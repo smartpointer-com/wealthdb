@@ -27,6 +27,7 @@ import argparse
 import base64
 import hashlib
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -215,6 +216,14 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    # Validate the destination up front, before connecting. UBS deletes
+    # each per-order-type zip immediately on a successful download, so a
+    # local write failure after a download would silently destroy data.
+    if not args.dest.is_dir():
+        raise SystemExit(f"Destination directory does not exist: {args.dest}")
+    if not os.access(args.dest, os.W_OK):
+        raise SystemExit(f"Destination directory is not writable: {args.dest}")
+
     client = connect(args)
     try:
         sftp = client.open_sftp()
@@ -224,7 +233,6 @@ def main() -> int:
             log.info("Dry run: skipping downloads.")
             return 0
 
-        args.dest.mkdir(parents=True, exist_ok=True)
         run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_dir = args.dest / run_ts
         run_dir.mkdir(parents=True, exist_ok=False)
