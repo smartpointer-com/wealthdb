@@ -1,0 +1,432 @@
+# swissquote-dump
+
+A toolkit for ingesting Swissquote Bank private-client portfolio data:
+driving the e-banking web UI under Playwright to export positions,
+transactions, and eDocuments, then (in subsequent scripts) parsing the
+raw CSVs and PDFs into a queryable SQLite silver database for
+downstream tools — e.g. local LLM-based agents and the `wealth-suite`
+gold layer — to consume.
+
+Sibling projects: [schwab-dump](https://github.com/ptu/schwab-dump),
+[ubs-psn-dump](https://github.com/ptu/ubs-psn-dump). The
+[DESIGN.md](DESIGN.md) document in `schwab-dump` covers the shared
+three-layer (bronze/silver/gold) model and the conventions reused
+here.
+
+## Why this design
+
+Swissquote does not expose any retail-accessible API for reading your
+own portfolio:
+
+- **PSD2 / Open Banking** — TPP-only (eIDAS cert required).
+- **OpenWealth / `bankingapi.swissquote.ch`** — B2B-only (External
+  Asset Managers, family offices). Worth asking your relationship
+  manager if you have the assets to justify it, but expect "no" for
+  retail.
+- **FIX API** — covers only the Forex/CFD margin sub-account, not the
+  bank-account portfolio (equities, ETFs, bonds, funds).
+- **PSD2 aggregators (Plaid, TrueLayer, Tink, etc.)** — no Swissquote
+  coverage. Powens has it but is B2B.
+- **Email feeds** — Swissquote sends "document available" notifications
+  with no payload; the parseable detail is only inside the PDF behind
+  the e-banking login.
+
+The remaining channel is the e-banking web UI: CSV export for
+transactions and positions, PDF download for eDocuments (trade
+confirmations, statements, fee notes). This toolkit automates that
+channel under Playwright.
+
+A **Mobile Level 3** push to the user's phone is required on every
+fresh login. Unattended cron is therefore impossible; this toolkit is
+human-triggered (one biometric tap per fresh session) but reuses the
+persisted session cookie across runs until it expires.
+
+## Tools
+
+| Script | Status | Purpose |
+| --- | --- | --- |
+| [`login.py`](login.py) | planned | Interactive login flow; drives Chromium through the Swissquote login + MFA gate and persists the resulting session cookies (`storageState.json`). Required when the session cookie expires (frequency TBD by Swissquote's policy). |
+| [`download.py`](download.py) | planned | Reuses the persisted session to export transactions (CSV), positions (CSV/XLSX), and new eDocuments (PDF) into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`load.py`](load.py) | planned | Parses bronze CSVs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. PDFs are tracked by content hash but not parsed structurally at this stage. |
+
+## Container build
+
+Playwright + Chromium + PDF tooling is heavy; running it directly on
+the host pollutes the OS. This toolkit ships as a Docker image and
+runs entirely inside the container.
+
+Base image: `mcr.microsoft.com/playwright/python:v1.59.0-noble`
+(Ubuntu Noble, Chromium browser binary and all OS-level deps
+pre-installed at `/ms-playwright/`). The Playwright Python package
+itself is installed via `requirements.txt`, version-pinned to match
+the base-image tag — bump both in lockstep. The Dockerfile pins to a
+specific tag so reruns are deterministic.
+
+### Build
+
+```sh
+git clone <this repo>
+cd swissquote-dump
+./swissquote-dump build         # one-time, ~10 min on first build
+```
+
+### Run
+
+The repo ships a thin `swissquote-dump` shell wrapper around `docker
+run` that mounts `~/.secrets/` (RO) and the bronze directory (RW)
+into the container:
+
+```sh
+./swissquote-dump login --check
+./swissquote-dump download --dry-run
+./swissquote-dump load --silver-db /data/swissquote.db --bronze-dir /data
+```
+
+Inside the container, `login.py`, `download.py`, and `load.py` live
+at `/app/`; `/secrets/` is the mounted credential dir; `/data/` is
+the mounted bronze + silver directory.
+
+If you prefer to drive `docker run` directly, the equivalent of
+`./swissquote-dump <cmd>` is:
+
+```sh
+docker run --rm -it \
+    -v ~/.secrets:/secrets \
+    -v ~/swissquote-data:/data \
+    swissquote-dump:latest \
+    <cmd>.py <flags>
+```
+
+### Headless remote host
+
+The toolkit is built to run on a headless remote Linux host (e.g. an
+always-on home server or a small VPS). The user `scp`s the bronze
+directory back to their workstation for analysis. Chromium runs
+headless inside the container; the MFA push is approved on the
+user's phone, not in any UI on the remote host.
+
+**First-run device verification.** Swissquote does device
+fingerprinting. The first login from a new IP (i.e. the remote
+host's IP) is likely to trigger an extra "verify this device" step
+on top of Mobile Level 3 — typically an email link or SMS code.
+Plan to do the very first `login.py` run with `--screenshot-dir`
+enabled so you can `scp` the captured screenshots down and see what
+Swissquote is asking for. Alternatively, do the device-trust step
+once via a manual browser session on the same outbound IP (e.g. SSH
+port-forwarding), then run scripted afterwards.
+
+## Layout
+
+```
+<bronze-dir>/                       e.g. ~/swissquote-data/
+├── 20260514T093122Z/               one bronze dump per run
+│   ├── transactions_000.csv        single CSV covering --since..--until
+│   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
+│   ├── list_of_assets.xls          Trading Platform List of Assets export (.xls binary; per-currency cash + FX)
+│   ├── account_overview.pdf        Server-rendered portfolio-summary PDF (~35 KB)
+│   ├── documents/
+│   │   ├── <docid>.pdf             eDocuments (trade confirms, statements, tax statements, fee notes, ...)
+│   │   └── ...
+│   └── run.json                    metadata: customer ID, windows, doc IDs + types seen
+├── 20260514T210105Z/
+│   └── ...
+├── manual/                         user-uploaded bronze artefacts
+│   ├── tax_statement_2024.pdf      annual e-tax PDFs from prior years
+│   └── tax_statement_2025.pdf
+└── swissquote.db                   silver SQLite database (default name)
+```
+
+Bronze and silver paths are independently configurable; the layout
+above is the path of least resistance for personal use.
+
+The `manual/` directory is for bronze artefacts the user produces
+out-of-band — most notably the annual Swissquote e-tax statement
+PDF (CHF 91 each, contains full year of positions + income +
+transactions and is useful as a year-end reconciliation against the
+scraped silver data). `load.py` ingests `manual/` on every run
+using the same dedup-by-hash mechanism as the auto-fetched eDocs.
+
+## Session lifecycle
+
+Swissquote sessions have two layers:
+
+- **Short-lived session cookie** — set by the login + MFA flow.
+  Lifetime unconfirmed but expected to be short (hours, possibly
+  one day). Refreshed transparently by `download.py` if it has not
+  yet expired.
+- **MFA gate** — Mobile Level 3 push to the user's phone. Required
+  on every fresh login (when the cookie has expired or been
+  invalidated). Cannot be scripted away; the user must tap.
+
+So the normal rhythm is: run `login.py` once, then `download.py` as
+many times as you like during the cookie's lifetime. When
+`download.py` starts reporting that the session has expired, re-run
+`login.py`.
+
+## login.py
+
+### How it works
+
+`login.py` launches headless Chromium inside the container,
+navigates to the Swissquote login page, enters the username and
+password, waits for the user to approve the Mobile Level 3 push on
+their phone, and persists the resulting browser context (cookies +
+localStorage) to a JSON state file. The file is chmod'ed to `0600`
+after creation.
+
+The browser runs headless and emits status to stdout. The user is
+told via terminal output when to approach their phone. The script
+waits up to `--mfa-timeout` seconds (default: 300) for the post-MFA
+landing page to appear, polling for a DOM/URL landmark rather than
+sleeping a fixed duration.
+
+### Usage
+
+Initial mint (and re-mint when the session expires):
+
+```sh
+./swissquote-dump login \
+    --state-path /secrets/swissquote_state.json \
+    --username <USERNAME>
+```
+
+`--username` may also be provided via `SWISSQUOTE_USERNAME`. The
+password is read from `SWISSQUOTE_PASSWORD` if set, otherwise
+prompted interactively (echo disabled). See
+[CLAUDE.md](CLAUDE.md) §3 — passwords are never accepted as CLI
+flags.
+
+Check whether the current session cookie still authenticates (no
+new MFA push, no fresh login):
+
+```sh
+./swissquote-dump login --state-path /secrets/swissquote_state.json --check
+```
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--state-path` | _(required)_ | Path to read/write the Playwright `storageState.json` file. |
+| `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
+| `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
+| `--mfa-timeout` | `300` | Seconds to wait for the user to approve the Mobile Level 3 push. |
+| `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [CLAUDE.md](CLAUDE.md) §4. |
+| `--trace` | off | Capture a Playwright trace bundle to the state-path's directory. Useful for debugging selector breakage. |
+| `-v`, `--verbose` | off | DEBUG-level logging. |
+
+## download.py
+
+### How it works
+
+`download.py` loads the persisted session state, opens a Playwright
+context, and walks a fixed sequence of e-banking pages to export
+bronze artefacts. The first navigation is also the session-liveness
+check — if Swissquote bounces to the login page, the script exits
+with a "run login.py" message rather than triggering a new MFA push
+mid-fetch.
+
+Per run, the script:
+
+1. Navigates to `#portfoliooverview` on the Trading Platform SPA and
+   triggers three exports from that page:
+   - **Positions** export (top-right of the Positions table) →
+     `positions.xls`.
+   - **List of Assets** export (next to the Assets table) →
+     `list_of_assets.xls` (per-currency cash + securities valuation
+     + FX rates against CHF).
+   - **Export account overview** (top-right of the page, near
+     "Buying power") → `account_overview.pdf` (server-rendered
+     portfolio-summary PDF, ~35 KB).
+
+   The two XLS files are the legacy CDFV2 binary Excel format (not
+   modern `.xlsx`); `load.py` reads them via `xlrd==1.2.0`, the last
+   `xlrd` line that supports `.xls`. The PDF is bronze-only at this
+   stage — it is not parsed into silver.
+2. Navigates to `#transactions`, mutates the Period filter to the
+   requested window via the React-native-setter trick (the inputs
+   ignore plain Playwright `.fill()`), clicks Apply, then triggers
+   the export dropdown and saves `transactions_000.csv`. Swissquote
+   does not enforce a window cap, so the entire range goes in a
+   single CSV — no chunking.
+3. Navigates to the eBanking SPA's `#documents` route (loaded by
+   mutating `location.hash` after the SPA bootstraps; direct
+   navigation strips the hash), widens the Period filter to
+   `--documents-since..--documents-until` (default: same as
+   `--since`/`--until`), and waits for the `.LoadingTable` spinner
+   to clear.
+4. Scrapes the rendered DOM for `a[href*='getPdfDocument']` anchors,
+   parses each URL into `(customer, doc_id, doc_type, contract_no,
+   date, target_user)`, skips any IDs already present in prior bronze
+   runs (filename-based dedup), and fetches each new PDF via
+   Playwright's request API (cookie reused, no per-row clicking) into
+   `documents/<doc_id>.pdf`.
+5. Writes `run.json` with the customer ID, transaction window bounds,
+   documents window bounds, and per-document metadata.
+
+Every response is written to disk verbatim — no parsing, no
+normalisation, no filtering happens at this stage. That's silver's
+job.
+
+The script must never navigate to a write surface — see
+[CLAUDE.md](CLAUDE.md) §1.
+
+### Prerequisites
+
+- Docker (host OS).
+- A Swissquote private-client account with e-banking enabled and
+  Mobile Level 3 active.
+- A valid `storageState.json` minted by `login.py`.
+
+### Usage
+
+Dry run — loads the session, verifies it's alive, walks the UI to
+confirm landmark selectors match, exits without exporting any
+artefacts:
+
+```sh
+./swissquote-dump download \
+    --state-path /secrets/swissquote_state.json \
+    --dest /data \
+    --dry-run
+```
+
+Real download:
+
+```sh
+./swissquote-dump download \
+    --state-path /secrets/swissquote_state.json \
+    --dest /data
+```
+
+Files land in `/data/<UTC-timestamp>/` inside the container, which
+maps to `~/swissquote-data/<UTC-timestamp>/` on the host.
+
+| File | Source |
+| --- | --- |
+| `transactions_000.csv` | Trading Platform → `#transactions` → top-right download menu (CSV) |
+| `positions.xls` | Trading Platform → `#portfoliooverview` → Positions export (legacy `.xls`, securities only) |
+| `list_of_assets.xls` | Trading Platform → `#portfoliooverview` → List of Assets export (legacy `.xls`, per-currency cash + FX) |
+| `account_overview.pdf` | Trading Platform → `#portfoliooverview` → Export account overview (server-rendered PDF) |
+| `documents/<docid>.pdf` | eBanking `#documents` → `getPdfDocument` REST endpoint (cookie reused) |
+| `run.json` | metadata: customer ID, transaction window, documents window, per-doc metadata |
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--state-path` | _(required)_ | Path to the Playwright `storageState.json` file. |
+| `--dest` | _(required)_ | Local destination directory (must be writable). |
+| `--since` | _today - 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
+| `--until` | _today (UTC)_ | Latest transaction date to fetch (YYYY-MM-DD, inclusive). |
+| `--documents-since` | _same as `--since`_ | Earliest document date (YYYY-MM-DD). Without this the docs page's 30-day default filter would mask anything older. |
+| `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
+| `--dry-run` | off | Skip exports; only validate session and selectors. |
+| `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. |
+| `--trace` | off | Capture a Playwright trace bundle for offline debugging. |
+| `-v`, `--verbose` | off | DEBUG-level logging. |
+
+### Caveats
+
+- **Session expiry.** Swissquote's session-cookie lifetime is short
+  and policy-driven (not configurable). When `download.py` reports
+  the session is dead, re-run `login.py`. Expect this at least daily
+  in practice; possibly more often.
+- **UI churn.** Selectors will break when Swissquote redesigns the
+  e-banking UI. Failure mode is "raise an explicit error pointing
+  at the broken landmark" — silent "empty CSV" results are
+  disallowed. Save a `--trace` bundle when reporting issues.
+- **CSV header drift.** Swissquote occasionally renames CSV columns
+  even when the UI stays put. `load.py` fails loud on unknown
+  headers rather than skipping silently.
+- **Currency.** Swissquote returns multi-currency data; every
+  position and transaction in silver carries an explicit `currency`
+  column. There is no implicit "main currency" assumption.
+- **One trading account today.** The schema and code path are
+  written to support multiple linked accounts under one login, but
+  no second-account fixtures exist — multi-account paths are
+  exercised but not verified.
+- **No retry / resume / scheduling.** Run interactively when you
+  want fresh data. The Mobile Level 3 gate makes unattended cron a
+  non-starter.
+
+## load.py
+
+### How it works
+
+Parses one or more bronze dump directories (as produced by
+`download.py`) and inserts them into a SQLite silver database.
+The schema is defined in `migrations/0001_initial.sql`; the loader
+applies any pending migrations on startup before loading data, so
+the silver database is always at the latest schema version.
+
+Each dump is loaded atomically — a failure mid-load rolls back to
+the prior state, and a re-run retries the whole dump. Already-loaded
+dumps are detected via `dump_runs` and skipped, so the loader is
+safe to point at a `--bronze-dir` containing a mix of new and
+already-processed snapshots.
+
+Reload semantics mirror the Schwab loader:
+
+- **Snapshots** (`accounts`, `positions`, `currency_balances`) are
+  append-only. Each dump produces a new row per (snapshot, entity).
+  `accounts` does content-dedup (only inserts when the canonical-JSON
+  payload differs from the most recent row for that customer).
+- **Events** (`transactions`) use window-DELETE-then-INSERT per
+  `(account, time-window)`. Re-running a window converges to
+  Swissquote's current truth even if dates/amounts were amended.
+- **Documents** (PDFs) are tracked by content hash + Swissquote's
+  GUID-style document ID in a `documents` table, but the binary
+  itself stays on disk. Structured PDF parsing is deferred — the
+  `payload` JSON records source filename, doc type, contract number,
+  date, and target user from the URL query string.
+- **`account_overview.pdf`** is regenerated every run (it's a live
+  snapshot, not a stable document). It lands in bronze but is
+  intentionally NOT indexed into the `documents` table.
+
+The `manual/` directory under the bronze root (e.g. pre-Swissquote-era
+e-tax statements brought forward, anything dropped in by the user out
+of band) is treated as a parallel bronze input on every run: each
+file's sha256 is compared against `documents.content_sha256`, and only
+new files are recorded as `source = 'manual'`.
+
+See the schwab-dump [DESIGN.md](https://github.com/ptu/schwab-dump/blob/main/DESIGN.md)
+§4 for the full rationale behind the snapshot/event archetype split
+and the semi-relational JSON1 pattern; this repo follows the same
+conventions.
+
+### Usage
+
+```sh
+./swissquote-dump load \
+    --silver-db /data/swissquote.db \
+    --bronze-dir /data
+```
+
+The loader scans `<bronze-dir>` for subdirectories whose names match
+the dump-timestamp format `YYYYMMDDTHHMMSSZ` and processes each one
+not already recorded in `dump_runs`. It also scans
+`<bronze-dir>/manual/` for new files on every run.
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `swissquote.db`. |
+| `--bronze-dir` | _(required)_ | Directory containing bronze dump subdirectories and the `manual/` subdirectory. |
+| `-v`, `--verbose` | off | DEBUG-level logging. |
+
+### Schema migrations
+
+To change the silver schema, add a new `migrations/NNNN_<slug>.sql`
+file. The number must be strictly greater than any existing
+migration. Each file:
+
+- Contains the DDL and any data backfill needed.
+- Ends with `INSERT INTO schema_meta (silver_schema_version, applied_at)
+  VALUES (N, CAST(strftime('%s','now') AS INTEGER));` as the
+  migration-complete marker the loader checks for.
+
+The loader executes each new migration in numeric order and commits
+between files. Silver databases must always be at the latest schema —
+never write code that handles "if column X exists".
