@@ -12,7 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # Mount points on the host. Override via env if your layout differs.
 HOST_SECRETS="${SWISSQUOTE_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${SWISSQUOTE_DATA_DIR:-$HOME/swissquote-data}"
+HOST_DATA="${SWISSQUOTE_DATA_DIR:-$HOME/wealth/swissquote}"
 
 usage() {
     cat <<EOF

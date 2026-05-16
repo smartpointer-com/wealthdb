@@ -93,7 +93,7 @@ If you prefer to drive `docker run` directly, the equivalent of
 ```sh
 docker run --rm -it \
     -v ~/.secrets:/secrets \
-    -v ~/swissquote-data:/data \
+    -v ~/wealth/swissquote:/data \
     swissquote-dump:latest \
     <cmd>.py <flags>
 ```
@@ -119,7 +119,7 @@ port-forwarding), then run scripted afterwards.
 ## Layout
 
 ```
-<bronze-dir>/                       e.g. ~/swissquote-data/
+<bronze-dir>/                       e.g. ~/wealth/swissquote/
 ├── 20260514T093122Z/               one bronze dump per run
 │   ├── transactions_000.csv        single CSV covering --since..--until
 │   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
@@ -307,7 +307,7 @@ Real download:
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
-maps to `~/swissquote-data/<UTC-timestamp>/` on the host.
+maps to `~/wealth/swissquote/<UTC-timestamp>/` on the host.
 
 | File | Source |
 | --- | --- |
