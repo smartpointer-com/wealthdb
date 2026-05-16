@@ -72,7 +72,7 @@ messages, test fixtures):
   balances, instrument lists scoped to a specific account.
 
 Test fixtures must be synthetic. Examples in docs should use
-placeholders like `<APP_KEY>` and `<ACCOUNT_HASH>`.
+placeholders like `<CLIENT_ID>`, `<CLIENT_SECRET>`, and `<ACCOUNT_HASH>`.
 
 When in doubt, ask the user before adding a value that looks
 identifier-shaped.

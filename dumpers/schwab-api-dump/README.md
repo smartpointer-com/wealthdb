@@ -1,11 +1,11 @@
 # schwab-dump
 
 A toolkit for ingesting Charles Schwab Trader API portfolio data:
-fetching account metadata, positions, and transaction history over the
-read-only subset of the Schwab REST API, then (in subsequent scripts)
-parsing the raw JSON into a queryable SQLite silver database for
-downstream tools — e.g. local LLM-based agents and the `wealth-suite`
-gold layer — to consume.
+fetching account metadata, positions, transactions, and open orders
+over the read-only subset of the Schwab REST API, then parsing the
+raw JSON into a queryable SQLite silver database for downstream
+tools — e.g. local LLM-based agents and the `wealth-suite` gold
+layer — to consume.
 
 ## Tools
 
@@ -113,12 +113,13 @@ refresh token that is valid for 7 days. `download.py` loads a previously
 minted token file and refreshes the access token transparently for the
 duration of the run.
 
-For each linked account it then fetches:
+It then fetches:
 
 1. The account-number → hash mapping (`/accounts/accountNumbers`).
 2. The user preferences blob (`/userPreference`).
 3. Accounts with positions (`/accounts?fields=positions`).
 4. Transactions per account, chunked into ≤1-year windows.
+5. Open orders across all accounts, filtered to non-terminal statuses.
 
 Every response is written to disk verbatim as JSON. No parsing,
 normalisation, or filtering happens at this stage; that is the silver
@@ -174,7 +175,8 @@ environment variables. Defaults are conservative:
 
 - Token file path: required (`--token-path`).
 - Output directory: required (`--dest`).
-- Transaction window: last 365 days, if not overridden.
+- Transaction window: last 364 days, if not overridden (Schwab caps the
+  endpoint at 365 days per request; 364 keeps the call within one chunk).
 - Client ID / Client Secret: passed via `--client-id` / `--client-secret`,
   or read from `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` env vars as
   fallback. Prefer the env-var path in shared environments to avoid
@@ -183,7 +185,7 @@ environment variables. Defaults are conservative:
 ### Usage
 
 Dry run — refreshes tokens, lists linked accounts, exits without
-fetching positions or transactions:
+fetching positions, transactions, or open orders:
 
 ```sh
 .venv/bin/python download.py \
