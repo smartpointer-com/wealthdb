@@ -14,13 +14,14 @@ Each immediate subdirectory of <bronze-dir> whose name matches the
 ubs-psn-dump timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
 Already-loaded dumps (recorded in dump_runs) are skipped.
 
-This first pass loads:
+Currently loaded:
   - SDCL / SDCA / SDSA / SDPO / SDFI from ZMD.zip
   - TDFXR / TDFWD from ZME.zip (other TD* types are loaded if non-empty;
     empty <Data> sections are skipped)
   - MT535 holdings from ZAH.zip
   - MT537 pending securities from ZM5.zip
   - MT940 cash balances + cash_movement events from Z40.zip
+  - MT515 trade_confirmation events from ZAG.zip
   - MT566 corporate_action_confirmation events from ZAN.zip
 
 ZAY.zip (MT950) is intentionally not loaded — see the migration header.
@@ -817,6 +818,199 @@ def load_mt566(conn, snapshot_at, relationship_id, mt_text):
 
 
 # --------------------------------------------------------------------------
+# MT515 — trade confirmations
+# --------------------------------------------------------------------------
+
+# Map :22H::BUSE// raw code -> conventional side label.
+_MT515_SIDE = {"BUYI": "BUY", "SELL": "SELL"}
+
+
+def _by_qualifier(fields: list[tuple[str, str]]) -> dict[str, dict[str, str]]:
+    """Build {tag: {qualifier: value-after-//}} for ':<QUAL>//value' entries.
+
+    Tags that appear multiple times with different qualifiers (e.g.
+    :19A::DEAL//, :19A::SETT//, :19A::TRAX//) become a sub-dict.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for tag, val in fields:
+        m = re.match(r"^:([A-Z]+)//(.*)$", val, re.S)
+        if m:
+            out.setdefault(tag, {})[m.group(1)] = m.group(2)
+    return out
+
+
+def _parse_unix_dt(s: str | None, fmt: str) -> int | None:
+    """Parse a date/datetime string in the given strptime format; return Unix
+    seconds UTC. Returns None on any failure (missing field, bad format)."""
+    if not s:
+        return None
+    try:
+        return int(datetime.strptime(s, fmt)
+                   .replace(tzinfo=timezone.utc).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_amount_ccy(s: str | None) -> tuple[str | None, float | None]:
+    """Parse '<CCY><amount-with-comma>' (e.g. 'XXX1234,56') into ('XXX', 1234.56)."""
+    if not s:
+        return None, None
+    m = re.match(r"^([A-Z]{3})([0-9.,]+)", s)
+    if not m:
+        return None, None
+    try:
+        return m.group(1), float(m.group(2).rstrip(",").replace(",", "."))
+    except ValueError:
+        return m.group(1), None
+
+
+def _parse_unit_amount(s: str | None) -> float | None:
+    """Parse 'UNIT/5087,' (or any single-prefix code) into 5087.0."""
+    if not s:
+        return None
+    m = re.match(r"\w+/([0-9.,]+)", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).rstrip(",").replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _parse_35b(val: str) -> tuple[str | None, str | None]:
+    """Extract (ISIN, security-name) from a :35B: multi-line value.
+
+    UBS emits either:
+        ISIN <code>
+        <NAME>
+    or:
+        ISIN <code>
+        /CH/<local-id>
+        <NAME>
+    """
+    if not val:
+        return None, None
+    lines = [l.strip() for l in val.splitlines() if l.strip()]
+    isin = None
+    for l in lines:
+        m = re.match(r"ISIN\s+([A-Z0-9]{12})", l)
+        if m:
+            isin = m.group(1)
+            break
+    name_lines = [l for l in lines
+                  if not l.startswith("ISIN") and not l.startswith("/")]
+    name = " ".join(name_lines) if name_lines else None
+    return isin, name
+
+
+def load_mt515(conn, snapshot_at, relationship_id, mt_text):
+    """MT515 Client Confirmation of Purchase or Sale.
+
+    One MT515 message per executed trade leg. Emits one row in `events`
+    with kind='trade_confirmation' and a structured payload so common
+    queries (side, ISIN, qty, price, fees, settlement) work without
+    re-parsing MT lines.
+
+    Promoted `account_external_id` = safekeeping account, matching the
+    convention used for `corporate_action_confirmation`. The cash
+    settlement account is preserved in payload for cash-side joins.
+    """
+    fields = parse_mt_block4(mt_text)
+    if not fields:
+        return 0
+    by_q = _by_qualifier(fields)
+    g = lambda tag, qual: by_q.get(tag, {}).get(qual)
+
+    seme = g("20C", "SEME")
+    if not seme:
+        log.debug("MT515 missing :20C::SEME// — skipping")
+        return 0
+
+    action = next((v for t, v in fields if t == "23G"), None)
+    related = g("20C", "RELA")
+    buse = g("22H", "BUSE")
+    side = _MT515_SIDE.get(buse, buse)
+
+    trade_time_unix = _parse_unix_dt(g("98C", "TRAD"), "%Y%m%d%H%M%S")
+    prep_time_unix = _parse_unix_dt(g("98C", "PREP"), "%Y%m%d%H%M%S")
+    settlement_date_unix = _parse_unix_dt(g("98A", "SETT"), "%Y%m%d")
+
+    # :35B: comes through fields list (no qualifier syntax there)
+    isin = None
+    security_name = None
+    for tag, val in fields:
+        if tag == "35B":
+            isin, security_name = _parse_35b(val)
+            break
+
+    quantity = _parse_unit_amount(g("36B", "CONF"))
+    raw_deal_price = g("90B", "DEAL")             # 'ACTU/<CCY><price>'
+    price_currency, price = (None, None)
+    if raw_deal_price and "/" in raw_deal_price:
+        price_currency, price = _parse_amount_ccy(raw_deal_price.split("/", 1)[1])
+
+    raw_venue = g("94B", "TRAD")                  # 'EXCH/XMAD'
+    venue_mic = raw_venue.split("/", 1)[1].strip() if raw_venue and "/" in raw_venue else None
+
+    settlement_currency = g("11A", "FXIB")
+    gross_ccy, gross_amt = _parse_amount_ccy(g("19A", "DEAL"))
+    net_ccy, net_amt = _parse_amount_ccy(g("19A", "SETT"))
+    trax_ccy, trax_amt = _parse_amount_ccy(g("19A", "TRAX"))
+    stam_ccy, stam_amt = _parse_amount_ccy(g("19A", "STAM"))
+
+    safe_acct = g("97A", "SAFE")
+    cash_acct = g("97A", "CASH")
+    buyer_bic = g("95P", "BUYR")
+    seller_bic = g("95P", "SELL")
+
+    payload_obj = {
+        "action": action,
+        "seme": seme,
+        "related_order_id": related,
+        "trade_time_unix": trade_time_unix,
+        "prep_time_unix": prep_time_unix,
+        "settlement_date_unix": settlement_date_unix,
+        "side": side,
+        "isin": isin,
+        "security_name": security_name,
+        "venue_mic": venue_mic,
+        "quantity": quantity,
+        "price": price,
+        "price_currency": price_currency,
+        "settlement_currency": settlement_currency,
+        "gross_amount": gross_amt,
+        "gross_currency": gross_ccy,
+        "net_amount": net_amt,
+        "net_currency": net_ccy,
+        "transaction_tax_amount": trax_amt,
+        "transaction_tax_currency": trax_ccy,
+        "stamp_duty_amount": stam_amt,
+        "stamp_duty_currency": stam_ccy,
+        "safekeeping_external_id": safe_acct,
+        "cash_account_external_id": cash_acct,
+        "buyer_bic": buyer_bic,
+        "seller_bic": seller_bic,
+        "raw_fields": fields,
+    }
+
+    # Timestamp = trade execution time when present (the natural "when"),
+    # else settlement, else prep, else the dump's snapshot_at.
+    timestamp = (trade_time_unix or settlement_date_unix or prep_time_unix
+                 or snapshot_at)
+
+    conn.execute(
+        "INSERT OR REPLACE INTO events"
+        "(event_external_id, timestamp, relationship_id, account_external_id, "
+        " kind, currency_iso, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (f"mt515:{seme}", timestamp, relationship_id,
+         safe_acct or "(unknown)",
+         "trade_confirmation", settlement_currency,
+         canonical_json(payload_obj)),
+    )
+    return 1
+
+
+# --------------------------------------------------------------------------
 # Dispatch tables — which zip contains which type, and which loader to call
 # --------------------------------------------------------------------------
 
@@ -846,6 +1040,7 @@ MT_LOADERS = {
     "ZAH": load_mt535,
     "ZM5": load_mt537,
     "Z40": load_mt940,
+    "ZAG": load_mt515,
     "ZAN": load_mt566,
     # ZAY (MT950) is intentionally not loaded; see migration header.
 }

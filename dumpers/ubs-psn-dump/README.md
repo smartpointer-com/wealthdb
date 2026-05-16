@@ -10,10 +10,10 @@ downstream tools — e.g. local LLM-based agents — can consume directly.
 | Script | Status | Purpose |
 | --- | --- | --- |
 | [`download.py`](download.py) | implemented | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
-| _future_ | planned | Unzip and parse SWIFT / XML / CSV payloads. |
-| _future_ | planned | Project the parsed data into an agent-friendly shape (canonical JSON, normalised account/transaction views, etc.). |
+| [`load.py`](load.py) | implemented | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
+| _future_ | planned | Cross-broker `wealth-suite` gold-layer adapter (lives in a separate repo). |
 
-The sections below document the only tool that currently exists.
+The sections below document the two tools that currently exist.
 
 ## download.py
 
@@ -110,3 +110,97 @@ downloaded nothing, the timestamped directory is removed.
   and silently skips those that yield `FileNotFoundError`.
 - **No retry / resume / scheduling.** Run from cron, launchd, or your
   scheduler of choice.
+
+## load.py
+
+### How it works
+
+Parses bronze dump directories produced by `download.py` and inserts
+their content into a SQLite silver database. The schema is defined in
+[`migrations/0001_initial.sql`](migrations/0001_initial.sql); the
+loader applies any pending migrations on startup before loading data,
+so the silver database is always at the latest schema version.
+
+Each dump is loaded atomically — a failure mid-load rolls back to the
+prior state, and a re-run retries the whole dump. Already-loaded dumps
+are detected via the `dump_runs` table and skipped, so the loader is
+safe to point at a `--bronze-dir` containing a mix of new and already-
+processed snapshots.
+
+Currently ingested per dump:
+
+| Source | Target |
+| --- | --- |
+| `ZMD.zip` → `SDCL` / `SDCA` / `SDSA` / `SDPO` / `SDFI` XML | `account_holders` / `cash_accounts` / `safekeeping_accounts` / `portfolios` / `instruments` |
+| `ZME.zip` → `TDFXR` / `TDFWD` XML (and the contract stubs) | `fx_rates` / `forward_contracts` (and the contract tables) |
+| `ZAH.zip` → MT535 holdings | `holdings` |
+| `ZM5.zip` → MT537 pending | `pending_securities` |
+| `Z40.zip` → MT940 statement headers + `:61:` lines | `cash_balances` + `events` (`kind='cash_movement'`) |
+| `ZAG.zip` → MT515 trade confirmations | `events` (`kind='trade_confirmation'`) |
+| `ZAN.zip` → MT566 corporate action confirmations | `events` (`kind='corporate_action_confirmation'`) |
+
+`ZAY.zip` (MT950 bank-to-bank statements) is intentionally **not**
+loaded — for retail PSN it duplicates MT940. `ZMH` (MT536 statement of
+transactions) and other MT types will be added when we have real
+samples. Bronze still keeps every retrieved zip for auditability.
+
+Reload semantics:
+
+- **Snapshots** (`holdings`, `cash_balances`, `pending_securities`,
+  `fx_rates`, `forward_contracts`, contract tables) are append-only
+  per snapshot.
+- **Slow-changing master data** (`account_holders`, `cash_accounts`,
+  `safekeeping_accounts`, `portfolios`, `instruments`) dedups against
+  the most recent row for each entity: insert only when the canonical-
+  JSON payload differs, after stripping UBS header noise
+  (`DWHMsgId` / `MsqSeqNo` / `CrtnDtTm`).
+- **Events** (`events`) use either window-DELETE-then-INSERT
+  (cash_movement, keyed on account + value-date range) or row-level
+  `INSERT OR REPLACE` on `event_external_id` for events the upstream
+  retracts only by sending a new CANC message (trade_confirmation,
+  corporate_action_confirmation).
+
+### Usage
+
+```sh
+.venv/bin/python load.py \
+    --silver-db ~/ubs-psn-data/ubs.db \
+    --bronze-dir ~/ubs-psn-data
+```
+
+The loader scans `<bronze-dir>` for subdirectories whose names match
+the dump-timestamp format `YYYYMMDDTHHMMSSZ` and processes each one
+not already recorded in `dump_runs`.
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `ubs.db`. |
+| `--bronze-dir` | _(required)_ | Directory containing bronze dump subdirectories. |
+| `--relationship-id` | `SFTPCH01` | UBS Server ID for the banking relationship the bronze dumps belong to. Override to load a different relationship into the same DB. |
+| `-v`, `--verbose` | off | DEBUG-level logging. |
+
+### Schema migrations
+
+To change the silver schema, add a new
+`migrations/NNNN_<slug>.sql` file. The number must be strictly greater
+than any existing migration. Each file:
+
+- Contains the DDL and any data backfill needed.
+- Ends with `INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (N, CAST(strftime('%s','now') AS INTEGER));` as the migration-complete marker the loader checks for.
+
+The loader executes each new migration in numeric order and commits
+between files. Silver databases must always be at the latest schema —
+never write code that handles "if column X exists".
+
+### Caveats
+
+- **Adding a new MT/XML loader requires re-running against existing
+  bronze dumps to backfill the new event kind / table.** Since
+  `dump_runs` records "this dump was loaded", a plain re-run will skip
+  already-processed dumps. To backfill, delete the silver DB and let
+  the loader rebuild it from bronze.
+- **Some "static" UBS XML feeds (SDCA, SDSA) carry daily-varying
+  fields** (book balance, accrued interest, market value). Content
+  dedup correctly captures these as new rows on each batch.
