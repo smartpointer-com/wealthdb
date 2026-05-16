@@ -25,7 +25,7 @@ building parallel tools for other bank/broker backends.
 The toolkit assumes a directory layout like:
 
 ```
-<bronze-dir>/                       e.g. ~/schwab-data/
+<bronze-dir>/                       e.g. ~/wealth/schwab/
 ├── 20260512T104753Z/               one bronze dump per run
 │   ├── account_numbers.json
 │   ├── user_preference.json
@@ -286,8 +286,8 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/schwab-data/schwab.db \
-    --bronze-dir ~/schwab-data
+    --silver-db ~/wealth/schwab/schwab.db \
+    --bronze-dir ~/wealth/schwab
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
