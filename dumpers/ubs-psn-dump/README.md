@@ -164,8 +164,8 @@ Reload semantics:
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/ubs-psn-data/ubs.db \
-    --bronze-dir ~/ubs-psn-data
+    --silver-db ~/wealth/ubs/ubs.db \
+    --bronze-dir ~/wealth/ubs
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
