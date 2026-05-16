@@ -212,7 +212,7 @@ new MFA push, no fresh login):
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
 | `--mfa-timeout` | `300` | Seconds to wait for the user to approve the Mobile Level 3 push. |
 | `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [CLAUDE.md](CLAUDE.md) §4. |
-| `--trace` | off | Capture a Playwright trace bundle to the state-path's directory. Useful for debugging selector breakage. |
+| `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. Never auto-writes to the secrets dir. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ## download.py
@@ -323,7 +323,7 @@ maps to `~/swissquote-data/<UTC-timestamp>/` on the host.
 | `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
 | `--dry-run` | off | Skip exports; only validate session and selectors. |
 | `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. |
-| `--trace` | off | Capture a Playwright trace bundle for offline debugging. |
+| `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Caveats

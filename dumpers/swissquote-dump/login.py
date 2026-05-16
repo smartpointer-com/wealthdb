@@ -78,8 +78,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--trace", action="store_true",
-        help="Capture a Playwright trace bundle next to the state file. "
-             "Useful for debugging selector breakage.",
+        help="Capture a Playwright trace bundle. Requires --screenshot-dir; "
+             "the bundle is written there alongside screenshots. Never "
+             "auto-writes to the secrets dir.",
     )
     p.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
@@ -209,10 +210,11 @@ def check_session(args: argparse.Namespace) -> int:
                 )
                 return 1
         finally:
-            _maybe_stop_trace(
-                context, args.trace,
-                args.state_path.with_name(f"trace_check_{ts}.zip"),
-            )
+            if args.trace:
+                _maybe_stop_trace(
+                    context, args.trace,
+                    args.screenshot_dir / f"trace_check_{ts}.zip",
+                )
             context.close()
             browser.close()
 
@@ -326,10 +328,11 @@ def login(args: argparse.Namespace) -> int:
             print(f"session minted: {args.state_path}", flush=True)
             return 0
         finally:
-            _maybe_stop_trace(
-                context, args.trace,
-                args.state_path.with_name(f"trace_login_{ts}.zip"),
-            )
+            if args.trace:
+                _maybe_stop_trace(
+                    context, args.trace,
+                    args.screenshot_dir / f"trace_login_{ts}.zip",
+                )
             context.close()
             browser.close()
 
@@ -340,6 +343,17 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # --trace must be paired with --screenshot-dir. The trace bundle
+    # lands inside that directory; there is no implicit fallback to
+    # the state-file's directory (which would pollute the secrets
+    # dir with debug artefacts).
+    if args.trace and not args.screenshot_dir:
+        raise SystemExit(
+            "--trace requires --screenshot-dir. The trace bundle is "
+            "written alongside screenshots; pick a directory that is "
+            "NOT your secrets dir."
+        )
+
     if args.check:
         return check_session(args)
     return login(args)

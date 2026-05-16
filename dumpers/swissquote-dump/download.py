@@ -90,7 +90,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--screenshot-dir", default=None, type=Path,
                    help="If set, write a screenshot at each landmark.")
     p.add_argument("--trace", action="store_true",
-                   help="Capture a Playwright trace bundle.")
+                   help="Capture a Playwright trace bundle. Requires "
+                        "--screenshot-dir; the bundle is written there "
+                        "alongside screenshots.")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     return p.parse_args(argv)
@@ -597,10 +599,11 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
         finally:
-            _maybe_stop_trace(
-                context, args.trace,
-                run_dir.with_suffix(".trace.zip"),
-            )
+            if args.trace:
+                _maybe_stop_trace(
+                    context, args.trace,
+                    args.screenshot_dir / f"trace_download_{run_ts_str}.zip",
+                )
             context.close()
             browser.close()
 
@@ -611,6 +614,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.trace and not args.screenshot_dir:
+        raise SystemExit(
+            "--trace requires --screenshot-dir. The trace bundle is "
+            "written alongside screenshots; pick a directory that is "
+            "NOT your secrets dir."
+        )
     return run(args)
 
 
