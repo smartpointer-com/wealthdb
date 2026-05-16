@@ -12,12 +12,20 @@ or scope. This repo's contract is that it *only* reads.
 
 Allowed UI surfaces — these are the only pages `download.py` may
 navigate to or click within:
-- Login / MFA pages.
-- Reports → Transactions (date-ranged CSV export).
-- Portfolio (positions snapshot export).
-- My Account → Documents / eDocuments (listing, downloading).
-- Whatever read-only landmark `login.py --check` uses to verify the
-  session.
+- F5 BIG-IP login form at `/my.policy` and the Mobile Level 3 MFA
+  page that follows it.
+- Trading Platform SPA `#transactions` route — date-range filter
+  inputs and the export dropdown only.
+- Trading Platform SPA `#portfoliooverview` route — the three
+  export buttons (Positions, List of Assets, Export account
+  overview) only. The Buy/Sell buttons inside position rows are
+  present in the DOM but must never be clicked.
+- eBanking SPA `#documents` route — date-range filter and Apply
+  only; document PDFs are fetched via Playwright's request API
+  (the `getPdfDocument` REST endpoint with the session cookie),
+  not by clicking download links.
+- eBanking SPA root (`/sqc-web-client-portal/`) used by
+  `login.py --check` to test session liveness via URL transition.
 
 Forbidden — do not navigate to, click, or scrape:
 - Trade entry forms (`Trade`, `Buy/Sell`, `Quote`, order-book widgets).
@@ -80,6 +88,12 @@ The session cookie is the keys to the kingdom (see §1). Do not:
   interactive prompt only.
 - Reduce the `chmod` on the state file below `0600`, or store it
   in a location wider than `~/.secrets/` defaults.
+- Default any debug or transient artefact (screenshot, trace
+  bundle, scratch log) to a path under `~/.secrets/`. The secrets
+  dir is for persistent credentials only; debug paths must be
+  user-provided (`--screenshot-dir` etc.) with no fallback to the
+  secrets-dir parent. `--trace` is therefore a paired flag — it
+  requires `--screenshot-dir`.
 
 ## 4. Do not leak private information into source
 

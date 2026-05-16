@@ -45,9 +45,9 @@ persisted session cookie across runs until it expires.
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | planned | Interactive login flow; drives Chromium through the Swissquote login + MFA gate and persists the resulting session cookies (`storageState.json`). Required when the session cookie expires (frequency TBD by Swissquote's policy). |
-| [`download.py`](download.py) | planned | Reuses the persisted session to export transactions (CSV), positions (CSV/XLSX), and new eDocuments (PDF) into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`load.py`](load.py) | planned | Parses bronze CSVs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. PDFs are tracked by content hash but not parsed structurally at this stage. |
+| [`login.py`](login.py) | implemented | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes the on-screen Operation No. (TAN) so the operator can compare against their phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
+| [`download.py`](download.py) | implemented | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`load.py`](load.py) | implemented | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. |
 
 ## Container build
 
@@ -73,8 +73,9 @@ cd swissquote-dump
 ### Run
 
 The repo ships a thin `swissquote-dump` shell wrapper around `docker
-run` that mounts `~/.secrets/` (RO) and the bronze directory (RW)
-into the container:
+run` that mounts `~/.secrets/` and the bronze directory into the
+container (both RW — `login.py` writes the state file, `download.py`
+writes bronze):
 
 ```sh
 ./swissquote-dump login --check
@@ -150,35 +151,41 @@ using the same dedup-by-hash mechanism as the auto-fetched eDocs.
 
 Swissquote sessions have two layers:
 
-- **Short-lived session cookie** — set by the login + MFA flow.
-  Lifetime unconfirmed but expected to be short (hours, possibly
-  one day). Refreshed transparently by `download.py` if it has not
-  yet expired.
+- **Session cookie** — set by F5 BIG-IP after the login + MFA flow
+  completes. `login.py` persists it into `storageState.json`;
+  `download.py` reuses that file directly (no refresh logic — when
+  the cookie dies, F5 redirects to `/my.policy` and the script
+  exits with a clear "run login.py" message). Lifetime is
+  policy-driven by Swissquote and unconfirmed; expect to re-login
+  at least once per working session in practice.
 - **MFA gate** — Mobile Level 3 push to the user's phone. Required
-  on every fresh login (when the cookie has expired or been
-  invalidated). Cannot be scripted away; the user must tap.
+  on every fresh login. Cannot be scripted away; the user must tap.
+  Swissquote occasionally skips the push when the device
+  fingerprint is recent enough — the script handles that case
+  silently.
 
 So the normal rhythm is: run `login.py` once, then `download.py` as
 many times as you like during the cookie's lifetime. When
-`download.py` starts reporting that the session has expired, re-run
-`login.py`.
+`download.py` reports the session is dead, re-run `login.py`.
 
 ## login.py
 
 ### How it works
 
-`login.py` launches headless Chromium inside the container,
-navigates to the Swissquote login page, enters the username and
-password, waits for the user to approve the Mobile Level 3 push on
-their phone, and persists the resulting browser context (cookies +
-localStorage) to a JSON state file. The file is chmod'ed to `0600`
-after creation.
+`login.py` launches headless Chromium inside the container and hits
+a protected eBanking URL (`/sqc-web-client-portal/`); the F5 BIG-IP
+gateway redirects to `/my.policy` with the login form. The script
+fills the form, waits for the Mobile Level 3 MFA page to appear, and
+prints the on-screen Operation No. (TAN) to the terminal so the
+operator can compare it against the value shown on their phone
+before tapping approve. Once F5 redirects away from `/my.policy`,
+the resulting browser context (cookies + localStorage) is persisted
+to a JSON state file (chmod `0600`).
 
-The browser runs headless and emits status to stdout. The user is
-told via terminal output when to approach their phone. The script
-waits up to `--mfa-timeout` seconds (default: 300) for the post-MFA
-landing page to appear, polling for a DOM/URL landmark rather than
-sleeping a fixed duration.
+The script waits up to `--mfa-timeout` seconds (default: 300) for
+F5 to leave `/my.policy`, polling the URL rather than sleeping a
+fixed duration. If Swissquote bypasses MFA on a recent-enough device
+fingerprint, the script completes silently in milliseconds.
 
 ### Usage
 
@@ -328,10 +335,10 @@ maps to `~/swissquote-data/<UTC-timestamp>/` on the host.
 
 ### Caveats
 
-- **Session expiry.** Swissquote's session-cookie lifetime is short
-  and policy-driven (not configurable). When `download.py` reports
-  the session is dead, re-run `login.py`. Expect this at least daily
-  in practice; possibly more often.
+- **Session expiry.** Swissquote's session-cookie lifetime is
+  policy-driven and not configurable. When `download.py` reports
+  the session is dead (F5 redirect to `/my.policy` during the
+  initial liveness check), re-run `login.py`.
 - **UI churn.** Selectors will break when Swissquote redesigns the
   e-banking UI. Failure mode is "raise an explicit error pointing
   at the broken landmark" — silent "empty CSV" results are
