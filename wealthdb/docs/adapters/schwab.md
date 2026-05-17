@@ -54,6 +54,39 @@ derived from `payload.instrument.assetType`:
 | `COLLECTIVE_INVESTMENT` | `fund` |
 | (unrecognised) | `other` (original `assetType` preserved in payload) |
 
+### `instrument.name` is empty for EQUITY positions
+
+The `instruments.name` column populates from `position.payload.
+instrument.description`. Schwab's Trader API returns `description`
+in `COLLECTIVE_INVESTMENT` / `MUTUAL_FUND` / `BOND` payloads but
+**not** in `EQUITY` payloads — equity instrument blocks carry only
+`{assetType, cusip, symbol, netChange}`. The same omission applies
+to `transactions[].transferItems[].instrument` for equity legs:
+`description` is absent.
+
+So gold's `name` column is empty for any Schwab equity position
+(visible in `wealthdb positions --columns all`, where the
+`name` column shows blank for equity rows but populated for
+funds/bonds). The company name lives on Schwab's
+`/marketdata/instruments` or `/marketdata/quotes` endpoints,
+which `schwab-dump` doesn't currently call.
+
+Three places this could be fixed; we're deliberately not doing
+any of them in wealthdb v1:
+1. `schwab-dump` enriches positions/instruments by calling
+   `/marketdata/quotes` (or `instruments?projection=symbol-search`)
+   once per held symbol. Right place architecturally — silver is
+   the per-broker faithful projection.
+2. A future market-data ingest in wealthdb (DESIGN.md §13.8)
+   would populate instrument names from a vendor feed regardless
+   of which silver registered the position.
+3. (Don't.) Synthesise `name = symbol`, hard-code a CSV, etc.
+   Rejected — equity ticker IS the name to a human reader, no
+   need to duplicate.
+
+Until either (1) or (2) lands, equity rows render with an empty
+`name` column. The `symbol` column is still populated.
+
 ## 5. `transactions.kind` mapping
 
 Schwab's `silver.transactions.kind` discriminator, observed in
