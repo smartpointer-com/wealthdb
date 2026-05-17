@@ -4,7 +4,7 @@ A toolkit for ingesting Charles Schwab Trader API portfolio data:
 fetching account metadata, positions, transactions, and open orders
 over the read-only subset of the Schwab REST API, then parsing the
 raw JSON into a queryable SQLite silver database for downstream
-tools — e.g. local LLM-based agents and the `wealth-suite` gold
+tools — e.g. local LLM-based agents and the `wealthdb` gold
 layer — to consume.
 
 ## Tools
@@ -25,7 +25,7 @@ building parallel tools for other bank/broker backends.
 The toolkit assumes a directory layout like:
 
 ```
-<bronze-dir>/                       e.g. ~/wealth/schwab/
+<bronze-dir>/                       e.g. ~/wealthdb/schwab/
 ├── 20260512T104753Z/               one bronze dump per run
 │   ├── account_numbers.json
 │   ├── user_preference.json
@@ -286,8 +286,8 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/wealth/schwab/schwab.db \
-    --bronze-dir ~/wealth/schwab
+    --silver-db ~/wealthdb/schwab/schwab.db \
+    --bronze-dir ~/wealthdb/schwab
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match

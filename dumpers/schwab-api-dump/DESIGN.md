@@ -27,7 +27,7 @@ reader can substitute the equivalent.
 └──────────────────────┘  └──────────│───────────┘  └──────────────────────┘
                                      ▼
                               ┌──────────────────────────────────────┐
-                              │   wealth-suite (DuckDB)              │
+                              │   wealthdb (DuckDB)                  │
                               │   - per-broker silver adapters       │
                               │   - canonical gold schema            │
                               │   - portfolio analytics, agent face  │
@@ -35,7 +35,7 @@ reader can substitute the equivalent.
 ```
 
 Each `*-dump` repo owns its own bronze format and silver schema as
-*published contracts*. `wealth-suite` is a downstream consumer with
+*published contracts*. `wealthdb` is a downstream consumer with
 broker-specific adapters; it has no rights over silver shape.
 
 ## 2. The three layers
@@ -44,7 +44,7 @@ broker-specific adapters; it has no rights over silver shape.
 |---|---|---|---|
 | **Bronze** | each `*-dump` repo | files on disk (JSON for Schwab, ZIPs of SWIFT-MT/XML for UBS) | Faithful, auditable archive of exactly what the upstream emitted. Never written by silver. |
 | **Silver** | each `*-dump` repo | SQLite + JSON1 | Queryable view of bronze. Per-broker, source-shaped, slightly cleaned (per-request noise dropped) but otherwise faithful. |
-| **Gold** | `wealth-suite` | DuckDB (`ATTACH`es silver) | Cross-broker canonical schema. Strictly relational. The agent-facing layer. |
+| **Gold** | `wealthdb` | DuckDB (`ATTACH`es silver) | Cross-broker canonical schema. Strictly relational. The agent-facing layer. |
 
 Three layers exist because the writes-fast / queries-fast tension is
 real. Bronze is optimised for "exactly what arrived"; silver for
@@ -202,7 +202,7 @@ MT message type carries; both sometimes change types (string ↔
 object). A relational schema would force a migration for every
 upstream change. A JSON payload absorbs all of them silently.
 
-**Why promote anything at all?** Because adapters in `wealth-suite`
+**Why promote anything at all?** Because adapters in `wealthdb`
 need to filter rows efficiently. `WHERE snapshot_at = ? AND
 account_external_id = ?` should be an index probe, not a JSON scan.
 
@@ -329,7 +329,7 @@ FROM ...` on the silver DB never returns a real Schwab account number.
   column on every row, since transactions for relationship 1 and 2
   are otherwise indistinguishable.
 - Pick *one* identifier per logical account dimension and stick with
-  it consistently across silver tables. The wealth-suite gold layer
+  it consistently across silver tables. The wealthdb gold layer
   will map per-broker IDs onto its canonical `accounts.account_id`.
 
 ### 4.7 Per-source noise filtering
@@ -404,8 +404,8 @@ hasn't run, fix the migration. If it has, the column always exists.
 
 ## 6. Gold-layer expectations
 
-`wealth-suite` is the agent-facing gold layer. Per-broker adapters
-live inside `wealth-suite`, not in the dump repos. The adapter's job
+`wealthdb` is the agent-facing gold layer. Per-broker adapters
+live inside `wealthdb`, not in the dump repos. The adapter's job
 is to read one broker's silver schema and project it into gold's
 canonical tables (`accounts`, `instruments`, `holdings`, `cash_flows`,
 `fx_rates`).
@@ -416,13 +416,13 @@ No Python row-by-row marshalling.
 
 Implications for silver schema authors:
 - **Silver schema is a public contract.** Bumping a silver schema
-  version may require updating the corresponding wealth-suite adapter.
+  version may require updating the corresponding wealthdb adapter.
   Communicate breaking changes.
-- **Promote anything wealth-suite needs as a filter or join key.**
-  If wealth-suite ends up doing `json_extract(...)` on every row
+- **Promote anything wealthdb needs as a filter or join key.**
+  If wealthdb ends up doing `json_extract(...)` on every row
   during silver→gold transforms, that's a sign the column should be
   promoted.
-- **Don't over-design for wealth-suite.** Adapters can handle
+- **Don't over-design for wealthdb.** Adapters can handle
   reasonable joins, type coercion, and JSON extraction. Don't
   materialize "convenience columns" silver doesn't otherwise need.
 
