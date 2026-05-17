@@ -554,26 +554,34 @@ def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
 def upsert_account(
     conn: sqlite3.Connection,
     snapshot_at: int,
-    customer_id: str,
+    external_id: str,
+    account_type: str,
     extra: dict | None = None,
 ) -> bool:
     """Insert a new accounts row only if the payload differs from the latest.
 
-    Returns True if a row was inserted, False if it was a no-op.
+    Dedup key is (external_id, account_type) — multi-account customers
+    would have multiple rows under the same external_id but different
+    type. Returns True if a row was inserted, False if it was a no-op.
     """
-    payload = canonical_json({"customer_id": customer_id, **(extra or {})})
+    payload = canonical_json({
+        "external_id": external_id,
+        "account_type": account_type,
+        **(extra or {}),
+    })
     last = conn.execute(
         "SELECT payload FROM accounts "
-        "WHERE account_external_id = ? "
+        "WHERE account_external_id = ? AND account_type = ? "
         "ORDER BY snapshot_at DESC LIMIT 1;",
-        (customer_id,),
+        (external_id, account_type),
     ).fetchone()
     if last and last["payload"] == payload:
         return False
     conn.execute(
-        "INSERT INTO accounts(snapshot_at, account_external_id, payload) "
-        "VALUES (?, ?, ?);",
-        (snapshot_at, customer_id, payload),
+        "INSERT INTO accounts("
+        " snapshot_at, account_external_id, account_type, payload) "
+        "VALUES (?, ?, ?, ?);",
+        (snapshot_at, external_id, account_type, payload),
     )
     return True
 
@@ -606,10 +614,30 @@ def load_one_dump(
             f"be loaded without knowing which account it belongs to."
         )
 
+    # Account list — either from the new accounts.json bronze artefact
+    # (current download.py), or synthesised from customer_id for older
+    # dumps that predate the scrape.
+    accounts_path = run_dir / "accounts.json"
+    if accounts_path.is_file():
+        account_entries = json.loads(accounts_path.read_text(encoding="utf-8"))
+    else:
+        log.info(
+            "No accounts.json in %s; falling back to a single typeless "
+            "account derived from customer_id.", run_dir.name,
+        )
+        account_entries = [
+            {"account_external_id": customer_id, "account_type": ""},
+        ]
+
     conn.execute("BEGIN;")
     try:
-        # accounts (content-dedup)
-        upsert_account(conn, snapshot_at, customer_id)
+        # accounts (content-dedup per (external_id, type))
+        for entry in account_entries:
+            upsert_account(
+                conn, snapshot_at,
+                entry["account_external_id"],
+                entry["account_type"],
+            )
 
         # currency_balances (list_of_assets.xls)
         loa_path = run_dir / "list_of_assets.xls"

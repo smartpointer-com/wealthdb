@@ -110,7 +110,12 @@ def _new_context(p, state_path: Path):
         )
     browser = p.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        # See login.py for rationale on the anti-detection knobs.
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
     )
     context = browser.new_context(
         storage_state=str(state_path),
@@ -119,6 +124,10 @@ def _new_context(p, state_path: Path):
         timezone_id="Europe/Zurich",
         viewport={"width": 1440, "height": 900},
         accept_downloads=True,
+    )
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', "
+        "{ get: () => undefined });"
     )
     context.set_default_timeout(NAV_TIMEOUT_MS)
     return browser, context
@@ -149,12 +158,14 @@ def _maybe_stop_trace(context, enabled: bool, trace_path: Path) -> None:
 
 
 def _verify_session(page) -> None:
-    """Hit an F5-protected URL; raise if F5 bounces us to /my.policy.
+    """Hit an F5-protected URL; raise unless we land at the post-auth URL.
 
     The Trading Platform URL itself isn't a reliable login indicator
     (F5 lets it load as a blank SPA when unauthenticated). We probe
     the eBanking SPA root, which F5 protects properly: a valid
-    session serves the SPA; an invalid one redirects to /my.policy.
+    session settles at `/sqc-web-client-portal/?url_id=...#...`; an
+    invalid one ends up at /my.policy or some transient intermediate.
+    Only the positive landmark counts.
     """
     from playwright.sync_api import TimeoutError as PWTimeout
     log.info("Verifying session via %s", sq.LOGIN_TRIGGER_URL)
@@ -163,7 +174,7 @@ def _verify_session(page) -> None:
         page.wait_for_load_state("networkidle", timeout=LANDMARK_TIMEOUT_MS)
     except PWTimeout:
         pass
-    if sq.F5_AUTH_PATH in page.url:
+    if not sq.is_post_auth_url(page.url):
         raise SystemExit(
             f"Session expired (final URL: {page.url}). "
             "Re-run login.py to mint a fresh session."
@@ -281,6 +292,47 @@ def export_positions(page, run_dir: Path) -> tuple[Path, str | None]:
     m = POSITIONS_FILENAME_RE.match(dl.suggested_filename)
     customer_id = m.group("customer") if m else None
     return target, customer_id
+
+
+def scrape_accounts(page, run_dir: Path) -> list[dict]:
+    """Scrape the eBanking #accountOverview/main account list.
+
+    Each account is rendered as `<TYPE> <CUSTOMER_ID>` text inside
+    `li.AccountListItem .AccountDetails__portfolioTitle`. We parse
+    those strings into structured entries and write them to
+    `accounts.json` in the run dir.
+
+    The list also drives silver's `accounts.account_type` column;
+    see migrations/0002. For single-account customers the result is
+    one entry; the schema supports multi-account customers natively.
+    """
+    page.goto(sq.EBANKING_BASE_URL, wait_until="domcontentloaded")
+    page.wait_for_load_state("networkidle", timeout=LANDMARK_TIMEOUT_MS)
+    page.evaluate(f"window.location.hash = '{sq.ROUTE_ACCOUNT_OVERVIEW}'")
+    page.wait_for_selector(sq.ACCOUNT_LIST_ROW, timeout=LANDMARK_TIMEOUT_MS)
+
+    raw_lines = page.eval_on_selector_all(
+        f"{sq.ACCOUNT_LIST_ROW} {sq.ACCOUNT_PORTFOLIO_TITLE}",
+        "els => els.map(el => el.textContent.trim())",
+    )
+    accounts: list[dict] = []
+    parse_re = re.compile(r"^(?P<type>[A-Z][\w \-]*?)\s+(?P<id>\d{6,8})$")
+    for line in raw_lines:
+        m = parse_re.match(line)
+        if not m:
+            log.warning("Skipping unparseable account-list entry: %r", line)
+            continue
+        accounts.append({
+            "account_type": m.group("type").strip(),
+            "account_external_id": m.group("id"),
+        })
+    target = run_dir / "accounts.json"
+    target.write_text(
+        json.dumps(accounts, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    log.info("Saved %s (%d account(s))", target, len(accounts))
+    return accounts
 
 
 def export_account_overview(page, run_dir: Path) -> Path:
@@ -507,7 +559,10 @@ def run(args: argparse.Namespace) -> int:
             run_dir.mkdir(parents=True, exist_ok=False)
             log.info("Writing artefacts to %s", run_dir)
 
-            # --- Portfolio first: positions + list_of_assets ---------
+            # --- Accounts list (informal type per account) -----------
+            accounts = scrape_accounts(page, run_dir)
+
+            # --- Portfolio: positions + list_of_assets ---------------
             # Doing this before transactions gives us the customer_id
             # (parsed from the Positions XLS filename) early, which
             # other steps stamp into run.json.
@@ -579,6 +634,7 @@ def run(args: argparse.Namespace) -> int:
             run_meta = {
                 "timestamp": run_ts_str,
                 "customer_id": customer_id,
+                "accounts": {"file": "accounts.json", "entries": accounts},
                 "transactions": txn_entries,
                 "documents": doc_entries,
                 "documents_window": {

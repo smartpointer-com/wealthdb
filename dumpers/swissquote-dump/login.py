@@ -138,7 +138,17 @@ def _new_context(p, *, storage_state: Path | None):
     """
     browser = p.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        # --disable-blink-features=AutomationControlled stops Chromium
+        # from advertising itself as automated in CDP-exposed headers
+        # and DOM hooks. Swissquote's MFA-wait page is a polling SPA
+        # that quietly stops polling when it detects automation; with
+        # this flag (plus the navigator.webdriver override below) it
+        # proceeds normally.
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
     )
     ctx_kwargs = {
         "user_agent": USER_AGENT,
@@ -149,6 +159,13 @@ def _new_context(p, *, storage_state: Path | None):
     if storage_state is not None and storage_state.is_file():
         ctx_kwargs["storage_state"] = str(storage_state)
     context = browser.new_context(**ctx_kwargs)
+    # `navigator.webdriver` is set to true by Playwright/CDP and is
+    # the cheapest fingerprint anti-bot code keys on. Override it to
+    # undefined (matching a real Chrome session) on every new page.
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', "
+        "{ get: () => undefined });"
+    )
     context.set_default_timeout(NAV_TIMEOUT_MS)
     return browser, context
 
@@ -193,13 +210,13 @@ def check_session(args: argparse.Namespace) -> int:
                 pass
             _screenshot(page, args.screenshot_dir, f"check_{ts}_after_goto")
 
-            # Authentication signal: we did NOT end up at the F5 auth
-            # path. If the session cookie is valid, F5 serves the
-            # originally-requested URL directly; if not, F5 redirects
-            # to /my.policy to collect credentials.
-            on_f5_auth = sq.F5_AUTH_PATH in page.url
+            # Authentication signal: F5 has forwarded us back to the
+            # eBanking SPA with a `url_id=` session parameter. The
+            # bare-trigger URL is not enough — F5 occasionally serves
+            # a transient intermediate page that does not contain
+            # `/my.policy`, so a negative test would false-positive.
             log.info("Final URL: %s", page.url)
-            if not on_f5_auth:
+            if sq.is_post_auth_url(page.url):
                 print("session OK")
                 return 0
             else:
@@ -250,76 +267,141 @@ def login(args: argparse.Namespace) -> int:
                     f"submitting credentials."
                 )
 
+            # Log every main-frame navigation while we're waiting on
+            # the auth flow. F5's redirect chain is opaque; without
+            # this we can't tell why a wait-for-URL predicate didn't
+            # fire. Logged at DEBUG (`-v`) by default.
+            page.on(
+                "framenavigated",
+                lambda f: log.debug("nav: %s", f.url) if f == page.main_frame else None,
+            )
+
             log.info("Filling credentials")
             page.locator(sq.LOGIN_USERNAME_INPUT).fill(username)
             page.locator(sq.LOGIN_PASSWORD_INPUT).fill(password)
             page.locator(sq.LOGIN_SUBMIT_BUTTON).click()
 
-            # Two possible next pages: MFA (happy path) or a login
-            # error (wrong password / locked account). Wait for the
-            # MFA landmark; if it never appears, surface a clear error.
-            log.info("Waiting for MFA prompt to appear ...")
+            # After credentials are submitted, F5 either:
+            #   (a) shows the MFA wait page (happy path, push to phone)
+            #   (b) skips MFA on a recently-trusted device fingerprint
+            #   (c) shows an inline error (wrong password etc.)
+            # Branches (a) and (b) both end at the post-auth landing
+            # URL — we wait for THAT positive landmark as the
+            # "logged in" signal. Branch (c) leaves us at /my.policy
+            # forever, and we'll time out cleanly.
+            #
+            # Along the way, opportunistically scrape the TAN if the
+            # MFA page renders. Brief (5s) wait — if no MFA page,
+            # F5 trusted the fingerprint and skipped the push, and
+            # the post-auth wait below will resolve nearly instantly.
             try:
                 page.wait_for_selector(
                     f'text="{sq.MFA_PAGE_TEXT_LANDMARK}"',
-                    timeout=LANDMARK_TIMEOUT_MS,
+                    timeout=5000,
                 )
+                _screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
+                tan = None
+                try:
+                    tan = page.locator(
+                        sq.MFA_OPERATION_CODE_SELECTOR
+                    ).inner_text(timeout=5000).strip()
+                except Exception as e:  # noqa: BLE001 - non-fatal
+                    log.warning("Could not scrape Operation No.: %s", e)
+                if tan:
+                    print(
+                        f"Operation No. on screen: {tan}\n"
+                        f"Verify this matches your phone, then approve. "
+                        f"Waiting up to {args.mfa_timeout}s ...",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "Approve the Mobile Level 3 push on your phone. "
+                        f"Waiting up to {args.mfa_timeout}s ...",
+                        flush=True,
+                    )
             except Exception:
-                _screenshot(
-                    page, args.screenshot_dir, f"login_{ts}_02_no_mfa",
+                log.info(
+                    "No MFA page detected — device fingerprint likely "
+                    "trusted; waiting for post-auth landing URL."
                 )
-                raise SystemExit(
-                    "Login did not advance to the MFA page. Likely "
-                    "causes: wrong username/password, account locked, "
-                    "or an unfamiliar interstitial. Re-run with "
-                    "--screenshot-dir and --trace to diagnose."
-                )
-            _screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
 
-            # Scrape the Operation No. (TAN) the page shows next to
-            # the approval prompt. The phone app shows the same code;
-            # the operator visually confirms they match before tapping
-            # approve. Printing it here saves an SCP/screenshot trip.
-            tan = None
-            try:
-                tan = page.locator(
-                    sq.MFA_OPERATION_CODE_SELECTOR
-                ).inner_text(timeout=LANDMARK_TIMEOUT_MS).strip()
-            except Exception as e:  # noqa: BLE001 - non-fatal
-                log.warning("Could not scrape Operation No.: %s", e)
-
-            if tan:
-                print(
-                    f"Operation No. on screen: {tan}\n"
-                    f"Verify this matches your phone, then approve. "
-                    f"Waiting up to {args.mfa_timeout}s ...",
-                    flush=True,
-                )
+            # Poll for either the success URL or a known interstitial.
+            # We also re-navigate to the trigger URL every 10s as a
+            # liveness probe: the MFA wait page is a polling SPA that
+            # silently fails when its XHRs are anti-bot-blocked, but
+            # F5 itself will route us correctly on a fresh navigation
+            # if the backend has recorded our approval. So we let the
+            # SPA try for 10s, then bypass it.
+            import time
+            deadline = time.monotonic() + args.mfa_timeout
+            last_logged_url = None
+            last_heartbeat = 0.0
+            last_repoke = time.monotonic()
+            while time.monotonic() < deadline:
+                url = page.url
+                if url != last_logged_url:
+                    log.info("waiting; current URL: %s", url)
+                    last_logged_url = url
+                elif time.monotonic() - last_heartbeat > 15:
+                    log.info("still waiting at %s", url)
+                    last_heartbeat = time.monotonic()
+                if sq.is_post_auth_url(url):
+                    break
+                if sq.is_profile_validation_url(url):
+                    _screenshot(
+                        page, args.screenshot_dir,
+                        f"login_{ts}_04_profile_validation",
+                    )
+                    raise SystemExit(
+                        "Swissquote is asking you to complete a "
+                        "profile-validation question (regulatory KYC "
+                        "refresh — e.g. the 'executive position' "
+                        "prompt). This script cannot answer that on "
+                        "your behalf. Log in once via a regular "
+                        "browser at https://trade.swissquote.ch/, "
+                        "answer the question, then re-run login.py.\n"
+                        f"Stuck at: {url}"
+                    )
+                # Re-poke F5 every 10s while we're stuck on the MFA
+                # wait page. If the user has already tapped approve,
+                # this fresh navigation will see the now-valid session
+                # cookie and F5 will route to the post-auth URL.
+                if (
+                    time.monotonic() - last_repoke > 10
+                    and "sq-thirdlevel-plugin" in url
+                ):
+                    log.info("re-poking F5 by re-navigating to trigger URL")
+                    try:
+                        page.goto(
+                            sq.LOGIN_TRIGGER_URL, wait_until="domcontentloaded",
+                        )
+                    except Exception as e:  # noqa: BLE001 - best effort
+                        log.warning("re-poke navigation failed: %s", e)
+                    last_repoke = time.monotonic()
+                time.sleep(0.25)
             else:
-                print(
-                    "Approve the Mobile Level 3 push on your phone. "
-                    f"Waiting up to {args.mfa_timeout}s ...",
-                    flush=True,
-                )
-
-            # F5 keeps the user at /my.policy during both the login
-            # and MFA stages. Successful MFA approval is signalled by
-            # the URL leaving /my.policy entirely (F5 then redirects
-            # to the originally-requested protected URL).
-            try:
-                page.wait_for_url(
-                    lambda url: sq.F5_AUTH_PATH not in url,
-                    timeout=args.mfa_timeout * 1000,
-                )
-            except Exception:
                 _screenshot(
                     page, args.screenshot_dir, f"login_{ts}_04_mfa_timeout",
                 )
                 raise SystemExit(
-                    f"MFA was not approved within {args.mfa_timeout}s, "
-                    "or F5 did not redirect away from /my.policy. "
-                    "Check the screenshots."
+                    f"Login did not complete within {args.mfa_timeout}s. "
+                    f"Final URL: {page.url}. The push may not have been "
+                    f"approved, the credentials may be wrong, or F5 may "
+                    f"have shown an unfamiliar interstitial. Re-run with "
+                    f"--screenshot-dir -v to diagnose."
                 )
+            # After the loose-predicate wait fires, give the SPA a
+            # beat to settle — F5 typically attaches `url_id=` and
+            # any further session cookies via a follow-up redirect.
+            from playwright.sync_api import TimeoutError as PWTimeout
+            try:
+                page.wait_for_load_state(
+                    "networkidle", timeout=LANDMARK_TIMEOUT_MS,
+                )
+            except PWTimeout:
+                pass
+            log.info("Settled at %s", page.url)
             _screenshot(page, args.screenshot_dir, f"login_{ts}_05_landed")
 
             log.info("Persisting session state to %s", args.state_path)

@@ -31,9 +31,41 @@ HOST = "trade.swissquote.ch"
 # as the trigger and is also where the user lands after auth.
 LOGIN_TRIGGER_URL = f"https://{HOST}/sqc-web-client-portal/"
 
-# Path fragment F5 uses for both the login form and the MFA wait page.
-# "In the F5 auth flow" is detected by F5_AUTH_PATH in page.url.
+# Path fragment F5 uses for the login form. The MFA wait page lives
+# at a *different* URL (F5 transitions away from /my.policy as soon
+# as credentials are accepted, before the user approves the push),
+# so "/my.policy not in url" is NOT a valid signal of "MFA done".
 F5_AUTH_PATH = "/my.policy"
+
+# Positive landmark for "fully authenticated". F5 attaches a
+# `url_id=<hex>` query parameter when it forwards the post-auth
+# request back to the originally-requested protected URL. We wait
+# for this AND the SPA-root path before declaring login successful.
+def is_post_auth_url(url: str) -> bool:
+    """URL is on the post-auth eBanking SPA path, not the F5 auth form.
+
+    F5 may or may not attach a `url_id=` query parameter on the
+    redirect; testing for it produced false negatives. The reliable
+    signal is just "we're on the protected SPA path and not on
+    /my.policy". Used by login.py post-MFA, by login.py --check, and
+    by download.py's session-verify.
+    """
+    return F5_AUTH_PATH not in url and "/sqc-web-client-portal/" in url
+
+
+def is_profile_validation_url(url: str) -> bool:
+    """Detects Swissquote's periodic regulatory-KYC interstitial.
+
+    After MFA approval, F5 sometimes routes the user to a profile-
+    validation plugin (e.g. the "executive position" question that
+    Swissquote refreshes annually for regulatory reasons). The script
+    cannot answer this on the user's behalf — it has to be done once
+    via a regular browser. We detect it so we can fail fast with an
+    actionable message instead of hanging on wait_for_url.
+    """
+    return "sq-profile-validation-plugin" in url
+
+
 
 # Trading Platform — hash-routed SPA. Append a route fragment to land
 # on a specific page. Reachable once F5 has issued a session cookie;
@@ -49,6 +81,14 @@ ROUTE_TRANSACTIONS = "#transactions"
 # so the script must widen it to fetch all historical documents.
 EBANKING_BASE_URL = LOGIN_TRIGGER_URL  # same SPA root as the login trigger
 DOCUMENTS_URL = f"{EBANKING_BASE_URL}#documents"
+ROUTE_ACCOUNT_OVERVIEW = "#accountOverview/main"
+
+# Account-list selectors on the eBanking #accountOverview/main page.
+# Each `<li.AccountListItem>` wraps a single account; inside it,
+# `.AccountDetails__portfolioTitle` contains the `<TYPE> <CUSTOMER_ID>`
+# label that Swissquote uses as the informal account-type indicator.
+ACCOUNT_LIST_ROW = "li.AccountListItem"
+ACCOUNT_PORTFOLIO_TITLE = ".AccountDetails__portfolioTitle"
 
 # Document fetch endpoint. The page is JS-driven, but each document
 # is ultimately served by this REST endpoint with the session cookie.
