@@ -3,7 +3,7 @@
 Adapter that projects the `schwab-dump` silver SQLite into the
 canonical gold schema. Implements the `silver.Adapter` /
 `silver.Connection` interface defined in
-[../../DESIGN.md](../../DESIGN.md) §6.
+[../DESIGN.md](../DESIGN.md) §6.
 
 ## 1. Silver source
 
