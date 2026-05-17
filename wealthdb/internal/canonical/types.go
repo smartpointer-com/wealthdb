@@ -1,0 +1,144 @@
+package canonical
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// AccountChange is one upsert into gold's `accounts` table.
+// Nullable columns are *T; non-nullable columns are T.
+type AccountChange struct {
+	SilverSourceID    string
+	AccountExternalID string
+	AccountKind       AccountKind
+	DisplayName       *string
+	BaseCurrency      *string
+	RelationshipID    *string
+	// FirstSeenAt is the earliest snapshot_at where this account
+	// has been observed in the current batch. Gold takes the min
+	// with whatever's already stored.
+	FirstSeenAt int64
+	// LastSeenAt is the latest snapshot_at observed in this batch.
+	// Gold takes the max with what's stored.
+	LastSeenAt int64
+	Payload    json.RawMessage
+}
+
+// InstrumentChange is one upsert into gold's `instruments` table.
+type InstrumentChange struct {
+	SilverSourceID       string
+	InstrumentExternalID string
+	AssetClass           AssetClass
+	ISIN                 *string
+	CUSIP                *string
+	Symbol               *string
+	Name                 *string
+	Currency             *string
+	FirstSeenAt          int64
+	LastSeenAt           int64
+	Payload              json.RawMessage
+}
+
+// PositionChange is one insert into gold's `positions` table.
+type PositionChange struct {
+	SilverSourceID       string
+	SnapshotAt           int64
+	AccountExternalID    string
+	PositionKey          string
+	InstrumentExternalID *string
+	AssetClass           AssetClass
+	Currency             string
+	Quantity             *Decimal
+	MarketValue          *Decimal
+	BookValue            *Decimal
+	AccruedInterest      *Decimal
+	// AcquisitionDate is a calendar date (no time component). Stored
+	// as DATE in DuckDB. Use time.Time at UTC midnight.
+	AcquisitionDate *time.Time
+	Payload         json.RawMessage
+}
+
+// CashBalanceChange is one insert into gold's `cash_balances` table.
+type CashBalanceChange struct {
+	SilverSourceID    string
+	SnapshotAt        int64
+	AccountExternalID string
+	Currency          string
+	BalanceKind       BalanceKind
+	Amount            Decimal
+	Payload           json.RawMessage
+}
+
+// FxRateChange is one insert into gold's `fx_rates` table.
+type FxRateChange struct {
+	SilverSourceID string
+	SnapshotAt     int64
+	BaseCurrency   string
+	QuoteCurrency  string
+	MidRate        Decimal
+	BidRate        *Decimal
+	AskRate        *Decimal
+	Payload        json.RawMessage
+}
+
+// TransactionChange is one insert into gold's `transactions` table.
+type TransactionChange struct {
+	SilverSourceID        string
+	TransactionExternalID string
+	OccurredAt            int64
+	AccountExternalID     string
+	InstrumentExternalID  *string
+	Kind                  TxKind
+	Currency              string
+	GrossAmount           *Decimal
+	NetAmount             *Decimal
+	Quantity              *Decimal
+	Price                 *Decimal
+	Payload               json.RawMessage
+}
+
+// Status is the return value of silver.Connection.Status(). See
+// docs/DESIGN.md §6.2 for semantics. All timestamps are Unix
+// seconds UTC; -1 is the "no observable state" sentinel.
+type Status struct {
+	OldestSnapshotAt    int64
+	LatestSnapshotAt    int64
+	OldestTransactionAt int64
+	LatestTransactionAt int64
+	LatestChangeNumber  int64
+}
+
+// Window is the return value of silver.Connection.ChangeWindow().
+// See docs/DESIGN.md §6.2.
+type Window struct {
+	// Start is the earliest changed timestamp in this window
+	// (inclusive). Unix seconds UTC.
+	Start int64
+	// End is the latest changed timestamp in this window (inclusive).
+	End int64
+	// NewChangeNumber is the value the gold-side high_watermark
+	// should advance to after the changes for this window have
+	// been committed.
+	NewChangeNumber int64
+	// HasChanges is false when there's nothing to apply — the
+	// caller skips Snapshots/Transactions and may still advance
+	// the watermark.
+	HasChanges bool
+}
+
+// SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
+// Adapters multiplex change records of different types into one
+// batch; gold applies them in the order: dimensions (accounts,
+// instruments) before facts (positions, cash_balances, fx_rates).
+type SnapshotBatch struct {
+	Accounts     []AccountChange
+	Instruments  []InstrumentChange
+	Positions    []PositionChange
+	CashBalances []CashBalanceChange
+	FxRates      []FxRateChange
+}
+
+// TransactionBatch is one batch yielded by a TransactionStream.Next call.
+type TransactionBatch struct {
+	Transactions []TransactionChange
+}
