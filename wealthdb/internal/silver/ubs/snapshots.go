@@ -365,20 +365,22 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 		// Resolve instrument metadata via the latest-known lookup
 		// built in appendInstruments (UBS silver dedups
 		// instruments per content, so most snapshots don't carry
-		// a fresh row). Fall back to (other, "XXX") if the ISIN
-		// has never been seen — defensive only.
-		meta := instrumentMeta{AssetClass: canonical.AssetClassOther, Currency: "XXX"}
+		// a fresh row). Fall back to AssetClass=other / blank
+		// currency when the ISIN has never been seen — the
+		// currency-from-HOLD step below typically rescues us.
+		meta := instrumentMeta{AssetClass: canonical.AssetClassOther}
 		if m, ok := instr[isin]; ok {
 			meta = m
-			if meta.Currency == "" {
-				meta.Currency = "XXX"
-			}
 		}
 
 		// MT535 SWIFT-tag parsing: pull aggregate quantity from
-		// the 93B array and market value (in the instrument's
-		// natural currency where possible) from 19A. See
-		// mt535.go and docs/adapters/ubs.md §4.
+		// the 93B array and pick a 19A:HOLD entry for market
+		// value. The HOLD entry's currency is the truthiest
+		// source of "the currency this position is reported in" —
+		// UBS publishes one HOLD per (currency the bank books
+		// this in), and the instrument's natural-currency entry
+		// is preferred when known. See mt535.go and
+		// docs/adapters/ubs.md §4.
 		var hp holdingsPayloadShape
 		_ = json.Unmarshal([]byte(payload), &hp) // best-effort; bad payloads leave both NULL
 		amounts := parse19A(hp.Fields.Tag19A)
@@ -389,9 +391,24 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			qq := q
 			quantity = &qq
 		}
-		if mv, ok := findMarketValue(amounts, meta.Currency); ok {
-			mvv := mv
-			marketValue = &mvv
+		mvAmt, mvCcy, mvOk := findHoldEntry(amounts, meta.Currency)
+		if mvOk {
+			mv := mvAmt
+			marketValue = &mv
+		}
+
+		// Position currency precedence: instrument meta wins when
+		// known (matches the chosen HOLD entry anyway since we
+		// preferred it); else the chosen HOLD entry's currency
+		// (rescues "XXX-currency" positions whose instrument has
+		// no GacInstrRskCcyIsoCd but whose holding payload is
+		// reported in a real currency); else the "XXX" sentinel.
+		positionCcy := meta.Currency
+		if positionCcy == "" {
+			positionCcy = mvCcy
+		}
+		if positionCcy == "" {
+			positionCcy = "XXX"
 		}
 
 		isinCopy := isin
@@ -401,7 +418,7 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           meta.AssetClass,
-			Currency:             meta.Currency,
+			Currency:             positionCcy,
 			Quantity:             quantity,
 			MarketValue:          marketValue,
 			Payload:              json.RawMessage(payload),

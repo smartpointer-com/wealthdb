@@ -111,6 +111,37 @@ func TestFindMarketValue(t *testing.T) {
 	}
 }
 
+// TestFindHoldEntry covers the (amount, currency, ok) shape used
+// by appendHoldings to derive both market_value and the position's
+// currency from one chosen 19A:HOLD entry.
+func TestFindHoldEntry(t *testing.T) {
+	amounts := []mt535Money{
+		{Qualifier: "HOLD", Currency: "USD", Amount: canonical.NewDecimalFromInt(1500)},
+		{Qualifier: "BOOK", Currency: "USD", Amount: canonical.NewDecimalFromInt(1200)},
+		{Qualifier: "HOLD", Currency: "CHF", Amount: canonical.NewDecimalFromInt(1300)},
+	}
+
+	// Preferred match wins (amount AND currency).
+	amt, ccy, ok := findHoldEntry(amounts, "CHF")
+	if !ok || amt.String() != "1300" || ccy != "CHF" {
+		t.Errorf("preferred CHF: amt=%s ccy=%s ok=%v, want 1300/CHF/true", amt, ccy, ok)
+	}
+
+	// No preference (instrument meta currency unknown): fall back
+	// to first HOLD entry — currency comes from that entry.
+	amt, ccy, ok = findHoldEntry(amounts, "")
+	if !ok || amt.String() != "1500" || ccy != "USD" {
+		t.Errorf("no-preference: amt=%s ccy=%s ok=%v, want 1500/USD/true", amt, ccy, ok)
+	}
+
+	// No HOLD at all → ok=false, both other fields zero.
+	noHold := []mt535Money{{Qualifier: "BOOK", Currency: "USD", Amount: canonical.NewDecimalFromInt(1200)}}
+	_, _, ok = findHoldEntry(noHold, "")
+	if ok {
+		t.Error("no-HOLD should give ok=false")
+	}
+}
+
 func TestFindQuantity(t *testing.T) {
 	// AGGR present → use it
 	q, ok := findQuantity([]mt535Qty{

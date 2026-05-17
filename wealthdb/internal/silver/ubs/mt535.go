@@ -98,21 +98,40 @@ func parse93B(raw []string) []mt535Qty {
 // false when no HOLD entry exists at all (the loader leaves the
 // gold market_value as NULL).
 func findMarketValue(amounts []mt535Money, naturalCurrency string) (canonical.Decimal, bool) {
-	var fallback canonical.Decimal
-	var hasFallback bool
+	v, _, ok := findHoldEntry(amounts, naturalCurrency)
+	return v, ok
+}
+
+// findHoldEntry picks one 19A:HOLD entry and returns its currency
+// AND amount, in that order. Preference: an entry whose currency
+// matches `preferredCurrency` (the instrument's natural currency,
+// when known); else the first HOLD entry of any currency. Returns
+// ok=false when no HOLD entry exists at all.
+//
+// Exposing the currency lets the UBS adapter sync the position's
+// currency to whatever the chosen HOLD entry reports — important
+// for positions whose instrument metadata lacks a currency
+// (otherwise routed to the "XXX" sentinel).
+func findHoldEntry(amounts []mt535Money, preferredCurrency string) (canonical.Decimal, string, bool) {
+	var (
+		fallbackAmt    canonical.Decimal
+		fallbackCcy    string
+		hasFallback    bool
+	)
 	for _, a := range amounts {
 		if a.Qualifier != "HOLD" {
 			continue
 		}
-		if a.Currency == naturalCurrency {
-			return a.Amount, true
+		if preferredCurrency != "" && a.Currency == preferredCurrency {
+			return a.Amount, a.Currency, true
 		}
 		if !hasFallback {
-			fallback = a.Amount
+			fallbackAmt = a.Amount
+			fallbackCcy = a.Currency
 			hasFallback = true
 		}
 	}
-	return fallback, hasFallback
+	return fallbackAmt, fallbackCcy, hasFallback
 }
 
 // findQuantity returns the aggregate quantity (AGGR qualifier)

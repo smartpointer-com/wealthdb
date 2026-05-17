@@ -162,3 +162,46 @@ func TestConvertValueNoRate(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoRate", err)
 	}
 }
+
+// TestConvertValueTriangulatesViaCHF exercises the CHF-pivot
+// fallback used when neither direct nor reciprocal exists for the
+// requested pair. Mirrors the UBS / Swissquote feed shape (only
+// CHF→X pairs are published).
+func TestConvertValueTriangulatesViaCHF(t *testing.T) {
+	db, ctx := openMigrated(t)
+	// 1 EUR = 1.06 CHF, 1 USD = 0.80 CHF (typical UBS feed).
+	seedFX(t, db, 1000, "CHF", "EUR", "1.06")
+	seedFX(t, db, 1000, "CHF", "USD", "0.80")
+
+	// 100 EUR → USD: should triangulate 100 EUR → 106 CHF → 132.5 USD.
+	out, err := ConvertValue(ctx, db, 1000, canonical.NewDecimalFromInt(100), "EUR", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatalf("triangulate EUR→USD: %v", err)
+	}
+	if out.StringFixed(2) != "132.50" {
+		t.Errorf("100 EUR → USD = %s, want 132.50", out)
+	}
+
+	// USD → EUR: triangulate 100 USD → 80 CHF → 75.4716...EUR
+	out, err = ConvertValue(ctx, db, 1000, canonical.NewDecimalFromInt(100), "USD", "EUR", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatalf("triangulate USD→EUR: %v", err)
+	}
+	if got := out.StringFixed(4); got != "75.4717" {
+		t.Errorf("100 USD → EUR = %s, want 75.4717", got)
+	}
+}
+
+// TestConvertValueTriangulationMissingLeg confirms that when one
+// of the two legs through CHF is absent we surface ErrNoRate (and
+// the message mentions which leg failed).
+func TestConvertValueTriangulationMissingLeg(t *testing.T) {
+	db, ctx := openMigrated(t)
+	// Only the EUR leg exists. USD leg missing.
+	seedFX(t, db, 1000, "CHF", "EUR", "1.06")
+
+	_, err := ConvertValue(ctx, db, 1000, canonical.NewDecimalFromInt(100), "EUR", "USD", canonical.FxModeHistoric)
+	if !errors.Is(err, ErrNoRate) {
+		t.Errorf("err = %v, want ErrNoRate", err)
+	}
+}

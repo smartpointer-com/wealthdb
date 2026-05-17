@@ -172,6 +172,42 @@ func TestSnapshotsAccountCategoryMapping(t *testing.T) {
 	}
 }
 
+// TestSnapshotsHoldingFallbackCurrency exercises the
+// position-currency fallback: when instrument metadata carries no
+// currency (GacInstrRskCcyIsoCd absent, common for funds), the
+// position's currency comes from the chosen 19A:HOLD entry rather
+// than defaulting to the "XXX" sentinel.
+func TestSnapshotsHoldingFallbackCurrency(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO instruments(snapshot_at, relationship_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH9999999999',
+             '{"InstrCtgyCFI":"CEOI","InstrNm":"Fund w/o currency","GacInstrRskCcyIsoCd":""}');
+        INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH00SAFE', 'CH9999999999',
+             '{"fields":{"19A":[":HOLD//USD1100000,",":BOOK//USD400000,"],"93B":[":AGGR//UNIT/1200,"]}}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	if len(batch.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(batch.Positions))
+	}
+	p := batch.Positions[0]
+	if p.Currency != "USD" {
+		t.Errorf("Currency = %q, want USD (rescued from 19A:HOLD)", p.Currency)
+	}
+	if p.MarketValue == nil || p.MarketValue.String() != "1100000" {
+		t.Errorf("MarketValue = %v, want 1100000", p.MarketValue)
+	}
+}
+
 func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`

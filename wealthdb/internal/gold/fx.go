@@ -90,32 +90,72 @@ func LookupRate(ctx context.Context, db *sql.DB, asOf int64, base, quote string,
 	}
 }
 
+// triangulationVehicle is the pivot currency used when a direct
+// or reciprocal rate isn't available. CHF reflects what UBS and
+// Swissquote actually publish — both feeds emit only CHF→X pairs,
+// so non-CHF cross conversions (EUR→USD, USD→EUR, ...) need to
+// route through CHF. Schwab publishes no FX at all, so the pivot
+// choice is moot for USD-only positions.
+const triangulationVehicle = "CHF"
+
 // ConvertValue converts an amount from one currency to another at
-// the given time + mode. Tries the direct rate first, then the
-// reciprocal pair. Returns ErrNoRate when neither direction has
-// any data.
+// the given time + mode. Tries direct, then reciprocal, then
+// triangulation through CHF (when neither end of the pair is CHF
+// already). Returns ErrNoRate when no path is available.
 func ConvertValue(ctx context.Context, db *sql.DB, asOf int64, value canonical.Decimal, from, to string, mode canonical.FxMode) (canonical.Decimal, error) {
 	if from == to {
 		return value, nil
 	}
+	if out, err := tryDirectOrReciprocal(ctx, db, asOf, value, from, to, mode); err == nil {
+		return out, nil
+	} else if !errors.Is(err, ErrNoRate) {
+		return canonical.Decimal{}, err
+	}
 
+	// Triangulation via CHF. Pointless if either end is already
+	// CHF — the direct/reciprocal pass would have found the rate
+	// (or definitively concluded it doesn't exist).
+	if from == triangulationVehicle || to == triangulationVehicle {
+		return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d", ErrNoRate, from, to, asOf)
+	}
+	mid, err := tryDirectOrReciprocal(ctx, db, asOf, value, from, triangulationVehicle, mode)
+	if err != nil {
+		// Includes ErrNoRate — bubble up unchanged so the caller
+		// sees the same not-available semantics.
+		if errors.Is(err, ErrNoRate) {
+			return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d (no %s leg)", ErrNoRate, from, to, asOf, triangulationVehicle)
+		}
+		return canonical.Decimal{}, err
+	}
+	out, err := tryDirectOrReciprocal(ctx, db, asOf, mid, triangulationVehicle, to, mode)
+	if err != nil {
+		if errors.Is(err, ErrNoRate) {
+			return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d (no %s→%s leg)", ErrNoRate, from, to, asOf, triangulationVehicle, to)
+		}
+		return canonical.Decimal{}, err
+	}
+	return out, nil
+}
+
+// tryDirectOrReciprocal is the non-triangulating half of
+// ConvertValue. Pulled out so the triangulation legs can use it
+// without re-entering the triangulation path.
+func tryDirectOrReciprocal(ctx context.Context, db *sql.DB, asOf int64, value canonical.Decimal, from, to string, mode canonical.FxMode) (canonical.Decimal, error) {
 	// Direct: (base=to, quote=from, mid_rate=K) ⇒ "1 from = K to" ⇒ amount_to = amount * K
 	if rate, err := LookupRate(ctx, db, asOf, to, from, mode); err == nil {
 		return value.Mul(rate), nil
 	} else if !errors.Is(err, ErrNoRate) {
 		return canonical.Decimal{}, err
 	}
-
 	// Reciprocal: (base=from, quote=to, mid_rate=K) ⇒ "1 to = K from" ⇒ amount_to = amount / K
 	if rate, err := LookupRate(ctx, db, asOf, from, to, mode); err == nil {
 		if rate.IsZero() {
-			return canonical.Decimal{}, fmt.Errorf("ConvertValue %s→%s: reciprocal rate is zero", from, to)
+			return canonical.Decimal{}, fmt.Errorf("tryDirectOrReciprocal %s→%s: reciprocal rate is zero", from, to)
 		}
 		return value.Div(rate), nil
 	} else if !errors.Is(err, ErrNoRate) {
 		return canonical.Decimal{}, err
 	}
-
 	return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d", ErrNoRate, from, to, asOf)
 }
 
