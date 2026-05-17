@@ -4,7 +4,7 @@ A toolkit for ingesting Swissquote Bank private-client portfolio data:
 driving the e-banking web UI under Playwright to export positions,
 transactions, and eDocuments, then (in subsequent scripts) parsing the
 raw CSVs and PDFs into a queryable SQLite silver database for
-downstream tools — e.g. local LLM-based agents and the `wealth-suite`
+downstream tools — e.g. local LLM-based agents and the `wealthdb`
 gold layer — to consume.
 
 Sibling projects: [schwab-dump](https://github.com/ptu/schwab-dump),
@@ -93,7 +93,7 @@ If you prefer to drive `docker run` directly, the equivalent of
 ```sh
 docker run --rm -it \
     -v ~/.secrets:/secrets \
-    -v ~/wealth/swissquote:/data \
+    -v ~/wealthdb/swissquote:/data \
     swissquote-dump:latest \
     <cmd>.py <flags>
 ```
@@ -119,7 +119,7 @@ port-forwarding), then run scripted afterwards.
 ## Layout
 
 ```
-<bronze-dir>/                       e.g. ~/wealth/swissquote/
+<bronze-dir>/                       e.g. ~/wealthdb/swissquote/
 ├── 20260514T093122Z/               one bronze dump per run
 │   ├── transactions_000.csv        single CSV covering --since..--until
 │   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
@@ -307,7 +307,7 @@ Real download:
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
-maps to `~/wealth/swissquote/<UTC-timestamp>/` on the host.
+maps to `~/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 | File | Source |
 | --- | --- |

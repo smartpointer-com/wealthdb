@@ -79,7 +79,7 @@ CREATE TABLE accounts (
 -- Conflating them into a synthetic 'CASH' row would muddy
 -- provenance.
 --
--- Promoted columns are the minimum set that adapters in wealth-suite
+-- Promoted columns are the minimum set that adapters in wealthdb
 -- need as filter/join keys without parsing JSON. Quantity, valuations,
 -- average cost, P&L, asset_class (the section-header dimension from
 -- the XLS — 'ETFs', 'Bonds', etc.), and the raw row all live in payload.
