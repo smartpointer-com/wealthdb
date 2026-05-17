@@ -1,11 +1,17 @@
+// wealthdb — gold-layer CLI for the personal-portfolio pipeline.
+// See docs/DESIGN.md for the architecture and IMPLEMENTATION.md
+// for the build order.
 package main
 
 import (
-	"fmt"
 	"os"
+
+	// Adapter packages register themselves in init(); blank-import
+	// here so they show up in the silver registry by the time the
+	// dispatcher runs.
+	_ "github.com/ptu/wealthdb/internal/silver/schwab"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "wealthdb: scaffolding only; see docs/IMPLEMENTATION.md for milestone progress")
-	os.Exit(0)
+	os.Exit(Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

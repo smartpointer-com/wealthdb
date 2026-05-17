@@ -13,9 +13,13 @@ no web UI.
 
 ## Status
 
-Early implementation. Container scaffolding is in place; user-facing
-functionality (`init`, `load`, `positions`, ...) lands milestone by
-milestone per [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+Minimum viable CLI is in. `wealthdb init`, `wealthdb load <id> | -a`,
+and `wealthdb positions` work end-to-end against a Schwab silver
+SQLite — that's enough for a real demo. UBS and Swissquote adapters,
+multi-currency rendering, the interactive `wealthdb config` wizard,
+and the remaining subcommands (`reset`, `status`, `snapshots`) land
+in later milestones per
+[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
 ## Build and run
 
