@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,9 @@ field in the config file, runs all migrations, and exits. Fails
 if the file already exists.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return errs.Newf(2, "init: bad flags")
 	}
 	if fs.NArg() != 0 {

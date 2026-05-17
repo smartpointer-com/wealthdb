@@ -96,9 +96,18 @@ SELECT snapshot_at FROM dump_runs
 	return out, rows.Err()
 }
 
+// schwabAccountPayload covers the {accountNumber, hashValue}
+// shape Schwab silver writes. account_external_id is the hash;
+// the human-readable account number lives in payload only.
+type schwabAccountPayload struct {
+	AccountNumber string `json:"accountNumber"`
+}
+
 // appendAccounts emits one AccountChange per accounts row in the
 // window. Schwab accounts are brokerage-kind; the silver
-// account_external_id is the Schwab hashValue.
+// account_external_id is the Schwab hashValue. DisplayName is set
+// to the plaintext accountNumber from the payload so user-facing
+// output can show something more recognisable than the hash.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, account_external_id, payload
@@ -123,9 +132,15 @@ SELECT snapshot_at, account_external_id, payload
 		if !ok {
 			continue
 		}
+
+		var p schwabAccountPayload
+		_ = json.Unmarshal([]byte(payload), &p) // best-effort
+
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
+			DisplayName:       strPtrIfNonEmpty(p.AccountNumber),
+			BaseCurrency:      strPtrIfNonEmpty("USD"),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),

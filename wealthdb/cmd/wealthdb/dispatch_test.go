@@ -194,6 +194,59 @@ func TestLoadAllNoSources(t *testing.T) {
 	}
 }
 
+func TestPositionsColumnsFlag(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// Default columns include "symbol".
+	so, _, code := run(t, "-c", cfg, "positions")
+	if code != 0 {
+		t.Fatal("positions default failed")
+	}
+	if !strings.Contains(so, "symbol") || !strings.Contains(so, "market_value") {
+		t.Errorf("default columns missing 'symbol' or 'market_value':\n%s", so)
+	}
+
+	// Explicit narrow list.
+	so, _, code = run(t, "-c", cfg, "positions", "--columns", "silver_source,symbol,market_value")
+	if code != 0 {
+		t.Fatal("positions narrow failed")
+	}
+	// Header should contain only the chosen three; quantity/asset_class absent.
+	header := strings.SplitN(so, "\n", 2)[0]
+	if !strings.Contains(header, "silver_source") || !strings.Contains(header, "symbol") || !strings.Contains(header, "market_value") {
+		t.Errorf("narrow header missing chosen columns: %q", header)
+	}
+	if strings.Contains(header, "quantity") || strings.Contains(header, "asset_class") {
+		t.Errorf("narrow header has unwanted columns: %q", header)
+	}
+
+	// `all` preset.
+	so, _, code = run(t, "-c", cfg, "positions", "--columns", "all")
+	if code != 0 {
+		t.Fatal("positions all failed")
+	}
+	for _, name := range []string{"account_id", "name", "relationship_id"} {
+		if !strings.Contains(strings.SplitN(so, "\n", 2)[0], name) {
+			t.Errorf("'all' missing column %q", name)
+		}
+	}
+
+	// Unknown column → exit 2 with helpful message listing all.
+	_, se, code := run(t, "-c", cfg, "positions", "--columns", "silver_source,bogus")
+	if code != 2 {
+		t.Errorf("unknown column exit = %d, want 2", code)
+	}
+	if !strings.Contains(se, "unknown column") || !strings.Contains(se, "available") {
+		t.Errorf("unknown-column stderr lacks guidance: %s", se)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	_, se, code := run(t, "help")
 	if code != 0 {

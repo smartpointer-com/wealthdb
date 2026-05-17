@@ -132,10 +132,13 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		var p cashAccountPayload
 		_ = json.Unmarshal([]byte(payload), &p) // best-effort
 
+		// We leave DisplayName nil so the user-facing positions
+		// output falls back to the IBAN (already human-
+		// readable), rather than showing the less-informative
+		// AcctTpDesc like "Private" or "Custody".
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindCash,
-			DisplayName:       strPtrIfNonEmpty(p.AcctTpDesc),
 			BaseCurrency:      strPtrIfNonEmpty(p.AcctCcyIsoCd),
 			RelationshipID:    strPtrIfNonEmpty(relID),
 			FirstSeenAt:       snap,
@@ -180,12 +183,12 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindSafekeeping,
-			DisplayName:       strPtrIfNonEmpty(p.AcctTpDesc),
-			BaseCurrency:      strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
-			RelationshipID:    strPtrIfNonEmpty(relID),
-			FirstSeenAt:       snap,
-			LastSeenAt:        snap,
-			Payload:           json.RawMessage(payload),
+			// DisplayName left nil; see appendCashAccounts.
+			BaseCurrency:   strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
+			RelationshipID: strPtrIfNonEmpty(relID),
+			FirstSeenAt:    snap,
+			LastSeenAt:     snap,
+			Payload:        json.RawMessage(payload),
 		})
 	}
 	return rows.Err()

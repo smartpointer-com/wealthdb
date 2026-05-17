@@ -30,6 +30,9 @@ for all configured sources (-a). See docs/DESIGN.md §8 for the
 load semantics.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return errs.Newf(2, "load: bad flags")
 	}
 
