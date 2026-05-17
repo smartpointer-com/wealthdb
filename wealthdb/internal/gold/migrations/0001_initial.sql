@@ -35,6 +35,11 @@ CREATE TABLE silver_sources (
     last_loaded_at      BIGINT  NOT NULL
 );
 
+-- loaded_at uses Unix NANOSECONDS (not seconds like the other
+-- timestamp columns) so that multiple loads within the same wall-
+-- clock second don't collide on the PK. Audit timing is the only
+-- column that needs sub-second resolution; everywhere else the
+-- coarser second-grain is fine.
 CREATE TABLE load_audit (
     silver_source_id        TEXT    NOT NULL,
     loaded_at               BIGINT  NOT NULL,
@@ -44,13 +49,22 @@ CREATE TABLE load_audit (
     window_end              BIGINT  NOT NULL,
     snapshots_loaded        INTEGER NOT NULL,
     transactions_loaded     INTEGER NOT NULL,
-    PRIMARY KEY (silver_source_id, loaded_at),
-    FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
+    PRIMARY KEY (silver_source_id, loaded_at)
 );
 
 -- ============================================================
 -- DIMENSIONS — accounts and instruments
 -- ============================================================
+
+-- Note on missing FK declarations across this schema: DuckDB
+-- enforces foreign-key constraints at statement boundaries (not
+-- transaction boundaries) AND does not support cascading deletes.
+-- The combination makes a same-transaction "delete child then
+-- delete parent" sequence fail, which is exactly what `wealthdb
+-- reset` does. The loader is the sole writer to gold, so the
+-- referential relationships are enforced by application logic
+-- rather than by the DB. The intended relationships are
+-- documented in DESIGN.md §7.2.
 
 CREATE TABLE accounts (
     silver_source_id        TEXT    NOT NULL,
@@ -62,8 +76,7 @@ CREATE TABLE accounts (
     first_seen_at           BIGINT  NOT NULL,
     last_seen_at            BIGINT  NOT NULL,
     payload                 JSON,
-    PRIMARY KEY (silver_source_id, account_external_id),
-    FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
+    PRIMARY KEY (silver_source_id, account_external_id)
 );
 
 CREATE TABLE instruments (
@@ -78,8 +91,7 @@ CREATE TABLE instruments (
     first_seen_at           BIGINT  NOT NULL,
     last_seen_at            BIGINT  NOT NULL,
     payload                 JSON,
-    PRIMARY KEY (silver_source_id, instrument_external_id),
-    FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
+    PRIMARY KEY (silver_source_id, instrument_external_id)
 );
 
 CREATE INDEX ix_instruments_isin   ON instruments(isin);
@@ -103,9 +115,7 @@ CREATE TABLE positions (
     accrued_interest        DECIMAL(28, 4),
     acquisition_date        DATE,
     payload                 JSON,
-    PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key),
-    FOREIGN KEY (silver_source_id, account_external_id)
-        REFERENCES accounts(silver_source_id, account_external_id)
+    PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, position_key)
 );
 
 CREATE TABLE cash_balances (
@@ -116,9 +126,7 @@ CREATE TABLE cash_balances (
     balance_kind            TEXT             NOT NULL,
     amount                  DECIMAL(28, 4)   NOT NULL,
     payload                 JSON,
-    PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, currency, balance_kind),
-    FOREIGN KEY (silver_source_id, account_external_id)
-        REFERENCES accounts(silver_source_id, account_external_id)
+    PRIMARY KEY (silver_source_id, snapshot_at, account_external_id, currency, balance_kind)
 );
 
 -- ============================================================
@@ -157,9 +165,7 @@ CREATE TABLE transactions (
     quantity                DECIMAL(28, 8),
     price                   DECIMAL(28, 8),
     payload                 JSON,
-    PRIMARY KEY (silver_source_id, transaction_external_id),
-    FOREIGN KEY (silver_source_id, account_external_id)
-        REFERENCES accounts(silver_source_id, account_external_id)
+    PRIMARY KEY (silver_source_id, transaction_external_id)
 );
 
 CREATE INDEX ix_transactions_account_time

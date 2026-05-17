@@ -717,7 +717,10 @@ applied migration, always add a new file.
 
 ### 7.1 Conventions
 
-- **Timestamps**: `BIGINT` Unix seconds, UTC. Matches silver.
+- **Timestamps**: `BIGINT` Unix seconds, UTC. Matches silver. The
+  one exception is `load_audit.loaded_at`, which uses Unix
+  nanoseconds so a back-to-back `wealthdb load` pair can't
+  collide on the PK.
 - **Dates**: `DATE` for calendar-only fields like `acquisition_date`.
 - **Money**: `DECIMAL(28, 4)` for amounts, `DECIMAL(28, 8)` for
   quantities (bonds in fractional units, FX in 4–6 decimals), and
@@ -730,8 +733,51 @@ applied migration, always add a new file.
   bank (`account_external_id`, `instrument_external_id`,
   `transaction_external_id`). Never globally unique on their own;
   always paired with `silver_source_id` in PKs.
-- **Foreign keys**: declared for documentation and for DuckDB's
-  query planner. DuckDB enforces them on INSERT.
+- **Foreign keys**: intended relationships are documented in this
+  section's prose but the DDL **does not declare them**. The
+  reason is a DuckDB limitation worth understanding rather than
+  glossing over:
+
+    `wealthdb reset <id>` (§9) purges every row in gold that
+    belongs to one silver source — parent rows in `accounts`,
+    `instruments`, `silver_sources` and the child rows that
+    reference them in `positions`, `cash_balances`, `transactions`,
+    `load_audit`. For correctness the reset must be atomic, so
+    all those DELETEs run inside one transaction. The natural
+    order is children first (positions, cash_balances,
+    transactions), then parents (accounts, instruments,
+    silver_sources).
+
+    DuckDB rejects this. Its FK enforcement runs at statement
+    boundaries against a view of the referencing table that does
+    not include the same-transaction child deletes — so the
+    `DELETE FROM accounts` step fails with "key … is still
+    referenced by a foreign key", even though every row that
+    referenced it was deleted moments earlier in the same
+    transaction.
+
+    DuckDB exposes no escape hatch:
+    - `PRAGMA foreign_keys = OFF` (SQLite) — unknown parameter.
+    - `SET enable_foreign_keys = false` / `SET disable_constraint_checking = true` — unknown parameters.
+    - `SET CONSTRAINTS ALL DEFERRED` (PostgreSQL) — parse error.
+    - `DEFERRABLE INITIALLY DEFERRED` on the FK declaration —
+      **silently accepted by the parser but has no effect**; the
+      parent DELETE still fails immediately. Worse than
+      rejecting outright.
+
+    The choices left are (a) drop the FK declarations, (b) split
+    reset across multiple transactions (loses atomicity), or
+    (c) DROP / re-ADD the constraint around the reset (DDL
+    inside the live data path). We picked (a): the loader is
+    the sole writer to gold, so application logic is the
+    authority on referential integrity. The intended FKs remain
+    documented in this §7.2 schema sketch as the conceptual
+    contract; the migration omits them.
+
+    If DuckDB ships proper deferred-constraint support in a
+    future version, this trade-off is easy to revisit — add FK
+    declarations to a new migration, add `DEFERRABLE INITIALLY
+    DEFERRED`, done.
 
 ### 7.2 Schema sketch
 
