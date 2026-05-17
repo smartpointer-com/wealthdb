@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // PositionRow is one row of the consolidated positions output.
@@ -104,8 +105,8 @@ SELECT p.silver_source_id,
 		r.InstrumentExternalID = nullStringToPtr(instr)
 		r.Symbol = nullStringToPtr(symbol)
 		r.Name = nullStringToPtr(name)
-		r.Quantity = nullStringToPtr(qty)
-		r.MarketValue = nullStringToPtr(mvalue)
+		r.Quantity = trimmedDecimalPtr(qty)
+		r.MarketValue = trimmedDecimalPtr(mvalue)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -117,4 +118,29 @@ func nullStringToPtr(n sql.NullString) *string {
 	}
 	s := n.String
 	return &s
+}
+
+// trimmedDecimalPtr drops trailing zeros (and a dangling decimal
+// point) from DuckDB's CAST(decimal AS VARCHAR) output. The cast
+// pads to the declared scale — DECIMAL(28,8) renders "100" as
+// "100.00000000" — which is correct but visually noisy. Applied
+// here so every consumer of PositionRow (table / csv / json
+// formatters) gets the normalised form for free.
+func trimmedDecimalPtr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	s := trimTrailingZeros(n.String)
+	return &s
+}
+
+func trimTrailingZeros(s string) string {
+	// No fractional digits → nothing to trim.
+	if !strings.ContainsRune(s, '.') {
+		return s
+	}
+	s = strings.TrimRight(s, "0")
+	// "100." → "100"; leave "0" alone (which has no '.').
+	s = strings.TrimRight(s, ".")
+	return s
 }
