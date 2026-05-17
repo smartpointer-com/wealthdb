@@ -1,0 +1,164 @@
+package gold
+
+import (
+	"database/sql"
+	"errors"
+	"testing"
+
+	"github.com/ptu/wealthdb/internal/canonical"
+)
+
+// seedFX inserts a single fx_rates row.
+func seedFX(t *testing.T, db *sql.DB, snap int64, base, quote, mid string) {
+	t.Helper()
+	if _, err := db.Exec(`
+        INSERT INTO fx_rates(silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+        VALUES (?, ?, ?, ?, CAST(? AS DECIMAL(20,10)))
+    `, "test-src", snap, base, quote, mid); err != nil {
+		t.Fatalf("seed fx (%d, %s/%s, %s): %v", snap, base, quote, mid, err)
+	}
+}
+
+func TestLookupRateBaseEqualsQuote(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rate, err := LookupRate(ctx, db, 1000, "USD", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "1" {
+		t.Errorf("rate(USD,USD) = %s, want 1", rate)
+	}
+}
+
+func TestLookupRateNoData(t *testing.T) {
+	db, ctx := openMigrated(t)
+	_, err := LookupRate(ctx, db, 1000, "CHF", "USD", canonical.FxModeHistoric)
+	if !errors.Is(err, ErrNoRate) {
+		t.Errorf("err = %v, want ErrNoRate", err)
+	}
+}
+
+func TestLookupRateExactMatch(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedFX(t, db, 1000, "CHF", "USD", "0.8000")
+	seedFX(t, db, 2000, "CHF", "USD", "0.9000")
+	rate, err := LookupRate(ctx, db, 1000, "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "0.8" {
+		t.Errorf("exact-match rate = %s, want 0.8", rate)
+	}
+}
+
+func TestLookupRateInterpolation(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedFX(t, db, 1000, "CHF", "USD", "0.8000000000")
+	seedFX(t, db, 2000, "CHF", "USD", "0.9000000000")
+	// At asOf=1500 (midpoint), expect midway rate.
+	rate, err := LookupRate(ctx, db, 1500, "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 0.8 + (0.9-0.8) * (1500-1000)/(2000-1000) = 0.85
+	if rate.String() != "0.85" {
+		t.Errorf("interpolated rate = %s, want 0.85", rate)
+	}
+
+	// asOf=1750 → 0.8 + 0.1 * 750/1000 = 0.875
+	rate, err = LookupRate(ctx, db, 1750, "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "0.875" {
+		t.Errorf("interpolated rate(1750) = %s, want 0.875", rate)
+	}
+}
+
+func TestLookupRateFlatExtrapolation(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedFX(t, db, 1000, "CHF", "USD", "0.8")
+	seedFX(t, db, 2000, "CHF", "USD", "0.9")
+
+	// asOf before first → flat-extrapolate back (return below=above row)
+	rate, err := LookupRate(ctx, db, 500, "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "0.8" {
+		t.Errorf("pre-first rate = %s, want 0.8 (flat back)", rate)
+	}
+
+	// asOf after last → flat-extrapolate forward
+	rate, err = LookupRate(ctx, db, 3000, "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "0.9" {
+		t.Errorf("post-last rate = %s, want 0.9 (flat forward)", rate)
+	}
+}
+
+func TestLookupRateCurrentMode(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedFX(t, db, 1000, "CHF", "USD", "0.8")
+	seedFX(t, db, 2000, "CHF", "USD", "0.9")
+	// FxModeCurrent ignores asOf, returns the latest available.
+	rate, err := LookupRate(ctx, db, 500, "CHF", "USD", canonical.FxModeCurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rate.String() != "0.9" {
+		t.Errorf("current-mode rate = %s, want 0.9", rate)
+	}
+}
+
+func TestConvertValueDirect(t *testing.T) {
+	db, ctx := openMigrated(t)
+	// 1 USD = 0.8 CHF
+	seedFX(t, db, 1000, "CHF", "USD", "0.8")
+
+	// USD → CHF: amount_chf = amount_usd * 0.8
+	out, err := ConvertValue(ctx, db, 1000, canonical.NewDecimalFromInt(100), "USD", "CHF", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "80" {
+		t.Errorf("100 USD → CHF = %s, want 80", out)
+	}
+}
+
+func TestConvertValueReciprocal(t *testing.T) {
+	db, ctx := openMigrated(t)
+	// Only one direction stored: 1 USD = 0.8 CHF.
+	seedFX(t, db, 1000, "CHF", "USD", "0.8")
+
+	// CHF → USD requires reciprocal: amount_usd = amount_chf / 0.8 = 1.25 * amount_chf
+	out, err := ConvertValue(ctx, db, 1000, canonical.NewDecimalFromInt(80), "CHF", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "100" {
+		t.Errorf("80 CHF → USD = %s, want 100", out)
+	}
+}
+
+func TestConvertValueSameCurrency(t *testing.T) {
+	db, ctx := openMigrated(t)
+	v := canonical.NewDecimalFromInt(42)
+	out, err := ConvertValue(ctx, db, 0, v, "USD", "USD", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Equal(v) {
+		t.Errorf("same-currency convert changed value: %s → %s", v, out)
+	}
+}
+
+func TestConvertValueNoRate(t *testing.T) {
+	db, ctx := openMigrated(t)
+	_, err := ConvertValue(ctx, db, 0, canonical.NewDecimalFromInt(100), "JPY", "BRL", canonical.FxModeHistoric)
+	if !errors.Is(err, ErrNoRate) {
+		t.Errorf("err = %v, want ErrNoRate", err)
+	}
+}

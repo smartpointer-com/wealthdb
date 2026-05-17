@@ -247,6 +247,56 @@ func TestPositionsColumnsFlag(t *testing.T) {
 	}
 }
 
+func TestPositionsCurrencyConversion(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// Default output currency from config is USD; the Schwab
+	// fixture is USD-only, so the value column should equal
+	// market_value (rate is 1.0 when from == to).
+	so, _, code := run(t, "-c", cfg, "positions", "--columns", "currency,market_value,value")
+	if code != 0 {
+		t.Fatalf("positions default-ccy failed; stderr=...")
+	}
+	if !strings.Contains(so, "value_USD") {
+		t.Errorf("default ccy header should show value_USD: %s", so)
+	}
+	if !strings.Contains(so, "1500.00") {
+		// Schwab fixture position has market_value 1500.00
+		t.Errorf("expected 1500.00 in output: %s", so)
+	}
+
+	// -x with no FX rates available → an error (no silvers ship
+	// USD↔CHF in this fixture).
+	_, se, code := run(t, "-c", cfg, "positions", "-x", "CHF")
+	if code == 0 {
+		t.Errorf("expected non-zero exit when no rates; stderr=%s", se)
+	}
+	if !strings.Contains(se, "FX rates available") {
+		t.Errorf("missing FX-rates guidance: %s", se)
+	}
+
+	// Bad fx-mode → exit 2.
+	_, se, code = run(t, "-c", cfg, "positions", "--fx-mode", "yolo")
+	if code != 2 {
+		t.Errorf("bad fx-mode exit = %d, want 2", code)
+	}
+	if !strings.Contains(se, "fx-mode") {
+		t.Errorf("missing fx-mode guidance: %s", se)
+	}
+
+	// Bad currency → exit 2.
+	_, se, code = run(t, "-c", cfg, "positions", "-x", "DOLLAR")
+	if code != 2 {
+		t.Errorf("bad currency exit = %d, want 2", code)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	_, se, code := run(t, "help")
 	if code != 0 {

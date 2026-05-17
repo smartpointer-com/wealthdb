@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,6 +32,9 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
 	cols := fs.String("C", "default", "columns: comma-separated names, or 'default' / 'all'")
 	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
+	currency := fs.String("x", "", "output currency for the value column (default: config.default_currency)")
+	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
+	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
 	}
@@ -47,9 +51,9 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return errs.Newf(2, "positions: unexpected positional argument %q", fs.Arg(0))
 	}
 
-	colSet, err := resolveColumns(*cols)
-	if err != nil {
-		return errs.Newf(2, "positions: %s", err.Error())
+	mode := canonical.FxMode(*fxMode)
+	if !mode.Valid() {
+		return errs.Newf(2, "positions: invalid --fx-mode %q (want 'historic' or 'current')", *fxMode)
 	}
 
 	fmtChoice, err := output.Parse(*format)
@@ -70,6 +74,19 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
+	outCcy := strings.ToUpper(*currency)
+	if outCcy == "" {
+		outCcy = cfg.DefaultCurrency
+	}
+	if len(outCcy) != 3 {
+		return errs.Newf(2, "positions: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
+	}
+
+	colSet, err := resolveColumns(*cols, outCcy)
+	if err != nil {
+		return errs.Newf(2, "positions: %s", err.Error())
+	}
+
 	// Read-only is fine; pick the right mode for what's available.
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
 	if err != nil {
@@ -80,11 +97,11 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
 	}
 
-	mode := gold.ModeReadWrite
+	openMode := gold.ModeReadWrite
 	if dec.Mode == pathmode.ModeReadOnly {
-		mode = gold.ModeReadOnly
+		openMode = gold.ModeReadOnly
 	}
-	db, err := gold.Open(cfg.GoldDB, mode)
+	db, err := gold.Open(cfg.GoldDB, openMode)
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
@@ -95,7 +112,57 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
-	return output.WriteTable(stdout, positionsTable(rows, colSet))
+	rendered, err := convertAll(ctx, db, rows, outCcy, mode)
+	if err != nil {
+		return err
+	}
+
+	return output.WriteTable(stdout, positionsTable(rendered, colSet))
+}
+
+// renderedRow pairs a raw position with its market value converted
+// to the user's requested output currency. The column extractors
+// pull from one or the other depending on which column they
+// represent.
+type renderedRow struct {
+	Row            gold.PositionRow
+	ConvertedValue *canonical.Decimal // nil when market_value was NULL or no rate was found
+}
+
+// convertAll resolves the per-row converted market value once,
+// up front. Failures to find an FX rate are not fatal — the row
+// is still emitted with ConvertedValue=nil so the user sees the
+// hole rather than the whole report aborting. The single
+// exception: if EVERY row failed to convert, that's almost
+// certainly a misconfiguration (e.g. asking for an output
+// currency we have no rates for) and we surface a fail with a
+// hint to look at the config.
+func convertAll(ctx context.Context, db *sql.DB, rows []gold.PositionRow, outCcy string, mode canonical.FxMode) ([]renderedRow, error) {
+	out := make([]renderedRow, len(rows))
+	anyConverted := false
+	anyAttempted := false
+	for i, r := range rows {
+		out[i].Row = r
+		if r.MarketValue == nil {
+			continue
+		}
+		anyAttempted = true
+		v, err := canonical.NewDecimalFromString(*r.MarketValue)
+		if err != nil {
+			continue
+		}
+		conv, err := gold.ConvertValue(ctx, db, r.SnapshotAt, v, r.Currency, outCcy, mode)
+		if err != nil {
+			// Per-row missing rate — leave nil and move on.
+			continue
+		}
+		out[i].ConvertedValue = &conv
+		anyConverted = true
+	}
+	if anyAttempted && !anyConverted {
+		return out, fmt.Errorf("positions: no FX rates available to convert to %q (mode=%s). Check that your silvers carry the right currency pairs", outCcy, mode)
+	}
+	return out, nil
 }
 
 // parseAsOf resolves the -d flag to a Unix-second epoch. Empty
@@ -120,40 +187,70 @@ func parseAsOf(s string) (int64, error) {
 
 // columnSpec describes one selectable output column for `wealthdb
 // positions`. The Extract function pulls the cell value out of a
-// gold.PositionRow; nullable fields fall back to a friendly
-// alternative (e.g. account → DisplayName or AccountExternalID).
-// Align is honoured by table-style formatters; numeric columns
-// (quantity, market_value, FX rates as those land) are right-
-// aligned so columns of figures line up at the decimal point.
+// renderedRow; the Header overrides the column name in display
+// (used by the dynamic `value` column to render as `value_USD` /
+// `value_CHF` etc.). Align is honoured by table-style formatters;
+// numeric columns are right-aligned so figures line up.
 type columnSpec struct {
 	Name    string
+	Header  string // empty ⇒ same as Name
 	Align   output.Alignment
-	Extract func(gold.PositionRow) string
+	Extract func(renderedRow) string
 }
 
-// allColumns is the registry of every column the user can name
-// via --columns. Order here is the order used by --columns all.
-var allColumns = []columnSpec{
-	{"silver_source", output.AlignLeft, func(r gold.PositionRow) string { return r.SilverSourceID }},
-	{"snapshot_date", output.AlignLeft, func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
-	{"account", output.AlignLeft, func(r gold.PositionRow) string {
-		// Display name preferred (Schwab accountNumber); fall
-		// back to the raw external_id when no display name is
-		// known (UBS IBAN, Swissquote customer ID).
-		if r.DisplayName != nil && *r.DisplayName != "" {
-			return *r.DisplayName
-		}
-		return r.AccountExternalID
-	}},
-	{"account_id", output.AlignLeft, func(r gold.PositionRow) string { return r.AccountExternalID }},
-	{"position_key", output.AlignLeft, func(r gold.PositionRow) string { return r.PositionKey }},
-	{"symbol", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.Symbol) }},
-	{"name", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.Name) }},
-	{"asset_class", output.AlignLeft, func(r gold.PositionRow) string { return r.AssetClass }},
-	{"currency", output.AlignLeft, func(r gold.PositionRow) string { return r.Currency }},
-	{"quantity", output.AlignRight, func(r gold.PositionRow) string { return strOrEmpty(r.Quantity) }},
-	{"market_value", output.AlignRight, func(r gold.PositionRow) string { return formatCents(r.MarketValue) }},
-	{"relationship_id", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
+func (c columnSpec) header() string {
+	if c.Header != "" {
+		return c.Header
+	}
+	return c.Name
+}
+
+// buildColumnRegistry returns the full set of available columns
+// for the given output currency. Most entries are constant; the
+// dynamic `value` column embeds the currency in its header
+// (`value_USD`, `value_CHF`, ...) and looks up the converted
+// amount on each row.
+func buildColumnRegistry(outCcy string) []columnSpec {
+	return []columnSpec{
+		{Name: "silver_source", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return rr.Row.SilverSourceID }},
+		{Name: "snapshot_date", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return formatDate(rr.Row.SnapshotAt) }},
+		{Name: "account", Align: output.AlignLeft, Extract: func(rr renderedRow) string {
+			// Display name preferred (Schwab accountNumber);
+			// fall back to the raw external_id when no display
+			// name is known (UBS IBAN, Swissquote customer ID).
+			if rr.Row.DisplayName != nil && *rr.Row.DisplayName != "" {
+				return *rr.Row.DisplayName
+			}
+			return rr.Row.AccountExternalID
+		}},
+		{Name: "account_id", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return rr.Row.AccountExternalID }},
+		{Name: "position_key", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return rr.Row.PositionKey }},
+		{Name: "symbol", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Symbol) }},
+		{Name: "name", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Name) }},
+		{Name: "asset_class", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return rr.Row.AssetClass }},
+		{Name: "currency", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return rr.Row.Currency }},
+		{Name: "quantity", Align: output.AlignRight,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Quantity) }},
+		{Name: "market_value", Align: output.AlignRight,
+			Extract: func(rr renderedRow) string { return formatCents(rr.Row.MarketValue) }},
+		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight,
+			Extract: func(rr renderedRow) string {
+				if rr.ConvertedValue == nil {
+					return ""
+				}
+				return rr.ConvertedValue.StringFixed(2)
+			}},
+		{Name: "relationship_id", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.RelationshipID) }},
+	}
 }
 
 // formatCents renders a decimal-string-as-pointer with exactly
@@ -177,36 +274,42 @@ func formatCents(p *string) string {
 // defaultColumns is what `wealthdb positions` shows when --columns
 // isn't passed (or when --columns=default). Tracks user feedback
 // from M8 — `account` shows the human-readable identifier and
-// `symbol` is included separately from `position_key`.
+// `symbol` is included separately from `position_key`. The
+// dynamic `value` column (named value_<CCY> in the header) is
+// appended so users see both the natural-currency market value
+// and the converted value side by side.
 var defaultColumns = []string{
 	"silver_source", "snapshot_date", "account", "symbol",
-	"position_key", "asset_class", "currency", "quantity", "market_value",
+	"position_key", "asset_class", "currency", "quantity",
+	"market_value", "value",
 }
 
 // resolveColumns turns a --columns flag value into an ordered list
 // of columnSpec. Supports the special values "default" and "all",
 // as well as comma-separated explicit lists. Returns a helpful
-// error on unknown column names.
-func resolveColumns(flagValue string) ([]columnSpec, error) {
+// error on unknown column names. The output currency is needed so
+// the dynamic `value` column gets the right header.
+func resolveColumns(flagValue, outCcy string) ([]columnSpec, error) {
+	registry := buildColumnRegistry(outCcy)
 	flagValue = strings.TrimSpace(flagValue)
-	if flagValue == "" || flagValue == "default" {
-		return columnsByName(defaultColumns)
-	}
-	if flagValue == "all" {
-		out := make([]columnSpec, len(allColumns))
-		copy(out, allColumns)
+	switch flagValue {
+	case "", "default":
+		return columnsByName(defaultColumns, registry)
+	case "all":
+		out := make([]columnSpec, len(registry))
+		copy(out, registry)
 		return out, nil
 	}
 	names := strings.Split(flagValue, ",")
 	for i, n := range names {
 		names[i] = strings.TrimSpace(n)
 	}
-	return columnsByName(names)
+	return columnsByName(names, registry)
 }
 
-func columnsByName(names []string) ([]columnSpec, error) {
-	index := make(map[string]columnSpec, len(allColumns))
-	for _, c := range allColumns {
+func columnsByName(names []string, registry []columnSpec) ([]columnSpec, error) {
+	index := make(map[string]columnSpec, len(registry))
+	for _, c := range registry {
 		index[c.Name] = c
 	}
 	out := make([]columnSpec, 0, len(names))
@@ -216,7 +319,7 @@ func columnsByName(names []string) ([]columnSpec, error) {
 		}
 		c, ok := index[n]
 		if !ok {
-			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinColumnNames())
+			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinColumnNames(registry))
 		}
 		out = append(out, c)
 	}
@@ -226,26 +329,27 @@ func columnsByName(names []string) ([]columnSpec, error) {
 	return out, nil
 }
 
-func joinColumnNames() string {
-	names := make([]string, len(allColumns))
-	for i, c := range allColumns {
+func joinColumnNames(registry []columnSpec) string {
+	names := make([]string, len(registry))
+	for i, c := range registry {
 		names[i] = c.Name
 	}
 	return strings.Join(names, ", ")
 }
 
-// positionsTable converts a slice of gold.PositionRow into the
+// positionsTable converts a slice of renderedRow into the
 // generic output.Table the formatter expects, using the caller's
 // selected columns. Column alignment is propagated so right-
 // aligned numeric columns render with their decimal points lined
-// up.
-func positionsTable(rows []gold.PositionRow, cols []columnSpec) output.Table {
+// up. Each column's header may override the registry name (e.g.
+// `value` renders as `value_USD`).
+func positionsTable(rows []renderedRow, cols []columnSpec) output.Table {
 	t := output.Table{
 		Columns: make([]string, len(cols)),
 		Aligns:  make([]output.Alignment, len(cols)),
 	}
 	for i, c := range cols {
-		t.Columns[i] = c.Name
+		t.Columns[i] = c.header()
 		t.Aligns[i] = c.Align
 	}
 	for _, r := range rows {
@@ -259,19 +363,28 @@ func positionsTable(rows []gold.PositionRow, cols []columnSpec) output.Table {
 }
 
 func positionsUsage() string {
-	return `usage: wealthdb positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS]
+	// We don't know the user's chosen output currency at usage-
+	// print time; show a placeholder for the dynamic column.
+	registry := buildColumnRegistry("CCY")
+	return `usage: wealthdb positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE]
 
 Print consolidated positions as of a date. For each silver source,
 the latest snapshot ≤ the as-of date is used. Default: today UTC,
-table format, default column set.
+table format, default column set, output currency from
+config.default_currency, historic FX mode.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (default: table; csv / csv_plain / json land in M10)
   -C, --columns COLS       comma-separated column names, or 'default' / 'all'
+  -x, --currency CCY       output currency for the value column (default: config.default_currency)
+      --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
 
 Available columns:
-  ` + joinColumnNames() + `
+  ` + joinColumnNames(registry) + `
+
+  (The 'value' column renders as 'value_<CCY>' in the header,
+   reflecting your -x/--currency choice.)
 
 Default column set:
   ` + strings.Join(defaultColumns, ", ")
