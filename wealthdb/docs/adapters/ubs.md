@@ -77,16 +77,40 @@ immutable — being stale by one snapshot is harmless. Discovered
 empirically during M7's load against real silver; documented here
 so the next maintainer doesn't undo it.
 
-### MT535 SWIFT-tag parsing (deferred)
+### MT535 SWIFT-tag parsing (implemented)
 
 Each `holdings.payload` carries the raw MT535 fields under
 `payload.fields.{"19A","93B","35B",...}`, where each tag is an
-array of raw SWIFT subblock strings (e.g. `":HOLD//CHF12345.67"`).
-Parsing those out to populate `PositionChange.Quantity` and
-`MarketValue` is non-trivial and deferred to a follow-up. For
-v1 the projected position rows have `quantity = NULL` and
-`market_value = NULL`; the position's identity, account, asset
-class, and currency are populated.
+array of raw SWIFT subblock strings. `mt535.go` decodes the two
+tags we surface in gold:
+
+- **`93B`** — quantity. Subfield format
+  `:<qualifier>//<format>/<value>` where qualifier is one of
+  `AGGR` (aggregate), `AVAI` (available), `NAVL` (not available),
+  `AWAS` (awaiting settlement), etc.; format is `UNIT` (shares /
+  contracts) or `FAMT` (face amount, for bonds). The adapter
+  prefers `AGGR`, falling back to `AVAI` if missing.
+
+- **`19A`** — monetary amount. Subfield format
+  `:<qualifier>//<CCY><value>` where qualifier is `HOLD` (current
+  market value), `BOOK` (book / cost basis), `ACRU` (accrued
+  interest), and similar. A single holding typically carries
+  multiple `19A` entries — the same `HOLD` value in the
+  position's trade currency and again in the relationship's
+  reference currency (CHF). The adapter prefers the `HOLD` entry
+  whose currency matches the instrument's natural currency,
+  falling back to the first `HOLD` entry if no exact match
+  exists.
+
+SWIFT value convention: comma is the decimal separator, and a
+trailing comma is the end-of-amount terminator (so `1500000,`
+parses to `1500000` and `150,123456` parses to `150.123456`).
+`parseSwiftDecimal` handles both forms.
+
+Holdings whose `payload.fields` is empty or whose 19A/93B
+subfields don't match the expected shape leave the gold columns
+NULL — the parser degrades gracefully so a single malformed
+payload doesn't fail the whole load.
 
 ## 5. `events.kind` mapping
 

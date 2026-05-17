@@ -311,11 +311,23 @@ SELECT snapshot_at, isin, payload
 	return lookup, rows.Err()
 }
 
+// holdingsPayloadShape mirrors the relevant slice of the MT535
+// payload — the two SWIFT tags we extract (19A monetary amounts,
+// 93B quantities). Everything else stays in the raw payload for
+// forensics.
+type holdingsPayloadShape struct {
+	Fields struct {
+		Tag19A []string `json:"19A"`
+		Tag93B []string `json:"93B"`
+	} `json:"fields"`
+}
+
 // appendHoldings projects MT535 securities holdings into
-// PositionChange. Quantity and market_value are intentionally
-// left NULL for now — MT535 SWIFT-tag parsing (the contents of
-// payload.fields.{"19A","93B"} arrays) is a M12 polish item.
-// See docs/adapters/ubs.md §4.
+// PositionChange. Quantity comes from the AGGR 93B subfield;
+// market_value comes from the HOLD 19A subfield whose currency
+// matches the instrument's natural currency (falls back to first
+// HOLD entry when no exact match exists). See mt535.go for the
+// parser and docs/adapters/ubs.md §4 for the rationale.
 func (c *Connection) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
 	const q = `
 SELECT snapshot_at, safekeeping_external_id, isin, payload
@@ -355,6 +367,25 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			}
 		}
 
+		// MT535 SWIFT-tag parsing: pull aggregate quantity from
+		// the 93B array and market value (in the instrument's
+		// natural currency where possible) from 19A. See
+		// mt535.go and docs/adapters/ubs.md §4.
+		var hp holdingsPayloadShape
+		_ = json.Unmarshal([]byte(payload), &hp) // best-effort; bad payloads leave both NULL
+		amounts := parse19A(hp.Fields.Tag19A)
+		qtys := parse93B(hp.Fields.Tag93B)
+
+		var quantity, marketValue *canonical.Decimal
+		if q, ok := findQuantity(qtys); ok {
+			qq := q
+			quantity = &qq
+		}
+		if mv, ok := findMarketValue(amounts, meta.Currency); ok {
+			mvv := mv
+			marketValue = &mvv
+		}
+
 		isinCopy := isin
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:           snap,
@@ -363,8 +394,9 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           meta.AssetClass,
 			Currency:             meta.Currency,
-			// Quantity / MarketValue: TODO(M12) — parse holdings.fields
-			Payload: json.RawMessage(payload),
+			Quantity:             quantity,
+			MarketValue:          marketValue,
+			Payload:              json.RawMessage(payload),
 		})
 	}
 	return rows.Err()

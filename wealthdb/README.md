@@ -1,31 +1,74 @@
 # wealthdb
 
-The gold layer of a personal-portfolio data pipeline. Reads
-per-bank silver SQLite databases (produced by sibling `*-dump`
-repositories — [schwab-dump](https://github.com/ptu/schwab-dump),
+A personal-portfolio gold-layer CLI. Reads per-bank silver
+SQLite databases (produced by sibling `*-dump` repositories —
+[schwab-dump](https://github.com/ptu/schwab-dump),
 [ubs-psn-dump](https://github.com/ptu/ubs-psn-dump),
 [swissquote-dump](https://github.com/ptu/swissquote-dump)) and
-projects them into a canonical, cross-bank DuckDB schema queryable
+projects them into a canonical cross-bank DuckDB schema queryable
 through the `wealthdb` CLI.
 
-Single Docker image; no host-side Go toolchain required. CLI only,
-no web UI.
+CLI only, no web UI. Single Docker image; no host-side Go
+toolchain required.
 
 ## Status
 
-All non-interactive subcommands are in. `wealthdb init`, `load`,
-`reset`, `positions`, `status`, and `snapshots` work end-to-end
-against Schwab, UBS, and Swissquote silver databases. `positions`
-renders in table / csv / csv_plain / json with selectable columns
-and multi-currency value conversion. The interactive
-`wealthdb config` first-time-setup wizard lands in M11 and
-MT535 SWIFT-tag parsing for UBS quantity/market_value in M12 per
-[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+All planned v1 functionality is in. The CLI ships with:
+
+| Subcommand | Purpose |
+| --- | --- |
+| `wealthdb config` | Interactive first-time setup wizard. |
+| `wealthdb init` | Create the gold DuckDB at the configured path. |
+| `wealthdb load <id>\|-a` | Merge new silver snapshots into gold. |
+| `wealthdb reset <id>\|-a` | Purge a silver source's data from gold. |
+| `wealthdb positions` | Print consolidated positions (table / csv / csv_plain / json) with currency conversion. |
+| `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
+| `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
+| `wealthdb help [<subcommand>]` | Help. |
+
+Verified end-to-end against real Schwab + UBS + Swissquote
+silvers.
+
+Future work (queued for separate milestones) lives in
+[docs/DESIGN.md §13](docs/DESIGN.md). Notable items:
+account-type categorisation (§13.9), instrument-name enrichment
+for Schwab equity, market-data feeds (§13.8).
+
+## Quickstart
+
+You need Docker. No host-side Go toolchain.
+
+```sh
+git clone <this repo>
+cd wealthdb
+./wealthdb build                  # one-time, ~2 min on first run
+./wealthdb config                 # interactive setup wizard
+./wealthdb init                   # create the gold DB
+./wealthdb load -a                # merge every configured silver
+./wealthdb positions              # print consolidated positions (default table format, USD)
+./wealthdb positions -x CHF       # render values in CHF
+./wealthdb positions -f csv       # CSV output for scripting
+./wealthdb status -v              # quick health check across all silvers
+```
+
+The `config` wizard walks you through:
+
+1. Gold DB path (default `$HOME/wealthdb/wealthdb.db`).
+2. Default output currency (default `USD`; can be overridden per
+   query with `-x`).
+3. One or more silver sources — for each: a short id (used by
+   `load`/`reset`/`snapshots`), the bank kind (`schwab`, `ubs`,
+   `swissquote`), and the path to the silver SQLite.
+
+It writes the result to `$HOME/.config/wealthdb.cfg` (overridable
+with `-c <path>`).
 
 ## Build and run
 
-All commands run inside a single Docker image (no host-side Go
-toolchain needed).
+All commands run inside a single Docker image; the host wrapper
+bind-mounts `$HOME/.config/wealthdb.cfg` and `$HOME/wealthdb/` at
+identical paths inside the container so `~`/`$HOME` resolution
+matches both sides.
 
 ```sh
 ./wealthdb build               # build the wealthdb:latest image
@@ -33,18 +76,15 @@ toolchain needed).
 ./wealthdb-test ./...          # run `go test` inside the container
 ```
 
-The `wealthdb` wrapper mounts `$HOME/.config/wealthdb.cfg` and
-`$HOME/wealthdb/` into the container at identical paths so `~`
-expansion works the same on both sides. See
-[docs/DESIGN.md §12](docs/DESIGN.md) for the full container model.
+See [docs/DESIGN.md §12](docs/DESIGN.md) for the container model
+and read-only sharing pattern.
 
 ## Documentation
 
 - **[docs/DESIGN.md](docs/DESIGN.md)** — gold-layer architecture,
-  schema, CLI, plugin contract, load semantics, and query patterns.
-- **[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** — Go package
-  layout, dependency direction, testing strategy, implementation
-  roadmap.
+  schema, CLI, plugin contract, load semantics, query patterns.
+- **[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** — Go
+  package layout, dependency direction, testing strategy.
 - **[docs/adapters/](docs/adapters/)** — per-bank adapter design
   ([schwab](docs/adapters/schwab.md), [ubs](docs/adapters/ubs.md),
   [swissquote](docs/adapters/swissquote.md)).

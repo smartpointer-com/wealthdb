@@ -26,11 +26,12 @@ func kindFor(rawType string, netAmount canonical.Decimal) canonical.TxKind {
 		return canonical.TxKindJournal
 
 	case "DIVIDEND_OR_INTEREST":
-		// Silver loses the dividend-vs-interest subtype on the
-		// promoted `kind` column; the payload still has it. For
-		// milestone 4 we collapse both to dividend — the more
-		// common case. TODO(milestone-7): inspect payload.subtype
-		// to discriminate when known.
+		// Silver collapses dividend-vs-interest into one kind on
+		// the promoted column. To discriminate we'd need to
+		// inspect the payload's transferItems / activityDetails
+		// for the subtype Schwab assigns. Future enhancement;
+		// for now we route both to `dividend` which is the
+		// dominant case in the observed real-data distribution.
 		return canonical.TxKindDividend
 
 	case "WIRE_IN", "CASH_RECEIPT":

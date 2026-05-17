@@ -137,7 +137,11 @@ func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
             (1000, 'SFTPCHxx', 'CH0000000001',
              '{"InstrCtgyCFI":"ESVTFR","InstrNm":"Acme","GacInstrRskCcyIsoCd":"CHF"}');
         INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
-            (1000, 'SFTPCHxx', 'CH00SAFE', 'CH0000000001', '{"fields":{}}');
+            (1000, 'SFTPCHxx', 'CH00SAFE', 'CH0000000001',
+             '{"fields":{"19A":[":HOLD//CHF45000,",":BOOK//CHF40000,"],"93B":[":AGGR//UNIT/100,",":AVAI//UNIT/100,"]}}');
+        INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH00SAFE', 'CH9999999999',
+             '{"fields":{}}');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -152,21 +156,42 @@ func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Positions) != 1 {
-		t.Fatalf("positions = %d, want 1", len(batch.Positions))
+	if len(batch.Positions) != 2 {
+		t.Fatalf("positions = %d, want 2", len(batch.Positions))
 	}
-	p := batch.Positions[0]
-	if p.AssetClass != canonical.AssetClassEquity {
-		t.Errorf("AssetClass = %q, want equity (resolved via instrument)", p.AssetClass)
+
+	// Find each position by ISIN.
+	var withMT, withoutMT *canonical.PositionChange
+	for i := range batch.Positions {
+		p := &batch.Positions[i]
+		if p.PositionKey == "CH0000000001" {
+			withMT = p
+		} else if p.PositionKey == "CH9999999999" {
+			withoutMT = p
+		}
 	}
-	if p.Currency != "CHF" {
-		t.Errorf("Currency = %q, want CHF (resolved via instrument)", p.Currency)
+	if withMT == nil || withoutMT == nil {
+		t.Fatalf("positions misnamed: %+v", batch.Positions)
 	}
-	if p.AccountExternalID != "CH00SAFE" {
-		t.Errorf("AccountExternalID = %q, want CH00SAFE", p.AccountExternalID)
+
+	// Parsed-from-MT535 position should have quantity + market_value.
+	if withMT.AssetClass != canonical.AssetClassEquity {
+		t.Errorf("AssetClass = %q, want equity (resolved via instrument)", withMT.AssetClass)
 	}
-	if p.Quantity != nil || p.MarketValue != nil {
-		t.Errorf("Quantity/MarketValue should be NULL (MT535 parsing deferred): %+v", p)
+	if withMT.Currency != "CHF" {
+		t.Errorf("Currency = %q, want CHF", withMT.Currency)
+	}
+	if withMT.Quantity == nil || withMT.Quantity.String() != "100" {
+		t.Errorf("Quantity = %v, want 100 (parsed from 93B:AGGR//UNIT/100,)", withMT.Quantity)
+	}
+	if withMT.MarketValue == nil || withMT.MarketValue.String() != "45000" {
+		t.Errorf("MarketValue = %v, want 45000 (parsed from 19A:HOLD//CHF45000,)", withMT.MarketValue)
+	}
+
+	// Empty-fields holding stays NULL — the parser gracefully
+	// degrades when there are no SWIFT subfields to decode.
+	if withoutMT.Quantity != nil || withoutMT.MarketValue != nil {
+		t.Errorf("empty-fields holding should leave qty/mv NULL: %+v", withoutMT)
 	}
 }
 
