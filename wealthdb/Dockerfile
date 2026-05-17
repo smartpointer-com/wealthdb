@@ -1,6 +1,6 @@
 # Single-stage image for wealthdb: development, testing, and production
 # all run in this image. See docs/DESIGN.md §12 for the rationale.
-FROM golang:1.24-bookworm
+FROM golang:1.25-bookworm
 
 WORKDIR /src
 
