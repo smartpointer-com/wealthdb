@@ -24,7 +24,7 @@ import logging
 import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("schwab-load")
@@ -380,6 +380,161 @@ def load_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
     return n
 
 
+# US Treasury CUSIP-prefix conventions. The first 6 chars of a Treasury
+# CUSIP identify the security family. Non-Treasury bonds (corporates,
+# munis, agencies) fall through to a generic "Bond" label.
+_TREASURY_CUSIP_PREFIXES = {
+    "912796": "US Treasury Bill",
+    "912810": "US Treasury Bond",
+    "912820": "US Treasury Note",
+    "912828": "US Treasury Note",
+    "912833": "US Treasury Note",
+    "912834": "US Treasury Note",
+    "91282C": "US Treasury Note",
+}
+
+
+def _parse_iso_date_only(iso: str | None) -> date | None:
+    """Extract just the date portion (YYYY-MM-DD) from a Schwab timestamp."""
+    if not iso or len(iso) < 10:
+        return None
+    try:
+        return date.fromisoformat(iso[:10])
+    except ValueError:
+        return None
+
+
+def _synthesize_bond_description(
+    symbol: str, maturity: str | None, rate: float | int | None,
+) -> str | None:
+    """Build a bond description from CUSIP prefix + coupon + maturity.
+
+    Schwab does not return a description for fixed-income instruments
+    via /instruments. The transferItem payload, however, carries
+    maturityDate and variableRate; the CUSIP itself encodes the issuer
+    family via its first 6 chars. Returns None when maturity is missing
+    (the most useful field; we won't synthesize a less-informative label
+    than the bare CUSIP already provides)."""
+    if not symbol or len(symbol) < 6:
+        return None
+    mat = _parse_iso_date_only(maturity)
+    if mat is None:
+        return None
+    issuer = _TREASURY_CUSIP_PREFIXES.get(symbol[:6], "Bond")
+    parts = [issuer]
+    if rate is not None and rate != 0:
+        parts.append(f"{rate:g}%")
+    parts.append(mat.strftime("%m/%d/%Y"))
+    return " ".join(parts)
+
+
+def _synthesize_option_description(
+    underlying: str | None,
+    expiration: str | None,
+    strike: float | int | None,
+    put_call: str | None,
+) -> str | None:
+    """Build an option description in the form used by Schwab /quotes
+    reference.description: 'UNDERLYING MM/DD/YYYY STRIKE.NN C|P'."""
+    if not (underlying and put_call and strike is not None):
+        return None
+    exp = _parse_iso_date_only(expiration)
+    if exp is None:
+        return None
+    short = "C" if put_call.upper().startswith("C") else "P"
+    return f"{underlying} {exp.strftime('%m/%d/%Y')} {float(strike):.2f} {short}"
+
+
+def load_synthesized_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
+    """Synthesise instruments table rows for bonds and options.
+
+    Schwab does not return descriptions for FIXED_INCOME or OPTION
+    instruments through /instruments (or /quotes for expired contracts).
+    The same instruments do, however, carry enough metadata in their
+    transferItems within transactions (maturity, coupon, expiry, strike,
+    put/call) to build a usable description locally.
+
+    We scan this dump's transactions, collect every unique
+    (symbol, FIXED_INCOME|OPTION) we see, synthesise a record per
+    symbol, and INSERT into the instruments table with the same
+    content-dedup pattern as load_instruments. The synthesised payload
+    is shaped to match what /instruments would have returned, so
+    downstream consumers can treat all instrument rows uniformly.
+
+    When the same symbol is *also* present in this dump's
+    instruments.json (rare, but Schwab does occasionally return a live
+    option contract through /instruments), we defer to the API row and
+    skip synthesising — Schwab's record is authoritative when available."""
+    api_symbols: set[str] = set()
+    inst_path = dump_dir / "instruments.json"
+    if inst_path.exists():
+        for inst in read_json(inst_path).get("instruments") or []:
+            sym = inst.get("symbol")
+            if sym:
+                api_symbols.add(sym)
+
+    seen: dict[str, dict] = {}
+    for txn_path in sorted(dump_dir.glob("transactions_*.json")):
+        for txn in read_json(txn_path).get("transactions") or []:
+            for item in txn.get("transferItems") or []:
+                inst = item.get("instrument") or {}
+                sym = inst.get("symbol")
+                kind = inst.get("assetType")
+                if sym and kind in ("FIXED_INCOME", "OPTION") and sym not in api_symbols:
+                    seen[sym] = inst  # later occurrences win
+
+    n = 0
+    for sym, inst in seen.items():
+        kind = inst.get("assetType")
+        if kind == "FIXED_INCOME":
+            desc = _synthesize_bond_description(
+                sym, inst.get("maturityDate"), inst.get("variableRate"),
+            )
+            if desc is None:
+                continue
+            record = {
+                "symbol": sym,
+                "cusip": inst.get("cusip") or sym,
+                "assetType": "FIXED_INCOME",
+                "description": desc,
+                "maturityDate": inst.get("maturityDate"),
+                "variableRate": inst.get("variableRate"),
+            }
+        else:  # OPTION
+            desc = _synthesize_option_description(
+                inst.get("underlyingSymbol"),
+                inst.get("expirationDate"),
+                inst.get("strikePrice"),
+                inst.get("putCall"),
+            )
+            if desc is None:
+                continue
+            record = {
+                "symbol": sym,
+                "assetType": "OPTION",
+                "description": desc,
+                "underlyingSymbol": inst.get("underlyingSymbol"),
+                "underlyingCusip": inst.get("underlyingCusip"),
+                "expirationDate": inst.get("expirationDate"),
+                "strikePrice": inst.get("strikePrice"),
+                "putCall": inst.get("putCall"),
+            }
+        payload = canonical_json(record)
+        row = conn.execute(
+            "SELECT payload FROM instruments WHERE symbol = ? "
+            "ORDER BY snapshot_at DESC LIMIT 1",
+            (sym,),
+        ).fetchone()
+        if row is None or row[0] != payload:
+            conn.execute(
+                "INSERT INTO instruments(snapshot_at, symbol, payload) "
+                "VALUES (?, ?, ?)",
+                (snapshot_at, sym, payload),
+            )
+            n += 1
+    return n
+
+
 def load_open_orders(
     conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
 ) -> int:
@@ -465,7 +620,10 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
         stats["balances"] = bal
         stats["transactions"] = load_transactions(conn, dump_dir)
         stats["open_orders"] = load_open_orders(conn, snapshot_at, dump_dir, acct_map)
-        stats["instruments"] = load_instruments(conn, snapshot_at, dump_dir)
+        stats["instruments"] = (
+            load_instruments(conn, snapshot_at, dump_dir)
+            + load_synthesized_instruments(conn, snapshot_at, dump_dir)
+        )
 
         # dump_runs at the END so a mid-load failure leaves no trace.
         conn.execute(

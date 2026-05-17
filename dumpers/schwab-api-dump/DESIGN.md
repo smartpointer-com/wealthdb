@@ -437,6 +437,23 @@ artefacts. The same kind of cross-endpoint inconsistency may bite in
 other places; treat fetch-side normalisation as a first-class concern
 when bridging artefact types.
 
+**Local synthesis when no API supplies the field.** A related pattern:
+when the source's endpoints omit a field that downstream tools need,
+but the field can be deterministically constructed from other data the
+source *does* provide, silver may synthesise it. Schwab returns bond
+transferItems with `maturityDate` and `variableRate` but no description,
+and option transferItems with the four contract coordinates
+(`underlyingSymbol`, `expirationDate`, `strikePrice`, `putCall`) but
+again no description. `load_synthesized_instruments` builds the
+descriptions locally at load time — Treasury CUSIPs decode via their
+six-character prefix into the issuer family — and writes them into the
+same `instruments` silver table that the API-sourced rows live in.
+
+The two enrichment paths coexist via a defer-to-API rule: when a symbol
+appears in both the dump's `instruments.json` *and* a transactions
+transferItem, synthesis skips it and lets the API row stand. The
+silver consumer sees one table; the source is transparent.
+
 ## 5. What silver deliberately omits
 
 - **Bitemporal model.** See §4.3.
