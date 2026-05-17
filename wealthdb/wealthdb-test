@@ -1,0 +1,22 @@
+#!/bin/sh
+# wealthdb-test — run `go test` inside the wealthdb container.
+# Argv is handed to `go test` verbatim. See docs/DESIGN.md §12.5.
+set -eu
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="wealthdb:latest"
+CACHE="$HOME/.cache/wealthdb-test"
+
+mkdir -p "$CACHE/go-build" "$CACHE/go-mod"
+
+exec docker run --rm \
+    -u "$(id -u):$(id -g)" \
+    -e HOME="$HOME" \
+    -e GOCACHE="$CACHE/go-build" \
+    -e GOMODCACHE="$CACHE/go-mod" \
+    -v "$REPO:$REPO" \
+    -v "$CACHE:$CACHE" \
+    -w "$REPO" \
+    --entrypoint go \
+    "$IMAGE" \
+    test "$@"

@@ -387,19 +387,18 @@ docker run --rm \
     -v "$HOME/.cache/wealthdb-test:$HOME/.cache/wealthdb-test" \
     -w "$REPO" \
     --entrypoint go \
-    wealthdb-build:latest \
+    wealthdb:latest \
     test "$@"
 ```
 
-### 5.2 Two image tags from one Dockerfile build
+### 5.2 One image, one tag
 
-The multi-stage Dockerfile produces both:
-- `wealthdb:latest` — runtime stage; used by `./wealthdb`.
-- `wealthdb-build:latest` — builder stage (has Go toolchain
-  + CGO prereqs); used by `./wealthdb-test`.
-
-`./wealthdb build` tags both. No rebuild needed when switching
-between production and test invocations.
+Single-stage Dockerfile produces `wealthdb:latest`. The image
+carries the Go toolchain, gcc/g++ (for CGO), and the built
+binary. Both `./wealthdb` and `./wealthdb-test` use this same
+image; the test wrapper just overrides the entrypoint with
+`--entrypoint go`. See DESIGN.md §12.4 for why multi-stage isn't
+worth it at this project's scale.
 
 ### 5.3 Isolated Go cache
 

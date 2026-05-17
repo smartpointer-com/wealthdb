@@ -1360,7 +1360,7 @@ wealthdb/
 ├── DESIGN.md                       — this document (gold-layer architecture)
 ├── README.md                       — user-facing usage
 ├── CLAUDE.md                       — agent ground rules
-├── Dockerfile                      — multi-stage; Go build → minimal runtime
+├── Dockerfile                      — single-stage; Go toolchain + binary in one image
 ├── docker-entrypoint.sh            — sets up paths, then exec wealthdb
 ├── wealthdb                          — thin host-side wrapper around `docker run` (production binary)
 ├── wealthdb-test                     — thin host-side wrapper around `docker run go test ...` (§12.5)
@@ -1399,21 +1399,27 @@ on the internals — `wealthdb` is an application, not a library.
 
 ## 12. Container / build / run
 
-Single multi-stage Dockerfile. One image for both development and
-production; the only difference is how the user invokes it.
+Single-stage Dockerfile, single image tag (`wealthdb:latest`),
+used unchanged for development, testing, and production. See §12.4
+for why we don't separate stages.
 
-### 12.1 Image stages
+### 12.1 Image
 
-1. **Builder.** Debian-slim base + Go toolchain + DuckDB CGO
-   prerequisites. Copies the source, runs `go build -o /out/wealthdb
-   ./cmd/wealthdb`.
-2. **Runtime.** Debian-slim base + the DuckDB shared library +
-   `/out/wealthdb`. No Go toolchain, no source. Entry point is
-   `/usr/local/bin/wealthdb`.
+Base: `golang:1.24-bookworm` (glibc, full Go toolchain, gcc/g++
+for CGO). The Dockerfile:
 
-DuckDB's Go driver (`github.com/marcboeker/go-duckdb`) requires CGO,
-so the binary isn't fully static. We accept that and ship a thin
-runtime image rather than chasing a pure-Go alternative.
+1. Copies `go.mod` / `go.sum` and runs `go mod download` in its own
+   layer for cache friendliness.
+2. Copies the source.
+3. Builds the binary at `/usr/local/bin/wealthdb`.
+
+Entry point is the production binary. The `./wealthdb-test`
+wrapper overrides with `--entrypoint go` to run tests in the same
+image. See §12.5.
+
+DuckDB's Go driver (`github.com/marcboeker/go-duckdb`) requires CGO
+and glibc — the `bookworm` base satisfies both. Alpine / musl was
+rejected for this reason.
 
 ### 12.2 Volume mounts
 
@@ -1480,12 +1486,24 @@ picks this up and refuses (RW) subcommands with a clear message.
 The wrapper passes through arguments verbatim to the in-container
 `wealthdb` binary.
 
-### 12.4 Why a single image
+### 12.4 Why single-stage
 
-For other repos with heavy build-time deps (Playwright in
-swissquote-dump) we'd weigh a separate build image. For a Go
-binary plus DuckDB, the runtime image is small enough (~80 MB
-projected) that one image is the path of least resistance.
+Multi-stage Dockerfiles normally buy three things: a smaller
+runtime image (build tools discarded), layer caching, and
+build/runtime separation. None apply here:
+
+1. **No image-size win.** The dev/test/prod image needs the Go
+   toolchain, source, CGO build deps, *and* the built binary —
+   nothing to discard.
+2. **Caching matched by layer ordering.** Copying `go.mod` /
+   `go.sum` and running `go mod download` *before* copying the
+   source gives the same dep-layer cache benefit with one stage.
+3. **No separation of concerns to make.** Build and runtime are
+   the same environment, by design.
+
+Multi-stage becomes worth it if a deploy target wants a tiny
+production-only image, or if a code-generation step needs tools
+absent from runtime. Retrofitting is mechanical. Not pre-paid.
 
 ### 12.5 Running tests
 
@@ -1530,18 +1548,16 @@ docker run --rm \
     -v "$HOME/.cache/wealthdb-test:$HOME/.cache/wealthdb-test" \
     -w "$REPO" \
     --entrypoint go \
-    wealthdb-build:latest \
+    wealthdb:latest \
     test "$@"
 ```
 
-#### Image: builder, not runtime
+#### One image, not two
 
-`./wealthdb-test` targets the **builder stage** of the multi-stage
-Dockerfile (tagged `wealthdb-build:latest` on `./wealthdb
-build`), not the production runtime stage. The builder already
-has the Go toolchain and CGO prerequisites; the runtime stage
-deliberately does not. Tagging both lets the wrapper pick the
-right one without rebuilding.
+`./wealthdb-test` uses the same `wealthdb:latest` image as the
+production wrapper, just with `--entrypoint go`. The single image
+carries the full Go toolchain so `go test` works against the
+mounted source tree; no separate builder image is needed.
 
 #### Cache locations
 

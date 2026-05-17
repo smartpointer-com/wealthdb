@@ -1,0 +1,32 @@
+#!/bin/sh
+# wealthdb — host-side wrapper around `docker run wealthdb:latest`.
+# See docs/DESIGN.md §12.2 for the mount geometry.
+set -eu
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="wealthdb:latest"
+
+# `wealthdb build` is wrapper-handled, not a container subcommand.
+case "${1:-}" in
+    build)
+        shift
+        exec docker build -t "$IMAGE" "$REPO" "$@"
+        ;;
+esac
+
+mkdir -p "$HOME/.config" "$HOME/wealthdb"
+[ -f "$HOME/.config/wealthdb.cfg" ] || : > "$HOME/.config/wealthdb.cfg"
+
+# Allocate a TTY only when the host shell has one. The wizard
+# (`wealthdb config`) requires this; the other subcommands work
+# either way. Cron / piped invocations skip both flags.
+TTY=""
+[ -t 0 ] && [ -t 1 ] && TTY="-it"
+
+exec docker run --rm $TTY \
+    -e HOME="$HOME" \
+    -u "$(id -u):$(id -g)" \
+    -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg" \
+    -v "$HOME/wealthdb:$HOME/wealthdb" \
+    "$IMAGE" \
+    "$@"
