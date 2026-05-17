@@ -11,7 +11,7 @@ downstream tools — e.g. local LLM-based agents — can consume directly.
 | --- | --- | --- |
 | [`download.py`](download.py) | implemented | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
 | [`load.py`](load.py) | implemented | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| _future_ | planned | Cross-broker `wealth-suite` gold-layer adapter (lives in a separate repo). |
+| _future_ | planned | Cross-broker `wealthdb` gold-layer adapter (lives in a separate repo). |
 
 The sections below document the two tools that currently exist.
 
@@ -164,8 +164,8 @@ Reload semantics:
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/wealth/ubs/ubs.db \
-    --bronze-dir ~/wealth/ubs
+    --silver-db ~/wealthdb/ubs-psn/ubs.db \
+    --bronze-dir ~/wealthdb/ubs-psn
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
