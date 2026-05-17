@@ -87,6 +87,28 @@ func TestWriteTableEmpty(t *testing.T) {
 	}
 }
 
+func TestWriteTableRightAlign(t *testing.T) {
+	var buf bytes.Buffer
+	WriteTable(&buf, Table{
+		Columns: []string{"name", "qty"},
+		Aligns:  []Alignment{AlignLeft, AlignRight},
+		Rows: [][]string{
+			{"apples", "5"},
+			{"oranges", "100"},
+		},
+	})
+	lines := strings.Split(buf.String(), "\n")
+	// Data row layout for the right-aligned `qty` column: cell
+	// padded on the LEFT. With widest cell "100" (3 chars), "5"
+	// renders as "  5" inside its column.
+	if !strings.Contains(lines[2], "|   5 ") {
+		t.Errorf("apples row not right-aligned in qty col:\n%s", lines[2])
+	}
+	if !strings.Contains(lines[3], "| 100 ") {
+		t.Errorf("oranges row alignment wrong:\n%s", lines[3])
+	}
+}
+
 func TestWriteTableColumnAlignment(t *testing.T) {
 	var buf bytes.Buffer
 	WriteTable(&buf, Table{

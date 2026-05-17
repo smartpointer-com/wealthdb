@@ -37,7 +37,7 @@ func WriteTable(w io.Writer, t Table) error {
 	}
 
 	// Header
-	if err := writeRow(w, t.Columns, widths); err != nil {
+	if err := writeRow(w, t.Columns, widths, t); err != nil {
 		return err
 	}
 
@@ -52,7 +52,7 @@ func WriteTable(w io.Writer, t Table) error {
 
 	// Data rows
 	for _, row := range t.Rows {
-		if err := writeRow(w, row, widths); err != nil {
+		if err := writeRow(w, row, widths, t); err != nil {
 			return err
 		}
 	}
@@ -71,14 +71,20 @@ func WriteTable(w io.Writer, t Table) error {
 
 // writeRow emits a single padded row. Cells beyond len(widths)
 // are ignored (defensive; producers should match column count).
-func writeRow(w io.Writer, cells []string, widths []int) error {
+// The table's Aligns slice controls per-column padding direction.
+func writeRow(w io.Writer, cells []string, widths []int, t Table) error {
 	parts := make([]string, len(widths))
 	for i, width := range widths {
 		var cell string
 		if i < len(cells) {
 			cell = cells[i]
 		}
-		parts[i] = " " + cell + strings.Repeat(" ", width-len(cell)) + " "
+		pad := strings.Repeat(" ", width-len(cell))
+		if t.alignAt(i) == AlignRight {
+			parts[i] = " " + pad + cell + " "
+		} else {
+			parts[i] = " " + cell + pad + " "
+		}
 	}
 	_, err := fmt.Fprintln(w, strings.Join(parts, "|"))
 	return err

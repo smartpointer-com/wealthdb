@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/config"
 	"github.com/ptu/wealthdb/internal/errs"
 	"github.com/ptu/wealthdb/internal/gold"
@@ -121,17 +122,21 @@ func parseAsOf(s string) (int64, error) {
 // positions`. The Extract function pulls the cell value out of a
 // gold.PositionRow; nullable fields fall back to a friendly
 // alternative (e.g. account → DisplayName or AccountExternalID).
+// Align is honoured by table-style formatters; numeric columns
+// (quantity, market_value, FX rates as those land) are right-
+// aligned so columns of figures line up at the decimal point.
 type columnSpec struct {
 	Name    string
+	Align   output.Alignment
 	Extract func(gold.PositionRow) string
 }
 
 // allColumns is the registry of every column the user can name
 // via --columns. Order here is the order used by --columns all.
 var allColumns = []columnSpec{
-	{"silver_source", func(r gold.PositionRow) string { return r.SilverSourceID }},
-	{"snapshot_date", func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
-	{"account", func(r gold.PositionRow) string {
+	{"silver_source", output.AlignLeft, func(r gold.PositionRow) string { return r.SilverSourceID }},
+	{"snapshot_date", output.AlignLeft, func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
+	{"account", output.AlignLeft, func(r gold.PositionRow) string {
 		// Display name preferred (Schwab accountNumber); fall
 		// back to the raw external_id when no display name is
 		// known (UBS IBAN, Swissquote customer ID).
@@ -140,15 +145,33 @@ var allColumns = []columnSpec{
 		}
 		return r.AccountExternalID
 	}},
-	{"account_id", func(r gold.PositionRow) string { return r.AccountExternalID }},
-	{"position_key", func(r gold.PositionRow) string { return r.PositionKey }},
-	{"symbol", func(r gold.PositionRow) string { return strOrEmpty(r.Symbol) }},
-	{"name", func(r gold.PositionRow) string { return strOrEmpty(r.Name) }},
-	{"asset_class", func(r gold.PositionRow) string { return r.AssetClass }},
-	{"currency", func(r gold.PositionRow) string { return r.Currency }},
-	{"quantity", func(r gold.PositionRow) string { return strOrEmpty(r.Quantity) }},
-	{"market_value", func(r gold.PositionRow) string { return strOrEmpty(r.MarketValue) }},
-	{"relationship_id", func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
+	{"account_id", output.AlignLeft, func(r gold.PositionRow) string { return r.AccountExternalID }},
+	{"position_key", output.AlignLeft, func(r gold.PositionRow) string { return r.PositionKey }},
+	{"symbol", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.Symbol) }},
+	{"name", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.Name) }},
+	{"asset_class", output.AlignLeft, func(r gold.PositionRow) string { return r.AssetClass }},
+	{"currency", output.AlignLeft, func(r gold.PositionRow) string { return r.Currency }},
+	{"quantity", output.AlignRight, func(r gold.PositionRow) string { return strOrEmpty(r.Quantity) }},
+	{"market_value", output.AlignRight, func(r gold.PositionRow) string { return formatCents(r.MarketValue) }},
+	{"relationship_id", output.AlignLeft, func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
+}
+
+// formatCents renders a decimal-string-as-pointer with exactly
+// two fractional digits — the canonical convention for money
+// columns. Returns "" for nil so empty cells stay empty (not
+// "0.00"). On parse failure falls back to the raw string rather
+// than erroring (defensive — the value came from DuckDB and
+// should always be valid, but garbage-in shouldn't crash the
+// table render).
+func formatCents(p *string) string {
+	if p == nil {
+		return ""
+	}
+	d, err := canonical.NewDecimalFromString(*p)
+	if err != nil {
+		return *p
+	}
+	return d.StringFixed(2)
 }
 
 // defaultColumns is what `wealthdb positions` shows when --columns
@@ -213,11 +236,17 @@ func joinColumnNames() string {
 
 // positionsTable converts a slice of gold.PositionRow into the
 // generic output.Table the formatter expects, using the caller's
-// selected columns.
+// selected columns. Column alignment is propagated so right-
+// aligned numeric columns render with their decimal points lined
+// up.
 func positionsTable(rows []gold.PositionRow, cols []columnSpec) output.Table {
-	t := output.Table{Columns: make([]string, len(cols))}
+	t := output.Table{
+		Columns: make([]string, len(cols)),
+		Aligns:  make([]output.Alignment, len(cols)),
+	}
 	for i, c := range cols {
 		t.Columns[i] = c.Name
+		t.Aligns[i] = c.Align
 	}
 	for _, r := range rows {
 		cells := make([]string, len(cols))
