@@ -100,6 +100,10 @@ Schwab specifics:
 - One HTTPS round-trip per artefact kind: accounts, user prefs,
   positions, transactions (chunked into ≤1-year windows because the
   endpoint caps that), open orders.
+- Optional `--with-instruments` extends the run with a `/instruments`
+  lookup for every symbol seen in positions and transactions. Default
+  off because instrument metadata changes rarely; intended for a
+  reduced schedule (weekly, monthly). See §4.9.
 - Writes one JSON file per (artefact kind, account, window) into a
   `<dest>/<UTC-timestamp>/` directory. Timestamp is the run-start
   time; subsequent runs get a new directory, never overwrite.
@@ -237,7 +241,8 @@ Every silver table is exactly one of these.
 
 **Snapshot tables** represent "state at a moment". One row per
 (entity, snapshot_at). For Schwab: `accounts`, `user_preference`,
-`account_balances`, `positions`, `open_orders`.
+`account_balances`, `positions`, `open_orders`, and the optional
+`instruments` table (see §4.9).
 
 - PK = composite, **`snapshot_at` first**, then entity columns.
 - The composite PK *is* the as-of index — no separate index needed.
@@ -384,6 +389,42 @@ The loader:
 **Silver is always at the latest schema.** Never write code that
 handles "if column X exists, use it, else fall back". If the migration
 hasn't run, fix the migration. If it has, the column always exists.
+
+### 4.9 Optional enrichment artefacts
+
+A subtler design wrinkle: Schwab's positions and transactions endpoints
+emit `description` for `COLLECTIVE_INVESTMENT`, `FIXED_INCOME`,
+`OPTION`, and `CURRENCY` rows, but **omit it for `EQUITY` rows**.
+Strict source-faithfulness would inherit this inconsistency into
+silver and pass it downstream. Two coherent ways out:
+
+1. Drop `description` from the silver projection of *all* asset
+   classes (level-down to the lowest-common-denominator).
+2. Fill it in for equities by hitting a second Schwab endpoint that
+   *does* return descriptions (`/marketdata/v1/instruments`).
+
+We chose (2) — and made it opt-in via `download.py --with-instruments`
+because the metadata is slow-changing and you don't want to pay for
+the extra round-trip on every dump. The fetched payload lands in a
+separate bronze file (`instruments.json`), consistent with the
+"one Schwab response per file" convention. The silver loader populates
+an `instruments` table when that bronze file is present; absence is
+not an error.
+
+**Generalisable pattern: optional enrichment bronze artefacts.**
+
+- Triggered by an explicit flag on the dump tool, not by default.
+- Live in their own bronze file; don't get merged into the
+  state/event artefacts.
+- Map to their own silver table; do not back-fill columns into
+  existing tables.
+- Run on a slower cadence than the state/event dump (Schwab's
+  instrument metadata only really changes on corporate-naming events).
+
+This pattern accepts a small deviation from "silver mirrors source
+faithfully": silver may *add* missing data when the source supplies
+it through a sibling endpoint. It does not change data Schwab did
+return, and it does not invent any data Schwab did not provide.
 
 ## 5. What silver deliberately omits
 

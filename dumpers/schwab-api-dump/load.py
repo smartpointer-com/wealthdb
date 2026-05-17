@@ -292,6 +292,41 @@ def load_transactions(conn, dump_dir: Path) -> int:
     return total
 
 
+def load_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
+    """Insert one row per symbol from instruments.json when present.
+
+    Optional artefact — populated only when download.py was invoked with
+    --with-instruments. Dedup per symbol: insert only when the new
+    canonical payload differs from the most recent row for that symbol.
+    Direct text comparison, matches the accounts/user_preference pattern."""
+    path = dump_dir / "instruments.json"
+    if not path.exists():
+        # Not a warning — this artefact is optional by design.
+        return 0
+    response = read_json(path)
+    n = 0
+    for inst in response.get("instruments") or []:
+        symbol = inst.get("symbol")
+        if not symbol:
+            log.warning("Instrument record with no symbol — skipping: %s",
+                        list(inst.keys()))
+            continue
+        payload = canonical_json(inst)
+        row = conn.execute(
+            "SELECT payload FROM instruments WHERE symbol = ? "
+            "ORDER BY snapshot_at DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row is None or row[0] != payload:
+            conn.execute(
+                "INSERT INTO instruments(snapshot_at, symbol, payload) "
+                "VALUES (?, ?, ?)",
+                (snapshot_at, symbol, payload),
+            )
+            n += 1
+    return n
+
+
 def load_open_orders(
     conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
 ) -> int:
@@ -366,6 +401,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
         stats["balances"] = bal
         stats["transactions"] = load_transactions(conn, dump_dir)
         stats["open_orders"] = load_open_orders(conn, snapshot_at, dump_dir, acct_map)
+        stats["instruments"] = load_instruments(conn, snapshot_at, dump_dir)
 
         # dump_runs at the END so a mid-load failure leaves no trace.
         conn.execute(
@@ -412,11 +448,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             log.info(
                 "  %s: accounts=%d user_pref=%d positions=%d balances=%d "
-                "transactions=%d open_orders=%d",
+                "transactions=%d open_orders=%d instruments=%d",
                 stats["name"],
                 stats["accounts"], stats["user_preference"],
                 stats["positions"], stats["balances"],
                 stats["transactions"], stats["open_orders"],
+                stats["instruments"],
             )
 
     conn.close()

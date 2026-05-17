@@ -41,6 +41,7 @@ ARTIFACT_USER_PREFERENCE = "user_preference.json"
 ARTIFACT_ACCOUNTS_POSITIONS = "accounts_positions.json"
 ARTIFACT_TRANSACTIONS_TEMPLATE = "transactions_{n:03d}.json"
 ARTIFACT_OPEN_ORDERS = "open_orders.json"
+ARTIFACT_INSTRUMENTS = "instruments.json"
 
 # Schwab caps the transactions endpoint window at 1 year per request. We
 # chunk longer ranges into successive sub-ranges to stay within the cap.
@@ -145,6 +146,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "Defaults to today (UTC).",
     )
     p.add_argument(
+        "--with-instruments",
+        action="store_true",
+        help="After fetching positions and transactions, look up "
+             "metadata (symbol, cusip, description, exchange, type, "
+             "assetType) for every instrument that appeared in either, "
+             "via /marketdata/v1/instruments. Writes a separate "
+             "instruments.json artefact. Off by default — instrument "
+             "metadata changes rarely, so this is typically run on a "
+             "reduced schedule.",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Connect, refresh tokens, list account hashes via "
@@ -243,6 +255,47 @@ def fetch_open_orders(client, since: date, until: date) -> list[dict]:
         )
     )
     return [o for o in all_orders if o.get("status") in OPEN_ORDER_STATUSES]
+
+
+def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
+    """Scan the bronze artefacts in `run_dir` for every distinct symbol.
+
+    Walks accounts_positions.json and every transactions_*.json file,
+    extracting `instrument.symbol` from positions and from each
+    transferItems entry. The result is the de-duplicated, sorted list of
+    symbols we will look up via /instruments."""
+    symbols: set[str] = set()
+
+    ap_path = run_dir / ARTIFACT_ACCOUNTS_POSITIONS
+    if ap_path.exists():
+        with ap_path.open(encoding="utf-8") as f:
+            for wrapper in json.load(f):
+                sa = wrapper.get("securitiesAccount") or {}
+                for pos in sa.get("positions") or []:
+                    sym = (pos.get("instrument") or {}).get("symbol")
+                    if sym:
+                        symbols.add(sym)
+
+    for txn_path in sorted(run_dir.glob("transactions_*.json")):
+        with txn_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+            for txn in data.get("transactions") or []:
+                for item in txn.get("transferItems") or []:
+                    sym = (item.get("instrument") or {}).get("symbol")
+                    if sym:
+                        symbols.add(sym)
+
+    return sorted(symbols)
+
+
+def fetch_instruments(client, symbols: list[str]) -> dict:
+    """GET /instruments?projection=symbol-search for a list of symbols.
+
+    Returns the parsed JSON response as-is. Schwab's payload shape is
+    `{"instruments": [...]}`; we preserve that structure in the bronze
+    file so silver/downstream tools see exactly what the API returned."""
+    proj = client.Instrument.Projection.SYMBOL_SEARCH
+    return schwab_get_json(client.get_instruments(symbols=symbols, projection=proj))
 
 
 def fetch_transactions(client, account_hash: str, start: date, end: date) -> list[dict]:
@@ -363,9 +416,29 @@ def run(args: argparse.Namespace) -> int:
     write_json(run_dir / ARTIFACT_OPEN_ORDERS, open_orders_payload)
     log.info("Open orders: %d", len(open_orders))
 
-    log.info("Done. Wrote %d transaction window(s) across %d account(s); "
-             "%d open order(s).",
-             n, len(account_numbers), len(open_orders))
+    # Optional instrument-metadata fetch. Schwab omits `description` on
+    # equity positions/transactions but populates it via /instruments
+    # (any projection). We harvest every symbol that appeared in the
+    # state/event artefacts we just wrote and look them up in one batch.
+    instruments_count = None
+    if args.with_instruments:
+        symbols = collect_instrument_symbols_from_run(run_dir)
+        log.info("Fetching instrument metadata for %d unique symbol(s) ...",
+                 len(symbols))
+        instruments_response = (
+            fetch_instruments(client, symbols) if symbols else {"instruments": []}
+        )
+        write_json(run_dir / ARTIFACT_INSTRUMENTS, instruments_response)
+        instruments_count = len(instruments_response.get("instruments") or [])
+        log.info("Instruments: %d returned", instruments_count)
+
+    summary = (
+        f"Done. Wrote {n} transaction window(s) across "
+        f"{len(account_numbers)} account(s); {len(open_orders)} open order(s)"
+    )
+    if instruments_count is not None:
+        summary += f"; {instruments_count} instrument(s)"
+    log.info("%s.", summary)
     return 0
 
 

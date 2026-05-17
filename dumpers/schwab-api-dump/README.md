@@ -211,6 +211,7 @@ Files land in `./data/<UTC-timestamp>/`:
 | `accounts_positions.json` | `/accounts?fields=positions` |
 | `transactions_NNN.json` | `/accounts/{hash}/transactions` (one file per account × window) |
 | `open_orders.json` | `/orders` (cross-account), filtered to non-terminal statuses |
+| `instruments.json` | `/marketdata/v1/instruments` (only when `--with-instruments` is passed) — basic metadata (symbol, cusip, description, exchange, type, assetType) for every symbol seen in positions and transactions |
 
 Transaction files are numbered rather than tagged with the account hash
 so that `ls`ing a dump directory does not leak account identifiers. The
@@ -231,6 +232,7 @@ the dump layer; full order history is intentionally not captured.
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. Prefer the env var in shared environments. |
 | `--since` | _today - 364d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the window at 1 year per request. |
 | `--until` | _today (UTC)_ | Latest transaction date (YYYY-MM-DD, inclusive). |
+| `--with-instruments` | off | After positions and transactions, look up metadata for every symbol seen and write a separate `instruments.json` artefact. Schwab omits `description` on equity positions/transactions; this fills the gap consistently across asset classes. Intended for reduced-schedule runs (instrument metadata changes rarely). |
 | `--dry-run` | off | Skip data fetch; only validate auth and list accounts. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
@@ -268,13 +270,17 @@ processed snapshots.
 Reload semantics:
 
 - **Snapshots** (`accounts`, `user_preference`, `account_balances`,
-  `positions`, `open_orders`) are append-only. Each dump produces a
-  new row per (snapshot, entity), with two exceptions:
+  `positions`, `open_orders`, `instruments`) are append-only. Each
+  dump produces a new row per (snapshot, entity), with three exceptions:
   - `accounts` deduplicates against the most recent row for each
     account: insert only if the canonical-JSON payload differs.
   - `user_preference` does the same, after stripping per-request
     noise fields (e.g. `schwabClientCorrelId`, which Schwab
     regenerates on every API call). Bronze keeps the original.
+  - `instruments` deduplicates per symbol, same direct payload
+    comparison. Populated only when bronze contains an
+    `instruments.json` (i.e. when `download.py --with-instruments`
+    was used).
 - **Events** (`transactions`) use window-DELETE-then-INSERT per
   `(account, time-window)`. The dump emits non-overlapping windows;
   the loader replaces exactly that range, which catches upstream
