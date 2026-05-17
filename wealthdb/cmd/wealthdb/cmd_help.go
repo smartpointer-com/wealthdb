@@ -15,6 +15,7 @@ func init() {
 // help <subcommand>`. Subcommand handlers register their longer
 // usage via flag.Usage; this map is for the brief overview only.
 var helpText = map[string]string{
+	"config":    "Interactive first-time setup; writes the wealthdb.cfg file.",
 	"init":      "Initialise an empty gold DB at the configured gold_db path.",
 	"load":      "Merge new silver snapshots into gold (one source, or -a for all).",
 	"reset":     "Purge a silver source's data from gold (one source, or -a for all).",

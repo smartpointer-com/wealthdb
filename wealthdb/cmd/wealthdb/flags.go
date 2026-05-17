@@ -65,6 +65,7 @@ global flags:
   -v, --verbose         DEBUG-level logging
 
 subcommands:
+  config                interactive first-time setup wizard
   init                  initialise an empty gold DB at the configured gold_db path
   load <id> | -a        merge new silver snapshots into gold
   reset <id> | -a       purge a silver source's data from gold
@@ -72,6 +73,4 @@ subcommands:
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
   help [<subcommand>]   help for a subcommand
-
-  (config — the interactive first-time wizard — lands in M11.)
 `

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,11 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// Compile-time check: silence unused-import warnings if io is
+// later trimmed (used by some inline strings.Reader → io.Reader
+// coercions).
+var _ io.Reader = strings.NewReader("")
 
 // silverFixture is the minimal Schwab silver schema, duplicated
 // here so this end-to-end test doesn't reach across packages.
@@ -485,6 +491,63 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 	}
 	if !strings.HasPrefix(strings.TrimSpace(so), "[") {
 		t.Errorf("json should be a top-level array: %s", so)
+	}
+}
+
+func TestConfigWizardWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "wealthdb.cfg")
+	silverPath := filepath.Join(dir, "silver.db")
+
+	// Write a minimal silver SQLite so probeSilverDB inside the
+	// wizard passes.
+	sdb, _ := sql.Open("sqlite", "file:"+silverPath)
+	sdb.Exec(`CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY)`)
+	sdb.Close()
+
+	// Explicit gold_db path so the validator doesn't probe the
+	// host $HOME/wealthdb/ default (which may not exist inside
+	// the test sandbox).
+	goldPath := filepath.Join(dir, "gold.db")
+	stdin := strings.NewReader(strings.Join([]string{
+		goldPath,   // gold_db
+		"USD",      // currency
+		"src-a",    // id
+		"schwab",   // kind
+		silverPath, // path
+		"n",        // no more sources
+	}, "\n") + "\n")
+	var so, se bytes.Buffer
+	exit := Run([]string{"-c", cfgPath, "config"}, stdin, &so, &se)
+	if exit != 0 {
+		t.Fatalf("config exit=%d stdout=%s stderr=%s", exit, so.String(), se.String())
+	}
+	if !strings.Contains(so.String(), "Wrote config to") {
+		t.Errorf("missing 'Wrote config to' confirmation: %s", so.String())
+	}
+
+	// File now exists with valid JSON.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `"src-a"`) {
+		t.Errorf("config file missing src-a id: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"default_currency": "USD"`) {
+		t.Errorf("config file missing currency: %s", string(data))
+	}
+
+	// Re-running refuses to clobber: exit 4.
+	stdin = strings.NewReader("\n")
+	so.Reset()
+	se.Reset()
+	exit = Run([]string{"-c", cfgPath, "config"}, stdin, &so, &se)
+	if exit != 4 {
+		t.Errorf("re-run exit = %d, want 4", exit)
+	}
+	if !strings.Contains(se.String(), "already exists") {
+		t.Errorf("missing 'already exists' message: %s", se.String())
 	}
 }
 
