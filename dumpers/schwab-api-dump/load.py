@@ -140,10 +140,59 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
 # Per-artefact loaders. All take `conn` already inside a transaction.
 # --------------------------------------------------------------------------
 
-def load_accounts(conn, snapshot_at: int, accounts_data: list[dict]) -> int:
-    """Insert account rows when the canonical payload differs from the latest."""
+def _build_account_metadata(
+    accounts_data: list[dict],
+    accounts_positions: list[dict] | None,
+    user_preference: dict | None,
+) -> list[dict]:
+    """Merge per-account info from the three Schwab artefacts.
+
+    Returns a list of dicts keyed by accountNumber/hashValue with three
+    promoted fields:
+      - account_type    from securitiesAccount.type (CASH/MARGIN)
+      - preference_type from userPreference.accounts[].type (BROKERAGE)
+      - nickname        from userPreference.accounts[].nickName
+
+    Missing sources or missing accounts within a source leave the
+    corresponding fields as None."""
+    # Index sibling artefacts by accountNumber.
+    type_by_acct: dict[str, str | None] = {}
+    for wrapper in accounts_positions or []:
+        sa = wrapper.get("securitiesAccount") or {}
+        acct = sa.get("accountNumber")
+        if acct:
+            type_by_acct[acct] = sa.get("type")
+
+    pref_by_acct: dict[str, dict] = {}
+    for entry in (user_preference or {}).get("accounts") or []:
+        acct = entry.get("accountNumber")
+        if acct:
+            pref_by_acct[acct] = entry
+
+    merged: list[dict] = []
+    for a in accounts_data:
+        acct = a["accountNumber"]
+        pref = pref_by_acct.get(acct, {})
+        merged.append({
+            "accountNumber":   acct,
+            "hashValue":       a["hashValue"],
+            "account_type":    type_by_acct.get(acct),
+            "preference_type": pref.get("type"),
+            "nickname":        pref.get("nickName"),
+        })
+    return merged
+
+
+def load_accounts(conn, snapshot_at: int, merged_accounts: list[dict]) -> int:
+    """Insert per-account metadata rows when the canonical payload differs.
+
+    `merged_accounts` is the output of `_build_account_metadata`: one
+    dict per linked account, with the three promoted fields plus the
+    accountNumber/hashValue mapping. The promoted columns and the
+    payload are both populated from each dict; payload is the canonical
+    JSON of the dict and is the basis for dedup."""
     n = 0
-    for acct in accounts_data:
+    for acct in merged_accounts:
         external_id = acct["hashValue"]
         payload = canonical_json(acct)
         row = conn.execute(
@@ -153,9 +202,13 @@ def load_accounts(conn, snapshot_at: int, accounts_data: list[dict]) -> int:
         ).fetchone()
         if row is None or row[0] != payload:
             conn.execute(
-                "INSERT INTO accounts(snapshot_at, account_external_id, payload) "
-                "VALUES (?, ?, ?)",
-                (snapshot_at, external_id, payload),
+                "INSERT INTO accounts"
+                "(snapshot_at, account_external_id, account_type, "
+                " preference_type, nickname, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (snapshot_at, external_id,
+                 acct["account_type"], acct["preference_type"], acct["nickname"],
+                 payload),
             )
             n += 1
     return n
@@ -389,12 +442,23 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     accounts_data = read_json(accounts_path)
     acct_map = {a["accountNumber"]: a["hashValue"] for a in accounts_data}
 
+    # The accounts silver row is built from three sibling artefacts;
+    # read the optional companions here so the merge in
+    # _build_account_metadata can include them when present.
+    ap_path = dump_dir / "accounts_positions.json"
+    positions_wrappers = read_json(ap_path) if ap_path.exists() else None
+    up_path = dump_dir / "user_preference.json"
+    user_preference = read_json(up_path) if up_path.exists() else None
+    merged_accounts = _build_account_metadata(
+        accounts_data, positions_wrappers, user_preference,
+    )
+
     stats: dict = {"name": name, "snapshot_at": snapshot_at, "skipped": False}
 
     # Python sqlite3 connection-as-context-manager: BEGIN on entry,
     # COMMIT on clean exit, ROLLBACK on exception.
     with conn:
-        stats["accounts"] = load_accounts(conn, snapshot_at, accounts_data)
+        stats["accounts"] = load_accounts(conn, snapshot_at, merged_accounts)
         stats["user_preference"] = load_user_preference(conn, snapshot_at, dump_dir)
         pos, bal = load_accounts_positions(conn, snapshot_at, dump_dir, acct_map)
         stats["positions"] = pos
