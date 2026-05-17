@@ -49,7 +49,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			specs = append(specs, loader.SourceSpec{ID: s.ID, Kind: s.Kind, Path: s.Path})
+			specs = append(specs, buildSourceSpec(s, cfg.AccountOverrides))
 		}
 		if len(specs) == 0 {
 			return fmt.Errorf("load: -a passed but no silver sources are configured")
@@ -60,7 +60,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		specs = []loader.SourceSpec{{ID: s.ID, Kind: s.Kind, Path: s.Path}}
+		specs = []loader.SourceSpec{buildSourceSpec(*s, cfg.AccountOverrides)}
 	default:
 		fs.Usage()
 		return errs.Newf(2, "load: expected one silver_source_id or -a")
@@ -105,6 +105,25 @@ load semantics.`)
 		printLoadResult(stdout, res)
 	}
 	return firstErr
+}
+
+// buildSourceSpec assembles a loader.SourceSpec for one configured
+// silver source, copying the per-source account_overrides slice
+// from the config (may be nil/empty — both are fine).
+func buildSourceSpec(s config.SilverSource, overrides map[string]map[string]config.AccountOverride) loader.SourceSpec {
+	spec := loader.SourceSpec{ID: s.ID, Kind: s.Kind, Path: s.Path}
+	cfgOvr, ok := overrides[s.ID]
+	if !ok || len(cfgOvr) == 0 {
+		return spec
+	}
+	spec.Overrides = make(map[string]loader.AccountOverride, len(cfgOvr))
+	for acctID, ov := range cfgOvr {
+		spec.Overrides[acctID] = loader.AccountOverride{
+			Nickname: ov.Nickname,
+			Category: ov.Category,
+		}
+	}
+	return spec
 }
 
 func printLoadResult(w io.Writer, r *loader.LoadResult) {

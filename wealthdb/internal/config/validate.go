@@ -47,6 +47,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: silver_sources[%d].path is required", i)
 		}
 	}
+
+	// account_overrides: every outer key must name a declared
+	// silver source (catches typos early); every inner key must be
+	// non-empty (an empty account_external_id can't match anything
+	// and is almost always user error).
+	for sourceID, perAccount := range c.AccountOverrides {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: account_overrides[%q]: no silver_sources[].id matches", sourceID)
+		}
+		for acctID, ov := range perAccount {
+			if acctID == "" {
+				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
+			}
+			if ov.Nickname == "" && ov.Category == "" {
+				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname or category must be set", sourceID, acctID)
+			}
+		}
+	}
 	return nil
 }
 

@@ -429,7 +429,16 @@ Example config file:
             "kind": "swissquote",
             "path": "~/wealthdb/swissquote/swissquote.db"
         }
-    ]
+    ],
+    "account_overrides": {
+        "schwab-retail": {
+            "<account-hash-1>": {"nickname": "Main brokerage", "category": "personal"},
+            "<account-hash-2>": {"nickname": "Education account",      "category": "esa"}
+        },
+        "swissquote-1": {
+            "1234567": {"nickname": "CHF trading", "category": "personal"}
+        }
+    }
 }
 ```
 
@@ -443,6 +452,7 @@ Example config file:
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
 | `silver_sources[].kind` | string | One of `schwab`, `ubs`, `swissquote`, `auto`. Picks the adapter. |
 | `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths are resolved against the config file's directory. |
+| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname` and/or `category` strings. See §13.9; both inner fields are optional but at least one must be set per entry. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 
 ### 5.2 `kind: "auto"`
 

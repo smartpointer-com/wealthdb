@@ -145,6 +145,65 @@ func TestValidateRejectsDuplicateID(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAccountOverrides(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [
+            {"id": "schwab-main", "kind": "schwab", "path": "/tmp/s.db"},
+            {"id": "swissquote",  "kind": "swissquote", "path": "/tmp/q.db"}
+        ],
+        "account_overrides": {
+            "schwab-main": {
+                "1A2B3C4D": {"nickname": "Main brokerage", "category": "personal"},
+                "5E6F7G8H": {"nickname": "Goal account", "category": "esa"}
+            },
+            "swissquote": {
+                "1234567": {"nickname": "CHF trading"}
+            }
+        }
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := c.AccountOverrides["schwab-main"]["1A2B3C4D"]
+	if got.Nickname != "Main brokerage" || got.Category != "personal" {
+		t.Errorf("schwab-main/1A2B3C4D = %+v", got)
+	}
+	gotSQ := c.AccountOverrides["swissquote"]["1234567"]
+	if gotSQ.Nickname != "CHF trading" || gotSQ.Category != "" {
+		t.Errorf("swissquote/1234567 = %+v (Category should be empty)", gotSQ)
+	}
+}
+
+func TestValidateRejectsOrphanOverride(t *testing.T) {
+	c := &Config{
+		GoldDB: "/x", DefaultCurrency: "USD",
+		SilverSources: []SilverSource{{ID: "a", Kind: "schwab", Path: "/x"}},
+		AccountOverrides: map[string]map[string]AccountOverride{
+			"unknown-source": {"ACC": {Nickname: "x"}},
+		},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "unknown-source") {
+		t.Fatalf("err = %v, want orphan-source complaint", err)
+	}
+}
+
+func TestValidateRejectsEmptyOverride(t *testing.T) {
+	c := &Config{
+		GoldDB: "/x", DefaultCurrency: "USD",
+		SilverSources: []SilverSource{{ID: "a", Kind: "schwab", Path: "/x"}},
+		AccountOverrides: map[string]map[string]AccountOverride{
+			"a": {"ACC": {}}, // both fields empty
+		},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("err = %v, want both-empty complaint", err)
+	}
+}
+
 func TestValidateRejectsBadCurrency(t *testing.T) {
 	cases := []string{"", "usd", "DOLLAR", "US", "USDX"}
 	for _, ccy := range cases {

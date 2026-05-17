@@ -17,6 +17,15 @@ type Config struct {
 	GoldDB          string         `json:"gold_db"`
 	DefaultCurrency string         `json:"default_currency"`
 	SilverSources   []SilverSource `json:"silver_sources"`
+	// AccountOverrides lets the user override the per-account
+	// `nickname` and `account_category` columns adapters would
+	// otherwise emit. Keyed by silver_source_id (outer) and then
+	// account_external_id (inner). Either field of the value may
+	// be empty/omitted; an empty value is treated as "no override
+	// for that column". The loader applies overrides AFTER the
+	// adapter has stamped its own values, so config wins on
+	// overlap. See docs/DESIGN.md §13.9.
+	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
 }
 
 // SilverSource is one entry under `silver_sources` in the config
@@ -25,6 +34,14 @@ type SilverSource struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Path string `json:"path"`
+}
+
+// AccountOverride is one per-account override entry. Both fields
+// are optional; an empty string means "don't override that
+// column".
+type AccountOverride struct {
+	Nickname string `json:"nickname,omitempty"`
+	Category string `json:"category,omitempty"`
 }
 
 // Load reads and parses the JSON config at the given path,

@@ -23,6 +23,20 @@ type SourceSpec struct {
 	ID   string // user-defined silver_source_id
 	Kind string // adapter kind ("schwab", "ubs", "swissquote", ...)
 	Path string // filesystem path to the silver SQLite
+	// Overrides is the per-account_external_id override map for
+	// this source — nickname / category values from the
+	// config-file `account_overrides` block. Loader applies these
+	// after adapters have stamped their own values; config wins on
+	// overlap. nil or empty entries are no-ops.
+	Overrides map[string]AccountOverride
+}
+
+// AccountOverride is the loader's view of one config-file
+// account_overrides entry. An empty string means "don't override
+// that column".
+type AccountOverride struct {
+	Nickname string
+	Category string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -130,7 +144,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): delete window: %w", spec.ID, err)
 		}
 
-		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window)
+		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply snapshots: %w", spec.ID, err)
 		}
@@ -222,8 +236,10 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 }
 
 // applySnapshots drains conn.Snapshots into the gold writer.
-// Returns the total count of snapshot-grain rows written.
-func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window) (int, error) {
+// Returns the total count of snapshot-grain rows written. The
+// overrides map (may be nil) is applied to AccountChange records
+// after stamping; see applyAccountOverrides.
+func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
 		return 0, err
@@ -240,6 +256,9 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 
 		// Stamp the silver_source_id on every record before write.
 		stampSnapshotBatch(&batch, sourceID)
+		// Config-file overrides go on top of whatever the adapter
+		// emitted; see DESIGN.md §13.9.
+		applyAccountOverrides(batch.Accounts, overrides)
 
 		if err := writer.UpsertAccounts(ctx, batch.Accounts); err != nil {
 			return total, err
@@ -348,5 +367,32 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 func stampTransactionBatch(b *canonical.TransactionBatch, sourceID string) {
 	for i := range b.Transactions {
 		b.Transactions[i].SilverSourceID = sourceID
+	}
+}
+
+// applyAccountOverrides patches each AccountChange whose
+// account_external_id appears in the overrides map. Non-empty
+// override fields replace the adapter's value (Nickname /
+// AccountCategory); empty fields are left as-is. Overrides for
+// account_external_ids not in the batch are silently ignored —
+// the user may have configured overrides for accounts that
+// happen not to be in this snapshot window.
+func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[string]AccountOverride) {
+	if len(overrides) == 0 {
+		return
+	}
+	for i := range accounts {
+		ov, ok := overrides[accounts[i].AccountExternalID]
+		if !ok {
+			continue
+		}
+		if ov.Nickname != "" {
+			n := ov.Nickname
+			accounts[i].Nickname = &n
+		}
+		if ov.Category != "" {
+			c := ov.Category
+			accounts[i].AccountCategory = &c
+		}
 	}
 }

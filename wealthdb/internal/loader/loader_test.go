@@ -377,6 +377,62 @@ func TestResetClearsEverything(t *testing.T) {
 	}
 }
 
+// TestAccountOverridesApplied confirms the config-file account
+// overrides land on the gold accounts row: nickname and category
+// fields wired via SourceSpec.Overrides reach the writer, and
+// override-less accounts in the same batch are untouched.
+func TestAccountOverridesApplied(t *testing.T) {
+	h := newHarness(t)
+
+	h.silverExec(t, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, 'ACC1', '{"hashValue":"ACC1","accountNumber":"redacted-1"}'),
+            (1000, 'ACC2', '{"hashValue":"ACC2","accountNumber":"redacted-2"}'),
+            (1000, 'ACC3', '{"hashValue":"ACC3","accountNumber":"redacted-3"}');
+    `)
+
+	_, err := h.loader.Load(context.Background(), loader.SourceSpec{
+		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
+		Overrides: map[string]loader.AccountOverride{
+			"ACC1": {Nickname: "Main brokerage", Category: "personal"},
+			"ACC2": {Nickname: "Education account"},      // partial: only nickname
+			"ACC3": {Category: "managed"},        // partial: only category
+			"ACCX": {Nickname: "unmatched"},      // no such account in batch
+		},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	rows, err := h.gold.Query(`
+        SELECT account_external_id, COALESCE(nickname,''), COALESCE(account_category,'')
+          FROM accounts
+         ORDER BY account_external_id`)
+	if err != nil {
+		t.Fatalf("query accounts: %v", err)
+	}
+	defer rows.Close()
+	got := map[string][2]string{}
+	for rows.Next() {
+		var id, nick, cat string
+		if err := rows.Scan(&id, &nick, &cat); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = [2]string{nick, cat}
+	}
+	want := map[string][2]string{
+		"ACC1": {"Main brokerage", "personal"},
+		"ACC2": {"Education account", ""},
+		"ACC3": {"", "managed"},
+	}
+	for id, w := range want {
+		if g := got[id]; g != w {
+			t.Errorf("%s: nickname/category = %q/%q, want %q/%q", id, g[0], g[1], w[0], w[1])
+		}
+	}
+}
+
 func TestListSourceIDs(t *testing.T) {
 	h := newHarness(t)
 	if got, _ := h.loader.ListSourceIDs(context.Background()); len(got) != 0 {
