@@ -48,21 +48,45 @@ identifier dimensions show up in every gold row:
 ## 4. `asset_class` derivation for `holdings`
 
 `silver.holdings` doesn't carry an asset-class column directly.
-The adapter joins to `silver.instruments` on `(relationship_id,
-isin)` and reads the SDFI `Tp` (instrument type) code from the
-payload. Approximate mapping (refine as real codes are observed):
+The adapter looks up the holding's ISIN in `silver.instruments`
+and reads the ISO 10962 CFI code (`InstrCtgyCFI` in the SDFI
+payload). The CFI's first character is the asset category, so a
+one-letter switch is enough:
 
-| SDFI `Tp` family | Gold `asset_class` |
+| CFI first char | Gold `asset_class` |
 | --- | --- |
-| Equity codes | `equity` |
-| ETF codes | `etf` |
-| Bond / fixed-income codes | `bond` |
-| Fund / SICAV codes | `fund` |
-| Structured-product codes | `other` (refine later) |
-| Precious-metal codes | `metal` |
+| `E` | `equity` |
+| `C` | `fund` (Collective investment) |
+| `D` | `bond` (Debt) |
+| `O` | `option` |
+| `F` | `future` |
+| `M` | `money_market` |
+| other / empty | `other` (e.g. `T` structured, `R` rights, or instruments UBS ships without a CFI code) |
 
-Unrecognised codes land as `other` with the raw `Tp` value
-preserved in payload.
+### Latest-known-instruments lookup
+
+UBS silver's loader applies content-based dedup on instruments —
+a fresh row is written only when the SDFI payload changes. Most
+snapshots therefore don't carry an instruments row for a given
+ISIN, so a same-snapshot lookup misses for most holdings. The
+adapter compensates by building a `map[isin]meta` from the
+**most-recent** instrument row across the entire silver DB, then
+using that for every holding. This is correct in practice
+because instrument metadata (name, CFI category) is functionally
+immutable — being stale by one snapshot is harmless. Discovered
+empirically during M7's load against real silver; documented here
+so the next maintainer doesn't undo it.
+
+### MT535 SWIFT-tag parsing (deferred)
+
+Each `holdings.payload` carries the raw MT535 fields under
+`payload.fields.{"19A","93B","35B",...}`, where each tag is an
+array of raw SWIFT subblock strings (e.g. `":HOLD//CHF12345.67"`).
+Parsing those out to populate `PositionChange.Quantity` and
+`MarketValue` is non-trivial and deferred to a follow-up. For
+v1 the projected position rows have `quantity = NULL` and
+`market_value = NULL`; the position's identity, account, asset
+class, and currency are populated.
 
 ## 5. `events.kind` mapping
 

@@ -10,6 +10,7 @@ import (
 	// here so they show up in the silver registry by the time the
 	// dispatcher runs.
 	_ "github.com/ptu/wealthdb/internal/silver/schwab"
+	_ "github.com/ptu/wealthdb/internal/silver/ubs"
 )
 
 func main() {
