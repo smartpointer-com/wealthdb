@@ -13,7 +13,23 @@ CREATE TABLE accounts (
     snapshot_at         INTEGER NOT NULL,
     account_external_id TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
+    -- v3 promoted columns. Tolerated optionally by the adapter
+    -- (hasColumn checks at query-build time) so older silvers that
+    -- predate the schwab-dump migration still load.
+    account_type        TEXT,
+    preference_type     TEXT,
+    nickname            TEXT,
     PRIMARY KEY (snapshot_at, account_external_id)
+);
+
+-- Populated only when schwab-dump runs with --with-instruments.
+-- The adapter reads (snapshot_at, symbol) grouped to symbol →
+-- latest description for instrument-name enrichment.
+CREATE TABLE instruments (
+    snapshot_at INTEGER NOT NULL,
+    symbol      TEXT    NOT NULL,
+    payload     TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_at, symbol)
 );
 
 CREATE TABLE account_balances (

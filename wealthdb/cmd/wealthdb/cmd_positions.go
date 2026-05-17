@@ -263,6 +263,10 @@ func buildColumnRegistry(outCcy string) []columnSpec {
 			}},
 		{Name: "relationship_id", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.RelationshipID) }},
+		{Name: "account_nickname", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Nickname) }},
+		{Name: "account_category", Align: output.AlignLeft,
+			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.AccountCategory) }},
 	}
 }
 

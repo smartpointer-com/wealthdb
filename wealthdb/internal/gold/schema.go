@@ -92,6 +92,20 @@ func listMigrations() ([]migration, error) {
 	return out, nil
 }
 
+// latestSchemaVersion returns the version number of the highest
+// embedded migration. Used by tests to assert post-Migrate state
+// without hardcoding a version that drifts as new migrations land.
+func latestSchemaVersion() (int, error) {
+	ms, err := listMigrations()
+	if err != nil {
+		return 0, err
+	}
+	if len(ms) == 0 {
+		return 0, fmt.Errorf("no migrations embedded")
+	}
+	return ms[len(ms)-1].version, nil
+}
+
 // parseMigrationVersion expects a filename like "0001_initial.sql"
 // and returns the leading integer.
 func parseMigrationVersion(name string) (int, error) {

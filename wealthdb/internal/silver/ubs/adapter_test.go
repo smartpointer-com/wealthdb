@@ -129,6 +129,49 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 	}
 }
 
+// TestSnapshotsAccountCategoryMapping covers AcctTpDesc →
+// AccountCategory for cash accounts (passthrough) and the
+// AcctTpDesc + " / " + AcctSubTypeDesc concatenation for
+// safekeeping accounts (when the sub-type is present).
+func TestSnapshotsAccountCategoryMapping(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH00CASH', '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private"}');
+        INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH00SAFE1', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody","AcctSubTypeDesc":"Cash-Custody"}'),
+            (1000, 'SFTPCHxx', 'CH00SAFE2', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]*string{}
+	for i := range batch.Accounts {
+		byID[batch.Accounts[i].AccountExternalID] = batch.Accounts[i].AccountCategory
+	}
+	if got := byID["CH00CASH"]; got == nil || *got != "Private" {
+		t.Errorf("CH00CASH category = %v, want 'Private'", got)
+	}
+	if got := byID["CH00SAFE1"]; got == nil || *got != "Custody / Cash-Custody" {
+		t.Errorf("CH00SAFE1 category = %v, want 'Custody / Cash-Custody'", got)
+	}
+	if got := byID["CH00SAFE2"]; got == nil || *got != "Custody" {
+		t.Errorf("CH00SAFE2 category = %v, want 'Custody'", got)
+	}
+}
+
 func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`

@@ -43,21 +43,26 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,
     display_name, base_currency, relationship_id,
+    nickname, account_category,
     first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
-    account_kind    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                           THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
-    display_name    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                           THEN EXCLUDED.display_name ELSE accounts.display_name END,
-    base_currency   = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                           THEN EXCLUDED.base_currency ELSE accounts.base_currency END,
-    relationship_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                           THEN EXCLUDED.relationship_id ELSE accounts.relationship_id END,
-    payload         = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                           THEN EXCLUDED.payload ELSE accounts.payload END,
-    first_seen_at   = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
-    last_seen_at    = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at)`
+    account_kind     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
+    display_name     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.display_name ELSE accounts.display_name END,
+    base_currency    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.base_currency ELSE accounts.base_currency END,
+    relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.relationship_id ELSE accounts.relationship_id END,
+    nickname         = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.nickname ELSE accounts.nickname END,
+    account_category = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.account_category ELSE accounts.account_category END,
+    payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.payload ELSE accounts.payload END,
+    first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at     = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at)`
 
 	stmt, err := w.tx.PrepareContext(ctx, q)
 	if err != nil {
@@ -74,6 +79,7 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 			r.SilverSourceID, r.AccountExternalID, string(r.AccountKind),
 			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
 			nullableString(r.RelationshipID),
+			nullableString(r.Nickname), nullableString(r.AccountCategory),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertAccounts row %d: %w", i, err)

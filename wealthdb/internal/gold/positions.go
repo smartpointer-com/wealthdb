@@ -12,15 +12,18 @@ import (
 // (DuckDB CAST to VARCHAR); the caller formats further if needed.
 //
 // The fields populated by LEFT JOIN against `accounts` /
-// `instruments` (DisplayName, RelationshipID, Symbol, Name) are
-// nullable; the consumer chooses when to fall back to
-// AccountExternalID / PositionKey for user-facing output.
+// `instruments` (DisplayName, RelationshipID, Nickname,
+// AccountCategory, Symbol, Name) are nullable; the consumer
+// chooses when to fall back to AccountExternalID / PositionKey for
+// user-facing output.
 type PositionRow struct {
 	SilverSourceID       string
 	SnapshotAt           int64
 	AccountExternalID    string
 	DisplayName          *string // accounts.display_name
 	RelationshipID       *string // accounts.relationship_id (UBS dimension)
+	Nickname             *string // accounts.nickname
+	AccountCategory      *string // accounts.account_category
 	PositionKey          string
 	InstrumentExternalID *string
 	Symbol               *string // instruments.symbol
@@ -54,6 +57,8 @@ SELECT p.silver_source_id,
        p.account_external_id,
        a.display_name,
        a.relationship_id,
+       a.nickname,
+       a.account_category,
        p.position_key,
        p.instrument_external_id,
        i.symbol,
@@ -86,6 +91,8 @@ SELECT p.silver_source_id,
 			r           PositionRow
 			displayName sql.NullString
 			relID       sql.NullString
+			nickname    sql.NullString
+			category    sql.NullString
 			instr       sql.NullString
 			symbol      sql.NullString
 			name        sql.NullString
@@ -94,7 +101,7 @@ SELECT p.silver_source_id,
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.SnapshotAt, &r.AccountExternalID,
-			&displayName, &relID,
+			&displayName, &relID, &nickname, &category,
 			&r.PositionKey, &instr, &symbol, &name,
 			&r.AssetClass, &r.Currency, &qty, &mvalue,
 		); err != nil {
@@ -102,6 +109,8 @@ SELECT p.silver_source_id,
 		}
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)
+		r.Nickname = nullStringToPtr(nickname)
+		r.AccountCategory = nullStringToPtr(category)
 		r.InstrumentExternalID = nullStringToPtr(instr)
 		r.Symbol = nullStringToPtr(symbol)
 		r.Name = nullStringToPtr(name)

@@ -6,8 +6,8 @@ import (
 )
 
 // TestMigrateAppliesSchema is the smoke test that proves the
-// DuckDB driver loads, the embedded migration runs end-to-end,
-// and the schema_meta row marks version 1.
+// DuckDB driver loads, the embedded migrations run end-to-end,
+// and schema_meta records the latest applied version.
 func TestMigrateAppliesSchema(t *testing.T) {
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
@@ -20,19 +20,24 @@ func TestMigrateAppliesSchema(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
+	want, err := latestSchemaVersion()
+	if err != nil {
+		t.Fatalf("latestSchemaVersion: %v", err)
+	}
+
 	var version int
 	if err := db.QueryRowContext(ctx,
 		`SELECT MAX(gold_schema_version) FROM schema_meta`).Scan(&version); err != nil {
 		t.Fatalf("read schema_meta: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("schema version = %d, want 1", version)
+	if version != want {
+		t.Errorf("schema version = %d, want %d", version, want)
 	}
 }
 
 // TestMigrateIdempotent verifies that a second Migrate call against
-// an already-migrated database is a no-op (and doesn't try to
-// re-apply migration 1).
+// an already-migrated database is a no-op (no re-application of
+// already-applied migrations).
 func TestMigrateIdempotent(t *testing.T) {
 	db, err := Open(":memory:", ModeReadWrite)
 	if err != nil {
@@ -44,17 +49,22 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
+
+	var before int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_meta`).Scan(&before); err != nil {
+		t.Fatalf("count schema_meta (before): %v", err)
+	}
+
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("second Migrate (should be no-op): %v", err)
 	}
 
-	// schema_meta should still have exactly one row.
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_meta`).Scan(&n); err != nil {
-		t.Fatalf("count schema_meta: %v", err)
+	var after int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_meta`).Scan(&after); err != nil {
+		t.Fatalf("count schema_meta (after): %v", err)
 	}
-	if n != 1 {
-		t.Errorf("schema_meta row count = %d, want 1", n)
+	if after != before {
+		t.Errorf("schema_meta row count = %d, want %d (idempotent)", after, before)
 	}
 }
 

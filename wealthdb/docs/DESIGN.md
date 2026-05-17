@@ -851,6 +851,8 @@ CREATE TABLE accounts (
     display_name            TEXT,               -- user-facing label, payload-derived
     base_currency           TEXT,               -- ISO 4217 if known
     relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
+    nickname                TEXT,               -- user-set label; Schwab silver supplies, config override fills others
+    account_category        TEXT,               -- wealth-mgmt wrapper hint; see §13.9
     first_seen_at           BIGINT  NOT NULL,   -- earliest snapshot_at observed
     last_seen_at            BIGINT  NOT NULL,   -- latest snapshot_at observed
     payload                 JSON,
@@ -1762,51 +1764,57 @@ Sketch of where this lands when designed:
 This is a sketch only; the source and ingest design will be
 fleshed out when the feature is scheduled.
 
-### 13.9 Account categorisation (personal / managed / UTMA / ESA / ...)
+### 13.9 Account categorisation (personal / managed / UTMA / ESA / ...) and nickname
 
 Users typically hold several distinct kinds of accounts at the
 same bank — personal brokerage, managed wealth account, UTMA /
 ESA / IRA wrappers for tax purposes, separate cash accounts.
 Filtering positions and net-worth roll-ups by these categories is
-more useful than slicing by raw account ID.
+more useful than slicing by raw account ID. Independently, a
+user-friendly `nickname` ("Main brokerage", "Education account") lets the
+CLI render something more recognisable than the bank's
+identifier.
 
-What today's silvers carry:
-- **UBS** has rich data already: `cash_accounts.AcctTpDesc`
-  cleanly discriminates "UBS personal account" / "UBS savings
-  account" / "Forward Contract Account" / "Cash Account for
-  investment solutions" (the managed cash leg). `safekeeping_
-  accounts.AcctTpDesc` + `AcctSubTypeDesc` discriminate "Custody
-  Account for investment solutions / managed securities account"
-  vs "UBS Custody Account / securities account with advisory
-  agreement" vs other.
-- **Schwab** silver carries no useful type/subType today —
-  `accounts.payload` is just `{accountNumber, hashValue}` and
-  `account_balances.payload` has no `type` field. Schwab's
-  `/accounts` API does expose the parent `securitiesAccount.type`
-  (CASH/MARGIN/IRA/ROTH/...) but `schwab-dump` doesn't capture
-  it. Same shape of upstream-fix problem as the equity-name story
-  in §13's adapter-doc cross-reference.
-- **Swissquote** silver carries no categorisation either; the
-  Swissquote UI does distinguish trading / savings sub-accounts,
-  but `swissquote-dump` doesn't scrape it.
+Adapter-supplied values today (migration 0002 promoted two
+columns on `accounts`):
 
-Proposed feature when scheduled:
-1. Gold adds an `account_category` column on `accounts`
-   (distinct from `account_kind`, which is the structural
-   brokerage/cash/safekeeping/portfolio shape). Free-text values
-   like `personal`, `managed`, `advisory`, `utma`, `esa`, `ira`.
-2. UBS adapter populates it from a small mapping table over
-   `AcctTpDesc` / `AcctSubTypeDesc`. Adapter-provided.
-3. Config-file `account_categories` map for Schwab and
-   Swissquote accounts where silver doesn't carry the category
-   — gold's loader applies these after adapter-provided values
-   (config wins on overlap).
-4. `wealthdb positions --category personal,managed` filter and
-   `account_category` as a selectable column.
-5. Longer term: enhance `schwab-dump` (and `swissquote-dump` if
-   feasible) to populate the silver `accounts.payload` with the
-   bank's own categorisation, removing the need for config-side
-   tagging where the bank already knows.
+- **UBS** populates `account_category` from
+  `cash_accounts.AcctTpDesc` for cash legs, and from
+  `safekeeping_accounts.AcctTpDesc` + `AcctSubTypeDesc`
+  (concatenated as `"Type / Sub"` when the sub is present) for
+  safekeeping legs. UBS PSN doesn't expose a per-account
+  nickname, so `nickname` stays NULL unless the config-side
+  override fills it in.
+- **Schwab** populates `nickname` from the v3-promoted
+  `silver.accounts.nickname` column (which mirrors the user-set
+  label from `/userPreference`). `account_category` stays NULL —
+  Schwab's `securitiesAccount.type` is CASH/MARGIN (margin
+  enablement), not a wealth-management category — and is filled
+  in via the config-side override.
+- **Swissquote** populates `account_category` from the
+  v2-promoted `silver.accounts.account_type` column ("Trading",
+  etc.). `nickname` is NULL; Swissquote doesn't expose one and
+  the config override fills in.
 
-Out of scope for v1; the data picture above is what we'd start
-from when the feature lands.
+Both adapters use SQLite PRAGMA-based feature detection so
+older silvers without the promoted columns still load (the
+columns just remain NULL).
+
+Config-side override (extends §5): users can specify
+`account_overrides` as a nested map keyed by
+`(silver_source_id, account_external_id)` with optional
+`nickname` and/or `category` fields. The loader applies overrides
+*after* the adapter has stamped its own values, so the override
+takes precedence on overlap. This gives users a single place to
+sharpen Schwab categories or override the somewhat utilitarian
+UBS `AcctTpDesc` labels.
+
+Selectable columns: `wealthdb positions -C
+silver_source,account,account_nickname,account_category,...` —
+both columns are registered (opt-in; not part of the default
+column set).
+
+Still on the roadmap:
+- `--category personal,managed` filter for `wealthdb positions`.
+- Long-form `wealthdb status` flag to show category/nickname
+  alongside account IDs.

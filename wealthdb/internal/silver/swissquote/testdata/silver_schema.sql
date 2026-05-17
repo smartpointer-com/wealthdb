@@ -12,6 +12,10 @@ CREATE TABLE accounts (
     snapshot_at         INTEGER NOT NULL,
     account_external_id TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
+    -- swissquote-dump v2 promoted column. Tolerated as optional by
+    -- the adapter (hasColumn check at query-build time) so older
+    -- silvers still load.
+    account_type        TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (snapshot_at, account_external_id)
 );
 

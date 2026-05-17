@@ -14,6 +14,16 @@ type AccountChange struct {
 	DisplayName       *string
 	BaseCurrency      *string
 	RelationshipID    *string
+	// Nickname is a free-text user-friendly label. Schwab silver
+	// supplies it directly; UBS / Swissquote silvers don't have
+	// one today (the config-side override fills in for those).
+	Nickname *string
+	// AccountCategory is a bank-assigned (or config-overridden)
+	// label hinting at the wealth-management wrapper — "managed",
+	// "advisory", "personal", "utma", "esa", etc. Adapters
+	// populate from silver-provided fields; config overrides
+	// take precedence at the load layer.
+	AccountCategory *string
 	// FirstSeenAt is the earliest snapshot_at where this account
 	// has been observed in the current batch. Gold takes the min
 	// with whatever's already stored.

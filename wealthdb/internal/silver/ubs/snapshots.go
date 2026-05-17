@@ -135,12 +135,14 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		// We leave DisplayName nil so the user-facing positions
 		// output falls back to the IBAN (already human-
 		// readable), rather than showing the less-informative
-		// AcctTpDesc like "Private" or "Custody".
+		// AcctTpDesc like "Private" or "Custody". The AcctTpDesc
+		// itself is forwarded as AccountCategory.
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindCash,
 			BaseCurrency:      strPtrIfNonEmpty(p.AcctCcyIsoCd),
 			RelationshipID:    strPtrIfNonEmpty(relID),
+			AccountCategory:   strPtrIfNonEmpty(p.AcctTpDesc),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
@@ -152,6 +154,7 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 type safekeepingPayload struct {
 	InvstmtCcyIsoCd string `json:"InvstmtCcyIsoCd"`
 	AcctTpDesc      string `json:"AcctTpDesc"`
+	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
 }
 
 func (c *Connection) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -183,12 +186,17 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindSafekeeping,
-			// DisplayName left nil; see appendCashAccounts.
-			BaseCurrency:   strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
-			RelationshipID: strPtrIfNonEmpty(relID),
-			FirstSeenAt:    snap,
-			LastSeenAt:     snap,
-			Payload:        json.RawMessage(payload),
+			// DisplayName left nil; see appendCashAccounts. The
+			// AcctTpDesc plus AcctSubTypeDesc when present (the
+			// sub-type sharpens "Custody" / "Cust Strap." into
+			// "Custody / Cash-Custody", "Custody / Personal
+			// Cust.", etc.) goes into AccountCategory.
+			BaseCurrency:    strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
+			RelationshipID:  strPtrIfNonEmpty(relID),
+			AccountCategory: strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
+			FirstSeenAt:     snap,
+			LastSeenAt:      snap,
+			Payload:         json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -621,4 +629,24 @@ func strPtrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// joinSafekeepingCategory combines the safekeeping AcctTpDesc and
+// AcctSubTypeDesc into a single category string for gold's
+// account_category column. Returns the type alone when the sub-
+// type is missing (the common case for non-Custody types) and the
+// empty string when both are blank.
+func joinSafekeepingCategory(typ, subtype string) string {
+	typ = strings.TrimSpace(typ)
+	subtype = strings.TrimSpace(subtype)
+	switch {
+	case typ != "" && subtype != "":
+		return typ + " / " + subtype
+	case typ != "":
+		return typ
+	case subtype != "":
+		return subtype
+	default:
+		return ""
+	}
 }

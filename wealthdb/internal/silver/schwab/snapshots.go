@@ -2,6 +2,7 @@ package schwab
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -50,7 +51,17 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendAccountBalances(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendPositions(ctx, w, byTime); err != nil {
+	// instrumentNames is consulted as a fallback by appendPositions
+	// when the per-position instrument descriptor lacks a
+	// description (common for EQUITY rows from /accounts). The
+	// schwab-dump --with-instruments mode populates a separate
+	// instruments table that we treat as the authoritative source
+	// for symbol → human-readable name.
+	instrumentNames, err := c.latestKnownInstrumentNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.appendPositions(ctx, w, byTime, instrumentNames); err != nil {
 		return nil, err
 	}
 
@@ -107,12 +118,22 @@ type schwabAccountPayload struct {
 // window. Schwab accounts are brokerage-kind; the silver
 // account_external_id is the Schwab hashValue. DisplayName is set
 // to the plaintext accountNumber from the payload so user-facing
-// output can show something more recognisable than the hash.
+// output can show something more recognisable than the hash. The
+// optional `nickname` column (schwab silver v3+) carries the
+// user-set label from /userPreference; we forward it as Nickname.
+// AccountCategory stays nil — Schwab's `account_type` is CASH or
+// MARGIN, which is margin enablement rather than a wealth-
+// management wrapper category, so the user fills it in via the
+// config-side override.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	const q = `
-SELECT snapshot_at, account_external_id, payload
-  FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`
+	hasNickname, err := c.hasColumn(ctx, "accounts", "nickname")
+	if err != nil {
+		return err
+	}
+	q := `SELECT snapshot_at, account_external_id, payload, NULL FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
+	if hasNickname {
+		q = `SELECT snapshot_at, account_external_id, payload, nickname FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
+	}
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
@@ -121,11 +142,12 @@ SELECT snapshot_at, account_external_id, payload
 
 	for rows.Next() {
 		var (
-			snap    int64
-			extID   string
-			payload string
+			snap     int64
+			extID    string
+			payload  string
+			nickname sql.NullString
 		)
-		if err := rows.Scan(&snap, &extID, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &payload, &nickname); err != nil {
 			return fmt.Errorf("appendAccounts scan: %w", err)
 		}
 		batch, ok := byTime[snap]
@@ -141,6 +163,7 @@ SELECT snapshot_at, account_external_id, payload
 			AccountKind:       canonical.AccountKindBrokerage,
 			DisplayName:       strPtrIfNonEmpty(p.AccountNumber),
 			BaseCurrency:      strPtrIfNonEmpty("USD"),
+			Nickname:          nullStringPtr(nickname),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
@@ -250,8 +273,13 @@ type schwabPositionPayload struct {
 
 // appendPositions emits InstrumentChange + PositionChange for each
 // non-cash position, or CashBalanceChange for CASH_EQUIVALENT and
-// CURRENCY positions. See docs/adapters/schwab.md §4.
-func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+// CURRENCY positions. See docs/adapters/schwab.md §4. The
+// optional instrumentNames map (latest-known per symbol from the
+// silver `instruments` table; empty when --with-instruments was
+// never used) fills in InstrumentChange.Name when Schwab's per-
+// position instrument descriptor has no description (typical for
+// EQUITY rows out of /accounts).
+func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_key, payload
   FROM positions
@@ -302,12 +330,16 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		instrExtID := posKey
 		ac := assetClassFor(pp.Instrument.AssetType)
 
+		name := pp.Instrument.Description
+		if name == "" && pp.Instrument.Symbol != "" {
+			name = instrumentNames[pp.Instrument.Symbol]
+		}
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,
 			AssetClass:           ac,
 			CUSIP:                strPtrIfNonEmpty(pp.Instrument.CUSIP),
 			Symbol:               strPtrIfNonEmpty(pp.Instrument.Symbol),
-			Name:                 strPtrIfNonEmpty(pp.Instrument.Description),
+			Name:                 strPtrIfNonEmpty(name),
 			Currency:             strPtrIfNonEmpty("USD"),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
@@ -338,5 +370,105 @@ func strPtrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// nullStringPtr converts a sql.NullString to *string, returning
+// nil for both SQL NULL and the empty string (the latter is
+// indistinguishable from "unset" for free-text label columns).
+func nullStringPtr(n sql.NullString) *string {
+	if !n.Valid || n.String == "" {
+		return nil
+	}
+	s := n.String
+	return &s
+}
+
+// hasColumn reports whether table contains a column with the given
+// name. SQLite-only; uses PRAGMA table_info via a query rather
+// than a Pragma helper so it works through database/sql.
+func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	// PRAGMA table_info doesn't accept parameter binding, so the
+	// caller must pass a trusted table name. Both call sites here
+	// pass string literals.
+	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid                                      int
+			name, ctype                              string
+			notnull, pk                              int
+			dfltValue                                sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return false, fmt.Errorf("hasColumn scan: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// hasTable reports whether the silver SQLite contains a table of
+// the given name.
+func (c *Connection) hasTable(ctx context.Context, table string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`,
+		table,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("hasTable(%s): %w", table, err)
+	}
+	return n > 0, nil
+}
+
+// latestKnownInstrumentNames returns symbol → human-readable name
+// from the `instruments` table, picking the row with the highest
+// snapshot_at for each symbol. Returns an empty (non-nil) map when
+// the silver doesn't have the table at all (older schwab-dump, or
+// --with-instruments never used). "Latest as of now" rather than
+// "latest as of snapshot": the cross-bank schema doesn't preserve
+// per-snapshot instrument descriptions, so callers get the freshest
+// label we know about for that symbol.
+func (c *Connection) latestKnownInstrumentNames(ctx context.Context) (map[string]string, error) {
+	exists, err := c.hasTable(ctx, "instruments")
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string)
+	if !exists {
+		return out, nil
+	}
+	const q = `
+SELECT i.symbol, i.payload
+  FROM instruments i
+  JOIN (SELECT symbol, MAX(snapshot_at) AS max_snap
+          FROM instruments
+         GROUP BY symbol) m
+    ON i.symbol = m.symbol
+   AND i.snapshot_at = m.max_snap`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("latestKnownInstrumentNames: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sym, payload string
+		if err := rows.Scan(&sym, &payload); err != nil {
+			return nil, fmt.Errorf("latestKnownInstrumentNames scan: %w", err)
+		}
+		var p struct {
+			Description string `json:"description"`
+		}
+		_ = json.Unmarshal([]byte(payload), &p)
+		if p.Description != "" {
+			out[sym] = p.Description
+		}
+	}
+	return out, rows.Err()
 }
 

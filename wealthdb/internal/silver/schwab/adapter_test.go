@@ -237,6 +237,61 @@ func TestSnapshotsBasic(t *testing.T) {
 	}
 }
 
+// TestSnapshotsAccountNicknameAndInstrumentEnrichment covers the
+// schwab-dump v3 enhancements: the promoted `nickname` column on
+// accounts populates AccountChange.Nickname, and the optional
+// `instruments` table fills in InstrumentChange.Name when the
+// per-position descriptor has no description (typical for the
+// EQUITY rows returned by /accounts).
+func TestSnapshotsAccountNicknameAndInstrumentEnrichment(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_type, preference_type, nickname) VALUES
+            (1000, 'ACC1', '{"hashValue":"ACC1","accountNumber":"redacted"}', 'CASH', 'INDIVIDUAL', 'Main brokerage');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
+            (1000, 'ACC1', '037833100',
+             '{"longQuantity":10,"shortQuantity":0,"marketValue":1500.00,
+               "instrument":{"assetType":"EQUITY","cusip":"037833100","symbol":"AAPL","description":""}}');
+        INSERT INTO instruments(snapshot_at, symbol, payload) VALUES
+            (900, 'AAPL', '{"description":"Apple Inc (stale)"}'),
+            (1000, 'AAPL', '{"description":"Apple Inc"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, err := conn.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatalf("Snapshots: %v", err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(batch.Accounts) != 1 {
+		t.Fatalf("accounts = %+v", batch.Accounts)
+	}
+	if batch.Accounts[0].Nickname == nil || *batch.Accounts[0].Nickname != "Main brokerage" {
+		t.Errorf("Nickname = %v, want 'Main brokerage'", batch.Accounts[0].Nickname)
+	}
+	if batch.Accounts[0].AccountCategory != nil {
+		t.Errorf("AccountCategory = %v, want nil (Schwab leaves category to overrides)", batch.Accounts[0].AccountCategory)
+	}
+	if len(batch.Instruments) != 1 {
+		t.Fatalf("instruments = %+v", batch.Instruments)
+	}
+	if batch.Instruments[0].Name == nil || *batch.Instruments[0].Name != "Apple Inc" {
+		t.Errorf("Name = %v, want 'Apple Inc' (latest-known-per-symbol)", batch.Instruments[0].Name)
+	}
+}
+
 func TestSnapshotsCashRouting(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`

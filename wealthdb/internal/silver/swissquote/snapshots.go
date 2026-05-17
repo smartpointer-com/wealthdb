@@ -2,6 +2,7 @@ package swissquote
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -76,10 +77,14 @@ func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Wind
 // ---- accounts ------------------------------------------------------------
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	const q = `
-SELECT snapshot_at, account_external_id, payload
-  FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`
+	hasAccountType, err := c.hasColumn(ctx, "accounts", "account_type")
+	if err != nil {
+		return err
+	}
+	q := `SELECT snapshot_at, account_external_id, payload, '' FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
+	if hasAccountType {
+		q = `SELECT snapshot_at, account_external_id, payload, COALESCE(account_type, '') FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
+	}
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
@@ -87,11 +92,12 @@ SELECT snapshot_at, account_external_id, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap    int64
-			extID   string
-			payload string
+			snap        int64
+			extID       string
+			payload     string
+			accountType string
 		)
-		if err := rows.Scan(&snap, &extID, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &payload, &accountType); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -101,12 +107,40 @@ SELECT snapshot_at, account_external_id, payload
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
+			AccountCategory:   strPtrIfNonEmpty(accountType),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
+}
+
+// hasColumn reports whether table contains the named column. Used
+// to keep the adapter tolerant of older silver schemas that haven't
+// yet been re-dumped with the v2 promoted columns. The table name
+// is interpolated; pass only trusted literals.
+func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid           int
+			name, ctype   string
+			notnull, pk   int
+			dflt          sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("hasColumn scan: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // ---- positions -----------------------------------------------------------
