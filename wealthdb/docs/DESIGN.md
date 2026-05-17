@@ -1131,20 +1131,27 @@ upsert is:
 ```sql
 INSERT INTO accounts (...) VALUES (...)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE
-   SET display_name    = EXCLUDED.display_name,
-       base_currency   = EXCLUDED.base_currency,
-       relationship_id = EXCLUDED.relationship_id,
-       last_seen_at    = GREATEST(accounts.last_seen_at, EXCLUDED.last_seen_at),
-       first_seen_at   = LEAST(accounts.first_seen_at, EXCLUDED.first_seen_at),
-       payload         = EXCLUDED.payload
-   WHERE EXCLUDED.last_seen_at >= accounts.last_seen_at;
+   SET display_name    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                              THEN EXCLUDED.display_name ELSE accounts.display_name END,
+       base_currency   = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                              THEN EXCLUDED.base_currency ELSE accounts.base_currency END,
+       /* ...same CASE pattern for the other attribute columns and payload... */
+       first_seen_at   = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
+       last_seen_at    = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at);
 ```
 
-The `WHERE` guard means re-emitting an *older* observation doesn't
-overwrite newer-observed attributes — relevant if the user runs
-two loads concurrently against different silvers that happen to
-register the same external ID by coincidence (not currently
-possible, but cheap to defend against).
+The per-column `CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at`
+guard means re-emitting an *older* observation doesn't overwrite
+newer-observed attributes. The seen-at range still expands in both
+directions regardless — re-emitting an older snapshot pulls
+`first_seen_at` backward but never disturbs the attributes that a
+newer observation set.
+
+(An earlier sketch used a single `WHERE EXCLUDED.last_seen_at >=
+accounts.last_seen_at` at the end of the SET clause; that gated
+the whole UPDATE including `first_seen_at` expansion, defeating
+the union semantics. Per-column CASE keeps the two concerns
+independent.)
 
 ### 8.5 Silver-went-backwards detection
 
