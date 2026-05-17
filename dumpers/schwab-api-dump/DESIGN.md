@@ -426,6 +426,17 @@ faithfully": silver may *add* missing data when the source supplies
 it through a sibling endpoint. It does not change data Schwab did
 return, and it does not invent any data Schwab did not provide.
 
+**Schwab quirk worth knowing about** when implementing the same
+pattern for another data class: class-share tickers are spelled
+differently on different Schwab endpoints. `/accounts` and
+`/transactions` emit the **dot form** (e.g. `BRK.B`); `/instruments`
+only indexes the **slash form** (`BRK/B`). `fetch_instruments` sends
+*both* forms when a sent symbol contains `.`, and rewrites returned
+`/` back to `.` on the symbol field so silver joins cleanly across
+artefacts. The same kind of cross-endpoint inconsistency may bite in
+other places; treat fetch-side normalisation as a first-class concern
+when bridging artefact types.
+
 ## 5. What silver deliberately omits
 
 - **Bitemporal model.** See §4.3.

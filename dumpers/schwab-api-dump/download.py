@@ -289,13 +289,53 @@ def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
 
 
 def fetch_instruments(client, symbols: list[str]) -> dict:
-    """GET /instruments?projection=symbol-search for a list of symbols.
+    """GET /instruments?projection=symbol-search with class-share normalisation.
 
-    Returns the parsed JSON response as-is. Schwab's payload shape is
-    `{"instruments": [...]}`; we preserve that structure in the bronze
-    file so silver/downstream tools see exactly what the API returned."""
+    Schwab is inconsistent across its own endpoints on class-share
+    tickers: /accounts and /transactions emit the dot form (BRK.B),
+    while /instruments only indexes the slash form (BRK/B). For any
+    sent symbol containing '.', we include *both* forms in the same
+    request. Schwab returns whichever variant it actually knows about;
+    we then rewrite '/' back to '.' on the returned `symbol` field so
+    the bronze file is symbol-consistent with sibling artefacts and
+    silver joins cleanly downstream.
+
+    Symbols that Schwab still does not recognise after this fallback
+    are logged for visibility but not retried. They are typically:
+    OCC-style option contracts (occ symbols are not indexed here),
+    bond CUSIPs (use /instruments/{cusip}, not symbol-search), and
+    internal placeholders like CURRENCY_USD."""
+    lookup: list[str] = []
+    for s in symbols:
+        lookup.append(s)
+        if "." in s:
+            lookup.append(s.replace(".", "/"))
+
     proj = client.Instrument.Projection.SYMBOL_SEARCH
-    return schwab_get_json(client.get_instruments(symbols=symbols, projection=proj))
+    response = schwab_get_json(
+        client.get_instruments(symbols=lookup, projection=proj)
+    )
+
+    # Normalise '/'  ->  '.' on returned symbols, and dedup in the rare
+    # case where Schwab returned both variants for one ticker.
+    seen: set[str] = set()
+    normalised: list[dict] = []
+    for inst in response.get("instruments") or []:
+        sym = inst.get("symbol") or ""
+        if "/" in sym:
+            sym = sym.replace("/", ".")
+            inst["symbol"] = sym
+        if sym and sym not in seen:
+            seen.add(sym)
+            normalised.append(inst)
+    response["instruments"] = normalised
+
+    missing = [s for s in symbols if s not in seen]
+    if missing:
+        preview = missing[:5] + (["..."] if len(missing) > 5 else [])
+        log.info("Schwab /instruments did not match %d sent symbol(s): %s",
+                 len(missing), preview)
+    return response
 
 
 def fetch_transactions(client, account_hash: str, start: date, end: date) -> list[dict]:
