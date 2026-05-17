@@ -13,12 +13,14 @@ no web UI.
 
 ## Status
 
-Minimum viable CLI is in. `wealthdb init`, `wealthdb load <id> | -a`,
-and `wealthdb positions` work end-to-end against Schwab, UBS, and
-Swissquote silver databases. Multi-currency rendering, the
-interactive `wealthdb config` wizard, and the remaining
-subcommands (`reset`, `status`, `snapshots`) land in later
-milestones per [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+All non-interactive subcommands are in. `wealthdb init`, `load`,
+`reset`, `positions`, `status`, and `snapshots` work end-to-end
+against Schwab, UBS, and Swissquote silver databases. `positions`
+renders in table / csv / csv_plain / json with selectable columns
+and multi-currency value conversion. The interactive
+`wealthdb config` first-time-setup wizard lands in M11 and
+MT535 SWIFT-tag parsing for UBS quantity/market_value in M12 per
+[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
 ## Build and run
 

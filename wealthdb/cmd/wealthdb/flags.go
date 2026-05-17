@@ -65,11 +65,13 @@ global flags:
   -v, --verbose         DEBUG-level logging
 
 subcommands:
-  init                  initialise an empty gold DB at config.gold_db
+  init                  initialise an empty gold DB at the configured gold_db path
   load <id> | -a        merge new silver snapshots into gold
-  positions [-d DATE]   print positions as of a date (table format)
+  reset <id> | -a       purge a silver source's data from gold
+  positions [flags]     print consolidated positions (table/csv/csv_plain/json)
+  status [<id>] [-v]    report gold state vs each silver source
+  snapshots <id> | -a   list snapshots gold has loaded for a silver
   help [<subcommand>]   help for a subcommand
 
-  (config, reset, status, snapshots, and additional output
-   formats land in later milestones; see docs/IMPLEMENTATION.md.)
+  (config — the interactive first-time wizard — lands in M11.)
 `

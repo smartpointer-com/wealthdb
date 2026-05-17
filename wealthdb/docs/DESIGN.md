@@ -1761,3 +1761,52 @@ Sketch of where this lands when designed:
 
 This is a sketch only; the source and ingest design will be
 fleshed out when the feature is scheduled.
+
+### 13.9 Account categorisation (personal / managed / UTMA / ESA / ...)
+
+Users typically hold several distinct kinds of accounts at the
+same bank — personal brokerage, managed wealth account, UTMA /
+ESA / IRA wrappers for tax purposes, separate cash accounts.
+Filtering positions and net-worth roll-ups by these categories is
+more useful than slicing by raw account ID.
+
+What today's silvers carry:
+- **UBS** has rich data already: `cash_accounts.AcctTpDesc`
+  cleanly discriminates "UBS personal account" / "UBS savings
+  account" / "Forward Contract Account" / "Cash Account for
+  investment solutions" (the managed cash leg). `safekeeping_
+  accounts.AcctTpDesc` + `AcctSubTypeDesc` discriminate "Custody
+  Account for investment solutions / managed securities account"
+  vs "UBS Custody Account / securities account with advisory
+  agreement" vs other.
+- **Schwab** silver carries no useful type/subType today —
+  `accounts.payload` is just `{accountNumber, hashValue}` and
+  `account_balances.payload` has no `type` field. Schwab's
+  `/accounts` API does expose the parent `securitiesAccount.type`
+  (CASH/MARGIN/IRA/ROTH/...) but `schwab-dump` doesn't capture
+  it. Same shape of upstream-fix problem as the equity-name story
+  in §13's adapter-doc cross-reference.
+- **Swissquote** silver carries no categorisation either; the
+  Swissquote UI does distinguish trading / savings sub-accounts,
+  but `swissquote-dump` doesn't scrape it.
+
+Proposed feature when scheduled:
+1. Gold adds an `account_category` column on `accounts`
+   (distinct from `account_kind`, which is the structural
+   brokerage/cash/safekeeping/portfolio shape). Free-text values
+   like `personal`, `managed`, `advisory`, `utma`, `esa`, `ira`.
+2. UBS adapter populates it from a small mapping table over
+   `AcctTpDesc` / `AcctSubTypeDesc`. Adapter-provided.
+3. Config-file `account_categories` map for Schwab and
+   Swissquote accounts where silver doesn't carry the category
+   — gold's loader applies these after adapter-provided values
+   (config wins on overlap).
+4. `wealthdb positions --category personal,managed` filter and
+   `account_category` as a selectable column.
+5. Longer term: enhance `schwab-dump` (and `swissquote-dump` if
+   feasible) to populate the silver `accounts.payload` with the
+   bank's own categorisation, removing the need for config-side
+   tagging where the bank already knows.
+
+Out of scope for v1; the data picture above is what we'd start
+from when the feature lands.

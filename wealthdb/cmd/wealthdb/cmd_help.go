@@ -17,7 +17,10 @@ func init() {
 var helpText = map[string]string{
 	"init":      "Initialise an empty gold DB at the configured gold_db path.",
 	"load":      "Merge new silver snapshots into gold (one source, or -a for all).",
-	"positions": "Print consolidated positions as of a date (table format).",
+	"reset":     "Purge a silver source's data from gold (one source, or -a for all).",
+	"positions": "Print consolidated positions as of a date (-f table|csv|csv_plain|json, -x CCY).",
+	"status":    "Report gold state vs each silver source (-v for taxonomy drift counts).",
+	"snapshots": "List snapshots gold has loaded for a silver source (-a for all).",
 	"help":      "Show this help, or detailed help for a subcommand.",
 }
 

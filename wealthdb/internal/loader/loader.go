@@ -83,11 +83,13 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		}
 	}()
 
-	// loaded_at uses UnixNano (vs the seconds-grain everywhere
-	// else) to keep the load_audit PK unique across loads that
-	// complete within the same wall-clock second.
-	now := time.Now().UTC().UnixNano()
-	watermark, err := upsertSilverSource(ctx, tx, spec, now)
+	// Two clocks: seconds-grain for silver_sources columns
+	// (matches every other timestamp in gold) and nanoseconds-
+	// grain for load_audit.loaded_at (so the PK can't collide
+	// across back-to-back loads in the same wall-clock second).
+	nowSec := time.Now().UTC().Unix()
+	nowNano := time.Now().UTC().UnixNano()
+	watermark, err := upsertSilverSource(ctx, tx, spec, nowSec)
 	if err != nil {
 		return nil, fmt.Errorf("Load(%s): upsert silver_sources: %w", spec.ID, err)
 	}
@@ -140,12 +142,12 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		}
 		res.TransactionsLoaded = nTx
 
-		if err := insertLoadAudit(ctx, tx, spec.ID, now, watermark, res); err != nil {
+		if err := insertLoadAudit(ctx, tx, spec.ID, nowNano, watermark, res); err != nil {
 			return nil, fmt.Errorf("Load(%s): insert load_audit: %w", spec.ID, err)
 		}
 	}
 
-	if err := updateWatermark(ctx, tx, spec.ID, window.NewChangeNumber, now); err != nil {
+	if err := updateWatermark(ctx, tx, spec.ID, window.NewChangeNumber, nowSec); err != nil {
 		return nil, fmt.Errorf("Load(%s): update watermark: %w", spec.ID, err)
 	}
 

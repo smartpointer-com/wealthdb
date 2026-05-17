@@ -60,9 +60,6 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	if err != nil {
 		return errs.Newf(2, "positions: %s", err.Error())
 	}
-	if fmtChoice != output.FormatTable {
-		return fmt.Errorf("positions: format %q not implemented yet (see milestone 10)", fmtChoice)
-	}
 
 	asOfEpoch, err := parseAsOf(*asOf)
 	if err != nil {
@@ -117,7 +114,23 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
-	return output.WriteTable(stdout, positionsTable(rendered, colSet))
+	return writeFormatted(stdout, fmtChoice, positionsTable(rendered, colSet))
+}
+
+// writeFormatted dispatches to the right output.Write* function
+// for the chosen format.
+func writeFormatted(w io.Writer, f output.Format, t output.Table) error {
+	switch f {
+	case output.FormatTable:
+		return output.WriteTable(w, t)
+	case output.FormatCSV:
+		return output.WriteCSV(w, t)
+	case output.FormatCSVPlain:
+		return output.WriteCSVPlain(w, t)
+	case output.FormatJSON:
+		return output.WriteJSON(w, t)
+	}
+	return fmt.Errorf("unsupported output format %q", f)
 }
 
 // renderedRow pairs a raw position with its market value converted

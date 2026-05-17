@@ -297,6 +297,197 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	}
 }
 
+func TestResetClearsSource(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// positions should have rows before reset.
+	so, _, code := run(t, "-c", cfg, "positions")
+	if code != 0 || !strings.Contains(so, "(1 row)") {
+		t.Fatalf("expected one position before reset; got code=%d so=%q", code, so)
+	}
+
+	so, _, code = run(t, "-c", cfg, "reset", "schwab-test")
+	if code != 0 {
+		t.Fatalf("reset failed; code=%d", code)
+	}
+	if !strings.Contains(so, "cleared") {
+		t.Errorf("reset stdout: %q", so)
+	}
+
+	// After reset, positions should produce zero rows.
+	so, _, code = run(t, "-c", cfg, "positions")
+	if code != 0 {
+		t.Fatalf("positions post-reset failed; code=%d", code)
+	}
+	if !strings.Contains(so, "(0 rows)") {
+		t.Errorf("expected (0 rows) after reset; got %q", so)
+	}
+
+	// Re-load should re-register and re-populate.
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("re-load failed")
+	}
+	so, _, code = run(t, "-c", cfg, "positions")
+	if code != 0 || !strings.Contains(so, "(1 row)") {
+		t.Fatalf("expected one position after re-load; got code=%d", code)
+	}
+}
+
+func TestResetMissingDB(t *testing.T) {
+	cfg := setupCLITest(t)
+	_, se, code := run(t, "-c", cfg, "reset", "schwab-test")
+	if code != 3 {
+		t.Errorf("reset on missing DB exit = %d, want 3 (ExitMissingDB)", code)
+	}
+	if !strings.Contains(se, "does not exist") {
+		t.Errorf("missing-DB guidance absent: %s", se)
+	}
+}
+
+func TestSnapshotsListsLoadedTimes(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	so, _, code := run(t, "-c", cfg, "snapshots", "schwab-test")
+	if code != 0 {
+		t.Fatalf("snapshots failed; code=%d so=%q", code, so)
+	}
+	if !strings.Contains(so, "schwab-test:") {
+		t.Errorf("missing source header: %s", so)
+	}
+	// Fixture has one snapshot at epoch 1000 → 1970-01-01.
+	if !strings.Contains(so, "1970-01-01") {
+		t.Errorf("expected 1970-01-01 in output: %s", so)
+	}
+}
+
+func TestSnapshotsAll(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+	so, _, code := run(t, "-c", cfg, "snapshots", "-a")
+	if code != 0 {
+		t.Fatalf("snapshots -a failed; code=%d", code)
+	}
+	if !strings.Contains(so, "schwab-test:") {
+		t.Errorf("missing source header in -a output: %s", so)
+	}
+}
+
+func TestStatusOverviewAndDetailed(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+
+	// Status with no load yet — overview should still work.
+	so, _, code := run(t, "-c", cfg, "status")
+	if code != 0 {
+		t.Fatalf("status (no load) failed; code=%d", code)
+	}
+	if !strings.Contains(so, "schwab-test") {
+		t.Errorf("overview missing source: %s", so)
+	}
+	if !strings.Contains(so, "not loaded yet") {
+		t.Errorf("expected 'not loaded yet' for fresh source: %s", so)
+	}
+
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// Status overview after load — fixture seeds 1 position and
+	// 0 transactions.
+	so, _, code = run(t, "-c", cfg, "status")
+	if code != 0 {
+		t.Fatalf("status (post-load) failed; code=%d", code)
+	}
+	if !strings.Contains(so, "1 pos") || !strings.Contains(so, "0 tx") {
+		t.Errorf("expected '1 pos, 0 tx' in overview: %s", so)
+	}
+
+	// Status detailed.
+	so, _, code = run(t, "-c", cfg, "status", "schwab-test")
+	if code != 0 {
+		t.Fatalf("status detailed failed; code=%d", code)
+	}
+	for _, want := range []string{"high_watermark:", "gold-side counts:", "positions:", "transactions:", "silver-side:"} {
+		if !strings.Contains(so, want) {
+			t.Errorf("detailed status missing %q: %s", want, so)
+		}
+	}
+
+	// Status -v adds drift counts. Note: Go's stdlib flag parser
+	// stops at the first positional, so flags must come before the
+	// silver_source_id.
+	so, _, code = run(t, "-c", cfg, "status", "-v", "schwab-test")
+	if code != 0 {
+		t.Fatalf("status -v failed; code=%d, stderr-via-stdout=%s", code, so)
+	}
+	if !strings.Contains(so, "taxonomy drift") {
+		t.Errorf("status -v missing taxonomy drift section: %s", so)
+	}
+}
+
+func TestPositionsCSVAndJSON(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// CSV with header
+	so, _, code := run(t, "-c", cfg, "positions", "-f", "csv", "--columns", "silver_source,symbol,market_value")
+	if code != 0 {
+		t.Fatalf("csv failed; code=%d", code)
+	}
+	lines := strings.Split(strings.TrimRight(so, "\n"), "\n")
+	if lines[0] != "silver_source,symbol,market_value" {
+		t.Errorf("csv header = %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "schwab-test") {
+		t.Errorf("csv first data row missing source: %q", lines[1])
+	}
+
+	// CSV plain — no header
+	so, _, code = run(t, "-c", cfg, "positions", "-f", "csv_plain", "--columns", "silver_source,symbol")
+	if code != 0 {
+		t.Fatalf("csv_plain failed; code=%d", code)
+	}
+	if strings.HasPrefix(so, "silver_source") {
+		t.Errorf("csv_plain should not have header: %q", so)
+	}
+
+	// JSON
+	so, _, code = run(t, "-c", cfg, "positions", "-f", "json", "--columns", "silver_source,symbol,market_value")
+	if code != 0 {
+		t.Fatalf("json failed; code=%d", code)
+	}
+	if !strings.Contains(so, `"silver_source": "schwab-test"`) {
+		t.Errorf("json missing expected key/value: %s", so)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(so), "[") {
+		t.Errorf("json should be a top-level array: %s", so)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	_, se, code := run(t, "help")
 	if code != 0 {
