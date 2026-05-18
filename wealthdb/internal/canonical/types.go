@@ -24,12 +24,13 @@ type AccountChange struct {
 	// populate from silver-provided fields; config overrides
 	// take precedence at the load layer.
 	AccountCategory *string
-	// ParentAccountExternalID names another account in the same
-	// silver source that this account belongs to. UBS cash and
-	// safekeeping accounts use it to point at their parent
-	// portfolio; everything else leaves it nil. Drives the
-	// portfolio rollup behaviour of the accounts query.
-	ParentAccountExternalID *string
+	// PortfolioExternalID names the parent portfolio in the
+	// `portfolios` table that this account belongs to. UBS cash
+	// and safekeeping accounts use it; Schwab and Swissquote
+	// leave it nil (no portfolio grouping). Accounts whose
+	// PortfolioExternalID is nil aggregate into the sentinel
+	// NULL portfolio per silver_source in `wealthdb portfolios`.
+	PortfolioExternalID *string
 	// FirstSeenAt is the earliest snapshot_at where this account
 	// has been observed in the current batch. Gold takes the min
 	// with whatever's already stored.
@@ -38,6 +39,24 @@ type AccountChange struct {
 	// Gold takes the max with what's stored.
 	LastSeenAt int64
 	Payload    json.RawMessage
+}
+
+// PortfolioChange is one upsert into gold's `portfolios` table.
+// Portfolios are wealth-management wrappers that group component
+// accounts (UBS-specific today). They do not hold positions or
+// cash directly; their value is the sum of their component
+// accounts'. See docs/DESIGN.md §13.9 and the new §7.2 portfolios
+// table.
+type PortfolioChange struct {
+	SilverSourceID      string
+	PortfolioExternalID string
+	DisplayName         *string
+	BaseCurrency        *string
+	RelationshipID      *string
+	Nickname            *string
+	FirstSeenAt         int64
+	LastSeenAt          int64
+	Payload             json.RawMessage
 }
 
 // InstrumentChange is one upsert into gold's `instruments` table.
@@ -144,9 +163,12 @@ type Window struct {
 
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
 // Adapters multiplex change records of different types into one
-// batch; gold applies them in the order: dimensions (accounts,
-// instruments) before facts (positions, cash_balances, fx_rates).
+// batch; gold applies them in the order: dimensions (portfolios,
+// accounts, instruments) before facts (positions, cash_balances,
+// fx_rates). Portfolios come first because accounts may reference
+// them by portfolio_external_id.
 type SnapshotBatch struct {
+	Portfolios   []PortfolioChange
 	Accounts     []AccountChange
 	Instruments  []InstrumentChange
 	Positions    []PositionChange

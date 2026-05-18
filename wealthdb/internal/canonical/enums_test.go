@@ -29,8 +29,10 @@ func TestAccountKindValid(t *testing.T) {
 	}{
 		{AccountKindBrokerage, true},
 		{AccountKindSafekeeping, true},
+		{AccountKindOverlay, true},
 		{"", false},
 		{"BROKERAGE", false},
+		{"portfolio", false}, // removed in migration 0004
 	}
 	for _, c := range cases {
 		if got := c.v.Valid(); got != c.want {

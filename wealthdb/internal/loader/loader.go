@@ -260,6 +260,12 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		// emitted; see DESIGN.md §13.9.
 		applyAccountOverrides(batch.Accounts, overrides)
 
+		// Portfolios first so the FK semantics on
+		// accounts.portfolio_external_id are satisfied (though
+		// gold doesn't declare the FK because DuckDB can't defer).
+		if err := writer.UpsertPortfolios(ctx, batch.Portfolios); err != nil {
+			return total, err
+		}
 		if err := writer.UpsertAccounts(ctx, batch.Accounts); err != nil {
 			return total, err
 		}
@@ -347,6 +353,9 @@ func updateWatermark(ctx context.Context, tx *sql.Tx, sourceID string, newWaterm
 // don't need to know their own registered name; the loader is
 // authoritative.
 func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
+	for i := range b.Portfolios {
+		b.Portfolios[i].SilverSourceID = sourceID
+	}
 	for i := range b.Accounts {
 		b.Accounts[i].SilverSourceID = sourceID
 	}

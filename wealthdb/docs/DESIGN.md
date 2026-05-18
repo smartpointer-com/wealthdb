@@ -847,13 +847,22 @@ CREATE TABLE load_audit (
 -- ============================================================
 
 -- account_kind values:
---   'brokerage'     — Schwab trading account, UBS portfolio container
+--   'brokerage'     — Schwab trading account
 --   'cash'          — IBAN-keyed cash account (UBS SDCA, future banks)
 --   'safekeeping'   — UBS safekeeping (custody) sub-account
---   'portfolio'     — UBS PrtflId-keyed reporting unit
 --   'custody'       — managed-custody account where a third-party
 --                     manager directs the holdings on the client's behalf
+--   'overlay'       — synthetic per-portfolio account that holds
+--                     positions the bank attributes to the portfolio
+--                     directly rather than to a sub-account (UBS
+--                     forward contracts). One per portfolio,
+--                     lazily emitted when needed.
 --   'other'         — unclassifiable, fall back to payload
+--
+-- portfolio_external_id (nullable) names the parent portfolio in
+-- the `portfolios` table. Schwab and Swissquote accounts leave it
+-- NULL (no portfolio grouping); UBS cash/safekeeping/overlay
+-- accounts populate it. See `wealthdb portfolios` rollup semantics.
 CREATE TABLE accounts (
     silver_source_id        TEXT    NOT NULL,
     account_external_id     TEXT    NOT NULL,
@@ -863,10 +872,31 @@ CREATE TABLE accounts (
     relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
     nickname                TEXT,               -- user-set label; Schwab silver supplies, config override fills others
     account_category        TEXT,               -- wealth-mgmt wrapper hint; see §13.9
+    portfolio_external_id   TEXT,               -- parent portfolio (NULL when ungrouped)
     first_seen_at           BIGINT  NOT NULL,   -- earliest snapshot_at observed
     last_seen_at            BIGINT  NOT NULL,   -- latest snapshot_at observed
     payload                 JSON,
     PRIMARY KEY (silver_source_id, account_external_id),
+    FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
+);
+
+-- portfolios is its own entity (added in migration 0004). A
+-- portfolio is the wealth-management wrapper (UBS-specific today)
+-- that GROUPS one or more accounts under a single mandate; it
+-- does not hold positions or cash directly — its component
+-- accounts do. Portfolio-level totals come from rolling up
+-- component-account values; see `wealthdb portfolios`.
+CREATE TABLE portfolios (
+    silver_source_id        TEXT    NOT NULL,
+    portfolio_external_id   TEXT    NOT NULL,
+    display_name            TEXT,
+    base_currency           TEXT,               -- portfolio reporting currency (UBS PrtflCcyIsoCd)
+    relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
+    nickname                TEXT,               -- user-set label (config-side override only today)
+    first_seen_at           BIGINT  NOT NULL,
+    last_seen_at            BIGINT  NOT NULL,
+    payload                 JSON,
+    PRIMARY KEY (silver_source_id, portfolio_external_id),
     FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
 );
 

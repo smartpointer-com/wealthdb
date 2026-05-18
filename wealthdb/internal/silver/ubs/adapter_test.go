@@ -93,8 +93,8 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(batch.Accounts) != 3 {
-		t.Fatalf("accounts = %d, want 3", len(batch.Accounts))
+	if len(batch.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2 (cash + safekeeping; portfolios are their own entity)", len(batch.Accounts))
 	}
 	kinds := map[canonical.AccountKind]int{}
 	for _, a := range batch.Accounts {
@@ -104,11 +104,14 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 		}
 	}
 	for _, want := range []canonical.AccountKind{
-		canonical.AccountKindCash, canonical.AccountKindSafekeeping, canonical.AccountKindPortfolio,
+		canonical.AccountKindCash, canonical.AccountKindSafekeeping,
 	} {
 		if kinds[want] != 1 {
 			t.Errorf("missing one account of kind %q", want)
 		}
+	}
+	if len(batch.Portfolios) != 1 || batch.Portfolios[0].PortfolioExternalID != "P1" {
+		t.Errorf("portfolios = %+v, want one entry with PortfolioExternalID 'P1'", batch.Portfolios)
 	}
 
 	if len(batch.Instruments) != 3 {
@@ -442,11 +445,27 @@ func TestSnapshotsForwardContract(t *testing.T) {
 	if p.AssetClass != canonical.AssetClassFxForward {
 		t.Errorf("AssetClass = %q, want fx_forward", p.AssetClass)
 	}
-	if p.AccountExternalID != "P1" {
-		t.Errorf("AccountExternalID = %q, want P1 (portfolio)", p.AccountExternalID)
+	if p.AccountExternalID != "P1:overlay" {
+		t.Errorf("AccountExternalID = %q, want 'P1:overlay' (synthetic per-portfolio overlay)", p.AccountExternalID)
 	}
 	if p.MarketValue == nil || p.MarketValue.String() != "1500" {
 		t.Errorf("MarketValue = %v, want 1500", p.MarketValue)
+	}
+	// Synthetic overlay account row emitted exactly once per portfolio.
+	var overlays []canonical.AccountChange
+	for _, a := range batch.Accounts {
+		if a.AccountKind == canonical.AccountKindOverlay {
+			overlays = append(overlays, a)
+		}
+	}
+	if len(overlays) != 1 {
+		t.Fatalf("overlay accounts = %d, want 1", len(overlays))
+	}
+	if overlays[0].AccountExternalID != "P1:overlay" {
+		t.Errorf("overlay account_external_id = %q, want 'P1:overlay'", overlays[0].AccountExternalID)
+	}
+	if overlays[0].PortfolioExternalID == nil || *overlays[0].PortfolioExternalID != "P1" {
+		t.Errorf("overlay PortfolioExternalID = %v, want 'P1'", overlays[0].PortfolioExternalID)
 	}
 }
 

@@ -153,8 +153,8 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.Nickname) }},
 		{Name: "account_category", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.AccountCategory) }},
-		{Name: "parent_account", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.ParentAccountExternalID) }},
+		{Name: "portfolio_external_id", Align: output.AlignLeft,
+			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.PortfolioExternalID) }},
 
 		// Base-currency aggregates. The header has no _<CCY>
 		// suffix because each row's value is in its OWN

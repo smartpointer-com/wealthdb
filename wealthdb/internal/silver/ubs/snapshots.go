@@ -168,15 +168,15 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		// AcctTpDesc like "Private" or "Custody". The AcctTpDesc
 		// itself is forwarded as AccountCategory.
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-			AccountExternalID:       extID,
-			AccountKind:             canonical.AccountKindCash,
-			BaseCurrency:            strPtrIfNonEmpty(p.AcctCcyIsoCd),
-			RelationshipID:          strPtrIfNonEmpty(relID),
-			AccountCategory:         strPtrIfNonEmpty(p.AcctTpDesc),
-			ParentAccountExternalID: strPtrIfNonEmpty(p.PrtflId),
-			FirstSeenAt:             snap,
-			LastSeenAt:              snap,
-			Payload:                 json.RawMessage(payload),
+			AccountExternalID:   extID,
+			AccountKind:         canonical.AccountKindCash,
+			BaseCurrency:        strPtrIfNonEmpty(p.AcctCcyIsoCd),
+			RelationshipID:      strPtrIfNonEmpty(relID),
+			AccountCategory:     strPtrIfNonEmpty(p.AcctTpDesc),
+			PortfolioExternalID: strPtrIfNonEmpty(p.PrtflId),
+			FirstSeenAt:         snap,
+			LastSeenAt:          snap,
+			Payload:             json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -223,13 +223,13 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 			// sub-type sharpens "Custody" / "Cust Strap." into
 			// "Custody / Cash-Custody", "Custody / Personal
 			// Cust.", etc.) goes into AccountCategory.
-			BaseCurrency:            strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
-			RelationshipID:          strPtrIfNonEmpty(relID),
-			AccountCategory:         strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
-			ParentAccountExternalID: strPtrIfNonEmpty(p.PrtflId),
-			FirstSeenAt:             snap,
-			LastSeenAt:              snap,
-			Payload:                 json.RawMessage(payload),
+			BaseCurrency:        strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
+			RelationshipID:      strPtrIfNonEmpty(relID),
+			AccountCategory:     strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
+			PortfolioExternalID: strPtrIfNonEmpty(p.PrtflId),
+			FirstSeenAt:         snap,
+			LastSeenAt:          snap,
+			Payload:             json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -260,14 +260,13 @@ SELECT snapshot_at, relationship_id, portfolio_external_id, payload
 		}
 		var p portfolioPayload
 		_ = json.Unmarshal([]byte(payload), &p) // best-effort
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-			AccountExternalID: extID,
-			AccountKind:       canonical.AccountKindPortfolio,
-			BaseCurrency:      strPtrIfNonEmpty(p.PrtflKey.PrtflCcyIsoCd),
-			RelationshipID:    strPtrIfNonEmpty(relID),
-			FirstSeenAt:       snap,
-			LastSeenAt:        snap,
-			Payload:           json.RawMessage(payload),
+		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
+			PortfolioExternalID: extID,
+			BaseCurrency:        strPtrIfNonEmpty(p.PrtflKey.PrtflCcyIsoCd),
+			RelationshipID:      strPtrIfNonEmpty(relID),
+			FirstSeenAt:         snap,
+			LastSeenAt:          snap,
+			Payload:             json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -651,8 +650,13 @@ type forwardPayload struct {
 }
 
 // appendForwardContracts projects open FX-forward contracts as
-// PositionChange rows with asset_class=fx_forward. The portfolio
-// is treated as the parent account; see docs/adapters/ubs.md.
+// PositionChange rows with asset_class=fx_forward. UBS attributes
+// these directly to the portfolio (no sub-account); we attach
+// them to a synthetic per-portfolio overlay account
+// ("<portfolio_id>:overlay", account_kind=overlay) so every
+// position remains owned by an `accounts` row and the totals
+// across `accounts` and `portfolios` tie out against `positions
+// --with-cash`. See docs/adapters/ubs.md.
 func (c *Connection) appendForwardContracts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, contract_external_id, payload
@@ -663,11 +667,14 @@ SELECT snapshot_at, contract_external_id, payload
 		return fmt.Errorf("appendForwardContracts: %w", err)
 	}
 	defer rows.Close()
+	// Track which (snapshot, portfolio) overlay accounts we've
+	// already emitted to avoid one AccountChange per forward.
+	overlayEmitted := map[[2]string]bool{}
 	for rows.Next() {
 		var (
-			snap             int64
-			contractID       string
-			payload          string
+			snap       int64
+			contractID string
+			payload    string
 		)
 		if err := rows.Scan(&snap, &contractID, &payload); err != nil {
 			return err
@@ -687,9 +694,23 @@ SELECT snapshot_at, contract_external_id, payload
 		if ccy == "" {
 			ccy = "XXX"
 		}
+		overlayID := overlayAccountID(p.PrtflId)
+		key := [2]string{fmt.Sprintf("%d", snap), p.PrtflId}
+		if !overlayEmitted[key] {
+			overlayEmitted[key] = true
+			pid := p.PrtflId
+			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+				AccountExternalID:   overlayID,
+				AccountKind:         canonical.AccountKindOverlay,
+				DisplayName:         strPtrIfNonEmpty("Portfolio overlay"),
+				PortfolioExternalID: &pid,
+				FirstSeenAt:         snap,
+				LastSeenAt:          snap,
+			})
+		}
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:        snap,
-			AccountExternalID: p.PrtflId,
+			AccountExternalID: overlayID,
 			PositionKey:       contractID,
 			AssetClass:        canonical.AssetClassFxForward,
 			Currency:          ccy,
@@ -698,6 +719,13 @@ SELECT snapshot_at, contract_external_id, payload
 		})
 	}
 	return rows.Err()
+}
+
+// overlayAccountID returns the synthetic account_external_id that
+// holds a portfolio's direct positions (forward contracts, MMC,
+// OTC). One per portfolio.
+func overlayAccountID(portfolioID string) string {
+	return portfolioID + ":overlay"
 }
 
 // ---- helpers --------------------------------------------------------------

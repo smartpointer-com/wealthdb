@@ -338,6 +338,34 @@ func TestAccountsBasicRollup(t *testing.T) {
 	}
 }
 
+// TestPortfoliosBasic checks the happy path of `wealthdb
+// portfolios`. The fixture has one Schwab account (no portfolio)
+// so the sentinel row carries its value; non-zero output proves
+// the orphan-aggregation path works.
+func TestPortfoliosBasic(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	so, _, code := run(t, "-c", cfg, "portfolios")
+	if code != 0 {
+		t.Fatalf("portfolios failed; code=%d so=%q", code, so)
+	}
+	// Schwab fixture has no real portfolios → one sentinel row only.
+	if !strings.Contains(so, "(no portfolio)") {
+		t.Errorf("expected sentinel '(no portfolio)' row: %s", so)
+	}
+	// Value of the single Schwab position (1500 USD) is the
+	// sentinel's total.
+	if !strings.Contains(so, "1500.00") {
+		t.Errorf("expected 1500.00 sentinel total: %s", so)
+	}
+}
+
 // TestAccountsAllColumnsAndBadColumn exercises the `all` preset
 // and the unknown-column error path.
 func TestAccountsAllColumnsAndBadColumn(t *testing.T) {

@@ -32,6 +32,7 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 		`DELETE FROM positions      WHERE silver_source_id = ?`,
 		`DELETE FROM instruments    WHERE silver_source_id = ?`,
 		`DELETE FROM accounts       WHERE silver_source_id = ?`,
+		`DELETE FROM portfolios     WHERE silver_source_id = ?`,
 		`DELETE FROM load_audit     WHERE silver_source_id = ?`,
 		`DELETE FROM silver_sources WHERE silver_source_id = ?`,
 	} {

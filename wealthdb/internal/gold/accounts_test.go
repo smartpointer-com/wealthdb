@@ -111,7 +111,7 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{{
 			SilverSourceID: "test-src", AccountExternalID: "ACC1",
-			AccountKind: canonical.AccountKindPortfolio,
+			AccountKind: canonical.AccountKindOther,
 			FirstSeenAt: 1000, LastSeenAt: 1000,
 		}})
 	})
@@ -141,50 +141,37 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 	}
 }
 
-// TestAccountsAsOfParentRollup verifies that an account's
-// aggregates include the lines from any account that names it as
-// parent_account_external_id. Models the UBS portfolio →
-// component-account relationship.
-func TestAccountsAsOfParentRollup(t *testing.T) {
+// TestAccountsAsOfNoCrossAccountRollup confirms that
+// `wealthdb accounts` reports each account's OWN positions+cash
+// only. Migration 0004 moved portfolios into their own entity;
+// the portfolio rollup is now `wealthdb portfolios`. Summing the
+// accounts column must not double-count.
+func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
 	db, ctx := openMigrated(t)
 
 	chf := "CHF"
-	parent := "PORT1"
+	port := "PORT1"
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{
-			// Parent portfolio: no own positions/cash, base CHF.
-			{SilverSourceID: "test-src", AccountExternalID: "PORT1",
-				AccountKind: canonical.AccountKindPortfolio, BaseCurrency: &chf,
-				FirstSeenAt: 1000, LastSeenAt: 1000},
-			// Child cash account in CHF.
 			{SilverSourceID: "test-src", AccountExternalID: "CASH1",
 				AccountKind: canonical.AccountKindCash, BaseCurrency: &chf,
-				ParentAccountExternalID: &parent,
-				FirstSeenAt:             1000, LastSeenAt: 1000},
-			// Child safekeeping account in CHF.
+				PortfolioExternalID: &port,
+				FirstSeenAt:         1000, LastSeenAt: 1000},
 			{SilverSourceID: "test-src", AccountExternalID: "SAFE1",
 				AccountKind: canonical.AccountKindSafekeeping, BaseCurrency: &chf,
-				ParentAccountExternalID: &parent,
-				FirstSeenAt:             1000, LastSeenAt: 1000},
-			// Unrelated account — must NOT show up in the rollup.
-			{SilverSourceID: "test-src", AccountExternalID: "STANDALONE",
-				AccountKind: canonical.AccountKindBrokerage, BaseCurrency: &chf,
-				FirstSeenAt: 1000, LastSeenAt: 1000},
+				PortfolioExternalID: &port,
+				FirstSeenAt:         1000, LastSeenAt: 1000},
 		})
 	})
 
 	chf1000 := canonical.NewDecimalFromInt(1000)
 	chf500 := canonical.NewDecimalFromInt(500)
-	chf99 := canonical.NewDecimalFromInt(99)
 	inTx(t, db, ctx, func(w *Writer) error {
-		if err := w.InsertPositions(ctx, []canonical.PositionChange{
-			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "SAFE1",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity,
-				Currency: "CHF", MarketValue: &chf1000},
-			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "STANDALONE",
-				PositionKey: "Y", AssetClass: canonical.AssetClassEquity,
-				Currency: "CHF", MarketValue: &chf99},
-		}); err != nil {
+		if err := w.InsertPositions(ctx, []canonical.PositionChange{{
+			SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "SAFE1",
+			PositionKey: "X", AssetClass: canonical.AssetClassEquity,
+			Currency: "CHF", MarketValue: &chf1000,
+		}}); err != nil {
 			return err
 		}
 		return w.InsertCashBalances(ctx, []canonical.CashBalanceChange{{
@@ -202,29 +189,23 @@ func TestAccountsAsOfParentRollup(t *testing.T) {
 		byID[r.AccountExternalID] = r
 	}
 
-	// Portfolio rolls up SAFE1 positions + CASH1 cash.
-	port := byID["PORT1"]
-	if port.PositionsValueBase == nil || *port.PositionsValueBase != "1000" {
-		t.Errorf("PORT1 positions_value = %v, want 1000 (from child SAFE1)", port.PositionsValueBase)
-	}
-	if port.CashBalanceBase == nil || *port.CashBalanceBase != "500" {
-		t.Errorf("PORT1 cash_balance = %v, want 500 (from child CASH1)", port.CashBalanceBase)
-	}
-	if port.TotalValueBase == nil || *port.TotalValueBase != "1500" {
-		t.Errorf("PORT1 total_value = %v, want 1500", port.TotalValueBase)
-	}
-
-	// Children still report their OWN values.
+	// Each account reports its OWN values only — no cross-account
+	// rollup. SAFE1 has only positions; CASH1 has only cash.
 	if v := byID["SAFE1"].PositionsValueBase; v == nil || *v != "1000" {
-		t.Errorf("SAFE1 positions_value = %v, want 1000 (own)", v)
+		t.Errorf("SAFE1 positions_value = %v, want 1000", v)
+	}
+	if v := byID["SAFE1"].CashBalanceBase; v == nil || *v != "0" {
+		t.Errorf("SAFE1 cash_balance = %v, want 0 (no cash on SAFE1)", v)
+	}
+	if v := byID["CASH1"].PositionsValueBase; v == nil || *v != "0" {
+		t.Errorf("CASH1 positions_value = %v, want 0 (no positions on CASH1)", v)
 	}
 	if v := byID["CASH1"].CashBalanceBase; v == nil || *v != "500" {
-		t.Errorf("CASH1 cash_balance = %v, want 500 (own)", v)
+		t.Errorf("CASH1 cash_balance = %v, want 500", v)
 	}
-
-	// Unrelated account untouched.
-	if v := byID["STANDALONE"].PositionsValueBase; v == nil || *v != "99" {
-		t.Errorf("STANDALONE positions_value = %v, want 99 (own, not in portfolio)", v)
+	// And the portfolio_external_id round-trips through gold.
+	if v := byID["CASH1"].PortfolioExternalID; v == nil || *v != "PORT1" {
+		t.Errorf("CASH1 portfolio_external_id = %v, want PORT1", v)
 	}
 }
 

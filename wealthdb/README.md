@@ -24,6 +24,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb reload <id>\|-a` | Reset then load (use after upgrading wealthdb). |
 | `wealthdb positions` | Print consolidated positions (table / csv / csv_plain / json) with currency conversion. |
 | `wealthdb accounts` | Print one row per account with derived positions / cash / total value aggregates. |
+| `wealthdb portfolios` | Print one row per portfolio (plus sentinel-NULL row per silver source) with derived value aggregates. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb help [<subcommand>]` | Help. |

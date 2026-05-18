@@ -47,15 +47,21 @@ const (
 	AccountKindBrokerage   AccountKind = "brokerage"
 	AccountKindCash        AccountKind = "cash"
 	AccountKindSafekeeping AccountKind = "safekeeping"
-	AccountKindPortfolio   AccountKind = "portfolio"
 	AccountKindCustody     AccountKind = "custody"
-	AccountKindOther       AccountKind = "other"
+	// AccountKindOverlay is the synthetic per-portfolio account
+	// that holds positions the bank attributes to the portfolio
+	// directly rather than to any sub-account (UBS forward
+	// contracts, money-market contracts, OTC contracts). One
+	// overlay account per portfolio, lazily emitted when the
+	// portfolio has at least one such position.
+	AccountKindOverlay AccountKind = "overlay"
+	AccountKindOther   AccountKind = "other"
 )
 
 var accountKindValues = map[AccountKind]struct{}{
 	AccountKindBrokerage: {}, AccountKindCash: {},
-	AccountKindSafekeeping: {}, AccountKindPortfolio: {},
-	AccountKindCustody: {}, AccountKindOther: {},
+	AccountKindSafekeeping: {}, AccountKindCustody: {},
+	AccountKindOverlay: {}, AccountKindOther: {},
 }
 
 func (a AccountKind) Valid() bool {

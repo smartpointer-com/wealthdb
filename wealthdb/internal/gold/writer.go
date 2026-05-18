@@ -43,7 +43,7 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,
     display_name, base_currency, relationship_id,
-    nickname, account_category, parent_account_external_id,
+    nickname, account_category, portfolio_external_id,
     first_seen_at, last_seen_at, payload
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
@@ -59,8 +59,8 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
                             THEN EXCLUDED.nickname ELSE accounts.nickname END,
     account_category = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.account_category ELSE accounts.account_category END,
-    parent_account_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.parent_account_external_id ELSE accounts.parent_account_external_id END,
+    portfolio_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.portfolio_external_id ELSE accounts.portfolio_external_id END,
     payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.payload ELSE accounts.payload END,
     first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
@@ -82,10 +82,58 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
 			nullableString(r.RelationshipID),
 			nullableString(r.Nickname), nullableString(r.AccountCategory),
-			nullableString(r.ParentAccountExternalID),
+			nullableString(r.PortfolioExternalID),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertAccounts row %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// UpsertPortfolios writes portfolio rows with the same §8.4 guard
+// semantics as UpsertAccounts. Portfolios are gold's own entity
+// (distinct from accounts) — see migration 0004 and docs/DESIGN.md
+// §13.9.
+func (w *Writer) UpsertPortfolios(ctx context.Context, batch []canonical.PortfolioChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const q = `
+INSERT INTO portfolios (
+    silver_source_id, portfolio_external_id,
+    display_name, base_currency, relationship_id, nickname,
+    first_seen_at, last_seen_at, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (silver_source_id, portfolio_external_id) DO UPDATE SET
+    display_name     = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
+                            THEN EXCLUDED.display_name ELSE portfolios.display_name END,
+    base_currency    = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
+                            THEN EXCLUDED.base_currency ELSE portfolios.base_currency END,
+    relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
+                            THEN EXCLUDED.relationship_id ELSE portfolios.relationship_id END,
+    nickname         = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
+                            THEN EXCLUDED.nickname ELSE portfolios.nickname END,
+    payload          = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
+                            THEN EXCLUDED.payload ELSE portfolios.payload END,
+    first_seen_at    = LEAST   (portfolios.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at     = GREATEST(portfolios.last_seen_at,  EXCLUDED.last_seen_at)`
+
+	stmt, err := w.tx.PrepareContext(ctx, q)
+	if err != nil {
+		return fmt.Errorf("prepare UpsertPortfolios: %w", err)
+	}
+	defer stmt.Close()
+
+	for i := range batch {
+		r := &batch[i]
+		if _, err := stmt.ExecContext(ctx,
+			r.SilverSourceID, r.PortfolioExternalID,
+			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
+			nullableString(r.RelationshipID), nullableString(r.Nickname),
+			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
+		); err != nil {
+			return fmt.Errorf("UpsertPortfolios row %d: %w", i, err)
 		}
 	}
 	return nil
