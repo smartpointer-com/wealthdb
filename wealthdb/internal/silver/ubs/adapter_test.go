@@ -208,6 +208,60 @@ func TestSnapshotsHoldingFallbackCurrency(t *testing.T) {
 	}
 }
 
+// TestSnapshotsHoldingsCanonicalSafekeepingID covers the
+// safekeeping ID normalisation: holdings use the MT535-flavoured
+// format ("023000xxxxxxxxS1") while safekeeping_accounts use the
+// canonical ("0230-xxxxxxxx.S1"). The adapter must translate the
+// holdings ID so position.account_external_id matches the
+// corresponding accounts row.
+func TestSnapshotsHoldingsCanonicalSafekeepingID(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', '0230-xxxxxxxx.S1', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody"}');
+        INSERT INTO instruments(snapshot_at, relationship_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH0000000001',
+             '{"InstrCtgyCFI":"ESVTFR","InstrNm":"Acme","GacInstrRskCcyIsoCd":"CHF"}');
+        INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', '023000xxxxxxxxS1', 'CH0000000001',
+             '{"fields":{"19A":[":HOLD//CHF1000,"],"93B":[":AGGR//UNIT/10,"]}}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	if len(batch.Positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(batch.Positions))
+	}
+	if got := batch.Positions[0].AccountExternalID; got != "0230-xxxxxxxx.S1" {
+		t.Errorf("position account_external_id = %q, want canonical safekeeping form '0230-xxxxxxxx.S1'", got)
+	}
+}
+
+// TestTrailingSuffix exercises the suffix extractor used by the
+// safekeeping ID normaliser.
+func TestTrailingSuffix(t *testing.T) {
+	cases := map[string]string{
+		"023000xxxxxxxxS1": "S1",
+		"023000xxxxxxxxT1": "T1",
+		"023000xxxxxxxxS10": "S10",
+		"ABC":              "", // no trailing digits
+		"123":              "", // no leading letter
+		"":                 "",
+		"S":                "", // no trailing digits
+	}
+	for in, want := range cases {
+		if got := trailingSuffix(in); got != want {
+			t.Errorf("trailingSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`

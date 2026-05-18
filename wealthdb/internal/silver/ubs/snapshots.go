@@ -48,7 +48,19 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendHoldings(ctx, w, byTime, instrMap); err != nil {
+	// Build the (relationship_id, suffix) → canonical safekeeping
+	// ID lookup. UBS silver stores the same safekeeping account in
+	// two formats — `0230-xxxxxxxx.S1` in safekeeping_accounts and
+	// `023000xxxxxxxxS1` in holdings — both ending in the same
+	// "S1"/"T1"/... suffix per (relationship, snapshot). Without
+	// this normalisation appendHoldings would stamp the MT535
+	// format onto position.account_external_id and downstream
+	// joins against gold.accounts would never match.
+	safekeepingLookup, err := c.safekeepingIDLookup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.appendHoldings(ctx, w, byTime, instrMap, safekeepingLookup); err != nil {
 		return nil, err
 	}
 	if err := c.appendCashBalances(ctx, w, byTime); err != nil {
@@ -336,9 +348,17 @@ type holdingsPayloadShape struct {
 // matches the instrument's natural currency (falls back to first
 // HOLD entry when no exact match exists). See mt535.go for the
 // parser and docs/adapters/ubs.md §4 for the rationale.
-func (c *Connection) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
+//
+// safekeepingLookup translates the MT535-flavoured
+// safekeeping_external_id stored in `holdings`
+// ("023000xxxxxxxxS1") into the canonical safekeeping_accounts
+// format ("0230-xxxxxxxx.S1"). When a row's (relationship_id,
+// suffix) pair has no entry, the raw silver value is forwarded
+// — defensive against suffix-extraction edge cases (the gold-side
+// join will simply miss).
+func (c *Connection) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta, safekeepingLookup map[[2]string]string) error {
 	const q = `
-SELECT snapshot_at, safekeeping_external_id, isin, payload
+SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -349,13 +369,17 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 
 	for rows.Next() {
 		var (
-			snap            int64
-			safekeepingID   string
-			isin            string
-			payload         string
+			snap          int64
+			relID         string
+			safekeepingID string
+			isin          string
+			payload       string
 		)
-		if err := rows.Scan(&snap, &safekeepingID, &isin, &payload); err != nil {
+		if err := rows.Scan(&snap, &relID, &safekeepingID, &isin, &payload); err != nil {
 			return err
+		}
+		if canonical := safekeepingLookup[[2]string{relID, trailingSuffix(safekeepingID)}]; canonical != "" {
+			safekeepingID = canonical
 		}
 		batch, ok := byTime[snap]
 		if !ok {
@@ -646,6 +670,70 @@ func strPtrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// safekeepingIDLookup builds a (relationship_id, suffix) →
+// canonical safekeeping_accounts.account_external_id map from
+// silver. UBS PSN's MT535 holdings record uses a stripped/padded
+// form of the safekeeping ID ("023000xxxxxxxxS1") while the
+// safekeeping_accounts table uses the canonical
+// ("0230-xxxxxxxx.S1") form — they share the trailing
+// letter+digits suffix ("S1", "T1", ...) within a relationship.
+// Without this lookup, position.account_external_id never joins
+// to gold.accounts.
+//
+// Built once per Snapshots() call against the WHOLE silver table
+// (not just the change window) so a holding's lookup never
+// misses just because its safekeeping_accounts record was last
+// updated in an earlier snapshot — UBS dedups by content like
+// instruments do.
+func (c *Connection) safekeepingIDLookup(ctx context.Context) (map[[2]string]string, error) {
+	const q = `SELECT DISTINCT relationship_id, account_external_id FROM safekeeping_accounts`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("safekeepingIDLookup: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[[2]string]string)
+	for rows.Next() {
+		var rel, id string
+		if err := rows.Scan(&rel, &id); err != nil {
+			return nil, err
+		}
+		suffix := suffixAfterDot(id)
+		if suffix == "" {
+			continue
+		}
+		out[[2]string{rel, suffix}] = id
+	}
+	return out, rows.Err()
+}
+
+// suffixAfterDot returns whatever follows the LAST `.` in s, or
+// "" if there's no dot. "0230-xxxxxxxx.S1" → "S1".
+func suffixAfterDot(s string) string {
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		return s[i+1:]
+	}
+	return ""
+}
+
+// trailingSuffix extracts a trailing [A-Z][0-9]+ from s, or "" if
+// no such suffix exists. "023000xxxxxxxxS1" → "S1"; "ABC123XY"
+// → "" (no digits at end); "" → "".
+func trailingSuffix(s string) string {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == 0 || i == len(s) {
+		return ""
+	}
+	if s[i-1] < 'A' || s[i-1] > 'Z' {
+		return ""
+	}
+	return s[i-1:]
 }
 
 // joinSafekeepingCategory combines the safekeeping AcctTpDesc and
