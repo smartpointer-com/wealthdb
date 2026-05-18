@@ -77,8 +77,8 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 		t.Errorf("positions_value (USD) = %v, want 1662.5", a.PositionsValueBase)
 	}
 	// cash (base USD): 200 CHF → 200 / 0.80 = 250 USD
-	if a.CashValueBase == nil || *a.CashValueBase != "250" {
-		t.Errorf("cash_value (USD) = %v, want 250", a.CashValueBase)
+	if a.CashBalanceBase == nil || *a.CashBalanceBase != "250" {
+		t.Errorf("cash_balance (USD) = %v, want 250", a.CashBalanceBase)
 	}
 	// total (base USD): 1662.5 + 250 = 1912.5
 	if a.TotalValueBase == nil || *a.TotalValueBase != "1912.5" {
@@ -91,8 +91,8 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 		t.Errorf("positions_value (CHF) = %v, want 1330", a.PositionsValueOutCcy)
 	}
 	// cash: 200 CHF stays 200 CHF
-	if a.CashValueOutCcy == nil || *a.CashValueOutCcy != "200" {
-		t.Errorf("cash_value (CHF) = %v, want 200", a.CashValueOutCcy)
+	if a.CashBalanceOutCcy == nil || *a.CashBalanceOutCcy != "200" {
+		t.Errorf("cash_balance (CHF) = %v, want 200", a.CashBalanceOutCcy)
 	}
 	// total: 1530 CHF
 	if a.TotalValueOutCcy == nil || *a.TotalValueOutCcy != "1530" {
@@ -132,7 +132,7 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rows[0].PositionsValueBase != nil ||
-		rows[0].CashValueBase != nil ||
+		rows[0].CashBalanceBase != nil ||
 		rows[0].TotalValueBase != nil {
 		t.Errorf("base columns should be nil for account without base_currency, got %+v", rows[0])
 	}
@@ -165,8 +165,8 @@ func TestAccountsAsOfEmptyAccount(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	for _, got := range []*string{
-		rows[0].PositionsValueBase, rows[0].CashValueBase, rows[0].TotalValueBase,
-		rows[0].PositionsValueOutCcy, rows[0].CashValueOutCcy, rows[0].TotalValueOutCcy,
+		rows[0].PositionsValueBase, rows[0].CashBalanceBase, rows[0].TotalValueBase,
+		rows[0].PositionsValueOutCcy, rows[0].CashBalanceOutCcy, rows[0].TotalValueOutCcy,
 	} {
 		if got == nil || *got != "0" {
 			t.Errorf("empty-account aggregate = %v, want \"0\"", got)

@@ -161,8 +161,8 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 		// nil.
 		{Name: "positions_value", Align: output.AlignRight,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueBase) }},
-		{Name: "cash_value", Align: output.AlignRight,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.CashValueBase) }},
+		{Name: "cash_balance", Align: output.AlignRight,
+			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceBase) }},
 		{Name: "total_value", Align: output.AlignRight,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueBase) }},
 
@@ -171,8 +171,8 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 		// the suffix.
 		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueOutCcy) }},
-		{Name: "cash_value_outccy", Header: "cash_value" + suffix, Align: output.AlignRight,
-			Extract: func(a gold.AccountRow) string { return formatCents(a.CashValueOutCcy) }},
+		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight,
+			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceOutCcy) }},
 		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueOutCcy) }},
 	}
@@ -180,7 +180,7 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 
 var defaultAccountColumns = []string{
 	"silver_source", "account", "base_currency",
-	"positions_value", "cash_value", "total_value",
+	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }
 
@@ -257,7 +257,7 @@ func accountsUsage() string {
 
 Print one row per registered account, with derived aggregate
 columns rolled up over the account's positions and cash balances.
-Base-currency aggregates (positions_value, cash_value,
+Base-currency aggregates (positions_value, cash_balance,
 total_value) are blank for accounts with no base_currency. The
 matching _<CCY> aggregates use the -x/--currency choice and stay
 populated whenever at least one underlying line resolves an FX
@@ -273,9 +273,9 @@ Flags:
 Available columns:
   ` + joinAccountColumnNames(registry) + `
 
-  (The 'positions_value_outccy', 'cash_value_outccy', and
+  (The 'positions_value_outccy', 'cash_balance_outccy', and
    'total_value_outccy' columns render as 'positions_value_<CCY>',
-   'cash_value_<CCY>', and 'total_value_<CCY>' in the header,
+   'cash_balance_<CCY>', and 'total_value_<CCY>' in the header,
    reflecting your -x/--currency choice.)
 
 Default column set:

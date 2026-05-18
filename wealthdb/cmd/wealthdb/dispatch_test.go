@@ -326,7 +326,7 @@ func TestAccountsBasicRollup(t *testing.T) {
 		t.Errorf("missing (1 row) footer: %s", so)
 	}
 	for _, col := range []string{"silver_source", "account", "base_currency",
-		"positions_value", "cash_value", "total_value", "total_value_USD"} {
+		"positions_value", "cash_balance", "total_value", "total_value_USD"} {
 		if !strings.Contains(so, col) {
 			t.Errorf("default columns missing %q:\n%s", col, so)
 		}
@@ -355,7 +355,7 @@ func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 	}
 	header := strings.SplitN(so, "\n", 2)[0]
 	for _, name := range []string{"account_kind", "relationship_id", "account_nickname",
-		"account_category", "positions_value_USD", "cash_value_USD"} {
+		"account_category", "positions_value_USD", "cash_balance_USD"} {
 		if !strings.Contains(header, name) {
 			t.Errorf("'all' header missing %q: %s", name, header)
 		}

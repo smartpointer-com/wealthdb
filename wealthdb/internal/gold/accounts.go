@@ -42,13 +42,13 @@ type AccountRow struct {
 	// Aggregates expressed in the account's own base_currency.
 	// Nil when BaseCurrency is nil.
 	PositionsValueBase *string
-	CashValueBase      *string
+	CashBalanceBase      *string
 	TotalValueBase     *string
 
 	// Aggregates expressed in the user-requested output currency.
 	// Nil when no FX path is available for the account at all.
 	PositionsValueOutCcy *string
-	CashValueOutCcy      *string
+	CashBalanceOutCcy      *string
 	TotalValueOutCcy     *string
 }
 
@@ -113,13 +113,13 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 			pos := sumConverted(ctx, db, asOf, lines[:split], base, mode)
 			cv := sumConverted(ctx, db, asOf, lines[split:], base, mode)
 			a.PositionsValueBase = decimalPtrString(pos)
-			a.CashValueBase = decimalPtrString(cv)
+			a.CashBalanceBase = decimalPtrString(cv)
 			a.TotalValueBase = decimalPtrString(addOptional(pos, cv))
 		}
 		pos := sumConverted(ctx, db, asOf, lines[:split], outCcy, mode)
 		cv := sumConverted(ctx, db, asOf, lines[split:], outCcy, mode)
 		a.PositionsValueOutCcy = decimalPtrString(pos)
-		a.CashValueOutCcy = decimalPtrString(cv)
+		a.CashBalanceOutCcy = decimalPtrString(cv)
 		a.TotalValueOutCcy = decimalPtrString(addOptional(pos, cv))
 	}
 	return accounts, nil
