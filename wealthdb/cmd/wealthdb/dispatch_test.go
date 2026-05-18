@@ -345,6 +345,55 @@ func TestResetClearsSource(t *testing.T) {
 	}
 }
 
+// TestReloadIsResetThenLoad confirms 'wealthdb reload <id>' clears
+// gold and reloads in one step. The output line mentions both
+// halves; positions are present after, just as if reset+load were
+// invoked separately.
+func TestReloadIsResetThenLoad(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	so, _, code := run(t, "-c", cfg, "reload", "schwab-test")
+	if code != 0 {
+		t.Fatalf("reload failed; code=%d so=%q", code, so)
+	}
+	if !strings.Contains(so, "reset +") {
+		t.Errorf("reload stdout missing 'reset +' marker: %q", so)
+	}
+
+	// Positions are present after the reload.
+	so, _, code = run(t, "-c", cfg, "positions")
+	if code != 0 || !strings.Contains(so, "(1 row)") {
+		t.Fatalf("expected (1 row) after reload; got code=%d so=%q", code, so)
+	}
+}
+
+// TestReloadAll covers the -a path. Empty config + -a should error
+// (mirrors load -a) rather than silently succeed.
+func TestReloadAllNoSources(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := tmp + "/wealthdb.cfg"
+	body := `{"gold_db":"` + tmp + `/g.db","default_currency":"USD","silver_sources":[]}`
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	_, se, code := run(t, "-c", cfg, "reload", "-a")
+	if code != 1 {
+		t.Errorf("reload -a on empty config exit = %d, want 1", code)
+	}
+	if !strings.Contains(se, "no silver sources are configured") {
+		t.Errorf("guidance missing: %s", se)
+	}
+}
+
 func TestResetMissingDB(t *testing.T) {
 	cfg := setupCLITest(t)
 	_, se, code := run(t, "-c", cfg, "reset", "schwab-test")

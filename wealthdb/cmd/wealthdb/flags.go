@@ -69,6 +69,7 @@ subcommands:
   init                  initialise an empty gold DB at the configured gold_db path
   load <id> | -a        merge new silver snapshots into gold
   reset <id> | -a       purge a silver source's data from gold
+  reload <id> | -a      reset then load (use after upgrading wealthdb)
   positions [flags]     print consolidated positions (table/csv/csv_plain/json)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
