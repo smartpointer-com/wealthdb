@@ -37,6 +37,11 @@ type PortfolioRow struct {
 	PositionsValueOutCcy *string
 	CashBalanceOutCcy    *string
 	TotalValueOutCcy     *string
+
+	// SnapshotAt is the latest snapshot_at across all lines that
+	// rolled into this portfolio (positions + cash across every
+	// child account), or 0 when the portfolio has no lines.
+	SnapshotAt int64
 }
 
 // PortfoliosAsOf returns one PortfolioRow per registered portfolio
@@ -77,6 +82,7 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 	type lines struct {
 		positions []lineItem
 		cash      []lineItem
+		maxSnap   int64
 	}
 	byKey := make(map[portKey]*lines)
 	addLine := func(src, acctID, ccy string, valueStr *string, snap int64, isCash bool) {
@@ -102,6 +108,9 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		} else {
 			l.positions = append(l.positions, item)
 		}
+		if snap > l.maxSnap {
+			l.maxSnap = snap
+		}
 	}
 	for _, p := range positions {
 		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, p.SnapshotAt, false)
@@ -115,6 +124,7 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		var pos, ca []lineItem
 		if l, ok := byKey[portKey{p.SilverSourceID, p.PortfolioExternalID}]; ok {
 			pos, ca = l.positions, l.cash
+			p.SnapshotAt = l.maxSnap
 		}
 
 		if p.BaseCurrency != nil && *p.BaseCurrency != "" {

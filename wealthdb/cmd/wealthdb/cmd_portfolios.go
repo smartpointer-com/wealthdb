@@ -133,6 +133,12 @@ func buildPortfolioColumnRegistry(outCcy string) []portfolioColumnSpec {
 	return []portfolioColumnSpec{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return r.SilverSourceID }},
+		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(r gold.PortfolioRow) string {
+			if r.SnapshotAt == 0 {
+				return ""
+			}
+			return formatDate(r.SnapshotAt)
+		}},
 		{Name: "portfolio", Align: output.AlignLeft, Extract: func(r gold.PortfolioRow) string {
 			// Sentinel rows render as "(no portfolio)" so the user
 			// can spot them at a glance; real portfolios show their
@@ -171,7 +177,7 @@ func buildPortfolioColumnRegistry(outCcy string) []portfolioColumnSpec {
 }
 
 var defaultPortfolioColumns = []string{
-	"silver_source", "portfolio", "base_currency",
+	"silver_source", "snapshot_date", "portfolio", "base_currency",
 	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }

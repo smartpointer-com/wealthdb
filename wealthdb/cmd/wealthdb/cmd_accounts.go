@@ -135,6 +135,12 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 	return []accountColumnSpec{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
+		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
+			if a.SnapshotAt == 0 {
+				return ""
+			}
+			return formatDate(a.SnapshotAt)
+		}},
 		{Name: "account", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
 			if a.DisplayName != nil && *a.DisplayName != "" {
 				return *a.DisplayName
@@ -181,7 +187,7 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 }
 
 var defaultAccountColumns = []string{
-	"silver_source", "account", "base_currency",
+	"silver_source", "snapshot_date", "account", "base_currency",
 	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }

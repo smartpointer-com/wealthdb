@@ -39,6 +39,11 @@ type AccountRow struct {
 	Nickname            *string
 	AccountCategory     *string
 	PortfolioExternalID *string
+	// SnapshotAt is the latest snapshot_at across all positions
+	// and cash_balances rows that contributed to the aggregates,
+	// or 0 when the account has no lines. Lets the caller answer
+	// "as of when is this row?".
+	SnapshotAt int64
 
 	// Aggregates expressed in the account's own base_currency.
 	// Nil when BaseCurrency is nil.
@@ -81,6 +86,7 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 	type lines struct {
 		positions []lineItem
 		cash      []lineItem
+		maxSnap   int64
 	}
 	byKey := make(map[acctKey]*lines, len(accounts))
 	addLine := func(src, id, ccy string, valueStr *string, snap int64, isCash bool) {
@@ -103,6 +109,9 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		} else {
 			l.positions = append(l.positions, item)
 		}
+		if snap > l.maxSnap {
+			l.maxSnap = snap
+		}
 	}
 	for _, p := range positions {
 		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, p.SnapshotAt, false)
@@ -116,6 +125,7 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		var pos, ca []lineItem
 		if l, ok := byKey[acctKey{a.SilverSourceID, a.AccountExternalID}]; ok {
 			pos, ca = l.positions, l.cash
+			a.SnapshotAt = l.maxSnap
 		}
 
 		// (positions, cash) × (base, outCcy). Each sumConverted
