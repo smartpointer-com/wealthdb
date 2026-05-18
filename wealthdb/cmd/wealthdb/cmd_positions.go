@@ -35,6 +35,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	currency := fs.String("x", "", "output currency for the value column (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	withCash := fs.Bool("with-cash", false, "also emit one synthetic row per account+currency with non-zero cash")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
 	}
@@ -107,6 +108,13 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	rows, err := gold.PositionsAsOf(ctx, db, asOfEpoch)
 	if err != nil {
 		return err
+	}
+	if *withCash {
+		cash, err := gold.CashAsOf(ctx, db, asOfEpoch)
+		if err != nil {
+			return err
+		}
+		rows = mergeSorted(rows, cash)
 	}
 
 	rendered, err := convertAll(ctx, db, rows, outCcy, mode)
@@ -396,6 +404,7 @@ Flags:
   -C, --columns COLS       comma-separated column names, or 'default' / 'all'
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
+      --with-cash          also emit one row per account+currency with non-zero cash
 
 Available columns:
   ` + joinColumnNames(registry) + `
@@ -416,5 +425,39 @@ func strOrEmpty(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// mergeSorted interleaves two already-(silver_source, account,
+// position_key)-sorted row slices in the same order. Used by
+// --with-cash to slot synthetic cash rows alongside their account's
+// real positions without re-sorting the entire combined list.
+func mergeSorted(a, b []gold.PositionRow) []gold.PositionRow {
+	out := make([]gold.PositionRow, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if positionLess(a[i], b[j]) {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, b[j])
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	out = append(out, b[j:]...)
+	return out
+}
+
+// positionLess is the (silver_source_id, account_external_id,
+// position_key) ordering shared with gold.PositionsAsOf /
+// gold.CashAsOf's SQL ORDER BY.
+func positionLess(x, y gold.PositionRow) bool {
+	if x.SilverSourceID != y.SilverSourceID {
+		return x.SilverSourceID < y.SilverSourceID
+	}
+	if x.AccountExternalID != y.AccountExternalID {
+		return x.AccountExternalID < y.AccountExternalID
+	}
+	return x.PositionKey < y.PositionKey
 }
 
