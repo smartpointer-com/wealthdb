@@ -40,9 +40,12 @@ type AccountRow struct {
 	AccountCategory     *string
 	PortfolioExternalID *string
 	// SnapshotAt is the latest snapshot_at across all positions
-	// and cash_balances rows that contributed to the aggregates,
-	// or 0 when the account has no lines. Lets the caller answer
-	// "as of when is this row?".
+	// and cash_balances rows that contributed to the aggregates.
+	// When the account has no contributing lines, falls back to
+	// the latest snapshot observed for the silver_source as a
+	// whole — an empty account at a known silver snapshot is
+	// honestly zero, not "we don't know". 0 only when the silver
+	// source has produced no data at all.
 	SnapshotAt int64
 
 	// Aggregates expressed in the account's own base_currency.
@@ -89,7 +92,15 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		maxSnap   int64
 	}
 	byKey := make(map[acctKey]*lines, len(accounts))
+	// Per-silver_source latest observation across positions AND
+	// cash. Used as the snapshot_at fallback for accounts that
+	// happen to have no contributing lines (legitimately zero at
+	// the known snapshot, not "unknown").
+	sourceMaxSnap := make(map[string]int64)
 	addLine := func(src, id, ccy string, valueStr *string, snap int64, isCash bool) {
+		if snap > sourceMaxSnap[src] {
+			sourceMaxSnap[src] = snap
+		}
 		if valueStr == nil {
 			return
 		}
@@ -126,6 +137,10 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		if l, ok := byKey[acctKey{a.SilverSourceID, a.AccountExternalID}]; ok {
 			pos, ca = l.positions, l.cash
 			a.SnapshotAt = l.maxSnap
+		} else {
+			// No contributing lines — the account is honestly
+			// zero at the silver_source's latest observation.
+			a.SnapshotAt = sourceMaxSnap[a.SilverSourceID]
 		}
 
 		// (positions, cash) × (base, outCcy). Each sumConverted

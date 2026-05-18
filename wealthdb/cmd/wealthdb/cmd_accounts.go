@@ -136,6 +136,9 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
+			// SnapshotAt is 0 only when the silver source has
+			// produced no observations at all — show nothing
+			// in that genuinely-unknown case.
 			if a.SnapshotAt == 0 {
 				return ""
 			}

@@ -40,7 +40,11 @@ type PortfolioRow struct {
 
 	// SnapshotAt is the latest snapshot_at across all lines that
 	// rolled into this portfolio (positions + cash across every
-	// child account), or 0 when the portfolio has no lines.
+	// child account). When no lines rolled into the portfolio,
+	// falls back to the silver_source's latest observed snapshot
+	// — an empty portfolio at a known silver snapshot is honestly
+	// zero, not "unknown". 0 only when the silver source has
+	// produced no data at all.
 	SnapshotAt int64
 }
 
@@ -85,7 +89,15 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		maxSnap   int64
 	}
 	byKey := make(map[portKey]*lines)
+	// Per-silver_source latest observation, mirroring AccountsAsOf.
+	// Used as the snapshot_at fallback for portfolios (and the
+	// sentinel row) that have no contributing lines — honestly
+	// zero at the source's known snapshot, not "unknown".
+	sourceMaxSnap := make(map[string]int64)
 	addLine := func(src, acctID, ccy string, valueStr *string, snap int64, isCash bool) {
+		if snap > sourceMaxSnap[src] {
+			sourceMaxSnap[src] = snap
+		}
 		if valueStr == nil {
 			return
 		}
@@ -125,6 +137,8 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		if l, ok := byKey[portKey{p.SilverSourceID, p.PortfolioExternalID}]; ok {
 			pos, ca = l.positions, l.cash
 			p.SnapshotAt = l.maxSnap
+		} else {
+			p.SnapshotAt = sourceMaxSnap[p.SilverSourceID]
 		}
 
 		if p.BaseCurrency != nil && *p.BaseCurrency != "" {
