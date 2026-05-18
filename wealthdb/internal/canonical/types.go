@@ -24,6 +24,12 @@ type AccountChange struct {
 	// populate from silver-provided fields; config overrides
 	// take precedence at the load layer.
 	AccountCategory *string
+	// ParentAccountExternalID names another account in the same
+	// silver source that this account belongs to. UBS cash and
+	// safekeeping accounts use it to point at their parent
+	// portfolio; everything else leaves it nil. Drives the
+	// portfolio rollup behaviour of the accounts query.
+	ParentAccountExternalID *string
 	// FirstSeenAt is the earliest snapshot_at where this account
 	// has been observed in the current batch. Gold takes the min
 	// with whatever's already stored.

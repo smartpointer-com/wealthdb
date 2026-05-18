@@ -60,10 +60,19 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	// Same flavour of mismatch on the cash side: cash_balances
+	// records carry AcctId-style IDs ("023000xxxxxxxx010000G")
+	// while cash_accounts uses the IBAN ("CH0000230230xxxxxxxx"). The
+	// AcctId is also present inside cash_accounts.payload, so the
+	// lookup is built from there.
+	cashLookup, err := c.cashIDLookup(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := c.appendHoldings(ctx, w, byTime, instrMap, safekeepingLookup); err != nil {
 		return nil, err
 	}
-	if err := c.appendCashBalances(ctx, w, byTime); err != nil {
+	if err := c.appendCashBalances(ctx, w, byTime, cashLookup); err != nil {
 		return nil, err
 	}
 	if err := c.appendFxRates(ctx, w, byTime); err != nil {
@@ -111,10 +120,19 @@ func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Wind
 
 // ---- accounts ------------------------------------------------------------
 
-// cashAccountPayload covers the UBS SDCA fields we extract.
+// cashAccountPayload covers the UBS SDCA fields we extract. AcctId
+// (the SWIFT-flavoured cash-account ID) is also captured so
+// appendCashBalances can rewrite cash_balances rows from that
+// format into the canonical IBAN form held in account_external_id.
+// PrtflId names the parent portfolio (when the account is part of
+// a wealth-management portfolio) — forwarded as
+// ParentAccountExternalID so the accounts rollup can sum component
+// balances into their portfolio row.
 type cashAccountPayload struct {
 	AcctCcyIsoCd string `json:"AcctCcyIsoCd"`
 	AcctTpDesc   string `json:"AcctTpDesc"`
+	AcctId       string `json:"AcctId"`
+	PrtflId      string `json:"PrtflId"`
 }
 
 func (c *Connection) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -150,14 +168,15 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 		// AcctTpDesc like "Private" or "Custody". The AcctTpDesc
 		// itself is forwarded as AccountCategory.
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-			AccountExternalID: extID,
-			AccountKind:       canonical.AccountKindCash,
-			BaseCurrency:      strPtrIfNonEmpty(p.AcctCcyIsoCd),
-			RelationshipID:    strPtrIfNonEmpty(relID),
-			AccountCategory:   strPtrIfNonEmpty(p.AcctTpDesc),
-			FirstSeenAt:       snap,
-			LastSeenAt:        snap,
-			Payload:           json.RawMessage(payload),
+			AccountExternalID:       extID,
+			AccountKind:             canonical.AccountKindCash,
+			BaseCurrency:            strPtrIfNonEmpty(p.AcctCcyIsoCd),
+			RelationshipID:          strPtrIfNonEmpty(relID),
+			AccountCategory:         strPtrIfNonEmpty(p.AcctTpDesc),
+			ParentAccountExternalID: strPtrIfNonEmpty(p.PrtflId),
+			FirstSeenAt:             snap,
+			LastSeenAt:              snap,
+			Payload:                 json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -167,6 +186,7 @@ type safekeepingPayload struct {
 	InvstmtCcyIsoCd string `json:"InvstmtCcyIsoCd"`
 	AcctTpDesc      string `json:"AcctTpDesc"`
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
+	PrtflId         string `json:"PrtflId"`
 }
 
 func (c *Connection) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -203,12 +223,13 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 			// sub-type sharpens "Custody" / "Cust Strap." into
 			// "Custody / Cash-Custody", "Custody / Personal
 			// Cust.", etc.) goes into AccountCategory.
-			BaseCurrency:    strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
-			RelationshipID:  strPtrIfNonEmpty(relID),
-			AccountCategory: strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
-			FirstSeenAt:     snap,
-			LastSeenAt:      snap,
-			Payload:         json.RawMessage(payload),
+			BaseCurrency:            strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
+			RelationshipID:          strPtrIfNonEmpty(relID),
+			AccountCategory:         strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
+			ParentAccountExternalID: strPtrIfNonEmpty(p.PrtflId),
+			FirstSeenAt:             snap,
+			LastSeenAt:              snap,
+			Payload:                 json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
@@ -237,9 +258,12 @@ SELECT snapshot_at, relationship_id, portfolio_external_id, payload
 		if !ok {
 			continue
 		}
+		var p portfolioPayload
+		_ = json.Unmarshal([]byte(payload), &p) // best-effort
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindPortfolio,
+			BaseCurrency:      strPtrIfNonEmpty(p.PrtflKey.PrtflCcyIsoCd),
 			RelationshipID:    strPtrIfNonEmpty(relID),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
@@ -247,6 +271,16 @@ SELECT snapshot_at, relationship_id, portfolio_external_id, payload
 		})
 	}
 	return rows.Err()
+}
+
+// portfolioPayload extracts the portfolio-level base currency
+// from PrtflKey.PrtflCcyIsoCd. The rest of the portfolio payload
+// (PrtflElmntData composition list, perf metrics) stays in
+// AccountChange.Payload for forensics.
+type portfolioPayload struct {
+	PrtflKey struct {
+		PrtflCcyIsoCd string `json:"PrtflCcyIsoCd"`
+	} `json:"PrtflKey"`
 }
 
 // ---- instruments + holdings ----------------------------------------------
@@ -459,9 +493,9 @@ type cashBalancePayload struct {
 	CurrencyISO string            `json:"currency_iso"`
 }
 
-func (c *Connection) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *Connection) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cashLookup map[[2]string]string) error {
 	const q = `
-SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
+SELECT snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -471,12 +505,15 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                            int64
-			extID, balanceKind, currencyISO string
-			payload                         string
+			snap                                   int64
+			relID, extID, balanceKind, currencyISO string
+			payload                                string
 		)
-		if err := rows.Scan(&snap, &extID, &balanceKind, &currencyISO, &payload); err != nil {
+		if err := rows.Scan(&snap, &relID, &extID, &balanceKind, &currencyISO, &payload); err != nil {
 			return err
+		}
+		if iban := cashLookup[[2]string{relID, extID}]; iban != "" {
+			extID = iban
 		}
 		batch, ok := byTime[snap]
 		if !ok {
@@ -706,6 +743,42 @@ func (c *Connection) safekeepingIDLookup(ctx context.Context) (map[[2]string]str
 			continue
 		}
 		out[[2]string{rel, suffix}] = id
+	}
+	return out, rows.Err()
+}
+
+// cashIDLookup builds a (relationship_id, AcctId) →
+// account_external_id map from silver.cash_accounts, where
+// AcctId is the SWIFT-flavoured cash-account ID
+// ("023000xxxxxxxx010000G") and account_external_id is the IBAN
+// ("CH0000230230xxxxxxxx..."). cash_balances records reference
+// accounts by AcctId, so without this rewrite the balances never
+// join to gold.accounts.
+//
+// Built once per Snapshots() call against the whole silver table
+// — same idempotency reasoning as safekeepingIDLookup.
+func (c *Connection) cashIDLookup(ctx context.Context) (map[[2]string]string, error) {
+	const q = `SELECT DISTINCT relationship_id, account_external_id, payload FROM cash_accounts`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("cashIDLookup: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[[2]string]string)
+	for rows.Next() {
+		var rel, iban, payload string
+		if err := rows.Scan(&rel, &iban, &payload); err != nil {
+			return nil, err
+		}
+		var p cashAccountPayload
+		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+			continue // tolerate; just no lookup entry
+		}
+		if p.AcctId == "" {
+			continue
+		}
+		out[[2]string{rel, p.AcctId}] = iban
 	}
 	return out, rows.Err()
 }

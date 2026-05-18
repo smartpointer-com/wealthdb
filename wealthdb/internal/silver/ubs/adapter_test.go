@@ -243,6 +243,41 @@ func TestSnapshotsHoldingsCanonicalSafekeepingID(t *testing.T) {
 	}
 }
 
+// TestSnapshotsCashBalancesCanonicalID covers the cash-side
+// counterpart of the safekeeping normalisation. cash_balances
+// references accounts by AcctId ("023000xxxxxxxx010000G") which
+// also lives in the cash_accounts payload; the
+// account_external_id on cash_accounts is the IBAN
+// ("CH0000230230xxxxxxxx"). The adapter must translate the
+// balance's AcctId to the IBAN so the CashBalanceChange's
+// AccountExternalID joins to the AccountChange.
+func TestSnapshotsCashBalancesCanonicalID(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH0000230230xxxxxxxx',
+             '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private","AcctId":"023000xxxxxxxx010000G"}');
+        INSERT INTO cash_balances(snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload) VALUES
+            (1000, 'SFTPCHxx', '023000xxxxxxxx010000G', 'closing', 'CHF',
+             '{"amount":1500.00,"credit_debit":"C","currency_iso":"CHF"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	if len(batch.CashBalances) != 1 {
+		t.Fatalf("cash_balances = %d, want 1", len(batch.CashBalances))
+	}
+	if got := batch.CashBalances[0].AccountExternalID; got != "CH0000230230xxxxxxxx" {
+		t.Errorf("cash balance account_external_id = %q, want canonical IBAN 'CH0000230230xxxxxxxx'", got)
+	}
+}
+
 // TestTrailingSuffix exercises the suffix extractor used by the
 // safekeeping ID normaliser.
 func TestTrailingSuffix(t *testing.T) {

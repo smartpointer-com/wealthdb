@@ -43,9 +43,9 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,
     display_name, base_currency, relationship_id,
-    nickname, account_category,
+    nickname, account_category, parent_account_external_id,
     first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
     account_kind     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
@@ -59,6 +59,8 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
                             THEN EXCLUDED.nickname ELSE accounts.nickname END,
     account_category = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.account_category ELSE accounts.account_category END,
+    parent_account_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN EXCLUDED.parent_account_external_id ELSE accounts.parent_account_external_id END,
     payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.payload ELSE accounts.payload END,
     first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
@@ -80,6 +82,7 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
 			nullableString(r.RelationshipID),
 			nullableString(r.Nickname), nullableString(r.AccountCategory),
+			nullableString(r.ParentAccountExternalID),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertAccounts row %d: %w", i, err)

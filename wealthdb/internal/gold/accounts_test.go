@@ -141,6 +141,93 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 	}
 }
 
+// TestAccountsAsOfParentRollup verifies that an account's
+// aggregates include the lines from any account that names it as
+// parent_account_external_id. Models the UBS portfolio →
+// component-account relationship.
+func TestAccountsAsOfParentRollup(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	chf := "CHF"
+	parent := "PORT1"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{
+			// Parent portfolio: no own positions/cash, base CHF.
+			{SilverSourceID: "test-src", AccountExternalID: "PORT1",
+				AccountKind: canonical.AccountKindPortfolio, BaseCurrency: &chf,
+				FirstSeenAt: 1000, LastSeenAt: 1000},
+			// Child cash account in CHF.
+			{SilverSourceID: "test-src", AccountExternalID: "CASH1",
+				AccountKind: canonical.AccountKindCash, BaseCurrency: &chf,
+				ParentAccountExternalID: &parent,
+				FirstSeenAt:             1000, LastSeenAt: 1000},
+			// Child safekeeping account in CHF.
+			{SilverSourceID: "test-src", AccountExternalID: "SAFE1",
+				AccountKind: canonical.AccountKindSafekeeping, BaseCurrency: &chf,
+				ParentAccountExternalID: &parent,
+				FirstSeenAt:             1000, LastSeenAt: 1000},
+			// Unrelated account — must NOT show up in the rollup.
+			{SilverSourceID: "test-src", AccountExternalID: "STANDALONE",
+				AccountKind: canonical.AccountKindBrokerage, BaseCurrency: &chf,
+				FirstSeenAt: 1000, LastSeenAt: 1000},
+		})
+	})
+
+	chf1000 := canonical.NewDecimalFromInt(1000)
+	chf500 := canonical.NewDecimalFromInt(500)
+	chf99 := canonical.NewDecimalFromInt(99)
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.InsertPositions(ctx, []canonical.PositionChange{
+			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "SAFE1",
+				PositionKey: "X", AssetClass: canonical.AssetClassEquity,
+				Currency: "CHF", MarketValue: &chf1000},
+			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "STANDALONE",
+				PositionKey: "Y", AssetClass: canonical.AssetClassEquity,
+				Currency: "CHF", MarketValue: &chf99},
+		}); err != nil {
+			return err
+		}
+		return w.InsertCashBalances(ctx, []canonical.CashBalanceChange{{
+			SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "CASH1",
+			Currency: "CHF", BalanceKind: canonical.BalanceKindClosing, Amount: chf500,
+		}})
+	})
+
+	rows, err := AccountsAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]AccountRow{}
+	for _, r := range rows {
+		byID[r.AccountExternalID] = r
+	}
+
+	// Portfolio rolls up SAFE1 positions + CASH1 cash.
+	port := byID["PORT1"]
+	if port.PositionsValueBase == nil || *port.PositionsValueBase != "1000" {
+		t.Errorf("PORT1 positions_value = %v, want 1000 (from child SAFE1)", port.PositionsValueBase)
+	}
+	if port.CashBalanceBase == nil || *port.CashBalanceBase != "500" {
+		t.Errorf("PORT1 cash_balance = %v, want 500 (from child CASH1)", port.CashBalanceBase)
+	}
+	if port.TotalValueBase == nil || *port.TotalValueBase != "1500" {
+		t.Errorf("PORT1 total_value = %v, want 1500", port.TotalValueBase)
+	}
+
+	// Children still report their OWN values.
+	if v := byID["SAFE1"].PositionsValueBase; v == nil || *v != "1000" {
+		t.Errorf("SAFE1 positions_value = %v, want 1000 (own)", v)
+	}
+	if v := byID["CASH1"].CashBalanceBase; v == nil || *v != "500" {
+		t.Errorf("CASH1 cash_balance = %v, want 500 (own)", v)
+	}
+
+	// Unrelated account untouched.
+	if v := byID["STANDALONE"].PositionsValueBase; v == nil || *v != "99" {
+		t.Errorf("STANDALONE positions_value = %v, want 99 (own, not in portfolio)", v)
+	}
+}
+
 // TestAccountsAsOfEmptyAccount confirms that an account with no
 // positions and no cash still appears, with zero aggregates (or
 // nil for the base columns when base_currency is absent).

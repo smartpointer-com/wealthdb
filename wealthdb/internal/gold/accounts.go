@@ -30,14 +30,15 @@ import (
 // semantics used by `wealthdb positions`. A partial sum is
 // usually more useful than a missing one.
 type AccountRow struct {
-	SilverSourceID    string
-	AccountExternalID string
-	AccountKind       string
-	DisplayName       *string
-	BaseCurrency      *string
-	RelationshipID    *string
-	Nickname          *string
-	AccountCategory   *string
+	SilverSourceID          string
+	AccountExternalID       string
+	AccountKind             string
+	DisplayName             *string
+	BaseCurrency            *string
+	RelationshipID          *string
+	Nickname                *string
+	AccountCategory         *string
+	ParentAccountExternalID *string
 
 	// Aggregates expressed in the account's own base_currency.
 	// Nil when BaseCurrency is nil.
@@ -58,6 +59,16 @@ type AccountRow struct {
 // account's base_currency and into outCcy via ConvertValue.
 // Accounts that have no positions and no cash still appear, with
 // zero aggregates (or nil when there's no base_currency).
+//
+// Parent rollup: when an account names a parent_account_external_
+// id, the parent's aggregates include the child's positions and
+// cash lines (in addition to whatever the parent owns directly).
+// This is the UBS portfolio model — portfolios have only a
+// handful of own forward-contract positions and inherit the
+// substance from their cash / safekeeping component accounts.
+// Component-account rows still report their own values, so a
+// SUM over the column intentionally double-counts; filter by
+// account_kind to pick a single perspective.
 func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]AccountRow, error) {
 	accounts, err := loadAccountBase(ctx, db)
 	if err != nil {
@@ -73,8 +84,20 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 	}
 
 	type acctKey struct{ src, id string }
-	byKey := make(map[acctKey][]lineItem, len(accounts))
-	addLine := func(src, id, ccy string, valueStr *string) {
+	type lines struct {
+		positions []lineItem
+		cash      []lineItem
+	}
+	byKey := make(map[acctKey]*lines, len(accounts))
+	getOrCreate := func(k acctKey) *lines {
+		l, ok := byKey[k]
+		if !ok {
+			l = &lines{}
+			byKey[k] = l
+		}
+		return l
+	}
+	addLine := func(src, id, ccy string, valueStr *string, isCash bool) {
 		if valueStr == nil {
 			return
 		}
@@ -82,27 +105,54 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		if err != nil {
 			return
 		}
-		byKey[acctKey{src, id}] = append(byKey[acctKey{src, id}],
-			lineItem{currency: ccy, amount: v})
+		l := getOrCreate(acctKey{src, id})
+		if isCash {
+			l.cash = append(l.cash, lineItem{currency: ccy, amount: v})
+		} else {
+			l.positions = append(l.positions, lineItem{currency: ccy, amount: v})
+		}
 	}
 	for _, p := range positions {
-		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue)
-	}
-	// Mark which lines are "cash" vs "positions" so the two
-	// aggregate columns stay separable.
-	cashStart := make(map[acctKey]int, len(accounts))
-	for k, lines := range byKey {
-		cashStart[k] = len(lines)
+		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, false)
 	}
 	for _, c := range cash {
-		addLine(c.SilverSourceID, c.AccountExternalID, c.Currency, c.MarketValue)
+		addLine(c.SilverSourceID, c.AccountExternalID, c.Currency, c.MarketValue, true)
+	}
+
+	// children[parent] = list of child account_external_ids within
+	// the same silver source. Built from accounts.parent_account_
+	// external_id. Used to fold child lines into the parent's
+	// aggregates below.
+	children := make(map[acctKey][]string)
+	for _, a := range accounts {
+		if a.ParentAccountExternalID == nil || *a.ParentAccountExternalID == "" {
+			continue
+		}
+		k := acctKey{a.SilverSourceID, *a.ParentAccountExternalID}
+		children[k] = append(children[k], a.AccountExternalID)
+	}
+
+	// collectLines accumulates positions + cash lines from `id`
+	// AND every child whose parent_account_external_id = id. Only
+	// goes one level deep — UBS portfolio → component is the only
+	// hierarchy we have today; nesting would need recursion.
+	collectLines := func(src, id string) (pos, ca []lineItem) {
+		if l, ok := byKey[acctKey{src, id}]; ok {
+			pos = append(pos, l.positions...)
+			ca = append(ca, l.cash...)
+		}
+		for _, childID := range children[acctKey{src, id}] {
+			if l, ok := byKey[acctKey{src, childID}]; ok {
+				pos = append(pos, l.positions...)
+				ca = append(ca, l.cash...)
+			}
+		}
+		return
 	}
 
 	for i := range accounts {
 		a := &accounts[i]
-		k := acctKey{a.SilverSourceID, a.AccountExternalID}
-		lines := byKey[k]
-		split := cashStart[k] // positions occupy [:split]; cash occupies [split:]
+		pos, ca := collectLines(a.SilverSourceID, a.AccountExternalID)
 
 		// Compute the four aggregates per requested target ccy:
 		// (positions, cash) × (base, outCcy). Each call returns
@@ -110,17 +160,17 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		// keeps a blank cell rather than a misleading 0).
 		if a.BaseCurrency != nil && *a.BaseCurrency != "" {
 			base := *a.BaseCurrency
-			pos := sumConverted(ctx, db, asOf, lines[:split], base, mode)
-			cv := sumConverted(ctx, db, asOf, lines[split:], base, mode)
-			a.PositionsValueBase = decimalPtrString(pos)
-			a.CashBalanceBase = decimalPtrString(cv)
-			a.TotalValueBase = decimalPtrString(addOptional(pos, cv))
+			pSum := sumConverted(ctx, db, asOf, pos, base, mode)
+			cSum := sumConverted(ctx, db, asOf, ca, base, mode)
+			a.PositionsValueBase = decimalPtrString(pSum)
+			a.CashBalanceBase = decimalPtrString(cSum)
+			a.TotalValueBase = decimalPtrString(addOptional(pSum, cSum))
 		}
-		pos := sumConverted(ctx, db, asOf, lines[:split], outCcy, mode)
-		cv := sumConverted(ctx, db, asOf, lines[split:], outCcy, mode)
-		a.PositionsValueOutCcy = decimalPtrString(pos)
-		a.CashBalanceOutCcy = decimalPtrString(cv)
-		a.TotalValueOutCcy = decimalPtrString(addOptional(pos, cv))
+		pSum := sumConverted(ctx, db, asOf, pos, outCcy, mode)
+		cSum := sumConverted(ctx, db, asOf, ca, outCcy, mode)
+		a.PositionsValueOutCcy = decimalPtrString(pSum)
+		a.CashBalanceOutCcy = decimalPtrString(cSum)
+		a.TotalValueOutCcy = decimalPtrString(addOptional(pSum, cSum))
 	}
 	return accounts, nil
 }
@@ -132,7 +182,7 @@ func loadAccountBase(ctx context.Context, db *sql.DB) ([]AccountRow, error) {
 	const q = `
 SELECT silver_source_id, account_external_id, account_kind,
        display_name, base_currency, relationship_id,
-       nickname, account_category
+       nickname, account_category, parent_account_external_id
   FROM accounts
  ORDER BY silver_source_id, account_external_id`
 	rows, err := db.QueryContext(ctx, q)
@@ -144,11 +194,11 @@ SELECT silver_source_id, account_external_id, account_kind,
 	var out []AccountRow
 	for rows.Next() {
 		var (
-			a                                                AccountRow
-			displayName, baseCcy, relID, nickname, category sql.NullString
+			a                                                        AccountRow
+			displayName, baseCcy, relID, nickname, category, parent sql.NullString
 		)
 		if err := rows.Scan(&a.SilverSourceID, &a.AccountExternalID, &a.AccountKind,
-			&displayName, &baseCcy, &relID, &nickname, &category); err != nil {
+			&displayName, &baseCcy, &relID, &nickname, &category, &parent); err != nil {
 			return nil, fmt.Errorf("loadAccountBase scan: %w", err)
 		}
 		a.DisplayName = nullStringToPtr(displayName)
@@ -156,6 +206,7 @@ SELECT silver_source_id, account_external_id, account_kind,
 		a.RelationshipID = nullStringToPtr(relID)
 		a.Nickname = nullStringToPtr(nickname)
 		a.AccountCategory = nullStringToPtr(category)
+		a.ParentAccountExternalID = nullStringToPtr(parent)
 		out = append(out, a)
 	}
 	return out, rows.Err()
