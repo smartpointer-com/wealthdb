@@ -303,6 +303,73 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	}
 }
 
+// TestAccountsBasicRollup checks the happy path of `wealthdb
+// accounts`: one row per account, the derived total_value cell
+// reflects the sum of positions + cash (and equals
+// total_value_<CCY> when output and base match), and the default
+// column set includes all the right names.
+func TestAccountsBasicRollup(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	so, _, code := run(t, "-c", cfg, "accounts")
+	if code != 0 {
+		t.Fatalf("accounts failed; code=%d so=%q", code, so)
+	}
+	// One row + header + "(1 row)" footer.
+	if !strings.Contains(so, "(1 row)") {
+		t.Errorf("missing (1 row) footer: %s", so)
+	}
+	for _, col := range []string{"silver_source", "account", "base_currency",
+		"positions_value", "cash_value", "total_value", "total_value_USD"} {
+		if !strings.Contains(so, col) {
+			t.Errorf("default columns missing %q:\n%s", col, so)
+		}
+	}
+	// Single position is 1500 USD. Base currency is USD so
+	// total_value == total_value_USD == "1500.00".
+	if !strings.Contains(so, "1500.00") {
+		t.Errorf("expected 1500.00 total in output:\n%s", so)
+	}
+}
+
+// TestAccountsAllColumnsAndBadColumn exercises the `all` preset
+// and the unknown-column error path.
+func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	so, _, code := run(t, "-c", cfg, "accounts", "--columns", "all")
+	if code != 0 {
+		t.Fatalf("accounts --columns all failed: %d", code)
+	}
+	header := strings.SplitN(so, "\n", 2)[0]
+	for _, name := range []string{"account_kind", "relationship_id", "account_nickname",
+		"account_category", "positions_value_USD", "cash_value_USD"} {
+		if !strings.Contains(header, name) {
+			t.Errorf("'all' header missing %q: %s", name, header)
+		}
+	}
+
+	_, se, code := run(t, "-c", cfg, "accounts", "--columns", "bogus")
+	if code != 2 {
+		t.Errorf("unknown column exit = %d, want 2", code)
+	}
+	if !strings.Contains(se, "unknown column") {
+		t.Errorf("missing guidance: %s", se)
+	}
+}
+
 func TestResetClearsSource(t *testing.T) {
 	cfg := setupCLITest(t)
 	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
