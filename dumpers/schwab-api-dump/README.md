@@ -1,4 +1,4 @@
-# schwab-dump
+# schwab-api-dump
 
 A toolkit for ingesting Charles Schwab Trader API portfolio data:
 fetching account metadata, positions, transactions, and open orders
@@ -25,7 +25,7 @@ building parallel tools for other bank/broker backends.
 The toolkit assumes a directory layout like:
 
 ```
-<bronze-dir>/                       e.g. ~/wealthdb/schwab/
+<bronze-dir>/                       e.g. ~/wealthdb/schwab-api/
 ├── 20260512T104753Z/               one bronze dump per run
 │   ├── account_numbers.json
 │   ├── user_preference.json
@@ -76,20 +76,20 @@ between Schwab's redirect and your localhost.
 Initial mint (and weekly re-mint):
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab_token.json
+.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json
 ```
 
 Headless / SSH environments — paste the redirect URL by hand:
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab_token.json --manual
+.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json --manual
 ```
 
 Check whether the current token still has refresh-window life left
 (no browser, no network):
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab_token.json --check
+.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json --check
 ```
 
 #### Flags
@@ -148,24 +148,24 @@ placement, replacement, cancellation, or transfers). See
 
 ```sh
 git clone <this repo>
-cd schwab-dump
+cd schwab-api-dump
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
 Provide your app credentials to the scripts. Storing them in a dedicated
-env file that you `source` only when running schwab-dump (rather than in
+env file that you `source` only when running schwab-api-dump (rather than in
 your default shell rc) keeps them out of every interactive session:
 
 ```sh
-# ~/.secrets/schwab.env (chmod 600, never committed)
+# ~/.secrets/schwab-api.env (chmod 600, never committed)
 export SCHWAB_CLIENT_ID=<CLIENT_ID>
 export SCHWAB_CLIENT_SECRET=<CLIENT_SECRET>
 ```
 
 ```sh
-source ~/.secrets/schwab.env
-.venv/bin/python login.py --token-path ~/.secrets/schwab_token.json
+source ~/.secrets/schwab-api.env
+.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json
 ```
 
 ### Configuration
@@ -189,7 +189,7 @@ fetching positions, transactions, or open orders:
 
 ```sh
 .venv/bin/python download.py \
-    --token-path ~/.secrets/schwab_token.json \
+    --token-path ~/.secrets/schwab-api-token.json \
     --dest ./data \
     --dry-run
 ```
@@ -198,7 +198,7 @@ Real download:
 
 ```sh
 .venv/bin/python download.py \
-    --token-path ~/.secrets/schwab_token.json \
+    --token-path ~/.secrets/schwab-api-token.json \
     --dest ./data
 ```
 
@@ -292,7 +292,7 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/wealthdb/schwab/schwab.db \
+    --silver-db ~/wealthdb/schwab-api/schwab-api.db \
     --bronze-dir ~/wealthdb/schwab
 ```
 

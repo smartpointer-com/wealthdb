@@ -50,9 +50,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument(
         "--token-path",
-        required=True,
         type=Path,
-        help="Path to read/write the OAuth token JSON file.",
+        default=Path.home() / ".secrets" / "schwab-api-token.json",
+        help="Path to read/write the OAuth token JSON file. "
+             "Default: ~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
         "--client-id",

@@ -39,7 +39,7 @@ Thumbs.db
 # Never commit credentials or downloaded portfolio data
 *.pem
 *.key
-schwab_token*
+schwab-api-token*
 token.json
 tokens.json
 .env

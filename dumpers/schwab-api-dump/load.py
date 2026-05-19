@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-schwab-dump silver loader.
+schwab-api-dump silver loader.
 
 Reads bronze JSON dumps (produced by download.py) and inserts them into
 a SQLite silver database. Applies any pending schema migrations on
@@ -11,7 +11,7 @@ Usage:
     load.py --silver-db <path> --bronze-dir <path>
 
 Each immediate subdirectory of <bronze-dir> whose name matches the
-schwab-dump timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
+schwab-api-dump timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
 Already-loaded dumps (recorded in dump_runs) are skipped.
 """
 
@@ -636,10 +636,18 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--silver-db", required=True, type=Path,
-                   help="Path to the silver SQLite database. Created if missing.")
-    p.add_argument("--bronze-dir", required=True, type=Path,
-                   help="Directory containing snapshot subdirectories.")
+    p.add_argument(
+        "--silver-db", type=Path,
+        default=Path.home() / "wealthdb" / "schwab-api" / "schwab-api.db",
+        help="Path to the silver SQLite database. Created if missing. "
+             "Default: ~/wealthdb/schwab-api/schwab-api.db.",
+    )
+    p.add_argument(
+        "--bronze-dir", type=Path,
+        default=Path.home() / "wealthdb" / "schwab-api",
+        help="Directory containing snapshot subdirectories. "
+             "Default: ~/wealthdb/schwab-api.",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging.")
     return p.parse_args(argv)
 

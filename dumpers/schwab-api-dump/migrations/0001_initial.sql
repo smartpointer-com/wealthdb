@@ -1,5 +1,5 @@
 -- ============================================================
--- schwab-dump silver schema, migration 0001 — initial schema.
+-- schwab-api-dump silver schema, migration 0001 — initial schema.
 --
 -- Migration discipline: every change to the silver schema lands as a
 -- new numbered file in this directory. The parser checks the maximum

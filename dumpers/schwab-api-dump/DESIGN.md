@@ -1,8 +1,8 @@
-# schwab-dump: Design
+# schwab-api-dump: Design
 
 ## 1. Audience and scope
 
-This document describes the design of `schwab-dump` for engineers
+This document describes the design of `schwab-api-dump` for engineers
 building parallel tools against other bank/broker backends — most
 immediately the author of `ubs-psn-data`, which has the same goal
 (a queryable, agent-consumable view of one institution's account data)
@@ -12,11 +12,11 @@ The patterns here are intended to be portable. Where a choice is
 specific to Schwab's API, that is called out explicitly so the
 reader can substitute the equivalent.
 
-`schwab-dump` is one corner of a larger system:
+`schwab-api-dump` is one corner of a larger system:
 
 ```
 ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-│   ubs-psn-data       │  │   schwab-dump        │  │   (future banks)     │
+│   ubs-psn-data       │  │   schwab-api-dump    │  │   (future banks)     │
 │   ┌──────────────┐   │  │   ┌──────────────┐   │  │   ┌──────────────┐   │
 │   │ bronze (zip) │   │  │   │ bronze (JSON)│   │  │   │ bronze (?)   │   │
 │   └──────┬───────┘   │  │   └──────┬───────┘   │  │   └──────┬───────┘   │
@@ -479,7 +479,7 @@ is to read one broker's silver schema and project it into gold's
 canonical tables (`accounts`, `instruments`, `holdings`, `cash_flows`,
 `fx_rates`).
 
-Read pattern: DuckDB `ATTACH 'path/to/schwab.db' AS schwab;`
+Read pattern: DuckDB `ATTACH 'path/to/schwab-api.db' AS schwab;`
 then transforms run as pure SQL across the attached SQLite tables.
 No Python row-by-row marshalling.
 

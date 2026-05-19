@@ -32,7 +32,7 @@ from pathlib import Path
 # inside main() so that --help works on a fresh checkout without the
 # dependency installed.
 
-log = logging.getLogger("schwab-dump")
+log = logging.getLogger("schwab-api-dump")
 
 # Read-only artefact names. Filenames never contain account numbers (plain
 # or hashed) so that ls'ing a dest dir does not leak identifiers.
@@ -106,10 +106,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument(
         "--token-path",
-        required=True,
         type=Path,
+        default=Path.home() / ".secrets" / "schwab-api-token.json",
         help="Path to the schwab-py token JSON file. The file must already "
-             "exist (mint it with login.py first).",
+             "exist (mint it with login.py first). Default: "
+             "~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
         "--dest",

@@ -1,5 +1,5 @@
 -- ============================================================
--- schwab-dump silver schema, migration 0003 — accounts metadata.
+-- schwab-api-dump silver schema, migration 0003 — accounts metadata.
 --
 -- The accounts table previously held only the {accountNumber, hashValue}
 -- mapping from /accounts/accountNumbers. This migration widens it with
