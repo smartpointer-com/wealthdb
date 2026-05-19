@@ -174,8 +174,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 	}
 
-	streams := make([]silver.SnapshotStream, 0, 2)
+	streams := make([]silver.SnapshotStream, 0, 3)
 	if c.web != nil {
+		hist, err := c.web.snapshotsHistorical(ctx, w)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web Snapshots (historical): %w", err)
+		}
+		streams = append(streams, hist)
 		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff, psnAssetClass)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots: %w", err)

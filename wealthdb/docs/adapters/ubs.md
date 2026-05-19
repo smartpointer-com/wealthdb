@@ -1,15 +1,26 @@
 # UBS adapter
 
-Adapter that projects the `ubs-psn-dump` silver SQLite into the
-canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+Adapter that projects two UBS silver SQLite databases into the
+canonical gold schema:
 
-## 1. Silver source
+- `ubs-psn-dump` — daily SDFI/MT-message feed delivered via SFTP.
+- `ubs-web-dump` — netbanking scrape (live snapshots + reconstructed
+  historical PDFs).
 
-- Upstream: `ubs-psn-dump` repository.
-- Silver schema: [ubs-psn-dump/migrations/0001_initial.sql](https://github.com/ptu/ubs-psn-dump/blob/main/migrations/0001_initial.sql).
-- Silver README: [ubs-psn-dump/README.md](https://github.com/ptu/ubs-psn-dump/blob/main/README.md).
+Implements the `silver.Adapter` / `silver.Connection` interface
+defined in [../DESIGN.md](../DESIGN.md) §6. When both subsources
+are configured the orchestrator (`merge.go`) splices them: web
+emits dimensions before PSN-start, PSN takes over from then on,
+and PDF-reconstructed historical fills the pre-PSN-start range.
+
+## 1. Silver sources
+
+- Upstream feeds:
+  - PSN: [`ubs-psn-dump`](https://github.com/ptu/ubs-psn-dump).
+    Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/ubs-psn-dump/blob/main/migrations/0001_initial.sql).
+  - Web: [`ubs-web-dump`](https://github.com/ptu/ubs-web-dump).
+    Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/ubs-web-dump/blob/main/migrations/0001_initial.sql)
+    + [migrations/0002_historical_snapshots.sql](https://github.com/ptu/ubs-web-dump/blob/main/migrations/0002_historical_snapshots.sql).
 
 ## 2. Identifier conventions
 
@@ -157,7 +168,87 @@ Common narrative prefixes (extend as observed):
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
-## 8. Open questions
+## 8. Historical (PDF-reconstructed) data — ubs-web-dump migration 0002
+
+`ubs-web-dump` migration 0002 added two parallel tables built
+from the customer's eDocuments PDF archive:
+
+| Silver table | Source PDF | Cadence | Gold target |
+| --- | --- | --- | --- |
+| `historical_position_snapshots` | "Statement of Assets" | Quarterly | `positions` (securities) — cash rows skipped, see below |
+| `historical_cash_balances` | "Account Statement" | Monthly | `cash_balances` (opening + closing) |
+
+These predate the PSN feed's go-live and complement the intra-day
+live web positions. The adapter emits them as a separate stream
+(`webReader.snapshotsHistorical`) that runs before the live
+overlap stream and PSN stream so chronologically the gold
+`positions` and `cash_balances` tables fill in oldest-first.
+
+### Security positions
+
+`historical_position_snapshots` rows where `instrument_isin IS NOT
+NULL`. UBS doesn't surface the safekeeping account reliably in
+the PDF text, so silver leaves `account_external_id = ''`. The
+adapter attaches each security position to the per-portfolio
+overlay account (`'<portfolio>:overlay'`, `account_kind=overlay`)
+that PSN already uses for forward contracts — preserving the
+invariant that every gold `positions` row is owned by an
+`accounts` row.
+
+| Silver column | Gold mapping |
+| --- | --- |
+| `as_of_date` | `positions.snapshot_at` |
+| `portfolio_external_id` | `accounts.portfolio_external_id` (BBBBAAAAAAAANN form, 16 chars including the leading-zero branch prefix, matches PSN) |
+| `instrument_isin` | `positions.instrument_external_id`, `instruments.isin` |
+| `currency_iso` | `instruments.currency` |
+| `units` | `positions.quantity` |
+| `market_value` | `positions.market_value` (in `market_value_currency`, typically portfolio base) |
+| `cost_price * units` | `positions.book_value` |
+| `accrued_interest` | `positions.accrued_interest` |
+| `description` | `instruments.name` |
+| `sector` | (kept in payload only) |
+
+`asset_class` defaults to `other` for historical rows — the PDFs
+don't carry a CFI code. The per-column upsert guard means a later
+PSN snapshot containing the same ISIN will overwrite `asset_class`
+with the CFI-derived value, so the `other` is only ever the
+visible value for instruments that never made it into PSN.
+
+### Cash balances
+
+`historical_cash_balances` is the richer monthly source.
+`historical_position_snapshots` cash rows (instrument_isin NULL)
+are **skipped** to avoid colliding with the cash_balances PK —
+their quarter-end timestamps would land on the same
+`(account, currency, balance_kind)` tuple as the matching month-
+end row from `historical_cash_balances`.
+
+| Silver column | Gold mapping |
+| --- | --- |
+| `period_start`, `opening_balance` | `cash_balances` row, `balance_kind=opening`, `snapshot_at=period_start` |
+| `period_end`, `closing_balance` | `cash_balances` row, `balance_kind=closing`, `snapshot_at=period_end` |
+| `account_external_id` | `cash_balances.account_external_id`; also emits an `accounts` row (`kind=cash`) once per period |
+| `total_debits`, `total_credits` | kept in payload, not projected |
+
+Each row produces zero, one, or two `cash_balances` writes
+depending on which of `opening_balance` / `closing_balance` are
+non-NULL. Rows with NULL on a side (closed-account statements,
+mid-period exports that haven't crystallised yet) skip that
+side rather than coercing to 0.0 — the silver loader leaves NULL
+distinguishable from a real zero-flow month.
+
+### Window semantics
+
+The webReader's `ChangeWindow` extends `Start` back to
+`MIN(historical times)` whenever there's any new live content (a
+new `dump_runs` row). This guarantees the loader's window-DELETE
+covers any existing historical gold rows before they're
+re-inserted, so a reload never collides on the gold PK. The
+`NewChangeNumber` stays a live-time concept — when no new live
+content has arrived, the load is a no-op even with historical
+present in silver.
+
+## 9. Open questions
 
 - **MT568 vs MT566 collapsing.** Both carry corporate-action info;
   MT568 is narrative supplementing MT566. The adapter currently
@@ -167,7 +258,11 @@ Common narrative prefixes (extend as observed):
   visibility lands, project into a new gold table
   `pending_transactions` rather than mixing with settled
   `transactions`.
-- **`portfolios` as accounts.** UBS portfolios are reporting
-  units, not holding containers. Modelling them as `accounts`
-  with kind=`portfolio` is a pragmatic shortcut. Revisit if
-  portfolio-level reporting needs differ from account-level.
+- **Historical asset_class.** Historical security positions
+  default to `asset_class=other` because the PDFs don't carry a
+  CFI code. When PSN data exists for an ISIN the per-column
+  upsert backfills with the CFI-derived value, but instruments
+  that pre-date PSN (closed positions, instruments since
+  delisted) stay `other`. Consider a per-ISIN asset-class lookup
+  populated from an external catalogue if richer historical
+  classification is needed.

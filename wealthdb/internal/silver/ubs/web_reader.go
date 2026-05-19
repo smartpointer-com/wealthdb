@@ -61,6 +61,26 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 	if err != nil {
 		return canonical.Status{}, fmt.Errorf("ubs-web Status transactions: %w", err)
 	}
+	// Historical (PDF) snapshots extend OldestSnapshotAt back —
+	// PDFs cover dates that pre-date the first live web dump.
+	ok, err := r.hasHistoricalTables(ctx)
+	if err != nil {
+		return canonical.Status{}, err
+	}
+	if ok {
+		histLo, histHi, err := r.historicalRange(ctx)
+		if err != nil {
+			return canonical.Status{}, err
+		}
+		if histLo >= 0 {
+			if out.OldestSnapshotAt == -1 || histLo < out.OldestSnapshotAt {
+				out.OldestSnapshotAt = histLo
+			}
+		}
+		if histHi >= 0 && histHi > out.LatestSnapshotAt {
+			out.LatestSnapshotAt = histHi
+		}
+	}
 	out.LatestChangeNumber = maxInt64(out.LatestSnapshotAt, out.LatestTransactionAt)
 	return out, nil
 }
@@ -68,6 +88,21 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 // ChangeWindow returns the union of new snapshots and new
 // transactions strictly after `since`. Matches the PSN reader's
 // convention so the merge layer's combine is straightforward.
+//
+// Historical (PDF-reconstructed) data extends Start backwards
+// when there's any new live content. The historical_position_
+// snapshots and historical_cash_balances tables key on
+// as_of_date / period_end / period_start (well before the live
+// dump_run watermark), so if the loader's delete-then-insert
+// window stayed at live-Start, re-emitting historical rows on
+// the next load would collide on the gold PK. Including the
+// historical range in Start guarantees the window-DELETE covers
+// any existing historical gold rows before they're re-inserted.
+//
+// NewChangeNumber stays a live-time concept (MAX over snapshot_at
+// / value_date) — the watermark advances only when live data
+// advances. This means re-running with no new dump_run is a
+// no-op even when historical data is present.
 func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	var (
 		snapMin, snapMax sql.NullInt64
@@ -106,6 +141,25 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 	}
 	merge(snapMax)
 	merge(txMax)
+
+	if w.HasChanges {
+		ok, err := r.hasHistoricalTables(ctx)
+		if err != nil {
+			return canonical.Window{}, err
+		}
+		if ok {
+			histLo, histHi, err := r.historicalRange(ctx)
+			if err != nil {
+				return canonical.Window{}, err
+			}
+			if histLo >= 0 && histLo < w.Start {
+				w.Start = histLo
+			}
+			if histHi > w.End {
+				w.End = histHi
+			}
+		}
+	}
 	return w, nil
 }
 
