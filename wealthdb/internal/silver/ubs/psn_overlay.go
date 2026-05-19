@@ -88,6 +88,27 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 	return out, rows.Err()
 }
 
+// assetClassByISIN returns a per-ISIN canonical asset class
+// derived from PSN's CFI. Used by the web reader to stamp web-
+// emitted InstrumentChange rows with the same asset_class PSN
+// would emit, so the per-column upsert guard in gold.instruments
+// stays idempotent on asset_class while letting web's Name +
+// Currency win on later last_seen_at.
+func (r *psnReader) assetClassByISIN(ctx context.Context) (map[string]canonical.AssetClass, error) {
+	if r == nil {
+		return nil, nil
+	}
+	meta, err := r.instrumentMetaByISIN(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]canonical.AssetClass, len(meta))
+	for isin, m := range meta {
+		out[isin] = m.AssetClass
+	}
+	return out, nil
+}
+
 // instrumentMetaByISIN is a thin wrapper over the existing
 // appendInstruments lookup-building logic, isolated here so the
 // overlay code can reuse it without dragging in the byTime

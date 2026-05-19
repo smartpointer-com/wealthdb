@@ -148,6 +148,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		webPosPayloads  map[webPosKey]string
 		webCashPayloads map[webCashKey]string
 		cutoff          map[string]int64
+		psnAssetClass   map[string]canonical.AssetClass
 	)
 
 	if c.web != nil && c.psn != nil {
@@ -157,6 +158,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, err
 		}
 		webCashPayloads, err = c.web.cashPayloadByKey(ctx, w.Start, w.End)
+		if err != nil {
+			return nil, err
+		}
+		psnAssetClass, err = c.psn.assetClassByISIN(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +176,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 
 	streams := make([]silver.SnapshotStream, 0, 2)
 	if c.web != nil {
-		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff)
+		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff, psnAssetClass)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots: %w", err)
 		}

@@ -131,6 +131,7 @@ func (r *webReader) snapshotsForOverlap(
 	ctx context.Context,
 	w canonical.Window,
 	cutoffByWebRel map[string]int64,
+	psnAssetClass map[string]canonical.AssetClass,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return &snapshotStream{}, nil
@@ -144,24 +145,91 @@ func (r *webReader) snapshotsForOverlap(
 		byTime[t] = &canonical.SnapshotBatch{}
 	}
 
-	// Dimensions only. Positions / cash come from the PSN side
-	// (with web payload folded in by the orchestrator).
+	// Dimensions only — portfolios, accounts, instruments.
+	// Positions / cash come from the PSN side (with web payload
+	// folded in by the orchestrator). Web's instruments-via-
+	// description are a strict upgrade over PSN's InstrNm.LngNm-
+	// English (which is colon-formatted and less user-readable),
+	// so emit them here and let the per-column upsert guard pick
+	// the latest snapshot's name.
 	if err := r.appendWebPortfolios(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
 	if err := r.appendWebAccounts(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
+	if err := r.appendWebInstruments(ctx, w, byTime, psnAssetClass); err != nil {
+		return nil, err
+	}
 
 	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
 	for _, t := range times {
 		b := byTime[t]
-		if len(b.Portfolios)+len(b.Accounts) == 0 {
+		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments) == 0 {
 			continue
 		}
 		out.batches = append(out.batches, *b)
 	}
 	return out, nil
+}
+
+// appendWebInstruments emits one InstrumentChange per (snapshot,
+// ISIN) in the window using the web positions.description as the
+// instrument's user-facing Name. ISINs that appear multiple
+// times in the same snapshot (cross-portfolio holdings) coalesce
+// to one emission with the description from the first row seen —
+// the descriptions don't vary by portfolio.
+//
+// psnAssetClass maps ISIN → PSN's CFI-derived asset_class.
+// Web doesn't know an instrument's class (no CFI), and a naive
+// `AssetClassOther` emission would overwrite PSN's specific
+// class via the per-column upsert guard (web's last_seen_at is
+// typically later than PSN's). Stamping PSN's class
+// keeps the cross-source upsert idempotent on asset_class while
+// letting web win on Name. Missing ISINs (not in PSN) fall back
+// to AssetClassOther.
+func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnAssetClass map[string]canonical.AssetClass) error {
+	const q = `
+SELECT snapshot_at, instrument_isin, currency_iso, description
+  FROM positions
+ WHERE instrument_isin IS NOT NULL
+   AND snapshot_at BETWEEN ? AND ?
+ GROUP BY snapshot_at, instrument_isin`
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	if err != nil {
+		return fmt.Errorf("appendWebInstruments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			snap        int64
+			isin        string
+			ccy         string
+			description sql.NullString
+		)
+		if err := rows.Scan(&snap, &isin, &ccy, &description); err != nil {
+			return err
+		}
+		batch, ok := byTime[snap]
+		if !ok {
+			continue
+		}
+		ac := canonical.AssetClassOther
+		if c, ok := psnAssetClass[isin]; ok && c != "" {
+			ac = c
+		}
+		isinCopy := isin
+		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
+			InstrumentExternalID: isin,
+			AssetClass:           ac,
+			ISIN:                 &isinCopy,
+			Name:                 nullStringPtr(description),
+			Currency:             strPtrIfNonEmpty(ccy),
+			FirstSeenAt:          snap,
+			LastSeenAt:           snap,
+		})
+	}
+	return rows.Err()
 }
 
 // transactionsBeforePSNStart emits web transactions strictly

@@ -264,10 +264,26 @@ type instrumentMeta struct {
 }
 
 type instrumentPayload struct {
-	InstrCtgyCFI       string `json:"InstrCtgyCFI"`
-	InstrCtgyCFIDesc   string `json:"InstrCtgyCFIDesc"`
-	InstrNm            string `json:"InstrNm"`
-	GacInstrRskCcyIsoCd string `json:"GacInstrRskCcyIsoCd"`
+	InstrCtgyCFI        string             `json:"InstrCtgyCFI"`
+	InstrCtgyCFIDesc    string             `json:"InstrCtgyCFIDesc"`
+	InstrNm             instrumentNames    `json:"InstrNm"`
+	GacInstrRskCcyIsoCd string             `json:"GacInstrRskCcyIsoCd"`
+}
+
+// instrumentNames is the UBS InstrNm object — a multi-language
+// envelope carrying long and short names per locale. We pick
+// LngNmEnglish for the canonical Name; ShrtNmEnglish is a useful
+// fallback when the long name is empty.
+type instrumentNames struct {
+	LngNmEnglish  string `json:"LngNmEnglish"`
+	ShrtNmEnglish string `json:"ShrtNmEnglish"`
+}
+
+func (n instrumentNames) Best() string {
+	if n.LngNmEnglish != "" {
+		return n.LngNmEnglish
+	}
+	return n.ShrtNmEnglish
 }
 
 // appendInstruments emits InstrumentChange for any instruments
@@ -325,7 +341,7 @@ SELECT snapshot_at, isin, payload
 			InstrumentExternalID: isin,
 			AssetClass:           ac,
 			ISIN:                 &isin,
-			Name:                 strPtrIfNonEmpty(p.InstrNm),
+			Name:                 strPtrIfNonEmpty(p.InstrNm.Best()),
 			Currency:             strPtrIfNonEmpty(p.GacInstrRskCcyIsoCd),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
