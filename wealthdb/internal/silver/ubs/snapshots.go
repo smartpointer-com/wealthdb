@@ -3,6 +3,7 @@ package ubs
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -48,31 +49,10 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	// Build the (relationship_id, suffix) → canonical safekeeping
-	// ID lookup. UBS silver stores the same safekeeping account in
-	// two formats — `0230-xxxxxxxx.S1` in safekeeping_accounts and
-	// `023000xxxxxxxxS1` in holdings — both ending in the same
-	// "S1"/"T1"/... suffix per (relationship, snapshot). Without
-	// this normalisation appendHoldings would stamp the MT535
-	// format onto position.account_external_id and downstream
-	// joins against gold.accounts would never match.
-	safekeepingLookup, err := c.safekeepingIDLookup(ctx)
-	if err != nil {
+	if err := c.appendHoldings(ctx, w, byTime, instrMap); err != nil {
 		return nil, err
 	}
-	// Same flavour of mismatch on the cash side: cash_balances
-	// records carry AcctId-style IDs ("023000xxxxxxxx010000G")
-	// while cash_accounts uses the IBAN ("CH0000230230xxxxxxxx"). The
-	// AcctId is also present inside cash_accounts.payload, so the
-	// lookup is built from there.
-	cashLookup, err := c.cashIDLookup(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := c.appendHoldings(ctx, w, byTime, instrMap, safekeepingLookup); err != nil {
-		return nil, err
-	}
-	if err := c.appendCashBalances(ctx, w, byTime, cashLookup); err != nil {
+	if err := c.appendCashBalances(ctx, w, byTime); err != nil {
 		return nil, err
 	}
 	if err := c.appendFxRates(ctx, w, byTime); err != nil {
@@ -120,24 +100,20 @@ func (c *psnReader) snapshotTimesInWindow(ctx context.Context, w canonical.Windo
 
 // ---- accounts ------------------------------------------------------------
 
-// cashAccountPayload covers the UBS SDCA fields we extract. AcctId
-// (the SWIFT-flavoured cash-account ID) is also captured so
-// appendCashBalances can rewrite cash_balances rows from that
-// format into the canonical IBAN form held in account_external_id.
-// PrtflId names the parent portfolio (when the account is part of
-// a wealth-management portfolio) — forwarded as
-// ParentAccountExternalID so the accounts rollup can sum component
-// balances into their portfolio row.
+// cashAccountPayload covers the UBS SDCA fields the adapter still
+// reads out of payload JSON. AcctCcyIsoCd (currency) and
+// AcctTpDesc (category) aren't promoted in silver, so they stay
+// here. PrtflId moved to a promoted column in silver migration
+// 0002 — read directly from the SELECT.
 type cashAccountPayload struct {
 	AcctCcyIsoCd string `json:"AcctCcyIsoCd"`
 	AcctTpDesc   string `json:"AcctTpDesc"`
-	AcctId       string `json:"AcctId"`
-	PrtflId      string `json:"PrtflId"`
 }
 
 func (c *psnReader) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
-SELECT snapshot_at, relationship_id, account_external_id, payload
+SELECT snapshot_at, relationship_id, account_external_id,
+       portfolio_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -147,12 +123,13 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap     int64
-			relID    string
-			extID    string
-			payload  string
+			snap        int64
+			relID       string
+			extID       string
+			portfolioID sql.NullString
+			payload     string
 		)
-		if err := rows.Scan(&snap, &relID, &extID, &payload); err != nil {
+		if err := rows.Scan(&snap, &relID, &extID, &portfolioID, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -173,7 +150,7 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 			BaseCurrency:        strPtrIfNonEmpty(p.AcctCcyIsoCd),
 			RelationshipID:      strPtrIfNonEmpty(relID),
 			AccountCategory:     strPtrIfNonEmpty(p.AcctTpDesc),
-			PortfolioExternalID: strPtrIfNonEmpty(p.PrtflId),
+			PortfolioExternalID: nullStringPtr(portfolioID),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -186,12 +163,12 @@ type safekeepingPayload struct {
 	InvstmtCcyIsoCd string `json:"InvstmtCcyIsoCd"`
 	AcctTpDesc      string `json:"AcctTpDesc"`
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
-	PrtflId         string `json:"PrtflId"`
 }
 
 func (c *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
-SELECT snapshot_at, relationship_id, account_external_id, payload
+SELECT snapshot_at, relationship_id, account_external_id,
+       portfolio_external_id, payload
   FROM safekeeping_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -201,11 +178,12 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap            int64
-			relID, extID    string
-			payload         string
+			snap         int64
+			relID, extID string
+			portfolioID  sql.NullString
+			payload      string
 		)
-		if err := rows.Scan(&snap, &relID, &extID, &payload); err != nil {
+		if err := rows.Scan(&snap, &relID, &extID, &portfolioID, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -226,7 +204,7 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 			BaseCurrency:        strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
 			RelationshipID:      strPtrIfNonEmpty(relID),
 			AccountCategory:     strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
-			PortfolioExternalID: strPtrIfNonEmpty(p.PrtflId),
+			PortfolioExternalID: nullStringPtr(portfolioID),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -236,8 +214,12 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 }
 
 func (c *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+	// base_currency is promoted in silver migration 0002 — read
+	// directly. The payload still carries the full PrtflKey (with
+	// PrtflElmntData, performance, etc.) for forensics.
 	const q = `
-SELECT snapshot_at, relationship_id, portfolio_external_id, payload
+SELECT snapshot_at, relationship_id, portfolio_external_id,
+       base_currency, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -249,20 +231,19 @@ SELECT snapshot_at, relationship_id, portfolio_external_id, payload
 		var (
 			snap         int64
 			relID, extID string
+			baseCcy      sql.NullString
 			payload      string
 		)
-		if err := rows.Scan(&snap, &relID, &extID, &payload); err != nil {
+		if err := rows.Scan(&snap, &relID, &extID, &baseCcy, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
 			continue
 		}
-		var p portfolioPayload
-		_ = json.Unmarshal([]byte(payload), &p) // best-effort
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
-			BaseCurrency:        strPtrIfNonEmpty(p.PrtflKey.PrtflCcyIsoCd),
+			BaseCurrency:        nullStringPtr(baseCcy),
 			RelationshipID:      strPtrIfNonEmpty(relID),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
@@ -270,16 +251,6 @@ SELECT snapshot_at, relationship_id, portfolio_external_id, payload
 		})
 	}
 	return rows.Err()
-}
-
-// portfolioPayload extracts the portfolio-level base currency
-// from PrtflKey.PrtflCcyIsoCd. The rest of the portfolio payload
-// (PrtflElmntData composition list, perf metrics) stays in
-// AccountChange.Payload for forensics.
-type portfolioPayload struct {
-	PrtflKey struct {
-		PrtflCcyIsoCd string `json:"PrtflCcyIsoCd"`
-	} `json:"PrtflKey"`
 }
 
 // ---- instruments + holdings ----------------------------------------------
@@ -382,16 +353,12 @@ type holdingsPayloadShape struct {
 // HOLD entry when no exact match exists). See mt535.go for the
 // parser and docs/adapters/ubs.md §4 for the rationale.
 //
-// safekeepingLookup translates the MT535-flavoured
-// safekeeping_external_id stored in `holdings`
-// ("023000xxxxxxxxS1") into the canonical safekeeping_accounts
-// format ("0230-xxxxxxxx.S1"). When a row's (relationship_id,
-// suffix) pair has no entry, the raw silver value is forwarded
-// — defensive against suffix-extraction edge cases (the gold-side
-// join will simply miss).
-func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta, safekeepingLookup map[[2]string]string) error {
+// As of silver migration 0002 both holdings and safekeeping_
+// accounts use the same AcctId form for the safekeeping ID
+// (e.g. BBBBxxxxxxxxxxS1); no cross-table translation is needed.
+func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
 	const q = `
-SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
+SELECT snapshot_at, safekeeping_external_id, isin, payload
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -403,16 +370,12 @@ SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
 	for rows.Next() {
 		var (
 			snap          int64
-			relID         string
 			safekeepingID string
 			isin          string
 			payload       string
 		)
-		if err := rows.Scan(&snap, &relID, &safekeepingID, &isin, &payload); err != nil {
+		if err := rows.Scan(&snap, &safekeepingID, &isin, &payload); err != nil {
 			return err
-		}
-		if canonical := safekeepingLookup[[2]string{relID, trailingSuffix(safekeepingID)}]; canonical != "" {
-			safekeepingID = canonical
 		}
 		batch, ok := byTime[snap]
 		if !ok {
@@ -492,9 +455,12 @@ type cashBalancePayload struct {
 	CurrencyISO string            `json:"currency_iso"`
 }
 
-func (c *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cashLookup map[[2]string]string) error {
+// As of silver migration 0002 cash_balances.account_external_id
+// is the IBAN, matching cash_accounts.account_external_id; no
+// cross-table translation is needed.
+func (c *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
-SELECT snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload
+SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
@@ -504,15 +470,12 @@ SELECT snapshot_at, relationship_id, account_external_id, balance_kind, currency
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                   int64
-			relID, extID, balanceKind, currencyISO string
-			payload                                string
+			snap                            int64
+			extID, balanceKind, currencyISO string
+			payload                         string
 		)
-		if err := rows.Scan(&snap, &relID, &extID, &balanceKind, &currencyISO, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &balanceKind, &currencyISO, &payload); err != nil {
 			return err
-		}
-		if iban := cashLookup[[2]string{relID, extID}]; iban != "" {
-			extID = iban
 		}
 		batch, ok := byTime[snap]
 		if !ok {
@@ -735,106 +698,6 @@ func strPtrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
-}
-
-// safekeepingIDLookup builds a (relationship_id, suffix) →
-// canonical safekeeping_accounts.account_external_id map from
-// silver. UBS PSN's MT535 holdings record uses a stripped/padded
-// form of the safekeeping ID ("023000xxxxxxxxS1") while the
-// safekeeping_accounts table uses the canonical
-// ("0230-xxxxxxxx.S1") form — they share the trailing
-// letter+digits suffix ("S1", "T1", ...) within a relationship.
-// Without this lookup, position.account_external_id never joins
-// to gold.accounts.
-//
-// Built once per Snapshots() call against the WHOLE silver table
-// (not just the change window) so a holding's lookup never
-// misses just because its safekeeping_accounts record was last
-// updated in an earlier snapshot — UBS dedups by content like
-// instruments do.
-func (c *psnReader) safekeepingIDLookup(ctx context.Context) (map[[2]string]string, error) {
-	const q = `SELECT DISTINCT relationship_id, account_external_id FROM safekeeping_accounts`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("safekeepingIDLookup: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[[2]string]string)
-	for rows.Next() {
-		var rel, id string
-		if err := rows.Scan(&rel, &id); err != nil {
-			return nil, err
-		}
-		suffix := suffixAfterDot(id)
-		if suffix == "" {
-			continue
-		}
-		out[[2]string{rel, suffix}] = id
-	}
-	return out, rows.Err()
-}
-
-// cashIDLookup builds a (relationship_id, AcctId) →
-// account_external_id map from silver.cash_accounts, where
-// AcctId is the SWIFT-flavoured cash-account ID
-// ("023000xxxxxxxx010000G") and account_external_id is the IBAN
-// ("CH0000230230xxxxxxxx..."). cash_balances records reference
-// accounts by AcctId, so without this rewrite the balances never
-// join to gold.accounts.
-//
-// Built once per Snapshots() call against the whole silver table
-// — same idempotency reasoning as safekeepingIDLookup.
-func (c *psnReader) cashIDLookup(ctx context.Context) (map[[2]string]string, error) {
-	const q = `SELECT DISTINCT relationship_id, account_external_id, payload FROM cash_accounts`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("cashIDLookup: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[[2]string]string)
-	for rows.Next() {
-		var rel, iban, payload string
-		if err := rows.Scan(&rel, &iban, &payload); err != nil {
-			return nil, err
-		}
-		var p cashAccountPayload
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			continue // tolerate; just no lookup entry
-		}
-		if p.AcctId == "" {
-			continue
-		}
-		out[[2]string{rel, p.AcctId}] = iban
-	}
-	return out, rows.Err()
-}
-
-// suffixAfterDot returns whatever follows the LAST `.` in s, or
-// "" if there's no dot. "0230-xxxxxxxx.S1" → "S1".
-func suffixAfterDot(s string) string {
-	if i := strings.LastIndexByte(s, '.'); i >= 0 {
-		return s[i+1:]
-	}
-	return ""
-}
-
-// trailingSuffix extracts a trailing [A-Z][0-9]+ from s, or "" if
-// no such suffix exists. "023000xxxxxxxxS1" → "S1"; "ABC123XY"
-// → "" (no digits at end); "" → "".
-func trailingSuffix(s string) string {
-	i := len(s)
-	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
-		i--
-	}
-	if i == 0 || i == len(s) {
-		return ""
-	}
-	if s[i-1] < 'A' || s[i-1] > 'Z' {
-		return ""
-	}
-	return s[i-1:]
 }
 
 // joinSafekeepingCategory combines the safekeeping AcctTpDesc and

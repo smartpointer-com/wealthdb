@@ -223,7 +223,15 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
-			TransactionExternalID: txID,
+			// Web silver's transactions PK is the compound
+			// (transaction_external_id, account_external_id) so
+			// that FX trades and other multi-leg events appear as
+			// separate rows per leg. Gold's transactions PK is
+			// (silver_source_id, transaction_external_id), so we
+			// synthesize a per-leg ID here. The natural
+			// "Transaction no." remains in the payload for
+			// downstream queries that want to reassemble the trade.
+			TransactionExternalID: txID + "@" + accountID,
 			OccurredAt:            valueDate,
 			AccountExternalID:     accountID,
 			Kind:                  webKind(kindStr.String, debit.Valid, credit.Valid),

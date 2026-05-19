@@ -211,23 +211,21 @@ func TestSnapshotsHoldingFallbackCurrency(t *testing.T) {
 	}
 }
 
-// TestSnapshotsHoldingsCanonicalSafekeepingID covers the
-// safekeeping ID normalisation: holdings use the MT535-flavoured
-// format ("023000xxxxxxxxS1") while safekeeping_accounts use the
-// canonical ("0230-xxxxxxxx.S1"). The adapter must translate the
-// holdings ID so position.account_external_id matches the
-// corresponding accounts row.
-func TestSnapshotsHoldingsCanonicalSafekeepingID(t *testing.T) {
+// TestSnapshotsHoldingsJoinPromoted confirms that with silver
+// migration 0002 the safekeeping_accounts.account_external_id
+// and holdings.safekeeping_external_id share the same AcctId
+// form — no cross-table translation needed by the adapter.
+func TestSnapshotsHoldingsJoinPromoted(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
-        INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
-            (1000, 'SFTPCHxx', '0230-xxxxxxxx.S1', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody"}');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, portfolio_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'BBBBxxxxxxxxxxS1', 'BBBBxxxxxxxxNNNN', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody"}');
         INSERT INTO instruments(snapshot_at, relationship_id, isin, payload) VALUES
             (1000, 'SFTPCHxx', 'CH0000000001',
              '{"InstrCtgyCFI":"ESVTFR","InstrNm":"Acme","GacInstrRskCcyIsoCd":"CHF"}');
         INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
-            (1000, 'SFTPCHxx', '023000xxxxxxxxS1', 'CH0000000001',
+            (1000, 'SFTPCHxx', 'BBBBxxxxxxxxxxS1', 'CH0000000001',
              '{"fields":{"19A":[":HOLD//CHF1000,"],"93B":[":AGGR//UNIT/10,"]}}');
     `); err != nil {
 		t.Fatal(err)
@@ -241,28 +239,23 @@ func TestSnapshotsHoldingsCanonicalSafekeepingID(t *testing.T) {
 	if len(batch.Positions) != 1 {
 		t.Fatalf("positions = %d, want 1", len(batch.Positions))
 	}
-	if got := batch.Positions[0].AccountExternalID; got != "0230-xxxxxxxx.S1" {
-		t.Errorf("position account_external_id = %q, want canonical safekeeping form '0230-xxxxxxxx.S1'", got)
+	if got := batch.Positions[0].AccountExternalID; got != "BBBBxxxxxxxxxxS1" {
+		t.Errorf("position account_external_id = %q, want 'BBBBxxxxxxxxxxS1'", got)
 	}
 }
 
-// TestSnapshotsCashBalancesCanonicalID covers the cash-side
-// counterpart of the safekeeping normalisation. cash_balances
-// references accounts by AcctId ("023000xxxxxxxx010000G") which
-// also lives in the cash_accounts payload; the
-// account_external_id on cash_accounts is the IBAN
-// ("CH0000230230xxxxxxxx"). The adapter must translate the
-// balance's AcctId to the IBAN so the CashBalanceChange's
-// AccountExternalID joins to the AccountChange.
-func TestSnapshotsCashBalancesCanonicalID(t *testing.T) {
+// TestSnapshotsCashBalancesJoinPromoted confirms that with silver
+// migration 0002 cash_balances.account_external_id is the IBAN —
+// the adapter no longer needs to translate via cash_accounts.payload.
+func TestSnapshotsCashBalancesJoinPromoted(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
-        INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
-            (1000, 'SFTPCHxx', 'CH0000230230xxxxxxxx',
-             '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private","AcctId":"023000xxxxxxxx010000G"}');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, portfolio_external_id, payload) VALUES
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAC', 'BBBBxxxxxxxxNNNN',
+             '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private"}');
         INSERT INTO cash_balances(snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload) VALUES
-            (1000, 'SFTPCHxx', '023000xxxxxxxx010000G', 'closing', 'CHF',
+            (1000, 'SFTPCHxx', 'CHKKBBBBRRRRAAAAAAAAC', 'closing', 'CHF',
              '{"amount":1500.00,"credit_debit":"C","currency_iso":"CHF"}');
     `); err != nil {
 		t.Fatal(err)
@@ -276,27 +269,8 @@ func TestSnapshotsCashBalancesCanonicalID(t *testing.T) {
 	if len(batch.CashBalances) != 1 {
 		t.Fatalf("cash_balances = %d, want 1", len(batch.CashBalances))
 	}
-	if got := batch.CashBalances[0].AccountExternalID; got != "CH0000230230xxxxxxxx" {
-		t.Errorf("cash balance account_external_id = %q, want canonical IBAN 'CH0000230230xxxxxxxx'", got)
-	}
-}
-
-// TestTrailingSuffix exercises the suffix extractor used by the
-// safekeeping ID normaliser.
-func TestTrailingSuffix(t *testing.T) {
-	cases := map[string]string{
-		"023000xxxxxxxxS1": "S1",
-		"023000xxxxxxxxT1": "T1",
-		"023000xxxxxxxxS10": "S10",
-		"ABC":              "", // no trailing digits
-		"123":              "", // no leading letter
-		"":                 "",
-		"S":                "", // no trailing digits
-	}
-	for in, want := range cases {
-		if got := trailingSuffix(in); got != want {
-			t.Errorf("trailingSuffix(%q) = %q, want %q", in, got, want)
-		}
+	if got := batch.CashBalances[0].AccountExternalID; got != "CHKKBBBBRRRRAAAAAAAAC" {
+		t.Errorf("cash balance account_external_id = %q, want 'CHKKBBBBRRRRAAAAAAAAC'", got)
 	}
 }
 

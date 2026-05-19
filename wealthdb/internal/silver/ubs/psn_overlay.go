@@ -36,18 +36,13 @@ type psnPosInfo struct {
 	MarketValue *canonical.Decimal
 }
 
-// positionInfoByKey is the structured counterpart to the older
-// "payload only" version: per (UTC date, account, position_key)
-// it returns PSN's payload AND the parsed market_value (when MT535
-// 19A:HOLD carried one). The MT535 parser lives in mt535.go and
-// is shared with the live read path.
+// positionInfoByKey returns PSN's payload and parsed market_value
+// per (UTC date, account, position_key). safekeeping_external_id
+// and safekeeping_accounts.account_external_id share the same
+// AcctId form as of silver migration 0002 — no translation needed.
 func (r *psnReader) positionInfoByKey(ctx context.Context, wStart, wEnd int64) (map[psnPosKey]psnPosInfo, error) {
 	if r == nil {
 		return nil, nil
-	}
-	lookup, err := r.safekeepingIDLookup(ctx)
-	if err != nil {
-		return nil, err
 	}
 	instr, err := r.instrumentMetaByISIN(ctx)
 	if err != nil {
@@ -55,7 +50,7 @@ func (r *psnReader) positionInfoByKey(ctx context.Context, wStart, wEnd int64) (
 	}
 
 	const q = `
-SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
+SELECT snapshot_at, safekeeping_external_id, isin, payload
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, wStart, wEnd)
@@ -66,16 +61,13 @@ SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
 	out := make(map[psnPosKey]psnPosInfo)
 	for rows.Next() {
 		var (
-			snap      int64
-			relID, sk string
-			isin      string
-			payload   string
+			snap    int64
+			sk      string
+			isin    string
+			payload string
 		)
-		if err := rows.Scan(&snap, &relID, &sk, &isin, &payload); err != nil {
+		if err := rows.Scan(&snap, &sk, &isin, &payload); err != nil {
 			return nil, err
-		}
-		if canonical := lookup[[2]string{relID, trailingSuffix(sk)}]; canonical != "" {
-			sk = canonical
 		}
 		var hp holdingsPayloadShape
 		_ = json.Unmarshal([]byte(payload), &hp)
@@ -132,18 +124,15 @@ type psnCashKey struct {
 }
 
 // cashPayloadByKey returns PSN's latest-per-day cash payload
-// keyed by (UTC date, account_external_id, currency). Same
-// AcctId → IBAN canonicalisation as the live read path.
+// keyed by (UTC date, account_external_id, currency).
+// account_external_id is the IBAN as of silver migration 0002 —
+// matches cash_accounts directly.
 func (r *psnReader) cashPayloadByKey(ctx context.Context, wStart, wEnd int64) (map[psnCashKey]string, error) {
 	if r == nil {
 		return nil, nil
 	}
-	cashLookup, err := r.cashIDLookup(ctx)
-	if err != nil {
-		return nil, err
-	}
 	const q = `
-SELECT snapshot_at, relationship_id, account_external_id, currency_iso, payload
+SELECT snapshot_at, account_external_id, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, wStart, wEnd)
@@ -154,14 +143,11 @@ SELECT snapshot_at, relationship_id, account_external_id, currency_iso, payload
 	out := make(map[psnCashKey]string)
 	for rows.Next() {
 		var (
-			snap                   int64
-			relID, acctID, ccy, pl string
+			snap            int64
+			acctID, ccy, pl string
 		)
-		if err := rows.Scan(&snap, &relID, &acctID, &ccy, &pl); err != nil {
+		if err := rows.Scan(&snap, &acctID, &ccy, &pl); err != nil {
 			return nil, err
-		}
-		if iban := cashLookup[[2]string{relID, acctID}]; iban != "" {
-			acctID = iban
 		}
 		k := psnCashKey{utcDate: utcDay(snap), account: acctID, currency: ccy}
 		out[k] = pl

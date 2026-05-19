@@ -18,18 +18,20 @@ CREATE TABLE account_holders (
 );
 
 CREATE TABLE cash_accounts (
-    snapshot_at          INTEGER NOT NULL,
-    relationship_id      TEXT    NOT NULL,
-    account_external_id  TEXT    NOT NULL,
-    payload              TEXT    NOT NULL,
+    snapshot_at            INTEGER NOT NULL,
+    relationship_id        TEXT    NOT NULL,
+    account_external_id    TEXT    NOT NULL,
+    portfolio_external_id  TEXT,
+    payload                TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, relationship_id, account_external_id)
 );
 
 CREATE TABLE safekeeping_accounts (
-    snapshot_at          INTEGER NOT NULL,
-    relationship_id      TEXT    NOT NULL,
-    account_external_id  TEXT    NOT NULL,
-    payload              TEXT    NOT NULL,
+    snapshot_at            INTEGER NOT NULL,
+    relationship_id        TEXT    NOT NULL,
+    account_external_id    TEXT    NOT NULL,
+    portfolio_external_id  TEXT,
+    payload                TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, relationship_id, account_external_id)
 );
 
@@ -37,6 +39,7 @@ CREATE TABLE portfolios (
     snapshot_at            INTEGER NOT NULL,
     relationship_id        TEXT    NOT NULL,
     portfolio_external_id  TEXT    NOT NULL,
+    base_currency          TEXT,
     payload                TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, relationship_id, portfolio_external_id)
 );
