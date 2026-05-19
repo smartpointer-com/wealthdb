@@ -244,8 +244,9 @@ def iban_to_psn_acct_id(iban_c: str | None) -> str | None:
 
 def relationship_prefix_from_iban(iban_c: str | None) -> str | None:
     """Extract the banking-relationship account-number prefix
-    from a canonical IBAN (e.g. 'BBBB AAAAAAAA' for CH...BBBB RRRR
-    AAAA AAAA .. C). Used as a proxy join key when the opaque
+    from a canonical IBAN. For a canonical IBAN of the shape
+    'CHKKBBBBRRRRAAAAAAAAC' the prefix is 'RRRR AAAAAAAA' (branch +
+    8-char account base). Used as a proxy join key when the opaque
     bankingRelationId tokens differ across sessions."""
     if not iban_c or len(iban_c) < 16:
         return None

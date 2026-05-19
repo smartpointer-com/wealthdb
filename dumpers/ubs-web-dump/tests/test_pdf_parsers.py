@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from pdf_parsers import parse_label_statement_of_assets
+from pdf_parsers import (
+    parse_account_statement_text,
+    parse_label_statement_of_assets,
+)
 
 
 # ---- Issue 2: portfolio_external_id length must be 16 -------------
@@ -94,3 +97,120 @@ class TestPortfolioExternalId:
         dummy.write_bytes(b"%PDF-1.4\n%%EOF\n")
         with pytest.raises(ValueError, match=r"length != 16"):
             parse_statement_of_assets(dummy, "<doc-token>", "<label>")
+
+
+# ---- Issue 1: opening/closing/total balances must be extracted ---
+
+class TestAccountStatementBalances:
+    """The Account-Statement parser must populate opening_balance,
+    closing_balance, total_debits, total_credits from the squished
+    PDF text. Earlier the four regexes required `\\s+` between label
+    and value, which never matches the whitespace-stripped `flat`
+    text — every row landed with all four numeric columns NULL."""
+
+    # Synthetic placeholder IBAN: CH + 2-digit checksum + 17
+    # alphanumerics. Not a real IBAN — the regex only validates
+    # shape, so any matching string works for the parser layer.
+    IBAN = "CH00000000000000000000A"[:21]  # 21 chars
+    PERIOD = "01.04.2026 - 30.04.2026"
+    HEADER = "UBS personal account EUR"
+
+    # Synthetic placeholder values. Deliberately obvious-fake
+    # repdigits so a casual reader can see they are not anyone's
+    # actual balances. Matching the assertions to these constants
+    # makes it easy to confirm none of the numbers were lifted from
+    # a real probed statement.
+    OPENING_VAL_STR = "1 111.11"
+    CREDITS_VAL_STR = "2 222.22"
+    DEBITS_VAL_STR = "3 333.33"
+    CLOSING_VAL_STR = "4 444.44"
+
+    def _statement_with_summary(self) -> str:
+        """Text shape of a full monthly EUR statement (opening +
+        closing + totals all present). Whitespace and line breaks
+        mirror what pdfplumber emits before the squish-pass."""
+        return (
+            f"IBAN {self.IBAN}\n"
+            f"{self.HEADER}\n"
+            f"Account Statement\n"
+            f"{self.PERIOD} / Monthly: number 4\n"
+            "Your account at a glance Debits Credits Balance\n"
+            f"Opening balance {self.OPENING_VAL_STR}\n"
+            f"Total credits {self.CREDITS_VAL_STR}\n"
+            f"Total debits {self.DEBITS_VAL_STR}\n"
+            f"Closing balance {self.CLOSING_VAL_STR}\n"
+        )
+
+    def _statement_without_summary(self) -> str:
+        """Text shape of a low-activity statement that omits the
+        summary block and only carries the in-table opening line."""
+        return (
+            f"IBAN {self.IBAN}\n"
+            f"{self.HEADER}\n"
+            f"Account Statement\n"
+            f"{self.PERIOD}\n"
+            "Date Information Debits Credits Value date Balance\n"
+            f"01.04.26 Opening balance {self.OPENING_VAL_STR}\n"
+        )
+
+    def test_summary_block_populates_all_four_columns(self):
+        rows = parse_account_statement_text(
+            self._statement_with_summary(), "<doc-token>"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["opening_balance"] == pytest.approx(1111.11)
+        assert row["closing_balance"] == pytest.approx(4444.44)
+        assert row["total_credits"] == pytest.approx(2222.22)
+        assert row["total_debits"] == pytest.approx(3333.33)
+        assert row["currency_iso"] == "EUR"
+        assert row["account_external_id"] == self.IBAN
+
+    def test_missing_summary_leaves_totals_null(self):
+        """When the summary block is absent (low-activity month),
+        opening_balance must still come from the in-table line and
+        the totals must remain NULL — never 0.0, which would be
+        indistinguishable from a real zero-flow month."""
+        rows = parse_account_statement_text(
+            self._statement_without_summary(), "<doc-token>"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["opening_balance"] == pytest.approx(1111.11)
+        assert row["closing_balance"] is None
+        assert row["total_credits"] is None
+        assert row["total_debits"] is None
+
+    def test_zero_balance_without_decimal_parses(self):
+        """Closed / zero-activity accounts render balances as a bare
+        `0` rather than `0.00`. The decimal portion of the value
+        regex must be optional or the row drops to NULL."""
+        text = (
+            f"IBAN {self.IBAN}\n"
+            f"{self.HEADER}\n"
+            f"{self.PERIOD}\n"
+            "Date Information Debits Credits Value date Balance\n"
+            "01.01.24 Opening balance 0\n"
+            "Turnover total 0 0\n"
+            "31.12.24 Closing balance 0\n"
+        )
+        rows = parse_account_statement_text(text, "<doc-token>")
+        assert len(rows) == 1
+        assert rows[0]["opening_balance"] == 0.0
+        assert rows[0]["closing_balance"] == 0.0
+
+    def test_negative_value_parses(self):
+        """Overdraft / debit-side opening balances render with a
+        leading minus sign in the source PDF; the value regex must
+        accept it."""
+        text = (
+            f"IBAN {self.IBAN}\n"
+            f"{self.HEADER}\n"
+            f"{self.PERIOD}\n"
+            f"Opening balance -{self.OPENING_VAL_STR}\n"
+            f"Closing balance -{self.CLOSING_VAL_STR}\n"
+        )
+        rows = parse_account_statement_text(text, "<doc-token>")
+        assert len(rows) == 1
+        assert rows[0]["opening_balance"] == pytest.approx(-1111.11)
+        assert rows[0]["closing_balance"] == pytest.approx(-4444.44)

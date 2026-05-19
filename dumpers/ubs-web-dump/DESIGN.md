@@ -383,6 +383,15 @@ sides.
   so missing months don't imply missing balances — the closing
   balance from the most recent prior month is still valid until
   the next statement.
+- Within a row, individual numeric columns may be NULL even when
+  the row is present. The four columns come from two different
+  PDF sections: opening / closing balance live on the in-table
+  header / footer rows (present in essentially every statement),
+  while `total_credits` / `total_debits` come from the "Your
+  account at a glance" summary block (only emitted for statements
+  with non-trivial activity — empirically ~37% of the corpus).
+  Treat NULL as "the source PDF did not print that line" rather
+  than as 0.0.
 
 ## 4. Web loader implementation notes
 

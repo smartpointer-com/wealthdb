@@ -139,6 +139,11 @@ companion PSN silver is at `~/wealthdb/ubs-psn/ubs-psn.db` (from
   `historical_cash_balances` (monthly cash deltas reconstructed
   from "Account Statement" PDFs). Kept separate from the live-
   fetch tables because the identity model and cadence differ.
+- [`0003_backfill_historical_portfolio_id.sql`](migrations/0003_backfill_historical_portfolio_id.sql)
+  — one-shot backfill: prepends a leading zero to any pre-existing
+  15-char `historical_position_snapshots.portfolio_external_id`
+  values so they line up with PSN's 16-char canonical form.
+  Idempotent; the parser fix prevents any new 15-char rows.
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the

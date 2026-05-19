@@ -98,7 +98,7 @@ _BASE_CCY_RE = re.compile(r"Valued in (?P<ccy>[A-Z]{3})\b")
 # Cash position rows in the "Liquidity - Accounts" section:
 #   "CHF 1 234.56 UBS Personal Account CHF 9 876.54 1 234 11.11"
 #   "                                                        0.00"   (accrued)
-#   "                                CH00 0000 0000 0000 0000X"
+#   "                                CHKK BBBB RRRR AAAA AAAA C"
 _CASH_AMOUNT_LINE_RE = re.compile(
     r"^(?P<ccy>[A-Z]{3})\s+(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
     r"(?P<opening>[\d\s']+(?:\.\d+)?)\s+(?:(?P<fx>\d+\.\d+)\s+)?"
@@ -285,10 +285,20 @@ _PERIOD_RE = re.compile(
 _CCY_HEADER_RE = re.compile(
     r"[A-Za-z]*[Aa]ccount[A-Za-z]*(?P<ccy>[A-Z]{3})\b"
 )
-_OPENING_BAL_RE = re.compile(r"Opening\s*balance\s+(?P<v>-?[\d\s']+\.\d{2})")
-_CLOSING_BAL_RE = re.compile(r"Closing\s*balance\s+(?P<v>-?[\d\s']+\.\d{2})")
-_TOTAL_CREDITS_RE = re.compile(r"Total\s*credits\s+(?P<v>-?[\d\s']+\.\d{2})")
-_TOTAL_DEBITS_RE = re.compile(r"Total\s*debits\s+(?P<v>-?[\d\s']+\.\d{2})")
+# The four balance/total regexes run against the squished `flat`
+# text (whitespace already removed). UBS uses thin spaces as
+# thousand separators in the rendered PDF (e.g. "1 234.56"), so
+# after the `replace(" ", "")` pass the value has neither spaces
+# nor apostrophes between digits. We keep `'` in the value class
+# defensively in case some historical statements use the Swiss
+# apostrophe convention and pdfplumber preserves it. The decimal
+# part is optional: zero-balance / closed-account statements
+# render the value as a bare `0`, not `0.00`.
+_VAL = r"-?[\d']+(?:\.\d{2})?"
+_OPENING_BAL_RE = re.compile(rf"Openingbalance(?P<v>{_VAL})")
+_CLOSING_BAL_RE = re.compile(rf"Closingbalance(?P<v>{_VAL})")
+_TOTAL_CREDITS_RE = re.compile(rf"Totalcredits(?P<v>{_VAL})")
+_TOTAL_DEBITS_RE = re.compile(rf"Totaldebits(?P<v>{_VAL})")
 
 
 def parse_account_statement(pdf_path: Path, doc_token: str,
@@ -299,8 +309,15 @@ def parse_account_statement(pdf_path: Path, doc_token: str,
         text = "\n".join(
             (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2]
         )
+    return parse_account_statement_text(text, doc_token)
+
+
+def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
+    """Pure-text variant of parse_account_statement — same row shape,
+    but takes already-extracted PDF text so tests can exercise the
+    regex layer without a real PDF on disk."""
     # UBS Account-Statement PDFs render text with all the
-    # whitespace squished out within tokens (e.g. `IBANCH76...`,
+    # whitespace squished out within tokens (e.g. `IBANCHKK...`,
     # `Openingbalance1234.56`). pdfplumber preserves that. We
     # match all the headers against the squished text.
     flat = text.replace(" ", "").replace(" ", "")
