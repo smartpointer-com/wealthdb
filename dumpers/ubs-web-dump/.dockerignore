@@ -1,0 +1,55 @@
+# Keep the build context lean and credential-free.
+
+# VCS
+.git/
+.gitignore
+.github/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Documentation that the image doesn't need at runtime
+README.md
+CLAUDE.md
+DESIGN.md
+
+# Credentials and downloaded data — must never enter the image
+*.pem
+*.key
+storageState*.json
+ubs_web_state*.json
+.env
+.envrc
+data/
+downloads/
+
+# Bootstrap material (sample HTML / screenshots / HAR / MHTML) the
+# user drops in for landmarking. Real account data, never ship.
+samples/
+fixtures/raw/
+*.mhtml
+*.har
+
+# Local logs / traces
+*.log
+trace*.zip
+screenshots/

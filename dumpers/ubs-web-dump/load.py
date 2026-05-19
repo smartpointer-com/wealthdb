@@ -1,0 +1,698 @@
+#!/usr/bin/env python3
+"""
+UBS web-scrape silver loader.
+
+Walks the bronze directory laid down by `download.py`, applies any
+pending schema migrations, and loads each new dump into the silver
+SQLite database defined by `migrations/0001_initial.sql`.
+
+Load semantics
+--------------
+- Bronze dumps are identified by their `YYYYMMDDTHHMMSSZ` subdir
+  names. Each dump is loaded atomically (one transaction); on
+  failure the partial dump is rolled back and the loader can retry
+  on the next run.
+- Already-loaded dumps are skipped via the `dump_runs` table.
+- Transactions are UPSERTed on UBS Transaction no.
+  (`transaction_external_id`). Re-running a window converges to
+  UBS's current view.
+- Snapshot tables (banking_relationships, portfolios, accounts,
+  positions) take a new row per `snapshot_at` (dedup-by-PK only).
+- Documents are indexed by `doc_token` (UBS API token); the binary
+  itself stays on disk under bronze.
+
+Usage:
+    load.py --silver-db <file> --bronze-dir <dir> [-v]
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import logging
+import re
+import sqlite3
+import sys
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+log = logging.getLogger("ubs-web-dump.load")
+
+# UTC timestamp directory pattern from download.py's ts_slug().
+DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
+
+# Migration file pattern: NNNN_<slug>.sql, sorted numerically.
+MIGRATION_FILE_RE = re.compile(r"^(\d+)_[a-z0-9_-]+\.sql$", re.IGNORECASE)
+
+# UBS positions.csv columns we care about (semicolon-delimited,
+# UTF-8 BOM, CRLF). Header row defines them in the order below.
+POSITIONS_COLS = [
+    "Banking relationship", "Portfolio", "Group of products",
+    "Product", "Ccy.", "Number/Amt.", "Intraday number/amount",
+    "Valor", "ISIN", "Cost price", "Buy exchange rate",
+    "Sector", "Rating", "Description", "Description 1",
+    "Description 2", "Description 3", "Description 4",
+    "Description 5", "Lending value", "Intraday lending value",
+    "Lending value ratio", "Intraday lending value ratio",
+    "IBAN", "Category", "Interest", "Date", "Duration",
+    "Market value", "% of market value", "Accrued interest",
+    "% of accrued interest",
+]
+
+# Transactions CSV header (UTF-8 BOM, semicolon, CRLF). Header row
+# is the 9th line; first 8 are metadata.
+TXN_DATA_HEADER = (
+    "Trade date;Trade time;Booking date;Value date;Currency;"
+    "Debit;Credit;Individual amount;Balance;Transaction no.;"
+    "Description1;Description2;Description3;Footnotes;"
+)
+TXN_HEADER_FROM = "From:"
+TXN_HEADER_IBAN = "IBAN:"
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.strip())
+    p.add_argument("--silver-db", required=True, type=Path,
+                   help="Path to the silver SQLite database. Created if missing.")
+    p.add_argument("--bronze-dir", required=True, type=Path,
+                   help="Directory containing UTC-timestamped bronze dump dirs.")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="DEBUG-level logging.")
+    return p.parse_args(argv)
+
+
+# ============================================================
+# Migrations
+# ============================================================
+
+def apply_migrations(conn: sqlite3.Connection,
+                     migrations_dir: Path) -> None:
+    """Apply every migration newer than the current
+    schema_meta.silver_schema_version, in numeric order."""
+    current = _current_schema_version(conn)
+    pending: list[tuple[int, Path]] = []
+    for path in sorted(migrations_dir.iterdir()):
+        m = MIGRATION_FILE_RE.match(path.name)
+        if not m:
+            continue
+        ver = int(m.group(1))
+        if ver > current:
+            pending.append((ver, path))
+    if not pending:
+        log.debug("schema at version %d; no migrations to apply", current)
+        return
+    for ver, path in pending:
+        log.info("applying migration %d (%s)", ver, path.name)
+        sql = path.read_text(encoding="utf-8")
+        conn.executescript(sql)
+        conn.commit()
+    new_ver = _current_schema_version(conn)
+    log.info("schema is now at version %d", new_ver)
+
+
+def _current_schema_version(conn: sqlite3.Connection) -> int:
+    """Returns 0 if schema_meta doesn't exist yet."""
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='schema_meta'"
+    )
+    if not cur.fetchone():
+        return 0
+    cur = conn.execute(
+        "SELECT COALESCE(MAX(silver_schema_version), 0) FROM schema_meta"
+    )
+    return int(cur.fetchone()[0])
+
+
+# ============================================================
+# Bronze scan
+# ============================================================
+
+def scan_bronze(bronze_dir: Path) -> list[Path]:
+    """Return bronze dump subdirs in chronological order."""
+    if not bronze_dir.is_dir():
+        raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
+    return sorted(
+        (p for p in bronze_dir.iterdir()
+         if p.is_dir() and DUMP_DIR_RE.match(p.name)),
+        key=lambda p: p.name,
+    )
+
+
+def already_loaded(conn: sqlite3.Connection, dump_dir: Path) -> bool:
+    snapshot_at = ts_from_dir(dump_dir.name)
+    cur = conn.execute(
+        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
+    )
+    return cur.fetchone() is not None
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def ts_from_dir(name: str) -> int:
+    """Parse 'YYYYMMDDTHHMMSSZ' -> Unix seconds UTC."""
+    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(
+        tzinfo=timezone.utc,
+    )
+    return int(dt.timestamp())
+
+
+def ts_from_iso(s: str | None) -> int | None:
+    """Parse 'YYYY-MM-DD' (or full ISO timestamp) -> Unix seconds UTC."""
+    if not s:
+        return None
+    # Accept both 'YYYY-MM-DD' and 'YYYYMMDDTHHMMSSZ' forms.
+    try:
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            dt = datetime.strptime(s, "%Y-%m-%d")
+        else:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def ts_from_dmy(s: str | None) -> int | None:
+    """Parse 'DD.MM.YYYY' -> Unix seconds UTC, midnight."""
+    if not s:
+        return None
+    try:
+        dt = datetime.strptime(s, "%d.%m.%Y").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return int(dt.timestamp())
+
+
+def parse_decimal(s: str | None) -> float | None:
+    """Parse a UBS decimal cell. Web CSVs use '.' as decimal sep;
+    return None for empty / whitespace cells."""
+    if s is None:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+CH_IBAN_CANONICAL_RE = re.compile(r"^CH\d{2}[A-Z0-9]{17}$")
+
+
+def iban_canonical(iban: str | None) -> str | None:
+    """Strip whitespace, uppercase, validate the CH-IBAN shape.
+
+    Returns the canonical string on success, None if the input
+    doesn't pass the basic shape check. UBS occasionally re-uses
+    the IBAN column for non-IBAN fields on mortgages and structured
+    products (e.g. it puts the maturity date / loan term there); we
+    reject those rather than letting them into the accounts table.
+    """
+    if not iban:
+        return None
+    c = re.sub(r"\s+", "", iban).upper()
+    if not CH_IBAN_CANONICAL_RE.match(c):
+        return None
+    return c
+
+
+def iban_to_psn_acct_id(iban_c: str | None) -> str | None:
+    """Compute the 21-char PSN AcctId form from a canonical CH IBAN.
+
+    Mapping (UBS Switzerland personal accounts):
+        CH<2chk><bank:4><branch:4><base:8><chk:1>     (21 chars)
+        -> <branch:4>0000 00<base:8>0000<chk:1>        (21 chars)
+    """
+    if not iban_c or len(iban_c) != 21 or not iban_c.startswith("CH"):
+        return None
+    branch = iban_c[8:12]
+    base = iban_c[12:20]
+    chk = iban_c[20]
+    return branch + "0000" + "00" + base + "0000" + chk
+
+
+def relationship_prefix_from_iban(iban_c: str | None) -> str | None:
+    """Extract the banking-relationship account-number prefix
+    from a canonical IBAN (e.g. 'BBBB AAAAAAAA' for CH...BBBB RRRR
+    AAAA AAAA .. C). Used as a proxy join key when the opaque
+    bankingRelationId tokens differ across sessions."""
+    if not iban_c or len(iban_c) < 16:
+        return None
+    branch = iban_c[8:12]
+    base8 = iban_c[12:20]
+    # Recombine to the spaced "BBBB AAAAAAAA" form (branch + first 8
+    # of base, dropping the trailing currency-sub-account digits and
+    # check letter).
+    return f"{branch} {base8[:8]}"
+
+
+def portfolio_external_id_from_full(full: str | None) -> str | None:
+    """Extract the trailing portfolio code from
+    `<prefix> <portfolio_code>` (e.g. 'BBBB AAAAAAAA RNNN' -> 'RNNN')."""
+    if not full:
+        return None
+    parts = full.split()
+    return parts[-1] if parts else None
+
+
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def normalize_payload(data: dict) -> str:
+    """Canonical JSON for embedding in payload columns."""
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+
+
+# ============================================================
+# Loaders
+# ============================================================
+
+def load_dump(conn: sqlite3.Connection, dump_dir: Path,
+              schema_version: int) -> None:
+    """Load one bronze dump into silver. Single transaction."""
+    snapshot_at = ts_from_dir(dump_dir.name)
+    log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
+
+    run_meta = _read_run_json(dump_dir)
+
+    _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta)
+
+    pos_count = _load_positions(conn, snapshot_at, dump_dir)
+    txn_count = _load_transactions(conn, snapshot_at, dump_dir)
+    doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
+
+    log.info("loaded %s: positions=%d transactions=%d documents=%d",
+             dump_dir.name, pos_count, txn_count, doc_count)
+
+
+def _read_run_json(dump_dir: Path) -> dict:
+    path = dump_dir / "run.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
+                     schema_version: int, dump_dir: Path,
+                     run_meta: dict) -> None:
+    txn = run_meta.get("transactions") or {}
+    docs = run_meta.get("documents") or {}
+    conn.execute(
+        "INSERT INTO dump_runs ("
+        "snapshot_at, silver_schema_version, run_dir, "
+        "transactions_since, transactions_until, "
+        "documents_since, documents_until"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            snapshot_at, schema_version, str(dump_dir),
+            ts_from_iso(txn.get("since")),
+            ts_from_iso(txn.get("until")),
+            ts_from_iso(docs.get("since")),
+            ts_from_iso(docs.get("until")),
+        ),
+    )
+
+
+# ----------------------------------------------------------------
+# Positions
+# ----------------------------------------------------------------
+
+def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
+                    dump_dir: Path) -> int:
+    """Parse every `positions/*.csv` in the dump dir; upsert into
+    banking_relationships, portfolios, accounts, positions."""
+    pos_dir = dump_dir / "positions"
+    if not pos_dir.is_dir():
+        return 0
+    inserted = 0
+    seen_accounts: set[str] = set()
+    seen_portfolios: set[str] = set()
+    seen_relationships: set[str] = set()
+    for csv_path in sorted(pos_dir.glob("*.csv")):
+        for row in _iter_positions_rows(csv_path):
+            inserted += _ingest_positions_row(
+                conn, snapshot_at, row,
+                seen_accounts, seen_portfolios, seen_relationships,
+            )
+    return inserted
+
+
+RELATIONSHIP_PREFIX_RE = re.compile(r"^\d{4}\s+\d{8}$")
+
+
+def _iter_positions_rows(csv_path: Path) -> "iter[dict]":
+    """Yield meaningful holding rows from a positions.csv.
+
+    Skips:
+      - the header row itself
+      - footer rows ("Export created on: …", "Number of positions: …")
+      - blank rows
+      - currency-conversion appendix rows whose column 0 is e.g.
+        "EUR/CHF" instead of a "<branch> <base>" prefix.
+    """
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f, delimiter=";")
+        try:
+            header = next(reader)
+        except StopIteration:
+            return
+        # Header row sanity-check: must contain "Banking relationship".
+        if not header or header[0].strip() != POSITIONS_COLS[0]:
+            log.warning("unexpected positions.csv header in %s: %r",
+                        csv_path.name, header[:3])
+            return
+        # Map header names to indices defensively (UBS may re-order).
+        idx = {name: i for i, name in enumerate(header) if name}
+        for raw in reader:
+            if not raw or all(not c.strip() for c in raw):
+                continue
+            relationship = _cell(raw, idx, "Banking relationship")
+            # Require the canonical "<4-digit branch> <8-digit base>"
+            # form. Filters out:
+            #   - real footer rows (no value)
+            #   - currency-pair appendix rows (e.g. 'EUR/CHF')
+            #   - "Portfolio number: …", "Valued in: …", etc. (text)
+            if not RELATIONSHIP_PREFIX_RE.match(relationship):
+                continue
+            row = {col: _cell(raw, idx, col) for col in POSITIONS_COLS}
+            yield row
+
+
+def _cell(raw: list[str], idx: dict[str, int], name: str) -> str:
+    """Defensive column read: returns '' if column index is out of range."""
+    i = idx.get(name)
+    if i is None or i >= len(raw):
+        return ""
+    return raw[i].strip()
+
+
+def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
+                          row: dict, seen_accounts: set[str],
+                          seen_portfolios: set[str],
+                          seen_relationships: set[str]) -> int:
+    relationship_prefix = row["Banking relationship"] or None
+    portfolio_full = row["Portfolio"] or None
+    portfolio_ext_id = portfolio_external_id_from_full(portfolio_full)
+    iban_raw = row["IBAN"] or None
+    iban_c = iban_canonical(iban_raw)
+    isin = row["ISIN"] or None
+
+    # banking_relationships (one synthetic row per relationship-prefix).
+    # We don't see the opaque bankingRelationId token in positions.csv,
+    # so the prefix doubles as the id here.
+    if relationship_prefix and relationship_prefix not in seen_relationships:
+        seen_relationships.add(relationship_prefix)
+        conn.execute(
+            "INSERT OR IGNORE INTO banking_relationships ("
+            "snapshot_at, banking_relationship_id, account_number_prefix, "
+            "description, payload"
+            ") VALUES (?, ?, ?, ?, ?)",
+            (snapshot_at, relationship_prefix, relationship_prefix, None,
+             normalize_payload({"source": "positions.csv"})),
+        )
+
+    # portfolios
+    if portfolio_ext_id and portfolio_ext_id not in seen_portfolios:
+        seen_portfolios.add(portfolio_ext_id)
+        conn.execute(
+            "INSERT OR IGNORE INTO portfolios ("
+            "snapshot_at, portfolio_external_id, banking_relationship_id, "
+            "portfolio_full_id, portfolio_uid, description, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot_at, portfolio_ext_id, relationship_prefix,
+             portfolio_full, None, None,
+             normalize_payload({"source": "positions.csv"})),
+        )
+
+    # accounts (cash only — securities-only rows have no IBAN)
+    if iban_c and iban_c not in seen_accounts:
+        seen_accounts.add(iban_c)
+        conn.execute(
+            "INSERT OR IGNORE INTO accounts ("
+            "snapshot_at, account_external_id, kind, iban, "
+            "account_acct_id_psn_form, account_number_raw, "
+            "account_opaque_id, banking_relationship_id, "
+            "portfolio_external_id, currency_iso, description, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (snapshot_at, iban_c, "cash", iban_raw,
+             iban_to_psn_acct_id(iban_c),
+             row["Product"] or None, None,
+             relationship_prefix, portfolio_ext_id,
+             row["Ccy."] or None,
+             row["Description"] or None,
+             normalize_payload({"source": "positions.csv"})),
+        )
+
+    # positions
+    # Resolve account_external_id: IBAN for cash, '' for securities-only
+    # rows (positions table PK includes instrument_isin to disambiguate).
+    account_ext = iban_c or ""
+    if not isin and not iban_c:
+        # Pure aggregate / informational row — skip.
+        return 0
+    conn.execute(
+        "INSERT OR REPLACE INTO positions ("
+        "snapshot_at, portfolio_external_id, account_external_id, "
+        "instrument_isin, valor, currency_iso, units, market_value, "
+        "market_value_base, cost_price, accrued_interest, "
+        "lending_value, lending_value_ratio, description, payload"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            snapshot_at, portfolio_ext_id or "", account_ext,
+            isin, row["Valor"] or None, row["Ccy."] or None,
+            parse_decimal(row["Number/Amt."]),
+            None,  # market_value (per-instrument-ccy not split out by UBS)
+            parse_decimal(row["Market value"]),  # base-ccy market value
+            parse_decimal(row["Cost price"]),
+            parse_decimal(row["Accrued interest"]),
+            parse_decimal(row["Lending value"]),
+            parse_decimal(row["Lending value ratio"]),
+            row["Description"] or None,
+            normalize_payload({k: row[k] for k in POSITIONS_COLS}),
+        ),
+    )
+    return 1
+
+
+# ----------------------------------------------------------------
+# Transactions
+# ----------------------------------------------------------------
+
+def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
+                       dump_dir: Path) -> int:
+    """Parse every `transactions/cash_*.csv` in the dump dir;
+    UPSERT into transactions keyed by UBS Transaction no."""
+    txn_dir = dump_dir / "transactions"
+    if not txn_dir.is_dir():
+        return 0
+    inserted = 0
+    for csv_path in sorted(txn_dir.glob("cash_*.csv")):
+        inserted += _ingest_transactions_csv(conn, snapshot_at, csv_path)
+    return inserted
+
+
+def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
+                             csv_path: Path) -> int:
+    """Parse the 8-line metadata block + 1-line column header + data."""
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        lines = f.read().splitlines()
+    # Locate the data header by literal match (UBS may add fields).
+    header_idx = None
+    iban = None
+    for i, ln in enumerate(lines[:15]):
+        if ln.startswith(TXN_HEADER_IBAN):
+            iban = ln.split(";", 1)[1].rstrip(";").strip() or None
+        if ln.startswith("Trade date;"):
+            header_idx = i
+            break
+    if header_idx is None:
+        log.warning("no transactions header in %s; skipping", csv_path.name)
+        return 0
+    account_ext = iban_canonical(iban) or ""
+    if not account_ext:
+        log.warning("no IBAN in %s; skipping", csv_path.name)
+        return 0
+    header = [c.strip() for c in lines[header_idx].split(";")]
+    idx = {name: i for i, name in enumerate(header) if name}
+    inserted = 0
+    for raw_line in lines[header_idx + 1:]:
+        if not raw_line.strip():
+            continue
+        raw = next(csv.reader([raw_line], delimiter=";"))
+        # The "Turnover total" footer block carries blank columns 1-9
+        # and "Turnover total" in description1 — skip.
+        trade_date = _cell(raw, idx, "Trade date")
+        txn_no = _cell(raw, idx, "Transaction no.")
+        if not txn_no:
+            continue
+        value_date_s = _cell(raw, idx, "Value date") or trade_date
+        value_date_ts = ts_from_iso(value_date_s)
+        if not value_date_ts:
+            log.warning("unparseable value_date %r in %s; skipping row",
+                        value_date_s, csv_path.name)
+            continue
+        conn.execute(
+            "INSERT INTO transactions ("
+            "transaction_external_id, snapshot_at, account_external_id, "
+            "trade_date, booking_date, value_date, currency_iso, "
+            "amount_debit, amount_credit, counterparty, "
+            "description_kind, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(transaction_external_id) DO UPDATE SET "
+            "snapshot_at = excluded.snapshot_at, "
+            "account_external_id = excluded.account_external_id, "
+            "trade_date = excluded.trade_date, "
+            "booking_date = excluded.booking_date, "
+            "value_date = excluded.value_date, "
+            "currency_iso = excluded.currency_iso, "
+            "amount_debit = excluded.amount_debit, "
+            "amount_credit = excluded.amount_credit, "
+            "counterparty = excluded.counterparty, "
+            "description_kind = excluded.description_kind, "
+            "payload = excluded.payload",
+            (
+                txn_no, snapshot_at, account_ext,
+                ts_from_iso(trade_date),
+                ts_from_iso(_cell(raw, idx, "Booking date")),
+                value_date_ts,
+                _cell(raw, idx, "Currency"),
+                parse_decimal(_cell(raw, idx, "Debit")),
+                parse_decimal(_cell(raw, idx, "Credit")),
+                # description1's first semi-line is usually the counterparty
+                (_cell(raw, idx, "Description1").split(";", 1)[0] or None),
+                _cell(raw, idx, "Description2") or None,
+                normalize_payload({h: c for h, c in zip(header, raw)}),
+            ),
+        )
+        inserted += 1
+    return inserted
+
+
+# ----------------------------------------------------------------
+# Documents
+# ----------------------------------------------------------------
+
+# Extract the doc type from a listing-row label of the form
+# "<doctype> <DD.MM.YYYY> <DD Month YYYY> P. <name> <...>".
+DOC_LABEL_RE = re.compile(
+    r"^\s*\W*\s*(?P<type>[A-Za-z][A-Za-z _]+?)\s+"
+    r"(?P<date>\d{2}\.\d{2}\.\d{4})\b"
+)
+
+
+def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
+                    dump_dir: Path, run_meta: dict) -> int:
+    """Index every PDF in dump_dir/documents/ into the documents
+    table, with metadata harvested from run.json where present.
+
+    `doc_token` is UBS's full URL-resolvable token (taken from
+    run.json), not the truncated filename prefix.
+    """
+    docs_dir = dump_dir / "documents"
+    if not docs_dir.is_dir():
+        return 0
+    # Index run.json items by their on-disk filename — that is the
+    # only stable key between the manifest and the files on disk.
+    items_by_filename: dict[str, dict] = {}
+    for item in (run_meta.get("documents") or {}).get("items") or []:
+        fname = item.get("filename")
+        if fname:
+            items_by_filename[fname] = item
+    inserted = 0
+    for pdf in sorted(docs_dir.glob("*.pdf")):
+        item = items_by_filename.get(pdf.name, {})
+        token = item.get("token") or pdf.stem  # fallback to stem
+        label = item.get("label") or ""
+        doc_type, doc_date = _parse_doc_label(label)
+        sha = sha256_of(pdf)
+        try:
+            conn.execute(
+                "INSERT INTO documents ("
+                "doc_token, content_sha256, file_path, size_bytes, "
+                "snapshot_at, doc_type, doc_date, account_external_id, "
+                "portfolio_external_id, label"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    token, sha, str(pdf.resolve()), pdf.stat().st_size,
+                    snapshot_at, doc_type, doc_date, None, None,
+                    label,
+                ),
+            )
+            inserted += 1
+        except sqlite3.IntegrityError:
+            # Same doc_token or sha already loaded in a previous dump.
+            log.debug("doc %s already in silver; skipping", token[:12])
+    return inserted
+
+
+def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
+    if not label:
+        return None, None
+    line = label.splitlines()[0]
+    m = DOC_LABEL_RE.search(line)
+    if not m:
+        return None, None
+    return m.group("type").strip(), ts_from_dmy(m.group("date"))
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    args.silver_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(args.silver_db))
+    conn.execute("PRAGMA foreign_keys = ON;")
+
+    migrations_dir = Path(__file__).parent / "migrations"
+    apply_migrations(conn, migrations_dir)
+    schema_version = _current_schema_version(conn)
+
+    dumps = scan_bronze(args.bronze_dir)
+    log.info("found %d bronze dump dir(s) under %s",
+             len(dumps), args.bronze_dir)
+
+    n_loaded = n_skipped = 0
+    for dump_dir in dumps:
+        if already_loaded(conn, dump_dir):
+            n_skipped += 1
+            log.debug("skipping already-loaded dump %s", dump_dir.name)
+            continue
+        try:
+            conn.execute("BEGIN")
+            load_dump(conn, dump_dir, schema_version)
+            conn.execute("COMMIT")
+            n_loaded += 1
+        except Exception:  # noqa: BLE001 — log + rollback + continue
+            conn.execute("ROLLBACK")
+            log.exception("load failed for %s; skipped", dump_dir.name)
+    conn.close()
+    log.info("done: %d dumps loaded, %d already-loaded skipped",
+             n_loaded, n_skipped)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
