@@ -402,7 +402,7 @@ Conventional host layout, produced by `wealthdb config`'s defaults:
 $HOME/.config/wealthdb.cfg             config file (this file)
 $HOME/wealthdb/                        all wealthdb data
 ├── wealthdb.db                        gold DuckDB
-├── ubs/ubs.db                       UBS silver SQLite + bronze dirs
+├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
 ├── schwab/schwab.db                 Schwab silver SQLite + bronze dirs
 └── swissquote/swissquote.db         Swissquote silver SQLite + bronze dirs
 ```
@@ -417,7 +417,7 @@ Example config file:
         {
             "id":   "ubs-main",
             "kind": "ubs",
-            "path": "~/wealthdb/ubs-psn/ubs.db"
+            "path": "~/wealthdb/ubs-psn/ubs-psn.db"
         },
         {
             "id":   "schwab-retail",

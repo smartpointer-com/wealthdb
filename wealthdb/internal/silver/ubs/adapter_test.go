@@ -16,7 +16,7 @@ var silverSchemaSQL string
 
 func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "ubs.db")
+	path := filepath.Join(t.TempDir(), "ubs-psn.db")
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
