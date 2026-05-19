@@ -44,13 +44,19 @@ NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
 
-# Default lookback when --since is not given: ~3 months. Swissquote
-# does not enforce a per-export window cap (probed with 8+ year
-# ranges), but defaulting to "everything ever" pulls hundreds of
-# documents on every run and is wasteful for incremental cron-like
-# use. 90 days is enough overlap for weekly/monthly cadences; users
-# doing a one-off bulk backfill should pass --since explicitly.
-DEFAULT_LOOKBACK_DAYS = 90
+# Default --since for transactions: ~3 months. Sensible for
+# incremental runs because silver's window-DELETE-INSERT replaces
+# overlapping rows on each load. Users doing a one-off bulk backfill
+# pass --since explicitly.
+DEFAULT_TRANSACTIONS_LOOKBACK_DAYS = 90
+
+# Default --documents-since: ~25 years. The documents corpus is the
+# raw material for reconstructing historical snapshots, so we want
+# every run to scan the full available history and pick up anything
+# new since the last run. The content-sha256 dedup in download.py
+# (filename-based) and load.py (hash-based) keeps the cost bounded
+# to one extra scrape of the listing — no PDFs get re-downloaded.
+DEFAULT_DOCUMENTS_LOOKBACK_DAYS = 365 * 25
 
 # Customer ID is captured from the Positions XLS download filename
 # (`Positions_<cust>_<ddmmyyyy>_<hh>_<mm>.xls`). This regex pulls it
@@ -77,9 +83,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "Default: today (UTC).")
     p.add_argument("--documents-since", type=date.fromisoformat, default=None,
                    help="Earliest document date (YYYY-MM-DD). "
-                        "Default: same as --since. The Documents page "
-                        "filter defaults to the last 30 days; without this "
-                        "flag older PDFs would be missed.")
+                        "Default: 25 years ago — every run scans the full "
+                        "available document history and fetches anything "
+                        "new since the last run; existing PDFs are not "
+                        "re-downloaded. Pass a closer date only when you "
+                        "deliberately want a narrower window.")
     p.add_argument("--documents-until", type=date.fromisoformat, default=None,
                    help="Latest document date (YYYY-MM-DD, inclusive). "
                         "Default: same as --until.")
@@ -504,11 +512,13 @@ def run(args: argparse.Namespace) -> int:
 
     today = datetime.now(timezone.utc).date()
     until = args.until or today
-    since = args.since or (until - timedelta(days=DEFAULT_LOOKBACK_DAYS))
+    since = args.since or (until - timedelta(days=DEFAULT_TRANSACTIONS_LOOKBACK_DAYS))
     if since > until:
         raise SystemExit(f"--since {since} is after --until {until}")
     documents_until = args.documents_until or until
-    documents_since = args.documents_since or since
+    documents_since = args.documents_since or (
+        documents_until - timedelta(days=DEFAULT_DOCUMENTS_LOOKBACK_DAYS)
+    )
     if documents_since > documents_until:
         raise SystemExit(
             f"--documents-since {documents_since} is after "

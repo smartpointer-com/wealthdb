@@ -326,7 +326,7 @@ maps to `~/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | `--dest` | _(required)_ | Local destination directory (must be writable). |
 | `--since` | _today - 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
 | `--until` | _today (UTC)_ | Latest transaction date to fetch (YYYY-MM-DD, inclusive). |
-| `--documents-since` | _same as `--since`_ | Earliest document date (YYYY-MM-DD). Without this the docs page's 30-day default filter would mask anything older. |
+| `--documents-since` | _25 years ago_ | Earliest document date (YYYY-MM-DD). Defaults to a wide window so every run scans the full available document history; existing PDFs are skipped by filename, so the cost is just one extra listing scrape. Pass a closer date for a deliberately narrower window. |
 | `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
 | `--dry-run` | off | Skip exports; only validate session and selectors. |
 | `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. |
