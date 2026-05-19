@@ -1,4 +1,4 @@
-// Package schwab projects the schwab-dump silver SQLite into
+// Package schwab projects the schwab-api-dump silver SQLite into
 // canonical change records. See docs/adapters/schwab.md for the
 // mapping contract.
 package schwab

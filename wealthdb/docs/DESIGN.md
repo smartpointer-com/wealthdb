@@ -4,11 +4,11 @@
 
 This document describes the design of `wealthdb` — the **gold**
 layer of the personal-portfolio data pipeline whose bronze and silver
-layers are owned by per-bank dump repositories (`schwab-dump`,
-`ubs-psn-dump`, `swissquote-dump`, future siblings).
+layers are owned by per-bank dump repositories (`schwab-api-dump`,
+`ubs-psn-dump`, `ubs-web-dump`, `swissquote-dump`, future siblings).
 
 It is intended to be read alongside
-[schwab-dump/DESIGN.md](https://github.com/ptu/schwab-dump/blob/main/DESIGN.md),
+[schwab-api-dump/DESIGN.md](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md),
 which establishes the three-layer (bronze/silver/gold) model and the
 per-broker silver-schema conventions reused here. This document covers
 only what gold adds.
@@ -17,7 +17,7 @@ only what gold adds.
 
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
-│   ubs-psn-dump     │  │   schwab-dump      │  │   swissquote-dump  │
+│   ubs-psn-dump     │  │   schwab-api-dump  │  │   swissquote-dump  │
 │   bronze: zips     │  │   bronze: JSON     │  │   bronze: CSV+XLS  │
 │   silver: SQLite   │  │   silver: SQLite   │  │   silver: SQLite   │
 └──────────┬─────────┘  └─────────┬──────────┘  └─────────┬──────────┘
@@ -403,7 +403,8 @@ $HOME/.config/wealthdb.cfg             config file (this file)
 $HOME/wealthdb/                        all wealthdb data
 ├── wealthdb.db                        gold DuckDB
 ├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
-├── schwab/schwab.db                 Schwab silver SQLite + bronze dirs
+├── ubs-web/ubs-web.db                UBS web silver SQLite + bronze dirs
+├── schwab-api/schwab-api.db          Schwab API silver SQLite + bronze dirs
 └── swissquote/swissquote.db         Swissquote silver SQLite + bronze dirs
 ```
 
@@ -428,7 +429,7 @@ Example config file:
         {
             "id":   "schwab-retail",
             "kind": "schwab",
-            "path": "~/wealthdb/schwab/schwab.db"
+            "path": "~/wealthdb/schwab-api/schwab-api.db"
         },
         {
             "id":   "swissquote-1",

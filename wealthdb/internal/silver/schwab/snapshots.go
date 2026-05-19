@@ -54,7 +54,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	// instrumentNames is consulted as a fallback by appendPositions
 	// when the per-position instrument descriptor lacks a
 	// description (common for EQUITY rows from /accounts). The
-	// schwab-dump --with-instruments mode populates a separate
+	// schwab-api-dump --with-instruments mode populates a separate
 	// instruments table that we treat as the authoritative source
 	// for symbol → human-readable name.
 	instrumentNames, err := c.latestKnownInstrumentNames(ctx)
@@ -429,8 +429,8 @@ func (c *Connection) hasTable(ctx context.Context, table string) (bool, error) {
 // latestKnownInstrumentNames returns symbol → human-readable name
 // from the `instruments` table, picking the row with the highest
 // snapshot_at for each symbol. Returns an empty (non-nil) map when
-// the silver doesn't have the table at all (older schwab-dump, or
-// --with-instruments never used). "Latest as of now" rather than
+// the silver doesn't have the table at all (older schwab-api-dump,
+// or --with-instruments never used). "Latest as of now" rather than
 // "latest as of snapshot": the cross-bank schema doesn't preserve
 // per-snapshot instrument descriptions, so callers get the freshest
 // label we know about for that symbol.

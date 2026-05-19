@@ -2,8 +2,9 @@
 
 A personal-portfolio gold-layer CLI. Reads per-bank silver
 SQLite databases (produced by sibling `*-dump` repositories —
-[schwab-dump](https://github.com/ptu/schwab-dump),
+[schwab-api-dump](https://github.com/ptu/schwab-api-dump),
 [ubs-psn-dump](https://github.com/ptu/ubs-psn-dump),
+[ubs-web-dump](https://github.com/ptu/ubs-web-dump),
 [swissquote-dump](https://github.com/ptu/swissquote-dump)) and
 projects them into a canonical cross-bank DuckDB schema queryable
 through the `wealthdb` CLI.

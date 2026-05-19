@@ -1,15 +1,22 @@
 # Schwab adapter
 
-Adapter that projects the `schwab-dump` silver SQLite into the
-canonical gold schema. Implements the `silver.Adapter` /
+Adapter that projects the `schwab-api-dump` silver SQLite into
+the canonical gold schema. Implements the `silver.Adapter` /
 `silver.Connection` interface defined in
 [../DESIGN.md](../DESIGN.md) §6.
 
+A separate `schwab-web-dump` project is planned for historic
+account statements scraped from the Schwab web app (analogous to
+[ubs-web-dump](https://github.com/ptu/ubs-web-dump)). When that
+lands the adapter will split into subsources (`schwab-api`,
+`schwab-web`) the same way the UBS adapter does. Until then the
+adapter operates in single-path mode against the API silver.
+
 ## 1. Silver source
 
-- Upstream: `schwab-dump` repository.
-- Silver schema: [schwab-dump/migrations/0001_initial.sql](https://github.com/ptu/schwab-dump/blob/main/migrations/0001_initial.sql).
-- Silver design: [schwab-dump/DESIGN.md](https://github.com/ptu/schwab-dump/blob/main/DESIGN.md).
+- Upstream: `schwab-api-dump` repository.
+- Silver schema: [schwab-api-dump/migrations/0001_initial.sql](https://github.com/ptu/schwab-api-dump/blob/main/migrations/0001_initial.sql).
+- Silver design: [schwab-api-dump/DESIGN.md](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md).
 
 ## 2. Identifier conventions
 
@@ -69,11 +76,11 @@ So gold's `name` column is empty for any Schwab equity position
 `name` column shows blank for equity rows but populated for
 funds/bonds). The company name lives on Schwab's
 `/marketdata/instruments` or `/marketdata/quotes` endpoints,
-which `schwab-dump` doesn't currently call.
+which `schwab-api-dump` doesn't currently call.
 
 Three places this could be fixed; we're deliberately not doing
 any of them in wealthdb v1:
-1. `schwab-dump` enriches positions/instruments by calling
+1. `schwab-api-dump` enriches positions/instruments by calling
    `/marketdata/quotes` (or `instruments?projection=symbol-search`)
    once per held symbol. Right place architecturally — silver is
    the per-broker faithful projection.
@@ -85,7 +92,10 @@ any of them in wealthdb v1:
    need to duplicate.
 
 Until either (1) or (2) lands, equity rows render with an empty
-`name` column. The `symbol` column is still populated.
+`name` column. The `symbol` column is still populated. (The
+planned `schwab-web-dump` source is a likely third path —
+scraping the company name out of the brokerage UI's holdings
+page — but that's its own design question.)
 
 ## 5. `transactions.kind` mapping
 

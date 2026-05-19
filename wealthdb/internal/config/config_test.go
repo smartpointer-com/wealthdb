@@ -22,7 +22,7 @@ func TestLoadValid(t *testing.T) {
         "gold_db": "/tmp/wealthdb.db",
         "default_currency": "USD",
         "silver_sources": [
-            {"id": "schwab-retail", "kind": "schwab", "path": "/tmp/schwab.db"},
+            {"id": "schwab-retail", "kind": "schwab", "path": "/tmp/schwab-api.db"},
             {"id": "ubs-main",      "kind": "ubs",    "path": "/tmp/ubs-psn.db"}
         ]
     }`)
