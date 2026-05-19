@@ -117,9 +117,9 @@ downloaded nothing, the timestamped directory is removed.
 
 Parses bronze dump directories produced by `download.py` and inserts
 their content into a SQLite silver database. The schema is defined in
-[`migrations/0001_initial.sql`](migrations/0001_initial.sql); the
-loader applies any pending migrations on startup before loading data,
-so the silver database is always at the latest schema version.
+the `migrations/` directory; the loader applies any pending migrations
+on startup before loading data, so the silver database is always at
+the latest schema version.
 
 Each dump is loaded atomically — a failure mid-load rolls back to the
 prior state, and a re-run retries the whole dump. Already-loaded dumps
@@ -159,6 +159,24 @@ Reload semantics:
   `INSERT OR REPLACE` on `event_external_id` for events the upstream
   retracts only by sending a new CANC message (trade_confirmation,
   corporate_action_confirmation).
+
+Identifier canonicalisation (since migration 0002):
+
+- `account_external_id` on the **cash** side is always the IBAN. MT940
+  `:25:` arrives in UBS's internal padded-account-number form and is
+  translated via `cash_accounts.payload.AcctId` inside the same dump
+  transaction. Cash-side `events.account_external_id` rows for
+  `cash_movement` use the IBAN too.
+- `account_external_id` on the **safekeeping** side is the MT535
+  `:97A::SAFE//` / UBS-internal `AcctId` form. `holdings`,
+  `pending_securities`, and `events` of kinds `trade_confirmation` /
+  `corporate_action_confirmation` use that form.
+- `cash_accounts.portfolio_external_id` and
+  `safekeeping_accounts.portfolio_external_id` are nullable promoted
+  columns — UBS legitimately omits portfolio linkage on standalone
+  bank accounts (~5% of cash accounts in observed data).
+- `portfolios.base_currency` is the portfolio's UBS reporting
+  currency (`PrtflCcyIsoCd`).
 
 ### Usage
 

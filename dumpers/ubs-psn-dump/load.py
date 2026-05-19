@@ -24,8 +24,15 @@ Currently loaded:
   - MT515 trade_confirmation events from ZAG.zip
   - MT566 corporate_action_confirmation events from ZAN.zip
 
-ZAY.zip (MT950) is intentionally not loaded — see the migration header.
-ZMH (MT536) and other MT types will be added when we have samples.
+ZAY.zip (MT950) is intentionally not loaded — see migration 0001's
+header. ZMH (MT536) and other MT types will be added when we have
+samples.
+
+Account identifiers are canonicalised at load time (since migration
+0002): cash side uses IBAN everywhere (MT940 :25: is translated via
+cash_accounts.payload.AcctId), safekeeping side uses the MT535
+:97A::SAFE// / UBS AcctId form everywhere (load_sdsa picks AcctId
+rather than the dashed ExtAcctId).
 """
 
 from __future__ import annotations
@@ -324,11 +331,17 @@ def iter_zip_entries(zip_path: Path, suffix: str | None = None):
 def _insert_if_changed_master(
     conn, table: str, pk_cols: tuple[str, ...], pk_vals: tuple,
     payload_canon: str, snapshot_at: int,
+    extra_cols: tuple[tuple[str, object], ...] = (),
 ) -> int:
     """Insert a row into `table` only if the most-recent row for the same
     PK suffix (everything after snapshot_at) has a different payload.
 
     Returns 1 if inserted, 0 if deduped.
+
+    `extra_cols` are non-PK columns whose values come from the row being
+    inserted (e.g. promoted-from-payload fields like portfolio_external_id).
+    They are not part of the dedup compare — payload is the canonical
+    source — but they will reflect the most recent value on every insert.
     """
     where = " AND ".join(f"{c} = ?" for c in pk_cols)
     row = conn.execute(
@@ -338,11 +351,14 @@ def _insert_if_changed_master(
     ).fetchone()
     if row is not None and row[0] == payload_canon:
         return 0
-    cols = ("snapshot_at",) + pk_cols + ("payload",)
+    cols = ("snapshot_at",) + pk_cols \
+           + tuple(c for c, _ in extra_cols) + ("payload",)
+    vals = (snapshot_at,) + pk_vals \
+           + tuple(v for _, v in extra_cols) + (payload_canon,)
     placeholders = ",".join("?" * len(cols))
     conn.execute(
         f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-        (snapshot_at,) + pk_vals + (payload_canon,),
+        vals,
     )
     return 1
 
@@ -379,7 +395,11 @@ def load_sdcl(conn, snapshot_at, relationship_id, entities):
 
 
 def load_sdca(conn, snapshot_at, relationship_id, entities):
-    """One row per cash account per snapshot. IBAN as account_external_id."""
+    """One row per cash account per snapshot. IBAN as account_external_id.
+
+    `portfolio_external_id` is promoted from payload.PrtflId (nullable —
+    standalone bank accounts have no portfolio assignment).
+    """
     n = 0
     for elem in entities:
         if _strip_ns(elem.tag) != "CshAcctInfo":
@@ -389,33 +409,45 @@ def load_sdca(conn, snapshot_at, relationship_id, entities):
         if not iban:
             log.warning("SDCA entity missing Iban — skipping")
             continue
+        prtfl_id = parsed.get("PrtflId") or deep_find(parsed, "PrtflId")
         payload = canonical_json(strip_header_noise(parsed))
         n += _insert_if_changed_master(
             conn, "cash_accounts",
             ("relationship_id", "account_external_id"),
             (relationship_id, iban),
             payload, snapshot_at,
+            extra_cols=(("portfolio_external_id", prtfl_id),),
         )
     return n
 
 
 def load_sdsa(conn, snapshot_at, relationship_id, entities):
-    """One row per safekeeping account per snapshot."""
+    """One row per safekeeping account per snapshot.
+
+    Account ID is `AcctId` (the MT535/`:97A::SAFE//` form) — the same
+    form used in `holdings` and the safekeeping-side
+    `events.account_external_id`. UBS also emits `ExtAcctId` as a
+    dashed display form, kept in payload for trace.
+
+    `portfolio_external_id` is promoted from payload.PrtflId (nullable).
+    """
     n = 0
     for elem in entities:
         if _strip_ns(elem.tag) != "SfkInfo":
             continue
         parsed = elem_to_dict(elem)["SfkInfo"]
-        ext_acct = parsed.get("ExtAcctId") or parsed.get("AcctId")
-        if not ext_acct:
+        acct = parsed.get("AcctId") or parsed.get("ExtAcctId")
+        if not acct:
             log.warning("SDSA entity missing AcctId — skipping")
             continue
+        prtfl_id = parsed.get("PrtflId") or deep_find(parsed, "PrtflId")
         payload = canonical_json(strip_header_noise(parsed))
         n += _insert_if_changed_master(
             conn, "safekeeping_accounts",
             ("relationship_id", "account_external_id"),
-            (relationship_id, ext_acct),
+            (relationship_id, acct),
             payload, snapshot_at,
+            extra_cols=(("portfolio_external_id", prtfl_id),),
         )
     return n
 
@@ -450,16 +482,19 @@ def load_sdpo(conn, snapshot_at, relationship_id, entities):
 
 
 def _flush_portfolio(conn, snapshot_at, relationship_id, portfolio) -> int:
-    pid = portfolio["PrtflKey"].get("PrtflId") if isinstance(portfolio["PrtflKey"], dict) else None
+    key = portfolio["PrtflKey"] if isinstance(portfolio["PrtflKey"], dict) else {}
+    pid = key.get("PrtflId")
     if not pid:
         log.warning("SDPO portfolio missing PrtflId — skipping")
         return 0
+    base_ccy = key.get("PrtflCcyIsoCd")        # promoted as base_currency
     payload = canonical_json(strip_header_noise(portfolio))
     return _insert_if_changed_master(
         conn, "portfolios",
         ("relationship_id", "portfolio_external_id"),
         (relationship_id, pid),
         payload, snapshot_at,
+        extra_cols=(("base_currency", base_ccy),),
     )
 
 
@@ -644,6 +679,26 @@ def load_mt537(conn, snapshot_at, relationship_id, mt_text):
     return 1
 
 
+def _resolve_iban(conn, relationship_id: str,
+                  acct_mt_form: str) -> str | None:
+    """Look up the IBAN for an MT940 ':25:'-style account number.
+
+    Uses the most-recent `cash_accounts` row (across all snapshots,
+    within the same relationship) whose payload `AcctId` matches.
+    Returns the IBAN, or None if no mapping is known yet (e.g. a dump
+    that contains MT940 but no SDCA, before any earlier dump has
+    loaded SDCA for this relationship).
+    """
+    row = conn.execute(
+        "SELECT account_external_id FROM cash_accounts "
+        "WHERE relationship_id = ? "
+        "  AND json_extract(payload, '$.AcctId') = ? "
+        "ORDER BY snapshot_at DESC LIMIT 1",
+        (relationship_id, acct_mt_form),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     """MT940 Customer Statement.
 
@@ -687,6 +742,21 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     if not account or not closing:
         log.warning("MT940 missing :25: or :62F: — skipping")
         return (0, 0)
+
+    # Canonicalise :25: → IBAN via cash_accounts.payload.AcctId lookup.
+    # SDCA loads earlier in the same dump transaction, so within a normal
+    # daily dump the lookup hits the row inserted seconds ago; cross-dump
+    # lookups also work because cash_accounts is append-only.
+    raw_acct = account
+    iban = _resolve_iban(conn, relationship_id, raw_acct)
+    if iban is None:
+        log.warning(
+            "MT940: no IBAN mapping for %r (no cash_accounts row found); "
+            "falling back to raw MT940 form for this dump",
+            raw_acct,
+        )
+    else:
+        account = iban
 
     currency = closing["currency_iso"]
     balances_inserted = 0
