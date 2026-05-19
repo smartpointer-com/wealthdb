@@ -117,32 +117,21 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 // PositionChange (instrument_isin set) and CashBalanceChange
 // (instrument_isin NULL).
 //
-// The orchestrator passes the *psnReader and config relationships
-// in via Transactions; for Snapshots we re-resolve the cutoff
-// map directly from the *Connection's stored relationships +
-// psnReader (see merge.go). For now the signature is just
-// (ctx, w) because the orchestrator's Snapshots forwards both
-// streams independently — see merge.go.
-func (r *webReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
-	return r.snapshotsWith(ctx, w, nil, nil)
-}
-
-// snapshotsWith is the merge-aware variant used by Connection
-// when a psnReader is available. cutoffByWebRel maps web
-// banking_relationship_id → exclusive cutoff Unix seconds;
-// missing entries mean "no PSN counterpart, emit unconditionally".
-// accountToWebRel + portfolioToWebRel let the position-level
-// filter resolve a row's banking relationship when accounts.csv
-// lacks the relationship column (e.g. securities-only rows).
-func (r *webReader) snapshotsWith(ctx context.Context, w canonical.Window, cutoffByWebRel map[string]int64, accountToWebRel map[string]string) (silver.SnapshotStream, error) {
-	portfolioToWebRel, err := r.buildPortfolioToRelMap(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.snapshotsWithMaps(ctx, w, cutoffByWebRel, accountToWebRel, portfolioToWebRel)
-}
-
-func (r *webReader) snapshotsWithMaps(ctx context.Context, w canonical.Window, cutoffByWebRel map[string]int64, accountToWebRel map[string]string, portfolioToWebRel map[string]string) (silver.SnapshotStream, error) {
+// snapshotsForOverlap is the merge-aware variant used by the
+// orchestrator. Iteration 2 emits ONLY dimensions from web —
+// portfolios and accounts, with iteration 1's PSN-start cutoff.
+// Positions and cash flow through PSN's snapshot stream instead;
+// the orchestrator wraps PSN with a fold stream that injects
+// web's per-(date, key) payload into PSN's rows. This direction
+// keeps PSN's faithful safekeeping / portfolio structure (web
+// silver flattens all securities under one PrtflId in this user's
+// data) while still preserving web-only fields like cost_price
+// inside `payload.web`.
+func (r *webReader) snapshotsForOverlap(
+	ctx context.Context,
+	w canonical.Window,
+	cutoffByWebRel map[string]int64,
+) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return &snapshotStream{}, nil
 	}
@@ -155,26 +144,19 @@ func (r *webReader) snapshotsWithMaps(ctx context.Context, w canonical.Window, c
 		byTime[t] = &canonical.SnapshotBatch{}
 	}
 
-	// Pull each entity type, applying the per-relationship cutoff
-	// as we route into byTime. Row-level filter (instead of
-	// upfront pruning) keeps the SQL simple and is fine at
-	// personal-portfolio scale.
+	// Dimensions only. Positions / cash come from the PSN side
+	// (with web payload folded in by the orchestrator).
 	if err := r.appendWebPortfolios(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
 	if err := r.appendWebAccounts(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
-	if err := r.appendWebPositions(ctx, w, byTime, cutoffByWebRel, accountToWebRel, portfolioToWebRel); err != nil {
-		return nil, err
-	}
 
 	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
 	for _, t := range times {
-		// Skip empty batches — happens when every entity at this
-		// snapshot got filtered out by the cutoff.
 		b := byTime[t]
-		if len(b.Portfolios)+len(b.Accounts)+len(b.Positions)+len(b.CashBalances) == 0 {
+		if len(b.Portfolios)+len(b.Accounts) == 0 {
 			continue
 		}
 		out.batches = append(out.batches, *b)
@@ -182,16 +164,14 @@ func (r *webReader) snapshotsWithMaps(ctx context.Context, w canonical.Window, c
 	return out, nil
 }
 
-// Transactions yields web transactions strictly before each
-// banking relationship's PSN-start cutoff. Same row-level filter
-// approach as Snapshots. When no psn is configured the cutoff
-// map is empty and every row passes; the splice degenerates to
-// "all-web".
-//
-// The signature accepts the *psnReader and config relationships
-// so Connection's Transactions can stay shape-equivalent for
-// callers that never see the merge.
-func (r *webReader) Transactions(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, error) {
+// transactionsBeforePSNStart emits web transactions strictly
+// before the per-relationship PSN-start cutover. This is the
+// iteration-1 splice — kept verbatim because in practice the web
+// and PSN sources use entirely different transaction_external_id
+// schemes ("0104030TJ0060041" web vs "mt515:..." PSN), so we
+// can't safely identity-match a web tx to a PSN event for payload
+// folding. The hard cut guarantees no double counting.
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return &txStream{consumed: true}, nil
 	}
@@ -226,16 +206,13 @@ SELECT transaction_external_id, value_date, account_external_id,
 		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &kindStr, &payload); err != nil {
 			return nil, fmt.Errorf("ubs-web Transactions scan: %w", err)
 		}
-		// Splice: drop rows whose value_date is at or past the
-		// PSN cutover for the owning relationship.
+		// Hard cut at PSN_start per relationship.
 		if rel, ok := accountToRel[accountID]; ok {
 			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
 				continue
 			}
 		}
 
-		// Net amount = credit - debit. Web stores them as
-		// separate columns; one is set per row.
 		var net canonical.Decimal
 		if credit.Valid {
 			net = net.Add(canonical.NewDecimalFromFloat(credit.Float64))
@@ -373,104 +350,6 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
-		})
-	}
-	return rows.Err()
-}
-
-// appendWebPositions splits the positions table into
-// PositionChange (instrument_isin set) and CashBalanceChange
-// (instrument_isin NULL). The cutoff applies via the row's
-// banking relationship — looked up first from
-// accountToWebRel (cash rows have account_external_id = IBAN),
-// then via portfolioToWebRel (securities-only rows have
-// account_external_id="" in the web silver and only the
-// portfolio_external_id is meaningful). Rows whose relationship
-// can't be resolved fall through unfiltered.
-func (r *webReader) appendWebPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cutoff map[string]int64, accountToWebRel, portfolioToWebRel map[string]string) error {
-	const q = `
-SELECT snapshot_at, portfolio_external_id, account_external_id,
-       instrument_isin, currency_iso, units, market_value,
-       description, payload
-  FROM positions
- WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendWebPositions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			snap                                      int64
-			portfolioID, accountID, ccy, payload      string
-			isin, description                         sql.NullString
-			units, marketValue                        sql.NullFloat64
-		)
-		if err := rows.Scan(&snap, &portfolioID, &accountID, &isin, &ccy, &units, &marketValue, &description, &payload); err != nil {
-			return err
-		}
-		rel := accountToWebRel[accountID]
-		if rel == "" {
-			rel = portfolioToWebRel[portfolioID]
-		}
-		if rel != "" {
-			if cut := cutoff[rel]; cut > 0 && snap >= cut {
-				continue
-			}
-		}
-		batch, ok := byTime[snap]
-		if !ok {
-			continue
-		}
-		if !isin.Valid || isin.String == "" {
-			// Cash position → cash_balances.
-			if !marketValue.Valid {
-				continue
-			}
-			amt := canonical.NewDecimalFromFloat(marketValue.Float64)
-			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
-				SnapshotAt:        snap,
-				AccountExternalID: accountID,
-				Currency:          ccy,
-				BalanceKind:       canonical.BalanceKindClosing,
-				Amount:            amt,
-				Payload:           json.RawMessage(payload),
-			})
-			continue
-		}
-		// Securities position → positions.
-		var qty, mv *canonical.Decimal
-		if units.Valid {
-			q := canonical.NewDecimalFromFloat(units.Float64)
-			qty = &q
-		}
-		if marketValue.Valid {
-			m := canonical.NewDecimalFromFloat(marketValue.Float64)
-			mv = &m
-		}
-		instrID := isin.String
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
-			SnapshotAt:           snap,
-			AccountExternalID:    accountID,
-			PositionKey:          isin.String,
-			InstrumentExternalID: &instrID,
-			AssetClass:           canonical.AssetClassOther, // web silver has no CFI; refined by PSN once it joins
-			Currency:             ccy,
-			Quantity:             qty,
-			MarketValue:          mv,
-			Payload:              json.RawMessage(payload),
-		})
-		// Emit the instrument row too — web has no dedicated
-		// instruments table, but downstream gold.instruments
-		// keeps name/symbol consistent across sources.
-		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
-			InstrumentExternalID: isin.String,
-			AssetClass:           canonical.AssetClassOther,
-			ISIN:                 &instrID,
-			Name:                 nullStringPtr(description),
-			Currency:             &ccy,
-			FirstSeenAt:          snap,
-			LastSeenAt:           snap,
 		})
 	}
 	return rows.Err()

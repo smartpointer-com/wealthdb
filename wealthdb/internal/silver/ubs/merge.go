@@ -1,7 +1,9 @@
 package ubs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/ptu/wealthdb/internal/canonical"
@@ -134,48 +136,84 @@ func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.
 	return out, nil
 }
 
-// Snapshots emits a single merged stream. PSN data passes through
-// unfiltered (PSN is authoritative within its window); web data
-// is filtered through a per-banking-relationship cutoff so any
-// snapshot_at >= the PSN-start for that relationship is dropped
-// — PSN covers those dates. Web's authority is the dates BEFORE
-// PSN-start (the historical backfill PSN structurally can't
-// deliver).
+// Snapshots emits the merged stream. Dimensions (portfolios,
+// accounts) follow iteration 1 — web emits dimensions strictly
+// before PSN_start, PSN emits all dimensions, the per-column
+// upsert guard reconciles. Facts (positions, cash) come solely
+// from PSN; web's per-(date, key) payload is folded into PSN's
+// rows under `payload.web` so PSN-missing fields like
+// cost_price stay visible.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
+	var (
+		webPosPayloads  map[webPosKey]string
+		webCashPayloads map[webCashKey]string
+		cutoff          map[string]int64
+	)
+
+	if c.web != nil && c.psn != nil {
+		var err error
+		webPosPayloads, err = c.web.positionPayloadByKey(ctx, w.Start, w.End)
+		if err != nil {
+			return nil, err
+		}
+		webCashPayloads, err = c.web.cashPayloadByKey(ctx, w.Start, w.End)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if c.web != nil {
+		var err error
+		cutoff, err = buildPSNStartByWebRel(ctx, c.psn, c.relationships)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web cutoff: %w", err)
+		}
+	}
+
 	streams := make([]silver.SnapshotStream, 0, 2)
+	if c.web != nil {
+		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web Snapshots: %w", err)
+		}
+		streams = append(streams, s)
+	}
 	if c.psn != nil {
 		s, err := c.psn.Snapshots(ctx, w)
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Snapshots: %w", err)
 		}
-		streams = append(streams, s)
-	}
-	if c.web != nil {
-		cutoff, err := buildPSNStartByWebRel(ctx, c.psn, c.relationships)
-		if err != nil {
-			return nil, fmt.Errorf("ubs web cutoff: %w", err)
-		}
-		accountToRel, err := c.web.buildAccountToRelMap(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("ubs web account→rel: %w", err)
-		}
-		s, err := c.web.snapshotsWith(ctx, w, cutoff, accountToRel)
-		if err != nil {
-			return nil, fmt.Errorf("ubs web Snapshots: %w", err)
+		if len(webPosPayloads)+len(webCashPayloads) > 0 {
+			s = &psnWebFoldStream{
+				inner:     s,
+				webPos:    webPosPayloads,
+				webCash:   webCashPayloads,
+				lookupSK:  c.psn,
+				ctx:       ctx,
+			}
 		}
 		streams = append(streams, s)
 	}
 	return &concatSnapshotStream{streams: streams}, nil
 }
 
-// Transactions emits a single merged stream. Iteration 1: PSN and
-// web each produce their own already-spliced subset (PSN omits
-// pre-PSN-start, web omits >= PSN-start), and we concatenate.
-// The PSN-start cutover is computed once per banking relationship
-// inside web_transactions.go's reader, using the relationships
-// pairing from OpenSpec to know which PSN side to ask.
+// Transactions keeps iteration 1's hard cut at PSN_start. Web
+// emits transactions whose value_date is strictly before the
+// per-relationship cutover; PSN emits its events unfiltered for
+// the remainder. We tried iteration-2-style identity merge but
+// the silvers' transaction_external_id schemes don't actually
+// align in practice (web uses UBS Transaction No. like
+// "0104030TJ0060041"; PSN events use prefixed strings like
+// "mt515:..."), so any cross-source match would be heuristic and
+// risk double-counting. Hard cut is the safe choice.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	streams := make([]silver.TransactionStream, 0, 2)
+	if c.web != nil {
+		s, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web Transactions: %w", err)
+		}
+		streams = append(streams, s)
+	}
 	if c.psn != nil {
 		s, err := c.psn.Transactions(ctx, w)
 		if err != nil {
@@ -183,15 +221,75 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 		streams = append(streams, s)
 	}
-	if c.web != nil {
-		s, err := c.web.Transactions(ctx, w, c.psn, c.relationships)
-		if err != nil {
-			return nil, fmt.Errorf("ubs web Transactions: %w", err)
-		}
-		streams = append(streams, s)
-	}
 	return &concatTransactionStream{streams: streams}, nil
 }
+
+// psnWebFoldStream wraps a SnapshotStream and folds web's
+// per-(UTC date, key) payload into PSN's position and cash rows.
+// PSN keeps identity (safekeeping accounts, faithful portfolios,
+// parsed MT535 values); web's CSV row is preserved under the
+// "web" key inside the row's payload so cost_price / lending_
+// value / market_value_base remain queryable.
+//
+// Position match key is (utc_day(snapshot_at), ISIN). Cash match
+// key is (utc_day(snapshot_at), account, currency).
+type psnWebFoldStream struct {
+	inner   silver.SnapshotStream
+	webPos  map[webPosKey]string
+	webCash map[webCashKey]string
+	// ctx is captured here only to keep the Stream interface
+	// signature (Next takes ctx); we don't fan out any work.
+	ctx      context.Context
+	lookupSK *psnReader // reserved for future (cross-source acct lookup); currently unused
+}
+
+func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	for i := range batch.Positions {
+		p := &batch.Positions[i]
+		key := webPosKey{utcDate: utcDay(p.SnapshotAt), isin: p.PositionKey}
+		if webPayload, ok := s.webPos[key]; ok {
+			p.Payload = foldWebPayloadAsWebKey(p.Payload, webPayload)
+		}
+	}
+	for i := range batch.CashBalances {
+		cb := &batch.CashBalances[i]
+		key := webCashKey{utcDate: utcDay(cb.SnapshotAt), account: cb.AccountExternalID, currency: cb.Currency}
+		if webPayload, ok := s.webCash[key]; ok {
+			cb.Payload = foldWebPayloadAsWebKey(cb.Payload, webPayload)
+		}
+	}
+	return batch, more, nil
+}
+
+func (s *psnWebFoldStream) Close() error { return s.inner.Close() }
+
+// foldWebPayloadAsWebKey mirrors foldPSNPayload but injects the
+// web JSON under the "web" key rather than "psn". The base
+// (canonical) row is owned by PSN here.
+func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
+	if web == "" {
+		return base
+	}
+	baseTrim := bytes.TrimSpace(base)
+	if len(baseTrim) == 0 || baseTrim[0] != '{' {
+		return json.RawMessage(`{"web":` + web + `}`)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(baseTrim, &m); err != nil {
+		return json.RawMessage(`{"web":` + web + `}`)
+	}
+	m["web"] = json.RawMessage(web)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return baseTrim
+	}
+	return out
+}
+
 
 // concatSnapshotStream drains each underlying stream in order.
 type concatSnapshotStream struct {
