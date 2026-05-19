@@ -1077,16 +1077,25 @@ def export_positions(page, run_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     portfolios = _enumerate_portfolios(page, screenshot_dir)
     results: list[dict] = []
+    # Always pull the consolidated default-portfolio view, even when
+    # we have explicit portfolioUids. UBS includes a few customer-
+    # facing cash accounts in the consolidated view that are NOT
+    # attached to any named portfolio (strategy-cash sub-accounts
+    # for alternative-investment products; fee / charges accounts;
+    # etc.) — UBS files them under a synthetic catch-all portfolio
+    # code in the default view. Skipping the consolidated view
+    # leaves those accounts entirely out of silver.
+    log.info("downloading default consolidated positions")
+    meta = _download_positions_csv(
+        page, ubs.ROUTE_POSITIONS_DEFAULT, out_dir,
+        filename="positions.csv", label="default",
+        screenshot_dir=screenshot_dir,
+    )
+    if meta:
+        results.append(meta)
     if not portfolios:
         log.warning("no portfolioUid anchors found on homepage — "
-                    "falling back to default-portfolio positions only")
-        meta = _download_positions_csv(
-            page, ubs.ROUTE_POSITIONS_DEFAULT, out_dir,
-            filename="positions.csv", label="default",
-            screenshot_dir=screenshot_dir,
-        )
-        if meta:
-            results.append(meta)
+                    "default view is the only positions snapshot")
         return results
     log.info("discovered %d portfolio(s) on homepage", len(portfolios))
     for p in portfolios:

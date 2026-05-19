@@ -55,11 +55,11 @@ defines every identifier. Recap of the cross-silver join keys:
 | Entity | Web silver | PSN silver | Join condition |
 | --- | --- | --- | --- |
 | Banking relationship | `banking_relationship_id` (UBS opaque token), plus `account_number_prefix` (e.g. `BBBB AAAAAAAA`) and `description` | `relationship_id` (`SFTPCH01` / `SFTPCH02`, the SFTP server name) | **Manual config required** — there is no shared key. See §3.1. |
-| Portfolio | `portfolio_external_id` (e.g. `RNNN`) | `portfolio_external_id` (= UBS `PrtflId`) | Equality on `portfolio_external_id` |
+| Portfolio | `portfolio_external_id` (e.g. `RNNN`) + `base_currency` (e.g. `CHF`, from positions.csv "Valued in:" footer) | `portfolio_external_id` (= UBS `PrtflId`) + `PrtflKey.PrtflCcyIsoCd` in payload | Equality on `portfolio_external_id` |
 | Cash account | `account_external_id` = IBAN no-spaces uppercase (e.g. `CHKKBBBBRRRRAAAAAAAAC`); plus parallel `account_acct_id_psn_form` (e.g. `RRRR000000AAAAAAAA0000C`) computed by the web loader | `account_external_id` = IBAN per `psn/migrations/0001` comment; the PSN payload also has UBS `AcctId` in the 21-char form | Equality on `account_external_id` (IBAN) OR equality on `account_acct_id_psn_form` ↔ PSN payload `AcctId`. Either works. |
 | Safekeeping account | Not currently surfaced by the web feed (would need future scraping) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only for now. |
 | Instrument | `instrument_isin` (ISO 6166 ISIN-12) on `positions` | `isin` on `instruments` / `holdings` | Equality on ISIN |
-| Transaction | `transaction_external_id` (UBS Transaction no., e.g. `0104030TJ0060041`) | `event_external_id` (e.g. `mt515:…` style, derived from the SWIFT message reference) | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.3 for the date-splice-only merge strategy. |
+| Transaction | `(transaction_external_id, account_external_id)` compound PK — UBS reuses the Transaction no. for both debit + credit sides of an inter-account transfer | `event_external_id` (derived from the SWIFT message reference), unique per event | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.6 for the date-splice-only merge strategy. |
 
 ## 3. Per-entity merge contracts
 
@@ -104,13 +104,41 @@ PSN's `portfolio_external_id` is UBS's `PrtflId` (4-char code
 like `RNNN`). The web `positions.csv` "Portfolio" column carries
 `<account_number_prefix> <PrtflId>` — e.g. `BBBB AAAAAAAA RNNN`.
 
-**Web loader contract:** when parsing `positions.csv`, extract the
-trailing token (split on whitespace, take the last word) as
-`portfolio_external_id`. Store the full original string in
-`portfolio_full_id` for traceability.
+Portfolios and accounts are **separate entities** in silver:
+`portfolios` is keyed by `(snapshot_at, portfolio_external_id)`,
+`accounts` carries a nullable `portfolio_external_id` foreign
+key. A portfolio never owns positions / balances directly — they
+hang off cash and safekeeping accounts.
 
-**Gold join:** equality on `portfolio_external_id`. No special-case
-logic needed.
+**Three kinds of portfolio rows can appear in web silver:**
+
+1. **Real customer-facing portfolios** that appear on the
+   UBS homepage as separate tiles (e.g. a managed CHF mandate, a
+   USD discretionary portfolio). The web loader pulls one
+   `positions_<sha>.csv` per portfolio via the `portfolioUid`
+   anchors enumerated from the homepage.
+2. **A synthetic catch-all portfolio** that the consolidated
+   default view (`positions.csv`, the `preselectFirstPortfolio
+   =true` route) uses to file accounts that aren't attached to
+   any real portfolio — strategy-cash sub-accounts for
+   alternative-investment products, fee / charges accounts, etc.
+   The web loader processes per-portfolio CSVs first, then the
+   consolidated CSV, and only inserts accounts + positions for
+   `(account, isin)` pairs not yet seen. Net effect: real
+   portfolio assignments win; the catch-all only ever owns the
+   genuinely-unattached accounts.
+
+**Web loader contract:** when parsing each positions.csv,
+extract the trailing token of the "Portfolio" column (split on
+whitespace, take the last word) as `portfolio_external_id`.
+Store the full original string in `portfolio_full_id` for
+traceability. Read the "Valued in: <CCY>" footer line and write
+it as `portfolios.base_currency`.
+
+**Gold join:** equality on `portfolio_external_id`. The
+catch-all is a real row in silver; gold can treat it as either a
+distinct portfolio or as "unassigned cash" depending on the
+roll-up.
 
 ### 3.3 Cash accounts
 
@@ -255,6 +283,13 @@ own config.
   Spot-checked: identical for cash movements in the overlap window.
 - Both promote the same field as the splice key; no per-row
   matching required.
+- **Inter-account transfers carry both sides.** UBS reuses the
+  same `Transaction no.` for the debit row in the source account
+  and the credit row in the destination account; the web silver
+  uses a compound PK on `(transaction_external_id, account_
+  external_id)` so both rows survive. Gold's per-account splice
+  picks up the correct side automatically — no special handling
+  needed.
 - If both feeds happen to carry the same transaction for an
   overlap day (unlikely with a strict `<` vs `>=` boundary), the
   PSN row wins and the web row is silently dropped. Acceptable.

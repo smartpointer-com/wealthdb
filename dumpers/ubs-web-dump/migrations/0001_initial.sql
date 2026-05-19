@@ -157,12 +157,21 @@ CREATE TABLE banking_relationships (
 -- One row per portfolio per snapshot. `portfolio_external_id`
 -- matches PSN.portfolios.portfolio_external_id; `portfolio_uid`
 -- is the UBS opaque token used in SPA URLs.
+-- Portfolios are wealth-management wrappers (strategy / mandate /
+-- product) that GROUP accounts but never hold cash or securities
+-- themselves — that happens at the cash-account and safekeeping-
+-- account layer. The link is `accounts.portfolio_external_id`
+-- (nullable; standalone accounts are common). `base_currency` is
+-- the portfolio's reporting currency, harvested from the
+-- positions.csv "Valued in: <CCY>" footer line; aligns with PSN's
+-- `PrtflKey.PrtflCcyIsoCd`.
 CREATE TABLE portfolios (
     snapshot_at              INTEGER NOT NULL,
     portfolio_external_id    TEXT    NOT NULL,            -- e.g. 'RNNN'
     banking_relationship_id  TEXT,
     portfolio_full_id        TEXT,                        -- e.g. 'BBBB AAAAAAAA RNNN'
     portfolio_uid            TEXT,                        -- UBS opaque token
+    base_currency            TEXT,                        -- e.g. 'CHF', from "Valued in:" footer
     description              TEXT,                        -- human label if discoverable
     payload                  TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, portfolio_external_id)
@@ -242,10 +251,16 @@ CREATE TABLE positions (
 -- pair, not an edit.
 -- ============================================================
 
+-- Compound PK (transaction_external_id, account_external_id):
+-- UBS uses the SAME Transaction no. for both sides of an inter-
+-- account transfer (the debit row in the source account and the
+-- credit row in the destination account share the ID). A PK on
+-- transaction_external_id alone would UPSERT one side away — we
+-- need both sides in silver to splice cleanly per account.
 CREATE TABLE transactions (
-    transaction_external_id  TEXT    NOT NULL PRIMARY KEY, -- UBS Transaction no.
-    snapshot_at              INTEGER NOT NULL,             -- which dump first captured this row
+    transaction_external_id  TEXT    NOT NULL,             -- UBS Transaction no.
     account_external_id      TEXT    NOT NULL,             -- joins accounts.account_external_id
+    snapshot_at              INTEGER NOT NULL,             -- which dump first captured this row
     trade_date               INTEGER,                      -- Unix seconds UTC; CSV "Trade date"
     booking_date             INTEGER,                      -- CSV "Booking date"
     value_date               INTEGER NOT NULL,             -- CSV "Value date" — gold splice key
@@ -254,7 +269,8 @@ CREATE TABLE transactions (
     amount_credit            REAL,
     counterparty             TEXT,                         -- extracted from description1
     description_kind         TEXT,                         -- "Dividend", "e-banking payment order", etc.
-    payload                  TEXT    NOT NULL              -- all four description columns + footnotes
+    payload                  TEXT    NOT NULL,             -- all four description columns + footnotes
+    PRIMARY KEY (transaction_external_id, account_external_id)
 );
 
 -- Time-range queries on a single account are the dominant access

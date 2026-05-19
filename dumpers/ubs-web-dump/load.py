@@ -349,12 +349,27 @@ def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
     seen_accounts: set[str] = set()
     seen_portfolios: set[str] = set()
     seen_relationships: set[str] = set()
-    for csv_path in sorted(pos_dir.glob("*.csv")):
+    seen_positions: set[tuple[str, str | None]] = set()
+    # Process per-portfolio CSVs first (`positions_<sha>.csv`), then
+    # the consolidated default view (`positions.csv`). The default
+    # view files unassigned accounts under a synthetic catch-all
+    # portfolio code; loading it last means the `INSERT OR IGNORE`
+    # on accounts keeps the real per-portfolio mapping where one
+    # exists, and only the truly-unassigned accounts inherit the
+    # catch-all. For positions we additionally track (account, isin)
+    # pairs already inserted from a per-portfolio CSV and skip the
+    # consolidated row for them, otherwise every holding ends up
+    # double-counted (once under its real portfolio, once under the
+    # catch-all).
+    per_portfolio_csvs = sorted(pos_dir.glob("positions_*.csv"))
+    consolidated_csvs = sorted(pos_dir.glob("positions.csv"))
+    for csv_path in per_portfolio_csvs + consolidated_csvs:
         base_ccy = _read_positions_base_currency(csv_path)
         for row in _iter_positions_rows(csv_path):
             inserted += _ingest_positions_row(
                 conn, snapshot_at, row, base_ccy,
                 seen_accounts, seen_portfolios, seen_relationships,
+                seen_positions,
             )
     return inserted
 
@@ -422,7 +437,8 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
                           row: dict, base_currency: str | None,
                           seen_accounts: set[str],
                           seen_portfolios: set[str],
-                          seen_relationships: set[str]) -> int:
+                          seen_relationships: set[str],
+                          seen_positions: set[tuple[str, str | None]]) -> int:
     relationship_prefix = row["Banking relationship"] or None
     portfolio_full = row["Portfolio"] or None
     portfolio_ext_id = portfolio_external_id_from_full(portfolio_full)
@@ -450,10 +466,11 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
         conn.execute(
             "INSERT OR IGNORE INTO portfolios ("
             "snapshot_at, portfolio_external_id, banking_relationship_id, "
-            "portfolio_full_id, portfolio_uid, description, payload"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "portfolio_full_id, portfolio_uid, base_currency, "
+            "description, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (snapshot_at, portfolio_ext_id, relationship_prefix,
-             portfolio_full, None, None,
+             portfolio_full, None, base_currency, None,
              normalize_payload({"source": "positions.csv"})),
         )
 
@@ -483,6 +500,13 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
     if not isin and not iban_c:
         # Pure aggregate / informational row — skip.
         return 0
+    pos_key = (account_ext, isin)
+    if pos_key in seen_positions:
+        # Already loaded from an earlier (per-portfolio) CSV in this
+        # dump. The consolidated view would attach it to the synthetic
+        # catch-all portfolio; that's a duplicate, so skip.
+        return 0
+    seen_positions.add(pos_key)
     conn.execute(
         "INSERT OR REPLACE INTO positions ("
         "snapshot_at, portfolio_external_id, account_external_id, "
@@ -566,14 +590,14 @@ def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
             continue
         conn.execute(
             "INSERT INTO transactions ("
-            "transaction_external_id, snapshot_at, account_external_id, "
+            "transaction_external_id, account_external_id, snapshot_at, "
             "trade_date, booking_date, value_date, currency_iso, "
             "amount_debit, amount_credit, counterparty, "
             "description_kind, payload"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(transaction_external_id) DO UPDATE SET "
+            "ON CONFLICT(transaction_external_id, account_external_id) "
+            "DO UPDATE SET "
             "snapshot_at = excluded.snapshot_at, "
-            "account_external_id = excluded.account_external_id, "
             "trade_date = excluded.trade_date, "
             "booking_date = excluded.booking_date, "
             "value_date = excluded.value_date, "
@@ -584,7 +608,7 @@ def _ingest_transactions_csv(conn: sqlite3.Connection, snapshot_at: int,
             "description_kind = excluded.description_kind, "
             "payload = excluded.payload",
             (
-                txn_no, snapshot_at, account_ext,
+                txn_no, account_ext, snapshot_at,
                 ts_from_iso(trade_date),
                 ts_from_iso(_cell(raw, idx, "Booking date")),
                 value_date_ts,
