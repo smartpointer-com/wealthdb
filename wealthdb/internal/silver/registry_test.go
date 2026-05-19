@@ -13,7 +13,7 @@ import (
 type stubAdapter struct{ kind string }
 
 func (s *stubAdapter) Kind() string { return s.kind }
-func (s *stubAdapter) Open(context.Context, string) (Connection, error) {
+func (s *stubAdapter) Open(context.Context, OpenSpec) (Connection, error) {
 	return nil, errors.New("not implemented")
 }
 

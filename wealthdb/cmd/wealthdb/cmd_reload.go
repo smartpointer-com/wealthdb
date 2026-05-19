@@ -107,7 +107,15 @@ or below the high watermark. Reload forces a full re-projection.`)
 			}
 			continue
 		}
-		res, err := ld.Load(ctx, buildSourceSpec(s, cfg.AccountOverrides))
+		spec, err := buildSourceSpec(s, cfg.AccountOverrides)
+		if err != nil {
+			fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		res, err := ld.Load(ctx, spec)
 		if err != nil {
 			fmt.Fprintf(stderr, "reload: %s: load: %s\n", s.ID, err.Error())
 			if firstErr == nil {

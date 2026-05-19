@@ -19,7 +19,7 @@ type snapshotStream struct {
 	idx     int
 }
 
-func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
+func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return &snapshotStream{}, nil
 	}
@@ -100,7 +100,7 @@ func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, e
 
 func (s *snapshotStream) Close() error { return nil }
 
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+func (c *psnReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
 	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
@@ -135,7 +135,7 @@ type cashAccountPayload struct {
 	PrtflId      string `json:"PrtflId"`
 }
 
-func (c *Connection) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *psnReader) appendCashAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id, payload
   FROM cash_accounts
@@ -189,7 +189,7 @@ type safekeepingPayload struct {
 	PrtflId         string `json:"PrtflId"`
 }
 
-func (c *Connection) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id, payload
   FROM safekeeping_accounts
@@ -235,7 +235,7 @@ SELECT snapshot_at, relationship_id, account_external_id, payload
 	return rows.Err()
 }
 
-func (c *Connection) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, relationship_id, portfolio_external_id, payload
   FROM portfolios
@@ -308,7 +308,7 @@ type instrumentPayload struct {
 // snapshot most of the time. Latest-known-per-ISIN is the right
 // resolution — instrument metadata is functionally immutable
 // (name, asset class) and stale-by-one-snapshot is harmless.
-func (c *Connection) appendInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[string]instrumentMeta, error) {
+func (c *psnReader) appendInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[string]instrumentMeta, error) {
 	// ORDER BY snapshot_at ASC so the map[isin] write inside the
 	// loop ends up holding the LATEST row's meta (later writes
 	// overwrite earlier).
@@ -389,7 +389,7 @@ type holdingsPayloadShape struct {
 // suffix) pair has no entry, the raw silver value is forwarded
 // — defensive against suffix-extraction edge cases (the gold-side
 // join will simply miss).
-func (c *Connection) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta, safekeepingLookup map[[2]string]string) error {
+func (c *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta, safekeepingLookup map[[2]string]string) error {
 	const q = `
 SELECT snapshot_at, relationship_id, safekeeping_external_id, isin, payload
   FROM holdings
@@ -492,7 +492,7 @@ type cashBalancePayload struct {
 	CurrencyISO string            `json:"currency_iso"`
 }
 
-func (c *Connection) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cashLookup map[[2]string]string) error {
+func (c *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, cashLookup map[[2]string]string) error {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
@@ -599,7 +599,7 @@ func firstFxPeriod(raw json.RawMessage) (fxRatePeriod, bool, error) {
 	}
 }
 
-func (c *Connection) appendFxRates(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *psnReader) appendFxRates(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
   FROM fx_rates
@@ -657,7 +657,7 @@ type forwardPayload struct {
 // position remains owned by an `accounts` row and the totals
 // across `accounts` and `portfolios` tie out against `positions
 // --with-cash`. See docs/adapters/ubs.md.
-func (c *Connection) appendForwardContracts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *psnReader) appendForwardContracts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, contract_external_id, payload
   FROM forward_contracts
@@ -752,7 +752,7 @@ func strPtrIfNonEmpty(s string) *string {
 // misses just because its safekeeping_accounts record was last
 // updated in an earlier snapshot — UBS dedups by content like
 // instruments do.
-func (c *Connection) safekeepingIDLookup(ctx context.Context) (map[[2]string]string, error) {
+func (c *psnReader) safekeepingIDLookup(ctx context.Context) (map[[2]string]string, error) {
 	const q = `SELECT DISTINCT relationship_id, account_external_id FROM safekeeping_accounts`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
@@ -785,7 +785,7 @@ func (c *Connection) safekeepingIDLookup(ctx context.Context) (map[[2]string]str
 //
 // Built once per Snapshots() call against the whole silver table
 // — same idempotency reasoning as safekeepingIDLookup.
-func (c *Connection) cashIDLookup(ctx context.Context) (map[[2]string]string, error) {
+func (c *psnReader) cashIDLookup(ctx context.Context) (map[[2]string]string, error) {
 	const q = `SELECT DISTINCT relationship_id, account_external_id, payload FROM cash_accounts`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {

@@ -14,7 +14,7 @@ type txStream struct {
 	consumed bool
 }
 
-func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
+func (c *psnReader) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return &txStream{consumed: true}, nil
 	}

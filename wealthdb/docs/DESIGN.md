@@ -415,9 +415,15 @@ Example config file:
     "default_currency": "USD",
     "silver_sources": [
         {
-            "id":   "ubs-main",
+            "id":   "ubs",
             "kind": "ubs",
-            "path": "~/wealthdb/ubs-psn/ubs-psn.db"
+            "subsources": [
+                {"kind": "ubs-web", "path": "~/wealthdb/ubs-web/ubs-web.db"},
+                {"kind": "ubs-psn", "path": "~/wealthdb/ubs-psn/ubs-psn.db"}
+            ],
+            "relationships": [
+                {"label": "Main", "web_id": "<web banking_relationship_id>", "psn_id": "SFTPCHxx"}
+            ]
         },
         {
             "id":   "schwab-retail",
@@ -451,7 +457,15 @@ Example config file:
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
 | `silver_sources[].kind` | string | One of `schwab`, `ubs`, `swissquote`, `auto`. Picks the adapter. |
-| `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths are resolved against the config file's directory. |
+| `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths resolved against the config file's directory. Used by single-file adapters (Schwab, Swissquote, single-source UBS). Mutually exclusive with `subsources`. |
+| `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
+| `silver_sources[].subsources[].kind` | string | Subsource discriminator. UBS recognises `ubs-web` and `ubs-psn`. |
+| `silver_sources[].subsources[].path` | string | Filesystem path to that subsource's silver SQLite. Expanded like `path`. |
+| `silver_sources[].relationships[]` | array | Optional. Pairs cross-subsource entity identities under a single label. UBS uses it to map web `banking_relationship_id` to PSN `SFTPCH0X`. |
+| `silver_sources[].relationships[].label` | string | Required. Canonical user-readable name stamped on canonical records regardless of which subsource produced them. |
+| `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
+| `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
+| `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname` and/or `category` strings. See §13.9; both inner fields are optional but at least one must be set per entry. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 
 ### 5.2 `kind: "auto"`

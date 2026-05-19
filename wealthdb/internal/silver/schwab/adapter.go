@@ -27,22 +27,19 @@ type Adapter struct{}
 func (*Adapter) Kind() string { return kindName }
 
 // Open opens the silver SQLite read-only and returns a Connection.
-// Read-only opening is enforced via the DSN; the underlying file
-// is never written by this adapter.
-func (*Adapter) Open(_ context.Context, path string) (silver.Connection, error) {
-	// `?mode=ro` is honoured by modernc.org/sqlite via the file:
-	// URI form; `_pragma=query_only(true)` is a belt-and-braces
-	// safeguard in case the URI's mode flag is stripped.
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", path)
+// Single-file adapter: only reads spec.Path; Subsources /
+// Relationships are ignored.
+func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", spec.Path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open schwab silver %q: %w", path, err)
+		return nil, fmt.Errorf("open schwab silver %q: %w", spec.Path, err)
 	}
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("ping schwab silver %q: %w", path, err)
+		return nil, fmt.Errorf("ping schwab silver %q: %w", spec.Path, err)
 	}
-	return &Connection{db: db, path: path}, nil
+	return &Connection{db: db, path: spec.Path}, nil
 }
 
 // Connection is one attached schwab silver SQLite.

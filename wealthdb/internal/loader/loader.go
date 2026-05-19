@@ -22,7 +22,15 @@ import (
 type SourceSpec struct {
 	ID   string // user-defined silver_source_id
 	Kind string // adapter kind ("schwab", "ubs", "swissquote", ...)
-	Path string // filesystem path to the silver SQLite
+	Path string // filesystem path to the silver SQLite (single-file adapters)
+	// Subsources, when set, replaces Path for adapters that merge
+	// several backing silvers under one logical source (UBS =
+	// ubs-web + ubs-psn). Passed through to silver.OpenSpec.
+	Subsources []silver.Subsource
+	// Relationships pairs cross-subsource entity identities. Used
+	// by the UBS adapter to align web banking_relationship_id with
+	// PSN SFTP relationship_id under a single label.
+	Relationships []silver.RelationshipPair
 	// Overrides is the per-account_external_id override map for
 	// this source — nickname / category values from the
 	// config-file `account_overrides` block. Loader applies these
@@ -75,7 +83,11 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 	if err != nil {
 		return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
 	}
-	conn, err := adapter.Open(ctx, spec.Path)
+	conn, err := adapter.Open(ctx, silver.OpenSpec{
+		Path:          spec.Path,
+		Subsources:    spec.Subsources,
+		Relationships: spec.Relationships,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("Load(%s): open silver: %w", spec.ID, err)
 	}

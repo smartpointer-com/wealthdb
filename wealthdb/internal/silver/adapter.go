@@ -23,11 +23,60 @@ type Adapter interface {
 	// (e.g. "schwab", "ubs", "swissquote").
 	Kind() string
 
-	// Open attaches to the silver SQLite at `path` and returns a
-	// Connection. The Connection is single-use; callers Close()
-	// when done. Open is read-only — adapters never write to
-	// silver.
-	Open(ctx context.Context, path string) (Connection, error)
+	// Open attaches to the silver source(s) described by spec and
+	// returns a Connection. The Connection is single-use; callers
+	// Close() when done. Open is read-only — adapters never write
+	// to silver. Single-backing-file adapters use spec.Path;
+	// multi-source adapters (UBS = web + PSN) use spec.Subsources
+	// and may use spec.Relationships to align cross-source
+	// identities.
+	Open(ctx context.Context, spec OpenSpec) (Connection, error)
+}
+
+// OpenSpec is everything Adapter.Open needs to know about the
+// configured silver source. Single-file adapters only read Path;
+// merged adapters (UBS) read Subsources and Relationships.
+type OpenSpec struct {
+	// Path is the silver SQLite path for single-file adapters.
+	// Empty when Subsources is used.
+	Path string
+
+	// Subsources lists the backing silvers when one logical source
+	// is composed from several (UBS = ubs-web + ubs-psn). Each
+	// entry's Kind is adapter-specific; the adapter dispatches.
+	// At least one Subsource must be present when Subsources is
+	// set.
+	Subsources []Subsource
+
+	// Relationships pairs cross-subsource entity identities under
+	// a single user-chosen label. Adapters that don't merge
+	// ignore this. UBS uses it to pair web banking_relationship_id
+	// with PSN SFTP relationship_id.
+	Relationships []RelationshipPair
+}
+
+// Subsource is one backing silver inside a merged Adapter.
+type Subsource struct {
+	Kind string
+	Path string
+}
+
+// RelationshipPair is one entry in OpenSpec.Relationships.
+// Either WebID or PSNID (or both) must be set; only the
+// configured side is used.
+type RelationshipPair struct {
+	// Label is the canonical (user-readable) name the adapter
+	// stamps on canonical records so downstream sees a single key
+	// regardless of which subsource produced the record.
+	Label string
+	// WebID, when set, is the web silver's banking_relationship_id.
+	WebID string
+	// PSNID, when set, is the PSN silver's relationship_id.
+	PSNID string
+	// PSNStartOverride, when non-zero, overrides the auto-detected
+	// PSN-start cutover date used to splice transactions between
+	// web and PSN. Unix seconds UTC. Zero = auto-detect.
+	PSNStartOverride int64
 }
 
 // Connection is one attached silver database, ready to answer

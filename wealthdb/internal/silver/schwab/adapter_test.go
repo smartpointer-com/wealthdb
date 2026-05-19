@@ -35,7 +35,7 @@ func newFixtureSilver(t *testing.T) (string, *sql.DB) {
 func openAdapter(t *testing.T, path string) silver.Connection {
 	t.Helper()
 	a := &Adapter{}
-	conn, err := a.Open(context.Background(), path)
+	conn, err := a.Open(context.Background(), silver.OpenSpec{Path: path})
 	if err != nil {
 		t.Fatalf("Adapter.Open: %v", err)
 	}

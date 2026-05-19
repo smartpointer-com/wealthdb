@@ -19,3 +19,13 @@ func NewDecimalFromString(s string) (Decimal, error) {
 func NewDecimalFromInt(n int64) Decimal {
 	return decimal.NewFromInt(n)
 }
+
+// NewDecimalFromFloat builds a Decimal from a float64. Used by
+// silver readers whose source format stores numerics as REAL
+// (SQLite). The conversion uses shopspring/decimal's float
+// helper which does best-effort base-10 reconstruction; for
+// values that originated as text in silver, prefer
+// NewDecimalFromString to avoid float-precision artefacts.
+func NewDecimalFromFloat(f float64) Decimal {
+	return decimal.NewFromFloat(f)
+}

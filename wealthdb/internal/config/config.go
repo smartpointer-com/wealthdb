@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/ptu/wealthdb/internal/silver"
 )
 
 // Config is the in-memory shape of the wealthdb config file.
@@ -29,11 +32,40 @@ type Config struct {
 }
 
 // SilverSource is one entry under `silver_sources` in the config
-// file.
+// file. Most sources are single-file: set `path`. Multi-source
+// adapters (UBS = web + PSN) instead set `subsources`, with one
+// entry per backing silver. Each subsource is optional; at least
+// one must be present when `subsources` is used. Path is empty
+// in the multi-source form.
 type SilverSource struct {
-	ID   string `json:"id"`
+	ID         string             `json:"id"`
+	Kind       string             `json:"kind"`
+	Path       string             `json:"path,omitempty"`
+	Subsources []SilverSubsource  `json:"subsources,omitempty"`
+	// Relationships pairs cross-subsource entity identities under
+	// a single user-chosen label. Used by the UBS adapter to link
+	// the web `banking_relationship_id` (opaque SPA token) to the
+	// PSN `relationship_id` (SFTPCHxx, etc.). Optional.
+	Relationships []RelationshipPair `json:"relationships,omitempty"`
+}
+
+// SilverSubsource is one entry under `silver_sources[].subsources`.
+type SilverSubsource struct {
 	Kind string `json:"kind"`
 	Path string `json:"path"`
+}
+
+// RelationshipPair is one entry under `silver_sources[].relationships`.
+// At least one of `web_id` or `psn_id` must be set. `label` is
+// the canonical user-readable name the adapter stamps on canonical
+// records. `psn_start_override`, when set (YYYY-MM-DD), overrides
+// the auto-detected cutover date used to splice web↔PSN
+// transactions for this relationship.
+type RelationshipPair struct {
+	Label            string `json:"label"`
+	WebID            string `json:"web_id,omitempty"`
+	PSNID            string `json:"psn_id,omitempty"`
+	PSNStartOverride string `json:"psn_start_override,omitempty"`
 }
 
 // AccountOverride is one per-account override entry. Both fields
@@ -75,11 +107,20 @@ func Load(path string) (*Config, error) {
 	}
 	c.GoldDB = expanded
 	for i := range c.SilverSources {
-		expanded, err := expandPath(c.SilverSources[i].Path, configDir)
-		if err != nil {
-			return nil, fmt.Errorf("config: silver_sources[%d].path: %w", i, err)
+		if c.SilverSources[i].Path != "" {
+			expanded, err := expandPath(c.SilverSources[i].Path, configDir)
+			if err != nil {
+				return nil, fmt.Errorf("config: silver_sources[%d].path: %w", i, err)
+			}
+			c.SilverSources[i].Path = expanded
 		}
-		c.SilverSources[i].Path = expanded
+		for j := range c.SilverSources[i].Subsources {
+			expanded, err := expandPath(c.SilverSources[i].Subsources[j].Path, configDir)
+			if err != nil {
+				return nil, fmt.Errorf("config: silver_sources[%d].subsources[%d].path: %w", i, j, err)
+			}
+			c.SilverSources[i].Subsources[j].Path = expanded
+		}
 	}
 
 	if err := c.Validate(); err != nil {
@@ -97,5 +138,49 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 		}
 	}
 	return nil, false
+}
+
+// ToSilverOpenSpec converts a config.SilverSource into the
+// silver.OpenSpec the adapter contract expects. Lives here (not
+// in silver) so config carries the JSON tags / parse logic and
+// silver stays JSON-free. Returns an error when a relationship's
+// psn_start_override fails to parse (YYYY-MM-DD).
+func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
+	out := silver.OpenSpec{Path: s.Path}
+	for _, sub := range s.Subsources {
+		out.Subsources = append(out.Subsources, silver.Subsource{
+			Kind: sub.Kind,
+			Path: sub.Path,
+		})
+	}
+	for _, rel := range s.Relationships {
+		var override int64
+		if rel.PSNStartOverride != "" {
+			t, err := parseYYYYMMDD(rel.PSNStartOverride)
+			if err != nil {
+				return silver.OpenSpec{}, fmt.Errorf(
+					"silver_sources[%q].relationships[%q].psn_start_override: %w",
+					s.ID, rel.Label, err)
+			}
+			override = t
+		}
+		out.Relationships = append(out.Relationships, silver.RelationshipPair{
+			Label:            rel.Label,
+			WebID:            rel.WebID,
+			PSNID:            rel.PSNID,
+			PSNStartOverride: override,
+		})
+	}
+	return out, nil
+}
+
+// parseYYYYMMDD turns a YYYY-MM-DD string into a Unix-seconds
+// timestamp at UTC midnight.
+func parseYYYYMMDD(s string) (int64, error) {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid YYYY-MM-DD %q: %w", s, err)
+	}
+	return t.UTC().Unix(), nil
 }
 

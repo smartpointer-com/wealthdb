@@ -201,7 +201,11 @@ func probeSilverStatus(ctx context.Context, src *config.SilverSource) (canonical
 	if err != nil {
 		return canonical_status{}, err
 	}
-	conn, err := adapter.Open(ctx, src.Path)
+	spec, err := src.ToSilverOpenSpec()
+	if err != nil {
+		return canonical_status{}, err
+	}
+	conn, err := adapter.Open(ctx, spec)
 	if err != nil {
 		return canonical_status{}, err
 	}

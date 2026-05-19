@@ -43,8 +43,30 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
 		}
 
-		if s.Path == "" {
-			return fmt.Errorf("config: silver_sources[%d].path is required", i)
+		// Single-file form OR subsources form — exactly one.
+		hasPath := s.Path != ""
+		hasSubs := len(s.Subsources) > 0
+		switch {
+		case !hasPath && !hasSubs:
+			return fmt.Errorf("config: silver_sources[%d]: one of `path` or `subsources` is required", i)
+		case hasPath && hasSubs:
+			return fmt.Errorf("config: silver_sources[%d]: `path` and `subsources` are mutually exclusive", i)
+		}
+		for j, sub := range s.Subsources {
+			if sub.Kind == "" {
+				return fmt.Errorf("config: silver_sources[%d].subsources[%d].kind is required", i, j)
+			}
+			if sub.Path == "" {
+				return fmt.Errorf("config: silver_sources[%d].subsources[%d].path is required", i, j)
+			}
+		}
+		for j, rel := range s.Relationships {
+			if rel.Label == "" {
+				return fmt.Errorf("config: silver_sources[%d].relationships[%d].label is required", i, j)
+			}
+			if rel.WebID == "" && rel.PSNID == "" {
+				return fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
+			}
 		}
 	}
 

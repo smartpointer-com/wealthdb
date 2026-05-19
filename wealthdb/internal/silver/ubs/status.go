@@ -10,7 +10,7 @@ import (
 
 // Status mirrors Schwab's adapter: -1 sentinels for "no rows",
 // LatestChangeNumber = MAX(dump_runs.snapshot_at).
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+func (c *psnReader) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
 		LatestSnapshotAt:    -1,
@@ -48,7 +48,7 @@ SELECT
 // ChangeWindow follows the same shape as the Schwab adapter's:
 // the change window starts at MIN of "newer snapshot_at" and
 // "newer event timestamp", ends at MAX of the two.
-func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+func (c *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 
 	const q = `

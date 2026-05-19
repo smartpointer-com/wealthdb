@@ -23,17 +23,17 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, path string) (silver.Connection, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", path)
+func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", spec.Path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open swissquote silver %q: %w", path, err)
+		return nil, fmt.Errorf("open swissquote silver %q: %w", spec.Path, err)
 	}
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("ping swissquote silver %q: %w", path, err)
+		return nil, fmt.Errorf("ping swissquote silver %q: %w", spec.Path, err)
 	}
-	return &Connection{db: db, path: path}, nil
+	return &Connection{db: db, path: spec.Path}, nil
 }
 
 type Connection struct {
