@@ -44,7 +44,7 @@ _LABEL_STMT_OF_ASSETS_RE = re.compile(
     r"(?P<day>\d{2})(?P<month>\d{2})(?P<year>\d{4})\s+"
     r"\d{2}\.\d{2}\.\d{4}\s+"
     r"\d{2}\s\S+\s\d{4}\s+.*?"
-    r"\b(?P<acct_no>\d{3}-\d+)-(?P<portfolio_no>\d+)\b"
+    r"\b(?P<acct_no>\d{3,4}-\d+)-(?P<portfolio_no>\d+)\b"
 )
 
 _LABEL_ACCT_STMT_RE = re.compile(
@@ -133,9 +133,29 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
     if label_meta is None:
         return []
 
-    # PSN-style portfolio identifier: '0230AAAAAAAANN'
+    # PSN-style portfolio identifier: 16 chars = 4-digit branch +
+    # 8-digit base + 4-digit portfolio number, all zero-padded.
+    # UBS strips the branch's leading zero in the PDF label
+    # (`BBB-AAAAAAAA-NN` instead of `BBBB-AAAAAAAA-NN`); the
+    # zfill(4) below restores it so the value joins to PSN's
+    # `portfolios.portfolio_external_id` directly.
     branch, base = label_meta["account_number_prefix"].split("-", 1)
-    psn_portfolio = f"{branch}{base.zfill(8)}{label_meta['portfolio_number'].zfill(4)}"
+    psn_portfolio = (
+        f"{branch.zfill(4)}"
+        f"{base.zfill(8)}"
+        f"{label_meta['portfolio_number'].zfill(4)}"
+    )
+    # Loud-fail if the assembly ever drifts from PSN's shape. The
+    # downstream gold layer joins on this column; a wrong length
+    # silently double-counts every position. Caught at parse time
+    # rather than at insert time so the source row is in the
+    # exception context.
+    if len(psn_portfolio) != 16:
+        raise ValueError(
+            f"portfolio_external_id length != 16: {psn_portfolio!r} "
+            f"(from acct_no={label_meta['account_number_prefix']!r}, "
+            f"portfolio_no={label_meta['portfolio_number']!r})"
+        )
 
     results: list[dict] = []
     with pdfplumber.open(pdf_path) as pdf:
