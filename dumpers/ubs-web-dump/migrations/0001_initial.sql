@@ -199,16 +199,23 @@ CREATE TABLE accounts (
 --   instrument_isin set   -> securities position (matches PSN holdings)
 -- ============================================================
 
+-- `currency_iso` is the INSTRUMENT currency (USD for a US stock,
+-- EUR for a EUR cash sub-account, etc.). `market_value` is in the
+-- PORTFOLIO BASE currency named by `market_value_currency` —
+-- positions.csv only exposes the base-currency value, not the
+-- instrument-currency one, so there is no second column for it.
+-- The base currency is harvested from the positions.csv footer
+-- ("Valued in: CHF"); for UBS Switzerland portfolios it is CHF.
 CREATE TABLE positions (
     snapshot_at              INTEGER NOT NULL,
     portfolio_external_id    TEXT    NOT NULL,
-    account_external_id      TEXT    NOT NULL,            -- IBAN for cash; ''+instrument_isin for securities-only rows
+    account_external_id      TEXT    NOT NULL,            -- IBAN for cash; '' for securities-only rows
     instrument_isin          TEXT,                        -- NULL for cash positions
     valor                    TEXT,
-    currency_iso             TEXT    NOT NULL,
+    currency_iso             TEXT    NOT NULL,            -- INSTRUMENT currency
     units                    REAL,                        -- "Number/Amt." column
-    market_value             REAL,                        -- in instrument currency
-    market_value_base        REAL,                        -- in portfolio base ccy (usually CHF)
+    market_value             REAL,                        -- in `market_value_currency`
+    market_value_currency    TEXT,                        -- portfolio base ccy from positions.csv footer
     cost_price               REAL,                        -- web-only; PSN doesn't carry cost
     accrued_interest         REAL,
     lending_value            REAL,

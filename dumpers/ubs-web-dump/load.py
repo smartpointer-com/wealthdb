@@ -336,7 +336,12 @@ def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
 def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
                     dump_dir: Path) -> int:
     """Parse every `positions/*.csv` in the dump dir; upsert into
-    banking_relationships, portfolios, accounts, positions."""
+    banking_relationships, portfolios, accounts, positions.
+
+    Each per-portfolio CSV is parsed independently. The portfolio
+    base currency for the `market_value` column is extracted from
+    the CSV's "Valued in: …" footer line.
+    """
     pos_dir = dump_dir / "positions"
     if not pos_dir.is_dir():
         return 0
@@ -345,12 +350,23 @@ def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
     seen_portfolios: set[str] = set()
     seen_relationships: set[str] = set()
     for csv_path in sorted(pos_dir.glob("*.csv")):
+        base_ccy = _read_positions_base_currency(csv_path)
         for row in _iter_positions_rows(csv_path):
             inserted += _ingest_positions_row(
-                conn, snapshot_at, row,
+                conn, snapshot_at, row, base_ccy,
                 seen_accounts, seen_portfolios, seen_relationships,
             )
     return inserted
+
+
+VALUED_IN_RE = re.compile(r"^Valued in:\s*([A-Z]{3})\b", re.MULTILINE)
+
+
+def _read_positions_base_currency(csv_path: Path) -> str | None:
+    """Extract the 'Valued in: <CCY>' footer line; default None."""
+    text = csv_path.read_text(encoding="utf-8-sig", errors="replace")
+    m = VALUED_IN_RE.search(text)
+    return m.group(1) if m else None
 
 
 RELATIONSHIP_PREFIX_RE = re.compile(r"^\d{4}\s+\d{8}$")
@@ -403,7 +419,8 @@ def _cell(raw: list[str], idx: dict[str, int], name: str) -> str:
 
 
 def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
-                          row: dict, seen_accounts: set[str],
+                          row: dict, base_currency: str | None,
+                          seen_accounts: set[str],
                           seen_portfolios: set[str],
                           seen_relationships: set[str]) -> int:
     relationship_prefix = row["Banking relationship"] or None
@@ -470,15 +487,15 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
         "INSERT OR REPLACE INTO positions ("
         "snapshot_at, portfolio_external_id, account_external_id, "
         "instrument_isin, valor, currency_iso, units, market_value, "
-        "market_value_base, cost_price, accrued_interest, "
+        "market_value_currency, cost_price, accrued_interest, "
         "lending_value, lending_value_ratio, description, payload"
         ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             snapshot_at, portfolio_ext_id or "", account_ext,
             isin, row["Valor"] or None, row["Ccy."] or None,
             parse_decimal(row["Number/Amt."]),
-            None,  # market_value (per-instrument-ccy not split out by UBS)
             parse_decimal(row["Market value"]),  # base-ccy market value
+            base_currency,
             parse_decimal(row["Cost price"]),
             parse_decimal(row["Accrued interest"]),
             parse_decimal(row["Lending value"]),

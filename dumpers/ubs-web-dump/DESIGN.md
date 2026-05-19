@@ -59,7 +59,7 @@ defines every identifier. Recap of the cross-silver join keys:
 | Cash account | `account_external_id` = IBAN no-spaces uppercase (e.g. `CHKKBBBBRRRRAAAAAAAAC`); plus parallel `account_acct_id_psn_form` (e.g. `RRRR000000AAAAAAAA0000C`) computed by the web loader | `account_external_id` = IBAN per `psn/migrations/0001` comment; the PSN payload also has UBS `AcctId` in the 21-char form | Equality on `account_external_id` (IBAN) OR equality on `account_acct_id_psn_form` ↔ PSN payload `AcctId`. Either works. |
 | Safekeeping account | Not currently surfaced by the web feed (would need future scraping) | `account_external_id` = UBS safekeeping code (e.g. `BBBB-AAAAAAAA.S1`) | PSN only for now. |
 | Instrument | `instrument_isin` (ISO 6166 ISIN-12) on `positions` | `isin` on `instruments` / `holdings` | Equality on ISIN |
-| Transaction | `transaction_external_id` (UBS Transaction no.) | `event_external_id` extracted from MT940 `:61:` `<bank_ref>` | Equality is possible but NOT required — see §3.3 splice strategy |
+| Transaction | `transaction_external_id` (UBS Transaction no., e.g. `0104030TJ0060041`) | `event_external_id` (e.g. `mt515:…` style, derived from the SWIFT message reference) | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.3 for the date-splice-only merge strategy. |
 
 ## 3. Per-entity merge contracts
 
@@ -190,22 +190,35 @@ exposes the depot hierarchy. Not done in v1.
 Both silvers emit complete snapshots. Web is on-demand (one per
 `download.py` run); PSN is daily.
 
-**Gold dedup strategy per (snapshot_date, account, instrument):**
+**Use PSN for identity; fold web payload on top.** PSN's
+holdings carry the full safekeeping / portfolio hierarchy and the
+authoritative pricing snapshot per (safekeeping, instrument). The
+web silver's `positions` table flattens that hierarchy (one
+portfolio code per row, no safekeeping link, market value in
+portfolio base currency only) — it cannot express the same
+identity faithfully. So the gold layer:
 
 ```
-preferred = PSN snapshot for that date if it exists
-fallback  = nearest web snapshot for that date
+identity   = PSN.holdings(snapshot_date, safekeeping, isin)
+payload    = LEFT JOIN web.positions
+              ON  web.portfolio_external_id = PSN.holdings.portfolio_external_id
+              AND web.instrument_isin       = PSN.holdings.isin
 ```
 
-Web snapshots fill the gap before PSN's activation. PSN takes
-over for every date from activation onwards. If both exist on the
-same day (e.g. PSN's nightly + a same-day web pull), gold prefers
-PSN (PSN's pricing is the bank's authoritative end-of-day mark).
+This picks up web's `cost_price`, `lending_value`,
+`lending_value_ratio`, `description`, etc. without trying to
+flatten PSN through the web's narrower identity model.
 
-**Caveat:** web `positions` carries `cost_price` and
-`lending_value_ratio` which PSN does NOT. Gold should LEFT JOIN
-web onto PSN to preserve those columns even when PSN is the
-chosen source row.
+For dates before PSN's activation, gold falls back to web
+`positions` standalone — accepting the flattened identity model
+for the pre-PSN window. The pricing in that window is whatever
+the customer's snapshot captured (no canonical bank mark).
+
+**Cash positions** (the "Liquidity - Accounts" rows in
+positions.csv) join to PSN's `cash_balances` the same way:
+join on `(snapshot_date, account_external_id)` and fold the web
+columns. `account_external_id` is the canonical IBAN per §2 — it
+joins directly.
 
 ### 3.6 Transactions (the splice)
 
@@ -245,6 +258,14 @@ own config.
 - If both feeds happen to carry the same transaction for an
   overlap day (unlikely with a strict `<` vs `>=` boundary), the
   PSN row wins and the web row is silently dropped. Acceptable.
+
+**Do not attempt per-row identity matching.** The two silvers carry
+totally different transaction-ID schemes (web uses UBS's "Transaction
+no." e.g. `0104030TJ0060041`; PSN derives event IDs from SWIFT
+message references e.g. `mt515:…`). Empirically there is **zero
+overlap** between the two ID spaces, so any cross-silver join on
+`transaction_external_id = event_external_id` returns nothing.
+The hard `<` vs `>=` cut on `value_date` is the only safe merge.
 
 **Note on Trade date vs Value date.** Web's CSV has four dates per
 row: Trade date, Trade time, Booking date, Value date. PSN MT940
