@@ -164,7 +164,7 @@ Reload semantics:
 
 ```sh
 .venv/bin/python load.py \
-    --silver-db ~/wealthdb/ubs-psn/ubs.db \
+    --silver-db ~/wealthdb/ubs-psn/ubs-psn.db \
     --bronze-dir ~/wealthdb/ubs-psn
 ```
 
@@ -176,7 +176,7 @@ not already recorded in `dump_runs`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `ubs.db`. |
+| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `ubs-psn.db`. |
 | `--bronze-dir` | _(required)_ | Directory containing bronze dump subdirectories. |
 | `--relationship-id` | `SFTPCH01` | UBS Server ID for the banking relationship the bronze dumps belong to. Override to load a different relationship into the same DB. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
