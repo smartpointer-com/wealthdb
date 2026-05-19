@@ -11,8 +11,8 @@ The companion silvers, by path:
 
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
-| `ubs-web` | Web scrape via Playwright | ~28-month transactions + ~5-year docs + on-demand positions | `~/wealthdb/ubs-web/ubs-web.db` |
-| `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `~/wealthdb/ubs.db` |
+| `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: ~28-month transactions + on-demand positions + 1.5k PDF document index. Historical tables: quarterly position snapshots back to 2022 + monthly cash balances back to late 2021, both reconstructed from the bronze PDF archive | `~/wealthdb/ubs-web/ubs-web.db` |
+| `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `~/wealthdb/ubs-psn/ubs-psn.db` |
 
 ## 1. Lambda architecture overview
 
@@ -322,11 +322,71 @@ The PDF binaries live on disk under
 `<bronze-root>/<dump-ts>/documents/` — the silver `documents`
 table only indexes them.
 
+### 3.8 Historical snapshots reconstructed from PDFs
+
+The web silver also reconstructs **historical** position + cash
+snapshots from the PDF document archive. Two dedicated tables:
+
+| Table | Source PDF type | Granularity |
+| --- | --- | --- |
+| `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS doesn't surface the safekeeping account in the printed text in a way we can extract). |
+| `historical_cash_balances` | "Account Statement" PDFs (monthly) | One row per `(period_end, account_external_id)` with opening / closing balance + turnover totals. UBS only issues an Account Statement for a given month when the account had activity in that month, so coverage is uneven; year-end months tend to cover the full account inventory. |
+
+**Why separate from the live-fetch `positions` / `accounts`
+tables.** Two reasons:
+
+1. **Identity model differs.** The PDFs use UBS's `NN` portfolio
+   numbering (e.g. `01` … `06`), which the loader expands to the
+   PSN-aligned `BBBBAAAAAAAANN` form — directly joinable against
+   PSN's `PrtflId`. The live-fetch `portfolios` table uses 4-char
+   UBS-internal codes (e.g. `RNNN`, `NNNN`) which are a different
+   surface. Putting them in one table would require either a
+   mapping that doesn't exist in either source, or a `source`
+   column that gold would still have to filter on every query.
+2. **Cadence + authority differ.** PDFs are bank-of-record end-
+   of-period snapshots, semi-annual at best for positions. Live
+   fetches are intra-day customer-side snapshots. Gold can pick
+   per use case (e.g. PDF snapshots are the right source for
+   historical performance attribution; live fetch is the right
+   source for "what does the customer see right now").
+
+**Gold join.** For overlap dates where PSN is also present, gold
+should prefer PSN for both identity and pricing. For dates that
+predate PSN's go-live, `historical_position_snapshots` is the
+canonical source. The portfolio identifier joins directly:
+
+```sql
+SELECT *
+FROM web_silver.historical_position_snapshots
+WHERE as_of_date < cutoff_date(R)
+UNION ALL
+SELECT *
+FROM psn_silver.holdings  -- shaped equivalently
+WHERE snapshot_at >= cutoff_date(R);
+```
+
+`historical_cash_balances` joins to the live `accounts` table via
+the IBAN (`account_external_id`) — same canonical form on both
+sides.
+
+**Known parser limitations.** The parsers in
+[pdf_parsers.py](pdf_parsers.py) are best-effort:
+
+- The "sector" field on securities sometimes captures the
+  preceding `Distribution:` line instead of the actual sector
+  label. Treat `sector` as informational, not authoritative.
+- The cash-position "description" sometimes pulls in adjacent
+  numeric noise (e.g. a balance-date that flowed into the
+  description column on the printed page). The IBAN, currency,
+  and market value are reliable.
+- UBS only issues Account Statements for months with activity,
+  so missing months don't imply missing balances — the closing
+  balance from the most recent prior month is still valid until
+  the next statement.
+
 ## 4. Web loader implementation notes
 
-(For the not-yet-written `load.py`.)
-
-- **Migration runner.** Apply pending migrations in numeric
+- **Migration runner.** Applies pending migrations in numeric
   order, commit after each, record version in `schema_meta`.
   Mirror `ubs-psn-dump/load.py`'s pattern.
 - **Bronze scan.** Walk `<bronze-root>` for subdirectories
@@ -334,18 +394,27 @@ table only indexes them.
   `dump_runs`.
 - **Per dump:**
   1. Parse `run.json` to get the window bounds; write `dump_runs`.
-  2. Parse `positions/*.csv` (one per portfolio) → upsert
-     `banking_relationships`, `portfolios`, `accounts`, `positions`.
-     The first file lets us learn the relationship; subsequent
-     files share it.
+  2. Parse `positions/*.csv` (per-portfolio CSVs first, then the
+     consolidated default-view CSV) → upsert
+     `banking_relationships`, `portfolios`, `accounts`,
+     `positions`. Per-portfolio first means real portfolio
+     assignments win and only truly-unassigned accounts land
+     under the synthetic catch-all portfolio.
   3. Parse `transactions/cash_*.csv` (per-account, per-window) →
-     upsert `transactions` keyed by UBS Transaction no.
+     upsert `transactions` keyed by `(transaction_external_id,
+     account_external_id)`.
   4. Catalog `documents/*.pdf` files referenced in `run.json` →
      upsert `documents`, computing `content_sha256` per file.
-  5. Optional: parse `*.mt940` files into a parallel
-     `transactions_mt940` table or merge into `transactions` for
-     opening/closing balance enrichment. (Not in v1 schema.)
+  5. Walk the `documents` table, route every PDF whose label
+     matches a known statement type to `pdf_parsers.py`, and
+     upsert the parsed positions / cash balances into the
+     `historical_*` tables.
 
+- **PDF parsing isolation.** `pdfplumber` is bundled in the
+  Docker image (`requirements.txt`). The parsers live in
+  `pdf_parsers.py` and have no DB-side dependencies, so they
+  can be unit-tested against a static PDF without spinning up
+  silver.
 - **Idempotency.** Re-running the loader on the same bronze dir
   is a no-op (PK collisions caught + content-dedup).
 - **Atomicity.** One transaction per dump-run. Roll back on any

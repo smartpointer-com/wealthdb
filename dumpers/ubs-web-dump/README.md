@@ -71,7 +71,7 @@ names and roles are the same:
 | --- | --- | --- |
 | [`login.py`](login.py) | implemented | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (chmod 0600). `--check` validates an existing state file without a new QR push. |
 | [`download.py`](download.py) | implemented | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Writes a `run.json` manifest. Credit-card transactions are intentionally skipped — this is a wealth-management toolkit. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| `load.py` | planned | Parse bronze artefacts into a queryable SQLite silver database using the schema in [migrations/0001_initial.sql](migrations/0001_initial.sql). Apply pending migrations on startup; load each dump atomically (row-level UPSERT on transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. |
+| [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
 
 ### Why both CSV and MT940?
 
@@ -126,11 +126,24 @@ prefix, so a naive slice would collide silently — hashing avoids it.
 ### Silver schema and gold-merge contract
 
 Silver lives at `~/wealthdb/ubs-web/ubs-web.db` by default;
-companion PSN silver is at `~/wealthdb/ubs.db` (from `ubs-psn-dump`).
-Schema in [migrations/0001_initial.sql](migrations/0001_initial.sql);
-full design notes including the per-entity gold-merge contract,
-identifier conventions, IBAN ↔ PSN AcctId conversion, and the
-transaction-splice strategy in [DESIGN.md](DESIGN.md).
+companion PSN silver is at `~/wealthdb/ubs-psn/ubs-psn.db` (from
+`ubs-psn-dump`). Schemas in [migrations/](migrations/):
+
+- [`0001_initial.sql`](migrations/0001_initial.sql) — live-fetch
+  tables: `banking_relationships`, `portfolios`, `accounts`,
+  `positions`, `transactions`, `documents`. Driven by the
+  positions.csv / MT940 / CSV / document-API artefacts.
+- [`0002_historical_snapshots.sql`](migrations/0002_historical_snapshots.sql)
+  — `historical_position_snapshots` (semi-annual full snapshots
+  reconstructed from "Statement of assets" PDFs) and
+  `historical_cash_balances` (monthly cash deltas reconstructed
+  from "Account Statement" PDFs). Kept separate from the live-
+  fetch tables because the identity model and cadence differ.
+
+Full design notes including the per-entity gold-merge contract,
+identifier conventions, IBAN ↔ PSN AcctId conversion, the
+transaction-splice strategy, and the historical-snapshot
+reconstruction approach in [DESIGN.md](DESIGN.md).
 
 ## Container build
 

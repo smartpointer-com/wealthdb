@@ -13,8 +13,8 @@ playwright==1.59.0
 # image changes.
 Pillow>=10.0,<12
 
-# Additional parsing deps will be added once the netbanking export
-# formats are known (likely candidates: pdfminer.six / pypdf for PDF
-# text extraction, openpyxl if UBS serves .xlsx, xlrd==1.2.0 if it
-# serves legacy .xls). Hold off on speculative pins until we have
-# real sample exports to test against.
+# pdfplumber sits on top of pdfminer.six and exposes a clean table-
+# extraction API. Used by load.py to reconstruct historical position
+# snapshots from UBS's semi-annual "Statement of assets" PDFs and
+# month-end "Account Statement" PDFs in the documents archive.
+pdfplumber>=0.11,<1

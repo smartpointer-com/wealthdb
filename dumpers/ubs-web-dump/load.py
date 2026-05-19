@@ -296,9 +296,12 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
+    hist_pos, hist_cash = _load_historical_from_pdfs(conn, dump_dir)
 
-    log.info("loaded %s: positions=%d transactions=%d documents=%d",
-             dump_dir.name, pos_count, txn_count, doc_count)
+    log.info("loaded %s: positions=%d transactions=%d documents=%d "
+             "hist_positions=%d hist_cash_balances=%d",
+             dump_dir.name, pos_count, txn_count, doc_count,
+             hist_pos, hist_cash)
 
 
 def _read_run_json(dump_dir: Path) -> dict:
@@ -680,6 +683,103 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
             # Same doc_token or sha already loaded in a previous dump.
             log.debug("doc %s already in silver; skipping", token[:12])
     return inserted
+
+
+# ----------------------------------------------------------------
+# Historical snapshots from PDF documents
+# ----------------------------------------------------------------
+
+def _load_historical_from_pdfs(conn: sqlite3.Connection,
+                               dump_dir: Path) -> tuple[int, int]:
+    """Walk every PDF tracked in the documents table whose label
+    indicates a Statement of assets or an Account Statement, parse
+    it, and upsert into the historical_* tables. Returns
+    (position_rows, cash_rows)."""
+    from pdf_parsers import (
+        parse_statement_of_assets, parse_account_statement,
+    )
+    docs_dir = dump_dir / "documents"
+    if not docs_dir.is_dir():
+        return 0, 0
+
+    # Pull (doc_token, file_path, label) for relevant docs from the
+    # documents table — that's where bronze metadata lives.
+    cur = conn.execute(
+        "SELECT doc_token, file_path, label FROM documents "
+        "WHERE label LIKE '%Statement of assets%' "
+        "   OR doc_type = 'Account Statement'"
+    )
+    pos_rows = 0
+    cash_rows = 0
+    for token, fp, label in cur.fetchall():
+        path = Path(fp)
+        if not path.is_file():
+            continue
+        try:
+            if "Statement of assets" in (label or ""):
+                rows = parse_statement_of_assets(path, token, label)
+                pos_rows += _insert_hist_positions(conn, rows)
+            else:
+                rows = parse_account_statement(path, token, label)
+                cash_rows += _insert_hist_cash_balances(conn, rows)
+        except Exception as e:  # noqa: BLE001
+            log.warning("PDF parse failed for %s (%s): %s",
+                        path.name, label[:60] if label else "", e)
+    return pos_rows, cash_rows
+
+
+def _insert_hist_positions(conn: sqlite3.Connection,
+                           rows: list[dict]) -> int:
+    n = 0
+    for r in rows:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO historical_position_snapshots ("
+                "as_of_date, portfolio_external_id, account_external_id, "
+                "instrument_isin, currency_iso, units, market_value, "
+                "market_value_currency, cost_price, market_price, "
+                "accrued_interest, exchange_rate_to_base, description, "
+                "sector, source_doc_token, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    r["as_of_date"], r["portfolio_external_id"],
+                    r["account_external_id"], r["instrument_isin"],
+                    r["currency_iso"], r["units"], r["market_value"],
+                    r["market_value_currency"], r["cost_price"],
+                    r["market_price"], r["accrued_interest"],
+                    r["exchange_rate_to_base"], r["description"],
+                    r["sector"], r["source_doc_token"], r["payload"],
+                ),
+            )
+            n += 1
+        except sqlite3.IntegrityError as e:
+            log.debug("hist position insert failed: %s", e)
+    return n
+
+
+def _insert_hist_cash_balances(conn: sqlite3.Connection,
+                               rows: list[dict]) -> int:
+    n = 0
+    for r in rows:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO historical_cash_balances ("
+                "period_end, account_external_id, currency_iso, "
+                "period_start, opening_balance, closing_balance, "
+                "total_debits, total_credits, source_doc_token, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    r["period_end"], r["account_external_id"],
+                    r["currency_iso"], r["period_start"],
+                    r["opening_balance"], r["closing_balance"],
+                    r["total_debits"], r["total_credits"],
+                    r["source_doc_token"], r["payload"],
+                ),
+            )
+            n += 1
+        except sqlite3.IntegrityError as e:
+            log.debug("hist cash insert failed: %s", e)
+    return n
 
 
 def _parse_doc_label(label: str) -> tuple[str | None, int | None]:

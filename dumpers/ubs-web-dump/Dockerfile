@@ -27,7 +27,7 @@ RUN pip install -r requirements.txt
 # entrypoint dispatches `download` / `load` subcommands to scripts
 # that do not exist, which is fine — running them produces a clear
 # "no such file" error rather than a silent failure.
-COPY login.py download.py load.py landmarks.py /app/
+COPY login.py download.py load.py landmarks.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
