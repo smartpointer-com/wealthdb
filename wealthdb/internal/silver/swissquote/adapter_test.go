@@ -106,6 +106,126 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 	}
 }
 
+// TestSnapshotsInstrumentNameAndISIN verifies the swissquote-dump
+// v3 `name` and `isin` columns surface on the InstrumentChange,
+// and that the per-bank identifier becomes the ISIN when one is
+// known (column-level on this row, or inherited from another row
+// sharing the same symbol+currency). Rows whose symbol+currency
+// has no ISIN anywhere in the silver fall back to symbol@currency.
+func TestSnapshotsInstrumentNameAndISIN(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, '1234567', '{"customer_id":"1234567"}');
+        INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload, name, isin) VALUES
+            (1000, '1234567', 'IUSQ', 'USD',
+             '{"asset_class":"ETFs","currency":"USD","symbol":"IUSQ","quantity":10,"total_value":1500.00}',
+             'iShares Core MSCI World UCITS ETF', 'IE00B4L5Y983'),
+            (1000, '1234567', 'PREMIG', 'CHF',
+             '{"asset_class":"Shares","currency":"CHF","symbol":"PREMIG","quantity":50,"total_value":1000.00}',
+             NULL, NULL);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	byKey := map[string]canonical.InstrumentChange{}
+	for _, i := range batch.Instruments {
+		byKey[i.InstrumentExternalID] = i
+	}
+	iusq, ok := byKey["IE00B4L5Y983"]
+	if !ok {
+		t.Fatalf("instrument with ISIN-keyed external_id 'IE00B4L5Y983' not found; got keys = %v", keysOf(byKey))
+	}
+	if iusq.Name == nil || *iusq.Name != "iShares Core MSCI World UCITS ETF" {
+		t.Errorf("IUSQ name = %v, want 'iShares Core MSCI World UCITS ETF'", iusq.Name)
+	}
+	if iusq.ISIN == nil || *iusq.ISIN != "IE00B4L5Y983" {
+		t.Errorf("IUSQ isin = %v, want 'IE00B4L5Y983'", iusq.ISIN)
+	}
+	if iusq.Symbol == nil || *iusq.Symbol != "IUSQ" {
+		t.Errorf("IUSQ symbol = %v, want 'IUSQ'", iusq.Symbol)
+	}
+	premig, ok := byKey["PREMIG@CHF"]
+	if !ok {
+		t.Fatalf("ISIN-less instrument 'PREMIG@CHF' not found; got keys = %v", keysOf(byKey))
+	}
+	if premig.Name != nil {
+		t.Errorf("PREMIG name = %v, want nil (pre-migration row)", premig.Name)
+	}
+	if premig.ISIN != nil {
+		t.Errorf("PREMIG isin = %v, want nil (pre-migration row)", premig.ISIN)
+	}
+}
+
+// TestSnapshotsHistoricalPositionsConsolidatedByISIN verifies the
+// silver-migration-0004 historical positions (source='pp:...')
+// land in the same gold position_key as the matching live row by
+// virtue of the ISIN. Without this, the same logical instrument
+// would fragment into two gold positions — historical rows store
+// the long instrument name in the `symbol` column while live XLS
+// rows store the ticker.
+func TestSnapshotsHistoricalPositionsConsolidatedByISIN(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (2000, 4, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (2000, '1234567', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload, name, isin, source) VALUES
+            -- Live row, ticker symbol.
+            (2000, '1234567', 'SMMCHA', 'CHF',
+             '{"asset_class":"ETFs","currency":"CHF","symbol":"SMMCHA","quantity":100,"total_value":10000.00}',
+             'Example Fund CHF dis', 'CH0000000060', 'live'),
+            -- Historical row from a Portfolio Performance PDF —
+            -- silver writes the long name into the symbol column,
+            -- which is a different (symbol, currency) tuple than
+            -- the live row but shares the ISIN.
+            (1500, '1234567', 'Example Fund CHF DIS', 'CHF',
+             '{"asset_class":"ETFs","currency":"CHF","symbol":"Example Fund CHF DIS","quantity":80,"total_value":7500.00}',
+             'Example Fund CHF DIS', 'CH0000000060', 'pp:doc-abc');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+
+	var allPositions []canonical.PositionChange
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		allPositions = append(allPositions, batch.Positions...)
+		if !more {
+			break
+		}
+	}
+
+	if len(allPositions) != 2 {
+		t.Fatalf("positions = %d, want 2", len(allPositions))
+	}
+	for _, p := range allPositions {
+		if p.PositionKey != "CH0000000060" {
+			t.Errorf("position at %d has key %q, want 'CH0000000060' (ISIN-keyed)", p.SnapshotAt, p.PositionKey)
+		}
+	}
+}
+
+func keysOf(m map[string]canonical.InstrumentChange) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // TestSnapshotsAccountCategoryPassthrough verifies the
 // swissquote-dump v2 `account_type` column is forwarded as
 // AccountCategory, and that the empty string maps to nil (older

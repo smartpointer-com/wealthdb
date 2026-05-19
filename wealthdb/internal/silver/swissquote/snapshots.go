@@ -56,9 +56,27 @@ func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, e
 
 func (s *snapshotStream) Close() error { return nil }
 
+// snapshotTimesInWindow returns the union of distinct snapshot_at
+// values across dump_runs, positions, and currency_balances —
+// every silver table whose `snapshot_at` carries semantic
+// meaning. Historical positions reconstructed from Portfolio
+// Performance PDFs (silver migration 0004, source='pp:<doc_id>')
+// land with snapshot_at = the PDF's effective as-of date rather
+// than the dump's run time, so they're absent from dump_runs but
+// present in positions. UNION'ing them keeps the byTime dispatch
+// in Snapshots() aware of every snapshot the adapter is about to
+// emit a batch for.
 func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	const q = `
+SELECT DISTINCT snapshot_at FROM (
+    SELECT snapshot_at FROM dump_runs         WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM positions         WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM currency_balances WHERE snapshot_at BETWEEN ? AND ?
+)
+ORDER BY snapshot_at`
+	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End, w.Start, w.End, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
 	}
@@ -145,28 +163,98 @@ func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool,
 
 // ---- positions -----------------------------------------------------------
 
-// positionPayload mirrors the Swissquote XLS-derived position
-// fields the silver loader extracts.
+// positionPayload mirrors the Swissquote position payload fields
+// the silver loader extracts. Two shapes are handled:
+//
+//   live (XLS export):   quantity, price, unit_cost, total_value,
+//                        total_value_chf
+//   historical (PDF):    quantity, market_price, avg_price,
+//                        valuation_chf  (no `total_value`)
+//
+// market_value resolution: prefer total_value; fall back to
+// valuation_chf when the row's currency is CHF (the historical
+// positions here are all CHF); else compute from
+// quantity × market_price as a last resort.
 type positionPayload struct {
-	AssetClass  string             `json:"asset_class"`
-	Currency    string             `json:"currency"`
-	Symbol      string             `json:"symbol"`
-	Quantity    *canonical.Decimal `json:"quantity"`
-	Price       *canonical.Decimal `json:"price"`
-	UnitCost    *canonical.Decimal `json:"unit_cost"`
-	TotalValue  *canonical.Decimal `json:"total_value"`
+	AssetClass    string             `json:"asset_class"`
+	Currency      string             `json:"currency"`
+	Symbol        string             `json:"symbol"`
+	Quantity      *canonical.Decimal `json:"quantity"`
+	Price         *canonical.Decimal `json:"price"`
+	MarketPrice   *canonical.Decimal `json:"market_price"`
+	UnitCost      *canonical.Decimal `json:"unit_cost"`
+	TotalValue    *canonical.Decimal `json:"total_value"`
+	ValuationCHF  *canonical.Decimal `json:"valuation_chf"`
 }
 
-// appendPositions also emits an InstrumentChange per
-// (snapshot_at, symbol+@+currency) so positions have a registered
-// instrument to reference. Swissquote silver doesn't have a
-// dedicated instruments table — we synthesize one from positions
-// rows.
+// effectiveMarketValue resolves market_value across the two
+// payload shapes Swissquote silver produces. See positionPayload.
+func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
+	if p.TotalValue != nil {
+		return p.TotalValue
+	}
+	if p.Currency == "CHF" && p.ValuationCHF != nil {
+		return p.ValuationCHF
+	}
+	if p.Quantity != nil && p.MarketPrice != nil {
+		v := p.Quantity.Mul(*p.MarketPrice)
+		return &v
+	}
+	return nil
+}
+
+// appendPositions emits one PositionChange and one
+// InstrumentChange per positions row. The silver `positions`
+// table mixes two provenances (migration 0004 `source` column):
+//
+//   `live`        — current Portfolio Overview XLS export
+//   `pp:<doc_id>` — reconstructed from a Portfolio Performance
+//                   PDF, with snapshot_at = the PDF's as-of date
+//
+// `name` and `isin` were promoted in silver migration 0003
+// (scraped from the Portfolio Overview DOM tooltip and FullQuote
+// link href respectively). Both are nullable — pre-migration
+// rows leave them NULL — and the adapter falls back via
+// hasColumn so older silvers still load.
+//
+// Identity contract:
+//   - instrument_external_id / position_key = ISIN when known
+//     for ANY row sharing the same `(symbol, currency)` tuple,
+//     else `symbol + '@' + currency`. The fallback chain is
+//     resolved once via isinBySymbol() so pre-migration live
+//     rows that lack a column-level ISIN still pick up the ISIN
+//     observed in a later live or historical row. This keeps
+//     positions for one instrument unified across the silver
+//     migration 0003 boundary AND across the live/historical
+//     boundary, where the historical PDF stores the instrument's
+//     long name in `symbol` while live XLS stores the ticker.
+//   - When no ISIN is reachable for a symbol (Swissquote never
+//     surfaced one), the symbol@currency fallback is the stable
+//     per-bank identifier and gold's ix_instruments_isin is just
+//     unused for that row.
 func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	const q = `
-SELECT snapshot_at, account_external_id, symbol, currency, payload
-  FROM positions
- WHERE snapshot_at BETWEEN ? AND ?`
+	hasName, err := c.hasColumn(ctx, "positions", "name")
+	if err != nil {
+		return err
+	}
+	hasISIN, err := c.hasColumn(ctx, "positions", "isin")
+	if err != nil {
+		return err
+	}
+	isinBySymbol, err := c.buildISINBySymbol(ctx, hasISIN)
+	if err != nil {
+		return err
+	}
+
+	q := `SELECT snapshot_at, account_external_id, symbol, currency, payload, '', '' FROM positions WHERE snapshot_at BETWEEN ? AND ?`
+	switch {
+	case hasName && hasISIN:
+		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, COALESCE(name, ''), COALESCE(isin, '') FROM positions WHERE snapshot_at BETWEEN ? AND ?`
+	case hasName:
+		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, COALESCE(name, ''), '' FROM positions WHERE snapshot_at BETWEEN ? AND ?`
+	case hasISIN:
+		q = `SELECT snapshot_at, account_external_id, symbol, currency, payload, '', COALESCE(isin, '') FROM positions WHERE snapshot_at BETWEEN ? AND ?`
+	}
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendPositions: %w", err)
@@ -177,8 +265,9 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload
 			snap                       int64
 			extID, symbol, currency    string
 			payload                    string
+			name, isin                 string
 		)
-		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -191,11 +280,23 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload
 		}
 		ac := assetClassFor(p.AssetClass)
 
-		positionKey := symbol + "@" + currency
+		effectiveISIN := isin
+		if effectiveISIN == "" {
+			effectiveISIN = isinBySymbol[symbol+"@"+currency]
+		}
+		var positionKey string
+		if effectiveISIN != "" {
+			positionKey = effectiveISIN
+		} else {
+			positionKey = symbol + "@" + currency
+		}
+
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: positionKey,
 			AssetClass:           ac,
+			ISIN:                 strPtrIfNonEmpty(effectiveISIN),
 			Symbol:               strPtrIfNonEmpty(symbol),
+			Name:                 strPtrIfNonEmpty(name),
 			Currency:             strPtrIfNonEmpty(currency),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
@@ -211,11 +312,43 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload
 			AssetClass:           ac,
 			Currency:             currency,
 			Quantity:             p.Quantity,
-			MarketValue:          p.TotalValue,
+			MarketValue:          p.effectiveMarketValue(),
 			Payload:              json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
+}
+
+// buildISINBySymbol returns a `symbol + '@' + currency` → ISIN
+// lookup built from every positions row that carries an ISIN
+// (including historical PDF rows added in silver migration 0004).
+// Used by appendPositions to give pre-migration-0003 rows that
+// lack a column-level ISIN the same ISIN-keyed position_key as
+// the post-migration rows for the same logical instrument. Empty
+// map when the silver has no `isin` column at all.
+func (c *Connection) buildISINBySymbol(ctx context.Context, hasISIN bool) (map[string]string, error) {
+	out := map[string]string{}
+	if !hasISIN {
+		return out, nil
+	}
+	const q = `
+SELECT symbol, currency, isin
+  FROM positions
+ WHERE isin IS NOT NULL AND isin != ''
+ ORDER BY snapshot_at`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("buildISINBySymbol: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var symbol, currency, isin string
+		if err := rows.Scan(&symbol, &currency, &isin); err != nil {
+			return nil, err
+		}
+		out[symbol+"@"+currency] = isin
+	}
+	return out, rows.Err()
 }
 
 // ---- currency_balances → CashBalance + FxRate ----------------------------

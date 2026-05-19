@@ -16,7 +16,7 @@ the canonical gold schema. Implements the `silver.Adapter` /
 | Field | Source | Notes |
 | --- | --- | --- |
 | `account_external_id` | Swissquote customer ID | Numeric string from silver's `accounts.account_external_id`. |
-| `instrument_external_id` | symbol + `@` + currency | Mirrors silver's `(symbol, currency)` composite PK; Swissquote often lacks ISIN in the Positions export. The optional ISIN that the loader backfills from the transactions stream is promoted to `instruments.isin` when present. |
+| `instrument_external_id` | ISIN when known for the `(symbol, currency)` tuple in any row of the silver, else `symbol + '@' + currency` | See §8 for why ISIN beats symbol+currency now that historical PDF rows use the instrument's long name in `symbol` (different tuple, same ISIN). The fallback path keeps pre-migration-0003 silvers that never observed an ISIN still loadable. |
 | `transaction_external_id` | synthetic | Silver doesn't expose a stable per-event ID (Order # is shared across partial fills, and cash rows have `00000000`). The adapter derives a hash of `(account, occurred_at, transaction_type, net_amount, symbol or '', currency)` as the gold ID. Replays converge per gold's window-DELETE-then-INSERT model. |
 
 ## 3. Coverage matrix
@@ -25,7 +25,8 @@ the canonical gold schema. Implements the `silver.Adapter` /
 | --- | --- | --- |
 | `schema_meta` / `dump_runs` | meta only | Used by `Status` / `ChangeWindow`. |
 | `accounts` | `accounts` (kind=`brokerage`) | Customer ID as `account_external_id`. |
-| `positions` | `positions` | `position_key` = `symbol + '@' + currency`; see §4 for `asset_class`. |
+| `positions` (`source='live'`) | `positions` | `position_key` = ISIN when known, else `symbol + '@' + currency`. See §4 for `asset_class`. |
+| `positions` (`source='pp:<doc_id>'`) | `positions` | Historical year-end snapshots reconstructed from Portfolio Performance PDFs (silver migration 0004). Same mapping as live — see §8. |
 | `currency_balances` | `cash_balances`; also derives `fx_rates` from `rate_to_chf` | See §5. |
 | `transactions` | `transactions` | See `transaction_type` mapping in §6. |
 | `documents` | — | PDFs are bronze-only; gold doesn't store binaries. |
@@ -94,17 +95,55 @@ lands as `other` with the raw type preserved in payload.
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
-## 8. Open questions
+## 8. Instrument identity — name, ISIN, and historical positions
 
-- **ISIN coverage.** The Positions export omits ISINs, but the
-  transactions CSV carries them. The adapter's instrument upsert
-  should backfill `instruments.isin` from later transaction rows
-  when a position originally landed without one. Verify this
-  doesn't churn `instruments.last_seen_at`.
+Two `swissquote-dump` migrations shape the instrument-side mapping:
+
+- **Migration 0003** added optional `name` and `isin` columns to
+  `positions`. `name` is scraped from the hover tooltip on the
+  symbol cell of the Portfolio Overview DOM (e.g.
+  `iShares ETF (CH)-Core SPI ETF (CH) ANT A CHF DIS`). `isin`
+  comes from the FullQuote link `href` path segment.
+- **Migration 0004** added a `source` column tagging row
+  provenance. Live XLS rows are tagged `'live'`; rows
+  reconstructed from a Portfolio Performance PDF are tagged
+  `'pp:<doc_id>'` and use `snapshot_at` = PDF as-of date.
+
+The adapter reads `name` and `isin` via a `PRAGMA table_info`-
+driven query build (graceful fallback when an older silver lacks
+the columns) and projects them as:
+
+- `Name` → gold `instruments.name`.
+- `ISIN` → gold `instruments.isin` (indexed for cross-bank join).
+
+### Why `instrument_external_id` is ISIN-keyed when possible
+
+Historical PDF rows store the instrument's **long name** in the
+`symbol` column (e.g. `Example Fund CHF DIS`), while live XLS rows
+store the **ticker** (`SMMCHA`). They share the same ISIN. A
+naive `symbol + '@' + currency` identity would split the same
+logical instrument into two gold rows — one historical, one
+live — and break per-instrument time-series queries.
+
+The adapter resolves this by building a
+`(symbol, currency) → ISIN` lookup once per Snapshots() call from
+every row that carries an ISIN, then keying both
+`instrument_external_id` and `position_key` by that ISIN.
+Pre-migration-0003 rows that lack a column-level ISIN inherit
+one from any later live or historical row sharing the same
+`(symbol, currency)` — keeping the live track continuous across
+the migration boundary too. Rows whose `(symbol, currency)` has
+no ISIN reachable anywhere in silver fall back to
+`symbol + '@' + currency` and live in gold alongside
+ISIN-keyed siblings under different identities.
+
+## 9. Open questions
+
 - **Multi-currency positions.** Silver's PK treats `(symbol, USD)`
-  and `(symbol, EUR)` as separate positions. Gold mirrors this
-  via `position_key = symbol + '@' + currency`. Cross-currency
-  rollups go through `instruments.symbol`.
+  and `(symbol, EUR)` as separate positions. Gold mirrors this:
+  even with the same ISIN, the position_key is taken from the
+  currency-paired tuple so multi-currency listings stay separable.
+  Cross-currency rollups go through `instruments.symbol`.
 - **Document indexing.** If a future need arises to enumerate
   Swissquote document metadata in gold (e.g. "which tax statements
   are loaded?"), add a `documents` gold table joined to `accounts`.
