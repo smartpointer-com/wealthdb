@@ -248,14 +248,11 @@ def relationship_prefix_from_iban(iban_c: str | None) -> str | None:
     'CHKKBBBBRRRRAAAAAAAAC' the prefix is 'RRRR AAAAAAAA' (branch +
     8-char account base). Used as a proxy join key when the opaque
     bankingRelationId tokens differ across sessions."""
-    if not iban_c or len(iban_c) < 16:
+    if not iban_c or len(iban_c) != 21:
         return None
     branch = iban_c[8:12]
     base8 = iban_c[12:20]
-    # Recombine to the spaced "BBBB AAAAAAAA" form (branch + first 8
-    # of base, dropping the trailing currency-sub-account digits and
-    # check letter).
-    return f"{branch} {base8[:8]}"
+    return f"{branch} {base8}"
 
 
 def portfolio_external_id_from_full(full: str | None) -> str | None:

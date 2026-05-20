@@ -215,18 +215,16 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
             pending_cash = None
 
     # --- Securities positions: anchor on the Valor/ISIN line, look
-    # back ~6 lines for the headline. ---
-    section_lines = section
-    for i, line in enumerate(section_lines):
+    # back up to 10 lines for the headline. ---
+    for i, line in enumerate(section):
         vi = _VALOR_ISIN_RE.match(line)
         if not vi:
             continue
         isin = vi["isin"]
-        # Search the prior ~10 lines for the headline.
         headline = None
         sector = None
         for j in range(max(0, i - 10), i):
-            prev = section_lines[j]
+            prev = section[j]
             hm = _SECURITY_HEADLINE_RE.match(prev)
             if hm:
                 headline = hm
@@ -271,7 +269,7 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
 # ============================================================
 
 _IBAN_HEADER_RE = re.compile(
-    r"IBAN[\s]*(?P<iban>CH\d{2}[A-Z0-9]{17})\b"
+    r"IBAN\s*(?P<iban>CH\d{2}[A-Z0-9]{17})\b"
 )
 _PERIOD_RE = re.compile(
     r"(?P<from_day>\d{2})\.(?P<from_month>\d{2})\.(?P<from_year>\d{4})\s*-\s*"
@@ -320,7 +318,7 @@ def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
     # whitespace squished out within tokens (e.g. `IBANCHKK...`,
     # `Openingbalance1234.56`). pdfplumber preserves that. We
     # match all the headers against the squished text.
-    flat = text.replace(" ", "").replace(" ", "")
+    flat = text.replace(" ", "").replace(" ", "")  #   = NBSP
     iban = None
     m = _IBAN_HEADER_RE.search(flat)
     if m:
