@@ -80,37 +80,6 @@ func TestParse93B(t *testing.T) {
 	}
 }
 
-func TestFindMarketValue(t *testing.T) {
-	amounts := []mt535Money{
-		{Qualifier: "HOLD", Currency: "USD", Amount: canonical.NewDecimalFromInt(1500)},
-		{Qualifier: "BOOK", Currency: "USD", Amount: canonical.NewDecimalFromInt(1200)},
-		{Qualifier: "HOLD", Currency: "CHF", Amount: canonical.NewDecimalFromInt(1300)},
-	}
-
-	// Currency match wins.
-	got, ok := findMarketValue(amounts, "USD")
-	if !ok || got.String() != "1500" {
-		t.Errorf("match: got=%s ok=%v, want 1500/true", got, ok)
-	}
-	got, ok = findMarketValue(amounts, "CHF")
-	if !ok || got.String() != "1300" {
-		t.Errorf("match: got=%s ok=%v, want 1300/true", got, ok)
-	}
-
-	// No exact match → fall back to first HOLD.
-	got, ok = findMarketValue(amounts, "JPY")
-	if !ok || got.String() != "1500" {
-		t.Errorf("fallback: got=%s ok=%v, want 1500/true (first HOLD)", got, ok)
-	}
-
-	// No HOLD at all → ok=false.
-	noHold := []mt535Money{{Qualifier: "BOOK", Currency: "USD", Amount: canonical.NewDecimalFromInt(1200)}}
-	_, ok = findMarketValue(noHold, "USD")
-	if ok {
-		t.Error("no-HOLD should give ok=false")
-	}
-}
-
 // TestFindHoldEntry covers the (amount, currency, ok) shape used
 // by appendHoldings to derive both market_value and the position's
 // currency from one chosen 19A:HOLD entry.

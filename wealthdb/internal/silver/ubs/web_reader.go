@@ -163,24 +163,25 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 	return w, nil
 }
 
-// Snapshots emits the per-snapshot rollup of banking
-// relationships, portfolios, accounts, and positions for every
-// dump_runs.snapshot_at in the window, FILTERED so that a row
-// whose banking_relationship_id has a known PSN-start cutoff is
-// dropped when snapshot_at >= cutoff. Web positions split into
-// PositionChange (instrument_isin set) and CashBalanceChange
-// (instrument_isin NULL).
+// snapshotsForOverlap emits dimensions (portfolios, accounts,
+// instruments) from web's live snapshots inside the window, with
+// each row filtered to snapshot_at < PSN-start for its banking
+// relationship. Positions and cash flow through PSN's snapshot
+// stream instead; the orchestrator wraps PSN with a fold stream
+// that injects web's per-(date, key) payload into PSN's rows.
 //
-// snapshotsForOverlap is the merge-aware variant used by the
-// orchestrator. Iteration 2 emits ONLY dimensions from web —
-// portfolios and accounts, with iteration 1's PSN-start cutoff.
-// Positions and cash flow through PSN's snapshot stream instead;
-// the orchestrator wraps PSN with a fold stream that injects
-// web's per-(date, key) payload into PSN's rows. This direction
-// keeps PSN's faithful safekeeping / portfolio structure (web
-// silver flattens all securities under one PrtflId in this user's
-// data) while still preserving web-only fields like cost_price
-// inside `payload.web`.
+// This split keeps PSN's faithful safekeeping / portfolio
+// structure (web silver flattens all securities under one
+// PrtflId) while still preserving web-only
+// fields like cost_price inside `payload.web`. Web's instrument
+// descriptions are a strict upgrade over PSN's InstrNm.LngNm-
+// English (which is colon-formatted and less user-readable), so
+// they're emitted here and let the per-column upsert guard pick
+// the latest snapshot's name.
+//
+// Historical PDF snapshots are handled by snapshotsHistorical
+// (historical.go); transactions are handled by
+// transactionsBeforePSNStart.
 func (r *webReader) snapshotsForOverlap(
 	ctx context.Context,
 	w canonical.Window,
@@ -287,12 +288,12 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 }
 
 // transactionsBeforePSNStart emits web transactions strictly
-// before the per-relationship PSN-start cutover. This is the
-// iteration-1 splice — kept verbatim because in practice the web
-// and PSN sources use entirely different transaction_external_id
-// schemes ("0104030TJ0060041" web vs "mt515:..." PSN), so we
-// can't safely identity-match a web tx to a PSN event for payload
-// folding. The hard cut guarantees no double counting.
+// before the per-relationship PSN-start cutover. A hard cut (not
+// an overlap merge) because the web and PSN sources use entirely
+// different transaction_external_id schemes — web uses UBS
+// Transaction No. (e.g. `0104030TXNNNNNNN`), PSN events use
+// MT-prefixed strings (e.g. `mt515:...`). Any cross-source
+// identity match would be heuristic and risk double-counting.
 func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return &txStream{consumed: true}, nil
@@ -483,35 +484,6 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 		})
 	}
 	return rows.Err()
-}
-
-// buildPortfolioToRelMap returns a web portfolio_external_id →
-// web banking_relationship_id lookup using the latest snapshot
-// per portfolio. Used as a fallback for positions whose
-// account_external_id is empty (securities-only rows).
-func (r *webReader) buildPortfolioToRelMap(ctx context.Context) (map[string]string, error) {
-	const q = `
-SELECT p.portfolio_external_id, p.banking_relationship_id
-  FROM portfolios p
-  JOIN (SELECT portfolio_external_id, MAX(snapshot_at) AS s
-          FROM portfolios GROUP BY portfolio_external_id) m
-    ON p.portfolio_external_id = m.portfolio_external_id
-   AND p.snapshot_at = m.s
- WHERE p.banking_relationship_id IS NOT NULL`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("buildPortfolioToRelMap: %w", err)
-	}
-	defer rows.Close()
-	out := make(map[string]string)
-	for rows.Next() {
-		var port, rel string
-		if err := rows.Scan(&port, &rel); err != nil {
-			return nil, err
-		}
-		out[port] = rel
-	}
-	return out, rows.Err()
 }
 
 // buildAccountToRelMap returns a web account_external_id → web

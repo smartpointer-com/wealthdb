@@ -12,13 +12,27 @@ import (
 
 // This file implements silver.Connection on the orchestrator
 // *Connection by delegating to the configured subsources.
-// Iteration 1 (current): when only one subsource is configured the
-// orchestrator is a thin passthrough; when both are configured the
-// merge logic in this file splices web (pre-PSN-start) and PSN
-// (>= PSN-start) into a single stream, per banking relationship.
-// Iteration 2 (planned): replace the hard cut with an overlap
-// merge — web is the source of truth for IDs and structured
-// fields, PSN payload extends.
+//
+// Single-subsource case: thin passthrough. Both-subsources case:
+// the streams compose as follows.
+//
+//   Snapshots
+//     - Historical PDF stream (web.snapshotsHistorical) for dates
+//       pre-dating live coverage.
+//     - Live web stream (web.snapshotsForOverlap) emits dimensions
+//       only — filtered to snapshot_at < PSN-start per banking
+//       relationship.
+//     - PSN stream (psn.Snapshots) emits all dimensions plus the
+//       positions / cash facts. The orchestrator wraps it in a
+//       fold stream that injects web's per-(date, key) payload
+//       under `payload.web` so web-only fields (cost_price,
+//       lending_value, market_value_base) stay queryable through
+//       PSN's faithful safekeeping + portfolio identity.
+//
+//   Transactions
+//     - Hard cut at PSN-start per relationship — see
+//       transactionsBeforePSNStart for why an overlap merge isn't
+//       safe here.
 
 // Status aggregates the per-subsource Status. The change number
 // is max across subsources (so the gold watermark covers
@@ -136,13 +150,7 @@ func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.
 	return out, nil
 }
 
-// Snapshots emits the merged stream. Dimensions (portfolios,
-// accounts) follow iteration 1 — web emits dimensions strictly
-// before PSN_start, PSN emits all dimensions, the per-column
-// upsert guard reconciles. Facts (positions, cash) come solely
-// from PSN; web's per-(date, key) payload is folded into PSN's
-// rows under `payload.web` so PSN-missing fields like
-// cost_price stay visible.
+// Snapshots emits the merged stream described in the file header.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	var (
 		webPosPayloads  map[webPosKey]string
@@ -194,11 +202,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		if len(webPosPayloads)+len(webCashPayloads) > 0 {
 			s = &psnWebFoldStream{
-				inner:     s,
-				webPos:    webPosPayloads,
-				webCash:   webCashPayloads,
-				lookupSK:  c.psn,
-				ctx:       ctx,
+				inner:   s,
+				webPos:  webPosPayloads,
+				webCash: webCashPayloads,
 			}
 		}
 		streams = append(streams, s)
@@ -206,15 +212,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	return &concatSnapshotStream{streams: streams}, nil
 }
 
-// Transactions keeps iteration 1's hard cut at PSN_start. Web
-// emits transactions whose value_date is strictly before the
-// per-relationship cutover; PSN emits its events unfiltered for
-// the remainder. We tried iteration-2-style identity merge but
-// the silvers' transaction_external_id schemes don't actually
-// align in practice (web uses UBS Transaction No. like
-// "0104030TJ0060041"; PSN events use prefixed strings like
-// "mt515:..."), so any cross-source match would be heuristic and
-// risk double-counting. Hard cut is the safe choice.
+// Transactions applies a hard cut at PSN_start per relationship.
+// Web emits transactions whose value_date is strictly before the
+// cutover; PSN emits its events unfiltered for the remainder.
+// See transactionsBeforePSNStart for why a hard cut and not an
+// overlap merge.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	streams := make([]silver.TransactionStream, 0, 2)
 	if c.web != nil {
@@ -247,10 +249,6 @@ type psnWebFoldStream struct {
 	inner   silver.SnapshotStream
 	webPos  map[webPosKey]string
 	webCash map[webCashKey]string
-	// ctx is captured here only to keep the Stream interface
-	// signature (Next takes ctx); we don't fan out any work.
-	ctx      context.Context
-	lookupSK *psnReader // reserved for future (cross-source acct lookup); currently unused
 }
 
 func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {

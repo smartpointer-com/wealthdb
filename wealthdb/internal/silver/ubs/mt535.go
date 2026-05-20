@@ -92,16 +92,6 @@ func parse93B(raw []string) []mt535Qty {
 	return out
 }
 
-// findMarketValue returns the holding-grain market value in the
-// supplied natural currency, falling back to the first :HOLD//
-// entry of any currency if no exact match is found. Returns ok=
-// false when no HOLD entry exists at all (the loader leaves the
-// gold market_value as NULL).
-func findMarketValue(amounts []mt535Money, naturalCurrency string) (canonical.Decimal, bool) {
-	v, _, ok := findHoldEntry(amounts, naturalCurrency)
-	return v, ok
-}
-
 // findHoldEntry picks one 19A:HOLD entry and returns its currency
 // AND amount, in that order. Preference: an entry whose currency
 // matches `preferredCurrency` (the instrument's natural currency,
