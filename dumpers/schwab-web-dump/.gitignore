@@ -1,0 +1,71 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments (this repo runs entirely inside Docker, but
+# editors sometimes create these for LSP convenience)
+.venv/
+venv/
+env/
+.python-version
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Playwright debugging artefacts — may contain logged-in screenshots
+# or session state. Never commit.
+trace*.zip
+screenshots/
+playwright-report/
+
+# Never commit credentials or downloaded portfolio data
+*.pem
+*.key
+storageState*.json
+schwab_web_state*.json
+token.json
+tokens.json
+.env
+.envrc
+data/
+downloads/
+
+# Bootstrap material the user drops in for landmarking (sample HTML,
+# screenshots, MHTML saves of the client.schwab.com UI). These contain
+# real account data and must never be committed. Move them into a
+# tracked location only after redaction.
+samples/
+fixtures/raw/
+
+# Local-only PDFs / HTML fixtures for the smoke-test suite. Real
+# Schwab statements contain PII; only synthetic data goes into
+# version control.
+tests/fixtures/*.pdf
+tests/fixtures/*.html
+*.mhtml
+*.har

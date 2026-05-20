@@ -1,0 +1,32 @@
+# Camoufox — stealth-patched Firefox fork that masks the
+# fingerprint surfaces (canvas, WebGL, audio, fonts, navigator.*)
+# upstream Playwright Firefox does not. Schwab's anti-bot rules
+# flag the OS-mismatch a plain Linux Playwright Firefox presents
+# even with a macOS UA string; camoufox's `os="macos"` mode
+# spoofs everything consistently. Brings Playwright as a
+# transitive dep, so the rest of the Playwright API surface
+# (cookies, evaluate, frame_locator, wait_for_event) keeps working
+# unchanged.
+# camoufox-py 0.4.11 (Jan 2025) downloads Firefox 135.0.1-beta.24
+# whose juggler patches target the contemporaneous Playwright
+# 1.49.x release line. The mcr.microsoft.com playwright image
+# ships a much newer Playwright (1.60), whose juggler protocol
+# revision causes camoufox-launched Firefox to crash the driver
+# (`coreBundle.js: Cannot read 'url' of undefined` on every
+# pageerror). Pinning Playwright back to the camoufox-aligned
+# version is the simplest fix — the image's bundled browsers at
+# /ms-playwright are unused (camoufox brings its own Firefox at
+# $HOME/.cache/camoufox/).
+camoufox[geoip]>=0.4.11,<0.5
+playwright==1.49.0
+
+# pdfplumber sits on top of pdfminer.six and exposes a clean
+# table-extraction API. Used by pdf_parsers.py to reconstruct
+# transactions / position snapshots from Schwab's monthly
+# statement and year-end 1099 PDFs.
+pdfplumber>=0.11,<1
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./schwab-web-dump sh -c "cd /app && pytest"`,
+# no host-side Python toolchain required.
+pytest>=8,<9

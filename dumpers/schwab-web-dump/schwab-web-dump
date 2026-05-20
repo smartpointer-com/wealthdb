@@ -1,0 +1,207 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the schwab-web-dump
+# container. Mounts ~/.secrets/ (RW; the container needs to write
+# the state file there during login) and the bronze directory (RW),
+# and forwards all arguments to the container's entrypoint.
+
+set -euo pipefail
+
+IMAGE="${SCHWAB_WEB_IMAGE:-schwab-web-dump:latest}"
+
+# Fixed container name. Image-hash drift (e.g. after a rebuild)
+# would otherwise hide running containers from
+# `docker ps --filter ancestor=schwab-web-dump:latest`; with a
+# fixed name, `docker rm -f schwab-web-dump` is a reliable
+# kill-switch regardless of which image revision a container was
+# started against. Single-name across subcommands means we
+# implicitly enforce "only one schwab-web-dump container at a
+# time" — which matches the per-profile single-writer model the
+# Firefox profile dir needs anyway.
+CONTAINER_NAME="${SCHWAB_WEB_CONTAINER:-schwab-web-dump}"
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Mount points on the host. Override via env if your layout differs.
+HOST_SECRETS="${SCHWAB_WEB_SECRETS_DIR:-$HOME/.secrets}"
+HOST_DATA="${SCHWAB_WEB_DATA_DIR:-$HOME/wealthdb/schwab-web}"
+# A separate writable dir for opt-in debug artefacts (screenshots,
+# Playwright trace bundles, ad-hoc HTML drops). Kept OUT of HOST_DATA
+# so the bronze + silver tree stays clean — only `--screenshot-dir
+# /debug/...`, `--trace /debug/...`, etc. should write here.
+HOST_DEBUG="${SCHWAB_WEB_DEBUG_DIR:-$HOME/.cache/schwab-web-debug}"
+
+usage() {
+    cat <<EOF
+schwab-web-dump — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (\`docker build\`).
+  login [args...]       Drive the login form + 2FA automatically.
+  vnc-login [args...]   Start x11vnc on 127.0.0.1:5900 and open
+                        Firefox at the Schwab homepage; you drive
+                        it via your local VNC client (macOS Screen
+                        Sharing, TigerVNC, etc.). Use when Schwab's
+                        bot detection blocks the automated path.
+  download [args...]    Export bronze artefacts from client.schwab.com.
+  load [args...]        Parse bronze into the silver SQLite DB.
+  rerun                 Touch the bronze-tree rerun trigger so a
+                        live vnc-login session re-runs the scrape
+                        against the freshly-edited code (no
+                        relogin needed).
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  $HOST_SECRETS  ->  /secrets   (state file lives here)
+  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
+  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces)
+
+Override mounts via env:
+  SCHWAB_WEB_SECRETS_DIR=/path/to/secrets
+  SCHWAB_WEB_DATA_DIR=/path/to/data
+  SCHWAB_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The Login ID is read from \$SCHWAB_LOGIN_ID inside the container;
+  the password from \$SCHWAB_PASSWORD (or prompted interactively
+  when not set). The login script sources /secrets/schwab-web.env
+  automatically (= \$HOME/.secrets/schwab-web.env on the host).
+
+  Use SINGLE QUOTES around values containing \$, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do \$-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    SCHWAB_LOGIN_ID='your-login-id'
+    SCHWAB_PASSWORD='your-password-with-\$pecial-chars'
+  chmod 600 the file. Password may also be left out and supplied
+  interactively at \`login\` time.
+EOF
+}
+
+# ./schwab-web-dump build [extra docker build flags]
+if [[ "${1:-}" == "build" ]]; then
+    shift
+    exec docker build -t "$IMAGE" "$@" "$HERE"
+fi
+
+# ./schwab-web-dump rerun [--dry-run|--no-dry-run] [--mode M] [--range R]
+#
+# Touches the trigger file that a live vnc-login keep-alive loop
+# polls for. The python script reloads download/landmarks modules
+# and re-invokes walk() on the same Firefox session, so host-side
+# code edits take effect without re-MFA.
+#
+# Any flags passed here are written into the trigger file as a
+# key=value config block; login.py's loop reads them and
+# overrides the next iteration's walk() args. Flags persist
+# across reruns until overridden. Empty trigger file = inherit
+# the previous iteration's settings.
+if [[ "${1:-}" == "rerun" ]]; then
+    mkdir -p "$HOST_DATA"
+    shift
+    declare -a config_lines=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)             config_lines+=("dry_run=true") ;;
+            --no-dry-run)          config_lines+=("dry_run=false") ;;
+            --with-more-detail)    config_lines+=("with_more_detail=true") ;;
+            --no-with-more-detail) config_lines+=("with_more_detail=false") ;;
+            --mode)                shift; config_lines+=("mode=$1") ;;
+            --range)               shift; config_lines+=("date_range=$1") ;;
+            *)
+                echo "schwab-web-dump rerun: unknown flag $1" >&2
+                echo "  valid: --dry-run | --no-dry-run" >&2
+                echo "         --with-more-detail | --no-with-more-detail" >&2
+                echo "         --mode M | --range R" >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+    if [[ ${#config_lines[@]} -gt 0 ]]; then
+        printf '%s\n' "${config_lines[@]}" > "$HOST_DATA/.rerun"
+        echo "schwab-web-dump: rerun trigger written ($HOST_DATA/.rerun):"
+        sed 's/^/  /' "$HOST_DATA/.rerun"
+    else
+        # No flags — just bump mtime, preserve previous config.
+        touch "$HOST_DATA/.rerun"
+        echo "schwab-web-dump: rerun trigger touched ($HOST_DATA/.rerun)"
+    fi
+    exit 0
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+    usage
+    exit 0
+fi
+
+# Ensure mount points exist on the host before we mount them. Docker
+# will silently create them as root-owned directories if we don't.
+mkdir -p "$HOST_DATA"
+mkdir -p "$HOST_DEBUG"
+if [[ ! -d "$HOST_SECRETS" ]]; then
+    echo "schwab-web-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
+    exit 1
+fi
+
+# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
+# wrapper safe to pipe (e.g. for log capture) while still giving
+# interactive prompts when run from a terminal. The `${arr[@]+...}`
+# idiom expands to nothing when the array is empty, which keeps
+# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
+TTY_ARGS=()
+if [[ -t 0 && -t 1 ]]; then
+    TTY_ARGS=(-it)
+fi
+
+# `vnc-login` needs the VNC port forwarded to the host so the
+# user's VNC client can connect. Bind to 127.0.0.1 only — the VNC
+# server inside the container has no password and we don't want
+# it reachable from the LAN.
+EXTRA_ARGS=()
+if [[ "${1:-}" == "vnc-login" ]]; then
+    EXTRA_ARGS+=(-p 127.0.0.1:5900:5900)
+fi
+
+# Safety guard: refuse to clobber a live container.
+#
+# Past mistake: running `./schwab-web-dump sh -c "pytest ..."` while
+# a `vnc-login` keep-alive session was active killed Schwab's
+# session (the rm -f below evicts whatever's named
+# schwab-web-dump). The cost: a fresh MFA round. Now we check
+# whether a RUNNING container with this name exists; if so, we
+# refuse and explain the options. The user can pass
+# `SCHWAB_WEB_FORCE_REPLACE=1` to override (useful when the live
+# session is known-stuck and we genuinely want to recycle).
+if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
+    if [[ "${SCHWAB_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
+        echo "schwab-web-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "  Refusing to evict it — that would kill any live Schwab session." >&2
+        echo "  Options:" >&2
+        echo "    * Use a different name:    SCHWAB_WEB_CONTAINER=otherthing $0 $*" >&2
+        echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
+        echo "    * Force replace:           SCHWAB_WEB_FORCE_REPLACE=1 $0 $*" >&2
+        exit 2
+    fi
+    echo "schwab-web-dump: SCHWAB_WEB_FORCE_REPLACE=1 — evicting live container" >&2
+fi
+
+# Evict any prior (stopped) container with this name (best-effort
+# — no-op when the name isn't in use). Past this point we've
+# already refused to clobber a RUNNING container; this only
+# affects exited-but-not-cleaned-up state.
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+exec docker run --rm --name "$CONTAINER_NAME" \
+    ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    -e SCHWAB_LOGIN_ID \
+    -e SCHWAB_PASSWORD \
+    -v "$HOST_SECRETS:/secrets" \
+    -v "$HOST_DATA:/data" \
+    -v "$HOST_DEBUG:/debug" \
+    -v "$HERE:/app" \
+    "$IMAGE" "$@"

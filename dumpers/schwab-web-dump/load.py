@@ -1,0 +1,799 @@
+#!/usr/bin/env python3
+"""
+Bronze → silver loader for schwab-web-dump.
+
+Walks a bronze tree (one or more `<UTC-ts>/` dirs produced by
+download.walk()), applies any pending schema migrations, and
+loads each bronze dump into the silver SQLite database defined
+by `migrations/0001_initial.sql`.
+
+The silver schema mirrors `schwab-api-dump`'s conventions so the
+gold layer can splice the two feeds with minimal special-casing.
+See migration 0001 for the full identifier-convention rationale,
+including the irreconcilable differences (account-id space,
+activity-id space) that the gold layer must bridge manually.
+
+Idempotency:
+  * `dump_runs` is keyed by snapshot_at (Unix seconds UTC parsed
+    from the bronze dir name) — re-loading the same dir is a
+    no-op.
+  * `documents` is keyed by `sha256` — a PDF/XML/CSV file that
+    appears in multiple bronze dumps collapses to one row.
+  * `transactions` is keyed by a deterministic synthetic
+    `activity_id` (see _synthesize_activity_id below) — re-parsing
+    the same statement converges. Re-parsing with an improved
+    parser requires an explicit DELETE WHERE source_sha256 = ?
+    step (load.py does that automatically when the source PDF's
+    sha256 is already present in documents but no transactions
+    reference it yet; the user can also force it with --reparse).
+
+Usage:
+    load.py --silver-db <path.db> --bronze-dir <root>
+            [--migrations <dir>] [--reparse] [-v]
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import re
+import sqlite3
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pdf_parsers as pp
+
+log = logging.getLogger("schwab-web-dump.load")
+
+# Bronze run-dir names look like `20260520T120000Z`. Parsed into
+# Unix seconds UTC for snapshot_at.
+_RUN_TS_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$")
+
+# Manifest doc dates come from the Schwab UI as MM/DD/YYYY. We
+# convert to Unix seconds UTC at midnight.
+_DOC_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+
+# Where to look for migrations when --migrations isn't passed.
+DEFAULT_MIGRATIONS_DIRS = (
+    Path("/app/migrations"),                              # in-container
+    Path(__file__).resolve().parent / "migrations",       # local dev
+)
+
+# Manifest doc_type → silver doc_kind. Trade Confirms are
+# explicitly skipped upstream by download.py, but we include the
+# mapping for forward-compat.
+_DOC_KIND_BY_TYPE = {
+    "Statements":       "statement",
+    "Tax Forms":        "tax_form",
+    "Letters":          "letter",
+    "Reports & Plans":  "report_or_plan",
+    "Trade Confirms":   "trade_confirm",
+}
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__.strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        "--silver-db", required=True, type=Path,
+        help=("Path to the silver SQLite DB. Created with the "
+              "current schema if absent. Conventional name: "
+              "schwab-web.db, next to the bronze tree."),
+    )
+    p.add_argument(
+        "--bronze-dir", required=True, type=Path,
+        help=("Bronze tree root (the same path passed to "
+              "download.py --dest). The loader scans every "
+              "<UTC-ts>/ subdir under it."),
+    )
+    p.add_argument(
+        "--migrations", default=None, type=Path,
+        help=("Directory of migration SQL files. Defaults to "
+              "/app/migrations (in-container) or ./migrations "
+              "(local dev)."),
+    )
+    p.add_argument(
+        "--reparse", action="store_true",
+        help=("Re-parse every statement PDF whose sha256 is already "
+              "in `documents`, even if `transactions` already has "
+              "rows for it. Deletes old transactions for that "
+              "source first, then re-inserts. Use after a parser fix."),
+    )
+    p.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="DEBUG-level logging.",
+    )
+    return p.parse_args(argv)
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def canonical_json(obj) -> str:
+    """JSON encoding suitable for content-dedup: stable key order,
+    no whitespace, ensure_ascii=False so non-ASCII labels compare
+    bit-for-bit. Matches schwab-api-dump's convention."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+
+
+def parse_snapshot_at(dump_dir_name: str) -> int:
+    """Parse `YYYYMMDDTHHMMSSZ` → Unix seconds UTC."""
+    m = _RUN_TS_RE.match(dump_dir_name)
+    if not m:
+        raise ValueError(f"bad bronze dir name: {dump_dir_name!r}")
+    yyyy, mm, dd, h, mn, s = (int(x) for x in m.groups())
+    return int(datetime(yyyy, mm, dd, h, mn, s,
+                        tzinfo=timezone.utc).timestamp())
+
+
+def parse_doc_date(s: str) -> int | None:
+    """Parse "MM/DD/YYYY" → Unix seconds UTC at midnight. Returns
+    None for blank/unparseable input — the loader treats that as
+    a parser-output gap and skips the row."""
+    if not s:
+        return None
+    m = _DOC_DATE_RE.match(s.strip())
+    if not m:
+        return None
+    mm, dd, yyyy = (int(x) for x in m.groups())
+    try:
+        return int(datetime(yyyy, mm, dd, tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def parse_iso_date(s: str | None) -> int | None:
+    """Parse "YYYY-MM-DD" (pdf_parsers output format) → Unix
+    seconds UTC at midnight. Returns None for blank/unparseable."""
+    if not s:
+        return None
+    try:
+        return int(datetime.strptime(s, "%Y-%m-%d")
+                   .replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def sha256_file(path: Path) -> tuple[str, int]:
+    """Return (hex sha256, size in bytes) of `path`."""
+    h = hashlib.sha256()
+    size = 0
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(64 * 1024), b""):
+            h.update(chunk)
+            size += len(chunk)
+    return h.hexdigest(), size
+
+
+# ============================================================
+# Schema migration
+# ============================================================
+
+def _current_schema_version(conn: sqlite3.Connection) -> int:
+    """Read max(silver_schema_version) from schema_meta. Returns
+    0 if the table doesn't exist yet (fresh DB) or is empty."""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='schema_meta'"
+    ).fetchone()
+    if not row:
+        return 0
+    row = conn.execute(
+        "SELECT MAX(silver_schema_version) FROM schema_meta"
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def _resolve_migrations_dir(arg: Path | None) -> Path:
+    if arg is not None:
+        if not arg.is_dir():
+            raise SystemExit(f"--migrations dir does not exist: {arg}")
+        return arg
+    for cand in DEFAULT_MIGRATIONS_DIRS:
+        if cand.is_dir():
+            return cand
+    raise SystemExit(
+        "no migrations dir found; pass --migrations or create "
+        f"one of: {[str(p) for p in DEFAULT_MIGRATIONS_DIRS]}"
+    )
+
+
+def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
+    """Apply any migrations newer than schema_meta's current
+    version, in numeric order. Each migration file is expected
+    to end with an INSERT into schema_meta that records its own
+    version — the loader doesn't add that line itself."""
+    current = _current_schema_version(conn)
+    log.info("silver schema currently at v%d", current)
+    files = sorted(
+        f for f in migrations_dir.glob("*.sql")
+        if re.match(r"^\d+_.*\.sql$", f.name)
+    )
+    for f in files:
+        try:
+            version = int(f.name.split("_", 1)[0])
+        except ValueError:
+            log.warning("skipping unparseable migration filename: %s", f.name)
+            continue
+        if version <= current:
+            continue
+        log.info("applying migration: %s (v%d)", f.name, version)
+        sql = f.read_text(encoding="utf-8")
+        conn.executescript(sql)
+        conn.commit()
+        new_current = _current_schema_version(conn)
+        if new_current < version:
+            raise SystemExit(
+                f"migration {f.name} did not insert into schema_meta "
+                f"(current still v{new_current}); fix the migration"
+            )
+
+
+# ============================================================
+# Bronze inventory
+# ============================================================
+
+def discover_bronze_runs(bronze_dir: Path) -> list[Path]:
+    """Return the subdirs under `bronze_dir` whose names match
+    the run-ts format. Sorted by name (== chronological)."""
+    if not bronze_dir.is_dir():
+        raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
+    return sorted(
+        p for p in bronze_dir.iterdir()
+        if p.is_dir() and _RUN_TS_RE.match(p.name)
+    )
+
+
+def already_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM dump_runs WHERE snapshot_at = ?", (snapshot_at,),
+    ).fetchone()
+    return row is not None
+
+
+# ============================================================
+# Row builders
+# ============================================================
+
+def _synthesize_activity_id(account_external_id: str,
+                            tx: dict,
+                            index: int,
+                            source_sha256: str) -> str:
+    """Deterministic synthetic id for a statement-parsed
+    transaction. Stable across re-loads of the same PDF; differs
+    if anything in the row's promoted columns or its position
+    within the statement differs. Hex SHA-256, first 32 chars
+    (128 bits — collision probability negligible at our scale)."""
+    parts = [
+        account_external_id,
+        tx.get("date") or "",
+        str(tx.get("amount") or ""),
+        tx.get("description") or "",
+        tx.get("symbol") or "",
+        str(index),
+        source_sha256,
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
+                    account_external_id: str, payload_dict: dict) -> bool:
+    """Insert (snapshot_at, account_external_id) row only when its
+    canonical payload differs from the most recent row for the
+    same account_external_id. Mirrors schwab-api-dump.load_accounts.
+
+    Returns True if a row was inserted, False if dedup skipped it."""
+    payload = canonical_json(payload_dict)
+    row = conn.execute(
+        "SELECT payload FROM accounts WHERE account_external_id = ? "
+        "ORDER BY snapshot_at DESC LIMIT 1",
+        (account_external_id,),
+    ).fetchone()
+    if row is not None and row[0] == payload:
+        return False
+    nickname = payload_dict.get("nickname")
+    conn.execute(
+        "INSERT OR REPLACE INTO accounts"
+        " (snapshot_at, account_external_id, nickname, payload)"
+        " VALUES (?, ?, ?, ?)",
+        (snapshot_at, account_external_id, nickname, payload),
+    )
+    return True
+
+
+def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
+                     run_dir: Path) -> None:
+    conn.execute(
+        "INSERT INTO dump_runs"
+        " (snapshot_at, silver_schema_version, run_dir)"
+        " VALUES (?, ?, ?)",
+        (snapshot_at, _current_schema_version(conn), str(run_dir)),
+    )
+
+
+def _account_nickname(label: str | None, suffix: str) -> str | None:
+    """Heuristic: extract a human-friendly nickname from a Schwab
+    dropdown label.
+
+    The label is rendered as the literal text of the dropdown's
+    sdps-account-selector__left-col + …NNN suffix + an "Account
+    ending in N N N" sr-only span. We strip the suffix and the
+    sr-only echo, leaving just the user's chosen name.
+
+    If the label is missing or pure-numeric, return None — the
+    nickname column should not store the suffix again.
+    """
+    if not label:
+        return None
+    text = label.strip()
+    # Drop "…NNN" tail.
+    text = re.sub(r"\s*…\d{3,5}\s*", " ", text)
+    # Drop "Account ending in N N N..." sr-only tail.
+    text = re.sub(r"\s*Account ending in[\s\d]+$", "", text)
+    # Strip any duplicated leading copy of the same name (the
+    # Schwab label embeds nickname + nickname-as-aria-label).
+    parts = text.strip().split()
+    if len(parts) >= 4 and parts[: len(parts) // 2] == parts[len(parts) // 2:]:
+        text = " ".join(parts[: len(parts) // 2])
+    text = text.strip()
+    return text or None
+
+
+# ============================================================
+# Per-bronze-run loader
+# ============================================================
+
+def load_run(conn: sqlite3.Connection, run_dir: Path,
+             reparse: bool = False) -> dict:
+    """Load one bronze-run dir. Returns a stats dict for logging."""
+    snapshot_at = parse_snapshot_at(run_dir.name)
+    stats = {
+        "snapshot_at": snapshot_at,
+        "accounts_inserted": 0,
+        "accounts_deduped": 0,
+        "documents_new": 0,
+        "documents_dup": 0,
+        "documents_missing_on_disk": 0,
+        "transactions_inserted": 0,
+        "transactions_reparsed": 0,
+        "pdf_parse_errors": 0,
+    }
+    manifest_path = run_dir / "run.json"
+    if not manifest_path.is_file():
+        log.warning("no run.json in %s; skipping", run_dir)
+        return stats
+
+    with manifest_path.open("r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+
+    _insert_dump_run(conn, snapshot_at, run_dir)
+
+    statements_dir = run_dir / "statements"
+    for acct in manifest.get("statements", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        nickname = _account_nickname(acct.get("label"), suffix)
+        acct_payload = {
+            "suffix": suffix,
+            "label": acct.get("label"),
+            "nickname": nickname,
+        }
+        if _upsert_account(conn, snapshot_at, suffix, acct_payload):
+            stats["accounts_inserted"] += 1
+        else:
+            stats["accounts_deduped"] += 1
+
+        for doc in acct.get("documents", []):
+            filename = doc.get("filename")
+            sha256 = doc.get("sha256")
+            size = int(doc.get("size") or 0)
+            if not filename or not sha256:
+                log.warning("manifest doc missing filename/sha256: %s", doc)
+                continue
+
+            doc_date = parse_doc_date(doc.get("date") or "")
+            if doc_date is None:
+                log.warning("doc %s has unparseable date %r; skipping",
+                            filename, doc.get("date"))
+                continue
+            raw_type = doc.get("type") or "Unknown"
+            doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
+            fmt = (doc.get("format") or _format_from_filename(filename)).lower()
+
+            doc_payload = canonical_json({
+                "raw_type": raw_type,
+                "raw_doc_name": doc.get("document"),
+                "format": fmt,
+            })
+
+            existing = conn.execute(
+                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO documents"
+                    " (sha256, snapshot_at, account_external_id, doc_date,"
+                    "  doc_kind, file_format, filename, size_bytes, payload)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sha256, snapshot_at, suffix, doc_date, doc_kind,
+                     fmt, filename, size, doc_payload),
+                )
+                stats["documents_new"] += 1
+            else:
+                stats["documents_dup"] += 1
+
+            # Only the Statements PDFs are parsed into rows today.
+            # Tax-form XML / CSV parsing is a follow-up — they're
+            # captured as opaque-blob documents for now.
+            if doc_kind != "statement" or fmt != "pdf":
+                continue
+
+            pdf_path = statements_dir / suffix / filename
+            if not pdf_path.is_file():
+                log.warning("doc in manifest but missing on disk: %s",
+                            pdf_path)
+                stats["documents_missing_on_disk"] += 1
+                continue
+
+            # Skip re-parse unless --reparse or no transactions yet
+            # reference this source.
+            already_has_rows = conn.execute(
+                "SELECT 1 FROM transactions WHERE source_sha256 = ?",
+                (sha256,),
+            ).fetchone() is not None
+            if already_has_rows and not reparse:
+                continue
+            if already_has_rows and reparse:
+                conn.execute(
+                    "DELETE FROM transactions WHERE source_sha256 = ?",
+                    (sha256,),
+                )
+                stats["transactions_reparsed"] += 1
+
+            # Old quarterly statements lack the auto-detectable
+            # period header; pass the year from the manifest as
+            # a fallback so the row parser can still resolve
+            # MM/DD → full date.
+            year_hint = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
+            try:
+                parsed = pp.parse_statement_pdf(
+                    pdf_path, statement_year=year_hint,
+                )
+            except Exception as e:
+                log.warning("PDF parse failed for %s: %s", pdf_path, e)
+                stats["pdf_parse_errors"] += 1
+                continue
+
+            n = _insert_statement_transactions(
+                conn, suffix, parsed.get("transactions", []), sha256,
+            )
+            stats["transactions_inserted"] += n
+
+    # Tx-history exports: per-account CSV/JSON/XML + a landing
+    # HTML capture. JSON is the canonical source for silver rows;
+    # CSV/XML are stored as opaque documents for traceability.
+    transactions_dir = run_dir / "transactions"
+    for acct in manifest.get("transactions", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        acct_dir = transactions_dir / suffix
+        if not acct_dir.is_dir():
+            continue
+        # Optional per-account More-detail sidecar (written by
+        # download.py when --with-more-detail is set). We merge
+        # its fields into matching transactions' payload.
+        more_details = _load_more_details(acct_dir)
+        for export in acct.get("exports", []):
+            sha256 = export.get("sha256")
+            filename = export.get("filename")
+            fmt = (export.get("format") or "").lower()
+            size = int(export.get("size") or 0)
+            if not sha256 or not filename or not fmt:
+                log.warning("tx-history manifest export missing fields: %s",
+                            export)
+                continue
+            doc_payload = canonical_json({
+                "raw_type": "Transaction History Export",
+                "format": fmt,
+            })
+            existing = conn.execute(
+                "SELECT 1 FROM documents WHERE sha256 = ?", (sha256,),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO documents"
+                    " (sha256, snapshot_at, account_external_id, doc_date,"
+                    "  doc_kind, file_format, filename, size_bytes, payload)"
+                    " VALUES (?, ?, ?, ?, 'tx_history_export', ?, ?, ?, ?)",
+                    (sha256, snapshot_at, suffix, snapshot_at,
+                     fmt, filename, size, doc_payload),
+                )
+                stats["documents_new"] += 1
+            else:
+                stats["documents_dup"] += 1
+
+            # JSON is the canonical row source — same logical
+            # events as the CSV/XML but with a couple of extra
+            # fields (AcctgRuleCd) and a structure that's
+            # cheaper to parse. Skip CSV/XML for row ingestion;
+            # they stay as documents for traceability.
+            if fmt != "json":
+                continue
+            json_path = acct_dir / filename
+            if not json_path.is_file():
+                log.warning("tx-history JSON missing on disk: %s",
+                            json_path)
+                stats["documents_missing_on_disk"] += 1
+                continue
+            already_has_rows = conn.execute(
+                "SELECT 1 FROM transactions WHERE source_sha256 = ?",
+                (sha256,),
+            ).fetchone() is not None
+            if already_has_rows and not reparse:
+                continue
+            if already_has_rows and reparse:
+                conn.execute(
+                    "DELETE FROM transactions WHERE source_sha256 = ?",
+                    (sha256,),
+                )
+                stats["transactions_reparsed"] += 1
+            try:
+                with json_path.open("r", encoding="utf-8") as fh:
+                    payload = json.load(fh)
+            except Exception as e:
+                log.warning("tx-history JSON parse failed for %s: %s",
+                            json_path, e)
+                continue
+            txs = payload.get("BrokerageTransactions") or []
+            n = _insert_tx_history_transactions(
+                conn, suffix, txs, sha256, more_details,
+            )
+            stats["transactions_inserted"] += n
+
+    return stats
+
+
+def _format_from_filename(filename: str) -> str:
+    ext = Path(filename).suffix.lstrip(".").lower()
+    return ext or "pdf"
+
+
+def _load_more_details(acct_dir: Path) -> dict:
+    """Return a {row_key: detail_dict} map of "More"-modal scrape
+    results for this tx-history account, or {} when the sidecar
+    is absent.
+
+    `download.py --with-more-detail` writes
+    `<acct_dir>/more-details.json` as a list of
+    `{"row_key": "...", "fields": {...}}` records. row_key is a
+    deterministic SHA-256 prefix over the row's promoted columns
+    (date|amount|description|symbol|action) that the loader can
+    re-derive from the JSON export to merge details in. See
+    download._scrape_more_details_for_page for the row_key
+    derivation.
+    """
+    path = acct_dir / "more-details.json"
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except Exception as e:
+        log.warning("more-details parse failed for %s: %s", path, e)
+        return {}
+    out = {}
+    for entry in entries:
+        key = entry.get("row_key")
+        fields = entry.get("fields")
+        if key and isinstance(fields, dict):
+            out[key] = fields
+    log.info("loaded %d more-detail record(s) from %s", len(out), path)
+    return out
+
+
+def _tx_history_row_key(tx: dict) -> str:
+    """Deterministic key over a tx-history row's promoted fields,
+    matching what download._scrape_more_details_for_page derives
+    from the rendered row. Used to merge More-modal detail into
+    the JSON export rows."""
+    parts = [
+        str(tx.get("Date") or ""),
+        str(tx.get("Amount") or ""),
+        str(tx.get("Description") or ""),
+        str(tx.get("Symbol") or ""),
+        str(tx.get("Action") or ""),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _parse_money(s) -> float | None:
+    """Parse a Schwab money string (e.g. "$1,234.56", "-$5.00",
+    "($1.00)") to a signed float. Returns None for blank /
+    non-money input. Conservative: silver stores the raw string
+    in `payload` regardless; this is for ordering / arithmetic
+    indexes only."""
+    if s is None:
+        return None
+    txt = str(s).strip()
+    if not txt:
+        return None
+    neg = txt.startswith("-") or (txt.startswith("(") and txt.endswith(")"))
+    txt = txt.strip("()-").lstrip("$").replace(",", "")
+    try:
+        v = float(txt)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _insert_tx_history_transactions(conn: sqlite3.Connection,
+                                    account_external_id: str,
+                                    transactions: list[dict],
+                                    source_sha256: str,
+                                    more_details: dict) -> int:
+    """INSERT OR IGNORE one row per Schwab-JSON-exported
+    transaction. Same activity-id derivation contract as the
+    statement parser (synthetic SHA-256 prefix), but over the
+    JSON export's field names (Title-Cased: Date, Amount, etc.).
+
+    If `more_details[row_key]` exists for a row, its key-value
+    pairs are merged into the row's `payload` JSON under a
+    nested `_more` key — silver consumers can pluck e.g.
+    `json_extract(payload, '$._more.Settle Date')`.
+    """
+    inserted = 0
+    for idx, tx in enumerate(transactions):
+        date_str = tx.get("Date") or ""
+        timestamp = parse_doc_date(date_str)
+        if timestamp is None:
+            log.debug("tx-history row %d: bad date %r — skipping",
+                      idx, date_str)
+            continue
+        # Normalised dict matching _synthesize_activity_id's
+        # expected keys so the synthetic id space lines up with
+        # the statement_pdf path (helps gold-layer cross-source
+        # deduping by ID prefix patterns).
+        normalised = {
+            "date": date_str,
+            "amount": _parse_money(tx.get("Amount")),
+            "description": tx.get("Description"),
+            "symbol": tx.get("Symbol"),
+        }
+        activity_id = _synthesize_activity_id(
+            account_external_id, normalised, idx, source_sha256,
+        )
+        # Merge any matching More-modal detail into payload.
+        payload_dict = dict(tx)
+        row_key = _tx_history_row_key(tx)
+        if row_key in more_details:
+            payload_dict["_more"] = more_details[row_key]
+        payload = canonical_json(payload_dict)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO transactions"
+            " (activity_id, timestamp, account_external_id, kind,"
+            "  instrument_key, source, source_sha256, payload)"
+            " VALUES (?, ?, ?, ?, ?, 'tx_history_json', ?, ?)",
+            (activity_id, timestamp, account_external_id,
+             tx.get("Action") or "Unknown",
+             tx.get("Symbol") or None,
+             source_sha256, payload),
+        )
+        if cur.rowcount:
+            inserted += 1
+    return inserted
+
+
+def _insert_statement_transactions(conn: sqlite3.Connection,
+                                   account_external_id: str,
+                                   transactions: list[dict],
+                                   source_sha256: str) -> int:
+    """INSERT OR IGNORE one row per parsed transaction. Returns
+    the count inserted.
+
+    Skips rows that have no amount (parser failure indicator) —
+    a parser regression should drop the bad row, not break the
+    whole load."""
+    inserted = 0
+    for idx, tx in enumerate(transactions):
+        if tx.get("amount") is None:
+            log.warning("skipping transaction with no amount: %s",
+                        {k: tx.get(k) for k in
+                         ("date", "category", "symbol")})
+            continue
+        activity_id = _synthesize_activity_id(
+            account_external_id, tx, idx, source_sha256,
+        )
+        timestamp = parse_iso_date(tx.get("date"))
+        if timestamp is None:
+            log.warning("skipping transaction with no parseable date: %s",
+                        tx.get("date"))
+            continue
+        kind = tx.get("category") or "Unknown"
+        # instrument_key: per the silver convention, prefer CUSIP
+        # over ticker. Statement PDFs only expose the ticker in
+        # the activity-rows section; CUSIP is in the positions
+        # block. For now, use whatever pdf_parsers gave us in
+        # `symbol`; the gold layer can resolve to CUSIP via the
+        # api silver's instruments table.
+        instrument_key = tx.get("symbol")
+        payload = canonical_json(tx)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO transactions"
+            " (activity_id, timestamp, account_external_id, kind,"
+            "  instrument_key, source, source_sha256, payload)"
+            " VALUES (?, ?, ?, ?, ?, 'statement_pdf', ?, ?)",
+            (activity_id, timestamp, account_external_id, kind,
+             instrument_key, source_sha256, payload),
+        )
+        if cur.rowcount:
+            inserted += 1
+    return inserted
+
+
+# ============================================================
+# Top-level
+# ============================================================
+
+def run_load(args: argparse.Namespace) -> int:
+    migrations_dir = _resolve_migrations_dir(args.migrations)
+    args.silver_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(args.silver_db))
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        apply_migrations(conn, migrations_dir)
+
+        runs = discover_bronze_runs(args.bronze_dir)
+        log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
+
+        for run_dir in runs:
+            snapshot_at = parse_snapshot_at(run_dir.name)
+            if already_loaded(conn, snapshot_at) and not args.reparse:
+                log.info("skipping %s (already loaded)", run_dir.name)
+                continue
+            log.info("loading %s (snapshot_at=%d)", run_dir.name, snapshot_at)
+            try:
+                stats = load_run(conn, run_dir, reparse=args.reparse)
+                conn.commit()
+                log.info(
+                    "loaded %s: accts +%d/-%d, docs +%d/-%d, "
+                    "tx +%d (reparsed %d), pdf errors %d",
+                    run_dir.name,
+                    stats["accounts_inserted"], stats["accounts_deduped"],
+                    stats["documents_new"], stats["documents_dup"],
+                    stats["transactions_inserted"],
+                    stats["transactions_reparsed"],
+                    stats["pdf_parse_errors"],
+                )
+            except Exception:
+                conn.rollback()
+                log.exception("load failed for %s; rolled back", run_dir.name)
+    finally:
+        conn.close()
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    return run_load(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
