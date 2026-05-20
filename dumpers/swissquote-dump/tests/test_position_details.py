@@ -16,7 +16,6 @@ Pure stdlib — no pytest, no fixtures binary files. The tests cover:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
 import tempfile

@@ -3,10 +3,14 @@
 Swissquote e-banking bronze downloader.
 
 Reuses the Playwright session minted by login.py to export:
+  - accounts.json              — eBanking #accountOverview/main (DOM scrape)
   - transactions CSV(s)        — Trading Platform #transactions
   - positions XLS              — Trading Platform #portfoliooverview
-  - list-of-assets XLS         — Trading Platform #portfoliooverview
-  - eDocuments PDFs            — eBanking Documents page
+  - position_details.json      — Trading Platform #portfoliooverview (DOM scrape: long name + ISIN)
+  - list_of_assets XLS         — Trading Platform #portfoliooverview
+  - account_overview PDF       — Trading Platform #portfoliooverview
+  - eDocuments PDFs            — eBanking #documents (REST endpoint)
+  - run.json                   — metadata index for the dump
 
 Files land in <dest>/<UTC-timestamp>/<artefact>. Read-only — see
 CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
@@ -15,6 +19,7 @@ authorised by the user.
 Usage:
     download.py --state-path <file> --dest <dir>
                 [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                [--documents-since YYYY-MM-DD] [--documents-until YYYY-MM-DD]
                 [--dry-run] [--screenshot-dir <dir>] [--trace]
 """
 
@@ -171,9 +176,9 @@ def _verify_session(page) -> None:
     The Trading Platform URL itself isn't a reliable login indicator
     (F5 lets it load as a blank SPA when unauthenticated). We probe
     the eBanking SPA root, which F5 protects properly: a valid
-    session settles at `/sqc-web-client-portal/?url_id=...#...`; an
-    invalid one ends up at /my.policy or some transient intermediate.
-    Only the positive landmark counts.
+    session settles inside `/sqc-web-client-portal/`; an invalid one
+    ends up at /my.policy. The `is_post_auth_url` predicate matches
+    only the former.
     """
     from playwright.sync_api import TimeoutError as PWTimeout
     log.info("Verifying session via %s", sq.LOGIN_TRIGGER_URL)

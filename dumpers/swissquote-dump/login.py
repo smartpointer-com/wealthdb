@@ -210,11 +210,10 @@ def check_session(args: argparse.Namespace) -> int:
                 pass
             _screenshot(page, args.screenshot_dir, f"check_{ts}_after_goto")
 
-            # Authentication signal: F5 has forwarded us back to the
-            # eBanking SPA with a `url_id=` session parameter. The
-            # bare-trigger URL is not enough — F5 occasionally serves
-            # a transient intermediate page that does not contain
-            # `/my.policy`, so a negative test would false-positive.
+            # Authentication signal: we land on the protected eBanking
+            # SPA path (not the F5 auth form). `is_post_auth_url`
+            # checks both halves — a bare "no /my.policy" test would
+            # false-positive on F5's transient intermediates.
             log.info("Final URL: %s", page.url)
             if sq.is_post_auth_url(page.url):
                 print("session OK")
@@ -391,9 +390,9 @@ def login(args: argparse.Namespace) -> int:
                     f"have shown an unfamiliar interstitial. Re-run with "
                     f"--screenshot-dir -v to diagnose."
                 )
-            # After the loose-predicate wait fires, give the SPA a
-            # beat to settle — F5 typically attaches `url_id=` and
-            # any further session cookies via a follow-up redirect.
+            # After the wait fires, give the SPA a beat to settle —
+            # F5 may issue follow-up redirects and additional cookies
+            # before the session is fully bedded in.
             from playwright.sync_api import TimeoutError as PWTimeout
             try:
                 page.wait_for_load_state(

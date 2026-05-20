@@ -37,10 +37,7 @@ LOGIN_TRIGGER_URL = f"https://{HOST}/sqc-web-client-portal/"
 # so "/my.policy not in url" is NOT a valid signal of "MFA done".
 F5_AUTH_PATH = "/my.policy"
 
-# Positive landmark for "fully authenticated". F5 attaches a
-# `url_id=<hex>` query parameter when it forwards the post-auth
-# request back to the originally-requested protected URL. We wait
-# for this AND the SPA-root path before declaring login successful.
+# Positive landmark for "fully authenticated".
 def is_post_auth_url(url: str) -> bool:
     """URL is on the post-auth eBanking SPA path, not the F5 auth form.
 
@@ -80,7 +77,6 @@ ROUTE_TRANSACTIONS = "#transactions"
 # are at #documents. The Period filter defaults to the last 30 days,
 # so the script must widen it to fetch all historical documents.
 EBANKING_BASE_URL = LOGIN_TRIGGER_URL  # same SPA root as the login trigger
-DOCUMENTS_URL = f"{EBANKING_BASE_URL}#documents"
 ROUTE_ACCOUNT_OVERVIEW = "#accountOverview/main"
 
 # Account-list selectors on the eBanking #accountOverview/main page.
@@ -89,15 +85,6 @@ ROUTE_ACCOUNT_OVERVIEW = "#accountOverview/main"
 # label that Swissquote uses as the informal account-type indicator.
 ACCOUNT_LIST_ROW = "li.AccountListItem"
 ACCOUNT_PORTFOLIO_TITLE = ".AccountDetails__portfolioTitle"
-
-# Document fetch endpoint. The page is JS-driven, but each document
-# is ultimately served by this REST endpoint with the session cookie.
-# download.py reuses the cookie via Playwright's `request` API and
-# bypasses the per-row download click entirely.
-DOC_FETCH_URL_TEMPLATE = (
-    f"https://{HOST}/sqc-ctrp-notifications-plugin/webapi/notifications/"
-    "getPdfDocument/{customer_id}/{doc_id}?documentType={doc_type}"
-)
 
 # ============================================================
 # Login page — F5 BIG-IP gateway form
@@ -128,18 +115,6 @@ MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 # The Swissquote UI says "This request is valid for 60 seconds".
 
 # ============================================================
-# Post-login landing — Trading Platform root
-# ============================================================
-
-# The Trading Platform SPA sets this testid on its root container
-# once the user is authenticated. We poll for it as the "logged-in"
-# liveness signal in login.py --check and at the start of download.py.
-TRADING_PLATFORM_ROOT_TESTID = "SecuritiesRetailTradingPlatform"
-TRADING_PLATFORM_ROOT_SELECTOR = (
-    f'[data-testid="{TRADING_PLATFORM_ROOT_TESTID}"]'
-)
-
-# ============================================================
 # Transactions page (Trading Platform #transactions)
 # ============================================================
 
@@ -147,13 +122,6 @@ TRADING_PLATFORM_ROOT_SELECTOR = (
 # CSV / PDF / etc. The CSV item label depends on the locale; we
 # force the UI to English before clicking.
 TXN_EXPORT_DROPDOWN_TRIGGER = ".Dropdown__trigger--export"
-
-# Date range inputs — three boxes per date (DD / MM / YYYY), two
-# date pickers (from / to). All four selectors are `.all()` matches;
-# index [0..2] is the "from" date, [3..5] is the "to" date.
-TXN_DATE_DAY_INPUT = "input.InputDate__input--day"
-TXN_DATE_MONTH_INPUT = "input.InputDate__input--month"
-TXN_DATE_YEAR_INPUT = "input.InputDate__input--year"
 
 # Menu items inside the transactions export dropdown. The dropdown
 # renders these only after the trigger is clicked. Items are
@@ -187,21 +155,6 @@ ACCOUNT_OVERVIEW_EXPORT_BUTTON = (
     'button.srp-ControlsPanel__printInfo[aria-label="Export account overview"]'
 )
 
-# Filename pattern Swissquote uses for each export, for sanity-
-# checking the captured download:
-#   positions.xls       e.g. Positions_<customer>_<ddmmyyyy>_<hh>_<mm>.xls
-#   list_of_assets.xls  e.g. List_of_assets_<ddmmyyyy>.xls
-POSITIONS_DOWNLOAD_NAME_RE = r"^Positions_\d+_\d{8}_\d{2}_\d{2}\.xls$"
-LIST_OF_ASSETS_DOWNLOAD_NAME_RE = r"^List_of_assets_\d{8}\.xls$"
-
-# Position rows inside the Portfolio Overview table. Reading-only —
-# Buy/Sell buttons appear in these rows and MUST NEVER be clicked
-# (CLAUDE.md §1). We only use the row selector to count expected
-# rows for cross-checking against the XLS export.
-PORTFOLIO_POSITION_ROW = (
-    "tr.TableRow:not(.TableRow--subTotalRow):not(.TableRow--totalRow)"
-)
-
 # The Positions widget is sometimes collapsed by default; download.py
 # expands any `WidgetWrapper--collapsed` before scraping per-row
 # detail.
@@ -231,44 +184,9 @@ POSITION_TOOLTIP_POPUP = "div.Tooltip[role=tooltip]"
 # Documents page (eBanking)
 # ============================================================
 
-# Each document is one table row. Rows tagged --notDownloaded have
-# never been fetched server-side from Swissquote's POV; we do not
-# rely on that tag for our own dedup (we use content_sha256 in
-# silver), but it is useful for prioritising unfetched docs.
+# Each document is one table row.
 DOC_ROW = "tr.NotificationRow"
-DOC_ROW_NOT_DOWNLOADED = "tr.NotificationRow.NotificationRow--notDownloaded"
 
 # Spinner shown over the documents table while it (re)loads after a
 # filter change. Visible briefly, then removed when the table renders.
 DOC_TABLE_SPINNER = ".LoadingTable"
-
-# Each row carries the document ID and type as part of the per-row
-# download button's class/data attributes. The exact extraction is
-# in download.py; this constant pins the row's download-button class.
-DOC_ROW_DOWNLOAD_BUTTON = ".ua-docListTable__button--downloadDocument"
-
-# Document type taxonomy as observed in the URL parameter
-# documentType=...; not constrained at the schema layer, but useful
-# for the loader to populate document_type without parsing the URL.
-DOC_TYPE_VALUES = frozenset({
-    "Corporate",    # corporate-action notices
-    "Stock",        # trade/exchange notices
-    "Transfer",     # incoming/outgoing wire notices
-    "Account",      # account statements
-    "PERSON",       # account-holder correspondence
-})
-
-# ============================================================
-# Read-only / write-surface boundary
-# ============================================================
-
-# These selectors identify UI surfaces that MUST NEVER be navigated
-# to or clicked. They are listed here so a code reviewer can grep
-# for them and confirm the codebase never references them in a
-# `click()` or `goto()` context. See CLAUDE.md §1.
-FORBIDDEN_TO_CLICK_SELECTORS = frozenset({
-    "button.Button--buy",                                    # row-level Buy
-    "button.Button--sell",                                   # row-level Sell
-    "button.securitiesRetailTradeButtonPlugin-Button--buy",  # alternate
-    "button.securitiesRetailTradeButtonPlugin-Button--sell", # alternate
-})
