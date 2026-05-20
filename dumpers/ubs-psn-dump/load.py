@@ -80,12 +80,6 @@ def parse_yymmdd(s: str) -> int:
     return int(datetime(yyyy, mm, dd, tzinfo=timezone.utc).timestamp())
 
 
-def parse_iso_date(s: str) -> int:
-    """'YYYY-MM-DD' -> Unix seconds UTC at 00:00:00."""
-    return int(datetime.strptime(s, "%Y-%m-%d")
-               .replace(tzinfo=timezone.utc).timestamp())
-
-
 def canonical_json(obj) -> str:
     """Compact JSON, sorted keys. Used both for storage and for dedup compare."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
@@ -115,12 +109,13 @@ def current_schema_version(conn: sqlite3.Connection) -> int:
 
 
 def discover_migrations() -> list[tuple[int, Path]]:
+    # `sorted(... .glob("*.sql"))` is filename-sorted, which for the
+    # required NNNN_*.sql convention is the same as numeric.
     items: list[tuple[int, Path]] = []
     for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
         m = MIGRATION_FILE_RE.match(f.name)
         if m:
             items.append((int(m.group(1)), f))
-    items.sort(key=lambda v: v[0])
     return items
 
 
@@ -297,16 +292,17 @@ def parse_mt_balance(s: str) -> dict | None:
     }
 
 
-def parse_qualifier_value(s: str) -> tuple[str, str]:
-    """Split ':<QUAL>//<value>' style into (qualifier, value).
-
-    e.g. ':SAFE//<safekeeping-id>' returns ('SAFE', '<safekeeping-id>').
-    Returns ('', s) if no qualifier prefix is present.
+def _extract_safe_id(fields: list[tuple[str, str]]) -> str | None:
+    """Return the safekeeping account ID from a `:97A::SAFE//<id>` field
+    in a parsed MT block 4, or None if absent. Used by every MT loader
+    whose subject is a single safekeeping account.
     """
-    m = re.match(r"^:([A-Z]+)//(.*)$", s, re.S)
-    if m:
-        return m.group(1), m.group(2)
-    return "", s
+    for tag, val in fields:
+        if tag == "97A":
+            m = re.match(r"^:SAFE//(.+)$", val, re.S)
+            if m:
+                return m.group(1).strip()
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -609,11 +605,7 @@ def load_mt535(conn, snapshot_at, relationship_id, mt_text):
     whole block content as the holdings.payload.
     """
     fields = parse_mt_block4(mt_text)
-    safe = None
-    for tag, val in fields:
-        if tag == "97A" and val.startswith(":SAFE//"):
-            safe = val[len(":SAFE//"):].strip()
-            break
+    safe = _extract_safe_id(fields)
     if not safe:
         log.debug("MT535 missing :97A::SAFE//, skipping")
         return 0
@@ -661,11 +653,7 @@ def load_mt537(conn, snapshot_at, relationship_id, mt_text):
     carries ACTI//N so consumers can tell.
     """
     fields = parse_mt_block4(mt_text)
-    safe = None
-    for tag, val in fields:
-        if tag == "97A" and val.startswith(":SAFE//"):
-            safe = val[len(":SAFE//"):].strip()
-            break
+    safe = _extract_safe_id(fields)
     if not safe:
         return 0
 
@@ -719,7 +707,6 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     closing: dict | None = None
     available: dict | None = None
     movements: list[tuple[dict, list[str]]] = []   # (parsed_61, [86 lines following])
-    last_61: tuple[dict, list[str]] | None = None
 
     for tag, val in fields:
         if tag == "25":
@@ -731,13 +718,9 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
         elif tag == "64":
             available = parse_mt_balance(val)
         elif tag == "61":
-            parsed = _parse_mt940_61(val)
-            last_61 = (parsed, [])
-            movements.append(last_61)
-        elif tag == "86" and last_61 is not None:
-            last_61[1].append(val)
-        elif tag in ("20", "28C") :
-            pass    # tracked elsewhere if needed
+            movements.append((_parse_mt940_61(val), []))
+        elif tag == "86" and movements:
+            movements[-1][1].append(val)
 
     if not account or not closing:
         log.warning("MT940 missing :25: or :62F: — skipping")
@@ -840,34 +823,34 @@ def load_mt566(conn, snapshot_at, relationship_id, mt_text):
     a fresh MT566 with status CANC for retractions, not a silent delete.
     """
     fields = parse_mt_block4(mt_text)
-    seme = corp = safe = caev = isin = None
-    timestamp = None
-    for tag, val in fields:
-        if tag == "20C":
-            qual, v = parse_qualifier_value(val)
-            if qual == "SEME": seme = v.strip()
-            elif qual == "CORP": corp = v.strip()
-        elif tag == "97A":
-            qual, v = parse_qualifier_value(val)
-            if qual == "SAFE": safe = v.strip()
-        elif tag == "22F":
-            qual, v = parse_qualifier_value(val)
-            if qual == "CAEV": caev = v.strip()
-        elif tag == "35B" and not isin:
-            m = re.search(r"ISIN\s+([A-Z0-9]{12})", val)
-            if m: isin = m.group(1)
-        elif tag == "98A":
-            qual, v = parse_qualifier_value(val)
-            if qual in ("POST", "PAYD", "VALU") and timestamp is None:
-                try:
-                    timestamp = int(datetime.strptime(v.strip(), "%Y%m%d")
-                                    .replace(tzinfo=timezone.utc).timestamp())
-                except ValueError:
-                    pass
+    by_q = _by_qualifier(fields)
+    def g(tag: str, qual: str) -> str | None:
+        v = by_q.get(tag, {}).get(qual)
+        return v.strip() if isinstance(v, str) else None
 
+    seme = g("20C", "SEME")
     if not seme:
         log.debug("MT566 missing :20C::SEME// — skipping")
         return 0
+
+    corp = g("20C", "CORP")
+    caev = g("22F", "CAEV")
+    safe = _extract_safe_id(fields)
+    isin = None
+    for tag, val in fields:
+        if tag == "35B":
+            m = re.search(r"ISIN\s+([A-Z0-9]{12})", val)
+            if m:
+                isin = m.group(1)
+            break
+
+    timestamp = None
+    for qual in ("POST", "PAYD", "VALU"):
+        v = g("98A", qual)
+        if v:
+            timestamp = _parse_unix_dt(v, "%Y%m%d")
+            if timestamp is not None:
+                break
     if timestamp is None:
         timestamp = snapshot_at  # fall back to snapshot time
 
@@ -1087,19 +1070,19 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
 # XML loaders keyed by TypeCd. Each takes (conn, snapshot_at, relationship_id,
 # entities) and returns rows-inserted count.
 XML_LOADERS = {
-    "SDCL":   ("master", load_sdcl),
-    "SDCA":   ("master", load_sdca),
-    "SDSA":   ("master", load_sdsa),
-    "SDPO":   ("master", load_sdpo),
-    "SDFI":   ("master", load_sdfi),
-    "TDFXR":  ("state",  lambda c, s, r, e: load_tdfxr(c, s, e)),
-    "TDFWD":  ("state",  load_tdfwd),
-    "TDOPT":  ("state",  lambda c, s, r, e: _load_contract_table(
-        c, s, r, e, "OptCtrctInf", "option_contracts")),
-    "TDMM":   ("state",  lambda c, s, r, e: _load_contract_table(
-        c, s, r, e, "MMCtrctInf", "money_market_contracts")),
-    "TDOTC":  ("state",  lambda c, s, r, e: _load_contract_table(
-        c, s, r, e, "OtcCtrctInf", "otc_contracts")),
+    "SDCL":  load_sdcl,
+    "SDCA":  load_sdca,
+    "SDSA":  load_sdsa,
+    "SDPO":  load_sdpo,
+    "SDFI":  load_sdfi,
+    "TDFXR": lambda c, s, r, e: load_tdfxr(c, s, e),       # base rates: relationship-agnostic
+    "TDFWD": load_tdfwd,
+    "TDOPT": lambda c, s, r, e: _load_contract_table(
+        c, s, r, e, "OptCtrctInf", "option_contracts"),
+    "TDMM":  lambda c, s, r, e: _load_contract_table(
+        c, s, r, e, "MMCtrctInf", "money_market_contracts"),
+    "TDOTC": lambda c, s, r, e: _load_contract_table(
+        c, s, r, e, "OtcCtrctInf", "otc_contracts"),
     # TDCAPI / TDPOPF loaders added when we have non-empty samples.
 }
 
@@ -1131,7 +1114,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
         return {"name": name, "skipped": True}
 
     log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)
-    stats = {"name": name, "snapshot_at": snapshot_at, "skipped": False}
+    stats: dict = {"name": name, "skipped": False}
 
     with conn:  # BEGIN on entry, COMMIT on clean exit, ROLLBACK on exception
         # 1. PSN XML containers (ZMD, ZME) — iterate every .xml entry
@@ -1152,8 +1135,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
                     log.debug("No XML loader for type %s (%s) — skipping",
                               type_code, fname)
                     continue
-                _, fn = loader
-                xml_rows += fn(conn, snapshot_at, relationship_id, entities)
+                xml_rows += loader(conn, snapshot_at, relationship_id, entities)
         stats["xml_rows"] = xml_rows
 
         # 2. MT containers — iterate every .txt entry per zip basename
@@ -1175,7 +1157,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
                     mt_other += result
         stats["mt_balances"] = mt_balances
         stats["mt_events"] = mt_events
-        stats["mt_holdings_or_pending_or_ca"] = mt_other
+        stats["mt_other"] = mt_other
 
         # 3. dump_runs LAST so a mid-load failure leaves no trace.
         conn.execute(
@@ -1230,11 +1212,10 @@ def main(argv: list[str] | None = None) -> int:
             log.info("  %s: skipped (already loaded)", stats["name"])
         else:
             log.info(
-                "  %s: xml_rows=%d mt_balances=%d mt_events=%d "
-                "mt_holdings+pending+ca=%d",
+                "  %s: xml_rows=%d mt_balances=%d mt_events=%d mt_other=%d",
                 stats["name"], stats["xml_rows"],
                 stats["mt_balances"], stats["mt_events"],
-                stats["mt_holdings_or_pending_or_ca"],
+                stats["mt_other"],
             )
 
     conn.close()
