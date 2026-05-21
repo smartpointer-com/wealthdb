@@ -463,7 +463,23 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 continue
             raw_type = doc.get("type") or "Unknown"
             doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
-            fmt = (doc.get("format") or _format_from_filename(filename)).lower()
+            # The downloader writes the format from the row's
+            # `Click to Download <FORMAT>` aria-label, but Schwab
+            # has been observed to render a row whose label says
+            # "PDF" while the actual download is a CSV (one known
+            # case: a stray 1099 Composite CSV slotted into a
+            # Brokerage Statement row). Trust the file extension
+            # on disk over the manifest claim, so a mis-labelled
+            # row doesn't get handed to pypdfium2.
+            claimed_fmt = (doc.get("format") or "").lower()
+            actual_fmt = _format_from_filename(filename)
+            if claimed_fmt and claimed_fmt != actual_fmt:
+                log.warning(
+                    "manifest format/extension mismatch for %s "
+                    "(manifest=%s, on-disk=%s); using on-disk",
+                    filename, claimed_fmt, actual_fmt,
+                )
+            fmt = actual_fmt
 
             doc_payload = canonical_json({
                 "raw_type": raw_type,

@@ -778,11 +778,28 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
             for chunk in iter(lambda: fh.read(1024 * 64), b""):
                 h.update(chunk)
                 size += len(chunk)
+        # Schwab has been observed serving a CSV from a row whose
+        # download button was labelled "PDF" (one known case: a
+        # stray 1099 Composite CSV slotted into a Brokerage
+        # Statement row). When that happens, trust the actual
+        # file extension over the button label so the manifest
+        # doesn't lie to the loader.
+        actual_ext = target.suffix.lstrip(".").lower()
+        if actual_ext and actual_ext != fmt:
+            log.warning(
+                "row %s/%s/%s aria-label said %r but downloaded "
+                "as %s; recording the actual extension",
+                row.get("date"), row.get("type"),
+                row.get("document"), fmt, target.name,
+            )
+            recorded_fmt = actual_ext
+        else:
+            recorded_fmt = fmt
         entries.append({
             "date": row["date"],
             "type": row["type"],
             "document": row["document"],
-            "format": fmt,
+            "format": recorded_fmt,
             "filename": target.name,
             "size": size,
             "sha256": h.hexdigest(),
