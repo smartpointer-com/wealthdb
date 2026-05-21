@@ -81,12 +81,12 @@ template; subcommand names and roles are the same:
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | implemented | `--manual`: open Firefox at the Schwab homepage, pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, block on Firefox close — the operator drives Log In + VIP 2FA themselves via VNC. `--check`: validate the persisted profile against the Account Summary URL and log the cookie jar including `_abck` trust state. Automated credential submit is not supported — Schwab anti-bot rejects it. |
+| [`login.py`](login.py) | implemented | `--manual --cli-mfa` (default): pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue. `--manual --no-cli-mfa`: legacy VNC-driven flow — pre-fill only, operator drives Log In + 2FA via VNC. `--check`: validate the persisted profile against the Account Summary URL and log the cookie jar including `_abck` trust state. |
 | [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally. `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`, plus one landing HTML capture for debug. `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions section) | Extracts the "Transaction Details" table from Schwab monthly brokerage statement PDFs. Statement-period header parsing gives us the year for the MM/DD dates. Output: a list of `TransactionRow` dicts with category (Sale/Purchase/Withdrawal/Deposit/Dividend/Interest), symbol/CUSIP, quantity, price, charges, amount, and realised gain/loss (with ST/LT term). Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Will be used by `load.py` for closed-account history backfill (closed accounts disappear from the Transaction History page; PDF parsing is the only path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Silver schema mirrors `schwab-api-dump`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
-### Browser choice — camoufox-patched Firefox, driven manually via VNC
+### Browser choice — camoufox-patched Firefox
 
 Schwab uses Akamai Bot Manager plus its own anti-bot rules. Stock
 Playwright-driven browsers — Chromium and Firefox alike — get
@@ -103,39 +103,50 @@ What works: [camoufox](https://github.com/daijro/camoufox), a
 stealth-patched Firefox fork that overrides every fingerprint
 surface consistently for the `os="macos"` mode (so a Linux
 container's browser presents as a macOS Firefox throughout the
-stack, not just at the UA-string layer). Combined with a manual
-login over VNC (Schwab still pushes a 2FA challenge to the user's
-device on every fresh session — automating the form submit
-remains tripwired regardless of fingerprint hygiene), camoufox
+stack, not just at the UA-string layer). Combined with the
+2FA challenge that Schwab pushes on every fresh session, camoufox
 gets through the credential-submit gate reliably.
 
 The session is alive only while *that* Firefox is alive (Schwab
 kills it on close), so login and scrape happen in one continuous
-session. The `vnc-login` subcommand wires up the keep-alive loop
-that lets multiple scrape iterations share a single login.
+session. Two entry points wire up the keep-alive loop that lets
+multiple scrape iterations share a single login:
+
+* `cli-login` — auto-submits the form and prompts for the 2FA
+  code on stdin. Pure command-line; no VNC. Use this by default.
+* `vnc-login` — opens an x11vnc server inside the container; the
+  operator drives Log In + 2FA from a local VNC client over an
+  SSH tunnel. Fallback for cases where the CLI-MFA selectors
+  drift, or when the user needs to satisfy a non-code challenge
+  (security question, push-to-device, etc.).
 
 ```sh
-# Once: start the container with VNC enabled, in the background
-./schwab-web-dump vnc-login \
-    --profile-dir /secrets/schwab-web-profile \
+# Default path: CLI-MFA login. stdin/stdout must be a TTY (the
+# wrapper allocates one automatically when invoked from a
+# terminal); the script prints
+#   Schwab 2FA: enter your VIP / SMS code, then press Enter.
+#   > _
+# at which point you type the code and press Enter.
+./schwab-web-dump cli-login \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 
-# It prints:
+# Fallback path: VNC. Start the container with VNC enabled, then
+# tunnel + open the display from your laptop. Use this if the
+# CLI-MFA flow misses (e.g. Schwab restyles the gateway).
+./schwab-web-dump vnc-login \
+    --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
+# Prints:
 #   vnc-login: VNC ready on 127.0.0.1:5900
 #   vnc-login: password (single-use):  <16 hex chars>
-
-# From your laptop:
+# Then on your laptop:
 ssh -L 5900:127.0.0.1:5900 <mbp-host>      # tunnel
 open vnc://localhost:5900                  # macOS Screen Sharing
 # (use the single-use password printed above)
 
-# In the VNC window: Firefox is at www.schwab.com with the login
-# form pre-filled. Click Log In, enter your VIP code, land on
-# Account Summary. The script polls the URL; once it sees
-# client.schwab.com/app/..., it takes over the same Firefox
-# session and runs the statements + transactions download.
-# When done, Firefox closes itself, the container exits, and
-# bronze data is on the host under ~/wealthdb/schwab-web/<TS>/.
+# Either entry point: once login completes the script takes over
+# the same Firefox page, runs statements + transactions downloads,
+# and exits. Bronze data lands on the host under
+# ~/wealthdb/schwab-web/<UTC-ts>/.
 ```
 
 ## Container build
@@ -174,7 +185,8 @@ Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
 
 ```sh
-./schwab-web-dump vnc-login --profile-dir /secrets/schwab-web-profile
+./schwab-web-dump cli-login                # auto-submit + stdin 2FA
+./schwab-web-dump vnc-login                # VNC fallback
 ./schwab-web-dump login --check --profile-dir /secrets/schwab-web-profile -v
 ./schwab-web-dump download --dry-run --screenshot-dir /debug/download
 ./schwab-web-dump load --silver-db /data/schwab-web.db --bronze-dir /data

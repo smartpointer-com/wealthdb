@@ -51,6 +51,18 @@ case "${1:-help}" in
         shift
         exec python3 /app/login.py "$@"
         ;;
+    cli-login)
+        # CLI-MFA login: prefill, auto-submit, prompt for the 2FA
+        # code on stdin, fill and Continue. No VNC server is
+        # started — stdin is the human-in-the-loop surface. Stdin
+        # must therefore be a TTY (the wrapper allocates one with
+        # `-it` automatically when run from a terminal).
+        start_xvfb
+        shift
+        exec python3 /app/login.py \
+            --profile-dir /secrets/schwab-web-profile \
+            --manual --cli-mfa --dest /data "$@"
+        ;;
     vnc-login)
         # Start Xvfb + x11vnc on the same display, then run
         # login.py --manual. The wrapper publishes 127.0.0.1:5900
@@ -77,11 +89,14 @@ case "${1:-help}" in
         # Default --profile-dir + --dest so vnc-login is one-arg.
         # Profile lives under the mounted /secrets tree so cookies
         # survive across container runs; --dest=/data triggers the
-        # post-login auto-scrape. Override either by passing the
-        # flag explicitly — argparse takes the last value.
+        # post-login auto-scrape. --no-cli-mfa preserves the
+        # all-manual VNC flow (everything past pre-fill is the
+        # operator's job) — that's the point of vnc-login. Override
+        # either by passing the flag explicitly — argparse takes
+        # the last value.
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --manual --dest /data "$@"
+            --manual --no-cli-mfa --dest /data "$@"
         ;;
     download)
         start_xvfb
@@ -104,15 +119,18 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       login.py --check / --manual without spinning up VNC
-              (use when you don't need to drive the browser from
-              outside the container).
+  login       Raw login.py invocation — pass --check / --manual
+              and other flags yourself. Useful for one-off runs;
+              for the common case prefer cli-login or vnc-login.
+  cli-login   CLI-MFA login: pre-fill from SCHWAB_LOGIN_ID /
+              SCHWAB_PASSWORD, auto-submit, prompt for the 2FA
+              code on stdin. No VNC. Default entry point. Stdin
+              must be a TTY.
   vnc-login   Start x11vnc on 127.0.0.1:5900 and open Firefox at
-              the Schwab homepage; pre-fills the login form from
-              SCHWAB_LOGIN_ID/SCHWAB_PASSWORD; you drive Log In +
-              VIP 2FA from your VNC client over an SSH tunnel.
-              This is the primary entry point — Schwab anti-bot
-              rejects automated credential submit.
+              the Schwab homepage; pre-fills the login form; you
+              drive Log In + 2FA from your VNC client over an SSH
+              tunnel. Fallback for cases where the CLI-MFA path
+              misses (DOM drift, alternative MFA factor).
   download    Export bronze artefacts from the Schwab client UI
               (only useful while a Firefox session is live; Schwab
               kills sessions on Firefox close, so in practice this

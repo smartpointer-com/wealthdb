@@ -3,25 +3,31 @@
 Schwab client-web session minter.
 
 Drives Firefox (headed, against an Xvfb virtual display managed
-by entrypoint.sh) through the Schwab login. The credential submit
-and Symantec VIP 2FA are completed by the operator over VNC
-because Schwab's anti-bot rules reject any non-trivially-automated
-login. This script opens the browser, pre-fills the login form for
-ergonomics, polls for the post-auth `/app/...` URL, and (when
-`--dest` is set) takes over the same Firefox page to run
-`download.walk()` in the same continuous session. Schwab kills
-the session on Firefox close, so login + scrape must happen in
-one Firefox lifetime — close-then-reopen does not work.
+by entrypoint.sh) through the Schwab login. With `--cli-mfa`
+(default) the script pre-fills the form, clicks Log In, waits for
+the 2FA challenge page, prompts the operator on stdin for their
+VIP / SMS code, fills it, and clicks Continue — no VNC required.
+The fallback `--no-cli-mfa` mode is the older VNC-driven flow
+where everything past the pre-fill is the operator's job (use it
+if Schwab ever reshapes the gateway DOM and the CLI selectors
+miss). Either way the script then polls for the post-auth
+`/app/...` URL, and (when `--dest` is set) takes over the same
+Firefox page to run `download.walk()` in the same continuous
+session. Schwab kills the session on Firefox close, so login +
+scrape must happen in one Firefox lifetime — close-then-reopen
+does not work.
 
 Modes:
   --check      validate the persisted profile against the
                Account Summary URL. Logs the cookie jar including
                _abck trust state. No credential submit.
   --manual     open Firefox, pre-fill from SCHWAB_LOGIN_ID /
-               SCHWAB_PASSWORD, wait for the operator to drive
-               Log In + 2FA. With --dest, hand off to
-               download.walk() after post-auth detection;
-               without --dest, just block on Firefox close.
+               SCHWAB_PASSWORD; then either drive Log In + 2FA
+               from stdin (--cli-mfa, default) or wait for the
+               operator to do it over VNC (--no-cli-mfa). With
+               --dest, hand off to download.walk() after post-auth
+               detection; without --dest, just block on Firefox
+               close.
 
 Browser choice: Firefox rather than Chromium. Schwab's Akamai
 rejects every Chromium-family automation surface we tried
@@ -116,14 +122,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--manual", action="store_true",
-        help=("Open Firefox at the Schwab homepage, pre-fill the "
-              "login form from $SCHWAB_LOGIN_ID / $SCHWAB_PASSWORD, "
-              "and wait for the operator to log in via VNC. After "
-              "the URL hits /app/... the script takes over the same "
-              "page and (if --dest is set) runs download.walk() in "
-              "the same Firefox session. Without --dest it just "
-              "blocks on Firefox close — Schwab kills the session "
-              "on close, so for any actual scrape pass --dest."),
+        help=("Open Firefox at the Schwab homepage and pre-fill "
+              "the login form from $SCHWAB_LOGIN_ID / $SCHWAB_PASSWORD. "
+              "With --cli-mfa (default) the script also auto-clicks "
+              "Log In and prompts you on stdin for the 2FA code; "
+              "with --no-cli-mfa you drive Log In + 2FA via VNC. "
+              "After the URL hits /app/... the script takes over the "
+              "same page and (if --dest is set) runs download.walk() "
+              "in the same Firefox session. Without --dest it just "
+              "blocks on Firefox close — Schwab kills the session on "
+              "close, so for any actual scrape pass --dest."),
+    )
+    p.add_argument(
+        "--cli-mfa", action=argparse.BooleanOptionalAction, default=True,
+        help=("Auto-submit the login form and prompt for the 2FA "
+              "code on stdin. Default on. Pass --no-cli-mfa to keep "
+              "the older VNC-driven flow where everything past the "
+              "credential pre-fill is the operator's job (useful if "
+              "Schwab restyles the gateway DOM and the CLI selectors "
+              "miss — falls back to manual VNC drive without a code "
+              "change)."),
+    )
+    p.add_argument(
+        "--login-only", action="store_true",
+        help=("Exit cleanly as soon as the post-auth URL is reached "
+              "— no scrape, no keep-alive loop, no waiting on the "
+              "Firefox window. Useful for verifying the login path "
+              "in isolation without paying the cost of a full dump. "
+              "Schwab MAY invalidate the session on Firefox close, "
+              "so a subsequent --check is not guaranteed to report "
+              "the session as live."),
     )
     p.add_argument(
         "--dest", default=None, type=Path,
@@ -534,6 +562,8 @@ def run_manual(profile_dir: Path,
                date_range: str = schwab.DATE_RANGE_DEFAULT,
                with_more_detail: bool = False,
                rerun_trigger: Path | None = None,
+               cli_mfa: bool = True,
+               login_only: bool = False,
                post_auth_timeout_s: int = 600) -> int:
     """Open Firefox at the homepage, pre-fill the login form, and
     wait for the operator (driving via VNC) to complete login.
@@ -583,10 +613,48 @@ def run_manual(profile_dir: Path,
             if will_prefill:
                 _prefill_login_iframe(page, login_id_value, password_value)
 
+            if cli_mfa:
+                if not will_prefill:
+                    log.warning(
+                        "--cli-mfa requested but credentials are not set "
+                        "in the environment; skipping auto-submit (you'll "
+                        "have to drive Log In + 2FA manually)"
+                    )
+                else:
+                    ok = _run_cli_mfa(page, screenshot_dir)
+                    if not ok:
+                        log.warning(
+                            "CLI-MFA path failed; falling back to manual "
+                            "drive — open a VNC session (./schwab-web-dump "
+                            "vnc-login) and complete the login yourself"
+                        )
+
+            if login_only:
+                log.info(
+                    "--login-only: waiting for post-auth URL, then "
+                    "exiting without scraping"
+                )
+                auth_page = _wait_for_post_auth(
+                    page, context, post_auth_timeout_s,
+                )
+                if auth_page is None:
+                    maybe_screenshot(page, screenshot_dir, "login-only-timeout")
+                    log.error(
+                        "post-auth URL not detected within %ds — login "
+                        "did not complete", post_auth_timeout_s,
+                    )
+                    return 7
+                maybe_screenshot(auth_page, screenshot_dir, "login-only-success")
+                log.info(
+                    "login OK: landed at %s — exiting (no scrape)",
+                    _live_url(auth_page),
+                )
+                return 0
+
             if dest is None:
                 log.info(
-                    "Firefox ready. Via VNC: drive the browser yourself. "
-                    "Close the Firefox window to exit."
+                    "Firefox ready. Drive the browser yourself if "
+                    "needed; close the Firefox window to exit."
                 )
                 try:
                     page.wait_for_event("close", timeout=0)
@@ -595,14 +663,22 @@ def run_manual(profile_dir: Path,
                 maybe_screenshot(page, screenshot_dir, "manual-final")
                 return 0
 
-            # Auto-scrape path: wait for the operator to finish
-            # logging in, then take over.
-            log.info(
-                "Firefox ready. Via VNC: click Log In, enter your VIP "
-                "code, land on Account Summary. Then the script will "
-                "take over and scrape. Do NOT close the window yourself; "
-                "the script closes it when the scrape is done."
-            )
+            # Auto-scrape path: wait for login (CLI-MFA submitted
+            # the code above, or the operator is driving via VNC).
+            if cli_mfa:
+                log.info(
+                    "2FA submitted; waiting for post-auth landing page "
+                    "(/app/...). If anything stalls, open a VNC "
+                    "session (./schwab-web-dump vnc-login) to recover."
+                )
+            else:
+                log.info(
+                    "Firefox ready. Via VNC: click Log In, enter your "
+                    "VIP code, land on Account Summary. Then the script "
+                    "will take over and scrape. Do NOT close the window "
+                    "yourself; the script closes it when the scrape is "
+                    "done."
+                )
             auth_page = _wait_for_post_auth(
                 page, context, post_auth_timeout_s,
             )
@@ -854,6 +930,351 @@ def _wait_for_post_auth(page, context, timeout_s: float,
     return None
 
 
+def _submit_login_form(page) -> bool:
+    """Submit the login form inside the homepage's `#schwablmslogin`
+    iframe. Returns True if any submit path landed.
+
+    Strategy (most-human-like first):
+      1. Pause ~1.5s — humans don't click 50ms after the last
+         keypress, and Schwab's anti-bot heuristics flag tight
+         pre-fill→submit timing.
+      2. Press Enter inside the password field. Native HTML form
+         submit; no synthetic mouse click; Angular sees a real
+         keyboard event that travels through the proper change-
+         detection cycle.
+      3. If Enter doesn't visibly progress (iframe URL unchanged
+         after a poll), fall back to clicking the Log In button.
+    """
+    gateway = page.frame_locator(f"#{schwab.LOGIN_IFRAME_ID}")
+    pre_iframe_url = _iframe_url(page)
+    log.debug("pre-submit iframe url: %s", pre_iframe_url)
+
+    # 1) Pre-submit pause.
+    time.sleep(1.5)
+
+    # 2) Enter on password field.
+    try:
+        pwd = gateway.locator(f"#{schwab.PASSWORD_INPUT_ID}")
+        if pwd.count() > 0:
+            pwd.press("Enter")
+            log.info("submitted login form via Enter on password field")
+            if _wait_iframe_progress(page, pre_iframe_url, timeout_s=8):
+                return True
+            log.info("iframe URL unchanged after Enter — trying button click")
+    except Exception as e:
+        log.debug("Enter on password failed: %s", e)
+
+    # 3) Button click fallback.
+    candidates = [
+        ("id",   f"#{schwab.LOGIN_BUTTON_ID}"),
+        ("text", f"button:has-text('{schwab.LOGIN_BUTTON_TEXT}')"),
+        ("type", "button[type='submit']"),
+    ]
+    for kind, sel in candidates:
+        try:
+            btn = gateway.locator(sel).first
+            if btn.count() == 0:
+                log.debug("login button candidate %s (%s): no match", sel, kind)
+                continue
+            btn.click(timeout=10_000)
+            log.info("submitted login form via %s selector %s", kind, sel)
+            if _wait_iframe_progress(page, pre_iframe_url, timeout_s=8):
+                return True
+            log.info("iframe URL unchanged after click — trying next candidate")
+        except Exception as e:
+            log.debug("login button candidate %s (%s) failed: %s", sel, kind, e)
+    log.error(
+        "form did not visibly submit after all attempts — see debug "
+        "screenshots; the iframe may show an error or Schwab may have "
+        "silently rejected the submit"
+    )
+    return False
+
+
+def _iframe_url(page) -> str | None:
+    """Return the current URL of the login iframe (the
+    sws-gateway-nr.schwab.com frame), or None if not yet
+    attached."""
+    for f in page.frames:
+        if "sws-gateway" in (f.url or ""):
+            return f.url
+    return None
+
+
+def _wait_iframe_progress(page, baseline_url: str | None,
+                          timeout_s: float, poll_s: float = 0.5) -> bool:
+    """Poll until either (a) the top-level URL leaves www.schwab.com
+    (meaning the form submit triggered a navigation out of the
+    homepage), or (b) the iframe's URL changes from `baseline_url`
+    (meaning the gateway SPA stepped to the next page — typically
+    the 2FA challenge — inside the iframe).
+
+    Returns True on progress, False on timeout. Used after a
+    submit attempt to decide whether to try the next candidate.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        top = _live_url(page)
+        if not top.startswith(schwab.MARKETING_HOMEPAGE):
+            log.info("top-level URL advanced to %s", top)
+            return True
+        cur_iframe = _iframe_url(page)
+        if cur_iframe != baseline_url:
+            log.info(
+                "iframe URL advanced: %s -> %s", baseline_url, cur_iframe,
+            )
+            return True
+        time.sleep(poll_s)
+    return False
+
+
+def _dump_visible_form_elements(page, label: str) -> None:
+    """Log visible <input> and <button>/[role=button] elements on
+    the top-level page. Used when CLI-MFA selectors miss, so the
+    next iteration can identify the new ids without burning a
+    fresh MFA round to inspect the DOM manually.
+
+    Tags identifiers as keys but NOT values — Schwab's MFA inputs
+    are typically empty when this fires, but be safe (CLAUDE.md
+    §4: don't leak identifiers anywhere).
+    """
+    try:
+        info = page.evaluate(
+            """
+            () => {
+                const visible = e => {
+                    const r = e.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                };
+                const inputs = [];
+                for (const e of document.querySelectorAll('input')) {
+                    if (!visible(e)) continue;
+                    inputs.push({
+                        id: e.id || null,
+                        name: e.name || null,
+                        type: e.type || null,
+                        placeholder: e.placeholder || null,
+                        autocomplete: e.autocomplete || null,
+                        maxlength: e.maxLength > 0 ? e.maxLength : null,
+                    });
+                }
+                const buttons = [];
+                for (const e of document.querySelectorAll('button, [role="button"]')) {
+                    if (!visible(e)) continue;
+                    buttons.push({
+                        id: e.id || null,
+                        type: e.type || null,
+                        text: (e.textContent || '').trim().slice(0, 60) || null,
+                    });
+                }
+                return {url: location.href, inputs, buttons};
+            }
+            """
+        )
+        log.info("DOM snapshot at %s: url=%s", label, info.get("url"))
+        for x in info.get("inputs") or []:
+            log.info("  input %s", x)
+        for x in info.get("buttons") or []:
+            log.info("  button %s", x)
+    except Exception as e:
+        log.debug("DOM snapshot at %s failed: %s", label, e)
+
+
+def _dump_iframe_state(page) -> None:
+    """Log every attached frame's URL plus a count of visible
+    <input> and <button> elements inside each. Used when MFA
+    selectors miss — tells us where in the frame tree the
+    challenge actually landed.
+    """
+    try:
+        for f in page.frames:
+            try:
+                summary = f.evaluate(
+                    """
+                    () => {
+                        const visible = e => {
+                            const r = e.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        };
+                        const inputs = [...document.querySelectorAll('input')]
+                            .filter(visible)
+                            .map(e => ({
+                                id: e.id || null,
+                                name: e.name || null,
+                                type: e.type || null,
+                                placeholder: e.placeholder || null,
+                                autocomplete: e.autocomplete || null,
+                                maxlength: e.maxLength > 0 ? e.maxLength : null,
+                            }));
+                        const buttons = [...document.querySelectorAll(
+                            'button, [role="button"]')]
+                            .filter(visible)
+                            .map(e => ({
+                                id: e.id || null,
+                                type: e.type || null,
+                                text: (e.textContent || '').trim().slice(0,60) || null,
+                            }));
+                        return {inputs, buttons};
+                    }
+                    """
+                )
+            except Exception as e:
+                summary = {"error": str(e)}
+            log.info(
+                "frame %r url=%s parent=%s: %s",
+                f.name, f.url,
+                "yes" if f.parent_frame is not None else "no (main)",
+                summary,
+            )
+    except Exception as e:
+        log.debug("frame state dump failed: %s", e)
+
+
+def _wait_for_mfa_input(page, timeout_s: float, poll_s: float = 0.5):
+    """Poll for the first visible MFA code input matching any of
+    `schwab.MFA_CODE_INPUT_CANDIDATES`. Searches the top-level
+    page AND every attached frame, since Schwab's 2FA challenge
+    may render either at top-level (after a redirect out of the
+    iframe) or inside the gateway iframe itself.
+
+    Returns `(scope_label, Locator)` on hit, or `None` on timeout
+    / if the page already redirected to a post-auth URL."""
+    deadline = time.monotonic() + timeout_s
+    last_log = 0.0
+    while time.monotonic() < deadline:
+        if schwab.is_post_auth_url(_live_url(page)):
+            log.info(
+                "post-auth URL detected without MFA challenge — "
+                "device already trusted or no 2FA required"
+            )
+            return None
+        scopes = [("page", page)]
+        for f in page.frames:
+            if f.parent_frame is None:
+                continue  # main frame == page; already covered
+            scopes.append((f"frame[{f.url}]", f))
+        for scope_label, scope in scopes:
+            for sel in schwab.MFA_CODE_INPUT_CANDIDATES:
+                try:
+                    loc = scope.locator(sel).first
+                    if loc.count() == 0:
+                        continue
+                    if loc.is_visible(timeout=500):
+                        return f"{scope_label} :: {sel}", loc
+                except Exception:
+                    continue
+        now = time.monotonic()
+        if now - last_log > 5:
+            log.debug(
+                "waiting for MFA input (top=%s, iframe=%s)",
+                _live_url(page), _iframe_url(page),
+            )
+            last_log = now
+        time.sleep(poll_s)
+    return None
+
+
+def _prompt_for_mfa_code() -> str:
+    """Print a prompt to stderr and read a code from stdin. stderr
+    is used so the prompt is visible even when stdout is
+    redirected to a log file. Returns the stripped code string;
+    empty input returns ''."""
+    # Bookended by blanks so the prompt stands out in a busy log.
+    sys.stderr.write("\n")
+    sys.stderr.write("=" * 60 + "\n")
+    sys.stderr.write("Schwab 2FA: enter your VIP / SMS code, then press Enter.\n")
+    sys.stderr.write("> ")
+    sys.stderr.flush()
+    try:
+        code = sys.stdin.readline()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n")
+        raise
+    sys.stderr.write("=" * 60 + "\n")
+    sys.stderr.flush()
+    return code.strip()
+
+
+def _submit_mfa_code(page, code_locator, code: str) -> bool:
+    """Fill the MFA input with `code` and click the Continue
+    button (trying each candidate selector). Returns True if a
+    button click landed, False on no-match (caller may fall back
+    to pressing Enter inside the input)."""
+    code_locator.fill(code)
+    for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES:
+        try:
+            btn = page.locator(sel).first
+            if btn.count() == 0:
+                continue
+            if not btn.is_visible(timeout=500):
+                continue
+            btn.click(timeout=10_000)
+            log.info("submitted 2FA via Continue selector %s", sel)
+            return True
+        except Exception as e:
+            log.debug("continue button candidate %s failed: %s", sel, e)
+    log.warning("no Continue button matched; pressing Enter in the input")
+    try:
+        code_locator.press("Enter")
+        return True
+    except Exception as e:
+        log.error("could not press Enter to submit 2FA: %s", e)
+        return False
+
+
+def _run_cli_mfa(page, screenshot_dir: Path | None,
+                  mfa_wait_s: float = 300) -> bool:
+    """Auto-submit the login form, wait for the 2FA page, prompt
+    for the code, fill, click Continue. Returns True on success
+    (or if Schwab skipped 2FA because the device is already
+    trusted), False on any step that failed in a way that warrants
+    falling back to the VNC-driven flow.
+
+    Does NOT wait for the post-auth landing page — the caller's
+    existing `_wait_for_post_auth()` polls for that.
+    """
+    maybe_screenshot(page, screenshot_dir, "pre-login-submit")
+    if not _submit_login_form(page):
+        maybe_screenshot(page, screenshot_dir, "submit-failed")
+        _dump_visible_form_elements(page, "login-submit-failed")
+        return False
+    # Two captures: immediate (during transition) and ~3s later
+    # (after navigation settles) so we can see what Schwab served
+    # without burning a fresh MFA round to inspect manually.
+    maybe_screenshot(page, screenshot_dir, "post-login-submit-immediate")
+    time.sleep(3)
+    maybe_screenshot(page, screenshot_dir, "post-login-submit-settled")
+
+    hit = _wait_for_mfa_input(page, timeout_s=mfa_wait_s)
+    if hit is None:
+        # Either the device was trusted (caller will see post-auth
+        # URL and proceed) or the input never appeared. Distinguish
+        # by re-checking the URL.
+        if schwab.is_post_auth_url(_live_url(page)):
+            return True
+        log.error(
+            "no MFA input field appeared within %ds; "
+            "Schwab may have served a different challenge (security "
+            "question, push-to-device prompt, etc.) — fall back to "
+            "--no-cli-mfa and drive via VNC", mfa_wait_s,
+        )
+        _dump_visible_form_elements(page, "mfa-input-not-found")
+        _dump_iframe_state(page)
+        return False
+
+    sel, loc = hit
+    log.info("MFA code input found (%s); prompting for code on stdin", sel)
+    maybe_screenshot(page, screenshot_dir, "mfa-prompt")
+    code = _prompt_for_mfa_code()
+    if not code:
+        log.error("no 2FA code entered; aborting login")
+        return False
+    if not _submit_mfa_code(page, loc, code):
+        return False
+    maybe_screenshot(page, screenshot_dir, "post-mfa-submit")
+    return True
+
+
 def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> None:
     """Pre-fill #loginIdInput + #passwordInput inside the homepage's
     `#schwablmslogin` iframe. Non-fatal on failure — if anything
@@ -911,6 +1332,8 @@ def main(argv: list[str]) -> int:
         date_range=args.date_range,
         with_more_detail=args.with_more_detail,
         rerun_trigger=rerun_trigger,
+        cli_mfa=args.cli_mfa,
+        login_only=args.login_only,
         post_auth_timeout_s=args.post_auth_timeout,
     )
 

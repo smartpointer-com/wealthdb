@@ -30,6 +30,48 @@ LOGIN_IFRAME_ID = "schwablmslogin"
 LOGIN_ID_INPUT_ID = "loginIdInput"
 PASSWORD_INPUT_ID = "passwordInput"
 
+# Log-In submit button inside the iframe. Best-guess id (the
+# gateway SPA's bundle uses a few naming variants across releases);
+# CLI-MFA login falls back to a role/text query if the id misses.
+LOGIN_BUTTON_ID = "btnLogin"
+LOGIN_BUTTON_TEXT = "Log In"
+
+# Symantec VIP / 2FA code entry. After the Log In click the user is
+# served a top-level page on sws-gateway-nr.schwab.com with a code
+# input and a Continue button. Schwab has shipped at least two ids
+# for the input (`securityCode` and the older `txt-token`), and the
+# Continue button has shifted between a submit and a role=button —
+# the CLI-MFA flow tries multiple selectors and falls back to a
+# heuristic visible-text-input + Enter-key submit when none match.
+# A DOM snapshot is logged on miss so the selector list can be
+# narrowed across iterations.
+MFA_CODE_INPUT_CANDIDATES = (
+    # Current observation (Symantec VIP "Confirm Your Identity"
+    # page): input id="placeholderCode" — named after the gateway
+    # SPA's #/placeholder route. type="number" maxlength="6".
+    "#placeholderCode",
+    "input[formcontrolname='placeholderCodeCtrl']",
+    # Older / alternative-factor selectors retained as fallbacks.
+    "#securityCode",
+    "#txt-token",
+    "input[name='securityCode']",
+    "input[name='token']",
+    "input[autocomplete='one-time-code']",
+    "input[type='tel'][maxlength='6']",
+    "input[type='number'][maxlength='6']",
+    "input[type='text'][maxlength='6']",
+    "input[type='text'][maxlength='8']",
+)
+MFA_CONTINUE_BUTTON_CANDIDATES = (
+    "#continueButton",
+    "#btnContinue",
+    "button[type='submit']",
+    "button:has-text('Continue')",
+    "button:has-text('Verify')",
+    "button:has-text('Submit')",
+    "button:has-text('Next')",
+)
+
 # Landmark URL hit by `--check` (and the natural post-auth landing
 # page after login). Same URL doubles as the post-auth-detected
 # signal in the upcoming combined login+scrape flow.

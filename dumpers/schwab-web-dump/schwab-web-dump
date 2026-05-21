@@ -36,12 +36,17 @@ schwab-web-dump — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
-  login [args...]       Drive the login form + 2FA automatically.
+  login [args...]       Raw login.py invocation (--check / --manual
+                        + other flags). Useful for one-offs; prefer
+                        cli-login or vnc-login for the common case.
+  cli-login [args...]   CLI-MFA login: auto-submit the form, then
+                        prompt you on stdin for the 2FA code. No
+                        VNC. Default entry point.
   vnc-login [args...]   Start x11vnc on 127.0.0.1:5900 and open
                         Firefox at the Schwab homepage; you drive
-                        it via your local VNC client (macOS Screen
-                        Sharing, TigerVNC, etc.). Use when Schwab's
-                        bot detection blocks the automated path.
+                        Log In + 2FA via your local VNC client
+                        (macOS Screen Sharing, TigerVNC, etc.).
+                        Fallback for when the CLI-MFA path misses.
   download [args...]    Export bronze artefacts from client.schwab.com.
   load [args...]        Parse bronze into the silver SQLite DB.
   rerun                 Touch the bronze-tree rerun trigger so a
