@@ -115,7 +115,8 @@ class TestSaleRows:
 
     def test_sale_of_cusip_with_continuation(self):
         # Treasury sales render with a CUSIP and the description
-        # wraps onto a second line ("NOTE DUE12/31/99").
+        # wraps onto a second line ("NOTE DUE12/31/99"). Values
+        # below are synthetic placeholders.
         text = _wrap(
             "02/06 Sale 000000AA0 SYNTHETICBONDNT (100,000.0000) 95.0000 50.00 95,000.00 100.00,(ST)\n"
             "NOTE DUE12/31/99\n"
@@ -552,6 +553,425 @@ class TestParseCashSummary:
 # ============================================================
 # parse_statement_pdf — return-dict shape
 # ============================================================
+
+class TestParsePositionsLegacy:
+    """Tests for the 2020-2024 'Investment Detail - <Section>'
+    statement layout. Synthetic-text fixtures only — no real
+    Schwab data."""
+
+    def _wrap(self, body: str) -> str:
+        return (
+            "Investment Detail - Equities\n"
+            "Quantity Market Price Market Value\n"
+            "% of\n"
+            "Account\n"
+            "Assets\n"
+            "Unrealized\n"
+            "Gain or (Loss)\n"
+            "Estimated\n"
+            "Yield\n"
+            "Estimated\n"
+            "Annual Income\n"
+            "Equities Units Purchased Cost Per Share Cost Basis Acquired\n"
+            + body
+            + "Total Investment Detail $999,999.99\n"
+        )
+
+    def test_main_row_with_symbol_and_cost_basis(self):
+        text = self._wrap(
+            "ALPHACORP INC (M) 100.0000 50.00000 5,000.00 2% 1,000.00 N/A N/A\n"
+            "CLASS A 50.0000 35.0000 1,750.00 01/15/22 875.00 800 Long-Term\n"
+            "SYMBOL: ALPH 50.0000 45.0000 2,250.00 02/20/22 125.00 760 Long-Term\n"
+            "Cost Basis 4,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["instrument_key"] == "ALPH"          # from SYMBOL: line
+        assert r["quantity"] == 100.0
+        assert r["market_price"] == 50.0
+        assert r["market_value"] == 5000.0
+        assert r["pct_of_acct"] == "2%"
+        assert r["unrealized_gain_loss"] == 1000.0
+        assert r["cost_basis"] == 4000.0              # from Cost Basis line
+        assert r["est_yield"] == "N/A"
+        assert r["est_annual_income"] is None         # N/A → None
+
+    def test_accrued_dividend_captured(self):
+        text = self._wrap(
+            "BETACORP HLDG (M) 150.0000 72.00000 10,800.00 1% (2,700.00) N/A N/A\n"
+            "SYMBOL: BETA\n"
+            "Cost Basis 13,500.00 Accrued Dividend: 250.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        assert rows[0]["cost_basis"] == 13500.0
+        assert rows[0]["accrued_interest"] == 250.0   # dividend → accrued_interest
+
+    def test_negative_unrealized_in_parens(self):
+        text = self._wrap(
+            "GAMMA CORP 25.0000 6.00000 150.00 <1% (5.00) N/A N/A\n"
+            "SYMBOL: GAMM\n"
+        )
+        rows = pp.parse_positions(text)
+        assert rows[0]["unrealized_gain_loss"] == -5.0
+        assert rows[0]["pct_of_acct"] == "<1%"
+
+    def test_multiple_positions_dont_merge(self):
+        text = self._wrap(
+            "ALPHACORP INC (M) 100.0000 50.00000 5,000.00 2% 1,000.00 N/A N/A\n"
+            "SYMBOL: ALPH\n"
+            "Cost Basis 4,000.00\n"
+            "BETACORP HLDG 50.0000 100.00000 5,000.00 2% 500.00 0.50% 25.00\n"
+            "SYMBOL: BETA\n"
+            "Cost Basis 4,500.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
+        assert rows[0]["cost_basis"] == 4000.0
+        assert rows[1]["cost_basis"] == 4500.0
+        assert rows[1]["est_yield"] == "0.50%"
+        assert rows[1]["est_annual_income"] == 25.0
+
+    def test_tax_lot_rows_dont_become_positions(self):
+        # Lot rows have a MM/DD/YY date token; the main-row
+        # detector requires a leading uppercase token and 7
+        # trailing trailing-col tokens. Lot rows fail both.
+        text = self._wrap(
+            "ALPHACORP INC 100.0000 50.00000 5,000.00 2% 1,000.00 N/A N/A\n"
+            "CLASS A 25.0000 120.0000 3,000.00 01/03/22 700.00 783 Long-Term\n"
+            "SYMBOL: ALPH 50.0000 45.0000 2,250.00 02/20/22 125.00 760 Long-Term\n"
+            "Cost Basis 4,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        assert rows[0]["instrument_key"] == "ALPH"
+
+    def test_cash_section_excluded(self):
+        # "Investment Detail - Cash" / "Bank Sweep" / "Cash and
+        # Bank Sweep" are cash positions, not security holdings;
+        # the parser must skip them entirely.
+        text = (
+            "Investment Detail - Cash\n"
+            "Cash Starting Balance Ending Balance\n"
+            "Cash $1,000.00 $2,000.00\n"
+            "Investment Detail - Bank Sweep\n"
+            "Bank Sweep $500.00 $750.00\n"
+            "Investment Detail - Equities\n"
+            "ALPHACORP INC 100.0000 50.00000 5,000.00 2% 1,000.00 N/A N/A\n"
+            "SYMBOL: ALPH\n"
+            "Cost Basis 4,000.00\n"
+            "Total Investment Detail $5,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["ALPH"]
+
+    def test_continued_section_header_keeps_section(self):
+        # "Investment Detail - Equities (continued)" must stay in
+        # the same section, not flush + re-open and lose state.
+        text = (
+            "Investment Detail - Equities\n"
+            "ALPHACORP INC 100.0000 50.00000 5,000.00 2% 1,000.00 N/A N/A\n"
+            "SYMBOL: ALPH\n"
+            "Cost Basis 4,000.00\n"
+            "Investment Detail - Equities (continued)\n"
+            "BETACORP HLDG 50.0000 100.00000 5,000.00 2% 500.00 N/A N/A\n"
+            "SYMBOL: BETA\n"
+            "Cost Basis 4,500.00\n"
+            "Total Investment Detail $10,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
+
+    def test_legacy_falls_back_only_when_new_format_absent(self):
+        # If a text has the NEW "Positions - Equities" anchor and
+        # produces rows, the legacy parser must NOT be invoked.
+        # We assert that by including BOTH an old-style block and
+        # a new-style block; the new-style rows win.
+        text = (
+            "Positions - Equities\n"
+            "Symbol Description Quantity Price MV CB Gain Yield Income Acct\n"
+            "NEW1 NewFormat(M) 10.0000 1.00000 10.00 8.00 2.00 N/A N/A 1%\n"
+            "TotalEquities $10.00 $8.00 $2.00 N/A 1%\n"
+            "Investment Detail - Equities\n"
+            "OLD1 OldFormat 5.0000 2.00000 10.00 1% 1.00 N/A N/A\n"
+            "SYMBOL: OLDX\n"
+            "Cost Basis 9.00\n"
+            "Total Investment Detail $20.00\n"
+        )
+        rows = pp.parse_positions(text)
+        # New-format wins; legacy is not consulted.
+        assert [r["instrument_key"] for r in rows] == ["NEW1"]
+
+
+class TestParseCashSummaryLegacy:
+    def test_extracts_all_known_lines(self):
+        # All values are synthetic; structure mirrors what Schwab
+        # emits but the amounts are made-up.
+        text = (
+            "Cash Transactions Summary This Period Year to Date\n"
+            "Starting Cash* $ 1,000.00 $ 500.00\n"
+            "Deposits and other Cash Credits 5,000.00 10,000.00\n"
+            "Investments Sold 500.00 1,000.00\n"
+            "Dividends and Interest 50.00 100.00\n"
+            "Withdrawals and other Debits (2,000.00) (4,000.00)\n"
+            "Investments Purchased (3,000.00) (6,000.00)\n"
+            "Fees and Charges (10.00) (20.00)\n"
+            "Total Cash Transaction Detail 540.00 1,080.00\n"
+            "Ending Cash* $ 1,540.00 $ 1,580.00\n"
+            "*Cash (includes any cash debit balance) ...\n"
+            "Investment Detail - Cash\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        assert cash is not None
+        assert cash["opening_balance"] == 1000.0
+        assert cash["closing_balance"] == 1540.0
+        assert cash["deposits"] == 5000.0
+        assert cash["sales_redemptions"] == 500.0
+        assert cash["dividends_interest"] == 50.0
+        assert cash["withdrawals"] == -2000.0
+        assert cash["purchases"] == -3000.0
+        assert cash["expenses"] == -10.0
+        assert cash["other_activity"] is None         # not in legacy
+        assert cash["currency_iso"] == "USD"
+
+    def test_derived_totals(self):
+        text = (
+            "Cash Transactions Summary\n"
+            "Starting Cash $ 100.00 $ 100.00\n"
+            "Deposits and other Cash Credits 1,000.00 1,000.00\n"
+            "Investments Sold 500.00 500.00\n"
+            "Dividends and Interest 25.00 25.00\n"
+            "Withdrawals and other Debits (200.00) (200.00)\n"
+            "Investments Purchased (300.00) (300.00)\n"
+            "Fees and Charges (10.00) (10.00)\n"
+            "Ending Cash $ 1,115.00 $ 1,115.00\n"
+            "Investment Detail - Equities\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        # credits = 1000 + 500 + 25 = 1525
+        assert cash["total_credits"] == pytest.approx(1525.0)
+        # debits = abs(-200 + -300 + -10) = 510
+        assert cash["total_debits"] == pytest.approx(510.0)
+
+    def test_missing_label_stays_null(self):
+        # Schwab statements sometimes omit Fees row entirely.
+        text = (
+            "Cash Transactions Summary\n"
+            "Starting Cash $ 100.00 $ 100.00\n"
+            "Deposits and other Cash Credits 1,000.00 1,000.00\n"
+            "Investments Sold 500.00 500.00\n"
+            "Dividends and Interest 25.00 25.00\n"
+            "Withdrawals and other Debits (200.00) (200.00)\n"
+            "Investments Purchased (300.00) (300.00)\n"
+            "Ending Cash $ 1,125.00 $ 1,125.00\n"
+            "Investment Detail - Equities\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        assert cash["expenses"] is None
+        # debits chain with a None input → None (NULL preservation)
+        assert cash["total_debits"] is None
+
+    def test_no_section_returns_none(self):
+        text = "Some other content with no cash block\n"
+        assert pp.parse_cash_summary(text) is None
+
+    def test_new_format_takes_precedence(self):
+        # Both anchors present → new format wins.
+        text = (
+            "Transactions - Summary\n"
+            "header\n"
+            "$1.00 $2.00 ($3.00) $0.00 $5.00 $0.50 $0.00 $5.50\n"
+            "Cash Transactions Summary\n"
+            "Starting Cash $ 100.00 $ 100.00\n"
+            "Ending Cash $ 200.00 $ 200.00\n"
+            "Investment Detail - Equities\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        # New format: opening=1.00, closing=5.50
+        assert cash["opening_balance"] == 1.0
+        assert cash["closing_balance"] == 5.5
+
+
+class TestParsePositionsVeryOld:
+    """2017-2019 layout: bare 'Investment Detail' header,
+    'Investments' sub-header, rows of the shape
+    NAME [DESCRIPTORS] TICKER QUANTITY PRICE MARKET_VALUE."""
+
+    def _wrap(self, body: str) -> str:
+        return (
+            "Investment Detail\n"
+            "Description Starting Balance Ending Balance\n"
+            "Cash and Bank Sweep\n"
+            "BANK SWEEP X,Z 100.00 200.00\n"
+            "Description Symbol Quantity Price Market Value\n"
+            "Investments\n"
+            + body
+            + "Total Account Value 1,000.00\n"
+        )
+
+    def test_basic_position_row(self):
+        text = self._wrap("ALPHACORP INC ALPH 100.0000 50.00000 5,000.00\n")
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["instrument_key"] == "ALPH"
+        assert r["quantity"] == 100.0
+        assert r["market_price"] == 50.0
+        assert r["market_value"] == 5000.0
+        # Pre-2020 columns the source doesn't carry:
+        assert r["cost_basis"] is None
+        assert r["unrealized_gain_loss"] is None
+        assert r["accrued_interest"] is None
+        assert r["section"] == "Investments"
+
+    def test_description_continuation_attaches(self):
+        text = self._wrap(
+            "ALPHACORP INC ALPH 100.0000 50.00000 5,000.00\n"
+            "CLASS A\n"
+            "BETACORP HLDG BETA 50.0000 100.00000 5,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
+        assert "CLASS A" in rows[0]["description"]
+
+    def test_cash_row_is_excluded(self):
+        # The "BANK SWEEP" row appears under "Cash and Bank Sweep",
+        # NOT under "Investments". The position parser must not
+        # see it as a position.
+        text = self._wrap("ALPHACORP INC ALPH 100.0000 50.0 5,000.00\n")
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["ALPH"]
+        # BANK is not a security ticker in this output.
+        assert all(r["instrument_key"] != "BANK" for r in rows)
+
+
+class TestParseCashSummaryVeryOld:
+    def test_extracts_opening_and_closing(self):
+        text = (
+            "Investment Detail\n"
+            "Description Starting Balance Ending Balance\n"
+            "Cash and Bank Sweep\n"
+            "BANK SWEEP X,Z 1,000.00 2,000.00\n"
+            "CASH 50.00 100.00\n"
+            "Description Symbol Quantity Price Market Value\n"
+            "Investments\n"
+            "ALPHACORP INC ALPH 10.0000 1.00 10.00\n"
+            "Total Account Value 2,110.00\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        assert cash is not None
+        # Multiple cash rows sum.
+        assert cash["opening_balance"] == 1050.0
+        assert cash["closing_balance"] == 2100.0
+        # Pre-2020 statements don't itemise flows.
+        assert cash["deposits"] is None
+        assert cash["withdrawals"] is None
+        assert cash["purchases"] is None
+        assert cash["sales_redemptions"] is None
+        assert cash["total_credits"] is None
+        assert cash["total_debits"] is None
+        assert cash["currency_iso"] == "USD"
+
+    def test_no_section_returns_none(self):
+        assert pp.parse_cash_summary("nothing relevant\n") is None
+
+
+class TestParseTransactionsLegacy:
+    """Legacy (2017-2024) "Transaction Detail" / "Transaction
+    Detail - <Category>" sections. Synthetic-text rows only."""
+
+    def _wrap(self, body: str, *, with_category: bool = False) -> str:
+        header = (
+            "Transaction Detail - Purchases & Sales\n" if with_category
+            else "Transaction Detail\n"
+        )
+        return (
+            header
+            + "Settle\nDate\nTrade\nDate Transaction Description Quantity Price Total\n"
+            + body
+            + "Total Account Value 0.00\n"
+        )
+
+    def test_2017_2019_one_numeric_row(self):
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "12/20 12/20 Qualified Dividend ALPHACORP INC: ALPH 5.60\n"
+        )
+        # No statement_year inferable — pass explicitly.
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r.date == date(2019, 12, 20)
+        assert r.symbol == "ALPH"
+        assert r.amount == 5.60
+        assert r.category == "Dividend"
+
+    def test_2017_2019_three_numeric_row_with_negative_amount(self):
+        text = self._wrap(
+            "Investments Activity\n"
+            "12/18 12/16 Bought ALPHACORP INC 100.0000 40.0000 (4,000.00)\n"
+            "CLASS A: ALPH\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r.date == date(2019, 12, 18)
+        assert r.quantity == 100.0
+        assert r.price == 40.0
+        assert r.amount == -4000.00
+        assert r.category == "Purchase"
+        assert r.symbol == "ALPH"  # picked up from continuation
+
+    def test_2020_2024_section_header_with_category(self):
+        text = self._wrap(
+            "Equities Activity\n"
+            "06/10/24 06/07/24 Bought BETACORP HLDG: BETA 6.0000 200.0000 0.00 (1,200.00)\n",
+            with_category=True,
+        )
+        rows = pp.parse_transactions(text, statement_year=2024)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r.date == date(2024, 6, 10)
+        assert r.quantity == 6.0
+        assert r.price == 200.0
+        assert r.charges == 0.00
+        assert r.amount == -1200.00
+        assert r.symbol == "BETA"
+        assert r.category == "Purchase"
+
+    def test_category_phrase_priority(self):
+        # "Reinvested Shares" must beat the single-token
+        # "Reinvest" / "Shares" matches that could compete.
+        text = self._wrap(
+            "Investments Activity\n"
+            "12/30 12/30 Reinvested Shares ALPHACORP INC: ALPH 0.1033 100.0 (10.33)\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert len(rows) == 1
+        assert rows[0].category == "Reinvest"
+
+    def test_new_format_wins_over_legacy(self):
+        # If the text has the 2025+ "Transaction Details" anchor
+        # (plural) the new parser handles it and the legacy
+        # path stays unused. Both anchors here.
+        text = (
+            "February 1-28, 2026\n"
+            "Transaction Details\n"
+            "Symbol/ Price/Rate\n"
+            "02/05 Deposit FundsReceived WIRE 1,000.00\n"
+            "TotalTransactions $1 $2\n"
+            # Legacy section in the same blob — must be ignored
+            # because the new parser already returned rows.
+            "Transaction Detail\n"
+            "12/20 12/20 Qualified Dividend FOO: FOOX 5.60\n"
+            "Total Account Value 0.00\n"
+        )
+        rows = pp.parse_transactions(text)
+        # New-format rows only.
+        assert all(t.symbol != "FOOX" for t in rows)
+        assert any(t.category == "Deposit" for t in rows)
+
 
 class TestStatementPdfReturnShape:
     def test_dict_carries_positions_and_cash_keys(self):
