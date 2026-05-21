@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/config"
@@ -62,7 +63,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return errs.Newf(2, "portfolios: %s", err.Error())
 	}
 
-	asOfEpoch, err := parseAsOf(*asOf)
+	asOfEpoch, err := parseAsOf(*asOf, time.Now())
 	if err != nil {
 		return errs.Newf(2, "portfolios: %s", err.Error())
 	}

@@ -92,7 +92,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return errs.Newf(2, "transactions: bad flags")
 	}
 
-	fromEpoch, toEpoch, err := parseDateRangeArgs(fs.Args())
+	fromEpoch, toEpoch, err := parseDateRange(fs.Args(), time.Now())
 	if err != nil {
 		fs.Usage()
 		return errs.Newf(2, "transactions: %s", err.Error())
@@ -192,116 +192,6 @@ func convertTxAll(ctx context.Context, db *sql.DB, rows []gold.TransactionRow, o
 		return out, fmt.Errorf("transactions: no FX rates available to convert to %q (mode=%s)", outCcy, mode)
 	}
 	return out, nil
-}
-
-// parseDateRangeArgs accepts zero, one, or two positional date
-// args and produces a [fromEpoch, toEpoch] window.
-//
-//	(no args)                  → past 30 days (today−30 .. now)
-//	YYYY                       → full calendar year
-//	YYYY-MM                    → full calendar month
-//	YYYY-MM-DD                 → single day
-//	YYYY-MM-DD YYYY-MM-DD      → explicit range
-//	YYYY-MM-DD -               → open-end (from then to now)
-//	- YYYY-MM-DD               → open-start (from epoch to then)
-//
-// "today" is accepted as an alias for the current UTC date. The
-// past-30-days default keeps the no-args output to a useful
-// inbox-style window; pass `- today` for all time.
-func parseDateRangeArgs(args []string) (int64, int64, error) {
-	now := time.Now().UTC()
-	endOfNow := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.UTC).Unix()
-
-	switch len(args) {
-	case 0:
-		thirtyDaysAgo := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -30).Unix()
-		return thirtyDaysAgo, endOfNow, nil
-	case 1:
-		return parseDateShorthand(args[0], endOfNow)
-	case 2:
-		from, err := parseRangeBound(args[0], false, 0, endOfNow)
-		if err != nil {
-			return 0, 0, fmt.Errorf("from: %w", err)
-		}
-		to, err := parseRangeBound(args[1], true, 0, endOfNow)
-		if err != nil {
-			return 0, 0, fmt.Errorf("to: %w", err)
-		}
-		if from > to {
-			return 0, 0, fmt.Errorf("from > to")
-		}
-		return from, to, nil
-	default:
-		return 0, 0, fmt.Errorf("expected 0, 1, or 2 date arguments; got %d", len(args))
-	}
-}
-
-// parseDateShorthand handles the single-arg forms: YYYY, YYYY-MM,
-// YYYY-MM-DD. Returns the [start, end] of the implied window.
-func parseDateShorthand(s string, endOfNow int64) (int64, int64, error) {
-	if s == "today" {
-		now := time.Now().UTC()
-		startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
-		return startOfToday, endOfNow, nil
-	}
-	switch len(s) {
-	case 4: // YYYY
-		t, err := time.Parse("2006", s)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid year %q: %w", s, err)
-		}
-		from := time.Date(t.Year(), 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-		to := time.Date(t.Year(), 12, 31, 23, 59, 59, 0, time.UTC).Unix()
-		return from, to, nil
-	case 7: // YYYY-MM
-		t, err := time.Parse("2006-01", s)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid month %q: %w", s, err)
-		}
-		from := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC).Unix()
-		// Last day of month: first of next month minus a second.
-		next := time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-		to := next.Add(-time.Second).Unix()
-		return from, to, nil
-	case 10: // YYYY-MM-DD
-		t, err := time.Parse("2006-01-02", s)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid date %q: %w", s, err)
-		}
-		from := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Unix()
-		to := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC).Unix()
-		return from, to, nil
-	default:
-		return 0, 0, fmt.Errorf("invalid date arg %q: want YYYY, YYYY-MM, or YYYY-MM-DD", s)
-	}
-}
-
-// parseRangeBound parses one of the two positional date args.
-// "-" means "open-ended": for the from side it returns the
-// epoch-0 sentinel; for the to side it returns endOfNow. "today"
-// resolves to today's UTC date.
-func parseRangeBound(s string, isTo bool, openFrom, openTo int64) (int64, error) {
-	if s == "-" {
-		if isTo {
-			return openTo, nil
-		}
-		return openFrom, nil
-	}
-	if s == "today" {
-		now := time.Now().UTC()
-		if isTo {
-			return time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.UTC).Unix(), nil
-		}
-		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix(), nil
-	}
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid date %q: want YYYY-MM-DD", s)
-	}
-	if isTo {
-		return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC).Unix(), nil
-	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Unix(), nil
 }
 
 // ---- column registry -----------------------------------------------------

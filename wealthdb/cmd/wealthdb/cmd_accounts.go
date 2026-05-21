@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/config"
@@ -64,7 +65,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return errs.Newf(2, "accounts: %s", err.Error())
 	}
 
-	asOfEpoch, err := parseAsOf(*asOf)
+	asOfEpoch, err := parseAsOf(*asOf, time.Now())
 	if err != nil {
 		return errs.Newf(2, "accounts: %s", err.Error())
 	}

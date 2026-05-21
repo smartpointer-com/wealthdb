@@ -62,7 +62,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return errs.Newf(2, "positions: %s", err.Error())
 	}
 
-	asOfEpoch, err := parseAsOf(*asOf)
+	asOfEpoch, err := parseAsOf(*asOf, time.Now())
 	if err != nil {
 		return errs.Newf(2, "positions: %s", err.Error())
 	}
@@ -184,24 +184,6 @@ func convertAll(ctx context.Context, db *sql.DB, rows []gold.PositionRow, outCcy
 		return out, fmt.Errorf("positions: no FX rates available to convert to %q (mode=%s). Check that your silvers carry the right currency pairs", outCcy, mode)
 	}
 	return out, nil
-}
-
-// parseAsOf resolves the -d flag to a Unix-second epoch. Empty
-// string means "end of today, UTC".
-func parseAsOf(s string) (int64, error) {
-	if s == "" {
-		now := time.Now().UTC()
-		endOfToday := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.UTC)
-		return endOfToday.Unix(), nil
-	}
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return 0, fmt.Errorf("invalid -d value %q: want YYYY-MM-DD", s)
-	}
-	// End of the given day so a snapshot taken at noon counts as
-	// "before today" when the user says -d today's-date.
-	t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
-	return t.Unix(), nil
 }
 
 // ---- column registry -----------------------------------------------------
