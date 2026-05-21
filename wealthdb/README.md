@@ -24,6 +24,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb reset <id>\|-a` | Purge a silver source's data from gold. |
 | `wealthdb reload <id>\|-a` | Reset then load (use after upgrading wealthdb). |
 | `wealthdb positions` | Print consolidated positions (table / csv / csv_plain / json) with currency conversion. |
+| `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
 | `wealthdb accounts` | Print one row per account with derived positions / cash / total value aggregates. |
 | `wealthdb portfolios` | Print one row per portfolio (plus sentinel-NULL row per silver source) with derived value aggregates. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
