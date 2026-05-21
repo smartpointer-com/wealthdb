@@ -47,6 +47,15 @@ func canonicalSign(k TxKind) int {
 //     debit flag) and "raw was already signed" sources (Schwab
 //     API) uniformly.
 //
+// Reversal handling: this helper unconditionally forces the
+// canonical sign, which is wrong for explicit reversal rows
+// (e.g. a `Dividend;Reversal` MT940 entry where the bank is
+// clawing back a duplicate-booked dividend — the source sign is
+// already correctly negative, and forcing positive would mask
+// the correction). Adapters that recognise a reversal marker in
+// their silver should bypass this helper for those rows and
+// assign the source-signed amount directly.
+//
 // Adapters should call this in their transaction builder before
 // assigning to GrossAmount and NetAmount.
 func ApplyCanonicalSign(kind TxKind, amount *Decimal) *Decimal {

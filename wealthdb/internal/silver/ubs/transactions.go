@@ -137,7 +137,19 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if p.Funds != "" {
 			tx.Currency = p.Funds
 		}
-		tx.NetAmount = p.Amount
+		// MT940 stores amount as a positive number with the
+		// direction in `credit_debit` ("C" / "D"). Pre-sign here
+		// so reversals from elsewhere — sources that DO supply a
+		// signed amount with a deliberate negative — aren't
+		// silently re-flipped by ApplyCanonicalSign. After this
+		// branch the helper sees an already-signed amount and
+		// only acts when sign and kind agree.
+		amt := p.Amount
+		if amt != nil && p.CreditDebit == "D" && !amt.IsNegative() {
+			n := amt.Neg()
+			amt = &n
+		}
+		tx.NetAmount = amt
 
 	case "corporate_action_confirmation",
 		"corporate_action_notification",

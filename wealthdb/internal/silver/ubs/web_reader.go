@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
@@ -346,6 +347,20 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
+		// Reversal rows (description_kind tagged `<base>;Reversal`)
+		// already carry the bank's correction sign in credit/
+		// debit, so the canonical-sign helper would mask the
+		// correction by forcing it back to the kind's normal
+		// direction. Bypass the helper for those rows; the kind
+		// itself still maps to the underlying canonical kind (so
+		// reversals net against the originals when summed by
+		// kind), only the sign-normalisation step is skipped.
+		_, isReversal := stripReversalSuffix(kindStr.String)
+		netAmount := &netPtr
+		if !isReversal {
+			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
+		}
+
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			// Web silver's transactions PK is the compound
 			// (transaction_external_id, account_external_id) so
@@ -360,7 +375,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			AccountExternalID:     accountID,
 			Kind:                  kind,
 			Currency:              ccy,
-			NetAmount:             canonical.ApplyCanonicalSign(kind, &netPtr),
+			NetAmount:             netAmount,
 			Payload:               json.RawMessage(payload),
 		})
 	}
@@ -562,7 +577,22 @@ func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []silver.Re
 // debit/credit indicators to a canonical.TxKind. Conservative —
 // unknown / ambiguous shapes route to TxKindOther so we never
 // invent semantics that PSN's own MT940 events would contradict.
+//
+// UBS marks bank-side corrections with a `<base>;Reversal`
+// suffix (the only one observed so far is
+// `Dividend;Reversal`, where UBS clawed back a duplicate
+// dividend booking). Reversals carry a negative amount in the
+// credit column; we map them to the same canonical kind as the
+// underlying event so they net out when summed by kind, and
+// rely on ApplyCanonicalSign preserving the source's negative
+// sign rather than forcing it positive.
 func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
+	// Strip a `;Reversal` suffix if present and recurse on the
+	// base. Lets us pick up any future reversal flavour the bank
+	// invents without enumerating each.
+	if base, ok := stripReversalSuffix(descKind); ok {
+		return webKind(base, hasDebit, hasCredit)
+	}
 	switch descKind {
 	case "Dividend":
 		return canonical.TxKindDividend
@@ -587,6 +617,18 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	}
 	return canonical.TxKindOther
+}
+
+// stripReversalSuffix peels a `;Reversal` (case-insensitive)
+// suffix off a description_kind. Returns (base, true) when a
+// suffix was present, (descKind, false) otherwise.
+func stripReversalSuffix(descKind string) (string, bool) {
+	const suffix = ";Reversal"
+	if len(descKind) > len(suffix) &&
+		strings.EqualFold(descKind[len(descKind)-len(suffix):], suffix) {
+		return descKind[:len(descKind)-len(suffix)], true
+	}
+	return descKind, false
 }
 
 // maxInt64 because Go 1.20 doesn't have generics-flavoured max in
