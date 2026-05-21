@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
@@ -275,19 +276,24 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			s := instrumentKey.String
 			instrPtr = &s
 		}
+		netAmount, quantity, price := extractWebTxAmounts(payload)
+		txKind := webKind(kind)
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            ts,
 			AccountExternalID:     hash,
 			InstrumentExternalID:  instrPtr,
-			Kind:                  webKind(kind),
+			Kind:                  txKind,
 			// Currency unknown from the web row — Schwab statements
 			// don't structure it. Default to USD: Schwab
 			// accounts are USD-denominated here, and
 			// the canonical TransactionChange.Currency field is
 			// NOT NULL.
-			Currency: "USD",
-			Payload:  json.RawMessage(payload),
+			Currency:  "USD",
+			NetAmount: canonical.ApplyCanonicalSign(txKind, netAmount),
+			Quantity:  quantity,
+			Price:     price,
+			Payload:   json.RawMessage(payload),
 		})
 	}
 	return &txStream{batch: out}, rows.Err()
@@ -303,32 +309,61 @@ func nullStringPtrSchwabWeb(n sql.NullString) *string {
 	return &s
 }
 
-// webKind maps the web silver's `kind` discriminator (Sale,
-// Purchase, CashDividend, NRATax, etc.) to canonical TxKind.
-// Conservative — unmapped strings route to TxKindOther so we
-// never invent semantics. Schwab uses different vocab on
-// statements vs the Trader API; the api-side mapping is in
-// kindmap.go.
+// webKind maps the web silver's `kind` discriminator (the
+// space-separated text Schwab uses on statements and in
+// transaction-history exports) to canonical TxKind. Conservative
+// — unmapped strings route to TxKindOther so we never invent
+// semantics. Schwab uses different vocab on statements vs the
+// Trader API; the api-side mapping is in kindmap.go.
+//
+// Reinvested dividends land as two separate transactions on
+// Schwab statements: the cash-income side ("Reinvest Dividend")
+// and the share-purchase side ("Reinvest" / "Reinvest Shares").
+// We map them to dividend and buy respectively so the canonical
+// single-entry sums stay correct (the two cancel out, net zero
+// cash impact). See sign.go for the per-kind sign rules.
+//
+// Options trades use Schwab's open/close legs: Buy to Open and
+// Buy to Close both leave cash (acquiring a long position or
+// closing a short); Sell to Open and Sell to Close both add
+// cash (receiving premium or closing a long). All four collapse
+// to plain buy/sell at the canonical layer.
+//
+// Corporate actions (Spin-off, Split, Reverse Split, Exchange,
+// Reorganized Issue, Return Of Capital, Cash In Lieu, etc.)
+// collapse to TxKindCorporateAction. The canonical sign helper
+// passes source-supplied signs through for that kind because
+// the cash impact varies: cash-in-lieu yields cash, a plain
+// split is zero, a cash merger pays out.
 func webKind(s string) canonical.TxKind {
 	switch s {
-	case "Purchase", "Buy":
+	case "Buy", "Buy to Open", "Buy to Close", "Purchase",
+		"Reinvest", "Reinvest Shares":
 		return canonical.TxKindBuy
-	case "Sale", "Sell":
+	case "Sell", "Sell to Open", "Sell to Close", "Sale", "Redemption":
 		return canonical.TxKindSell
-	case "CashDividend", "QualDiv", "NonQualDiv":
+	case "Cash Dividend", "Dividend", "Non-Qualified Div",
+		"Qualified Dividend", "Reinvest Dividend",
+		"Pr Yr Cash Div", "Special Dividend", "Special Qual Div":
 		return canonical.TxKindDividend
-	case "CreditInterest", "Interest":
+	case "Bond Interest", "Credit Interest", "Interest",
+		"Bank Interest", "Bank Interest Adj", "Margin Interest":
 		return canonical.TxKindInterest
-	case "Deposit", "MoneyLinkTransfer":
-		return canonical.TxKindDeposit
-	case "Withdrawal":
-		return canonical.TxKindWithdrawal
-	case "ServiceFee", "Fee", "FundExpense":
+	case "Fee", "Service Fee", "ADR Mgmt Fee":
 		return canonical.TxKindFee
-	case "NRATax", "Tax", "TaxWithholding":
+	case "Foreign Tax Paid", "NRA Tax Adj", "Pr Yr NRA Tax", "Tax":
 		return canonical.TxKindTax
-	case "Journal":
+	case "Deposit", "MoneyLink Deposit", "Funds Received", "Wire Received":
+		return canonical.TxKindDeposit
+	case "Withdrawal", "Wire Sent":
+		return canonical.TxKindWithdrawal
+	case "MoneyLink Transfer", "Transfer", "Security Transfer",
+		"Journal", "Journaled Shares":
 		return canonical.TxKindJournal
+	case "Exchange", "Reorganized Issue", "Spin-off", "Split",
+		"Reverse Split", "Return Of Capital", "Cash In Lieu",
+		"Litigation", "Unissued Rights Redemption":
+		return canonical.TxKindCorporateAction
 	}
 	return canonical.TxKindOther
 }
@@ -338,4 +373,82 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// schwabWebTxPayload captures the two payload shapes the silver
+// produces side-by-side. Statement-PDF rows use lower-case keys
+// with numeric values (`amount`, `quantity`, `price`).
+// Transaction-history JSON rows use Schwab's CSV-export-style
+// capitalised string keys (`Amount`, `Quantity`, `Price`) with
+// values like `"$384.01"`, `"(25,000.00)"`, or `""`. Both
+// payloads land in the same silver row keyed by source, so the
+// adapter probes both.
+type schwabWebTxPayload struct {
+	Amount   *float64 `json:"amount"`
+	Quantity *float64 `json:"quantity"`
+	Price    *float64 `json:"price"`
+
+	AmountStr   string `json:"Amount"`
+	QuantityStr string `json:"Quantity"`
+	PriceStr    string `json:"Price"`
+}
+
+// extractWebTxAmounts parses NetAmount, Quantity, and Price out
+// of a schwab-web transaction payload, handling both the
+// statement_pdf and tx_history_json shapes. Errors are swallowed
+// — a malformed field just stays nil so one bad row doesn't
+// abort the whole batch.
+func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.Decimal) {
+	var p schwabWebTxPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return nil, nil, nil
+	}
+	netAmount = pickWebAmount(p.Amount, p.AmountStr)
+	quantity = pickWebAmount(p.Quantity, p.QuantityStr)
+	price = pickWebAmount(p.Price, p.PriceStr)
+	return
+}
+
+func pickWebAmount(num *float64, str string) *canonical.Decimal {
+	if num != nil {
+		d := canonical.NewDecimalFromFloat(*num)
+		return &d
+	}
+	d, ok := parseSchwabAmountString(str)
+	if !ok {
+		return nil
+	}
+	return &d
+}
+
+// parseSchwabAmountString parses Schwab's CSV-export string
+// format: optional surrounding parens (negative), optional "$"
+// prefix, optional "-" sign, comma thousands separators.
+// Returns ok=false for empty or unparseable input.
+func parseSchwabAmountString(s string) (canonical.Decimal, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return canonical.Decimal{}, false
+	}
+	negative := false
+	if len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
+		negative = true
+		s = s[1 : len(s)-1]
+	}
+	s = strings.NewReplacer("$", "", ",", "", " ", "").Replace(s)
+	if strings.HasPrefix(s, "-") {
+		negative = !negative
+		s = s[1:]
+	}
+	if s == "" {
+		return canonical.Decimal{}, false
+	}
+	d, err := canonical.NewDecimalFromString(s)
+	if err != nil {
+		return canonical.Decimal{}, false
+	}
+	if negative {
+		d = d.Neg()
+	}
+	return d, true
 }
