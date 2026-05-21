@@ -24,7 +24,7 @@ type snapshotStream struct {
 // silver row into the right canonical record type, and groups
 // them by snapshot_at so the caller can apply one batch per
 // snapshot.
-func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
+func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return &snapshotStream{}, nil
 	}
@@ -85,7 +85,7 @@ func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the distinct dump_runs.snapshot_at
 // values in [w.Start, w.End], in chronological order.
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
+func (c *apiReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
 	const q = `
 SELECT snapshot_at FROM dump_runs
  WHERE snapshot_at BETWEEN ? AND ?
@@ -125,7 +125,7 @@ type schwabAccountPayload struct {
 // MARGIN, which is margin enablement rather than a wealth-
 // management wrapper category, so the user fills it in via the
 // config-side override.
-func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	hasNickname, err := c.hasColumn(ctx, "accounts", "nickname")
 	if err != nil {
 		return err
@@ -186,7 +186,7 @@ type schwabBalancePayload struct {
 // account_balances. Each silver row maps to at most one canonical
 // row: a balance payload without a cashBalance field is skipped
 // (no useful cash quantity to project).
-func (c *Connection) appendAccountBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+func (c *apiReader) appendAccountBalances(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
 SELECT snapshot_at, account_external_id, balance_kind, payload
   FROM account_balances
@@ -279,7 +279,7 @@ type schwabPositionPayload struct {
 // never used) fills in InstrumentChange.Name when Schwab's per-
 // position instrument descriptor has no description (typical for
 // EQUITY rows out of /accounts).
-func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
+func (c *apiReader) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instrumentNames map[string]string) error {
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_key, payload
   FROM positions
@@ -386,7 +386,7 @@ func nullStringPtr(n sql.NullString) *string {
 // hasColumn reports whether table contains a column with the given
 // name. SQLite-only; uses PRAGMA table_info via a query rather
 // than a Pragma helper so it works through database/sql.
-func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
+func (c *apiReader) hasColumn(ctx context.Context, table, column string) (bool, error) {
 	// PRAGMA table_info doesn't accept parameter binding, so the
 	// caller must pass a trusted table name. Both call sites here
 	// pass string literals.
@@ -414,7 +414,7 @@ func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool,
 
 // hasTable reports whether the silver SQLite contains a table of
 // the given name.
-func (c *Connection) hasTable(ctx context.Context, table string) (bool, error) {
+func (c *apiReader) hasTable(ctx context.Context, table string) (bool, error) {
 	var n int
 	err := c.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`,
@@ -434,7 +434,7 @@ func (c *Connection) hasTable(ctx context.Context, table string) (bool, error) {
 // "latest as of snapshot": the cross-bank schema doesn't preserve
 // per-snapshot instrument descriptions, so callers get the freshest
 // label we know about for that symbol.
-func (c *Connection) latestKnownInstrumentNames(ctx context.Context) (map[string]string, error) {
+func (c *apiReader) latestKnownInstrumentNames(ctx context.Context) (map[string]string, error) {
 	exists, err := c.hasTable(ctx, "instruments")
 	if err != nil {
 		return nil, err

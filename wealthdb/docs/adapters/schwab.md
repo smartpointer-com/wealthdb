@@ -1,22 +1,34 @@
 # Schwab adapter
 
-Adapter that projects the `schwab-api-dump` silver SQLite into
-the canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+Adapter that projects two Schwab silver SQLite databases into the
+canonical gold schema:
 
-A separate `schwab-web-dump` project is planned for historic
-account statements scraped from the Schwab web app (analogous to
-[ubs-web-dump](https://github.com/ptu/ubs-web-dump)). When that
-lands the adapter will split into subsources (`schwab-api`,
-`schwab-web`) the same way the UBS adapter does. Until then the
-adapter operates in single-path mode against the API silver.
+- `schwab-api-dump` — Trader-API JSON, live position / cash
+  snapshots and ~2y of transactions.
+- `schwab-web-dump` — netbanking scrape (live account list +
+  reconstructed historical positions, cash balances, and
+  transactions from monthly statement PDFs).
 
-## 1. Silver source
+Implements the `silver.Adapter` / `silver.Connection` interface
+defined in [../DESIGN.md](../DESIGN.md) §6. When both subsources
+are configured the orchestrator (`merge.go`) splices them: web
+backfills pre-api-coverage transactions and contributes
+per-statement-period historical positions and cash balances that
+api doesn't surface at all. See §8 below for the merge contract
+and §1 below for the suffix↔hashValue bridge.
 
-- Upstream: `schwab-api-dump` repository.
-- Silver schema: [schwab-api-dump/migrations/0001_initial.sql](https://github.com/ptu/schwab-api-dump/blob/main/migrations/0001_initial.sql).
-- Silver design: [schwab-api-dump/DESIGN.md](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md).
+Single-path mode (`"kind": "schwab", "path": ...`) is preserved
+for users with only the api silver — it's treated as api-only
+and skips the orchestrator's merge layer.
+
+## 1. Silver sources
+
+- API: [`schwab-api-dump`](https://github.com/ptu/schwab-api-dump).
+  Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/schwab-api-dump/blob/main/migrations/0001_initial.sql).
+- Web: [`schwab-web-dump`](https://github.com/ptu/schwab-web-dump).
+  Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/schwab-web-dump/blob/main/migrations/0001_initial.sql)
+  + [migrations/0002_historical_snapshots.sql](https://github.com/ptu/schwab-web-dump/blob/main/migrations/0002_historical_snapshots.sql).
+- Cross-repo interop notes: [schwab-web-dump/INTEROP.md](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md).
 
 ## 2. Identifier conventions
 
@@ -121,7 +133,75 @@ with the original string preserved in payload.
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
-## 7. Open questions
+## 7. Web subsource (schwab-web-dump)
+
+When the `schwab-web` subsource is configured, the adapter
+contributes three things the api silver doesn't have:
+
+- **Historical position snapshots.** `historical_position_snapshots`
+  carries per-statement-period holdings (one row per (period_end,
+  account, instrument_key)). Cadence is monthly when statements
+  are available. asset_class defaults to `other` (statements
+  don't carry a CFI/assetType code); per-column upsert lets a
+  later api emission win on instruments.asset_class for the
+  underlying instrument row.
+- **Historical cash balances.** `historical_cash_balances`
+  carries opening + closing balances per statement period.
+  Opening lands at `period_start`, closing at `period_end`; rows
+  with NULL on a side skip that side rather than coercing to 0.
+- **Pre-api transaction backfill.** Web's transactions reach
+  ~3-4y back (limited by Schwab's transaction-history export);
+  the api only covers ~2y. The adapter emits web transactions
+  strictly older than each account's api-coverage-start.
+- **Nickname.** Web's `accounts.nickname` is the account
+  label as Schwab renders it in the UI (e.g. an account-type
+  hint like "IRA Account …NNN"). Promoted onto AccountChange so
+  per-column upsert merges it with api's other account columns.
+
+### 7.1. Suffix ↔ hashValue bridge
+
+Web stores `account_external_id` as the 3-to-5-digit account
+suffix Schwab shows in the UI. The api stores Schwab's opaque
+`hashValue`. The orchestrator builds the suffix → hashValue
+bridge lazily on first Status/Snapshots/Transactions call by
+matching each web suffix against the trailing digits of every
+api `accounts.account_number` (a column the api silver promotes
+from the `/accounts/accountNumbers` response).
+
+The bridge is unambiguous as long as no two api accounts share
+the same trailing-N digits in their account numbers. At a handful
+of accounts the data is unambiguous on 3-digit suffixes; if
+a future account triggers ambiguity, the bridge fails loudly so
+the user can add an explicit override (not yet implemented —
+file a request when needed).
+
+Web rows whose suffix doesn't bridge to any api hashValue are
+dropped silently — they have no api counterpart to merge with
+and emitting them under the raw suffix would create orphaned
+gold rows.
+
+### 7.2. Transaction splice — hard cut, not overlap merge
+
+Per [INTEROP §2](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md#2-transaction-identifier-mismatch):
+the two silvers' `activity_id` spaces are disjoint (api uses
+Schwab's real `activityId`; web uses a synthetic SHA-256 prefix).
+Any cross-source per-row match would be heuristic and risk
+double-counting. Inside the api window, api wins (real
+`activity_id`, no parser approximation); web emits only
+timestamps strictly less than `MIN(api.timestamp)` for that
+account.
+
+### 7.3. PDF sha256 churn
+
+INTEROP §3 documents that Schwab regenerates statement PDFs per
+download (different sha256 each time, same logical content).
+Mitigation lives in `schwab-web-dump` silver — the historical
+tables use INSERT OR REPLACE on the natural PK
+`(as_of_date | period_end, account, instrument_key | currency)`
+so a re-parse of a churned PDF converges on a single row.
+wealthdb doesn't need to dedupe further.
+
+## 8. Open questions
 
 - **Tax withholding on dividends.** Schwab reports the withholding
   inside the `DIVIDEND_OR_INTEREST` payload's `transferItems`. The
@@ -130,3 +210,13 @@ with the original string preserved in payload.
   if tax-lot work needs the withholding as a distinct event.
 - **`open_orders` projection.** Reserved for a future `wealthdb
   orders` subcommand; no schema work needed in gold yet.
+- **1099-XML structured tax-lot data.** Per
+  [INTEROP §4](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
+  schwab-web silver carries 1099 Composite as PDF/XML/CSV; the
+  XML has lot-level detail (cost basis, term, wash-sale flag)
+  the api doesn't surface. Wealthdb doesn't ingest this yet — a
+  future `tax_lots` gold table could project it.
+- **Explicit suffix→hashValue override config.** The bridge is
+  currently auto-only. When/if ambiguity strikes, add an
+  `account_bridge: {<api_hash>: <web_suffix>}` field on the
+  schwab silver_source config.

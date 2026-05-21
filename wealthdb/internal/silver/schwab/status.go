@@ -12,7 +12,7 @@ import (
 // the latest logical change number. Per docs/adapters/schwab.md §6,
 // the change number is MAX(dump_runs.snapshot_at), or -1 if there
 // are no dump_runs at all.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+func (c *apiReader) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
 		LatestSnapshotAt:    -1,
@@ -61,7 +61,7 @@ SELECT
 // advance the gold watermark to upon successful load.
 // HasChanges is false when nothing in silver is strictly newer
 // than `since`.
-func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+func (c *apiReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 
 	const q = `
