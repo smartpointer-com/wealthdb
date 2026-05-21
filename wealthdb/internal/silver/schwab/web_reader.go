@@ -240,6 +240,7 @@ func (r *webReader) transactionsBeforeAPIStart(
 	w canonical.Window,
 	bridge map[string]string,
 	apiStartByHash map[string]int64,
+	symbolToCUSIP map[string]string,
 ) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return &txStream{consumed: true}, nil
@@ -273,7 +274,16 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		}
 		var instrPtr *string
 		if instrumentKey.Valid && instrumentKey.String != "" {
+			// Web stores the ticker as instrument_key. Translate
+			// to the api-side CUSIP when known so the row lands
+			// on the same gold instruments row the api side
+			// registered (and thus the symbol/name/asset_class
+			// columns populate via the LEFT JOIN). Web-only
+			// tickers fall through to using the ticker as-is.
 			s := instrumentKey.String
+			if cusip, ok := symbolToCUSIP[s]; ok {
+				s = cusip
+			}
 			instrPtr = &s
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)

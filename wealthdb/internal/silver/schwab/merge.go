@@ -55,6 +55,17 @@ type Connection struct {
 	apiStartByHash    map[string]int64
 	apiStartBuilt     bool
 	apiStartErr       error
+
+	// symbolToCUSIP resolves a ticker (the schwab-web silver's
+	// instrument_key) to the matching CUSIP (the schwab-api
+	// silver's preferredInstrumentKey). Lets web transactions
+	// land their InstrumentExternalID on the same gold
+	// instruments row the api side registered — so the symbol /
+	// name / asset_class columns populate via the LEFT JOIN
+	// without a second instrument-emit on the web side.
+	symbolToCUSIP    map[string]string
+	symbolBridgeBuilt bool
+	symbolBridgeErr  error
 }
 
 // Close releases both readers. Safe to call multiple times.
@@ -284,10 +295,14 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if err != nil {
 		return nil, err
 	}
+	symbolBridge, err := c.ensureSymbolBridge(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	streams := make([]silver.TransactionStream, 0, 2)
 	if c.web != nil {
-		s, err := c.web.transactionsBeforeAPIStart(ctx, w, bridge, apiStart)
+		s, err := c.web.transactionsBeforeAPIStart(ctx, w, bridge, apiStart, symbolBridge)
 		if err != nil {
 			return nil, fmt.Errorf("schwab web Transactions: %w", err)
 		}
@@ -317,6 +332,67 @@ func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error
 	}
 	c.bridge, c.bridgeErr = buildAccountBridge(ctx, c.api.db, c.web.db)
 	return c.bridge, c.bridgeErr
+}
+
+// ensureSymbolBridge builds the web ticker → api CUSIP map on
+// first use and caches the result. Empty when api isn't
+// configured (web-only mode falls back to using the ticker as
+// the instrument id, with no api row to join against).
+func (c *Connection) ensureSymbolBridge(ctx context.Context) (map[string]string, error) {
+	if c.symbolBridgeBuilt {
+		return c.symbolToCUSIP, c.symbolBridgeErr
+	}
+	c.symbolBridgeBuilt = true
+	if c.api == nil {
+		c.symbolToCUSIP = map[string]string{}
+		return c.symbolToCUSIP, nil
+	}
+	c.symbolToCUSIP, c.symbolBridgeErr = buildSymbolToCUSIPBridge(ctx, c.api.db)
+	return c.symbolToCUSIP, c.symbolBridgeErr
+}
+
+// buildSymbolToCUSIPBridge scans schwab-api silver positions for
+// (symbol, cusip) pairs. When a symbol maps unambiguously to one
+// CUSIP, it's added to the bridge. Symbol→CUSIP conflicts (the
+// same ticker reused by Schwab for different securities over
+// time, which is rare but possible) are skipped — the web side
+// then falls back to the ticker, leaving the symbol column
+// blank rather than mismapping.
+func buildSymbolToCUSIPBridge(ctx context.Context, api *sql.DB) (map[string]string, error) {
+	const q = `
+SELECT DISTINCT json_extract(payload,'$.instrument.symbol') AS sym,
+                json_extract(payload,'$.instrument.cusip')  AS cusip
+  FROM positions
+ WHERE sym  IS NOT NULL AND sym  != ''
+   AND cusip IS NOT NULL AND cusip != ''`
+	rows, err := api.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("schwab symbol bridge: %w", err)
+	}
+	defer rows.Close()
+	candidates := map[string]map[string]struct{}{}
+	for rows.Next() {
+		var sym, cusip string
+		if err := rows.Scan(&sym, &cusip); err != nil {
+			return nil, err
+		}
+		if candidates[sym] == nil {
+			candidates[sym] = map[string]struct{}{}
+		}
+		candidates[sym][cusip] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(candidates))
+	for sym, cusips := range candidates {
+		if len(cusips) == 1 {
+			for c := range cusips {
+				out[sym] = c
+			}
+		}
+	}
+	return out, nil
 }
 
 // buildAccountBridge reads (hashValue, accountNumber) from api

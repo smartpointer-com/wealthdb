@@ -275,10 +275,19 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 			ac = c
 		}
 		isinCopy := isin
+		// UBS web descriptions encode the listing ticker in
+		// trailing parens — e.g. "Reg.shs Novartis Inc.
+		// (NOVN)". Extract it and surface as the instrument's
+		// Symbol so dividend / coupon transactions joined by
+		// ISIN get a populated symbol column. Descriptions
+		// without a trailing (TICKER) (ETFs identified only by
+		// long-form name) keep Symbol nil.
+		symbol := tickerFromDescription(description.String)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           ac,
 			ISIN:                 &isinCopy,
+			Symbol:               symbol,
 			Name:                 nullStringPtr(description),
 			Currency:             strPtrIfNonEmpty(ccy),
 			FirstSeenAt:          snap,
@@ -667,6 +676,42 @@ func extractInstrumentFromDescription1(payload string) (instrumentID, descriptio
 		}
 	}
 	return nil, strPtrIfNonEmpty(caption)
+}
+
+// tickerFromDescription pulls the trailing `(TICKER)` segment
+// out of a UBS web caption like "Reg.shs Novartis Inc.
+// (NOVN)" or "Sponsored American Deposit Receipt Taiwan
+// Semicon. Manuf.Co Ltd (Repr. 5 shs)     (TSM)". Returns nil
+// when:
+//
+//   - The string has no trailing `(...)`.
+//   - The bracketed content isn't 1-10 chars of upper-case
+//     ASCII letters / digits / hyphens (filters out things
+//     like "(IE)" / "(Lux)" — those appear mid-string in ETF
+//     issuer suffixes, never at the very end).
+//
+// Strict enough to avoid false positives on long parenthetical
+// phrases that happen to come last (e.g. "(Repr. 5 shs)").
+func tickerFromDescription(desc string) *string {
+	desc = strings.TrimRight(desc, " \t")
+	if !strings.HasSuffix(desc, ")") {
+		return nil
+	}
+	open := strings.LastIndex(desc, "(")
+	if open < 0 {
+		return nil
+	}
+	t := desc[open+1 : len(desc)-1]
+	if len(t) < 1 || len(t) > 10 {
+		return nil
+	}
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' {
+			return nil
+		}
+	}
+	return &t
 }
 
 // looksLikeISIN: 12 chars, first two ASCII letters (country
