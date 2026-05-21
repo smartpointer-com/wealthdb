@@ -79,6 +79,7 @@ type schwabTransferItem struct {
 // row's payload.
 type schwabTxPayload struct {
 	NetAmount     *canonical.Decimal   `json:"netAmount"`
+	Description   string               `json:"description"`
 	TransferItems []schwabTransferItem `json:"transferItems"`
 }
 
@@ -102,6 +103,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		Kind:                  kind,
 		Currency:              "USD", // Schwab retail is USD-only.
 		NetAmount:             canonical.ApplyCanonicalSign(kind, tp.NetAmount),
+		Description:           strPtrIfNonEmpty(tp.Description),
 		Payload:               json.RawMessage(payload),
 	}
 

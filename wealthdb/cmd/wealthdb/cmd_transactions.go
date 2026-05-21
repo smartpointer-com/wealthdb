@@ -232,9 +232,22 @@ func buildTransactionColumnRegistry(outCcy string) []txColumnSpec {
 		{Name: "symbol", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Symbol) }},
 		{Name: "name", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Name) }},
+			Extract: func(r renderedTx) string {
+				// Prefer the joined instruments.name; fall back
+				// to the adapter-supplied transactions.description
+				// (Schwab dividends, UBS web cash_movement
+				// captions) so instrument-related rows still
+				// surface a human-readable label even when no
+				// instrument_external_id link exists.
+				if r.Row.Name != nil && *r.Row.Name != "" {
+					return *r.Row.Name
+				}
+				return strOrEmpty(r.Row.Description)
+			}},
 		{Name: "instrument_id", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.InstrumentExternalID) }},
+		{Name: "description", Align: output.AlignLeft,
+			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Description) }},
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,

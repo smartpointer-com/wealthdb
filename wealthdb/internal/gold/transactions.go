@@ -30,6 +30,7 @@ type TransactionRow struct {
 	NetAmount             *string
 	Quantity              *string
 	Price                 *string
+	Description           *string // transactions.description; free-text label, see canonical.TransactionChange.Description
 }
 
 // SortOrder controls the row ordering for TransactionsBetween.
@@ -75,7 +76,8 @@ SELECT t.silver_source_id,
        CAST(t.gross_amount AS VARCHAR) AS gross_str,
        CAST(t.net_amount   AS VARCHAR) AS net_str,
        CAST(t.quantity     AS VARCHAR) AS qty_str,
-       CAST(t.price        AS VARCHAR) AS price_str
+       CAST(t.price        AS VARCHAR) AS price_str,
+       t.description
   FROM transactions t
   LEFT JOIN accounts a
     ON t.silver_source_id    = a.silver_source_id
@@ -99,6 +101,7 @@ SELECT t.silver_source_id,
 			displayName, relID, nickname, category         sql.NullString
 			instr, symbol, name, assetClass                sql.NullString
 			grossStr, netStr, qtyStr, priceStr             sql.NullString
+			description                                    sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -107,9 +110,11 @@ SELECT t.silver_source_id,
 			&instr, &symbol, &name, &assetClass,
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
+			&description,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
+		r.Description = nullStringToPtr(description)
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)
 		r.Nickname = nullStringToPtr(nickname)

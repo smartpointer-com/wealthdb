@@ -308,8 +308,8 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 INSERT INTO transactions (
     silver_source_id, transaction_external_id, occurred_at,
     account_external_id, instrument_external_id, kind, currency,
-    gross_amount, net_amount, quantity, price, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    gross_amount, net_amount, quantity, price, description, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	stmt, err := w.tx.PrepareContext(ctx, q)
 	if err != nil {
@@ -328,6 +328,7 @@ INSERT INTO transactions (
 			string(r.Kind), r.Currency,
 			nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
 			nullableDecimal(r.Quantity), nullableDecimal(r.Price),
+			nullableString(r.Description),
 			nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("InsertTransactions row %d: %w", i, err)

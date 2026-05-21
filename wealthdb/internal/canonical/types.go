@@ -146,7 +146,16 @@ type TransactionChange struct {
 	NetAmount             *Decimal
 	Quantity              *Decimal
 	Price                 *Decimal
-	Payload               json.RawMessage
+	// Description is a free-text label provided by the adapter
+	// when an instrument/account/event identifier doesn't carry
+	// enough context on its own. Used as a fallback for the
+	// `name` column in CLI output when the instruments-table
+	// join misses (typical for Schwab dividends where the
+	// payload only has a cash leg plus a top-level description
+	// like "VANGUARD TOTAL STOCK MKT ETF"). See gold migration
+	// 0005 and docs/adapters/*.md.
+	Description *string
+	Payload     json.RawMessage
 }
 
 // Status is the return value of silver.Connection.Status(). See

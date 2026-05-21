@@ -277,6 +277,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			instrPtr = &s
 		}
 		netAmount, quantity, price := extractWebTxAmounts(payload)
+		description := extractWebTxDescription(payload)
 		txKind := webKind(kind)
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			TransactionExternalID: activityID,
@@ -289,10 +290,11 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			// accounts are USD-denominated here, and
 			// the canonical TransactionChange.Currency field is
 			// NOT NULL.
-			Currency:  "USD",
-			NetAmount: canonical.ApplyCanonicalSign(txKind, netAmount),
-			Quantity:  quantity,
-			Price:     price,
+			Currency:    "USD",
+			NetAmount:   canonical.ApplyCanonicalSign(txKind, netAmount),
+			Quantity:    quantity,
+			Price:       price,
+			Description: description,
 			Payload:   json.RawMessage(payload),
 		})
 	}
@@ -407,6 +409,28 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 	quantity = pickWebAmount(p.Quantity, p.QuantityStr)
 	price = pickWebAmount(p.Price, p.PriceStr)
 	return
+}
+
+// extractWebTxDescription pulls the security name out of the
+// silver payload. statement_pdf uses lower-case `description`;
+// tx_history_json uses capital `Description`. Returns nil when
+// both are absent or empty so cash-only rows (interest, fees,
+// transfers) don't get a spurious name.
+func extractWebTxDescription(payload string) *string {
+	var p struct {
+		Lower string `json:"description"`
+		Upper string `json:"Description"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return nil
+	}
+	for _, s := range []string{p.Lower, p.Upper} {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			return &s
+		}
+	}
+	return nil
 }
 
 func pickWebAmount(num *float64, str string) *canonical.Decimal {

@@ -361,6 +361,15 @@ SELECT transaction_external_id, value_date, account_external_id,
 			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 		}
 
+		// Description1 in the silver carries the instrument
+		// caption verbatim, with the ISIN appended after the
+		// last "; " separator. Pull both out: the ISIN goes on
+		// instrument_external_id so the gold-side instruments
+		// join works for dividend / coupon / fee rows tied to a
+		// security; the full caption is the row's Description
+		// fallback for the CLI's name column.
+		instrumentID, descriptionText := extractInstrumentFromDescription1(payload)
+
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			// Web silver's transactions PK is the compound
 			// (transaction_external_id, account_external_id) so
@@ -373,9 +382,11 @@ SELECT transaction_external_id, value_date, account_external_id,
 			TransactionExternalID: txID + "@" + accountID,
 			OccurredAt:            valueDate,
 			AccountExternalID:     accountID,
+			InstrumentExternalID:  instrumentID,
 			Kind:                  kind,
 			Currency:              ccy,
 			NetAmount:             netAmount,
+			Description:           descriptionText,
 			Payload:               json.RawMessage(payload),
 		})
 	}
@@ -617,6 +628,69 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	}
 	return canonical.TxKindOther
+}
+
+// extractInstrumentFromDescription1 pulls (ISIN, full caption)
+// out of the silver row's payload.Description1 field, when
+// present. UBS web statements format this field as
+// "<security caption>; <ISIN>" — a typical caption looks like
+// "UBS (Lux) Fund Solutions SICAV - UBS Core MSCI EMU UCITS ETF
+// EUR dis-dist; LU0000000070". The trailing 12-char alphanumeric
+// after "; " is a valid ISIN ~always in observed data; we
+// validate by length-and-charset to avoid grabbing other ";"-
+// separated comments.
+//
+// Returns (nil, nil) when the field is missing, empty, or the
+// trailing token doesn't look like an ISIN. The full caption
+// (everything before the final separator, trimmed) is returned
+// even when no ISIN matches — it's still useful as a name
+// fallback.
+func extractInstrumentFromDescription1(payload string) (instrumentID, description *string) {
+	d1 := json.RawMessage(payload)
+	var fields struct {
+		Description1 string `json:"Description1"`
+	}
+	if err := json.Unmarshal(d1, &fields); err != nil || fields.Description1 == "" {
+		return nil, nil
+	}
+	caption := strings.TrimSpace(fields.Description1)
+	// Try to split on the last "; ". Anything 12 chars long
+	// with the ISIN shape (2 alpha + 10 alnum) is treated as
+	// an ISIN; otherwise the caption stays whole.
+	if i := strings.LastIndex(caption, "; "); i >= 0 {
+		head := strings.TrimSpace(caption[:i])
+		tail := strings.TrimSpace(caption[i+2:])
+		if looksLikeISIN(tail) {
+			id := tail
+			desc := head
+			return &id, strPtrIfNonEmpty(desc)
+		}
+	}
+	return nil, strPtrIfNonEmpty(caption)
+}
+
+// looksLikeISIN: 12 chars, first two ASCII letters (country
+// code), remaining 10 ASCII alphanumerics. Strict enough to
+// reject "(SCMN)"-style ticker fragments while accepting every
+// real ISIN.
+func looksLikeISIN(s string) bool {
+	if len(s) != 12 {
+		return false
+	}
+	if !isASCIIAlpha(s[0]) || !isASCIIAlpha(s[1]) {
+		return false
+	}
+	for i := 2; i < 12; i++ {
+		c := s[i]
+		if !isASCIIAlpha(c) && !(c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlpha(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 // stripReversalSuffix peels a `;Reversal` (case-insensitive)
