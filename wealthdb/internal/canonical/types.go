@@ -117,6 +117,23 @@ type FxRateChange struct {
 }
 
 // TransactionChange is one insert into gold's `transactions` table.
+//
+// Sign convention for GrossAmount / NetAmount (see sign.go for
+// the per-kind table and ApplyCanonicalSign helper that adapters
+// use to enforce it):
+//
+//   Single-entry, from the account's perspective.
+//   Positive  → balance increase (deposit, dividend, coupon,
+//               sell proceeds, transfer_in).
+//   Negative  → balance decrease (withdrawal, fee, tax, buy
+//               cost, transfer_out).
+//
+// Summing NetAmount across an account's transactions for a
+// period equals that account's net cash flow over the period.
+// Sources differ in their raw conventions (Schwab API returns
+// signed amounts; UBS MT940 returns absolute amounts plus a
+// debit/credit flag); the per-source adapter normalises to this
+// convention before assigning to NetAmount / GrossAmount.
 type TransactionChange struct {
 	SilverSourceID        string
 	TransactionExternalID string

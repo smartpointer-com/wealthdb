@@ -165,5 +165,12 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		tx.Currency = "XXX"
 	}
 
+	// Normalise amount signs per the canonical convention. UBS
+	// MT940 supplies positive amounts plus a credit/debit flag,
+	// and the kind already encodes the direction; collapsing both
+	// into a signed amount happens here.
+	tx.GrossAmount = canonical.ApplyCanonicalSign(tx.Kind, tx.GrossAmount)
+	tx.NetAmount = canonical.ApplyCanonicalSign(tx.Kind, tx.NetAmount)
+
 	return tx, nil
 }

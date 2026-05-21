@@ -344,6 +344,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			net = net.Sub(canonical.NewDecimalFromFloat(debit.Float64))
 		}
 		netPtr := net
+		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			// Web silver's transactions PK is the compound
@@ -357,9 +358,9 @@ SELECT transaction_external_id, value_date, account_external_id,
 			TransactionExternalID: txID + "@" + accountID,
 			OccurredAt:            valueDate,
 			AccountExternalID:     accountID,
-			Kind:                  webKind(kindStr.String, debit.Valid, credit.Valid),
+			Kind:                  kind,
 			Currency:              ccy,
-			NetAmount:             &netPtr,
+			NetAmount:             canonical.ApplyCanonicalSign(kind, &netPtr),
 			Payload:               json.RawMessage(payload),
 		})
 	}

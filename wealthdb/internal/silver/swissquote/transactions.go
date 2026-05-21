@@ -50,14 +50,15 @@ SELECT account_external_id, occurred_at, transaction_type,
 			return nil, fmt.Errorf("swissquote Transactions parse net_amount %q: %w", netAmountStr, err)
 		}
 
+		kind := kindFor(txType)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: syntheticTxID(extID, occurredAt, txType,
 				nullStringOrEmpty(symbol), currency, netDec),
 			OccurredAt:        occurredAt,
 			AccountExternalID: extID,
-			Kind:              kindFor(txType),
+			Kind:              kind,
 			Currency:          currency,
-			NetAmount:         &netDec,
+			NetAmount:         canonical.ApplyCanonicalSign(kind, &netDec),
 			Payload:           json.RawMessage(payload),
 		}
 

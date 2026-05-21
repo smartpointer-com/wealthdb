@@ -101,7 +101,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		AccountExternalID:     extID,
 		Kind:                  kind,
 		Currency:              "USD", // Schwab retail is USD-only.
-		NetAmount:             tp.NetAmount,
+		NetAmount:             canonical.ApplyCanonicalSign(kind, tp.NetAmount),
 		Payload:               json.RawMessage(payload),
 	}
 
@@ -119,7 +119,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 			tx.Price = leg.Price
 		}
 		if leg.Cost != nil {
-			tx.GrossAmount = leg.Cost
+			tx.GrossAmount = canonical.ApplyCanonicalSign(kind, leg.Cost)
 		}
 	}
 	return tx, nil
