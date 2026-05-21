@@ -32,9 +32,11 @@ import csv
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -687,15 +689,40 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
 # Historical snapshots from PDF documents
 # ----------------------------------------------------------------
 
+def _parse_one_pdf(args: tuple[str, str, str]
+                   ) -> tuple[str, str, str, list[dict] | None, str | None]:
+    """Worker-side: parse one PDF and return its rows. Pure (no DB
+    access) so it can run in a ProcessPoolExecutor worker. Returns
+    (token, kind, file_name, rows, error_message); exactly one of
+    `rows` or `error_message` is set on every non-skipped call."""
+    from pdf_parsers import (
+        parse_statement_of_assets, parse_account_statement,
+    )
+    token, fp, label = args
+    path = Path(fp)
+    if not path.is_file():
+        return token, "skip", path.name, None, None
+    try:
+        if "Statement of assets" in (label or ""):
+            rows = parse_statement_of_assets(path, token, label)
+            return token, "positions", path.name, rows, None
+        rows = parse_account_statement(path, token, label)
+        return token, "cash", path.name, rows, None
+    except Exception as e:  # noqa: BLE001
+        return token, "error", path.name, None, f"{type(e).__name__}: {e}"
+
+
 def _load_historical_from_pdfs(conn: sqlite3.Connection,
                                dump_dir: Path) -> tuple[int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets or an Account Statement, parse
-    it, and upsert into the historical_* tables. Returns
-    (position_rows, cash_rows)."""
-    from pdf_parsers import (
-        parse_statement_of_assets, parse_account_statement,
-    )
+    it in a worker-pool of subprocesses, and upsert into the
+    historical_* tables on the main thread. Returns
+    (position_rows, cash_rows).
+
+    pdfplumber / pdfminer text extraction is CPU-bound and largely
+    GIL-bound, so the speedup comes from real OS processes, not
+    threads. SQLite writes stay on the main connection."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return 0, 0
@@ -707,22 +734,25 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection,
         "WHERE label LIKE '%Statement of assets%' "
         "   OR doc_type = 'Account Statement'"
     )
+    work = cur.fetchall()
+    if not work:
+        return 0, 0
+
     pos_rows = 0
     cash_rows = 0
-    for token, fp, label in cur.fetchall():
-        path = Path(fp)
-        if not path.is_file():
-            continue
-        try:
-            if "Statement of assets" in (label or ""):
-                rows = parse_statement_of_assets(path, token, label)
-                pos_rows += _insert_hist_positions(conn, rows)
-            else:
-                rows = parse_account_statement(path, token, label)
-                cash_rows += _insert_hist_cash_balances(conn, rows)
-        except Exception as e:  # noqa: BLE001
-            log.warning("PDF parse failed for %s (%s): %s",
-                        path.name, label[:60] if label else "", e)
+    n_workers = max(1, os.cpu_count() or 1)
+    log.info("parsing %d PDFs across %d workers", len(work), n_workers)
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        futures = [ex.submit(_parse_one_pdf, w) for w in work]
+        for fut in as_completed(futures):
+            _, kind, name, rows, err = fut.result()
+            if err is not None:
+                log.warning("PDF parse failed for %s: %s", name, err)
+                continue
+            if kind == "positions":
+                pos_rows += _insert_hist_positions(conn, rows or [])
+            elif kind == "cash":
+                cash_rows += _insert_hist_cash_balances(conn, rows or [])
     return pos_rows, cash_rows
 
 
