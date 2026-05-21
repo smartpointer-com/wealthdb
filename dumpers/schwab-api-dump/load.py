@@ -203,10 +203,10 @@ def load_accounts(conn, snapshot_at: int, merged_accounts: list[dict]) -> int:
         if row is None or row[0] != payload:
             conn.execute(
                 "INSERT INTO accounts"
-                "(snapshot_at, account_external_id, account_type, "
-                " preference_type, nickname, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (snapshot_at, external_id,
+                "(snapshot_at, account_external_id, account_number, "
+                " account_type, preference_type, nickname, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_at, external_id, acct["accountNumber"],
                  acct["account_type"], acct["preference_type"], acct["nickname"],
                  payload),
             )
