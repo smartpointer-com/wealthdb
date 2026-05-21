@@ -83,17 +83,23 @@ don't" debugging.`)
 		return errs.Newf(2, "snapshots: expected one silver_source_id or -a")
 	}
 
-	for i, id := range ids {
-		if i > 0 {
-			fmt.Fprintln(stdout)
+	// Column width for the source id — pad to the longest id so
+	// dates line up visually. Single-id mode ends up with no
+	// padding (width == len(only id)).
+	idWidth := 0
+	for _, id := range ids {
+		if len(id) > idWidth {
+			idWidth = len(id)
 		}
-		fmt.Fprintf(stdout, "%s:\n", id)
+	}
+
+	for _, id := range ids {
 		times, err := gold.ListSnapshotTimes(ctx, db, id)
 		if err != nil {
 			return err
 		}
 		if len(times) == 0 {
-			fmt.Fprintln(stdout, "  (no snapshots)")
+			fmt.Fprintf(stdout, "%-*s  (no snapshots)\n", idWidth, id)
 			continue
 		}
 		// Group by calendar date — multiple intra-day dumps
@@ -107,9 +113,9 @@ don't" debugging.`)
 				return
 			}
 			if count > 1 {
-				fmt.Fprintf(stdout, "  %s (×%d)\n", prevDate, count)
+				fmt.Fprintf(stdout, "%-*s  %s (×%d)\n", idWidth, id, prevDate, count)
 			} else {
-				fmt.Fprintf(stdout, "  %s\n", prevDate)
+				fmt.Fprintf(stdout, "%-*s  %s\n", idWidth, id, prevDate)
 			}
 		}
 		for _, t := range times {

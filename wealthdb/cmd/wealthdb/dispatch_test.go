@@ -513,10 +513,11 @@ func TestSnapshotsListsLoadedTimes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("snapshots failed; code=%d so=%q", code, so)
 	}
-	if !strings.Contains(so, "schwab-test:") {
-		t.Errorf("missing source header: %s", so)
+	// Each row is "<source>  <YYYY-MM-DD>"; fixture has one
+	// snapshot at epoch 1000 → 1970-01-01.
+	if !strings.Contains(so, "schwab-test") {
+		t.Errorf("missing source prefix: %s", so)
 	}
-	// Fixture has one snapshot at epoch 1000 → 1970-01-01.
 	if !strings.Contains(so, "1970-01-01") {
 		t.Errorf("expected 1970-01-01 in output: %s", so)
 	}
@@ -534,8 +535,8 @@ func TestSnapshotsAll(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("snapshots -a failed; code=%d", code)
 	}
-	if !strings.Contains(so, "schwab-test:") {
-		t.Errorf("missing source header in -a output: %s", so)
+	if !strings.Contains(so, "schwab-test") {
+		t.Errorf("missing source prefix in -a output: %s", so)
 	}
 }
 
