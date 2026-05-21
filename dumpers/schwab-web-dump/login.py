@@ -122,16 +122,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--manual", action="store_true",
-        help=("Open Firefox at the Schwab homepage and pre-fill "
-              "the login form from $SCHWAB_LOGIN_ID / $SCHWAB_PASSWORD. "
+        help=("[Legacy alias — manual mode is the default.] Open "
+              "Firefox at the Schwab homepage and pre-fill the "
+              "login form from $SCHWAB_LOGIN_ID / $SCHWAB_PASSWORD. "
               "With --cli-mfa (default) the script also auto-clicks "
               "Log In and prompts you on stdin for the 2FA code; "
               "with --no-cli-mfa you drive Log In + 2FA via VNC. "
               "After the URL hits /app/... the script takes over the "
               "same page and (if --dest is set) runs download.walk() "
-              "in the same Firefox session. Without --dest it just "
-              "blocks on Firefox close — Schwab kills the session on "
-              "close, so for any actual scrape pass --dest."),
+              "in the same Firefox session. Without --dest the script "
+              "either exits cleanly (--login-only) or blocks on "
+              "Firefox close. The wrapper subcommands `login` and "
+              "`download` set this for you."),
     )
     p.add_argument(
         "--cli-mfa", action=argparse.BooleanOptionalAction, default=True,
@@ -146,12 +148,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--login-only", action="store_true",
         help=("Exit cleanly as soon as the post-auth URL is reached "
-              "— no scrape, no keep-alive loop, no waiting on the "
-              "Firefox window. Useful for verifying the login path "
-              "in isolation without paying the cost of a full dump. "
-              "Schwab MAY invalidate the session on Firefox close, "
-              "so a subsequent --check is not guaranteed to report "
-              "the session as live."),
+              "— no scrape, no waiting on the Firefox window. "
+              "Useful for verifying the login path in isolation "
+              "without paying the cost of a full dump. Schwab MAY "
+              "invalidate the session on Firefox close, so a "
+              "subsequent --check is not guaranteed to report the "
+              "session as live."),
     )
     p.add_argument(
         "--dest", default=None, type=Path,
@@ -185,18 +187,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=tuple(v for v in schwab.DATE_RANGE_VALUES if v != "Custom"),
         default=schwab.DATE_RANGE_DEFAULT,
         help=("Date-range preset for the Statements filter. "
-              "See download.py --range help. Default %(default)s "
-              "= longest preset = all available."),
-    )
-    p.add_argument(
-        "--rerun-trigger", default="/data/.rerun", type=Path,
-        help=("File whose mtime change signals 'reload download / "
-              "landmarks and re-run walk() against the live "
-              "Firefox session' — lets iterations of the scrape "
-              "code run without re-MFA. Default %(default)s. "
-              "From the host, `./schwab-web-dump rerun` touches it. "
-              "Pass '' to disable the loop (script exits after one "
-              "scrape, browser closes, Schwab session dies)."),
+              "Default %(default)s aligns with the sibling "
+              "schwab-api-dump / ubs-*-dump tools; pass "
+              "Last10Years for a full historical backfill."),
     )
     p.add_argument(
         "--post-auth-timeout", type=int, default=7200,
@@ -540,7 +533,7 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
                 rc = 0
             else:
                 log.error(
-                    "session DEAD: %s — re-run vnc-login to mint a new session",
+                    "session DEAD: %s — run `./schwab-web-dump login` to mint a new session",
                     url,
                 )
                 rc = 2
@@ -561,7 +554,6 @@ def run_manual(profile_dir: Path,
                dry_run: bool = False,
                date_range: str = schwab.DATE_RANGE_DEFAULT,
                with_more_detail: bool = False,
-               rerun_trigger: Path | None = None,
                cli_mfa: bool = True,
                login_only: bool = False,
                post_auth_timeout_s: int = 600) -> int:
@@ -709,88 +701,26 @@ def run_manual(profile_dir: Path,
             # intercept the next click.
             time.sleep(3)
             maybe_screenshot(page, screenshot_dir, "post-auth-handoff")
-            # Late import so download's top-level setup runs after
-            # logging is configured; importlib.reload(download)
-            # below picks up host-side edits between iterations.
-            import importlib
             import download
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-
-            iteration = 0
-            last_mtime = (
-                rerun_trigger.stat().st_mtime
-                if rerun_trigger and rerun_trigger.exists()
-                else None
-            )
-            while True:
-                iteration += 1
-                log.info("=== scrape iteration %d ===", iteration)
-                try:
-                    summary = download.walk(
-                        page, dest,
-                        mode=mode, dry_run=dry_run,
-                        screenshot_dir=screenshot_dir,
-                        date_range=date_range,
-                        with_more_detail=with_more_detail,
-                    )
-                    log.info(
-                        "iteration %d complete: %d statement entries, "
-                        "%d tx entries",
-                        iteration,
-                        len(summary.get("statements", [])),
-                        len(summary.get("transactions", [])),
-                    )
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    log.exception(
-                        "iteration %d failed: %s — keeping session "
-                        "alive for re-run", iteration, e,
-                    )
-
-                if rerun_trigger is None:
-                    log.info(
-                        "no --rerun-trigger; exiting after one iteration"
-                    )
-                    return 0
-
-                log.info(
-                    "iteration %d done. To re-run with fresh code: "
-                    "edit host files, then `./schwab-web-dump rerun` "
-                    "(touches %s).",
-                    iteration, rerun_trigger,
-                )
-                # Block until the trigger file's mtime advances. If
-                # the file doesn't exist yet, treat its creation as
-                # the trigger.
-                while True:
-                    if rerun_trigger.exists():
-                        cur = rerun_trigger.stat().st_mtime
-                        if last_mtime is None or cur > last_mtime:
-                            last_mtime = cur
-                            break
-                    time.sleep(2)
-                # Reload landmarks first (download imports it as
-                # `schwab`), then download itself, so download
-                # picks up the fresh landmarks values.
-                importlib.reload(schwab)
-                importlib.reload(download)
-                # Apply any per-iteration overrides written into
-                # the trigger file by `./schwab-web-dump rerun
-                # --flag ...`. Empty file = inherit current
-                # settings.
-                dry_run, mode, date_range, with_more_detail = (
-                    _apply_rerun_overrides(
-                        rerun_trigger, dry_run, mode, date_range,
-                        with_more_detail,
-                    )
+            try:
+                summary = download.walk(
+                    page, dest,
+                    mode=mode, dry_run=dry_run,
+                    screenshot_dir=screenshot_dir,
+                    date_range=date_range,
+                    with_more_detail=with_more_detail,
                 )
                 log.info(
-                    "reloaded landmarks + download; running iteration "
-                    "%d (dry_run=%s mode=%s range=%s more=%s)",
-                    iteration + 1, dry_run, mode, date_range,
-                    with_more_detail,
+                    "scrape complete: %d statement entries, "
+                    "%d tx entries",
+                    len(summary.get("statements", [])),
+                    len(summary.get("transactions", [])),
                 )
+                return 0
+            except KeyboardInterrupt:
+                log.info("interrupted; closing browser")
+                return 0
         except KeyboardInterrupt:
             log.info("interrupted; closing browser")
             return 0
@@ -801,73 +731,6 @@ def run_manual(profile_dir: Path,
             except Exception:
                 pass
             return 1
-
-
-def _apply_rerun_overrides(trigger: Path,
-                           dry_run: bool, mode: str, date_range: str,
-                           with_more_detail: bool,
-                           ) -> tuple[bool, str, str, bool]:
-    """Parse the rerun-trigger file's content (if non-empty) and
-    return updated (dry_run, mode, date_range, with_more_detail).
-    Empty file = inherit current values.
-
-    Supported keys (one per line, `key=value`):
-        dry_run            = true | false
-        mode               = statements | transactions | both
-        date_range         = any preset accepted by download.walk()
-        with_more_detail   = true | false
-
-    Unknown keys are logged and ignored. Parse failures fall back
-    to the inherited value — the loop never raises here, since a
-    bad config shouldn't terminate the live Firefox session.
-    """
-    try:
-        content = trigger.read_text(encoding="utf-8").strip()
-    except Exception as e:
-        log.debug("could not read rerun trigger %s: %s", trigger, e)
-        return dry_run, mode, date_range, with_more_detail
-    if not content:
-        return dry_run, mode, date_range, with_more_detail
-
-    def _bool(v: str) -> bool:
-        return v.lower() in ("1", "true", "yes")
-
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            log.warning("rerun config: skipping malformed line %r", line)
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if key == "dry_run":
-            new_val = _bool(value)
-            if new_val != dry_run:
-                log.info("rerun config: dry_run %s → %s", dry_run, new_val)
-            dry_run = new_val
-        elif key == "with_more_detail":
-            new_val = _bool(value)
-            if new_val != with_more_detail:
-                log.info("rerun config: with_more_detail %s → %s",
-                         with_more_detail, new_val)
-            with_more_detail = new_val
-        elif key == "mode":
-            if value in ("statements", "transactions", "both"):
-                if value != mode:
-                    log.info("rerun config: mode %s → %s", mode, value)
-                mode = value
-            else:
-                log.warning("rerun config: ignoring bad mode %r", value)
-        elif key == "date_range":
-            if value != date_range:
-                log.info("rerun config: date_range %s → %s",
-                         date_range, value)
-            date_range = value
-        else:
-            log.warning("rerun config: ignoring unknown key %r", key)
-    return dry_run, mode, date_range, with_more_detail
 
 
 def _live_url(page) -> str:
@@ -1307,23 +1170,16 @@ def main(argv: list[str]) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
-    if not (args.check or args.manual):
-        raise SystemExit(
-            "specify --check or --manual. Automated form-submit is not "
-            "supported (Schwab anti-bot rejects it); manual VNC drive is "
-            "the only path that works."
-        )
     if args.check and args.manual:
-        raise SystemExit("--check and --manual are mutually exclusive")
+        # --check overrides any explicit --manual; warn once and
+        # proceed with check. Keeps the wrapper's default-set
+        # `--manual` from blocking `login --check` usage.
+        log.warning("--check overrides --manual; running check mode")
+        args.manual = False
     maybe_source_env_files(args)
     prepare_profile_dir(args.profile_dir)
     if args.check:
         return run_check(args.profile_dir, args.screenshot_dir, args.trace)
-    # Empty-string sentinel disables the keep-alive loop; treat
-    # the resulting Path('.') as opt-out.
-    rerun_trigger = args.rerun_trigger
-    if str(rerun_trigger) in ("", "."):
-        rerun_trigger = None
     return run_manual(
         args.profile_dir, args.screenshot_dir,
         dest=args.dest,
@@ -1331,7 +1187,6 @@ def main(argv: list[str]) -> int:
         dry_run=args.dry_run,
         date_range=args.date_range,
         with_more_detail=args.with_more_detail,
-        rerun_trigger=rerun_trigger,
         cli_mfa=args.cli_mfa,
         login_only=args.login_only,
         post_auth_timeout_s=args.post_auth_timeout,

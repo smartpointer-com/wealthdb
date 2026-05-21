@@ -81,7 +81,7 @@ template; subcommand names and roles are the same:
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | implemented | `--manual --cli-mfa` (default): pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue. `--manual --no-cli-mfa`: legacy VNC-driven flow — pre-fill only, operator drives Log In + 2FA via VNC. `--check`: validate the persisted profile against the Account Summary URL and log the cookie jar including `_abck` trust state. |
+| [`login.py`](login.py) | implemented | Default (`--cli-mfa`, manual mode implicit): pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue. `--no-cli-mfa`: legacy VNC-driven flow where the operator drives Log In + 2FA. `--check`: validate the persisted profile against the Account Summary URL and log the cookie jar including `_abck` trust state. Driven by the wrapper's `login` / `download` subcommands. |
 | [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally. `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`, plus one landing HTML capture for debug. `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions section) | Extracts the "Transaction Details" table from Schwab monthly brokerage statement PDFs. Statement-period header parsing gives us the year for the MM/DD dates. Output: a list of `TransactionRow` dicts with category (Sale/Purchase/Withdrawal/Deposit/Dividend/Interest), symbol/CUSIP, quantity, price, charges, amount, and realised gain/loss (with ST/LT term). Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Will be used by `load.py` for closed-account history backfill (closed accounts disappear from the Transaction History page; PDF parsing is the only path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Silver schema mirrors `schwab-api-dump`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
@@ -109,26 +109,41 @@ gets through the credential-submit gate reliably.
 
 The session is alive only while *that* Firefox is alive (Schwab
 kills it on close), so login and scrape happen in one continuous
-session. Two entry points wire up the keep-alive loop that lets
-multiple scrape iterations share a single login:
+session. Each `download` invocation triggers a fresh MFA
+challenge — by design, to match the sibling toolkits' shape.
 
-* `cli-login` — auto-submits the form and prompts for the 2FA
-  code on stdin. Pure command-line; no VNC. Use this by default.
-* `vnc-login` — opens an x11vnc server inside the container; the
-  operator drives Log In + 2FA from a local VNC client over an
-  SSH tunnel. Fallback for cases where the CLI-MFA selectors
-  drift, or when the user needs to satisfy a non-code challenge
-  (security question, push-to-device, etc.).
+The CLI verbs mirror the sibling toolkits (swissquote-dump,
+ubs-web-dump):
+
+* `login` — auto-submits the form and prompts for the 2FA code on
+  stdin, then exits. Pure command-line; no VNC. Mints / refreshes
+  the Playwright profile. Schwab kills the session on browser
+  close, so the profile cookies stale at exit — `login` is mainly
+  for verifying the MFA flow.
+* `download` — same CLI-MFA login followed by the statements +
+  tx-history scrape in one Firefox lifetime. Use this for the
+  actual dump. Defaults to a 3-month range (matches the
+  convention of the sibling tools); pass `--range Last10Years`
+  for a full backfill.
+* `load` — parse the bronze tree into the silver SQLite DB.
+* `vnc-login` — fallback to a VNC-driven login when the CLI-MFA
+  selectors drift or a non-code challenge is required.
 
 ```sh
-# Default path: CLI-MFA login. stdin/stdout must be a TTY (the
-# wrapper allocates one automatically when invoked from a
-# terminal); the script prints
+# Default path: CLI-MFA login + scrape. stdin/stdout must be a
+# TTY (the wrapper allocates one automatically when invoked from
+# a terminal); the script prints
 #   Schwab 2FA: enter your VIP / SMS code, then press Enter.
 #   > _
 # at which point you type the code and press Enter.
-./schwab-web-dump cli-login \
+./schwab-web-dump download \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
+
+# Full backfill (10 years of statements):
+./schwab-web-dump download --range Last10Years --with-more-detail
+
+# Verify the MFA flow without scraping:
+./schwab-web-dump login
 
 # Fallback path: VNC. Start the container with VNC enabled, then
 # tunnel + open the display from your laptop. Use this if the
@@ -185,7 +200,7 @@ Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
 
 ```sh
-./schwab-web-dump cli-login                # auto-submit + stdin 2FA
+./schwab-web-dump download                 # auto-submit + stdin 2FA + scrape
 ./schwab-web-dump vnc-login                # VNC fallback
 ./schwab-web-dump login --check --profile-dir /secrets/schwab-web-profile -v
 ./schwab-web-dump download --dry-run --screenshot-dir /debug/download
@@ -317,16 +332,9 @@ pre-fills the form, the operator completes Log In + VIP 2FA via
 VNC, and the Python script takes over the same `page` to walk
 Statements & Tax Forms and Transaction History.
 
-After the first scrape iteration, the script enters a keep-alive
-loop: it polls for an external trigger file (default
-`/data/.rerun`), and on touch reloads `download.py` + the
-landmark module and re-runs the scrape against the same live
-Firefox. This lets the operator iterate scrape code without
-re-doing the MFA dance — the trigger is wired to a
-`./schwab-web-dump rerun` subcommand on the host side. Set
-`--rerun-trigger ''` on the `login.py` invocation to disable the
-loop (the script exits after one iteration, Firefox closes,
-Schwab kills the session).
+The script exits as soon as the scrape completes — same shape
+as the sibling toolkits. Each `download` invocation pays one
+MFA challenge.
 
 `--check` is mostly diagnostic — it'll report DEAD even on a
 profile that just completed a successful login if Firefox was

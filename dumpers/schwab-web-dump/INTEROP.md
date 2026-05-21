@@ -187,7 +187,7 @@ the web feed is and isn't carrying:
 
 | Gap | Impact on gold |
 | --- | --- |
-| pdf_parsers occasionally returns `amount=None` on Sale rows (≈1% — concentrated on TFLO MMF proceeds, some early-2025 fees) | A handful of missing transactions per year; gold can detect via a row-count sanity check |
+| pdf_parsers occasionally returns `amount=None` on Sale rows (≈1% — concentrated on money-market-fund proceeds and a handful of early-2025 fee rows) | A handful of missing transactions per year; gold can detect via a row-count sanity check |
 | Two parallel transaction sources (`statement_pdf` + `tx_history_json`) | Same logical event lands twice with different synthetic `activity_id`s. Gold should dedupe by (account, timestamp, amount, ±description) and prefer `tx_history_json` where both exist |
 | Per-row "More"-modal data not captured by default | The opt-in `--with-more-detail` flag enables it (~1 click/transaction). When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
 | 1099 XML / CSV not parsed | Tax-lot detail unavailable (see §4) |

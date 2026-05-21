@@ -73,23 +73,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=tuple(v for v in schwab.DATE_RANGE_VALUES if v != "Custom"),
         default=schwab.DATE_RANGE_DEFAULT,
         help=("Date-range preset for the Statements filter "
-              "(default: %(default)s = the longest preset Schwab "
-              "exposes natively, which we treat as 'all available'). "
-              "Schwab's Custom mode is not yet wired up — its date "
-              "inputs need DOM landmarking first. For older docs, "
-              "you'd need that custom path."),
+              "(default: %(default)s — matches the sibling "
+              "schwab-api-dump / ubs-*-dump tools). Pass "
+              "Last10Years for a full backfill. Schwab's Custom "
+              "mode is not yet wired up — its date inputs need "
+              "DOM landmarking first."),
     )
     p.add_argument(
         "--mode", choices=("statements", "transactions", "both"),
-        default="statements",
+        default="both",
         help=("statements: walk Statements & Tax Forms, download "
               "Statements / Tax Forms / Letters / Reports & Plans "
               "PDFs (skipping Trade Confirms — see CLAUDE.md). "
-              "transactions: navigate to the Transaction History "
-              "page and (currently) capture the rendered HTML + "
-              "screenshot per account for later scraper development. "
-              "both: run statements first, then transactions. "
-              "Default: statements."),
+              "transactions: drive the Transaction History "
+              "Export modal to save CSV / JSON / XML of the full "
+              "tx-history per account. both: run statements then "
+              "transactions. Default: both."),
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -1174,9 +1173,13 @@ def _scrape_more_details(page, account_suffix: str) -> list[dict]:
                 log.debug("more-detail row %d click failed: %s", row_idx, e)
                 continue
             try:
-                modal = page.locator(
-                    '[role="dialog"]'
-                ).filter(visible=True).first
+                # Playwright 1.49's Locator.filter() doesn't take
+                # a `visible` kwarg — that's a newer-version API.
+                # Use the Playwright-specific `:visible` CSS
+                # extension so we still pick only the currently-
+                # displayed dialog (a previously-dismissed modal
+                # may still be in the DOM, just `display:none`).
+                modal = page.locator('[role="dialog"]:visible').first
                 modal.wait_for(state="visible", timeout=5_000)
                 raw_text = modal.inner_text()
                 fields = _parse_more_modal_text(raw_text)
@@ -1276,16 +1279,21 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     # apply the filter, same shape as the Statements page's
     # Search.
     #
-    # `date_range` from the CLI uses Statements' option values
-    # (default Last10Years); tx-history uses a disjoint set
-    # (default `All`). We map "all available" via the explicit
-    # TX_DATE_RANGE_DEFAULT — anything else from the CLI we pass
-    # through verbatim and select_date_range raises if invalid.
-    tx_range = (
-        schwab.TX_DATE_RANGE_DEFAULT
-        if date_range == schwab.DATE_RANGE_DEFAULT
-        else date_range
-    )
+    # `date_range` from the CLI uses Statements' option values;
+    # tx-history exposes a disjoint set (different option names,
+    # different granularities). Map each Statements value to the
+    # tx-history value with the closest matching coverage; the
+    # rare in-tx-only values (CurrentMonth, PreviousMonth, etc.)
+    # pass through verbatim.
+    _STATEMENT_TO_TX_RANGE = {
+        "Today":        "Today",
+        "Last7Days":    "Last7Days",
+        "Last3Months":  "Last6Months",  # tx has no 3-month preset
+        "Last6Months":  "Last6Months",
+        "Last5Years":   "All",          # tx maxes out at 6 months / All
+        "Last10Years":  "All",
+    }
+    tx_range = _STATEMENT_TO_TX_RANGE.get(date_range, date_range)
     try:
         select_date_range(page, tx_range)
     except Exception as e:
@@ -1536,7 +1544,8 @@ def run_download(args: argparse.Namespace) -> int:
             if not schwab.is_post_auth_url(landed_url):
                 maybe_screenshot(page, args.screenshot_dir, "session-dead")
                 log.error(
-                    "session is dead (landed at %s) — re-run vnc-login",
+                    "session is dead (landed at %s) — run "
+                    "`./schwab-web-dump login` to mint a new session",
                     landed_url,
                 )
                 return 2

@@ -47,26 +47,54 @@ start_xvfb() {
 
 case "${1:-help}" in
     login)
-        start_xvfb
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
-    cli-login)
-        # CLI-MFA login: prefill, auto-submit, prompt for the 2FA
-        # code on stdin, fill and Continue. No VNC server is
-        # started — stdin is the human-in-the-loop surface. Stdin
-        # must therefore be a TTY (the wrapper allocates one with
-        # `-it` automatically when run from a terminal).
+        # Mint or refresh the Playwright session profile via
+        # CLI-MFA: pre-fill from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+        # auto-submit, prompt for the 2FA code on stdin, land on
+        # the post-auth URL, exit. Mirrors the `login` verb used
+        # by swissquote-dump / ubs-web-dump. Stdin must be a TTY
+        # (the wrapper allocates one automatically when invoked
+        # from a terminal).
+        #
+        # Note: Schwab kills the session when the browser closes,
+        # so this `login` alone does NOT leave a usable session
+        # behind — the profile dir's cookies become stale at
+        # process exit. The companion `download` subcommand
+        # therefore re-runs the CLI-MFA flow in the same process
+        # rather than reading a persisted session, and the
+        # `--check` path on raw login.py reports DEAD between
+        # runs. We expose `login` mainly for CLI parity with the
+        # sibling toolkits and for testing the MFA flow itself
+        # without paying the cost of a full scrape.
         start_xvfb
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --manual --cli-mfa --dest /data "$@"
+            --manual --cli-mfa --login-only "$@"
+        ;;
+    download)
+        # Reuse the session that `login` minted: open the
+        # persistent profile, navigate to the post-auth URL,
+        # verify the cookies are still good, then scrape. No
+        # MFA — that's `login`'s job. If Schwab has invalidated
+        # the session since `login` ran, this exits with rc=2
+        # and the user should re-run `login`. Mirrors the
+        # download verb in swissquote-dump / ubs-web-dump.
+        # Default range: 3 months (override with --range;
+        # --range Last10Years for a full backfill).
+        start_xvfb
+        shift
+        exec python3 /app/download.py \
+            --profile-dir /secrets/schwab-web-profile \
+            --dest /data "$@"
         ;;
     vnc-login)
-        # Start Xvfb + x11vnc on the same display, then run
-        # login.py --manual. The wrapper publishes 127.0.0.1:5900
-        # so the VNC port is only reachable via a host-side SSH
+        # Fallback to the older VNC-driven flow: start Xvfb +
+        # x11vnc on the same display, then run login.py --manual
+        # --no-cli-mfa. Use when CLI-MFA selectors drift or the
+        # user has to satisfy a non-code challenge (security
+        # question, push-to-device, etc.) that the stdin prompt
+        # can't drive. The wrapper publishes 127.0.0.1:5900 so
+        # the VNC port is only reachable via a host-side SSH
         # tunnel. A VNC password is required regardless (macOS
         # Screen Sharing refuses no-auth servers); we generate a
         # fresh one every launch so the same string is never
@@ -119,18 +147,20 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       Raw login.py invocation — pass --check / --manual
-              and other flags yourself. Useful for one-off runs;
-              for the common case prefer cli-login or vnc-login.
-  cli-login   CLI-MFA login: pre-fill from SCHWAB_LOGIN_ID /
-              SCHWAB_PASSWORD, auto-submit, prompt for the 2FA
-              code on stdin. No VNC. Default entry point. Stdin
-              must be a TTY.
-  vnc-login   Start x11vnc on 127.0.0.1:5900 and open Firefox at
-              the Schwab homepage; pre-fills the login form; you
-              drive Log In + 2FA from your VNC client over an SSH
-              tunnel. Fallback for cases where the CLI-MFA path
-              misses (DOM drift, alternative MFA factor).
+  login       Mint or refresh the Playwright session profile.
+              Runs the CLI-MFA flow (auto-submit + stdin 2FA
+              prompt) and exits. Stdin must be a TTY.
+  download    Export bronze artefacts from the Schwab web UI.
+              Same CLI-MFA flow as `login` followed by the
+              statements + tx-history scrape in the same Firefox
+              process — Schwab kills the session on browser
+              close, so login + scrape happen in one lifetime.
+              Default range: 3 months (override with --range).
+  load        Parse bronze into the silver SQLite database.
+  vnc-login   Fallback to a VNC-driven login when CLI-MFA selectors
+              drift or a non-code challenge is required. Starts
+              x11vnc on 127.0.0.1:5900; tunnel + connect from your
+              VNC client.
   download    Export bronze artefacts from the Schwab client UI
               (only useful while a Firefox session is live; Schwab
               kills sessions on Firefox close, so in practice this

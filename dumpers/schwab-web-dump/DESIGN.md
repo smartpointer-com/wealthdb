@@ -281,10 +281,11 @@ under `_more` (keyed by `_tx_history_row_key`).
   workaround is in `load._insert_statement_transactions`. If
   pdf_parsers ever gets autoextract for the older period-header
   variant, the explicit-year fallback can be dropped.
-- **Some sale rows lose their amount** (e.g. TFLO money-market
-  fund proceeds). These are skipped during load with a warning
-  rather than failing the whole statement; about 1% of rows in
-  this user's archive. Worth a follow-up parser pass.
+- **Some sale rows lose their amount** (concentrated on
+  money-market-fund proceeds and a handful of early-2025 fee
+  rows). Skipped during load with a warning rather than
+  failing the whole statement; about 1% of rows in the
+  archive we tested against. Worth a follow-up parser pass.
 - **Two parallel transaction sources**. After enabling the
   tx-history JSON ingest, the same logical event lands in
   silver from both `source='statement_pdf'` (parser-derived,

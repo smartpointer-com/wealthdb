@@ -36,23 +36,22 @@ schwab-web-dump — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
-  login [args...]       Raw login.py invocation (--check / --manual
-                        + other flags). Useful for one-offs; prefer
-                        cli-login or vnc-login for the common case.
-  cli-login [args...]   CLI-MFA login: auto-submit the form, then
-                        prompt you on stdin for the 2FA code. No
-                        VNC. Default entry point.
-  vnc-login [args...]   Start x11vnc on 127.0.0.1:5900 and open
-                        Firefox at the Schwab homepage; you drive
-                        Log In + 2FA via your local VNC client
-                        (macOS Screen Sharing, TigerVNC, etc.).
-                        Fallback for when the CLI-MFA path misses.
-  download [args...]    Export bronze artefacts from client.schwab.com.
+  login [args...]       Mint or refresh the Playwright session
+                        profile via CLI-MFA: auto-submit + stdin
+                        2FA. Stdin must be a TTY. Pass --check to
+                        validate the existing profile instead.
+  download [args...]    CLI-MFA login + scrape: auto-submits the
+                        login form, prompts you on stdin for the
+                        2FA code, then downloads statements + tx
+                        history into a fresh bronze run. No VNC;
+                        stdin must be a TTY. Default range: 3
+                        months (override with --range).
   load [args...]        Parse bronze into the silver SQLite DB.
-  rerun                 Touch the bronze-tree rerun trigger so a
-                        live vnc-login session re-runs the scrape
-                        against the freshly-edited code (no
-                        relogin needed).
+  vnc-login [args...]   Fallback to a VNC-driven login when the
+                        CLI-MFA selectors drift or a non-code
+                        challenge is required. Starts x11vnc on
+                        127.0.0.1:5900; tunnel + connect from
+                        your local VNC client.
   sh|bash               Open an interactive shell in the container.
   help                  Show this message.
 
@@ -87,52 +86,6 @@ EOF
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-# ./schwab-web-dump rerun [--dry-run|--no-dry-run] [--mode M] [--range R]
-#
-# Touches the trigger file that a live vnc-login keep-alive loop
-# polls for. The python script reloads download/landmarks modules
-# and re-invokes walk() on the same Firefox session, so host-side
-# code edits take effect without re-MFA.
-#
-# Any flags passed here are written into the trigger file as a
-# key=value config block; login.py's loop reads them and
-# overrides the next iteration's walk() args. Flags persist
-# across reruns until overridden. Empty trigger file = inherit
-# the previous iteration's settings.
-if [[ "${1:-}" == "rerun" ]]; then
-    mkdir -p "$HOST_DATA"
-    shift
-    declare -a config_lines=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --dry-run)             config_lines+=("dry_run=true") ;;
-            --no-dry-run)          config_lines+=("dry_run=false") ;;
-            --with-more-detail)    config_lines+=("with_more_detail=true") ;;
-            --no-with-more-detail) config_lines+=("with_more_detail=false") ;;
-            --mode)                shift; config_lines+=("mode=$1") ;;
-            --range)               shift; config_lines+=("date_range=$1") ;;
-            *)
-                echo "schwab-web-dump rerun: unknown flag $1" >&2
-                echo "  valid: --dry-run | --no-dry-run" >&2
-                echo "         --with-more-detail | --no-with-more-detail" >&2
-                echo "         --mode M | --range R" >&2
-                exit 2
-                ;;
-        esac
-        shift
-    done
-    if [[ ${#config_lines[@]} -gt 0 ]]; then
-        printf '%s\n' "${config_lines[@]}" > "$HOST_DATA/.rerun"
-        echo "schwab-web-dump: rerun trigger written ($HOST_DATA/.rerun):"
-        sed 's/^/  /' "$HOST_DATA/.rerun"
-    else
-        # No flags — just bump mtime, preserve previous config.
-        touch "$HOST_DATA/.rerun"
-        echo "schwab-web-dump: rerun trigger touched ($HOST_DATA/.rerun)"
-    fi
-    exit 0
 fi
 
 if [[ "${1:-}" == "help" || $# -eq 0 ]]; then

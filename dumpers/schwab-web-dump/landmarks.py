@@ -159,10 +159,13 @@ DATE_RANGE_VALUES = (
     "Last3Months",
     "Last6Months",
     "Last5Years",
-    "Last10Years",   # longest preset; treat as "all available"
+    "Last10Years",   # longest preset; "all available"
     "Custom",
 )
-DATE_RANGE_DEFAULT = "Last10Years"
+# 3-month default matches the convention of the sibling
+# *-dump tools (schwab-api-dump, ubs-psn-dump, ubs-web-dump).
+# Bump explicitly with `--range Last10Years` for a full backfill.
+DATE_RANGE_DEFAULT = "Last3Months"
 
 
 # ============================================================
@@ -191,7 +194,11 @@ TX_DATE_RANGE_VALUES = (
     "Last6Months", "CurrentYear", "PreviousYear",
     "All", "SpecifyDateRange",
 )
-TX_DATE_RANGE_DEFAULT = "All"
+# Schwab's tx-history option set doesn't include a "Last3Months"
+# preset — the closest larger preset is "Last6Months". We use it
+# as the default to stay roughly aligned with the Statements
+# 3-month default; "All" is available for a full backfill.
+TX_DATE_RANGE_DEFAULT = "Last6Months"
 
 # Tx-history applies date-range / symbol filters via a Search
 # button (NOT an Apply button — that's only inside the
