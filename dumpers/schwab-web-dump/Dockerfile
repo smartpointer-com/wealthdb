@@ -48,7 +48,7 @@ RUN python3 -m camoufox fetch && \
 # host artefacts (.venv, real-credential JSONs, recorded Playwright
 # traces) never make it into the image even if .dockerignore is
 # incomplete.
-COPY login.py download.py landmarks.py pdf_parsers.py load.py /app/
+COPY login.py download.py download_trigger.py landmarks.py pdf_parsers.py load.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

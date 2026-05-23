@@ -47,45 +47,38 @@ start_xvfb() {
 
 case "${1:-help}" in
     login)
-        # Mint or refresh the Playwright session profile via
-        # CLI-MFA: pre-fill from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
-        # auto-submit, prompt for the 2FA code on stdin, land on
-        # the post-auth URL, exit. Mirrors the `login` verb used
-        # by swissquote-dump / ubs-web-dump. Stdin must be a TTY
-        # (the wrapper allocates one automatically when invoked
-        # from a terminal).
+        # CLI-MFA login + keep-alive. Pre-fills the form, prompts
+        # for the 2FA code on stdin, lands on the post-auth URL,
+        # then HOLDS Firefox open so the live session survives
+        # between `download` invocations. Schwab kills the
+        # persistent profile's cookies within seconds of Firefox
+        # closing — so the sibling-tool model of "login mints,
+        # download reads storageState" doesn't apply here, and
+        # the only way to do multiple scrapes per MFA is to keep
+        # the Firefox process running.
         #
-        # Note: Schwab kills the session when the browser closes,
-        # so this `login` alone does NOT leave a usable session
-        # behind — the profile dir's cookies become stale at
-        # process exit. The companion `download` subcommand
-        # therefore re-runs the CLI-MFA flow in the same process
-        # rather than reading a persisted session, and the
-        # `--check` path on raw login.py reports DEAD between
-        # runs. We expose `login` mainly for CLI parity with the
-        # sibling toolkits and for testing the MFA flow itself
-        # without paying the cost of a full scrape.
+        # While the login is held, the process polls
+        # /data/.download-trigger; each `download` invocation
+        # from another terminal writes that file with the scrape
+        # config and exits. Ctrl+C ends the session.
         start_xvfb
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --manual --cli-mfa --login-only "$@"
+            --manual --cli-mfa \
+            --download-trigger /data/.download-trigger "$@"
         ;;
     download)
-        # Reuse the session that `login` minted: open the
-        # persistent profile, navigate to the post-auth URL,
-        # verify the cookies are still good, then scrape. No
-        # MFA — that's `login`'s job. If Schwab has invalidated
-        # the session since `login` ran, this exits with rc=2
-        # and the user should re-run `login`. Mirrors the
-        # download verb in swissquote-dump / ubs-web-dump.
-        # Default range: 3 months (override with --range;
-        # --range Last10Years for a full backfill).
-        start_xvfb
+        # Trigger a scrape against an already-running `login`
+        # process. Writes the per-scrape config (mode / range /
+        # with_more_detail / dest) into the trigger file the
+        # login's keep-alive loop polls, then exits immediately.
+        # The actual scrape runs in the login process (which has
+        # the live Firefox). If no login is running, the trigger
+        # file just sits there until one starts. Bronze lands at
+        # <dest>/<UTC-ts>/ as produced by the login process.
         shift
-        exec python3 /app/download.py \
-            --profile-dir /secrets/schwab-web-profile \
-            --dest /data "$@"
+        exec python3 /app/download_trigger.py "$@"
         ;;
     vnc-login)
         # Fallback to the older VNC-driven flow: start Xvfb +
@@ -147,15 +140,18 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       Mint or refresh the Playwright session profile.
-              Runs the CLI-MFA flow (auto-submit + stdin 2FA
-              prompt) and exits. Stdin must be a TTY.
-  download    Export bronze artefacts from the Schwab web UI.
-              Same CLI-MFA flow as `login` followed by the
-              statements + tx-history scrape in the same Firefox
-              process — Schwab kills the session on browser
-              close, so login + scrape happen in one lifetime.
-              Default range: 3 months (override with --range).
+  login       CLI-MFA login + keep-alive. Auto-submits the form,
+              prompts for the 2FA code on stdin, then HOLDS
+              Firefox open and polls /data/.download-trigger so
+              `download` calls from another terminal scrape
+              against the same live session. Ctrl+C ends the
+              session. Stdin must be a TTY.
+  download    Trigger a scrape against an already-running login.
+              Writes the per-scrape config (mode / range /
+              with_more_detail / dest) into the trigger file and
+              exits. No browser, no MFA. Default range: 3 months
+              (override with --range; --range Last10Years for a
+              full backfill).
   load        Parse bronze into the silver SQLite database.
   vnc-login   Fallback to a VNC-driven login when CLI-MFA selectors
               drift or a non-code challenge is required. Starts

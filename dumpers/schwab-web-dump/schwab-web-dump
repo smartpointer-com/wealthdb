@@ -36,16 +36,18 @@ schwab-web-dump — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
-  login [args...]       Mint or refresh the Playwright session
-                        profile via CLI-MFA: auto-submit + stdin
-                        2FA. Stdin must be a TTY. Pass --check to
-                        validate the existing profile instead.
-  download [args...]    CLI-MFA login + scrape: auto-submits the
-                        login form, prompts you on stdin for the
-                        2FA code, then downloads statements + tx
-                        history into a fresh bronze run. No VNC;
-                        stdin must be a TTY. Default range: 3
-                        months (override with --range).
+  login [args...]       CLI-MFA login + keep-alive. Auto-submits
+                        the form, prompts on stdin for the 2FA
+                        code, then HOLDS Firefox open and polls
+                        for download triggers from another
+                        terminal. Ctrl+C ends the session. Stdin
+                        must be a TTY.
+  download [args...]    Trigger a scrape against an already-running
+                        login. Writes the per-scrape config into
+                        the trigger file and exits. No browser,
+                        no MFA. Default range: 3 months (override
+                        with --range; --range Last10Years for a
+                        full backfill).
   load [args...]        Parse bronze into the silver SQLite DB.
   vnc-login [args...]   Fallback to a VNC-driven login when the
                         CLI-MFA selectors drift or a non-code
@@ -86,6 +88,72 @@ EOF
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
+fi
+
+# ./schwab-web-dump download [...]  → wrapper-side trigger write.
+#
+# The login container holds the live Firefox + polls
+# $HOST_DATA/.download-trigger; this command just writes that
+# file with the requested config and exits. No docker container
+# spawned — both because the trigger is purely a host-side file
+# write, and because spawning a container with the fixed
+# CONTAINER_NAME would collide with the running login. The
+# login container's keep-alive loop picks up the trigger on
+# its next 2-second poll and runs the scrape in-place.
+if [[ "${1:-}" == "download" ]]; then
+    mkdir -p "$HOST_DATA"
+    shift
+    declare -a config_lines=()
+    DEST_PATH="/data"
+    MODE="both"
+    RANGE="Last3Months"
+    DRY_RUN="false"
+    MORE_DETAIL="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dest)               shift; DEST_PATH="$1" ;;
+            --mode)               shift; MODE="$1" ;;
+            --range)              shift; RANGE="$1" ;;
+            --dry-run)            DRY_RUN="true" ;;
+            --no-dry-run)         DRY_RUN="false" ;;
+            --with-more-detail)   MORE_DETAIL="true" ;;
+            --no-with-more-detail) MORE_DETAIL="false" ;;
+            -h|--help)
+                cat <<EOH
+schwab-web-dump download — trigger a scrape
+
+Writes /data/.download-trigger with the per-scrape config; the
+running 'login' container's keep-alive loop picks it up.
+
+Flags:
+  --dest <path>            Bronze tree root inside container (default: /data)
+  --mode {statements,transactions,both}     (default: both)
+  --range <preset>         Date-range preset for Statements
+                           (default: Last3Months; Last10Years for full backfill)
+  --dry-run / --no-dry-run                  (default: --no-dry-run)
+  --with-more-detail / --no-with-more-detail (default: --no-with-more-detail)
+EOH
+                exit 0
+                ;;
+            *)
+                echo "schwab-web-dump download: unknown flag $1" >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+    cat > "$HOST_DATA/.download-trigger" <<EOF
+dest=$DEST_PATH
+mode=$MODE
+date_range=$RANGE
+dry_run=$DRY_RUN
+with_more_detail=$MORE_DETAIL
+EOF
+    echo "schwab-web-dump: download triggered ($HOST_DATA/.download-trigger):" >&2
+    sed 's/^/  /' "$HOST_DATA/.download-trigger" >&2
+    echo "  (the running \`login\` container will pick this up on" >&2
+    echo "  its next ~2s poll; bronze lands under $HOST_DATA/<UTC-ts>/.)" >&2
+    exit 0
 fi
 
 if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
