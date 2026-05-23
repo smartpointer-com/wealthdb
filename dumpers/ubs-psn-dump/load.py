@@ -85,6 +85,28 @@ def canonical_json(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
 
 
+_FILENAME_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_")
+
+
+def file_snapshot_at(fname: str) -> int | None:
+    """Extract the 'YYYY-MM-DD_' prefix from a PSN filename and return
+    Unix seconds at 00:00 UTC of that date. Returns None if absent.
+
+    Every PSN-emitted file inside a dump zip is named
+    '<YYYY-MM-DD>_<ZTYPE>_<...>.{xml,txt}' where the date is the as-of
+    date of the data, NOT the dump-retrieval date. This is the natural
+    `snapshot_at` value for the silver rows derived from that file —
+    using it (rather than the dump-directory timestamp) lets a single
+    dump correctly land multiple as-of dates when download.py was
+    skipped for a day and the next dump arrives with a catch-up batch.
+    """
+    m = _FILENAME_DATE_RE.match(fname)
+    if not m:
+        return None
+    return int(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        tzinfo=timezone.utc).timestamp())
+
+
 # --------------------------------------------------------------------------
 # Database / migrations
 # --------------------------------------------------------------------------
@@ -1117,6 +1139,10 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     stats: dict = {"name": name, "skipped": False}
 
     with conn:  # BEGIN on entry, COMMIT on clean exit, ROLLBACK on exception
+        # Per-file snapshot_at: the file's as-of date from its 'YYYY-MM-DD_'
+        # filename prefix (see file_snapshot_at). Falls back to the dump
+        # directory's timestamp if the prefix is missing.
+        #
         # 1. PSN XML containers (ZMD, ZME) — iterate every .xml entry
         xml_rows = 0
         for zip_path in sorted(dump_dir.glob("Z*.zip")):
@@ -1135,7 +1161,8 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
                     log.debug("No XML loader for type %s (%s) — skipping",
                               type_code, fname)
                     continue
-                xml_rows += loader(conn, snapshot_at, relationship_id, entities)
+                file_at = file_snapshot_at(fname) or snapshot_at
+                xml_rows += loader(conn, file_at, relationship_id, entities)
         stats["xml_rows"] = xml_rows
 
         # 2. MT containers — iterate every .txt entry per zip basename
@@ -1149,7 +1176,8 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
                 continue
             for fname, blob in iter_zip_entries(zip_path, suffix=".txt"):
                 text = blob.decode("utf-8", errors="replace")
-                result = loader(conn, snapshot_at, relationship_id, text)
+                file_at = file_snapshot_at(fname) or snapshot_at
+                result = loader(conn, file_at, relationship_id, text)
                 if isinstance(result, tuple):
                     mt_balances += result[0]
                     mt_events += result[1]

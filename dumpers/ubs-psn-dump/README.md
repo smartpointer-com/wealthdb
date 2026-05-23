@@ -146,6 +146,14 @@ samples. Bronze still keeps every retrieved zip for auditability.
 
 Reload semantics:
 
+- **`snapshot_at` is the per-file as-of date**, parsed from the
+  `YYYY-MM-DD_` prefix that every PSN file inside a dump zip carries.
+  A single bronze dump can therefore land data at multiple `snapshot_at`
+  values — important for catch-up dumps where `download.py` was skipped
+  for a day and UBS bundles two nights' worth of master data into the
+  next zip. `dump_runs.snapshot_at` is separately the dump-retrieval
+  timestamp (the bronze-directory name), kept as an audit trail of
+  when each dump was processed.
 - **Snapshots** (`holdings`, `cash_balances`, `pending_securities`,
   `fx_rates`, `forward_contracts`, contract tables) are append-only
   per snapshot.
