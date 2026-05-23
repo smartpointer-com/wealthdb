@@ -29,17 +29,57 @@ type Config struct {
 	// adapter has stamped its own values, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
-	// Model configures the LLM endpoint used by `wealthdb
-	// resolve-symbols` to back-fill missing instrument tickers.
-	// Optional; required only when that subcommand runs.
-	Model *ModelConfig `json:"model,omitempty"`
+	// SymbolResolution groups the per-deployment knobs that drive
+	// `wealthdb resolve-symbols`: the LLM endpoint and the
+	// user-authored override list. Both fields inside are optional;
+	// the subcommand fails loudly if Model is unset and
+	// --overrides-only wasn't passed.
+	SymbolResolution *SymbolResolutionConfig `json:"symbol_resolution,omitempty"`
 }
 
-// ModelConfig is the `model` block of wealthdb.cfg. The only
-// API shape supported today is the OpenAI-compatible Chat
-// Completions endpoint (`api: "openai-completions"`); ThinkingFormat
-// lets the resolve-symbols pipeline strip R1-style `<think>` blocks
-// from the response before parsing.
+// SymbolResolutionConfig is the `symbol_resolution` block of
+// wealthdb.cfg. Groups everything specific to the resolve-symbols
+// subcommand so the top-level config file doesn't sprout one
+// field per concern.
+type SymbolResolutionConfig struct {
+	// Model configures the LLM endpoint used to back-fill missing
+	// instrument tickers. Required for normal `resolve-symbols`
+	// runs; can be omitted when only --overrides-only is used.
+	Model *ModelConfig `json:"model,omitempty"`
+	// Overrides is the user-authored ticker-mapping override list.
+	// Each entry replaces (or suppresses) a row in
+	// symbol_resolutions under model_name='manual-override'.
+	// Applied at the start of every `wealthdb resolve-symbols`
+	// invocation (including --overrides-only). Use cases:
+	// correcting an LLM resolution that was wrong, or seeding
+	// tickers the LLM can't infer (e.g. private-fund proxies).
+	Overrides []SymbolOverride `json:"overrides,omitempty"`
+}
+
+// SymbolOverride is one entry under `symbol_resolution.overrides`.
+// Mirrors the symbol_resolutions PK + value columns. Two modes:
+//
+//   - Correction: set `symbol` to the right ticker. The sync UPSERTs
+//     this row into symbol_resolutions, winning over any LLM result.
+//   - Suppression: set `delete: true` (and omit `symbol`). The sync
+//     DELETEs any row with this PK from symbol_resolutions. Use for
+//     descriptions where no real ticker exists (US Treasury CUSIPs,
+//     private structured products, currency-line placeholders) so
+//     the LLM's wrong guess stops surfacing.
+type SymbolOverride struct {
+	SilverSourceID string `json:"silver_source_id"`
+	LookupKind     string `json:"lookup_kind"` // 'instrument_external_id' or 'name'
+	LookupValue    string `json:"lookup_value"`
+	Symbol         string `json:"symbol,omitempty"`
+	Delete         bool   `json:"delete,omitempty"`
+}
+
+// ModelConfig is the `symbol_resolution.model` block of
+// wealthdb.cfg. The only API shape supported today is the
+// OpenAI-compatible Chat Completions endpoint
+// (`api: "openai-completions"`); ThinkingFormat lets the
+// resolve-symbols pipeline strip R1-style `<think>` blocks from
+// the response before parsing.
 type ModelConfig struct {
 	BaseURL        string `json:"baseUrl"`
 	API            string `json:"api"`

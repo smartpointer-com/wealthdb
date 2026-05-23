@@ -204,6 +204,79 @@ func TestValidateRejectsEmptyOverride(t *testing.T) {
 	}
 }
 
+func TestValidateSymbolOverrides(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			GoldDB: "/x", DefaultCurrency: "USD",
+			SilverSources: []SilverSource{{ID: "ubs", Kind: "ubs", Path: "/y"}},
+		}
+	}
+	t.Run("accepts upsert", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "CH0000000020", Symbol: "NOVN"},
+		}}
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("accepts delete", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "XD1396017463", Delete: true},
+		}}
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("rejects unknown source", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "binance", LookupKind: "name", LookupValue: "BTC", Symbol: "BTC"},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "binance") {
+			t.Fatalf("err = %v, want source-not-found complaint", err)
+		}
+	})
+	t.Run("rejects unknown lookup_kind", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "isin", LookupValue: "CH0000000020", Symbol: "NOVN"},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "lookup_kind") {
+			t.Fatalf("err = %v, want lookup_kind complaint", err)
+		}
+	})
+	t.Run("rejects bad symbol shape", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "CH0000000020", Symbol: "not a ticker"},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "symbol") {
+			t.Fatalf("err = %v, want symbol-shape complaint", err)
+		}
+	})
+	t.Run("rejects delete + symbol mutually exclusive", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "name", LookupValue: "X", Symbol: "X", Delete: true},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("err = %v, want delete-symbol-conflict complaint", err)
+		}
+	})
+	t.Run("rejects duplicate tuple", func(t *testing.T) {
+		c := base()
+		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
+			{SilverSourceID: "ubs", LookupKind: "name", LookupValue: "FOO", Symbol: "F"},
+			{SilverSourceID: "ubs", LookupKind: "name", LookupValue: "FOO", Symbol: "G"},
+		}}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("err = %v, want duplicate complaint", err)
+		}
+	})
+}
+
 func TestValidateRejectsBadCurrency(t *testing.T) {
 	cases := []string{"", "usd", "DOLLAR", "US", "USDX"}
 	for _, ccy := range cases {

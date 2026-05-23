@@ -102,6 +102,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	noCurrency := fs.Bool("no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
 	maxAnchors := fs.Int("max-anchors", 30, "max anchor examples to include in the prompt")
 	showPrompt := fs.Bool("show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
+	overridesOnly := fs.Bool("overrides-only", false, "apply cfg.symbol_overrides and exit; skip the LLM round-trip entirely")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, resolveSymbolsUsage())
 	}
@@ -120,11 +121,20 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if err != nil {
 		return err
 	}
-	if cfg.Model == nil {
-		return errs.Newf(2, "resolve-symbols: config.model is not set; add a `model` block to %s", g.ConfigPath)
+	// LLM config is only needed when we'll actually call the LLM.
+	// --overrides-only is a fast cfg→DB sync path with no model
+	// dependency.
+	var modelCfg *config.ModelConfig
+	if cfg.SymbolResolution != nil {
+		modelCfg = cfg.SymbolResolution.Model
 	}
-	if err := validateModelConfig(cfg.Model); err != nil {
-		return errs.Newf(2, "resolve-symbols: %s", err.Error())
+	if !*overridesOnly {
+		if modelCfg == nil {
+			return errs.Newf(2, "resolve-symbols: symbol_resolution.model is not set; add a `symbol_resolution.model` block to %s (or use --overrides-only)", g.ConfigPath)
+		}
+		if err := validateModelConfig(modelCfg); err != nil {
+			return errs.Newf(2, "resolve-symbols: %s", err.Error())
+		}
 	}
 
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
@@ -142,9 +152,10 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	}
 	// Dry-run takes no write locks so a parallel `wealthdb
 	// transactions` / `positions` call can read the DB while the
-	// LLM is responding.
+	// LLM is responding. --overrides-only writes (the sync step),
+	// so it always opens RW.
 	openMode := gold.ModeReadWrite
-	if *dryRun || dec.Mode == pathmode.ModeReadOnly {
+	if *dryRun && !*overridesOnly {
 		openMode = gold.ModeReadOnly
 	}
 	db, err := gold.Open(cfg.GoldDB, openMode)
@@ -156,6 +167,31 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	configuredSources := make(map[string]bool, len(cfg.SilverSources))
 	for _, s := range cfg.SilverSources {
 		configuredSources[s.ID] = true
+	}
+
+	// Always sync cfg.symbol_resolution.overrides first — manual
+	// overrides are the source of truth and must win over any
+	// LLM-derived row for the same key, whether we're about to run
+	// the LLM or just doing --overrides-only.
+	var overrides []config.SymbolOverride
+	if cfg.SymbolResolution != nil {
+		overrides = cfg.SymbolResolution.Overrides
+	}
+	purged, upserted, suppressed, err := syncSymbolOverrides(ctx, db, overrides)
+	if err != nil {
+		return fmt.Errorf("resolve-symbols: sync overrides: %w", err)
+	}
+	if purged+upserted+suppressed > 0 {
+		fmt.Fprintf(stdout, "resolve-symbols: synced cfg overrides — %d upserted, %d suppressed (delete:true), %d stale manual-override rows purged\n",
+			upserted, suppressed, purged)
+	}
+
+	if *overridesOnly {
+		var total int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM symbol_resolutions`).Scan(&total); err == nil {
+			fmt.Fprintf(stdout, "resolve-symbols: overrides-only mode; total symbol_resolutions rows now %d\n", total)
+		}
+		return nil
 	}
 
 	candidates, err := collectCandidates(ctx, db)
@@ -176,9 +212,9 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 
 	fmt.Fprintf(stdout, "resolve-symbols: %d candidates (%s; by-kind %s), %d anchors, model %s\n",
 		stats.Total, formatPerSource(stats.PerSource),
-		formatPerKind(stats.PerKind), len(anchors), cfg.Model.Name)
+		formatPerKind(stats.PerKind), len(anchors), modelCfg.Name)
 
-	valid, attempts, totalInvalid, err := resolveWithLLM(ctx, cfg.Model, candidates, anchors,
+	valid, attempts, totalInvalid, err := resolveWithLLM(ctx, modelCfg, candidates, anchors,
 		candKey, configuredSources, *maxAttempts, *noCurrency, *showPrompt, stdout, stderr)
 	if err != nil {
 		return err
@@ -212,7 +248,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	}
 
 	now := time.Now().Unix()
-	perSource, total, err := persistResolutions(ctx, db, valid, now, cfg.Model.Name)
+	perSource, total, err := persistResolutions(ctx, db, valid, now, modelCfg.Name)
 	if err != nil {
 		return err
 	}
@@ -962,6 +998,104 @@ func stripCodeFences(s string) string {
 
 // ---- persistence -----------------------------------------------------------
 
+// manualOverrideModelName is the model_name string written into
+// symbol_resolutions for rows that came from cfg.symbol_overrides
+// rather than an LLM. Distinguishes them in the resolutions dump
+// and lets syncSymbolOverrides target just those rows when
+// reconciling cfg ↔ DB.
+const manualOverrideModelName = "manual-override"
+
+// syncSymbolOverrides reconciles cfg.symbol_overrides into the
+// symbol_resolutions table. Three phases, all in one transaction:
+//
+//  1. Remove every existing row tagged model_name='manual-override'
+//     (so previously-synced corrections that aren't in cfg anymore
+//     disappear from the DB).
+//  2. For each cfg override entry:
+//       - if `delete: true`, DELETE the matching PK row regardless
+//         of model_name (suppresses an LLM result the user marked
+//         as garbage — US Treasury CUSIPs, private products etc.);
+//       - otherwise UPSERT it as a manual-override row, replacing
+//         any prior LLM result for the same key.
+//
+// Returns (purged, upserted, suppressed) counts:
+//   - purged: rows wiped by phase 1 (previous-run manual overrides)
+//   - upserted: rows written by cfg-driven corrections
+//   - suppressed: rows wiped by `delete: true` cfg entries
+//
+// Note on precedence: removing an override from cfg in a later
+// edit removes its row from the DB. Any LLM result the override
+// was hiding is also gone (the override overwrote it). The next
+// `wealthdb resolve-symbols` (without --overrides-only) re-derives.
+func syncSymbolOverrides(ctx context.Context, db *sql.DB, overrides []config.SymbolOverride) (purged, upserted, suppressed int, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM symbol_resolutions WHERE model_name = ?`, manualOverrideModelName)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("delete stale manual-override rows: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		purged = int(n)
+	}
+
+	if len(overrides) > 0 {
+		upsertStmt, err := tx.PrepareContext(ctx, `
+INSERT INTO symbol_resolutions
+    (silver_source_id, lookup_kind, lookup_value, symbol, resolved_at, model_name)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (silver_source_id, lookup_kind, lookup_value) DO UPDATE SET
+    symbol      = EXCLUDED.symbol,
+    resolved_at = EXCLUDED.resolved_at,
+    model_name  = EXCLUDED.model_name`)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("prepare override upsert: %w", err)
+		}
+		defer upsertStmt.Close()
+		deleteStmt, err := tx.PrepareContext(ctx,
+			`DELETE FROM symbol_resolutions WHERE silver_source_id = ? AND lookup_kind = ? AND lookup_value = ?`)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("prepare override delete: %w", err)
+		}
+		defer deleteStmt.Close()
+
+		now := time.Now().Unix()
+		for _, o := range overrides {
+			if o.Delete {
+				if _, err := deleteStmt.ExecContext(ctx,
+					o.SilverSourceID, o.LookupKind, o.LookupValue,
+				); err != nil {
+					return 0, 0, 0, fmt.Errorf("delete override (%s,%s,%s): %w", o.SilverSourceID, o.LookupKind, o.LookupValue, err)
+				}
+				suppressed++
+				continue
+			}
+			if _, err := upsertStmt.ExecContext(ctx,
+				o.SilverSourceID, o.LookupKind, o.LookupValue, o.Symbol,
+				now, manualOverrideModelName,
+			); err != nil {
+				return 0, 0, 0, fmt.Errorf("upsert override (%s,%s,%s): %w", o.SilverSourceID, o.LookupKind, o.LookupValue, err)
+			}
+			upserted++
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, 0, fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return purged, upserted, suppressed, nil
+}
+
 // persistResolutions upserts the validated rows into the
 // symbol_resolutions table. Returns a per-source count of rows
 // INSERTed (NB: ON CONFLICT DO UPDATE doesn't distinguish insert
@@ -1008,7 +1142,7 @@ ON CONFLICT (silver_source_id, lookup_kind, lookup_value) DO UPDATE SET
 
 // resolveSymbolsUsage is the long-form help text printed by -h.
 func resolveSymbolsUsage() string {
-	return `usage: wealthdb resolve-symbols [-n | --dry-run] [--max-attempts N] [--no-currency] [--max-anchors N] [--show-prompt]
+	return `usage: wealthdb resolve-symbols [-n | --dry-run] [--max-attempts N] [--no-currency] [--max-anchors N] [--show-prompt] [--overrides-only]
 
 Back-fill missing instrument ticker symbols by consulting the LLM
 configured in wealthdb.cfg's "model" block. Reads candidates from:
@@ -1026,12 +1160,19 @@ touched. The read path in 'positions' and 'transactions' picks
 them up via LEFT JOIN + COALESCE, so re-running the command with
 better data simply overwrites stale resolutions.
 
+cfg.symbol_overrides are synced to symbol_resolutions on every
+invocation (whether or not the LLM runs). Use --overrides-only to
+apply cfg overrides without making an LLM call — useful for fast
+correction of bad LLM resolutions.
+
 Flags:
-  -n, --dry-run        print the resolution plan, don't write
-      --max-attempts N retry the LLM up to N times when responses
-                       contain hallucinated rows (default 3)
-      --no-currency    drop the currency hint column from the prompt
-                       (experiment / ablation)
-      --max-anchors N  cap the in-context anchor examples (default 30)
-      --show-prompt    print the full LLM prompt to stderr (debugging)`
+  -n, --dry-run         print the resolution plan, don't write
+      --max-attempts N  retry the LLM up to N times when responses
+                        contain hallucinated rows (default 3)
+      --no-currency     drop the currency hint column from the prompt
+                        (experiment / ablation)
+      --max-anchors N   cap the in-context anchor examples (default 30)
+      --show-prompt     print the full LLM prompt to stderr (debugging)
+      --overrides-only  apply cfg.symbol_overrides and exit; skip the
+                        LLM round-trip entirely`
 }
