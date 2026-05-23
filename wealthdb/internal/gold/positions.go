@@ -45,6 +45,12 @@ type PositionRow struct {
 // spec; query rewriters / planner hints can replace this later
 // without changing the contract).
 func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64) ([]PositionRow, error) {
+	// LEFT JOIN against symbol_resolutions (lookup_kind =
+	// 'instrument_external_id' only — positions has no 'name'
+	// equivalent column) so LLM-derived tickers from `wealthdb
+	// resolve-symbols` fill in for instruments whose silver
+	// adapter couldn't surface a symbol. COALESCE prefers the
+	// instruments-table value when it exists.
 	const q = `
 WITH latest_per_source AS (
     SELECT silver_source_id, MAX(snapshot_at) AS snapshot_at
@@ -61,7 +67,7 @@ SELECT p.silver_source_id,
        a.account_category,
        p.position_key,
        p.instrument_external_id,
-       i.symbol,
+       COALESCE(i.symbol, sri.symbol) AS symbol,
        i.name,
        p.asset_class,
        p.currency,
@@ -74,6 +80,10 @@ SELECT p.silver_source_id,
   LEFT JOIN instruments i
     ON p.silver_source_id        = i.silver_source_id
    AND p.instrument_external_id  = i.instrument_external_id
+  LEFT JOIN symbol_resolutions sri
+    ON sri.silver_source_id = p.silver_source_id
+   AND sri.lookup_kind      = 'instrument_external_id'
+   AND sri.lookup_value     = p.instrument_external_id
   JOIN latest_per_source l
     ON p.silver_source_id = l.silver_source_id
    AND p.snapshot_at      = l.snapshot_at

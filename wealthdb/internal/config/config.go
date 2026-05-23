@@ -29,6 +29,23 @@ type Config struct {
 	// adapter has stamped its own values, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
+	// Model configures the LLM endpoint used by `wealthdb
+	// resolve-symbols` to back-fill missing instrument tickers.
+	// Optional; required only when that subcommand runs.
+	Model *ModelConfig `json:"model,omitempty"`
+}
+
+// ModelConfig is the `model` block of wealthdb.cfg. The only
+// API shape supported today is the OpenAI-compatible Chat
+// Completions endpoint (`api: "openai-completions"`); ThinkingFormat
+// lets the resolve-symbols pipeline strip R1-style `<think>` blocks
+// from the response before parsing.
+type ModelConfig struct {
+	BaseURL        string `json:"baseUrl"`
+	API            string `json:"api"`
+	APIKey         string `json:"apiKey,omitempty"`
+	Name           string `json:"name"`
+	ThinkingFormat string `json:"thinkingFormat,omitempty"`
 }
 
 // SilverSource is one entry under `silver_sources` in the config

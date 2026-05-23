@@ -25,7 +25,12 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	}()
 
 	// FK order: facts → dimensions → audit → registration.
+	// symbol_resolutions is per-source LLM-derived data that
+	// references instrument_external_id / transaction.description
+	// in the source; clear it alongside so the next load+resolve
+	// cycle starts from a clean slate.
 	for _, stmt := range []string{
+		`DELETE FROM symbol_resolutions WHERE silver_source_id = ?`,
 		`DELETE FROM transactions   WHERE silver_source_id = ?`,
 		`DELETE FROM fx_rates       WHERE silver_source_id = ?`,
 		`DELETE FROM cash_balances  WHERE silver_source_id = ?`,

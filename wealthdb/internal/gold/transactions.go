@@ -58,6 +58,12 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 	if order == SortDescending {
 		direction = "DESC"
 	}
+	// Two LEFT JOINs against symbol_resolutions cover the two
+	// lookup_kind discriminators populated by `wealthdb
+	// resolve-symbols`: ID-keyed (matches t.instrument_external_id)
+	// and name-keyed (matches t.description). COALESCE prefers the
+	// joined instruments.symbol first; the LLM-derived fallback
+	// only fires when instruments produced NULL.
 	q := `
 SELECT t.silver_source_id,
        t.transaction_external_id,
@@ -68,7 +74,7 @@ SELECT t.silver_source_id,
        a.nickname,
        a.account_category,
        t.instrument_external_id,
-       i.symbol,
+       COALESCE(i.symbol, sri.symbol, srn.symbol) AS symbol,
        i.name,
        i.asset_class,
        t.kind,
@@ -85,6 +91,14 @@ SELECT t.silver_source_id,
   LEFT JOIN instruments i
     ON t.silver_source_id        = i.silver_source_id
    AND t.instrument_external_id  = i.instrument_external_id
+  LEFT JOIN symbol_resolutions sri
+    ON sri.silver_source_id = t.silver_source_id
+   AND sri.lookup_kind      = 'instrument_external_id'
+   AND sri.lookup_value     = t.instrument_external_id
+  LEFT JOIN symbol_resolutions srn
+    ON srn.silver_source_id = t.silver_source_id
+   AND srn.lookup_kind      = 'name'
+   AND srn.lookup_value     = t.description
  WHERE t.occurred_at BETWEEN ? AND ?
  ORDER BY t.occurred_at ` + direction + `, t.silver_source_id, t.transaction_external_id`
 

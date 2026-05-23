@@ -23,6 +23,7 @@ var helpText = map[string]string{
 	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
 	"status":       "Report gold state vs each silver source (-v for taxonomy drift counts).",
 	"snapshots":    "List snapshots gold has loaded for a silver source (-a for all).",
+	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.model.",
 	"help":         "Show this help, or detailed help for a subcommand.",
 }
 

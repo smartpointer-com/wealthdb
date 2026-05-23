@@ -360,7 +360,7 @@ func TestResetClearsEverything(t *testing.T) {
 	for _, table := range []string{
 		"transactions", "fx_rates", "cash_balances",
 		"positions", "instruments", "accounts",
-		"load_audit", "silver_sources",
+		"load_audit", "silver_sources", "symbol_resolutions",
 	} {
 		if n := h.goldCount(t, table); n != 0 {
 			t.Errorf("after reset: %s has %d rows, want 0", table, n)
