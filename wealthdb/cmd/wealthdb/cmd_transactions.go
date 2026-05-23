@@ -154,7 +154,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	if err != nil {
 		return err
 	}
-	return writeFormatted(stdout, fmtChoice, transactionsTable(rendered, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet))
 }
 
 // renderedTx pairs a raw transaction with its net_amount
@@ -196,22 +196,8 @@ func convertTxAll(ctx context.Context, db *sql.DB, rows []gold.TransactionRow, o
 
 // ---- column registry -----------------------------------------------------
 
-type txColumnSpec struct {
-	Name    string
-	Header  string
-	Align   output.Alignment
-	Extract func(renderedTx) string
-}
-
-func (c txColumnSpec) header() string {
-	if c.Header != "" {
-		return c.Header
-	}
-	return c.Name
-}
-
-func buildTransactionColumnRegistry(outCcy string) []txColumnSpec {
-	return []txColumnSpec{
+func buildTransactionColumnRegistry(outCcy string) []columnSpec[renderedTx] {
+	return []columnSpec[renderedTx]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return r.Row.SilverSourceID }},
 		{Name: "date", Align: output.AlignLeft,
@@ -283,74 +269,8 @@ var defaultTransactionColumns = []string{
 	"instrument_id", "currency", "net_amount", "value",
 }
 
-func resolveTransactionColumns(flagValue, outCcy string) ([]txColumnSpec, error) {
-	registry := buildTransactionColumnRegistry(outCcy)
-	flagValue = strings.TrimSpace(flagValue)
-	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return txColumnsByName(applyColumnsDelta(defaultTransactionColumns, adds, removes), registry)
-	}
-	switch flagValue {
-	case "", "default":
-		return txColumnsByName(defaultTransactionColumns, registry)
-	case "all":
-		out := make([]txColumnSpec, len(registry))
-		copy(out, registry)
-		return out, nil
-	}
-	names := strings.Split(flagValue, ",")
-	for i, n := range names {
-		names[i] = strings.TrimSpace(n)
-	}
-	return txColumnsByName(names, registry)
-}
-
-func txColumnsByName(names []string, registry []txColumnSpec) ([]txColumnSpec, error) {
-	index := make(map[string]txColumnSpec, len(registry))
-	for _, c := range registry {
-		index[c.Name] = c
-	}
-	out := make([]txColumnSpec, 0, len(names))
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		c, ok := index[n]
-		if !ok {
-			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinTxColumnNames(registry))
-		}
-		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("--columns produced an empty list")
-	}
-	return out, nil
-}
-
-func joinTxColumnNames(registry []txColumnSpec) string {
-	names := make([]string, len(registry))
-	for i, c := range registry {
-		names[i] = c.Name
-	}
-	return strings.Join(names, ", ")
-}
-
-func transactionsTable(rows []renderedTx, cols []txColumnSpec) output.Table {
-	t := output.Table{
-		Columns: make([]string, len(cols)),
-		Aligns:  make([]output.Alignment, len(cols)),
-	}
-	for i, c := range cols {
-		t.Columns[i] = c.header()
-		t.Aligns[i] = c.Align
-	}
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			cells[i] = c.Extract(r)
-		}
-		t.Rows = append(t.Rows, cells)
-	}
-	return t
+func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[renderedTx], error) {
+	return resolveColumns(flagValue, defaultTransactionColumns, buildTransactionColumnRegistry(outCcy))
 }
 
 func transactionsUsage() string {
@@ -384,7 +304,7 @@ Flags:
       --fx-mode MODE       'historic' (default; rate at occurred_at) or 'current' (latest rate)
 
 Available columns:
-  ` + joinTxColumnNames(registry) + `
+  ` + joinColumnNames(registry) + `
 
   (The 'value' column renders as 'value_<CCY>' in the header,
    reflecting your -x/--currency choice.)

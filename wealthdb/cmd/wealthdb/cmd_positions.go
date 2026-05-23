@@ -80,7 +80,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return errs.Newf(2, "positions: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
 	}
 
-	colSet, err := resolveColumns(*cols, outCcy)
+	colSet, err := resolvePositionColumns(*cols, outCcy)
 	if err != nil {
 		return errs.Newf(2, "positions: %s", err.Error())
 	}
@@ -122,7 +122,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, positionsTable(rendered, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet))
 }
 
 // writeFormatted dispatches to the right output.Write* function
@@ -188,33 +188,13 @@ func convertAll(ctx context.Context, db *sql.DB, rows []gold.PositionRow, outCcy
 
 // ---- column registry -----------------------------------------------------
 
-// columnSpec describes one selectable output column for `wealthdb
-// positions`. The Extract function pulls the cell value out of a
-// renderedRow; the Header overrides the column name in display
-// (used by the dynamic `value` column to render as `value_USD` /
-// `value_CHF` etc.). Align is honoured by table-style formatters;
-// numeric columns are right-aligned so figures line up.
-type columnSpec struct {
-	Name    string
-	Header  string // empty ⇒ same as Name
-	Align   output.Alignment
-	Extract func(renderedRow) string
-}
-
-func (c columnSpec) header() string {
-	if c.Header != "" {
-		return c.Header
-	}
-	return c.Name
-}
-
 // buildColumnRegistry returns the full set of available columns
 // for the given output currency. Most entries are constant; the
 // dynamic `value` column embeds the currency in its header
 // (`value_USD`, `value_CHF`, ...) and looks up the converted
 // amount on each row.
-func buildColumnRegistry(outCcy string) []columnSpec {
-	return []columnSpec{
+func buildColumnRegistry(outCcy string) []columnSpec[renderedRow] {
+	return []columnSpec[renderedRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return rr.Row.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft,
@@ -291,85 +271,8 @@ var defaultColumns = []string{
 	"market_value", "value",
 }
 
-// resolveColumns turns a --columns flag value into an ordered list
-// of columnSpec. Supports the special values "default" and "all",
-// as well as comma-separated explicit lists. Returns a helpful
-// error on unknown column names. The output currency is needed so
-// the dynamic `value` column gets the right header.
-func resolveColumns(flagValue, outCcy string) ([]columnSpec, error) {
-	registry := buildColumnRegistry(outCcy)
-	flagValue = strings.TrimSpace(flagValue)
-	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return columnsByName(applyColumnsDelta(defaultColumns, adds, removes), registry)
-	}
-	switch flagValue {
-	case "", "default":
-		return columnsByName(defaultColumns, registry)
-	case "all":
-		out := make([]columnSpec, len(registry))
-		copy(out, registry)
-		return out, nil
-	}
-	names := strings.Split(flagValue, ",")
-	for i, n := range names {
-		names[i] = strings.TrimSpace(n)
-	}
-	return columnsByName(names, registry)
-}
-
-func columnsByName(names []string, registry []columnSpec) ([]columnSpec, error) {
-	index := make(map[string]columnSpec, len(registry))
-	for _, c := range registry {
-		index[c.Name] = c
-	}
-	out := make([]columnSpec, 0, len(names))
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		c, ok := index[n]
-		if !ok {
-			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinColumnNames(registry))
-		}
-		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("--columns produced an empty list")
-	}
-	return out, nil
-}
-
-func joinColumnNames(registry []columnSpec) string {
-	names := make([]string, len(registry))
-	for i, c := range registry {
-		names[i] = c.Name
-	}
-	return strings.Join(names, ", ")
-}
-
-// positionsTable converts a slice of renderedRow into the
-// generic output.Table the formatter expects, using the caller's
-// selected columns. Column alignment is propagated so right-
-// aligned numeric columns render with their decimal points lined
-// up. Each column's header may override the registry name (e.g.
-// `value` renders as `value_USD`).
-func positionsTable(rows []renderedRow, cols []columnSpec) output.Table {
-	t := output.Table{
-		Columns: make([]string, len(cols)),
-		Aligns:  make([]output.Alignment, len(cols)),
-	}
-	for i, c := range cols {
-		t.Columns[i] = c.header()
-		t.Aligns[i] = c.Align
-	}
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			cells[i] = c.Extract(r)
-		}
-		t.Rows = append(t.Rows, cells)
-	}
-	return t
+func resolvePositionColumns(flagValue, outCcy string) ([]columnSpec[renderedRow], error) {
+	return resolveColumns(flagValue, defaultColumns, buildColumnRegistry(outCcy))
 }
 
 func positionsUsage() string {

@@ -110,28 +110,14 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, portfoliosTable(rows, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet))
 }
 
 // ---- column registry -----------------------------------------------------
 
-type portfolioColumnSpec struct {
-	Name    string
-	Header  string
-	Align   output.Alignment
-	Extract func(gold.PortfolioRow) string
-}
-
-func (c portfolioColumnSpec) header() string {
-	if c.Header != "" {
-		return c.Header
-	}
-	return c.Name
-}
-
-func buildPortfolioColumnRegistry(outCcy string) []portfolioColumnSpec {
+func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow] {
 	suffix := "_" + outCcy
-	return []portfolioColumnSpec{
+	return []columnSpec[gold.PortfolioRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return r.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(r gold.PortfolioRow) string {
@@ -183,74 +169,8 @@ var defaultPortfolioColumns = []string{
 	"total_value_outccy",
 }
 
-func resolvePortfolioColumns(flagValue, outCcy string) ([]portfolioColumnSpec, error) {
-	registry := buildPortfolioColumnRegistry(outCcy)
-	flagValue = strings.TrimSpace(flagValue)
-	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return portfolioColumnsByName(applyColumnsDelta(defaultPortfolioColumns, adds, removes), registry)
-	}
-	switch flagValue {
-	case "", "default":
-		return portfolioColumnsByName(defaultPortfolioColumns, registry)
-	case "all":
-		out := make([]portfolioColumnSpec, len(registry))
-		copy(out, registry)
-		return out, nil
-	}
-	names := strings.Split(flagValue, ",")
-	for i, n := range names {
-		names[i] = strings.TrimSpace(n)
-	}
-	return portfolioColumnsByName(names, registry)
-}
-
-func portfolioColumnsByName(names []string, registry []portfolioColumnSpec) ([]portfolioColumnSpec, error) {
-	index := make(map[string]portfolioColumnSpec, len(registry))
-	for _, c := range registry {
-		index[c.Name] = c
-	}
-	out := make([]portfolioColumnSpec, 0, len(names))
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		c, ok := index[n]
-		if !ok {
-			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinPortfolioColumnNames(registry))
-		}
-		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("--columns produced an empty list")
-	}
-	return out, nil
-}
-
-func joinPortfolioColumnNames(registry []portfolioColumnSpec) string {
-	names := make([]string, len(registry))
-	for i, c := range registry {
-		names[i] = c.Name
-	}
-	return strings.Join(names, ", ")
-}
-
-func portfoliosTable(rows []gold.PortfolioRow, cols []portfolioColumnSpec) output.Table {
-	t := output.Table{
-		Columns: make([]string, len(cols)),
-		Aligns:  make([]output.Alignment, len(cols)),
-	}
-	for i, c := range cols {
-		t.Columns[i] = c.header()
-		t.Aligns[i] = c.Align
-	}
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			cells[i] = c.Extract(r)
-		}
-		t.Rows = append(t.Rows, cells)
-	}
-	return t
+func resolvePortfolioColumns(flagValue, outCcy string) ([]columnSpec[gold.PortfolioRow], error) {
+	return resolveColumns(flagValue, defaultPortfolioColumns, buildPortfolioColumnRegistry(outCcy))
 }
 
 func portfoliosUsage() string {
@@ -274,7 +194,7 @@ Flags:
       --fx-mode MODE       'historic' (default) or 'current'
 
 Available columns:
-  ` + joinPortfolioColumnNames(registry) + `
+  ` + joinColumnNames(registry) + `
 
   ('positions_value_outccy', 'cash_balance_outccy',
    'total_value_outccy' render as positions_value_<CCY> etc.)

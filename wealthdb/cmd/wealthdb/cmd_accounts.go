@@ -112,28 +112,14 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, accountsTable(rows, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet))
 }
 
 // ---- column registry -----------------------------------------------------
 
-type accountColumnSpec struct {
-	Name    string
-	Header  string // empty ⇒ same as Name
-	Align   output.Alignment
-	Extract func(gold.AccountRow) string
-}
-
-func (c accountColumnSpec) header() string {
-	if c.Header != "" {
-		return c.Header
-	}
-	return c.Name
-}
-
-func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
+func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 	suffix := "_" + outCcy
-	return []accountColumnSpec{
+	return []columnSpec[gold.AccountRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
@@ -196,74 +182,8 @@ var defaultAccountColumns = []string{
 	"total_value_outccy",
 }
 
-func resolveAccountColumns(flagValue, outCcy string) ([]accountColumnSpec, error) {
-	registry := buildAccountColumnRegistry(outCcy)
-	flagValue = strings.TrimSpace(flagValue)
-	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return accountColumnsByName(applyColumnsDelta(defaultAccountColumns, adds, removes), registry)
-	}
-	switch flagValue {
-	case "", "default":
-		return accountColumnsByName(defaultAccountColumns, registry)
-	case "all":
-		out := make([]accountColumnSpec, len(registry))
-		copy(out, registry)
-		return out, nil
-	}
-	names := strings.Split(flagValue, ",")
-	for i, n := range names {
-		names[i] = strings.TrimSpace(n)
-	}
-	return accountColumnsByName(names, registry)
-}
-
-func accountColumnsByName(names []string, registry []accountColumnSpec) ([]accountColumnSpec, error) {
-	index := make(map[string]accountColumnSpec, len(registry))
-	for _, c := range registry {
-		index[c.Name] = c
-	}
-	out := make([]accountColumnSpec, 0, len(names))
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		c, ok := index[n]
-		if !ok {
-			return nil, fmt.Errorf("unknown column %q; available: %s", n, joinAccountColumnNames(registry))
-		}
-		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("--columns produced an empty list")
-	}
-	return out, nil
-}
-
-func joinAccountColumnNames(registry []accountColumnSpec) string {
-	names := make([]string, len(registry))
-	for i, c := range registry {
-		names[i] = c.Name
-	}
-	return strings.Join(names, ", ")
-}
-
-func accountsTable(rows []gold.AccountRow, cols []accountColumnSpec) output.Table {
-	t := output.Table{
-		Columns: make([]string, len(cols)),
-		Aligns:  make([]output.Alignment, len(cols)),
-	}
-	for i, c := range cols {
-		t.Columns[i] = c.header()
-		t.Aligns[i] = c.Align
-	}
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			cells[i] = c.Extract(r)
-		}
-		t.Rows = append(t.Rows, cells)
-	}
-	return t
+func resolveAccountColumns(flagValue, outCcy string) ([]columnSpec[gold.AccountRow], error) {
+	return resolveColumns(flagValue, defaultAccountColumns, buildAccountColumnRegistry(outCcy))
 }
 
 func accountsUsage() string {
@@ -288,7 +208,7 @@ Flags:
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
 
 Available columns:
-  ` + joinAccountColumnNames(registry) + `
+  ` + joinColumnNames(registry) + `
 
   (The 'positions_value_outccy', 'cash_balance_outccy', and
    'total_value_outccy' columns render as 'positions_value_<CCY>',
