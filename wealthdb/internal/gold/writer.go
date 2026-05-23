@@ -39,6 +39,14 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 	// directions. We use per-column CASE to keep attributes
 	// pinned when EXCLUDED is older, while letting first_seen_at
 	// and last_seen_at always reflect the union.
+	//
+	// On nullable columns the newer-wins branch is wrapped in
+	// COALESCE so a later writer's NULL doesn't clobber an
+	// earlier writer's value — NULL here means "I don't carry
+	// this field", not "set it to NULL". This matters in
+	// multi-source merges (e.g. schwab-web emits AccountChange
+	// rows for its newer snapshots without DisplayName; without
+	// the COALESCE they'd erase the api side's accountNumber).
 	const q = `
 INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,
@@ -50,19 +58,19 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
     account_kind     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
     display_name     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.display_name ELSE accounts.display_name END,
+                            THEN COALESCE(EXCLUDED.display_name, accounts.display_name) ELSE accounts.display_name END,
     base_currency    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.base_currency ELSE accounts.base_currency END,
+                            THEN COALESCE(EXCLUDED.base_currency, accounts.base_currency) ELSE accounts.base_currency END,
     relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.relationship_id ELSE accounts.relationship_id END,
+                            THEN COALESCE(EXCLUDED.relationship_id, accounts.relationship_id) ELSE accounts.relationship_id END,
     nickname         = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.nickname ELSE accounts.nickname END,
+                            THEN COALESCE(EXCLUDED.nickname, accounts.nickname) ELSE accounts.nickname END,
     account_category = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.account_category ELSE accounts.account_category END,
+                            THEN COALESCE(EXCLUDED.account_category, accounts.account_category) ELSE accounts.account_category END,
     portfolio_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.portfolio_external_id ELSE accounts.portfolio_external_id END,
+                            THEN COALESCE(EXCLUDED.portfolio_external_id, accounts.portfolio_external_id) ELSE accounts.portfolio_external_id END,
     payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.payload ELSE accounts.payload END,
+                            THEN COALESCE(EXCLUDED.payload, accounts.payload) ELSE accounts.payload END,
     first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
     last_seen_at     = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at)`
 
@@ -107,15 +115,15 @@ INSERT INTO portfolios (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, portfolio_external_id) DO UPDATE SET
     display_name     = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN EXCLUDED.display_name ELSE portfolios.display_name END,
+                            THEN COALESCE(EXCLUDED.display_name, portfolios.display_name) ELSE portfolios.display_name END,
     base_currency    = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN EXCLUDED.base_currency ELSE portfolios.base_currency END,
+                            THEN COALESCE(EXCLUDED.base_currency, portfolios.base_currency) ELSE portfolios.base_currency END,
     relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN EXCLUDED.relationship_id ELSE portfolios.relationship_id END,
+                            THEN COALESCE(EXCLUDED.relationship_id, portfolios.relationship_id) ELSE portfolios.relationship_id END,
     nickname         = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN EXCLUDED.nickname ELSE portfolios.nickname END,
+                            THEN COALESCE(EXCLUDED.nickname, portfolios.nickname) ELSE portfolios.nickname END,
     payload          = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN EXCLUDED.payload ELSE portfolios.payload END,
+                            THEN COALESCE(EXCLUDED.payload, portfolios.payload) ELSE portfolios.payload END,
     first_seen_at    = LEAST   (portfolios.first_seen_at, EXCLUDED.first_seen_at),
     last_seen_at     = GREATEST(portfolios.last_seen_at,  EXCLUDED.last_seen_at)`
 
@@ -156,17 +164,17 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
     asset_class   = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
                          THEN EXCLUDED.asset_class ELSE instruments.asset_class END,
     isin          = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.isin ELSE instruments.isin END,
+                         THEN COALESCE(EXCLUDED.isin, instruments.isin) ELSE instruments.isin END,
     cusip         = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.cusip ELSE instruments.cusip END,
+                         THEN COALESCE(EXCLUDED.cusip, instruments.cusip) ELSE instruments.cusip END,
     symbol        = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.symbol ELSE instruments.symbol END,
+                         THEN COALESCE(EXCLUDED.symbol, instruments.symbol) ELSE instruments.symbol END,
     name          = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.name ELSE instruments.name END,
+                         THEN COALESCE(EXCLUDED.name, instruments.name) ELSE instruments.name END,
     currency      = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.currency ELSE instruments.currency END,
+                         THEN COALESCE(EXCLUDED.currency, instruments.currency) ELSE instruments.currency END,
     payload       = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.payload ELSE instruments.payload END,
+                         THEN COALESCE(EXCLUDED.payload, instruments.payload) ELSE instruments.payload END,
     first_seen_at = LEAST   (instruments.first_seen_at, EXCLUDED.first_seen_at),
     last_seen_at  = GREATEST(instruments.last_seen_at,  EXCLUDED.last_seen_at)`
 
