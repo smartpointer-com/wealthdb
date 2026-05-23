@@ -287,7 +287,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		netAmount = *tp.NetAmount
 	}
 
-	kind := kindFor(silverKind, netAmount)
+	kind := kindFor(silverKind, netAmount, tp.Description)
 
 	tx := canonical.TransactionChange{
 		TransactionExternalID: activityID,

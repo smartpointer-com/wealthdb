@@ -354,28 +354,38 @@ func TestTransactionsKindMapping(t *testing.T) {
 	zero := canonical.NewDecimalFromInt(0)
 
 	cases := []struct {
-		schwabKind string
-		amount     canonical.Decimal
-		want       canonical.TxKind
+		schwabKind  string
+		amount      canonical.Decimal
+		description string
+		want        canonical.TxKind
 	}{
-		{"TRADE", negative, canonical.TxKindBuy},
-		{"TRADE", positive, canonical.TxKindSell},
-		{"JOURNAL", zero, canonical.TxKindJournal},
-		{"DIVIDEND_OR_INTEREST", positive, canonical.TxKindDividend},
-		{"WIRE_IN", positive, canonical.TxKindDeposit},
-		{"WIRE_OUT", negative, canonical.TxKindWithdrawal},
-		{"CASH_RECEIPT", positive, canonical.TxKindDeposit},
-		{"CASH_DISBURSEMENT", negative, canonical.TxKindWithdrawal},
-		{"ELECTRONIC_FUND", negative, canonical.TxKindWithdrawal},
-		{"ELECTRONIC_FUND", positive, canonical.TxKindDeposit},
-		{"RECEIVE_AND_DELIVER", negative, canonical.TxKindTransferOut},
-		{"RECEIVE_AND_DELIVER", positive, canonical.TxKindTransferIn},
-		{"SMA_ADJUSTMENT", zero, canonical.TxKindOther},
-		{"MEMORANDUM", zero, canonical.TxKindOther},
+		{"TRADE", negative, "", canonical.TxKindBuy},
+		{"TRADE", positive, "", canonical.TxKindSell},
+		{"JOURNAL", zero, "", canonical.TxKindJournal},
+		// DIVIDEND_OR_INTEREST splits by description.
+		{"DIVIDEND_OR_INTEREST", positive, "VANGUARD S&P 500 ETF", canonical.TxKindDividend},
+		{"DIVIDEND_OR_INTEREST", positive, "META PLATFORMS INC CLASS A", canonical.TxKindDividend},
+		{"DIVIDEND_OR_INTEREST", positive, "BANK INT 011625-021525 SCHWAB BANK", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", positive, "SCHWAB1 INT 03/28-04/28", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", positive, "INTEREST 12/30THRU 01/29", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", negative, "MARGIN INTEREST 03/01THRU 04/01", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", positive, "US TREASU NT 0.625%05/30UST NOTE DUE 05/15/30", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", positive, "US TREASURY 1.25%05/50UST BOND DUE 05/15/50", canonical.TxKindInterest},
+		{"DIVIDEND_OR_INTEREST", positive, "", canonical.TxKindDividend},
+		{"WIRE_IN", positive, "", canonical.TxKindDeposit},
+		{"WIRE_OUT", negative, "", canonical.TxKindWithdrawal},
+		{"CASH_RECEIPT", positive, "", canonical.TxKindDeposit},
+		{"CASH_DISBURSEMENT", negative, "", canonical.TxKindWithdrawal},
+		{"ELECTRONIC_FUND", negative, "", canonical.TxKindWithdrawal},
+		{"ELECTRONIC_FUND", positive, "", canonical.TxKindDeposit},
+		{"RECEIVE_AND_DELIVER", negative, "", canonical.TxKindTransferOut},
+		{"RECEIVE_AND_DELIVER", positive, "", canonical.TxKindTransferIn},
+		{"SMA_ADJUSTMENT", zero, "", canonical.TxKindOther},
+		{"MEMORANDUM", zero, "", canonical.TxKindOther},
 	}
 	for _, c := range cases {
-		if got := kindFor(c.schwabKind, c.amount); got != c.want {
-			t.Errorf("kindFor(%q, %s) = %q, want %q", c.schwabKind, c.amount.String(), got, c.want)
+		if got := kindFor(c.schwabKind, c.amount, c.description); got != c.want {
+			t.Errorf("kindFor(%q, %s, %q) = %q, want %q", c.schwabKind, c.amount.String(), c.description, got, c.want)
 		}
 	}
 }
