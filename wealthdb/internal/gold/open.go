@@ -17,8 +17,8 @@ import (
 )
 
 // Mode controls whether the gold DB is opened read-write or
-// read-only. The pathmode package (milestone 6) chooses one based
-// on filesystem permissions and the -r flag.
+// read-only. The pathmode package chooses one based on
+// filesystem permissions and the -r flag.
 type Mode int
 
 const (

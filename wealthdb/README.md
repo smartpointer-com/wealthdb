@@ -29,15 +29,17 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb portfolios` | Print one row per portfolio (plus sentinel-NULL row per silver source) with derived value aggregates. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
+| `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
+| `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
 | `wealthdb help [<subcommand>]` | Help. |
 
-Verified end-to-end against real Schwab + UBS + Swissquote
-silvers.
+Adapters ship for Schwab (API + web statements), UBS (PSN feed +
+web export), and Swissquote.
 
-Future work (queued for separate milestones) lives in
-[docs/DESIGN.md §13](docs/DESIGN.md). Notable items:
-account-type categorisation (§13.9), instrument-name enrichment
-for Schwab equity, market-data feeds (§13.8).
+Future work lives in [docs/DESIGN.md §13](docs/DESIGN.md).
+Notable items: account-type categorisation (§13.9),
+instrument-name enrichment for Schwab equity, market-data feeds
+(§13.8).
 
 ## Quickstart
 

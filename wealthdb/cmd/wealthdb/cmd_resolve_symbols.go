@@ -1145,7 +1145,8 @@ func resolveSymbolsUsage() string {
 	return `usage: wealthdb resolve-symbols [-n | --dry-run] [--max-attempts N] [--no-currency] [--max-anchors N] [--show-prompt] [--overrides-only]
 
 Back-fill missing instrument ticker symbols by consulting the LLM
-configured in wealthdb.cfg's "model" block. Reads candidates from:
+configured in wealthdb.cfg's "symbol_resolution.model" block.
+Reads candidates from:
 
   - instruments rows where symbol IS NULL but name IS NOT NULL
     (typical: UBS ETFs whose descriptions don't carry a ticker —
@@ -1160,10 +1161,10 @@ touched. The read path in 'positions' and 'transactions' picks
 them up via LEFT JOIN + COALESCE, so re-running the command with
 better data simply overwrites stale resolutions.
 
-cfg.symbol_overrides are synced to symbol_resolutions on every
-invocation (whether or not the LLM runs). Use --overrides-only to
-apply cfg overrides without making an LLM call — useful for fast
-correction of bad LLM resolutions.
+cfg.symbol_resolution.overrides are synced to symbol_resolutions
+on every invocation (whether or not the LLM runs). Use
+--overrides-only to apply cfg overrides without making an LLM call
+— useful for fast correction of bad LLM resolutions.
 
 Flags:
   -n, --dry-run         print the resolution plan, don't write

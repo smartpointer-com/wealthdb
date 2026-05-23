@@ -1,8 +1,6 @@
 // Package output renders tabular query results to a writer.
 // Each format (table, csv, csv_plain, json) is a separate
 // function over the same Table value type.
-//
-// Milestone 6 ships table only; CSV/JSON land in milestone 10.
 package output
 
 import "fmt"
