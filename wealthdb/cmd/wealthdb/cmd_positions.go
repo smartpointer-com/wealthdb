@@ -39,7 +39,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
 	}
-	if err := fs.Parse(subargs); err != nil {
+	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
 		// flag.Parse already printed usage to stderr; suppress
 		// further error text for the standard -h case.
 		if errors.Is(err, flag.ErrHelp) {
@@ -299,6 +299,9 @@ var defaultColumns = []string{
 func resolveColumns(flagValue, outCcy string) ([]columnSpec, error) {
 	registry := buildColumnRegistry(outCcy)
 	flagValue = strings.TrimSpace(flagValue)
+	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
+		return columnsByName(applyColumnsDelta(defaultColumns, adds, removes), registry)
+	}
 	switch flagValue {
 	case "", "default":
 		return columnsByName(defaultColumns, registry)
@@ -383,7 +386,9 @@ config.default_currency, historic FX mode.
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (default: table; csv / csv_plain / json land in M10)
-  -C, --columns COLS       comma-separated column names, or 'default' / 'all'
+  -C, --columns COLS       comma-separated column names, 'default', 'all', or
+                           a +ADD,...-REMOVE,... delta against the default set
+                           (e.g. -C+account_id-market_value)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
       --with-cash          also emit one row per account+currency with non-zero cash

@@ -84,7 +84,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	// positionals. Reorder so flag tokens float to the front; the
 	// positional date args end up at the back where fs.Args()
 	// returns them after Parse.
-	reordered := reorderFlagsFirst(subargs, txValueFlags)
+	reordered := reorderFlagsFirst(splitFusedColumnsFlag(subargs), txValueFlags)
 	if err := fs.Parse(reordered); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -280,12 +280,15 @@ func buildTransactionColumnRegistry(outCcy string) []txColumnSpec {
 
 var defaultTransactionColumns = []string{
 	"silver_source", "date", "account", "kind", "symbol",
-	"currency", "net_amount", "value",
+	"instrument_id", "currency", "net_amount", "value",
 }
 
 func resolveTransactionColumns(flagValue, outCcy string) ([]txColumnSpec, error) {
 	registry := buildTransactionColumnRegistry(outCcy)
 	flagValue = strings.TrimSpace(flagValue)
+	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
+		return txColumnsByName(applyColumnsDelta(defaultTransactionColumns, adds, removes), registry)
+	}
 	switch flagValue {
 	case "", "default":
 		return txColumnsByName(defaultTransactionColumns, registry)
@@ -374,7 +377,9 @@ flags):
 Flags:
   -r, --reverse            reverse-time order (newest first); default is oldest first
   -f, --format FORMAT      output format: table | csv | csv_plain | json
-  -C, --columns COLS       comma-separated column names, or 'default' / 'all'
+  -C, --columns COLS       comma-separated column names, 'default', 'all', or
+                           a +ADD,...-REMOVE,... delta against the default set
+                           (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at occurred_at) or 'current' (latest rate)
 

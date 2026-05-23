@@ -44,7 +44,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, accountsUsage())
 	}
-	if err := fs.Parse(subargs); err != nil {
+	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
@@ -191,14 +191,17 @@ func buildAccountColumnRegistry(outCcy string) []accountColumnSpec {
 }
 
 var defaultAccountColumns = []string{
-	"silver_source", "snapshot_date", "account", "base_currency",
-	"positions_value", "cash_balance", "total_value",
+	"silver_source", "snapshot_date", "account", "account_kind",
+	"base_currency", "positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }
 
 func resolveAccountColumns(flagValue, outCcy string) ([]accountColumnSpec, error) {
 	registry := buildAccountColumnRegistry(outCcy)
 	flagValue = strings.TrimSpace(flagValue)
+	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
+		return accountColumnsByName(applyColumnsDelta(defaultAccountColumns, adds, removes), registry)
+	}
 	switch flagValue {
 	case "", "default":
 		return accountColumnsByName(defaultAccountColumns, registry)
@@ -278,7 +281,9 @@ path to that currency.
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (table | csv | csv_plain | json)
-  -C, --columns COLS       comma-separated column names, or 'default' / 'all'
+  -C, --columns COLS       comma-separated column names, 'default', 'all', or
+                           a +ADD,...-REMOVE,... delta against the default set
+                           (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
 

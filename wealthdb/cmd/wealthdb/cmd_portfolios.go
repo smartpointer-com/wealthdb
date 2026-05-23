@@ -42,7 +42,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, portfoliosUsage())
 	}
-	if err := fs.Parse(subargs); err != nil {
+	if err := fs.Parse(splitFusedColumnsFlag(subargs)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
@@ -186,6 +186,9 @@ var defaultPortfolioColumns = []string{
 func resolvePortfolioColumns(flagValue, outCcy string) ([]portfolioColumnSpec, error) {
 	registry := buildPortfolioColumnRegistry(outCcy)
 	flagValue = strings.TrimSpace(flagValue)
+	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
+		return portfolioColumnsByName(applyColumnsDelta(defaultPortfolioColumns, adds, removes), registry)
+	}
 	switch flagValue {
 	case "", "default":
 		return portfolioColumnsByName(defaultPortfolioColumns, registry)
@@ -264,7 +267,9 @@ which equals 'wealthdb positions --with-cash'.
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (table | csv | csv_plain | json)
-  -C, --columns COLS       comma-separated column names, or 'default' / 'all'
+  -C, --columns COLS       comma-separated column names, 'default', 'all', or
+                           a +ADD,...-REMOVE,... delta against the default set
+                           (e.g. -C+relationship_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
       --fx-mode MODE       'historic' (default) or 'current'
 
