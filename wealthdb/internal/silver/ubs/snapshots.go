@@ -80,9 +80,41 @@ func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, e
 
 func (s *snapshotStream) Close() error { return nil }
 
+// snapshotTimesInWindow returns the union of distinct snapshot_at
+// values across dump_runs and every PSN content table whose
+// snapshot_at column the adapter reads. ubs-psn-dump promotes
+// snapshot_at on content tables to the business-date midnight
+// (UTC) of the dump's effective as-of date, which differs from
+// the dump's wall-clock run time recorded in dump_runs. So
+// content rows never match a dump_runs timestamp; without the
+// union, the byTime dispatch in Snapshots() silently drops
+// every content row.
 func (c *psnReader) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
+	const q = `
+SELECT DISTINCT snapshot_at FROM (
+    SELECT snapshot_at FROM dump_runs            WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM cash_accounts        WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM safekeeping_accounts WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM portfolios           WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM holdings             WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM cash_balances        WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM instruments          WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM fx_rates             WHERE snapshot_at BETWEEN ? AND ?
+    UNION ALL
+    SELECT snapshot_at FROM forward_contracts    WHERE snapshot_at BETWEEN ? AND ?
+)
+ORDER BY snapshot_at`
+	rows, err := c.db.QueryContext(ctx, q,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End,
+		w.Start, w.End, w.Start, w.End, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("snapshotTimesInWindow: %w", err)
 	}
