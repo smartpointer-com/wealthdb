@@ -1,39 +1,39 @@
 #!/usr/bin/env python3
 """
-Schwab client-web bronze artefact downloader.
+Schwab client-web scrape helpers.
 
-Walks the Statements & Tax Forms page in the Schwab client UI,
-enumerates the user's accounts, and downloads every "bank
-document" PDF (Statements, Tax Forms, Letters, Reports & Plans —
-NOT Trade Confirmations) for the configured date window. Writes
-the bronze tree at <dest>/<UTC-timestamp>/ with one PDF per
-document plus a run.json manifest.
+Module-only — the public entry is `walk(page, dest, ...)`, called
+by login.py once it's driven Firefox through the CLI-MFA flow and
+the post-auth landing page is ready. No standalone CLI: the
+wrapper's `download` subcommand always goes through login.py
+because Schwab invalidates the persistent profile's session
+within seconds of Firefox closing.
 
-Per CLAUDE.md §1 this is a strictly read-only flow: we only ever
-click the document-type filter chips, the Search button, the
-account selector entries, the per-row "Download PDF" buttons,
-and the pagination Next button. We never touch trade entry,
-transfer entry, or any "submit/confirm" surface.
+walk() drives two read-only surfaces (CLAUDE.md §1):
 
-Headed Firefox driven against an Xvfb display (from entrypoint.sh)
-for the same Akamai-bypass reason as login.py — see README.md
-"Browser choice".
+  Statements & Tax Forms — enumerate the user's accounts, apply
+  the document-type chip filter, paginate the results, and fetch
+  every PDF (Statements / Tax Forms / Letters / Reports & Plans;
+  Trade Confirms intentionally skipped).
 
-Usage:
-    download.py --profile-dir <dir> --dest <bronze-root>
-                [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-                [--dry-run] [--screenshot-dir <dir>] [--trace] [-v]
+  Transaction History — drive the Export modal to save CSV / JSON
+  / XML of the full tx-history per account; with --with-more-detail,
+  also click each row's "More" link and capture the per-row detail
+  modal (Settle Date / CUSIP / Principal / Commission / Industry
+  Fee) into a sidecar more-details.json the loader merges into
+  silver.
+
+Bronze tree: <dest>/<UTC-timestamp>/ with one PDF per document
+under statements/<account>/ plus a run.json manifest.
 """
 
 from __future__ import annotations
 
-import argparse
-import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
-import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -49,90 +49,12 @@ LANDMARK_TIMEOUT_MS = 60_000
 # Bronze run-directory naming: <dest>/<UTC-timestamp>/
 RUN_DIR_FMT = "%Y%m%dT%H%M%SZ"
 
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument(
-        "--profile-dir", required=True, type=Path,
-        help=("Persistent Firefox profile dir, as minted by "
-              "login.py. download.py reuses the same profile so "
-              "Akamai's bot-manager state is preserved."),
-    )
-    p.add_argument(
-        "--dest", required=True, type=Path,
-        help=("Bronze tree root. A new <UTC-timestamp>/ subdir is "
-              "created under here for this run. PDFs land at "
-              "<dest>/<TS>/statements/<account>/<filename>.pdf, "
-              "manifest at <dest>/<TS>/run.json."),
-    )
-    p.add_argument(
-        "--range", dest="date_range",
-        choices=tuple(v for v in schwab.DATE_RANGE_VALUES if v != "Custom"),
-        default=schwab.DATE_RANGE_DEFAULT,
-        help=("Date-range preset for the Statements filter "
-              "(default: %(default)s — matches the sibling "
-              "schwab-api-dump / ubs-*-dump tools). Pass "
-              "Last10Years for a full backfill. Schwab's Custom "
-              "mode is not yet wired up — its date inputs need "
-              "DOM landmarking first."),
-    )
-    p.add_argument(
-        "--mode", choices=("statements", "transactions", "both"),
-        default="both",
-        help=("statements: walk Statements & Tax Forms, download "
-              "Statements / Tax Forms / Letters / Reports & Plans "
-              "PDFs (skipping Trade Confirms — see CLAUDE.md). "
-              "transactions: drive the Transaction History "
-              "Export modal to save CSV / JSON / XML of the full "
-              "tx-history per account. both: run statements then "
-              "transactions. Default: both."),
-    )
-    p.add_argument(
-        "--dry-run", action="store_true",
-        help=("Walk the page, enumerate accounts, list documents, "
-              "but do NOT click any PDF download button. Useful "
-              "for verifying selectors and projected work without "
-              "burning a bunch of Schwab document-fetch endpoints."),
-    )
-    p.add_argument(
-        "--with-more-detail", action="store_true",
-        help=("On the Transaction History pass, also click each "
-              "row's 'More' link and capture the per-row detail "
-              "modal contents (Settle Date, CUSIP, Principal, "
-              "Commission, Industry Fee, etc.) into a sidecar "
-              "more-details.json. Off by default — adds ~1 click "
-              "per transaction, which is several thousand extra "
-              "clicks for a multi-year backfill. The silver loader "
-              "merges these details into the transaction's payload "
-              "when the sidecar is present."),
-    )
-    p.add_argument(
-        "--screenshot-dir", default=None, type=Path,
-        help=("If set, write a screenshot at each stage and on "
-              "failures. Never auto-writes to the secrets dir."),
-    )
-    p.add_argument(
-        "--trace", action="store_true",
-        help=("Capture a Playwright trace bundle. Requires "
-              "--screenshot-dir."),
-    )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
-    return p.parse_args(argv)
-
-
 # ============================================================
-# Helpers shared with login.py
+# Helpers
 # ============================================================
 
 def ts_slug() -> str:
     return datetime.now(timezone.utc).strftime(RUN_DIR_FMT)
-
 
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """HTML + best-effort screenshot. See login.maybe_screenshot
@@ -167,47 +89,6 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     except Exception as e:
         log.debug("screenshot %s failed (HTML saved): %s", label, e)
 
-
-@contextlib.contextmanager
-def open_camoufox_context(profile_dir: Path, trace: bool):
-    """Mirror of login.open_camoufox_context; both scripts open the
-    same persistent profile so Akamai bot-manager state survives
-    across login.py → download.py invocations.
-
-    See login.py for the camoufox / `os="macos"` rationale.
-    """
-    from camoufox.sync_api import Camoufox
-    with Camoufox(
-        persistent_context=True,
-        user_data_dir=str(profile_dir),
-        os="macos",
-        window=(1280, 800),
-        headless=False,
-    ) as context:
-        if trace:
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
-        yield context
-
-
-def open_page(context):
-    """Open a fresh page on the persistent context. See
-    login.py.open_page for why we avoid context.pages[0]."""
-    return context.new_page()
-
-
-def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
-                        label: str) -> None:
-    if not trace:
-        return
-    if screenshot_dir is None:
-        log.warning("--trace without --screenshot-dir; trace discarded")
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{ts_slug()}-{label}-trace.zip"
-    context.tracing.stop(path=str(trace_path))
-    log.info("trace saved to %s", trace_path)
-
-
 # ============================================================
 # Account enumeration
 # ============================================================
@@ -220,17 +101,14 @@ def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
 # way depending on the rendering path.
 _SUFFIX_RE = re.compile(r"(?:…|\.{3})(\d{3,5})")
 
-
 def _suffix_of(label: str) -> str:
     m = _SUFFIX_RE.search(label)
     if not m:
         # Fall back to a stable hash of the label so we still
         # produce a per-account directory; not pretty, but never
         # collides.
-        import hashlib
         return "x" + hashlib.sha256(label.encode("utf-8")).hexdigest()[:8]
     return m.group(1)
-
 
 def enumerate_accounts(page) -> list[dict]:
     """Open the account selector dropdown and read every entry.
@@ -291,7 +169,6 @@ def enumerate_accounts(page) -> list[dict]:
         log.debug("  - %s (…%s, id=%s)", a["label"], a["suffix"], a["entry_id"])
     return accounts
 
-
 def select_account(page, entry_id: str) -> None:
     """Open the account selector and pick the entry with `entry_id`.
 
@@ -308,7 +185,6 @@ def select_account(page, entry_id: str) -> None:
     selector_button.click()
     page.wait_for_selector(f"#{entry_id}", timeout=LANDMARK_TIMEOUT_MS)
     page.locator(f"#{entry_id}").dispatch_event("click")
-
 
 # ============================================================
 # Filter configuration
@@ -358,12 +234,10 @@ def configure_doc_type_filter(page) -> None:
         # Schwab's chip handler ignores untrusted clicks.
         chip.click(force=True)
 
-
 def click_search(page) -> None:
     page.get_by_role(
         "button", name=schwab.SEARCH_BUTTON_TEXT, exact=True,
     ).first.click()
-
 
 def select_date_range(page, value: str) -> None:
     """Set every `<select id="date-range-select-id">` on the page
@@ -429,7 +303,6 @@ def select_date_range(page, value: str) -> None:
         )
     log.debug("date range set to %s on %d <select> element(s)", value, n_set)
 
-
 def click_visible_button(page, text: str, timeout_s: int = 5) -> bool:
     """Click the first visible button on the page whose text is
     exactly `text`. Returns True on click, False if no visible
@@ -450,7 +323,6 @@ def click_visible_button(page, text: str, timeout_s: int = 5) -> bool:
             continue
     return False
 
-
 # ============================================================
 # Result-table walking
 # ============================================================
@@ -459,7 +331,6 @@ def click_visible_button(page, text: str, timeout_s: int = 5) -> bool:
 #   "123 document(s) found from 05/19/2016 to 05/19/2026"
 # We just need the leading integer.
 _COUNT_RE = re.compile(r"^\s*(\d+)\s*document")
-
 
 def wait_for_results(page) -> int:
     """Wait for the search-result count to appear; return the count."""
@@ -475,7 +346,6 @@ def wait_for_results(page) -> int:
         log.warning("could not parse result count from %r", text)
         return -1
     return int(m.group(1))
-
 
 def iter_visible_rows(page):
     """Yield one dict per row visible on the current results page.
@@ -522,7 +392,6 @@ def iter_visible_rows(page):
             "document": doc_str,
             "download_buttons": download_buttons,  # [(fmt, locator), ...]
         }
-
 
 def click_next_page(page, pagination_id: str) -> bool:
     """Advance to the next page of results.
@@ -618,7 +487,6 @@ def click_next_page(page, pagination_id: str) -> bool:
         )
     return True
 
-
 # ============================================================
 # Per-document download
 # ============================================================
@@ -626,11 +494,9 @@ def click_next_page(page, pagination_id: str) -> bool:
 # Filename-safe replacement for the parts we want to embed.
 _FN_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
-
 def _safe(s: str, fallback: str = "x") -> str:
     out = _FN_SAFE.sub("-", s).strip("-")
     return out or fallback
-
 
 def _dismiss_open_modal(page) -> None:
     """Press Escape to dismiss any currently-open Schwab modal.
@@ -646,7 +512,6 @@ def _dismiss_open_modal(page) -> None:
         page.wait_for_timeout(300)
     except Exception:
         pass
-
 
 def _confirm_export_tax_modal(page) -> None:
     """If Schwab popped its "Export Tax Data" confirmation modal,
@@ -674,7 +539,6 @@ def _confirm_export_tax_modal(page) -> None:
     except Exception as e:
         log.warning("failed to click Download on tax-data modal: %s", e)
 
-
 # Per-format retry policy. Schwab occasionally fails the first
 # download click — the inline "Download" link briefly shows a
 # "Download failed" pill but stays clickable, and the second
@@ -684,7 +548,6 @@ def _confirm_export_tax_modal(page) -> None:
 DOWNLOAD_ATTEMPT_TIMEOUT_MS = 30_000
 DOWNLOAD_MAX_ATTEMPTS = 3
 DOWNLOAD_RETRY_PAUSE_MS = 2_000
-
 
 def _fetch_one_format(page, button, fmt: str, target_dir: Path,
                       is_tax_form: bool):
@@ -715,7 +578,6 @@ def _fetch_one_format(page, button, fmt: str, target_dir: Path,
     download.save_as(str(target))
     return target
 
-
 def download_one(page, row: dict, target_dir: Path) -> list[dict]:
     """Fetch every available format for `row` into target_dir.
 
@@ -738,7 +600,6 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
     are exhausted, the format is skipped (logged) and the loop
     continues to the next format / row.
     """
-    import hashlib
 
     target_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = []
@@ -807,7 +668,6 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
         # Tiny breather between same-row formats.
         page.wait_for_timeout(100)
     return entries
-
 
 # ============================================================
 # Per-account download
@@ -915,7 +775,6 @@ def download_account(page, account: dict, dest_dir: Path,
         "documents": documents,
     }
 
-
 # ============================================================
 # Transaction History export-modal driver
 # ============================================================
@@ -936,7 +795,6 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
     carries different metadata. Empirically TBD — see
     DESIGN.md §7.
     """
-    import hashlib
 
     entries: list[dict] = []
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1049,7 +907,6 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
         page.wait_for_timeout(300)
     return entries
 
-
 def _scroll_tx_table(page) -> None:
     """Scroll the tx-history table's scrollable parent to the
     bottom repeatedly to force virtualised rows into the DOM.
@@ -1081,7 +938,6 @@ def _scroll_tx_table(page) -> None:
         last_height = new_height
         page.wait_for_timeout(300)
 
-
 def _extract_tx_row_cells(row) -> list[str] | None:
     """Return the (Date, Amount, Description, Symbol, Action)
     tuple from a tx-history row's cells. Mirrors the field order
@@ -1104,7 +960,6 @@ def _extract_tx_row_cells(row) -> list[str] | None:
         texts[2],  # Symbol
         texts[1],  # Action / Transaction Type
     ]
-
 
 def _parse_more_modal_text(text: str) -> dict:
     """Parse Schwab's "More"-modal inner text into a flat
@@ -1141,7 +996,6 @@ def _parse_more_modal_text(text: str) -> dict:
                 fields[key] = val
     return fields
 
-
 def _scrape_more_details(page, account_suffix: str) -> list[dict]:
     """Walk every pagination page of the tx-history table,
     scroll-load all virtualised rows, click each row's "More"
@@ -1157,7 +1011,6 @@ def _scrape_more_details(page, account_suffix: str) -> list[dict]:
     and a per-row exception doesn't abort the per-account
     scrape.
     """
-    import hashlib
 
     details: list[dict] = []
     seen_keys: set[str] = set()
@@ -1219,7 +1072,6 @@ def _scrape_more_details(page, account_suffix: str) -> list[dict]:
              account_suffix, len(details), page_n)
     return details
 
-
 def _click_visible_export_button(page, in_modal: bool) -> bool:
     """Click the first visible "Export" button. When in_modal is
     False, the modal hasn't opened yet so only the main-page
@@ -1241,7 +1093,6 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
         return True
     except Exception:
         return False
-
 
 # ============================================================
 # Transaction History (per-page HTML capture, paginated)
@@ -1391,7 +1242,6 @@ def capture_transactions(page, account: dict, dest_dir: Path,
         "out_dir": str(out_dir.relative_to(dest_dir)),
     }
 
-
 def run_transactions(page, accounts: list[dict], dest_dir: Path,
                      screenshot_dir: Path | None,
                      date_range: str,
@@ -1428,7 +1278,6 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
             }
         results.append(entry)
     return results
-
 
 # ============================================================
 # Main flow
@@ -1527,79 +1376,9 @@ def walk(page, dest_root: Path, *, mode: str = "both",
     log.info("scrape complete; manifest at %s/run.json", run_dir)
     return run_summary
 
-
-def run_download(args: argparse.Namespace) -> int:
-    """Standalone CLI entry. Opens its own context, validates the
-    session, calls walk(). For chained use (login → scrape in one
-    Firefox), the caller should drive walk() directly."""
-    from playwright.sync_api import TimeoutError as PWTimeout
-
-    if args.trace and args.screenshot_dir is None:
-        raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
-    if not args.profile_dir.is_dir():
-        raise SystemExit(f"--profile-dir does not exist: {args.profile_dir}")
-
-    with open_camoufox_context(args.profile_dir, args.trace) as context:
-        page = open_page(context)
-        page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-        page.on("pageerror", lambda exc: log.warning("browser pageerror: %s", exc))
-
-        try:
-            log.info("verifying session at %s", schwab.ACCOUNT_SUMMARY_URL)
-            page.goto(
-                schwab.ACCOUNT_SUMMARY_URL,
-                wait_until="domcontentloaded",
-                timeout=NAV_TIMEOUT_MS,
-            )
-            # Read via evaluate; the cached page.url is unreliable
-            # under the camoufox/playwright pin — see
-            # login._live_url for the long story.
-            try:
-                landed_url = page.evaluate("() => location.href") or page.url
-            except Exception:
-                landed_url = page.url
-            if not schwab.is_post_auth_url(landed_url):
-                maybe_screenshot(page, args.screenshot_dir, "session-dead")
-                log.error(
-                    "session is dead (landed at %s) — run "
-                    "`./schwab-web-dump login` to mint a new session",
-                    landed_url,
-                )
-                return 2
-            walk(
-                page, args.dest,
-                mode=args.mode, dry_run=args.dry_run,
-                screenshot_dir=args.screenshot_dir,
-                date_range=args.date_range,
-                with_more_detail=args.with_more_detail,
-            )
-            return 0
-        except PWTimeout as e:
-            maybe_screenshot(page, args.screenshot_dir, "download-timeout")
-            log.error("timeout during download: %s", e)
-            return 4
-        finally:
-            stop_trace_if_active(
-                context, args.trace, args.screenshot_dir, "download",
-            )
-
-
 def _write_manifest(run_dir: Path, summary: dict) -> None:
     path = run_dir / "run.json"
     tmp = run_dir / "run.json.tmp"
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
-
-
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    return run_download(args)
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

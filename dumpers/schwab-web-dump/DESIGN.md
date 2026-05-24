@@ -260,7 +260,7 @@ silver doesn't strictly need any of them.
             ├── <Nick>_XXX<suffix>_Transactions_<ts>.xml
             ├── page-001.html       debug snapshot of the landing view
             └── more-details.json   optional: per-row "More"-modal
-                                    contents when download.py was
+                                    contents when `download` was
                                     invoked with --with-more-detail
 ```
 
@@ -275,12 +275,13 @@ under `_more` (keyed by `_tx_history_row_key`).
 
 ## 7. Known gaps (not blockers for the gold merge, but worth noting)
 
-- **pdf_parsers can't parse pre-2025 quarterly statements
-  without a year hint**. The loader passes `statement_year`
-  from the manifest's `doc_date` so these still load; the
-  workaround is in `load._insert_statement_transactions`. If
-  pdf_parsers ever gets autoextract for the older period-header
-  variant, the explicit-year fallback can be dropped.
+- **Statement-PDF parser handles three layout eras** (2017-2019
+  bare "Investment Detail" / "Transaction Detail"; 2020-2024
+  "Investment Detail - X" / "Transaction Detail - X"; 2025+
+  "Positions - X" / "Transaction Details"). Each tier is tried
+  in turn; the loader still passes `statement_year` as a
+  fallback for the few pre-2025 quarterly headers that pdfplumber
+  / pypdfium2 didn't surface.
 - **Some sale rows lose their amount** (concentrated on
   money-market-fund proceeds and a handful of early-2025 fee
   rows). Skipped during load with a warning rather than

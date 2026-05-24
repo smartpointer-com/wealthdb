@@ -1,46 +1,36 @@
 #!/usr/bin/env python3
 """
-Schwab client-web session minter.
+Schwab client-web login + scrape driver.
 
-Drives Firefox (headed, against an Xvfb virtual display managed
-by entrypoint.sh) through the Schwab login. With `--cli-mfa`
-(default) the script pre-fills the form, clicks Log In, waits for
-the 2FA challenge page, prompts the operator on stdin for their
-VIP / SMS code, fills it, and clicks Continue — no VNC required.
-The fallback `--no-cli-mfa` mode is the older VNC-driven flow
-where everything past the pre-fill is the operator's job (use it
-if Schwab ever reshapes the gateway DOM and the CLI selectors
-miss). Either way the script then polls for the post-auth
-`/app/...` URL, and (when `--dest` is set) takes over the same
-Firefox page to run `download.walk()` in the same continuous
-session. Schwab kills the session on Firefox close, so login +
-scrape must happen in one Firefox lifetime — close-then-reopen
-does not work.
+Implementation backing the wrapper's `download` (and `vnc-login`)
+subcommands. Drives Firefox (headed, against an Xvfb virtual
+display set up by entrypoint.sh) through the Schwab login, then
+hands off the same `page` to `download.walk()` for the actual
+statements + tx-history scrape.
+
+Schwab invalidates the persistent profile's session within
+seconds of Firefox closing, so login + scrape must happen in one
+Firefox lifetime — each invocation pays one MFA challenge. The
+trade-off is operational simplicity: no daemon to babysit, no
+trigger files, no idle timeouts.
 
 Modes:
   --check      validate the persisted profile against the
                Account Summary URL. Logs the cookie jar including
-               _abck trust state. No credential submit.
-  --manual     open Firefox, pre-fill from SCHWAB_LOGIN_ID /
-               SCHWAB_PASSWORD; then either drive Log In + 2FA
-               from stdin (--cli-mfa, default) or wait for the
-               operator to do it over VNC (--no-cli-mfa). With
-               --dest, hand off to download.walk() after post-auth
-               detection; without --dest, just block on Firefox
-               close.
+               _abck trust state. Mostly diagnostic — Schwab will
+               report DEAD between scrape runs by design.
+  default      pre-fill the form from SCHWAB_LOGIN_ID /
+               SCHWAB_PASSWORD; with --cli-mfa (default) drive
+               Log In + 2FA from stdin, with --no-cli-mfa wait
+               for the operator to do it over VNC. Then hand
+               off to download.walk() against the same page.
+               --dest is required (the bronze tree root).
 
 Browser choice: Firefox rather than Chromium. Schwab's Akamai
 rejects every Chromium-family automation surface we tried
 (headless Chromium, patchright-patched Chromium, real Chrome
 unavailable on Linux ARM64). See README.md "Browser choice" for
 the full diagnostic chain.
-
-Usage:
-    login.py --profile-dir <dir>
-             [--env-file <path>]
-             [--check] [--manual]
-             [--screenshot-dir <dir>] [--trace]
-             [-v]
 """
 
 from __future__ import annotations
@@ -118,78 +108,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Validate the existing profile by navigating to the "
               "Account Summary URL and reading the resulting URL. "
               "Logs the cookie jar including the _abck bot-manager "
-              "trust state. No credential submit, no 2FA."),
-    )
-    p.add_argument(
-        "--manual", action="store_true",
-        help=("[Legacy alias — manual mode is the default.] Open "
-              "Firefox at the Schwab homepage and pre-fill the "
-              "login form from $SCHWAB_LOGIN_ID / $SCHWAB_PASSWORD. "
-              "With --cli-mfa (default) the script also auto-clicks "
-              "Log In and prompts you on stdin for the 2FA code; "
-              "with --no-cli-mfa you drive Log In + 2FA via VNC. "
-              "After the URL hits /app/... the script takes over the "
-              "same page and (if --dest is set) runs download.walk() "
-              "in the same Firefox session. Without --dest the script "
-              "either exits cleanly (--login-only) or blocks on "
-              "Firefox close. The wrapper subcommands `login` and "
-              "`download` set this for you."),
+              "trust state. No credential submit, no 2FA. Mostly "
+              "diagnostic — Schwab invalidates the session on "
+              "Firefox close, so a fresh --check between scrape "
+              "runs will report DEAD by design."),
     )
     p.add_argument(
         "--cli-mfa", action=argparse.BooleanOptionalAction, default=True,
         help=("Auto-submit the login form and prompt for the 2FA "
-              "code on stdin. Default on. Pass --no-cli-mfa to keep "
-              "the older VNC-driven flow where everything past the "
-              "credential pre-fill is the operator's job (useful if "
-              "Schwab restyles the gateway DOM and the CLI selectors "
-              "miss — falls back to manual VNC drive without a code "
-              "change)."),
-    )
-    p.add_argument(
-        "--download-trigger", default=None, type=Path,
-        help=("File whose mtime change signals 'run a scrape "
-              "against the live Firefox session'. Lets a `login` "
-              "process (with this flag set) hold the session open "
-              "while a separate `download` invocation in another "
-              "terminal writes the trigger and exits. The trigger "
-              "file content is a key=value config block (mode, "
-              "date_range, with_more_detail, dest) that overrides "
-              "the loop's defaults for the next scrape; empty "
-              "file = inherit defaults. Wrapper canonical path: "
-              "/data/.download-trigger."),
-    )
-    p.add_argument(
-        "--idle-timeout", type=int, default=1800,
-        help=("Seconds of inactivity after which the keep-alive "
-              "loop exits (default %(default)s = 30 minutes). "
-              "Resets every time a scrape completes — so the "
-              "process stays alive as long as you're driving it, "
-              "but a forgotten session eventually self-closes "
-              "rather than holding Firefox indefinitely. Only "
-              "relevant when --download-trigger is set."),
-    )
-    p.add_argument(
-        "--login-only", action="store_true",
-        help=("Exit cleanly as soon as the post-auth URL is reached "
-              "— no scrape, no waiting on the Firefox window. "
-              "Useful for verifying the login path in isolation "
-              "without paying the cost of a full dump. Schwab MAY "
-              "invalidate the session on Firefox close, so a "
-              "subsequent --check is not guaranteed to report the "
-              "session as live."),
+              "code on stdin. Default on. Pass --no-cli-mfa to "
+              "fall back to the VNC-driven flow (the operator "
+              "drives Log In + 2FA themselves) — useful if Schwab "
+              "restyles the gateway DOM and the CLI selectors miss."),
     )
     p.add_argument(
         "--dest", default=None, type=Path,
-        help=("Bronze tree root. When set together with --manual, "
-              "the script chains into download.walk(page, dest, ...) "
-              "after the operator finishes login. A new "
-              "<UTC-timestamp>/ run dir is created under it. "
-              "Canonical container path: /data."),
+        help=("Bronze tree root. Required for the scrape path; the "
+              "script chains into download.walk(page, dest, ...) "
+              "after login completes. A new <UTC-timestamp>/ run "
+              "dir is created under it. Canonical container "
+              "path: /data."),
     )
     p.add_argument(
         "--mode", choices=("statements", "transactions", "both"),
         default="both",
-        help=("Scrape mode for the auto-scrape after manual login. "
+        help=("Scrape mode for the post-login walk. "
               "See download.py --mode help. Ignored when --dest "
               "is unset."),
     )
@@ -572,34 +515,25 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
 def run_manual(profile_dir: Path,
                screenshot_dir: Path | None,
                *,
-               dest: Path | None = None,
+               dest: Path,
                mode: str = "both",
                dry_run: bool = False,
                date_range: str = schwab.DATE_RANGE_DEFAULT,
                with_more_detail: bool = False,
                cli_mfa: bool = True,
-               login_only: bool = False,
-               download_trigger: Path | None = None,
-               idle_timeout_s: int = 1800,
                post_auth_timeout_s: int = 600) -> int:
-    """Open Firefox at the homepage, pre-fill the login form, and
-    wait for the operator (driving via VNC) to complete login.
+    """One-shot: CLI-MFA login → scrape → exit.
 
-    Two modes depending on `dest`:
+    Schwab invalidates the persistent profile's session within
+    seconds of Firefox closing, so login + scrape must happen
+    in one Firefox lifetime — which means every `download`
+    invocation pays one MFA challenge. The trade-off is
+    operational simplicity: no daemon to babysit, no trigger
+    files, no idle timeouts to tune.
 
-    - dest is None: block on Firefox close. The operator does
-      whatever they want with the browser; on close the profile
-      is persisted to disk. (Note: Schwab kills the session on
-      close, so the persisted profile won't authenticate the
-      next run.)
-
-    - dest is set: poll the URL for `/app/...` (post-auth
-      landing). When detected, take over the same `page` and run
-      `download.walk(page, dest, ...)` in the same Firefox
-      session — the only path that produces bronze data, since
-      Schwab's session can't be reopened from disk.
-
-    Either way pre-fill is best-effort and non-fatal.
+    Pre-fill is best-effort and non-fatal; if creds aren't in
+    the env we log a warning and (with --no-cli-mfa) let the
+    operator drive Log In + 2FA via VNC.
     """
     login_id_value = (os.environ.get(LOGIN_ID_ENV) or "").strip()
     password_value = os.environ.get(PASSWORD_ENV) or ""
@@ -615,13 +549,10 @@ def run_manual(profile_dir: Path,
             "set" if login_id_value else "MISSING",
             "set" if password_value else "MISSING",
         )
-    if dest is not None:
-        log.info(
-            "auto-scrape after login: dest=%s mode=%s dry_run=%s",
-            dest, mode, dry_run,
-        )
+    log.info("scrape config: dest=%s mode=%s dry_run=%s range=%s more=%s",
+             dest, mode, dry_run, date_range, with_more_detail)
 
-    log.info("opening Firefox for manual driving")
+    log.info("opening Firefox")
     with open_camoufox_context(profile_dir, trace=False) as context:
         page = open_page(context)
         page.on("pageerror", lambda exc: log.warning("browser pageerror: %s", exc))
@@ -646,28 +577,6 @@ def run_manual(profile_dir: Path,
                             "vnc-login) and complete the login yourself"
                         )
 
-            if login_only:
-                log.info(
-                    "--login-only: waiting for post-auth URL, then "
-                    "exiting without scraping"
-                )
-                auth_page = _wait_for_post_auth(
-                    page, context, post_auth_timeout_s,
-                )
-                if auth_page is None:
-                    maybe_screenshot(page, screenshot_dir, "login-only-timeout")
-                    log.error(
-                        "post-auth URL not detected within %ds — login "
-                        "did not complete", post_auth_timeout_s,
-                    )
-                    return 7
-                maybe_screenshot(auth_page, screenshot_dir, "login-only-success")
-                log.info(
-                    "login OK: landed at %s — exiting (no scrape)",
-                    _live_url(auth_page),
-                )
-                return 0
-
             if cli_mfa:
                 log.info(
                     "2FA submitted; waiting for post-auth landing page "
@@ -677,9 +586,8 @@ def run_manual(profile_dir: Path,
             else:
                 log.info(
                     "Firefox ready. Via VNC: click Log In, enter your "
-                    "VIP code, land on Account Summary. Then this "
-                    "script holds the session open for `download` "
-                    "calls from another terminal."
+                    "VIP code, land on Account Summary. Then the script "
+                    "takes over and scrapes."
                 )
             auth_page = _wait_for_post_auth(
                 page, context, post_auth_timeout_s,
@@ -712,216 +620,34 @@ def run_manual(profile_dir: Path,
             time.sleep(3)
             maybe_screenshot(page, screenshot_dir, "post-auth-handoff")
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-
-            # Schwab kills the persistent profile's session
-            # within seconds of Firefox closing, so the
-            # sibling-tool model of "login mints, download
-            # reuses the persisted state" doesn't apply here.
-            # Instead this process holds Firefox open and waits
-            # for `download` invocations from another terminal,
-            # which deposit a key=value config into
-            # `download_trigger`; on each touch we re-run
-            # download.walk() against the same `page`. Ctrl+C
-            # ends the session.
-            if login_only:
-                log.info(
-                    "--login-only: session OK, exiting (Schwab will "
-                    "invalidate the persistent profile in a few "
-                    "seconds — that's expected)."
+            import download
+            try:
+                summary = download.walk(
+                    page, dest,
+                    mode=mode, dry_run=dry_run,
+                    screenshot_dir=screenshot_dir,
+                    date_range=date_range,
+                    with_more_detail=with_more_detail,
                 )
-                maybe_screenshot(page, screenshot_dir, "login-only-success")
-                return 0
-            if download_trigger is None and dest is None:
                 log.info(
-                    "no --download-trigger and no --dest; blocking on "
-                    "Firefox close (Ctrl+C to exit)."
+                    "scrape complete: %d statement entries, %d tx entries",
+                    len(summary.get("statements", [])),
+                    len(summary.get("transactions", [])),
                 )
-                try:
-                    page.wait_for_event("close", timeout=0)
-                except KeyboardInterrupt:
-                    log.info("interrupted; closing browser")
                 return 0
-            return _run_download_loop(
-                page, dest, download_trigger,
-                screenshot_dir,
-                initial_mode=mode, initial_dry_run=dry_run,
-                initial_date_range=date_range,
-                initial_with_more_detail=with_more_detail,
-                idle_timeout_s=idle_timeout_s,
-            )
+            except KeyboardInterrupt:
+                log.info("interrupted; closing browser")
+                return 0
         except KeyboardInterrupt:
             log.info("interrupted; closing browser")
             return 0
         except Exception as e:
-            log.exception("manual+scrape flow failed: %s", e)
+            log.exception("login + scrape failed: %s", e)
             try:
                 maybe_screenshot(page, screenshot_dir, "manual-error")
             except Exception:
                 pass
             return 1
-
-
-def _run_download_loop(page, dest: Path | None,
-                        download_trigger: Path | None,
-                        screenshot_dir: Path | None,
-                        *,
-                        initial_mode: str,
-                        initial_dry_run: bool,
-                        initial_date_range: str,
-                        initial_with_more_detail: bool,
-                        idle_timeout_s: float = 1800) -> int:
-    """Hold the live Firefox session open and run download.walk()
-    each time the `download_trigger` file's mtime advances.
-
-    The host's `download` wrapper writes the trigger with a
-    key=value config (mode / range / with_more_detail / dest).
-    Each touch fires one scrape against this `page`; the loop
-    then resumes polling for the next trigger. Ctrl+C exits.
-
-    If `dest` is set on entry we run one initial scrape with
-    the as-invoked args (back-compat with the older
-    "login --dest /data" auto-scrape flow); otherwise the
-    process just waits for the first trigger.
-    """
-    import download
-    if download_trigger is not None:
-        download_trigger.parent.mkdir(parents=True, exist_ok=True)
-
-    def _do_scrape(*, dest_path, mode, dry_run, date_range,
-                   with_more_detail):
-        if dest_path is None:
-            log.warning(
-                "scrape requested but no --dest configured; skipping"
-            )
-            return
-        log.info(
-            "=== scrape: dest=%s mode=%s dry_run=%s range=%s "
-            "with_more_detail=%s ===",
-            dest_path, mode, dry_run, date_range, with_more_detail,
-        )
-        try:
-            summary = download.walk(
-                page, dest_path,
-                mode=mode, dry_run=dry_run,
-                screenshot_dir=screenshot_dir,
-                date_range=date_range,
-                with_more_detail=with_more_detail,
-            )
-            log.info(
-                "scrape complete: %d statement entries, %d tx entries",
-                len(summary.get("statements", [])),
-                len(summary.get("transactions", [])),
-            )
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            log.exception(
-                "scrape failed: %s — session still alive, ready for "
-                "next trigger", e,
-            )
-
-    # Initial scrape (back-compat with `login --dest /data`).
-    if dest is not None:
-        _do_scrape(
-            dest_path=dest, mode=initial_mode, dry_run=initial_dry_run,
-            date_range=initial_date_range,
-            with_more_detail=initial_with_more_detail,
-        )
-        if download_trigger is None:
-            return 0
-
-    if download_trigger is None:
-        return 0
-
-    log.info(
-        "session live (idle timeout %ds). Trigger a scrape from "
-        "another terminal with `./schwab-web-dump download "
-        "[--range R] [--mode M] [--with-more-detail]`; that writes "
-        "to %s and the loop below picks it up. Ctrl+C ends the "
-        "session.",
-        int(idle_timeout_s), download_trigger,
-    )
-    last_mtime = (
-        download_trigger.stat().st_mtime
-        if download_trigger.exists() else None
-    )
-    # Idle window resets after every scrape (or trigger) — so the
-    # script stays alive as long as you're actively driving it,
-    # but a forgotten session eventually self-closes rather than
-    # holding Firefox indefinitely. Schwab will kill the cookies
-    # in seconds once the browser process exits.
-    last_activity = time.monotonic()
-    while True:
-        try:
-            if download_trigger.exists():
-                cur_mtime = download_trigger.stat().st_mtime
-                if last_mtime is None or cur_mtime > last_mtime:
-                    last_mtime = cur_mtime
-                    cfg = _read_download_trigger(download_trigger)
-                    _do_scrape(
-                        dest_path=cfg.get("dest", dest) or Path("/data"),
-                        mode=cfg.get("mode", initial_mode),
-                        dry_run=cfg.get("dry_run", initial_dry_run),
-                        date_range=cfg.get(
-                            "date_range", initial_date_range),
-                        with_more_detail=cfg.get(
-                            "with_more_detail",
-                            initial_with_more_detail),
-                    )
-                    last_activity = time.monotonic()
-                    log.info(
-                        "waiting for next trigger at %s "
-                        "(idle timeout %ds)",
-                        download_trigger, int(idle_timeout_s),
-                    )
-            if time.monotonic() - last_activity >= idle_timeout_s:
-                log.info(
-                    "no trigger for %ds — idle timeout reached, "
-                    "closing the session",
-                    int(idle_timeout_s),
-                )
-                return 0
-            time.sleep(2)
-        except KeyboardInterrupt:
-            log.info("interrupted; closing browser")
-            return 0
-
-
-def _read_download_trigger(path: Path) -> dict:
-    """Parse the download-trigger file's key=value contents into a
-    dict that overrides the keep-alive loop's defaults for one
-    scrape. Empty file = inherit all defaults. Recognised keys:
-    dest, mode, dry_run, date_range, with_more_detail.
-    """
-    try:
-        content = path.read_text(encoding="utf-8").strip()
-    except Exception as e:
-        log.debug("could not read trigger %s: %s", path, e)
-        return {}
-    cfg: dict = {}
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            log.warning("trigger: skipping malformed line %r", line)
-            continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if key == "dry_run" or key == "with_more_detail":
-            cfg[key] = value.lower() in ("1", "true", "yes")
-        elif key == "mode":
-            if value in ("statements", "transactions", "both"):
-                cfg[key] = value
-            else:
-                log.warning("trigger: ignoring bad mode %r", value)
-        elif key == "date_range":
-            cfg[key] = value
-        elif key == "dest":
-            cfg[key] = Path(value)
-        else:
-            log.warning("trigger: ignoring unknown key %r", key)
-    return cfg
 
 
 def _live_url(page) -> str:
@@ -1361,16 +1087,15 @@ def main(argv: list[str]) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
-    if args.check and args.manual:
-        # --check overrides any explicit --manual; warn once and
-        # proceed with check. Keeps the wrapper's default-set
-        # `--manual` from blocking `login --check` usage.
-        log.warning("--check overrides --manual; running check mode")
-        args.manual = False
     maybe_source_env_files(args)
     prepare_profile_dir(args.profile_dir)
     if args.check:
         return run_check(args.profile_dir, args.screenshot_dir, args.trace)
+    if args.dest is None:
+        raise SystemExit(
+            "--dest is required for the scrape path (or pass --check "
+            "to validate the existing profile)."
+        )
     return run_manual(
         args.profile_dir, args.screenshot_dir,
         dest=args.dest,
@@ -1379,9 +1104,6 @@ def main(argv: list[str]) -> int:
         date_range=args.date_range,
         with_more_detail=args.with_more_detail,
         cli_mfa=args.cli_mfa,
-        login_only=args.login_only,
-        download_trigger=args.download_trigger,
-        idle_timeout_s=args.idle_timeout,
         post_auth_timeout_s=args.post_auth_timeout,
     )
 

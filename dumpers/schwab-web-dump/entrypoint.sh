@@ -46,52 +46,29 @@ start_xvfb() {
 }
 
 case "${1:-help}" in
-    login)
-        # CLI-MFA login + keep-alive. Pre-fills the form, prompts
-        # for the 2FA code on stdin, lands on the post-auth URL,
-        # then HOLDS Firefox open so the live session survives
-        # between `download` invocations. Schwab kills the
-        # persistent profile's cookies within seconds of Firefox
-        # closing — so the sibling-tool model of "login mints,
-        # download reads storageState" doesn't apply here, and
-        # the only way to do multiple scrapes per MFA is to keep
-        # the Firefox process running.
-        #
-        # While the login is held, the process polls
-        # /data/.download-trigger; each `download` invocation
-        # from another terminal writes that file with the scrape
-        # config and exits. Ctrl+C ends the session.
+    download)
+        # One-shot: CLI-MFA login → scrape → exit. Schwab
+        # invalidates the persistent profile's cookies within
+        # seconds of Firefox closing, so login + scrape must
+        # happen in one Firefox lifetime — each invocation pays
+        # one MFA challenge, in exchange for not having to
+        # babysit a long-lived process. Stdin must be a TTY.
         start_xvfb
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --manual --cli-mfa \
-            --download-trigger /data/.download-trigger "$@"
-        ;;
-    download)
-        # Trigger a scrape against an already-running `login`
-        # process. Writes the per-scrape config (mode / range /
-        # with_more_detail / dest) into the trigger file the
-        # login's keep-alive loop polls, then exits immediately.
-        # The actual scrape runs in the login process (which has
-        # the live Firefox). If no login is running, the trigger
-        # file just sits there until one starts. Bronze lands at
-        # <dest>/<UTC-ts>/ as produced by the login process.
-        shift
-        exec python3 /app/download_trigger.py "$@"
+            --cli-mfa --dest /data "$@"
         ;;
     vnc-login)
-        # Fallback to the older VNC-driven flow: start Xvfb +
-        # x11vnc on the same display, then run login.py --manual
-        # --no-cli-mfa. Use when CLI-MFA selectors drift or the
-        # user has to satisfy a non-code challenge (security
-        # question, push-to-device, etc.) that the stdin prompt
-        # can't drive. The wrapper publishes 127.0.0.1:5900 so
-        # the VNC port is only reachable via a host-side SSH
-        # tunnel. A VNC password is required regardless (macOS
-        # Screen Sharing refuses no-auth servers); we generate a
-        # fresh one every launch so the same string is never
-        # reusable.
+        # Fallback: start x11vnc on the same Xvfb display and
+        # run the login + scrape flow with --no-cli-mfa, so the
+        # operator can drive Log In + 2FA from a local VNC
+        # client. Use when CLI-MFA selectors drift or a non-
+        # code challenge (security question, push-to-device) is
+        # required. A fresh VNC password is generated each
+        # launch and printed to stderr; the wrapper publishes
+        # the port on 127.0.0.1:5900 only — tunnel from your
+        # laptop with ssh -L.
         start_xvfb
         # openssl rand -hex 8 is a single command, no pipe — so
         # `set -euo pipefail` doesn't trip on SIGPIPE the way
@@ -107,22 +84,9 @@ case "${1:-help}" in
         echo "vnc-login: then on the laptop:" >&2
         echo "vnc-login:   open vnc://localhost:5900" >&2
         shift
-        # Default --profile-dir + --dest so vnc-login is one-arg.
-        # Profile lives under the mounted /secrets tree so cookies
-        # survive across container runs; --dest=/data triggers the
-        # post-login auto-scrape. --no-cli-mfa preserves the
-        # all-manual VNC flow (everything past pre-fill is the
-        # operator's job) — that's the point of vnc-login. Override
-        # either by passing the flag explicitly — argparse takes
-        # the last value.
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --manual --no-cli-mfa --dest /data "$@"
-        ;;
-    download)
-        start_xvfb
-        shift
-        exec python3 /app/download.py "$@"
+            --no-cli-mfa --dest /data "$@"
         ;;
     load)
         shift
@@ -140,28 +104,18 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       CLI-MFA login + keep-alive. Auto-submits the form,
-              prompts for the 2FA code on stdin, then HOLDS
-              Firefox open and polls /data/.download-trigger so
-              `download` calls from another terminal scrape
-              against the same live session. Ctrl+C ends the
-              session. Stdin must be a TTY.
-  download    Trigger a scrape against an already-running login.
-              Writes the per-scrape config (mode / range /
-              with_more_detail / dest) into the trigger file and
-              exits. No browser, no MFA. Default range: 3 months
-              (override with --range; --range Last10Years for a
-              full backfill).
+  download    One-shot CLI-MFA login + scrape. Pre-fills the
+              form from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+              auto-submits, prompts for the 2FA code on stdin,
+              runs the statements + tx-history download in the
+              same Firefox session, exits. Default range: 3
+              months (override with --range; --range Last10Years
+              for a full backfill). Stdin must be a TTY.
   load        Parse bronze into the silver SQLite database.
-  vnc-login   Fallback to a VNC-driven login when CLI-MFA selectors
-              drift or a non-code challenge is required. Starts
-              x11vnc on 127.0.0.1:5900; tunnel + connect from your
-              VNC client.
-  download    Export bronze artefacts from the Schwab client UI
-              (only useful while a Firefox session is live; Schwab
-              kills sessions on Firefox close, so in practice this
-              gets chained off vnc-login in a single Firefox).
-  load        Parse bronze into the silver SQLite database.
+  vnc-login   Fallback to a VNC-driven login + scrape when the
+              CLI-MFA selectors drift or a non-code challenge is
+              required. Starts x11vnc on 127.0.0.1:5900; tunnel
+              + connect from your local VNC client.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 
