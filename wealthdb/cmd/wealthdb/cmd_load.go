@@ -136,8 +136,10 @@ func buildSourceSpec(s config.SilverSource, overrides map[string]map[string]conf
 		spec.Overrides = make(map[string]loader.AccountOverride, len(cfgOvr))
 		for acctID, ov := range cfgOvr {
 			spec.Overrides[acctID] = loader.AccountOverride{
-				Nickname: ov.Nickname,
-				Category: ov.Category,
+				Nickname:        ov.Nickname,
+				Category:        ov.Category,
+				TaxWrapper:      ov.TaxWrapper,
+				ManagementStyle: ov.ManagementStyle,
 			}
 		}
 	}

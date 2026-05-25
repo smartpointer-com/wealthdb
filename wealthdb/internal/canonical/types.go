@@ -18,12 +18,23 @@ type AccountChange struct {
 	// supplies it directly; UBS / Swissquote silvers don't have
 	// one today (the config-side override fills in for those).
 	Nickname *string
-	// AccountCategory is a bank-assigned (or config-overridden)
-	// label hinting at the wealth-management wrapper — "managed",
-	// "advisory", "personal", "utma", "esa", etc. Adapters
-	// populate from silver-provided fields; config overrides
-	// take precedence at the load layer.
+	// AccountCategory is a free-text bank-supplied descriptor —
+	// UBS's "Custody / Cash-Custody", Schwab's "Personal" /
+	// "Custodial", anything the source provides verbatim. Useful
+	// as supplementary metadata; for the structured taxonomy use
+	// TaxWrapper and ManagementStyle below.
 	AccountCategory *string
+	// TaxWrapper is the account's tax / regulatory registration
+	// — taxable_personal (default), traditional_ira, 529,
+	// pillar_3a, trust_non_grantor, etc. Orthogonal to
+	// AccountKind (the technical container) and ManagementStyle
+	// (who places trades). Adapters populate from silver where
+	// possible; config overrides win on overlap.
+	TaxWrapper *TaxWrapper
+	// ManagementStyle is who places trades — self_directed
+	// (default), advisory, discretionary, automated. Orthogonal
+	// to AccountKind and TaxWrapper.
+	ManagementStyle *ManagementStyle
 	// PortfolioExternalID names the parent portfolio in the
 	// `portfolios` table that this account belongs to. UBS cash
 	// and safekeeping accounts use it; Schwab and Swissquote

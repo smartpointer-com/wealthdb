@@ -125,12 +125,16 @@ type RelationshipPair struct {
 	PSNStartOverride string `json:"psn_start_override,omitempty"`
 }
 
-// AccountOverride is one per-account override entry. Both fields
+// AccountOverride is one per-account override entry. All fields
 // are optional; an empty string means "don't override that
-// column".
+// column". TaxWrapper and ManagementStyle are validated against
+// the canonical enums at config-load time; bad values fail the
+// load rather than landing as gibberish in gold.
 type AccountOverride struct {
-	Nickname string `json:"nickname,omitempty"`
-	Category string `json:"category,omitempty"`
+	Nickname        string `json:"nickname,omitempty"`
+	Category        string `json:"category,omitempty"`
+	TaxWrapper      string `json:"tax_wrapper,omitempty"`
+	ManagementStyle string `json:"management_style,omitempty"`
 }
 
 // Load reads and parses the JSON config at the given path,

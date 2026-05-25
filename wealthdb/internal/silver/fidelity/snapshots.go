@@ -132,11 +132,33 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 	return rows.Err()
 }
 
+// appendAccounts joins each silver account against its portfolio
+// to lift the silver-side `portfolios.kind` discriminator
+// (529 / trust_managed / other) into the canonical taxonomy:
+//
+//   - kind=529           → TaxWrapper=529 (US education-savings).
+//   - kind=trust_managed → TaxWrapper=trust_non_grantor +
+//                          ManagementStyle=discretionary, since
+//                          "trust_managed" by definition implies
+//                          a third-party investment manager
+//                          holding limited POA.
+//   - kind=other         → leave TaxWrapper/ManagementStyle nil
+//                          so a config-side override can pin
+//                          per-account values (e.g. an IRA
+//                          nickname that silver can't classify).
+//
+// Both columns stay nil for accounts whose portfolio has no
+// classification or no portfolio at all; the gold COALESCE
+// upsert preserves whatever a later writer / override supplies.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
-SELECT snapshot_at, account_external_id, portfolio_external_id, nickname, payload
-  FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`
+SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
+       a.nickname, a.payload, p.kind
+  FROM accounts a
+  LEFT JOIN portfolios p
+    ON p.snapshot_at = a.snapshot_at
+   AND p.portfolio_external_id = a.portfolio_external_id
+ WHERE a.snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
@@ -145,18 +167,18 @@ SELECT snapshot_at, account_external_id, portfolio_external_id, nickname, payloa
 	usd := "USD"
 	for rows.Next() {
 		var (
-			snap                       int64
-			extID, payload             string
-			portfolioID, nickname      sql.NullString
+			snap                                          int64
+			extID, payload                                string
+			portfolioID, nickname, portfolioKind          sql.NullString
 		)
-		if err := rows.Scan(&snap, &extID, &portfolioID, &nickname, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &portfolioID, &nickname, &payload, &portfolioKind); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
 			continue
 		}
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		change := canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindBrokerage,
 			BaseCurrency:        &usd,
@@ -165,9 +187,28 @@ SELECT snapshot_at, account_external_id, portfolio_external_id, nickname, payloa
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
-		})
+		}
+		applyPortfolioKindTaxonomy(portfolioKind.String, &change)
+		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
+}
+
+// applyPortfolioKindTaxonomy stamps TaxWrapper / ManagementStyle
+// on an AccountChange based on the joined silver portfolios.kind.
+// See appendAccounts for the mapping rationale. No-op when kind
+// is empty or 'other'.
+func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
+	switch kind {
+	case "529":
+		w := canonical.TaxWrapper529
+		change.TaxWrapper = &w
+	case "trust_managed":
+		w := canonical.TaxWrapperTrustNonGrantor
+		s := canonical.ManagementStyleDiscretionary
+		change.TaxWrapper = &w
+		change.ManagementStyle = &s
+	}
 }
 
 // appendPositionsAndCash walks `positions` once and splits each

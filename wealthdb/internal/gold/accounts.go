@@ -39,6 +39,14 @@ type AccountRow struct {
 	Nickname            *string
 	AccountCategory     *string
 	PortfolioExternalID *string
+	// TaxWrapper and ManagementStyle are the two new dimensions
+	// of the account taxonomy (migration 0008). Nil when neither
+	// the adapter nor a config override supplied a value;
+	// downstream readers can treat nil tax_wrapper as
+	// 'taxable_personal' and nil management_style as
+	// 'self_directed' for default-aware display.
+	TaxWrapper      *string
+	ManagementStyle *string
 	// SnapshotAt is the latest snapshot_at across all positions
 	// and cash_balances rows that contributed to the aggregates.
 	// When the account has no contributing lines, falls back to
@@ -170,7 +178,8 @@ func loadAccountBase(ctx context.Context, db *sql.DB) ([]AccountRow, error) {
 	const q = `
 SELECT silver_source_id, account_external_id, account_kind,
        display_name, base_currency, relationship_id,
-       nickname, account_category, portfolio_external_id
+       nickname, account_category, portfolio_external_id,
+       tax_wrapper, management_style
   FROM accounts
  ORDER BY silver_source_id, account_external_id`
 	rows, err := db.QueryContext(ctx, q)
@@ -182,11 +191,12 @@ SELECT silver_source_id, account_external_id, account_kind,
 	var out []AccountRow
 	for rows.Next() {
 		var (
-			a                                                            AccountRow
-			displayName, baseCcy, relID, nickname, category, portfolio sql.NullString
+			a                                                                                    AccountRow
+			displayName, baseCcy, relID, nickname, category, portfolio, taxWrapper, mgmtStyle sql.NullString
 		)
 		if err := rows.Scan(&a.SilverSourceID, &a.AccountExternalID, &a.AccountKind,
-			&displayName, &baseCcy, &relID, &nickname, &category, &portfolio); err != nil {
+			&displayName, &baseCcy, &relID, &nickname, &category, &portfolio,
+			&taxWrapper, &mgmtStyle); err != nil {
 			return nil, fmt.Errorf("loadAccountBase scan: %w", err)
 		}
 		a.DisplayName = nullStringToPtr(displayName)
@@ -195,6 +205,8 @@ SELECT silver_source_id, account_external_id, account_kind,
 		a.Nickname = nullStringToPtr(nickname)
 		a.AccountCategory = nullStringToPtr(category)
 		a.PortfolioExternalID = nullStringToPtr(portfolio)
+		a.TaxWrapper = nullStringToPtr(taxWrapper)
+		a.ManagementStyle = nullStringToPtr(mgmtStyle)
 		out = append(out, a)
 	}
 	return out, rows.Err()

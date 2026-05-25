@@ -40,7 +40,10 @@ func (a AssetClass) Valid() bool {
 	return ok
 }
 
-// AccountKind discriminates `accounts.account_kind`.
+// AccountKind discriminates `accounts.account_kind`. This is the
+// "technical container" dimension — what the bank's UI calls the
+// account regardless of its tax treatment or management style
+// (those live in `tax_wrapper` and `management_style`).
 type AccountKind string
 
 const (
@@ -55,17 +58,131 @@ const (
 	// overlay account per portfolio, lazily emitted when the
 	// portfolio has at least one such position.
 	AccountKindOverlay AccountKind = "overlay"
-	AccountKindOther   AccountKind = "other"
+	// Crypto kinds split custodial-exchange holdings from self-
+	// custody wallets. Risk profile and reporting needs differ
+	// enough that one bucket would conflate them.
+	AccountKindCryptoExchange   AccountKind = "crypto_exchange"
+	AccountKindCryptoSelfCustody AccountKind = "crypto_self_custody"
+	AccountKindOther             AccountKind = "other"
 )
 
 var accountKindValues = map[AccountKind]struct{}{
 	AccountKindBrokerage: {}, AccountKindCash: {},
 	AccountKindSafekeeping: {}, AccountKindCustody: {},
-	AccountKindOverlay: {}, AccountKindOther: {},
+	AccountKindOverlay: {},
+	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
+	AccountKindOther: {},
 }
 
 func (a AccountKind) Valid() bool {
 	_, ok := accountKindValues[a]
+	return ok
+}
+
+// TaxWrapper discriminates `accounts.tax_wrapper` — the tax /
+// regulatory registration of the account, independent of the
+// technical container (account_kind) and management style.
+// Defaults to TaxWrapperTaxablePersonal when neither the adapter
+// nor a config override has more specific information.
+//
+// Jurisdictional coverage: US (the IRA / 529 / ESA / DAF / trust
+// / custodial families) and Switzerland (the BVG/LPP "pillar"
+// families). Other jurisdictions can be added by extending this
+// enum and the migration's CHECK constraint without disturbing
+// existing rows.
+type TaxWrapper string
+
+const (
+	// Generic / cross-jurisdictional.
+	TaxWrapperTaxablePersonal TaxWrapper = "taxable_personal"
+	TaxWrapperTaxableJoint    TaxWrapper = "taxable_joint"
+	TaxWrapperFoundation      TaxWrapper = "foundation" // CH Stiftung, US private foundation
+
+	// US retirement.
+	TaxWrapperTraditionalIRA TaxWrapper = "traditional_ira"
+	TaxWrapperRothIRA        TaxWrapper = "roth_ira"
+	TaxWrapperSEPIRA         TaxWrapper = "sep_ira"
+	TaxWrapperSIMPLEIRA      TaxWrapper = "simple_ira"
+	TaxWrapper401k           TaxWrapper = "401k"
+	TaxWrapper403b           TaxWrapper = "403b"
+	TaxWrapper457b           TaxWrapper = "457b"
+
+	// US education / health.
+	TaxWrapper529          TaxWrapper = "529"
+	TaxWrapperCoverdellESA TaxWrapper = "coverdell_esa"
+	TaxWrapperHSA          TaxWrapper = "hsa"
+
+	// US charitable.
+	TaxWrapperDAF TaxWrapper = "daf" // donor-advised fund
+
+	// US custodial-for-minors.
+	TaxWrapperCustodialUTMA TaxWrapper = "custodial_utma"
+	TaxWrapperCustodialUGMA TaxWrapper = "custodial_ugma"
+
+	// US trust.
+	TaxWrapperTrustGrantor    TaxWrapper = "trust_grantor"
+	TaxWrapperTrustNonGrantor TaxWrapper = "trust_non_grantor"
+	TaxWrapperTrustCharitable TaxWrapper = "trust_charitable"
+
+	// Switzerland — three-pillar system (private pension piece
+	// of the picture; AHV/IV state pension isn't an account you
+	// can hold).
+	TaxWrapperPillar2        TaxWrapper = "pillar_2"        // BVG/LPP occupational
+	TaxWrapperVestedBenefits TaxWrapper = "vested_benefits" // Freizügigkeitskonto (pillar 2 in transit)
+	TaxWrapperPillar3a       TaxWrapper = "pillar_3a"       // tax-advantaged private pension
+
+	TaxWrapperOther TaxWrapper = "other"
+)
+
+var taxWrapperValues = map[TaxWrapper]struct{}{
+	TaxWrapperTaxablePersonal: {}, TaxWrapperTaxableJoint: {}, TaxWrapperFoundation: {},
+	TaxWrapperTraditionalIRA: {}, TaxWrapperRothIRA: {},
+	TaxWrapperSEPIRA: {}, TaxWrapperSIMPLEIRA: {},
+	TaxWrapper401k: {}, TaxWrapper403b: {}, TaxWrapper457b: {},
+	TaxWrapper529: {}, TaxWrapperCoverdellESA: {}, TaxWrapperHSA: {},
+	TaxWrapperDAF: {},
+	TaxWrapperCustodialUTMA: {}, TaxWrapperCustodialUGMA: {},
+	TaxWrapperTrustGrantor: {}, TaxWrapperTrustNonGrantor: {}, TaxWrapperTrustCharitable: {},
+	TaxWrapperPillar2: {}, TaxWrapperVestedBenefits: {}, TaxWrapperPillar3a: {},
+	TaxWrapperOther: {},
+}
+
+func (t TaxWrapper) Valid() bool {
+	_, ok := taxWrapperValues[t]
+	return ok
+}
+
+// ManagementStyle discriminates `accounts.management_style` — who
+// places the trades. Orthogonal to AccountKind and TaxWrapper.
+type ManagementStyle string
+
+const (
+	// ManagementStyleSelfDirected: the account holder places all
+	// trades. Default when neither the adapter nor a config
+	// override says otherwise.
+	ManagementStyleSelfDirected ManagementStyle = "self_directed"
+	// ManagementStyleAdvisory: an advisor recommends trades but
+	// the account holder approves each one (CH Anlageberatung,
+	// US non-discretionary advisory).
+	ManagementStyleAdvisory ManagementStyle = "advisory"
+	// ManagementStyleDiscretionary: an advisor places trades
+	// under a limited power of attorney without per-trade
+	// approval (CH Vermögensverwaltung, US discretionary
+	// managed accounts).
+	ManagementStyleDiscretionary ManagementStyle = "discretionary"
+	// ManagementStyleAutomated: algorithmic / robo-advisor.
+	ManagementStyleAutomated ManagementStyle = "automated"
+)
+
+var managementStyleValues = map[ManagementStyle]struct{}{
+	ManagementStyleSelfDirected:  {},
+	ManagementStyleAdvisory:      {},
+	ManagementStyleDiscretionary: {},
+	ManagementStyleAutomated:     {},
+}
+
+func (m ManagementStyle) Valid() bool {
+	_, ok := managementStyleValues[m]
 	return ok
 }
 

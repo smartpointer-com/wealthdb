@@ -141,6 +141,25 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
+		// Defaults applied at render time so users see something
+		// useful when the adapter / overrides haven't classified
+		// the account. The underlying column stays NULL — gold's
+		// distinguishes "unknown" from "explicitly default" via
+		// the database, the CLI surfaces the conventional default.
+		{Name: "tax_wrapper", Align: output.AlignLeft,
+			Extract: func(a gold.AccountRow) string {
+				if a.TaxWrapper != nil {
+					return *a.TaxWrapper
+				}
+				return "taxable_personal"
+			}},
+		{Name: "management_style", Align: output.AlignLeft,
+			Extract: func(a gold.AccountRow) string {
+				if a.ManagementStyle != nil {
+					return *a.ManagementStyle
+				}
+				return "self_directed"
+			}},
 		{Name: "base_currency", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.BaseCurrency) }},
 		{Name: "relationship_id", Align: output.AlignLeft,
@@ -177,7 +196,8 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 }
 
 var defaultAccountColumns = []string{
-	"silver_source", "snapshot_date", "account", "account_kind",
+	"silver_source", "snapshot_date", "account",
+	"account_kind", "tax_wrapper", "management_style",
 	"base_currency", "positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }

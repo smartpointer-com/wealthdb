@@ -52,8 +52,9 @@ INSERT INTO accounts (
     silver_source_id, account_external_id, account_kind,
     display_name, base_currency, relationship_id,
     nickname, account_category, portfolio_external_id,
+    tax_wrapper, management_style,
     first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
     account_kind     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
@@ -69,6 +70,10 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
                             THEN COALESCE(EXCLUDED.account_category, accounts.account_category) ELSE accounts.account_category END,
     portfolio_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN COALESCE(EXCLUDED.portfolio_external_id, accounts.portfolio_external_id) ELSE accounts.portfolio_external_id END,
+    tax_wrapper      = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN COALESCE(EXCLUDED.tax_wrapper, accounts.tax_wrapper) ELSE accounts.tax_wrapper END,
+    management_style = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
+                            THEN COALESCE(EXCLUDED.management_style, accounts.management_style) ELSE accounts.management_style END,
     payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
                             THEN COALESCE(EXCLUDED.payload, accounts.payload) ELSE accounts.payload END,
     first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
@@ -85,18 +90,36 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 		if !r.AccountKind.Valid() {
 			return fmt.Errorf("UpsertAccounts row %d: invalid account_kind %q", i, r.AccountKind)
 		}
+		if r.TaxWrapper != nil && !r.TaxWrapper.Valid() {
+			return fmt.Errorf("UpsertAccounts row %d: invalid tax_wrapper %q", i, *r.TaxWrapper)
+		}
+		if r.ManagementStyle != nil && !r.ManagementStyle.Valid() {
+			return fmt.Errorf("UpsertAccounts row %d: invalid management_style %q", i, *r.ManagementStyle)
+		}
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.AccountExternalID, string(r.AccountKind),
 			nullableString(r.DisplayName), nullableString(r.BaseCurrency),
 			nullableString(r.RelationshipID),
 			nullableString(r.Nickname), nullableString(r.AccountCategory),
 			nullableString(r.PortfolioExternalID),
+			nullableEnumString(r.TaxWrapper), nullableEnumString(r.ManagementStyle),
 			r.FirstSeenAt, r.LastSeenAt, nullableJSON(r.Payload),
 		); err != nil {
 			return fmt.Errorf("UpsertAccounts row %d: %w", i, err)
 		}
 	}
 	return nil
+}
+
+// nullableEnumString turns a typed-string pointer into a value
+// suitable for sql.Exec — nil → NULL, non-nil → the underlying
+// string. Generics let us share one helper across TaxWrapper /
+// ManagementStyle without writing two near-identical copies.
+func nullableEnumString[T ~string](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return string(*p)
 }
 
 // UpsertPortfolios writes portfolio rows with the same §8.4 guard

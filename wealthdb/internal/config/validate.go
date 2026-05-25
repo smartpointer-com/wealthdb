@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
@@ -118,7 +119,8 @@ func (c *Config) Validate() error {
 	// account_overrides: every outer key must name a declared
 	// silver source (catches typos early); every inner key must be
 	// non-empty (an empty account_external_id can't match anything
-	// and is almost always user error).
+	// and is almost always user error); typed fields validate
+	// against the canonical enums.
 	for sourceID, perAccount := range c.AccountOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: account_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -127,8 +129,15 @@ func (c *Config) Validate() error {
 			if acctID == "" {
 				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
 			}
-			if ov.Nickname == "" && ov.Category == "" {
-				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname or category must be set", sourceID, acctID)
+			if ov.Nickname == "" && ov.Category == "" &&
+				ov.TaxWrapper == "" && ov.ManagementStyle == "" {
+				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, tax_wrapper, or management_style must be set", sourceID, acctID)
+			}
+			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
+				return fmt.Errorf("config: account_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, acctID, ov.TaxWrapper)
+			}
+			if ov.ManagementStyle != "" && !canonical.ManagementStyle(ov.ManagementStyle).Valid() {
+				return fmt.Errorf("config: account_overrides[%q][%q]: invalid management_style %q", sourceID, acctID, ov.ManagementStyle)
 			}
 		}
 	}
