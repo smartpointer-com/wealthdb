@@ -1,0 +1,34 @@
+# Camoufox — stealth-patched Firefox fork that masks the fingerprint
+# surfaces (canvas, WebGL, audio, fonts, navigator.*, TLS) Akamai's
+# bot-scoring uses to detect Playwright-driven browsers. Fidelity's
+# signin flow is Akamai-protected; vanilla Playwright Chromium is
+# rejected at credential-submit with the generic "Sorry, we can't
+# complete this action right now" page. Camoufox's `os="macos"` mode
+# spoofs the entire fingerprint stack consistently, presenting as a
+# macOS Firefox to Akamai. See DESIGN.md §6 and the schwab-web-dump
+# precedent for the same vendor.
+#
+# camoufox-py 0.4.11 (Jan 2025) downloads Firefox 135.0.1-beta.24
+# whose juggler patches target the contemporaneous Playwright 1.49.x
+# release line. The mcr.microsoft.com playwright image ships a much
+# newer Playwright (1.59), whose juggler protocol revision causes
+# camoufox-launched Firefox to crash the driver (`coreBundle.js:
+# Cannot read 'url' of undefined` on every pageerror). Pinning
+# Playwright back to the camoufox-aligned version is the simplest
+# fix — the image's bundled browsers at /ms-playwright are unused
+# (camoufox brings its own Firefox at $HOME/.cache/camoufox/).
+camoufox[geoip]>=0.4.11,<0.5
+playwright==1.49.0
+
+# pdfplumber sits on top of pdfminer.six and exposes a clean table-
+# extraction API. Used by load.py to reconstruct historical position
+# snapshots from Fidelity's monthly 529 statement PDFs (the trust
+# accounts get no statements — see DESIGN.md §4.5). pypdfium2 is
+# faster but pdfplumber's table-aware extraction is a better fit for
+# the statement layout; revisit if perf matters later.
+pdfplumber>=0.11,<1
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./fidelity-web-dump sh -c "cd /app && pytest"`,
+# no host-side Python toolchain required.
+pytest>=8,<9
