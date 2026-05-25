@@ -22,12 +22,11 @@ decisions.
 
 ## Status
 
-Login + bronze fetch are operational; the silver loader is not
-yet implemented.
+Login, bronze fetch, and silver loader are operational.
 
 | Component | Status |
 | --- | --- |
-| [`login.py`](login.py) | implemented (Camoufox + Akamai trust + Fidelity device-trust) |
+| [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
 | [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts) |
 | [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--since/--until` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
@@ -77,13 +76,11 @@ a `portfolios.kind`; see [DESIGN.md §1.2](DESIGN.md).
 
 Fidelity binds its session to the Firefox-process lifetime
 (confirmed empirically; same model as Schwab). Login and scrape
-must share one continuous Camoufox process. The current dev
-architecture uses a trigger-file keep-alive: `./fidelity-web-dump
-login` holds Camoufox open and polls a trigger file; `./fidelity-
-web-dump download` writes the trigger file from the host side and
-exits immediately. Once the scraping logic stabilises this will
-collapse into a one-shot `download` that does login + scrape +
-exit in one go.
+share one continuous Camoufox process — `./fidelity-web-dump
+download` does login → walk → logout → exit in one shot. The
+device-trust cookie in the profile dir lets subsequent runs skip
+the MFA prompt for ~30 days; once it expires the next run
+prompts on stdin for a fresh 6-digit code.
 
 ### Build
 
@@ -114,43 +111,36 @@ The wrapper mounts three host paths into the container:
 | `/debug` | `~/.cache/fidelity-web-debug` | opt-in screenshots / traces |
 
 Plus the repo dir is mounted at `/app` so edits to `download.py`
-on the host are picked up by the running container's keep-alive
-loop on the next trigger (no rebuild needed during iteration).
+on the host are picked up by the next container spawn (no
+rebuild needed during iteration).
 
 Override host paths via env: `FIDELITY_WEB_SECRETS_DIR`,
 `FIDELITY_WEB_DATA_DIR`, `FIDELITY_WEB_DEBUG_DIR`.
 
 #### First-ever login (one-time VNC handoff)
 
-For a fresh profile dir:
+For a fresh profile dir on a new IP, Akamai's behavioural-detection
+needs a real human click at credential submit. Use `vnc-login` to
+hand off:
 
 ```sh
 rm -rf ~/.secrets/fidelity-web-profile/
-./fidelity-web-dump vnc-login --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
+./fidelity-web-dump vnc-login --mode none -v
 ```
 
-`entrypoint.sh` prints a fresh VNC password at startup; connect
-with any VNC client (macOS: Finder → ⌘K → `vnc://localhost:5900`),
-click "Log in" in the Camoufox window, complete 2FA, tick
-"Trust this browser" if you want subsequent logins to skip MFA.
-Script auto-detects post-auth, persists the profile dir, drops
-into keep-alive.
+`entrypoint.sh` prints a fresh single-use VNC password at startup;
+connect with any VNC client (macOS: Finder → ⌘K →
+`vnc://localhost:5900`), click "Log in" in the Camoufox window,
+complete 2FA, tick "Trust this browser" if you want subsequent
+runs to skip MFA. The script auto-detects post-auth and exits;
+the profile dir now holds the trust cookies.
 
-#### Subsequent logins
+Drop the `--mode none` to also run the walk after the VNC-driven
+login lands.
 
-Once the profile dir has the trust cookies, auto-driven login
-works:
+#### Routine dumps
 
-```sh
-./fidelity-web-dump login --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
-```
-
-This will likely skip MFA entirely. If MFA does fire, you'll get
-a stdin prompt for the 6-digit code.
-
-#### Triggering a dump
-
-In a second terminal, with the keep-alive container running:
+Once the profile dir is seeded, every run is one-shot:
 
 ```sh
 ./fidelity-web-dump download --mode all     # positions + activity + documents + balances + performance
@@ -164,14 +154,13 @@ In a second terminal, with the keep-alive container running:
                                             # into ≤93-day windows, clamped
                                             # to Fidelity's ~4-year retention)
 ./fidelity-web-dump download --dry-run      # walk + enumerate, no artefact writes
+./fidelity-web-dump download --check        # validate session, no walk
 ```
 
-The wrapper writes the trigger file and exits in <1s; the running
-login container picks it up on its next 2-second poll, runs
-`walk()` in-place, and writes a fresh `<bronze-dir>/<UTC-ts>/`.
-
-Ctrl-C the keep-alive terminal when done. Camoufox flushes the
-profile dir cleanly on exit.
+Each invocation spins up Camoufox, logs in (auto-MFA-skip via the
+device-trust cookie or stdin prompt for the 6-digit code), runs
+the walk, attempts a clean logout, and exits. Bronze lands in a
+fresh `<bronze-dir>/<UTC-ts>/`.
 
 #### Loading into silver
 
@@ -189,20 +178,19 @@ the `content_sha256` document key, so re-running converges.
 ```
 
 Runs host-side (pure-stdlib Python; no Docker, no Camoufox), so
-it can execute while a `login` keep-alive container is live.
-After every run the loader validates that positions and non-
-cash transactions have a ticker and
-logs how many accounts each classified portfolio holds;
-failures are logged as warnings.
+it can execute in parallel with a `download` container if
+needed. After every run the loader validates that positions and
+non-cash transactions have a ticker and
+logs how many accounts each classified portfolio holds; failures are logged as warnings.
 
 ### Credentials
 
-`login.py` reads two env vars inside the container:
+`download.py` reads two env vars inside the container:
 
 - `FIDELITY_USERNAME` — Fidelity login username (treat as sensitive).
 - `FIDELITY_PASSWORD` — Fidelity login password.
 
-The login script sources `/secrets/fidelity-web.env` automatically.
+The script sources `/secrets/fidelity-web.env` automatically.
 
 ```sh
 # ~/.secrets/fidelity-web.env (chmod 600, never committed)
@@ -214,20 +202,19 @@ FIDELITY_PASSWORD='your-password'
 
 ### Session lifecycle
 
-- Fidelity's idle timeout is ~15 minutes. A keep-alive container
-  that goes idle for that long will get redirected to a session-
-  timeout modal on the next trigger. `walk()` detects this best-
-  effort and aborts the affected phase cleanly; restart the
-  container to recover (MFA-less per the device-trust cookie).
+- The session lives only for the duration of one `download`
+  invocation: login → walk → logout → exit. No keep-alive,
+  no idle-timeout concerns.
 - Device-trust cookie has a long lifetime (~30 days nominal);
-  beyond that, MFA fires again on next login.
-- Akamai trust cookie has a separate lifetime; if it expires, the
-  next scripted login may get bot-blocked and need another
+  during that window subsequent runs skip the MFA prompt.
+  Beyond it, MFA fires again on the next run.
+- Akamai trust cookie has a separate lifetime; if it expires,
+  the next scripted login may get bot-blocked and need another
   one-shot VNC handoff to re-seed.
-- `login --check` is mostly diagnostic — it'll report DEAD on a
-  profile that just completed a successful login if Camoufox was
-  closed in between (session ≠ profile-dir cookies, per §5 of
-  [DESIGN.md](DESIGN.md)).
+- `download --check` is mostly diagnostic — it'll report DEAD on
+  a profile dir whose Fidelity session has expired even if the
+  cookies on disk look intact (session ≠ profile-dir cookies,
+  per §5 of [DESIGN.md](DESIGN.md)).
 
 ## Bronze layout
 
@@ -264,10 +251,13 @@ mapping lives inside each CSV's `Account Number` column and
 in tax-form filenames (Fidelity-supplied); bronze itself is
 gitignored.
 
-The `manual/` directory is for bronze artefacts that arrive
-out-of-band, outside anything Fidelity-as-custodian surfaces.
-The (planned) silver loader will ingest `manual/` on every run
-using the same dedup-by-hash mechanism as auto-fetched documents.
+The `manual/` directory is for bronze artefacts produced
+out-of-band — most notably advisor reports from the outside
+investment manager (performance attribution, fee accruals, IPS
+/ mandate documentation) that Fidelity-as-custodian does not
+surface. The (planned) silver loader will ingest `manual/` on
+every run using the same dedup-by-hash mechanism as
+auto-fetched documents.
 
 ## Relationship to a hypothetical Fidelity API source
 

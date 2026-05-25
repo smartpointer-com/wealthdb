@@ -38,23 +38,26 @@ fidelity-web-dump — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
-  login [args...]       Mint or refresh the session state file.
-                        Prompts on stdin for the Fidelity 2FA code
-                        (Duo / Authenticator / Symantec VIP). Stdin
-                        must be a TTY.
-  download [args...]    Export bronze artefacts (positions,
-                        transactions, statements) from fidelity.com.
+  download [args...]    One-shot: log in (prompts on stdin for the
+                        Fidelity 2FA code if MFA fires; auto-skips
+                        when the device-trust cookie is valid), run
+                        the requested walk phases, log out, exit.
+                        Stdin must be a TTY when MFA is expected.
+                        Pass --check to validate the session without
+                        scraping.
   load [args...]        Parse bronze into the silver SQLite DB.
-  vnc-login [args...]   Fallback to a VNC-driven login when the
-                        CLI-MFA selectors drift or a non-code
-                        challenge is required. Starts x11vnc on
-                        127.0.0.1:5900; tunnel + connect from your
-                        local VNC client.
+                        Runs host-side (pure stdlib Python; no
+                        Docker spawn).
+  vnc-login [args...]   First-time profile-dir seed: pre-fills
+                        credentials, hands off to a VNC client for
+                        the human-driven click + 2FA, then runs the
+                        walk (or just exits with --mode none).
+                        Starts x11vnc on 127.0.0.1:5900.
   sh|bash               Open an interactive shell in the container.
   help                  Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (state file lives here)
+  $HOST_SECRETS  ->  /secrets   (env file + profile dir)
   $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
   $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces)
 
@@ -64,9 +67,8 @@ Override mounts via env:
   FIDELITY_WEB_DEBUG_DIR=/path/to/debug
 
 Credentials:
-  The username is read from \$FIDELITY_USERNAME inside the container;
-  the password from \$FIDELITY_PASSWORD (or prompted interactively
-  when not set). The login script sources /secrets/fidelity-web.env
+  Read from \$FIDELITY_USERNAME / \$FIDELITY_PASSWORD inside the
+  container. The script sources /secrets/fidelity-web.env
   automatically (= \$HOME/.secrets/fidelity-web.env on the host).
 
   Use SINGLE QUOTES around values containing \$, \!, backtick, or
@@ -75,8 +77,7 @@ Credentials:
   mangles the password before it reaches the container:
     FIDELITY_USERNAME='your-username'
     FIDELITY_PASSWORD='your-password-with-\$pecial-chars'
-  chmod 600 the file. Password may also be left out and supplied
-  interactively at \`login\` time.
+  chmod 600 the file.
 EOF
 }
 
@@ -91,83 +92,14 @@ if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     exit 0
 fi
 
-# ./fidelity-web-dump download [...]  → wrapper-side trigger write.
-#
-# The login container holds the live Camoufox + polls
-# $HOST_DATA/.download-trigger; this command just writes that
-# file with the requested config and exits. No docker container
-# spawned — both because the trigger is purely a host-side file
-# write, and because spawning a container with the fixed
-# CONTAINER_NAME would collide with the running login. The login
-# container's keep-alive loop picks up the trigger on its next
-# 2-second poll and runs the scrape in-place.
-if [[ "${1:-}" == "download" ]]; then
-    mkdir -p "$HOST_DATA"
-    shift
-    DEST_PATH="/data"
-    MODE="all"
-    SINCE=""
-    UNTIL=""
-    EXCLUDE=""
-    DRY_RUN="false"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --dest)              shift; DEST_PATH="$1" ;;
-            --mode)              shift; MODE="$1" ;;
-            --since)             shift; SINCE="$1" ;;
-            --until)             shift; UNTIL="$1" ;;
-            --exclude-accounts)  shift; EXCLUDE="$1" ;;
-            --dry-run)           DRY_RUN="true" ;;
-            --no-dry-run)        DRY_RUN="false" ;;
-            -h|--help)
-                cat <<EOH
-fidelity-web-dump download — trigger a scrape
-
-Writes \$HOST_DATA/.download-trigger with the per-scrape config; the
-running login keep-alive loop picks it up on its next ~2s poll and
-runs the scrape against its live Camoufox session.
-
-Flags:
-  --dest <path>             Bronze tree root inside container (default: /data)
-  --mode {all,positions,activity,documents,balances,performance}
-                            (default: all)
-  --since YYYY-MM-DD        Earliest date for windowed surfaces
-  --until YYYY-MM-DD        Latest date (default: today UTC)
-  --exclude-accounts <a,b>  Comma-separated account ids to skip
-  --dry-run / --no-dry-run                            (default: --no-dry-run)
-EOH
-                exit 0
-                ;;
-            *)
-                echo "fidelity-web-dump download: unknown flag $1" >&2
-                exit 2
-                ;;
-        esac
-        shift
-    done
-    {
-        echo "dest=$DEST_PATH"
-        echo "mode=$MODE"
-        echo "dry_run=$DRY_RUN"
-        [[ -n "$SINCE"   ]] && echo "since=$SINCE"
-        [[ -n "$UNTIL"   ]] && echo "until=$UNTIL"
-        [[ -n "$EXCLUDE" ]] && echo "exclude_accounts=$EXCLUDE"
-    } > "$HOST_DATA/.download-trigger"
-    echo "fidelity-web-dump: download triggered ($HOST_DATA/.download-trigger):" >&2
-    sed 's/^/  /' "$HOST_DATA/.download-trigger" >&2
-    echo "  (the running login container will pick this up on" >&2
-    echo "  its next ~2s poll; bronze lands under $HOST_DATA/<UTC-ts>/.)" >&2
-    exit 0
-fi
-
 # ./fidelity-web-dump load [args...]  → host-side python3 invocation.
 #
 # The silver loader is pure-stdlib Python (sqlite3 + csv + json
 # + hashlib + re); no Camoufox / Playwright / container needed.
-# Running it host-side means it can execute in parallel with a
-# live `login` keep-alive container without tripping the
-# safety guard further down, and it avoids the docker-spin
-# overhead for what's just a file walk + SQLite writes.
+# Running it host-side avoids the docker-spin overhead for what's
+# just a file walk + SQLite writes, and bypasses the safety
+# guard further down so it can run while a `download` container
+# is mid-flight.
 #
 # Defaults match the container layout (silver under <data>/...,
 # bronze tree = <data>). Forward all flags through.
@@ -237,13 +169,12 @@ fi
 
 # Safety guard: refuse to clobber a live container.
 #
-# Inherited lesson from schwab-web-dump: running a second wrapper
-# invocation while a `login` / `vnc-login` keep-alive session is
-# active would otherwise `docker rm -f` the live container and
-# kill the Fidelity session — costing a fresh MFA round. Check
-# whether a RUNNING container with this name exists; if so, refuse
-# and explain the options. Pass FIDELITY_WEB_FORCE_REPLACE=1 to
-# override (when the live session is known-stuck).
+# A second wrapper invocation while a `download` or `vnc-login` is
+# mid-MFA would otherwise `docker rm -f` the live container and
+# kill the in-flight Fidelity session — costing a fresh MFA round
+# (and during VNC handoff, losing the human's in-progress click).
+# Pass FIDELITY_WEB_FORCE_REPLACE=1 to override when the live
+# session is known-stuck.
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${FIDELITY_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
         echo "fidelity-web-dump: a container named '$CONTAINER_NAME' is already running." >&2

@@ -124,7 +124,8 @@ CREATE TABLE dump_runs (
 -- `kind` is the loader's interpretation of that label:
 --   '529'              Fidelity 529 College Investing Plan sleeves
 --                      (group label 'Education')
---   'trust_managed'    Trust accounts under a third-party investment manager (group label 'Authorized'; see DESIGN.md §1.3)
+--   'trust_managed'    Trust accounts under a third-party investment manager (group label 'Authorized'; see
+--                      DESIGN.md §1.3)
 --   'other'            Anything else surfaced under a different
 --                      group label (e.g. a retail or DAF-adjacent
 --                      group; the DAF itself is auto-excluded

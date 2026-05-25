@@ -51,14 +51,11 @@ RUN python3 -m camoufox fetch && \
 # Copy scripts last. Listed explicitly so accidentally-present
 # host artefacts (.venv, real-credential JSONs, recorded Playwright
 # traces) never make it into the image even if .dockerignore is
-# incomplete.
-#
-# login.py + download.py + download_trigger.py exist today.
-# load.py / landmarks.py / migrations/ land in subsequent commits;
-# the entrypoint dispatches `load` to a script that does not yet
-# exist, which produces a clear "no such file" error rather than
-# a silent failure.
-COPY login.py download.py download_trigger.py /app/
+# incomplete. download.py is the one-shot CLI (login → walk →
+# logout); load.py is the silver loader (also reachable host-side
+# via the wrapper).
+COPY download.py load.py /app/
+COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

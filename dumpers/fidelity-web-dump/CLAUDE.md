@@ -85,9 +85,9 @@ Repeated logins:
 Allowed without asking:
 
 - Read the code, configs, and docs.
-- Run `login.py --check` (loads the stored `storageState.json`,
-  hits one cheap landmark URL, reports whether the cookie is still
-  valid). No new login, no MFA push.
+- Run `download.py --check` (loads the stored profile dir, hits
+  one cheap landmark URL, reports whether the session is still
+  alive). No credential submit, no MFA push.
 - Run `download.py --dry-run` (uses the existing session if alive,
   walks the UI to confirm selectors still match landmarks, exits
   without exporting). Counts as one navigation, not a new login.
@@ -95,9 +95,9 @@ Allowed without asking:
 
 Not allowed unless the user explicitly asks:
 
-- Run `login.py` without `--check` (mints a fresh session, sends
-  an MFA challenge to the user's phone).
-- Run `download.py` without `--dry-run`.
+- Run `download.py` without `--check` or `--dry-run` (full login
+  + walk; sends an MFA challenge to the user's phone if the
+  device-trust cookie has expired).
 - Trigger any non-`--check` navigation to a live `fidelity.com`
   URL from a REPL or one-off shell command.
 - Add or change scheduling (cron, launchd, systemd timer, GitHub
@@ -113,10 +113,11 @@ The session cookie is the keys to the kingdom (see §1). Do not:
   "temporarily for testing."
 - Persist the user's password in plaintext anywhere on disk or in
   environment files committed to the repo. Passwords come from
-  interactive prompt at `login.py` time, or from an env var that
-  the user manages outside the repo (`FIDELITY_PASSWORD`).
-- Cache the password "for the next login.py invocation" in process
-  state or on disk.
+  an env var that the user manages outside the repo
+  (`FIDELITY_PASSWORD`, typically sourced from
+  `~/.secrets/fidelity-web.env`).
+- Cache the password "for the next download.py invocation" in
+  process state or on disk.
 - Add a `--password VALUE` CLI flag that puts the password in `ps`
   output or shell history. Credentials reach the script via the
   `FIDELITY_USERNAME` / `FIDELITY_PASSWORD` env vars, typically
@@ -145,8 +146,10 @@ drops the user provides for landmarking):
 - Registration identifiers — account titles, tax IDs (EIN),
   beneficiary names, agreement numbers; must not appear anywhere
   tracked.
-- Third-party-manager identifiers — relationship numbers,
-  advisor names, manager-side reference numbers.
+- Third-party-manager identifiers — firm name,
+  relationship numbers, advisor names, manager-side reference
+  numbers — even though that data isn't directly fetched by
+  this toolkit.
 - Personal data: names, addresses, phone numbers, email addresses,
   birth dates, SSN fragments, beneficiary identifiers.
 - Real session cookies, browser-profile contents, or MFA tokens.
@@ -167,7 +170,7 @@ into examples, even comments.
 **Pre-commit:** grep the staged diff for known real values BEFORE
 the first `git add`, not after. When the user drops a sample HTML
 download or screenshot into the repo as part of bootstrapping
-`login.py` / `download.py`, strip identifiers before committing
+`download.py`, strip identifiers before committing
 anything derived from it — even comments and test fixtures. When
 in doubt, ask the user before adding a value that looks
 identifier-shaped.

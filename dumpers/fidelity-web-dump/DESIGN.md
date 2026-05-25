@@ -2,7 +2,7 @@
 
 Design document for the `fidelity-web-dump` toolkit. The audience
 is the engineer (current author, future contributor) implementing
-and maintaining `login.py`, `download.py`, and the silver loader
+and maintaining `download.py` and the silver loader
 against the live `www.fidelity.com` UI. It is also the contract
 between this silver and the `wealthdb` Fidelity adapter (which
 doesn't exist yet but will follow the [`schwab` adapter](https://github.com/ptu/wealthdb/blob/main/docs/adapters/schwab.md)
@@ -74,7 +74,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 ```
 <bronze-root>/
 ├── 20260524T120000Z/
-│   ├── run.json                                manifest (trigger config,
+│   ├── run.json                                manifest (CLI config,
 │   │                                           account_dimensions, per-phase results)
 │   ├── positions/
 │   │   ├── positions_summary.csv               Overview view (all accounts in one CSV)
@@ -106,10 +106,13 @@ bronze subdirectory holds documents that arrive out-of-band.
 
 Filename conventions:
 
-- `<account-key>` is the first 16 hex chars of
-  `sha256(account_external_id)`. `ls`-ing a bronze dir does not
-  expose the 9-digit Fidelity account number; the mapping lives
-  inside each artefact body plus `run.json`.
+- Activity / positions CSV filenames are content-keyed (date
+  window or view name) — no account discriminator in the name.
+  `run.json` keys its `account_dimensions` block by
+  `sha256(account_external_id)[:16]` so that `ls`-ing a bronze
+  dir + a glance at the manifest doesn't expose the 9-digit
+  Fidelity account number; the canonical mapping lives inside
+  each CSV's `Account Number` column.
 - Positions: TWO CSVs, one per view, **each containing all
   in-scope accounts**. Fidelity's positions Download exports the
   consolidated all-accounts view; per-account navigation does not
@@ -132,7 +135,7 @@ Filename conventions:
   can carry an account or agreement number in the filename
   (Fidelity-supplied; we don't redact, but bronze is gitignored).
 
-`run.json` records the trigger config, account inventory, and
+`run.json` records the CLI config, account inventory, and
 per-phase results (success + file paths, or per-failure error
 strings).
 
@@ -352,7 +355,7 @@ documents:
   most return metrics are also derivable from positions +
   activity time-series, so the gap is acceptable.
 
-## 5. Architecture: keep-alive trigger-file model
+## 5. Architecture: one-shot model
 
 **Fidelity binds its session to the Firefox-process lifetime.**
 Confirmed empirically: after a successful login that writes the
@@ -362,59 +365,44 @@ treats the cookie as dead even though the file persists. This
 matches the [schwab-web-dump session model](https://github.com/ptu/schwab-web-dump/blob/main/DESIGN.md#5-login--mfa-flow)
 exactly.
 
-Consequence: **login and scrape must share one continuous Camoufox
+Consequence: **login and scrape share one continuous Camoufox
 process.** The sibling-tool "login mints `storageState.json`,
 download reuses it across runs" pattern (UBS, Swissquote) does
 not apply.
 
-### 5.1 Trigger-file dev model (current)
-
-To let the operator iterate on scraping without paying for an
-MFA round on every change:
+`./fidelity-web-dump download` is a one-shot:
 
 ```
-Terminal A:  ./fidelity-web-dump login
-             → login + (auto-skipped MFA per device-trust cookie)
-             → HOLD Firefox open
-             → poll /data/.download-trigger every 2s
-
-Terminal B:  ./fidelity-web-dump download [flags]
-             → wrapper writes $HOST_DATA/.download-trigger and
-               exits immediately (no docker spawn)
-             → running login container picks up the trigger and
-               runs download.walk() in-place against the live
-               Camoufox session
+./fidelity-web-dump download [flags]
+    → docker spawn → Camoufox launch
+    → IUA accept (if non-US locale) → signin
+    → MFA auto-skip via device-trust cookie, or stdin prompt
+    → walk(): positions / activity / documents / balances / performance
+    → logout (best-effort) → Camoufox teardown → exit
 ```
 
 The wrapper mounts `$HERE:/app` so edits to `download.py` on the
-host are immediately visible inside the container; `login.py`
-calls `importlib.reload(download)` before each `walk()`, so a
-host-side edit + a new trigger picks up the latest code with no
-rebuild and no MFA hit.
+host land in the next container spawn — no image rebuild during
+iteration. The device-trust cookie suppresses MFA across spawns
+for ~30 days, so iteration on the walk phases doesn't burn MFA
+pushes.
 
-### 5.2 One-shot model (planned for production)
-
-Once the scraping logic stabilises, the trigger-file indirection
-goes away and `./fidelity-web-dump download` becomes a one-shot:
-login → walk → exit in one continuous Camoufox process.
-
-### 5.3 Session timeout
+### 5.1 Session timeout
 
 Empirically observed: **Fidelity's idle timeout is ~15 minutes**.
-A keep-alive container that's been idle for 15+ minutes will see
-the next navigation redirect to a session-timeout modal. The
-walk() functions detect this best-effort (URL check after the
-documents nav) and abort the affected phase cleanly rather than
-falling over. For long iteration sessions, restart the container
-(MFA-less per the device-trust cookie).
+Since each run is bounded by login + walk + logout, this is only
+relevant when the walk itself exceeds 15 min idle (e.g. waiting
+for human stdin at the 2FA prompt). The walk functions
+defensively check the post-auth URL prefix after navigation and
+abort the affected phase cleanly if Fidelity has redirected to a
+session-timeout modal.
 
 ## 6. Anti-bot configuration (Camoufox + behavioural mimicry)
 
 The working config: **Camoufox + `os="macos"` + `humanize=True` +
 `geoip=True`**, headed against Xvfb. This combination gets the
 login flow past Akamai Bot Manager (Fidelity's bot-detection
-vendor); see [`project_fidelity_akamai_block`](project_fidelity_akamai_block.md)
-memory for the empirical diagnostic chain.
+vendor). The empirical diagnostic chain is below.
 
 The escalation history:
 
@@ -437,14 +425,15 @@ operator drives the login + 2FA via VNC.
 
 ## 7. Login + MFA flow
 
-Default flow (`./fidelity-web-dump login`), assuming a profile dir
-that already has Akamai trust + Fidelity device-trust cookies:
+Default flow (`./fidelity-web-dump download`), assuming a profile
+dir that already has Akamai trust + Fidelity device-trust
+cookies:
 
 1. Launch Camoufox (rung 3b).
 2. Navigate to `https://digital.fidelity.com/prgw/digital/signin/`.
 3. Detect either signin form (US locale) or International Usage
-   Agreement interstitial (non-US locale, our case via geoip=True);
-   click "I Accept" on the IUA if served.
+   Agreement interstitial (non-US locale, when geoip=True trips
+   it); click "I Accept" on the IUA if served.
 4. Fill `#dom-pswd-input` with `FIDELITY_PASSWORD`. Username field
    varies by device-known state (text input vs `<select>`); the
    script tries both paths.
@@ -458,16 +447,23 @@ that already has Akamai trust + Fidelity device-trust cookies:
    `https://digital.fidelity.com/ftgw/digital/portfolio/` to
    appear (using `live_url()` via `location.href` — see workaround
    note in §6).
-8. Drop into the keep-alive trigger loop (§5.1).
+8. Run `walk()` for the requested mode(s).
+9. Best-effort `logout()` (click visible Log Out link).
+10. Camoufox context teardown → process exit.
 
 `--no-trust-this-browser` skips ticking the "Trust this browser"
 checkbox at the 2FA page (useful for repeatedly exercising the
 MFA flow during development).
 
 `--check` loads the profile dir and navigates to the post-auth
-landing without re-logging — reports session ALIVE / DEAD. Note:
-DEAD on a profile that just completed a successful login is
-expected if the Camoufox process exited in between (§5).
+landing without re-logging — reports session ALIVE / DEAD,
+skips walk + logout.
+
+`--vnc` (via the `vnc-login` subcommand, or directly) pre-fills
+the credentials but waits for the operator to click Log In via a
+VNC client. After the post-auth URL lands, the walk runs as
+normal (or `--mode none` skips it for a profile-dir-seed-only
+flow).
 
 ## 8. UI surface map
 
@@ -596,14 +592,14 @@ the rendered HTML; silver scrapes from there.
 - MFA automation — human-in-the-loop on every truly-fresh login.
 - Cross-bank semantic alignment — gold's job.
 - Trust statement reconstruction from PDFs — no statements exist.
-- Third-party investment-manager data sources — out-of-band; separate repo when needed.
+- Outside investment-manager data sources — out-of-band; separate repo when needed.
 
 ## 10. Implementation status
 
 | Step | Status |
 | --- | --- |
 | Container scaffolding + design docs | done |
-| `login.py` — IUA gate, MFA, trust-device, profile dir | done |
+| `download.py` — IUA gate, MFA, trust-device, profile dir, one-shot login → walk → logout | done |
 | `download.py` — positions Overview + DividendView (consolidated CSVs) | done |
 | `download.py` — activity preset 'Past 90 days' (page-level pill → radio → Apply Recent → networkidle) | done |
 | `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into ≤93-day windows) | done |
