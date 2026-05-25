@@ -467,7 +467,7 @@ Example config file:
 | `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
-| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname` and/or `category` strings. See §13.9; both inner fields are optional but at least one must be set per entry. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
 
 ### 5.2 `kind: "auto"`
 
@@ -881,13 +881,15 @@ CREATE TABLE load_audit (
 CREATE TABLE accounts (
     silver_source_id        TEXT    NOT NULL,
     account_external_id     TEXT    NOT NULL,
-    account_kind            TEXT    NOT NULL,
+    account_kind            TEXT    NOT NULL,   -- technical container; see §13.9
     display_name            TEXT,               -- user-facing label, payload-derived
     base_currency           TEXT,               -- ISO 4217 if known
     relationship_id         TEXT,               -- UBS relationship dimension; NULL otherwise
     nickname                TEXT,               -- user-set label; Schwab silver supplies, config override fills others
-    account_category        TEXT,               -- wealth-mgmt wrapper hint; see §13.9
+    account_category        TEXT,               -- free-text bank descriptor; see §13.9
     portfolio_external_id   TEXT,               -- parent portfolio (NULL when ungrouped)
+    tax_wrapper             TEXT,               -- tax / regulatory registration; see §13.9
+    management_style        TEXT,               -- self_directed / advisory / discretionary / automated; see §13.9
     first_seen_at           BIGINT  NOT NULL,   -- earliest snapshot_at observed
     last_seen_at            BIGINT  NOT NULL,   -- latest snapshot_at observed
     payload                 JSON,
@@ -1819,57 +1821,102 @@ Sketch of where this lands when designed:
 This is a sketch only; the source and ingest design will be
 fleshed out when the feature is scheduled.
 
-### 13.9 Account categorisation (personal / managed / UTMA / ESA / ...) and nickname
+### 13.9 Account taxonomy (kind / tax_wrapper / management_style) and nickname
 
 Users typically hold several distinct kinds of accounts at the
 same bank — personal brokerage, managed wealth account, UTMA /
-ESA / IRA wrappers for tax purposes, separate cash accounts.
-Filtering positions and net-worth roll-ups by these categories is
-more useful than slicing by raw account ID. Independently, a
-user-friendly `nickname` ("Main brokerage", "Education account") lets the
-CLI render something more recognisable than the bank's
-identifier.
+ESA / IRA / 529 / Säule 3a wrappers for tax purposes, separate
+cash accounts. Filtering positions and net-worth roll-ups by
+these dimensions is more useful than slicing by raw account ID.
+Independently, a user-friendly `nickname` lets the CLI render
+something more recognisable than the bank's identifier.
 
-Adapter-supplied values today (migration 0002 promoted two
-columns on `accounts`):
+The `accounts` table carries three orthogonal classifier columns
+plus the free-text descriptors (migrations 0002 promoted
+`account_category`/`nickname`; migration 0008 added the two
+structured-enum columns):
+
+- **`account_kind`** — the technical container the bank exposes:
+  `brokerage`, `cash`, `safekeeping`, `custody`, `overlay`,
+  `crypto_exchange`, `crypto_self_custody`, `other`. Required;
+  every adapter stamps this.
+- **`tax_wrapper`** — the tax / regulatory registration.
+  Nullable; defaults to `taxable_personal` at render time.
+  Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,
+  `simple_ira`, `401k`, `403b`, `457b`, `529`, `coverdell_esa`,
+  `hsa`, `daf`, `custodial_utma`, `custodial_ugma`,
+  `trust_grantor`, `trust_non_grantor`, `trust_charitable`) and
+  Switzerland (`pillar_2`, `vested_benefits` /
+  Freizügigkeitskonto, `pillar_3a`), plus generic
+  `taxable_personal`, `taxable_joint`, `foundation`, `other`.
+- **`management_style`** — who places trades. Nullable;
+  defaults to `self_directed` at render time. Values:
+  `self_directed`, `advisory`, `discretionary`, `automated`.
+- **`account_category`** — free-text bank-supplied descriptor,
+  unchanged from migration 0002. Demoted from "the primary
+  classifier" to "supplementary metadata"; useful for verbatim
+  strings the structured enums don't capture (UBS's
+  "Custody / Cash-Custody", etc.).
+
+Adapter-supplied values today:
 
 - **UBS** populates `account_category` from
   `cash_accounts.AcctTpDesc` for cash legs, and from
   `safekeeping_accounts.AcctTpDesc` + `AcctSubTypeDesc`
   (concatenated as `"Type / Sub"` when the sub is present) for
-  safekeeping legs. UBS PSN doesn't expose a per-account
-  nickname, so `nickname` stays NULL unless the config-side
-  override fills it in.
+  safekeeping legs. `tax_wrapper` is derived from `AcctTpCd`
+  via an explicit known-code switch (every observed PSN code
+  maps to `taxable_personal`); unknown codes log a one-shot
+  WARN and leave the column nil. UBS PSN doesn't expose a
+  per-account nickname, so `nickname` stays NULL unless the
+  config-side override fills it in. `management_style` is not
+  surfaced by silver and stays nil.
 - **Schwab** populates `nickname` from the v3-promoted
   `silver.accounts.nickname` column (which mirrors the user-set
-  label from `/userPreference`). `account_category` stays NULL —
-  Schwab's `securitiesAccount.type` is CASH/MARGIN (margin
-  enablement), not a wealth-management category — and is filled
-  in via the config-side override.
-- **Swissquote** populates `account_category` from the
-  v2-promoted `silver.accounts.account_type` column ("Trading",
-  etc.). `nickname` is NULL; Swissquote doesn't expose one and
-  the config override fills in.
+  label from `/userPreference`). `account_category` and
+  `tax_wrapper` stay NULL — Schwab's `securitiesAccount.type` is
+  CASH/MARGIN (margin enablement), not a wealth-management
+  category, and the schwab-api endpoints surveyed expose no
+  structured wrapper field. Config-side override fills both.
+- **Swissquote** populates `account_category` and `tax_wrapper`
+  from `silver.accounts.account_product` (the per-account
+  product label scraped from the eBanking account-overview
+  page): `Trading`/`Savings` → `taxable_personal`,
+  `Säule 3a` → `pillar_3a`, `Freizügigkeit` → `vested_benefits`.
+  `nickname` stays NULL; Swissquote doesn't expose one.
+- **Fidelity** populates `tax_wrapper` and `management_style`
+  via a join through `silver.portfolios.kind`: `529` →
+  `tax_wrapper=529`; `trust_managed` → `tax_wrapper=
+  trust_non_grantor` + `management_style=discretionary`. Per-
+  account registration labels (Roth IRA / Coverdell ESA / etc.)
+  aren't currently surfaced by silver; the path to add them is
+  documented in fidelity-web-dump's DESIGN.md §11.6.
 
-Both adapters use SQLite PRAGMA-based feature detection so
-older silvers without the promoted columns still load (the
-columns just remain NULL).
+Adapters use SQLite PRAGMA-based feature detection where the
+silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
+`account_type` instead of `account_product`); older silvers
+still load with the corresponding columns left NULL.
 
 Config-side override (extends §5): users can specify
 `account_overrides` as a nested map keyed by
 `(silver_source_id, account_external_id)` with optional
-`nickname` and/or `category` fields. The loader applies overrides
-*after* the adapter has stamped its own values, so the override
-takes precedence on overlap. This gives users a single place to
-sharpen Schwab categories or override the somewhat utilitarian
-UBS `AcctTpDesc` labels.
+`nickname`, `category`, `tax_wrapper`, and/or `management_style`
+fields. `tax_wrapper` and `management_style` values are
+validated against the canonical enums at config-load time. The
+loader applies overrides *after* the adapter has stamped its
+own values, so the override takes precedence on overlap. This
+is the path for sharpening accounts the adapter can't classify
+on its own (e.g. a Schwab IRA whose wrapper isn't reachable
+from any silver-side field).
 
-Selectable columns: `wealthdb positions -C
-silver_source,account,account_nickname,account_category,...` —
-both columns are registered (opt-in; not part of the default
-column set).
+Selectable columns: `wealthdb accounts -C
+silver_source,account,account_kind,tax_wrapper,management_style,...`.
+The three structured classifiers are part of the default
+column set; the descriptor columns (`account_category`,
+`account_nickname`) are registered but opt-in.
 
 Still on the roadmap:
-- `--category personal,managed` filter for `wealthdb positions`.
-- Long-form `wealthdb status` flag to show category/nickname
+- `--tax-wrapper personal,roth_ira` filter for the readout
+  subcommands.
+- Long-form `wealthdb status` flag to show wrapper / style
   alongside account IDs.

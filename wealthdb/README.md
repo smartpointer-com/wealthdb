@@ -34,12 +34,20 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb help [<subcommand>]` | Help. |
 
 Adapters ship for Schwab (API + web statements), UBS (PSN feed +
-web export), and Swissquote.
+web export), Swissquote, and Fidelity (web scrape).
+
+Accounts carry a three-dimensional taxonomy: `account_kind`
+(technical container — brokerage / cash / safekeeping / custody /
+overlay / crypto_exchange / crypto_self_custody / other),
+`tax_wrapper` (taxable_personal / IRA / 529 / pillar_3a /
+vested_benefits / trust / DAF / HSA / …; covers US + Switzerland),
+and `management_style` (self_directed / advisory / discretionary /
+automated). Adapters populate what silver carries; config-side
+`account_overrides` fills the rest.
 
 Future work lives in [docs/DESIGN.md §13](docs/DESIGN.md).
-Notable items: account-type categorisation (§13.9),
-instrument-name enrichment for Schwab equity, market-data feeds
-(§13.8).
+Notable items: market-data feeds (§13.8), instrument-name
+enrichment for Schwab equity, broader crypto-source coverage.
 
 ## Quickstart
 
