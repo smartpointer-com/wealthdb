@@ -171,18 +171,28 @@ SELECT snapshot_at, account_external_id, portfolio_external_id, nickname, payloa
 }
 
 // appendPositionsAndCash walks `positions` once and splits each
-// row down one of two paths:
+// row down one of two paths based on the silver-side
+// `is_core_position` flag:
 //
-//   - Money-market core positions → CashBalanceChange with
-//     BalanceKindCurrent (Fidelity reports an instantaneous
-//     "what's in the sweep right now" view).
-//   - Everything else → InstrumentChange (registers identity +
-//     name) plus PositionChange (the holding line).
+//   - is_core_position=1 → CashBalanceChange with
+//     BalanceKindCurrent. Fidelity surfaces money-market core
+//     positions (FDRXX / SPAXX / ...) as ordinary positions
+//     rows; the gold convention is to route them into
+//     cash_balances so `wealthdb positions --with-cash` and the
+//     cash_balance aggregate column populate uniformly across
+//     sources.
+//   - everything else → InstrumentChange (registers identity +
+//     name + asset class) plus PositionChange (the holding line).
 //
 // "Pending activity" rows (no instrument_key, description
 // "Pending activity") are skipped — Fidelity hasn't booked them
 // yet, so they have no resolvable instrument identity. They
 // reappear on the next dump as proper rows.
+//
+// `asset_class`, `currency`, and `is_core_position` are all
+// promoted columns on silver (added by the maintainer after the
+// first adapter review); the adapter relies on them directly
+// rather than re-deriving from instrument_key + description.
 func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-
 	// trip doesn't bleed precision before we parse into the
@@ -190,6 +200,9 @@ func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Win
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_key,
        COALESCE(description, ''),
+       COALESCE(asset_class, ''),
+       currency,
+       is_core_position,
        CAST(quantity      AS VARCHAR),
        CAST(current_value AS VARCHAR),
        payload
@@ -203,11 +216,14 @@ SELECT snapshot_at, account_external_id, instrument_key,
 
 	for rows.Next() {
 		var (
-			snap                                     int64
-			acct, key, desc, payload                 string
-			qtyStr, valueStr                         sql.NullString
+			snap                                          int64
+			acct, key, desc, silverClass, currency        string
+			isCore                                        int
+			qtyStr, valueStr                              sql.NullString
+			payload                                       string
 		)
-		if err := rows.Scan(&snap, &acct, &key, &desc, &qtyStr, &valueStr, &payload); err != nil {
+		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
+			&isCore, &qtyStr, &valueStr, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -221,7 +237,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			continue
 		}
 
-		if isMoneyMarketPosition(key, desc) {
+		if isCore != 0 {
 			amt, err := decimalOrZero(valueStr)
 			if err != nil {
 				return fmt.Errorf("money-market amount parse (acct=%s instr=%s): %w", acct, key, err)
@@ -229,7 +245,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 				SnapshotAt:        snap,
 				AccountExternalID: acct,
-				Currency:          "USD",
+				Currency:          currency,
 				BalanceKind:       canonical.BalanceKindCurrent,
 				Amount:            amt,
 				Payload:           json.RawMessage(payload),
@@ -237,32 +253,30 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			continue
 		}
 
-		canonKey := canonicalInstrumentKey(key)
-		symbol := canonKey
-		usd := "USD"
-		name := desc
+		assetClass := assetClassFor(silverClass)
+		symbol := key
+		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
-			InstrumentExternalID: canonKey,
-			AssetClass:           canonical.AssetClassEquity,
+			InstrumentExternalID: key,
+			AssetClass:           assetClass,
 			Symbol:               &symbol,
-			Name:                 strPtrIfNonEmpty(name),
-			Currency:             &usd,
+			Name:                 strPtrIfNonEmpty(desc),
+			Currency:             &ccy,
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 			Payload:              json.RawMessage(payload),
 		})
 
-		qty := decimalPtrOrNil(qtyStr)
-		val := decimalPtrOrNil(valueStr)
+		instrumentKey := key
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
-			PositionKey:          canonKey,
-			InstrumentExternalID: &canonKey,
-			AssetClass:           canonical.AssetClassEquity,
-			Currency:             "USD",
-			Quantity:             qty,
-			MarketValue:          val,
+			PositionKey:          key,
+			InstrumentExternalID: &instrumentKey,
+			AssetClass:           assetClass,
+			Currency:             currency,
+			Quantity:             decimalPtrOrNil(qtyStr),
+			MarketValue:          decimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
 		})
 	}

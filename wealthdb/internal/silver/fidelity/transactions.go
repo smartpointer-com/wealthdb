@@ -25,6 +25,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	const q = `
 SELECT activity_id, timestamp, account_external_id, kind,
        COALESCE(instrument_key, ''),
+       currency,
        CAST(quantity AS VARCHAR),
        CAST(price    AS VARCHAR),
        CAST(amount   AS VARCHAR),
@@ -40,12 +41,12 @@ SELECT activity_id, timestamp, account_external_id, kind,
 	out := canonical.TransactionBatch{}
 	for rows.Next() {
 		var (
-			activityID, acct, rawKind, instr, payload string
-			occurredAt                                int64
-			qtyStr, priceStr, amtStr                  sql.NullString
+			activityID, acct, rawKind, instr, currency, payload string
+			occurredAt                                          int64
+			qtyStr, priceStr, amtStr                            sql.NullString
 		)
 		if err := rows.Scan(&activityID, &occurredAt, &acct, &rawKind, &instr,
-			&qtyStr, &priceStr, &amtStr, &payload); err != nil {
+			&currency, &qtyStr, &priceStr, &amtStr, &payload); err != nil {
 			return nil, fmt.Errorf("fidelity Transactions scan: %w", err)
 		}
 
@@ -56,14 +57,14 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			OccurredAt:            occurredAt,
 			AccountExternalID:     acct,
 			Kind:                  kind,
-			Currency:              "USD",
+			Currency:              currency,
 			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
 			Quantity:              decimalPtrOrNil(qtyStr),
 			Price:                 decimalPtrOrNil(priceStr),
 			Payload:               json.RawMessage(payload),
 		}
 		if instr != "" {
-			s := canonicalInstrumentKey(instr)
+			s := instr
 			tx.InstrumentExternalID = &s
 		}
 		out.Transactions = append(out.Transactions, tx)

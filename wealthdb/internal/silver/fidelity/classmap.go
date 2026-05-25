@@ -1,28 +1,30 @@
 package fidelity
 
-import "strings"
+import "github.com/ptu/wealthdb/internal/canonical"
 
-// isMoneyMarketPosition reports whether a positions row is the
-// brokerage cash sweep / core money-market fund rather than a
-// security holding. Fidelity tags these with a trailing "**" on
-// `instrument_key` and a description of "HELD IN MONEY MARKET";
-// either signal suffices.
+// assetClassFor maps fidelity-web-dump's `positions.asset_class`
+// (the silver-side classification: 'equity' / 'etf' / 'mutual_fund'
+// / 'bond' / 'plan_fund' / 'money_market' / ...) to the canonical
+// AssetClass. Unknown / empty values fall through to AssetClassOther.
 //
-// Money-market positions route to gold's cash_balances table
-// instead of positions + instruments, matching the convention
-// the other adapters use for cash-equivalent holdings.
-func isMoneyMarketPosition(instrumentKey, description string) bool {
-	if strings.HasSuffix(instrumentKey, "**") {
-		return true
+// `money_market` rows never reach this helper — they're filtered
+// out earlier in appendPositionsAndCash and emitted as
+// CashBalanceChange instead.
+func assetClassFor(silverClass string) canonical.AssetClass {
+	switch silverClass {
+	case "equity":
+		return canonical.AssetClassEquity
+	case "etf":
+		return canonical.AssetClassETF
+	case "mutual_fund", "plan_fund":
+		// plan_fund is a 529 investment-option code — Fidelity-
+		// administered fund wrapper around an underlying allocation.
+		// Same canonical bucket as a regular mutual fund.
+		return canonical.AssetClassFund
+	case "bond":
+		return canonical.AssetClassBond
+	case "money_market":
+		return canonical.AssetClassMoneyMarket
 	}
-	return strings.EqualFold(strings.TrimSpace(description), "HELD IN MONEY MARKET")
-}
-
-// canonicalInstrumentKey returns the instrument identifier with
-// any trailing "**" stripped. Fidelity's CSV export adds the
-// asterisks to flag the row as a money-market core position; the
-// underlying ticker (FDRXX, SPAXX, ...) is the real identity and
-// is what `transactions.instrument_key` references.
-func canonicalInstrumentKey(instrumentKey string) string {
-	return strings.TrimRight(instrumentKey, "*")
+	return canonical.AssetClassOther
 }
