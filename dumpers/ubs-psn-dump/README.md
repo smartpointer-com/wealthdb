@@ -1,19 +1,20 @@
 # ubs-psn-dump
 
 A toolkit for ingesting UBS Private Standard Network (PSN) banking data:
-fetching the raw per-order-type zips over SFTP Pull, then (in subsequent
-scripts) decompressing, parsing, and reshaping them into formats that
-downstream tools — e.g. local LLM-based agents — can consume directly.
+fetching the raw per-order-type zips over SFTP Pull, parsing them into
+a queryable SQLite silver database, and serving as one of the
+per-broker sources for the `wealthdb` gold layer (separate repo) which
+projects all broker silvers into a single cross-broker view.
+
+See [DESIGN.md](DESIGN.md) for the silver-schema contract and the
+design notes targeted at gold-layer adapter authors.
 
 ## Tools
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`download.py`](download.py) | implemented | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
-| [`load.py`](load.py) | implemented | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| _future_ | planned | Cross-broker `wealthdb` gold-layer adapter (lives in a separate repo). |
-
-The sections below document the two tools that currently exist.
+| Script | Purpose |
+| --- | --- |
+| [`download.py`](download.py) | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
+| [`load.py`](load.py) | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
 
 ## download.py
 
