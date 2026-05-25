@@ -94,14 +94,37 @@ ORDER BY snapshot_at`
 
 // ---- accounts ------------------------------------------------------------
 
+// appendAccounts emits one AccountChange per silver accounts row,
+// promoting the silver `account_product` discriminator (or
+// `account_type` on pre-v5 silvers) into both AccountCategory
+// (free-text descriptor, preserved verbatim) and TaxWrapper
+// (canonical enum, mapped per the table documented in the
+// swissquote-dump README "Gold-layer integration" section):
+//
+//   Trading / Savings      → taxable_personal (default)
+//   Säule 3a               → pillar_3a
+//   Freizügigkeit          → vested_benefits
+//   anything else / empty  → leave TaxWrapper nil so the config-
+//                            side override or the COALESCE upsert
+//                            can supply a value.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	hasAccountType, err := c.hasColumn(ctx, "accounts", "account_type")
-	if err != nil {
+	// Silver v5 renamed `account_type` to `account_product`. Read
+	// whichever exists so older silvers (pre-v5) still load until
+	// the user re-runs the silver loader.
+	productCol := ""
+	if has, err := c.hasColumn(ctx, "accounts", "account_product"); err != nil {
 		return err
+	} else if has {
+		productCol = "account_product"
+	} else if has, err := c.hasColumn(ctx, "accounts", "account_type"); err != nil {
+		return err
+	} else if has {
+		productCol = "account_type"
 	}
+
 	q := `SELECT snapshot_at, account_external_id, payload, '' FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
-	if hasAccountType {
-		q = `SELECT snapshot_at, account_external_id, payload, COALESCE(account_type, '') FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
+	if productCol != "" {
+		q = fmt.Sprintf(`SELECT snapshot_at, account_external_id, payload, COALESCE(%s, '') FROM accounts WHERE snapshot_at BETWEEN ? AND ?`, productCol)
 	}
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
@@ -110,26 +133,30 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap        int64
-			extID       string
-			payload     string
-			accountType string
+			snap       int64
+			extID      string
+			payload    string
+			product    string
 		)
-		if err := rows.Scan(&snap, &extID, &payload, &accountType); err != nil {
+		if err := rows.Scan(&snap, &extID, &payload, &product); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
 			continue
 		}
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		change := canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
-			AccountCategory:   strPtrIfNonEmpty(accountType),
+			AccountCategory:   strPtrIfNonEmpty(product),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
-		})
+		}
+		if w := taxWrapperFor(product); w != "" {
+			change.TaxWrapper = &w
+		}
+		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
 }

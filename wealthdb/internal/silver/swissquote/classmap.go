@@ -2,6 +2,29 @@ package swissquote
 
 import "github.com/ptu/wealthdb/internal/canonical"
 
+// taxWrapperFor maps the silver-side `accounts.account_product`
+// label (Swissquote's per-account product designation, scraped
+// from the eBanking account-overview page) to the canonical
+// TaxWrapper enum. Mapping is documented in the swissquote-dump
+// README's "Gold-layer integration" section; keep the two
+// aligned when either side changes.
+//
+// Returns an empty TaxWrapper when the product is unrecognised
+// or empty — the caller should leave AccountChange.TaxWrapper
+// nil in that case so a config-side override can supply a value
+// (or gold's default-aware display renders 'taxable_personal').
+func taxWrapperFor(accountProduct string) canonical.TaxWrapper {
+	switch accountProduct {
+	case "Trading", "Savings":
+		return canonical.TaxWrapperTaxablePersonal
+	case "Säule 3a":
+		return canonical.TaxWrapperPillar3a
+	case "Freizügigkeit":
+		return canonical.TaxWrapperVestedBenefits
+	}
+	return ""
+}
+
 // assetClassFor maps Swissquote's XLS section-header string
 // (stored in positions.payload.asset_class) to the canonical
 // AssetClass. The set of headers is small and stable; unknown
