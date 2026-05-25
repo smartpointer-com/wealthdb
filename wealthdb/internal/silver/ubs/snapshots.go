@@ -133,12 +133,13 @@ ORDER BY snapshot_at`
 // ---- accounts ------------------------------------------------------------
 
 // cashAccountPayload covers the UBS SDCA fields the adapter still
-// reads out of payload JSON. AcctCcyIsoCd (currency) and
-// AcctTpDesc (category) aren't promoted in silver, so they stay
-// here. PrtflId moved to a promoted column in silver migration
-// 0002 — read directly from the SELECT.
+// reads out of payload JSON. AcctCcyIsoCd (currency), AcctTpCd
+// (product code), and AcctTpDesc (category) aren't promoted in
+// silver, so they stay here. PrtflId moved to a promoted column
+// in silver migration 0002 — read directly from the SELECT.
 type cashAccountPayload struct {
 	AcctCcyIsoCd string `json:"AcctCcyIsoCd"`
+	AcctTpCd     string `json:"AcctTpCd"`
 	AcctTpDesc   string `json:"AcctTpDesc"`
 }
 
@@ -176,7 +177,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		// readable), rather than showing the less-informative
 		// AcctTpDesc like "Private" or "Custody". The AcctTpDesc
 		// itself is forwarded as AccountCategory.
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		change := canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindCash,
 			BaseCurrency:        strPtrIfNonEmpty(p.AcctCcyIsoCd),
@@ -186,13 +187,18 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
-		})
+		}
+		if w := taxWrapperForCashAcctTp(p.AcctTpCd, p.AcctTpDesc); w != "" {
+			change.TaxWrapper = &w
+		}
+		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
 }
 
 type safekeepingPayload struct {
 	InvstmtCcyIsoCd string `json:"InvstmtCcyIsoCd"`
+	AcctTpCd        string `json:"AcctTpCd"`
 	AcctTpDesc      string `json:"AcctTpDesc"`
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
 }
@@ -225,7 +231,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		var p safekeepingPayload
 		_ = json.Unmarshal([]byte(payload), &p)
 
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		change := canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindSafekeeping,
 			// DisplayName left nil; see appendCashAccounts. The
@@ -240,7 +246,11 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
-		})
+		}
+		if w := taxWrapperForSafekeepingAcctTp(p.AcctTpCd, p.AcctTpDesc); w != "" {
+			change.TaxWrapper = &w
+		}
+		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
 }
