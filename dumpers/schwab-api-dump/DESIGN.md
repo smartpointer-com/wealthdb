@@ -454,6 +454,64 @@ appears in both the dump's `instruments.json` *and* a transactions
 transferItem, synthesis skips it and lets the API row stand. The
 silver consumer sees one table; the source is transparent.
 
+### 4.10 Tax wrapper: a negative finding
+
+The Schwab Trader API does **not** expose the tax-registration / wrapper
+of an account (IRA, Roth IRA, Rollover IRA, SEP-IRA, Inherited IRA,
+Coverdell ESA, UTMA/UGMA, 529, taxable, trust, etc.) as a structured
+field. Both endpoints that touch accounts were probed exhaustively:
+
+| Endpoint | Wrapper-shaped field? |
+|---|---|
+| `GET /trader/v1/accounts` and `/accounts/{hash}`, with or without `fields=…` | No. The `securitiesAccount.type` field is one of {`CASH`, `MARGIN`} — that is *margin enablement*, not tax treatment. The 9 returned keys are `accountNumber`, `type`, `roundTrips`, `isDayTrader`, `isClosingOnlyRestricted`, `pfcbFlag`, plus three balance blocks. Trying undocumented projections (`accountSubType`, `registrationType`, `type2`, `registration`, `all`, …) yields the same 9 keys; unknown projection values are silently ignored. |
+| `GET /trader/v1/accounts/accountNumbers` | No. Just `{accountNumber, hashValue}`. |
+| `GET /trader/v1/userPreference` per-account entry | The structured `type` field is `BROKERAGE` for every account — useless for discrimination. The only wrapper signal is the **`nickName`** free-text field. |
+
+The silver `accounts` table already promotes `nickName` as a real
+column (`nickname`, populated by `_build_account_metadata` from
+`userPreference.accounts[*].nickName`; see migration 0003). No further
+field is available to promote.
+
+**Guidance for downstream adapters (e.g. wealthdb):**
+
+1. Map the structured fields where they are unambiguous:
+   - `account_type = MARGIN` → margin-enabled (not a wrapper signal).
+   - `account_type = CASH` → cash-only (also not a wrapper signal).
+   - These do not determine the wrapper; do not infer.
+2. Fall back to a regex on `nickname` for the wrapper. The full Schwab
+   wrapper vocabulary (across both individual and entity accounts)
+   maps to known nickname tokens. A reasonable starting matcher:
+
+   | Wrapper | Token(s) commonly found in nicknames |
+   |---|---|
+   | Roth IRA | `Roth IRA`, `Roth` |
+   | Rollover IRA | `Rollover IRA`, `Rollover` |
+   | SEP-IRA | `SEP IRA`, `SEP-IRA`, `SEP` |
+   | SIMPLE IRA | `SIMPLE IRA`, `SIMPLE` |
+   | Inherited IRA | `Inherited IRA`, `Beneficiary IRA` |
+   | Traditional IRA | `IRA` (after matching the more specific variants above) |
+   | Coverdell ESA | `ESA`, `Coverdell` |
+   | 529 plan | `529` |
+   | UTMA | `UTMA` |
+   | UGMA | `UGMA` |
+   | Trust | `Trust`, `Revocable`, `Irrevocable` |
+   | Solo 401(k) | `Solo 401k`, `Individual 401k`, `i401k` |
+   | Taxable / personal | anything else (default) |
+
+   Match more-specific tokens before generic ones (e.g. `Roth IRA`
+   before `IRA`).
+3. Treat the regex as best-effort, not authoritative. The nickname
+   is user-set: people can name an inherited IRA `"Mom's Account"`
+   with no wrapper token, and they routinely will. The gold layer
+   should support an explicit per-account override in config that
+   takes precedence over the nickname inference.
+
+**Do not** invent a structured-field column on silver to hold the
+adapter's regex-derived wrapper — that classification lives in gold,
+where the adapter combines the nickname signal with config overrides.
+Silver's contract is "what the source said"; the source said nothing
+structured here.
+
 ## 5. What silver deliberately omits
 
 - **Bitemporal model.** See §4.3.
