@@ -162,7 +162,7 @@ CUSIP for bonds (9-char alphanumeric in the `Symbol` column) and
 ticker for equities / ETFs / mutual funds. Money-market core
 positions use Fidelity-internal codes (`FDRXX**` and similar; the
 asterisks are footnote markers, not part of the ticker). 529-plan
-positions use plan-internal codes (e.g. `XXX######` for state
+positions use plan-internal codes (e.g. `XXX######` for an NH
 529-plan target-date sleeves).
 
 Silver should discriminate via an `instrument_kind` column
@@ -223,54 +223,70 @@ Persisted in `run.json` under `account_dimensions`, keyed by
 raw 9-digit ids if viewed standalone. The mapping back to
 canonical id lives inside the per-phase CSVs.
 
-## 4. Silver schema (sketch)
+## 4. Silver schema
 
-Final schema lands in `migrations/0001_initial.sql` once the
-silver loader is implemented. The shape below is the design
-target.
+Materialised in `migrations/0001_initial.sql`. The loader
+(`load.py`) applies any pending numbered migration on every run,
+so silver databases always conform to the latest schema.
 
 ### 4.1 Tables
 
 | Table | Archetype | PK | Promoted columns |
 | --- | --- | --- | --- |
 | `schema_meta` | meta | `silver_schema_version` | `applied_at` |
-| `dump_runs` | meta | `snapshot_at` | `loaded_at`, `bronze_dir` |
-| `accounts` | snapshot, content-deduped | `(snapshot_at, account_external_id)` | `owner`, `account_kind`, `account_name_raw`; rest in `payload` |
-| `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `instrument_kind`, `symbol`, `cusip` (when present), `currency`, `quantity`, `market_value`, `cost_basis_total`, `average_cost_basis`; rest in `payload` |
-| `transactions` | event | synthetic `transaction_external_id` PK + secondary index on `(account_external_id, timestamp)` | `account_external_id`, `timestamp`, `kind`, `amount`, `currency`, `instrument_key` |
-| `documents` | event | `content_sha256` | `account_external_id` (when derivable), `doc_date`, `doc_kind` (`statement` / `tax_form_pdf`), `filename`, `bronze_path` |
-| `tax_form_rows` | event | `(tax_year, account_external_id, form_subtype, row_index)` | structured per-lot detail from the 1099 Composite when Fidelity offers a structured-data variant — see §4.6 |
+| `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `*_present` flags |
+| `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
+| `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`; rest in `payload` |
+| `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
+| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `source_sha256` |
+| `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 
 ### 4.2 Snapshots vs events
 
-`accounts`, `positions` follow the snapshot archetype: PK begins
-with the temporal key, append-only across runs.
+`portfolios`, `accounts`, `positions` follow the snapshot
+archetype: PK begins with `snapshot_at`, INSERT OR REPLACE per
+load. Every dump's view of the master data is preserved.
 
-`transactions` follows the event archetype: window-DELETE-then-
-INSERT per `(account, snapshot window)`. The activity scrape
-emits one CSV per account at the page's default range; the
-loader replaces exactly that range for that account.
+`transactions` follows the event archetype: idempotent INSERT
+OR REPLACE on the synthetic `activity_id`. Re-loading the same
+source activity CSV converges (the ID is derived from row
+content + source-file sha256 + row index). Overlapping
+download windows produce duplicate rows that collapse on the
+shared `activity_id`.
 
-`documents` follows the event archetype: INSERT-OR-IGNORE on
-`content_sha256`. Each PDF is a discrete object; re-downloading
-gives us a possibly-different sha256 (PDF regeneration question
-deferred to §11.1) but the same logical doc.
+`documents` follows the event archetype: PRIMARY KEY on
+`content_sha256` so the same PDF / HTML across multiple dumps
+collapses to one row whose `snapshot_at` is the first dump that
+observed it. PDF regeneration (same logical doc, different bytes)
+is the open question in §11.1.
 
 ### 4.3 Cash routing
 
 Fidelity surfaces money-market core positions (`FDRXX`, `SPAXX`,
-`FZFXX`, similar) as rows on the positions CSV with the
-`HELD IN MONEY MARKET` description. Silver stores these as
-`positions` rows (not split into a separate `cash_balances`
-table); the wealthdb gold adapter re-routes them per its existing
-[per-broker convention](https://github.com/ptu/wealthdb/blob/main/docs/adapters/schwab.md).
+`FZFXX`, similar) as ordinary rows on the positions CSV. Silver
+stores these as `positions` rows (not split into a separate
+`cash_balances` table); the `wealthdb` gold adapter re-routes
+them per its per-broker convention. The `Type` column carries
+`Cash` / `Margin` and is promoted on `positions.type`.
 
-### 4.4 Owner dimension
+### 4.4 Portfolio classification
 
-`owner` lives on `accounts`. Other tables join via
-`account_external_id`. Gold queries that want "all trust
-positions" join positions → accounts on `account_external_id` and
-filter on `accounts.owner`.
+Fidelity's account selector renders accounts under labelled
+groups (`<section aria-label="…">` blocks). `download.py`
+captures the label as `portfolio` on each account_dimensions
+entry. The loader maps the literal label to a stable `kind`:
+
+| Selector label | `portfolios.kind` |
+| --- | --- |
+| `Education` | `529` |
+| `Authorized` | `trust_managed` |
+| anything else | `other` |
+
+`accounts.portfolio_external_id` is the literal label (so gold
+can re-derive the mapping if it wants a different taxonomy);
+`portfolios.kind` is the loader's normalised classification.
+Any future Fidelity group label drops cleanly into `other`
+without a schema change.
 
 ### 4.5 Historical reconstruction — statement PDFs
 
@@ -300,10 +316,12 @@ ending in ` (pdf)` exclusively; an early DOM snapshot suggested
 CSV / XML variants may exist for some 1099 types, but live
 testing across the available years (2019-2025, 7 anchors total
 for this account set) found no such variants on this customer's
-forms. First-pass silver stores the PDFs in `documents`;
-structured extraction into `tax_form_rows` is a follow-up
-(parser TBD; pdfplumber + per-line layout heuristics, mirroring
-the planned 529-statement reconstruction in §4.5).
+forms. Silver stores the PDFs in `documents` keyed by
+`content_sha256` with `doc_kind='tax_form'` and the parsed
+`tax_year`. Structured per-lot extraction (1099 detail into a
+`tax_form_rows` table) is a follow-up; parser TBD (pdfplumber
++ per-line layout heuristics, mirroring the planned 529-
+statement reconstruction in §4.5).
 
 ### 4.7 Balances + Performance pages
 
@@ -592,7 +610,7 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — documents: statements (per-row popover; PDF via popup-tab + `context.request`, CSV via `page.expect_download`; scroll-into-view + JS-click fallback for rows below the fold) | done |
 | `download.py` — documents: tax forms (multi-year via `#options-select-TimeFilter`, one click per form by unique anchor id) | done |
 | `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
-| `migrations/0001_initial.sql` + `load.py` | not started |
+| `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
 | Statement-PDF parser (529 historical reconstruction) | not started |
 | One-shot architecture collapse (login + walk + exit) | not started |
 | `wealthdb` Fidelity adapter | separate repo |

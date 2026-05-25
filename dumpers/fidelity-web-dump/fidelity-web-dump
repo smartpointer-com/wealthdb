@@ -160,6 +160,52 @@ EOH
     exit 0
 fi
 
+# ./fidelity-web-dump load [args...]  → host-side python3 invocation.
+#
+# The silver loader is pure-stdlib Python (sqlite3 + csv + json
+# + hashlib + re); no Camoufox / Playwright / container needed.
+# Running it host-side means it can execute in parallel with a
+# live `login` keep-alive container without tripping the
+# safety guard further down, and it avoids the docker-spin
+# overhead for what's just a file walk + SQLite writes.
+#
+# Defaults match the container layout (silver under <data>/...,
+# bronze tree = <data>). Forward all flags through.
+if [[ "${1:-}" == "load" ]]; then
+    mkdir -p "$HOST_DATA"
+    shift
+    SILVER_DB="$HOST_DATA/fidelity-web.db"
+    BRONZE_DIR="$HOST_DATA"
+    PASSTHRU=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --silver-db) shift; SILVER_DB="$1" ;;
+            --bronze-dir) shift; BRONZE_DIR="$1" ;;
+            -h|--help)
+                cat <<EOH
+fidelity-web-dump load — parse bronze into silver SQLite
+
+Runs host-side (pure stdlib Python). Default silver DB lives at
+\$HOST_DATA/fidelity-web.db; default bronze tree is \$HOST_DATA
+itself.
+
+Flags:
+  --silver-db <file>    SQLite path (default: \$HOST_DATA/fidelity-web.db)
+  --bronze-dir <dir>    Bronze tree root (default: \$HOST_DATA)
+  -v, --verbose         DEBUG-level logging
+EOH
+                exit 0
+                ;;
+            *) PASSTHRU+=("$1") ;;
+        esac
+        shift
+    done
+    exec python3 "$HERE/load.py" \
+        --silver-db "$SILVER_DB" \
+        --bronze-dir "$BRONZE_DIR" \
+        ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+fi
+
 # Ensure mount points exist on the host before we mount them. Docker
 # will silently create them as root-owned directories if we don't.
 mkdir -p "$HOST_DATA"

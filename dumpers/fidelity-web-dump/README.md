@@ -34,7 +34,7 @@ yet implemented.
 | [`download.py`](download.py) documents — statements | implemented (per-row popover → "Download as PDF" via popup-tab + `context.request`, "Download as CSV" via canonical download event; scroll-into-view + JS-click fallback for rows below the fold). |
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
-| `load.py` / silver schema | not yet implemented |
+| [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). Statement-PDF parser for 529 historical reconstruction is a follow-up. |
 | `wealthdb` Fidelity adapter | separate repo (not yet created) |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).
@@ -172,6 +172,28 @@ login container picks it up on its next 2-second poll, runs
 
 Ctrl-C the keep-alive terminal when done. Camoufox flushes the
 profile dir cleanly on exit.
+
+#### Loading into silver
+
+`load.py` walks every `<bronze-dir>/<UTC-ts>/` subdir, applies
+any pending schema migrations, and inserts new dumps into the
+silver SQLite DB. Idempotent on the synthetic `activity_id` and
+the `content_sha256` document key, so re-running converges.
+
+```sh
+./fidelity-web-dump load                              # uses defaults
+./fidelity-web-dump load \
+    --silver-db /path/to/fidelity.db \
+    --bronze-dir /path/to/bronze
+./fidelity-web-dump load -v                           # DEBUG logging
+```
+
+Runs host-side (pure-stdlib Python; no Docker, no Camoufox), so
+it can execute while a `login` keep-alive container is live.
+After every run the loader validates that positions and non-
+cash transactions have a ticker and
+logs how many accounts each classified portfolio holds;
+failures are logged as warnings.
 
 ### Credentials
 
