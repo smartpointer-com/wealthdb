@@ -11,8 +11,7 @@ issue transfers, and change settings. There is no read-only sub-
 session or scope. This repo's contract is that it *only* reads.
 
 Allowed UI surfaces — `download.py` may only navigate to or click
-within (final list TBD once the live UI is mapped, but the
-allow-list pattern below is binding):
+within the surfaces listed below:
 
 - The Fidelity login form and the MFA challenge page that follows
   it (Duo push, Symantec VIP code, Google Authenticator code, SMS,

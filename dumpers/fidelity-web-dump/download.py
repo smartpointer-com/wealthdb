@@ -1755,13 +1755,13 @@ def scrape_performance(page, bronze_dir, capture_dir):
 # walk() — orchestrates the per-phase scrapes against a live session
 # ---------------------------------------------------------------------------
 
-def walk(context, page, config, args):
+def walk(context, page, config):
     """Run the requested phase(s) against a logged-in session.
     Called from ``run_oneshot()`` after ``login()`` lands on the
     post-auth URL. Dispatches to the per-phase scrape functions
-    based on ``config['mode']``. Phases
-    each have their own try/except inside their dispatcher; a
-    failure in one phase does not block the others."""
+    based on ``config['mode']``. Each phase has its own
+    try/except inside its dispatcher; a failure in one phase does
+    not block the others."""
     dest_root = Path(config.get("dest") or "/data")
     bronze_dir = dest_root / ts_slug()
     bronze_dir.mkdir(parents=True, exist_ok=True)
@@ -1811,7 +1811,7 @@ def walk(context, page, config, args):
 
     run_json = {
         "snapshot_at": bronze_dir.name,
-        "trigger_config": config,
+        "cli_config": config,
         "accounts_enumerated": all_accounts,
         "accounts_auto_excluded": sorted(auto_excluded),
         "accounts_explicitly_excluded":
@@ -1859,7 +1859,7 @@ def walk(context, page, config, args):
 
 
 # ---------------------------------------------------------------------------
-# Env-file loader (mirrors schwab-web-dump's pattern)
+# Env-file loader
 # ---------------------------------------------------------------------------
 
 def load_env_file(path):
@@ -2506,7 +2506,7 @@ def run_oneshot(args):
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
             try:
-                walk(context, page, config, args)
+                walk(context, page, config)
             finally:
                 logout(page, args.screenshot_dir)
             return 0

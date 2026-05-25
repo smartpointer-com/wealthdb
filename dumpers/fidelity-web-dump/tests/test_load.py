@@ -93,7 +93,7 @@ def _write_dump(root: Path, ts: str) -> Path:
         "Today's Gain/Loss Dollar,Today's Gain/Loss Percent,"
         "Total Gain/Loss Dollar,Total Gain/Loss Percent,"
         "Percent Of Account,Cost Basis Total,Average Cost Basis,Type\n"
-        f"{ACCT_529},Beneficiary,{SYM_529},NH PLACEHOLDER FUND,"
+        f"{ACCT_529},Beneficiary,{SYM_529},STATE PLACEHOLDER FUND,"
         "100,$10.00,+$0.05,$1000.00,+$5,+0.5%,+$100,+11%,80%,"
         "$900,$9.00,Cash,\n"
         f"{ACCT_TRUST},Trust: Under Agreement,{SYM_TRUST},"
@@ -130,8 +130,8 @@ def _write_dump(root: Path, ts: str) -> Path:
         f'"DIVIDEND RECEIVED STUB TICKER ONE ({SYM_TRUST}) (Cash)",'
         f'{SYM_TRUST},"STUB TICKER ONE",Cash,,0.000,,,,12.50,\n'
         f'06/02/2024,"Beneficiary","{ACCT_529}",'
-        f'"YOU BOUGHT NH PLACEHOLDER FUND ({SYM_529}) (Cash)",'
-        f'{SYM_529},"NH PLACEHOLDER FUND",Cash,10.00,5.000,,,,-50.00,'
+        f'"YOU BOUGHT STATE PLACEHOLDER FUND ({SYM_529}) (Cash)",'
+        f'{SYM_529},"STATE PLACEHOLDER FUND",Cash,10.00,5.000,,,,-50.00,'
         '06/03/2024\n'
     )
     (dump / "activity").mkdir()
@@ -283,3 +283,87 @@ def test_parse_decimal_handles_fidelity_formats():
     assert load.parse_decimal("--") is None
     assert load.parse_decimal("") is None
     assert load.parse_decimal(None) is None
+
+
+# ============================================================
+# Migration-0002 columns: currency, asset_class, is_core_position
+# ============================================================
+
+def test_currency_defaults_to_usd(migrated, tmp_path):
+    _write_dump(tmp_path, "20260101T120000Z")
+    load.load_dump(migrated, tmp_path / "20260101T120000Z", 2)
+    pos_currencies = {
+        r[0] for r in migrated.execute(
+            "SELECT DISTINCT currency FROM positions"
+        )
+    }
+    txn_currencies = {
+        r[0] for r in migrated.execute(
+            "SELECT DISTINCT currency FROM transactions"
+        )
+    }
+    assert pos_currencies == {"USD"}
+    assert txn_currencies == {"USD"}
+
+
+def test_money_market_suffix_stripped_and_flagged(migrated, tmp_path):
+    """A position row whose Symbol ends in '**' (Fidelity's core
+    money-market channel signal) lands in silver with the asterisks
+    stripped from instrument_key and is_core_position = 1."""
+    dump = tmp_path / "20260101T120000Z"
+    _write_dump(tmp_path, "20260101T120000Z")
+    # Patch in a core-position row.
+    csv = dump / "positions" / "positions_summary.csv"
+    text = csv.read_text()
+    text += (
+        f"{ACCT_TRUST},Trust: Under Agreement,FDRXX**,"
+        "FIDELITY GOVERNMENT CASH RESERVES,1000,$1.00,+$0.00,$1000.00,"
+        "$0,0.0%,+$0,0.0%,5%,$1000.00,$1.00,Cash,\n"
+    )
+    csv.write_text(text)
+    load.load_dump(migrated, dump, 2)
+    row = migrated.execute(
+        "SELECT instrument_key, is_core_position, asset_class "
+        "FROM positions WHERE account_external_id = ? "
+        "AND description LIKE 'FIDELITY GOVERNMENT%'",
+        (ACCT_TRUST,),
+    ).fetchone()
+    assert row == ("FDRXX", 1, "money_market")
+
+
+def test_asset_class_classifier_covers_known_shapes():
+    # Money-market via is_core_position=1
+    assert load._classify_asset_class("FDRXX", "anything", 1) == "money_market"
+    # CUSIP-shaped 9-char ticker → bond
+    assert load._classify_asset_class(
+        "000000AA0", "EXAMPLE CITY BDS", 0,
+    ) == "bond"
+    # 3-letter + 6-digit Fidelity 529 plan-fund code
+    assert load._classify_asset_class(
+        "ABC123456", "STATE PLAN PORTFOLIO 2030", 0,
+    ) == "plan_fund"
+    # Industry mutual-fund convention: 5 chars ending in X
+    assert load._classify_asset_class(
+        "FXAIX", "FIDELITY 500 INDEX FUND", 0,
+    ) == "mutual_fund"
+    # Common stock — fall through to equity
+    assert load._classify_asset_class("AAPL", "APPLE INC", 0) == "equity"
+    # ADR — 5-char ending in Y, not X → equity
+    assert load._classify_asset_class(
+        "AAGIY", "AIA GROUP ADR", 0,
+    ) == "equity"
+    # ETF — 3-char alpha → equity (gold disambiguates further)
+    assert load._classify_asset_class("SPY", "S&P 500 ETF", 0) == "equity"
+
+
+def test_dump_runs_no_balances_or_performance_columns(migrated, tmp_path):
+    """Migration 0002 dropped the *_present flags for balances /
+    performance — the documents table is the source of truth."""
+    cols = {
+        r[1] for r in migrated.execute(
+            "PRAGMA table_info(dump_runs)"
+        )
+    }
+    assert "balances_present" not in cols
+    assert "performance_present" not in cols
+    assert "positions_present" in cols  # the data-bearing phases stay

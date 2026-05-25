@@ -301,15 +301,18 @@ def _read_run_json(dump_dir):
 
 
 def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
-    cfg = run_meta.get("trigger_config", {}) or {}
+    cfg = run_meta.get("cli_config", {}) or {}
     window = run_meta.get("activity_window") or {}
+    # balances / performance presence is recoverable from the
+    # documents table via doc_kind IN ('balances_html',
+    # 'performance_html'); we only persist the explicit flags
+    # for the structured-data phases.
     conn.execute(
         "INSERT INTO dump_runs ("
         "snapshot_at, silver_schema_version, run_dir, mode, "
         "activity_since, activity_until, "
-        "positions_present, activity_present, documents_present, "
-        "balances_present, performance_present"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "positions_present, activity_present, documents_present"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             snapshot_at, schema_version, str(dump_dir),
             cfg.get("mode"),
@@ -318,8 +321,6 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
             int((dump_dir / "positions").is_dir()),
             int((dump_dir / "activity").is_dir()),
             int((dump_dir / "documents").is_dir()),
-            int((dump_dir / "balances").is_dir()),
-            int((dump_dir / "performance").is_dir()),
         ),
     )
 
@@ -417,11 +418,21 @@ def _load_positions(conn, snapshot_at, dump_dir):
             entry = merged.setdefault(key, {})
             entry[view] = row
     inserted = 0
-    for (account_ext, instr), views in merged.items():
+    for (account_ext, raw_instr), views in merged.items():
+        # Strip trailing '*' chars Fidelity appends to money-market
+        # core-position symbols (e.g. 'FDRXX**' → 'FDRXX'). The
+        # asterisks are a channel signal we promote to the
+        # is_core_position flag; the silver instrument_key joins
+        # cleanly against transactions where the same fund appears
+        # without the suffix.
+        is_core = 1 if raw_instr.endswith("*") else 0
+        instr = raw_instr.rstrip("*")
         summary = views.get("summary", {})
         dividend = views.get("dividend", {})
         # Prefer summary's quantity/value/cost; fall back to dividend.
         primary = summary or dividend
+        description = primary.get("Description") or None
+        asset_class = _classify_asset_class(instr, description, is_core)
         conn.execute(
             "INSERT OR REPLACE INTO positions ("
             "snapshot_at, account_external_id, instrument_key, "
@@ -429,11 +440,11 @@ def _load_positions(conn, snapshot_at, dump_dir):
             "cost_basis_total, average_cost_basis, type, "
             "ex_date, amount_per_share, pay_date, "
             "distribution_yield, sec_yield, est_annual_income, "
-            "payload"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "payload, currency, asset_class, is_core_position"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 snapshot_at, account_ext, instr,
-                primary.get("Description") or None,
+                description,
                 parse_decimal(primary.get("Quantity")),
                 parse_decimal(primary.get("Last Price")),
                 parse_decimal(primary.get("Current Value")),
@@ -447,10 +458,52 @@ def _load_positions(conn, snapshot_at, dump_dir):
                 parse_decimal(dividend.get("SEC yield")),
                 parse_decimal(dividend.get("Est. annual income")),
                 normalize_payload({"summary": summary, "dividend": dividend}),
+                "USD",
+                asset_class,
+                is_core,
             ),
         )
         inserted += 1
     return inserted
+
+
+# Regexes for the instrument-shape rules in _classify_asset_class.
+# CUSIP-9: 9 alphanumeric chars with a trailing check digit.
+_CUSIP9_RE = re.compile(r"^[A-Z0-9]{8}[0-9]$")
+# Fidelity's 529-plan investment-option codes: 3 letters + 6 digits
+# (an internal Fidelity scheme for target-date / risk-bucket
+# sleeves inside a state 529 plan). The strictness matters — some
+# ADRs share the first three letters of a state's plan prefix, so
+# the regex pins the trailing 6 characters to digits.
+_PLAN_FUND_RE = re.compile(r"^[A-Z]{3}[0-9]{6}$")
+# Industry mutual-fund convention: 5-char ticker ending in 'X'.
+_MUTUAL_FUND_RE = re.compile(r"^[A-Z]{4}X$")
+
+
+def _classify_asset_class(instrument_key, description, is_core_position):
+    """Heuristic asset-class derivation from the Fidelity Symbol +
+    Description fields. Order matters — first match wins. Returns
+    one of 'money_market' / 'bond' / 'plan_fund' / 'mutual_fund' /
+    'equity'. Gold can override via reference data; this populates
+    the column for the common cases."""
+    if is_core_position:
+        return "money_market"
+    if not instrument_key:
+        return "equity"
+    # plan_fund BEFORE the broader CUSIP-9 check because the
+    # plan-fund shape ([A-Z]{3}[0-9]{6}) is a stricter subset of
+    # CUSIP-9 (any alphanumeric ending in a digit). Real CUSIPs
+    # almost never fit the strict 3-letters-then-6-digits pattern.
+    if _PLAN_FUND_RE.match(instrument_key):
+        return "plan_fund"
+    if _CUSIP9_RE.match(instrument_key):
+        # 9-char alphanumeric with trailing check digit → CUSIP.
+        # Fidelity exposes the CUSIP in the Symbol column for
+        # bonds when no ticker exists.
+        return "bond"
+    if _MUTUAL_FUND_RE.match(instrument_key):
+        return "mutual_fund"
+    return "equity"
 
 
 def _iter_positions_rows(csv_path):
@@ -553,8 +606,8 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
                 "INSERT OR REPLACE INTO transactions ("
                 "activity_id, timestamp, account_external_id, kind, "
                 "instrument_key, quantity, price, amount, "
-                "settlement_date, source_sha256, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "settlement_date, source_sha256, payload, currency"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     activity_id, ts, account_ext, kind, symbol,
                     parse_decimal(row.get("Quantity")),
@@ -563,6 +616,7 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
                     ts_from_mdy(row.get("Settlement Date")),
                     src_sha,
                     normalize_payload(dict(row)),
+                    "USD",
                 ),
             )
             inserted += 1

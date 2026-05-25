@@ -165,7 +165,7 @@ CUSIP for bonds (9-char alphanumeric in the `Symbol` column) and
 ticker for equities / ETFs / mutual funds. Money-market core
 positions use Fidelity-internal codes (`FDRXX**` and similar; the
 asterisks are footnote markers, not part of the ticker). 529-plan
-positions use plan-internal codes (e.g. `XXX######` for an NH
+positions use plan-internal codes (e.g. `XXX######` for state
 529-plan target-date sleeves).
 
 Silver should discriminate via an `instrument_kind` column
@@ -228,21 +228,35 @@ canonical id lives inside the per-phase CSVs.
 
 ## 4. Silver schema
 
-Materialised in `migrations/0001_initial.sql`. The loader
-(`load.py`) applies any pending numbered migration on every run,
-so silver databases always conform to the latest schema.
+Materialised in `migrations/0001_initial.sql`, evolved by numbered
+migration files in the same directory. The loader (`load.py`)
+applies any pending numbered migration on every run, so silver
+databases always conform to the latest schema.
 
 ### 4.1 Tables
 
 | Table | Archetype | PK | Promoted columns |
 | --- | --- | --- | --- |
 | `schema_meta` | meta | `silver_schema_version` | `applied_at` |
-| `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `*_present` flags |
+| `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `positions_present`, `activity_present`, `documents_present` |
 | `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
 | `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`; rest in `payload` |
-| `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
-| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `source_sha256` |
+| `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
+| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
+
+Notes:
+- `currency` defaults to `'USD'` on both `positions` and
+  `transactions`. Fidelity US is USD-only today; the column is
+  load-bearing the day a foreign-fund holding shows up.
+- `asset_class` is the loader's best-effort classification from
+  the Symbol shape: `money_market` / `bond` / `plan_fund` /
+  `mutual_fund` / `equity`. See §4.3.
+- `is_core_position` is `1` for money-market core sweep funds.
+  Bronze emits these with a `*` / `**` suffix on the Symbol
+  column; the loader strips the suffix so `instrument_key` joins
+  cleanly across `positions` and `transactions` and promotes the
+  channel signal to this flag. See §4.3.
 
 ### 4.2 Snapshots vs events
 
@@ -263,14 +277,40 @@ collapses to one row whose `snapshot_at` is the first dump that
 observed it. PDF regeneration (same logical doc, different bytes)
 is the open question in §11.1.
 
-### 4.3 Cash routing
+### 4.3 Cash routing + asset_class
 
 Fidelity surfaces money-market core positions (`FDRXX`, `SPAXX`,
-`FZFXX`, similar) as ordinary rows on the positions CSV. Silver
-stores these as `positions` rows (not split into a separate
-`cash_balances` table); the `wealthdb` gold adapter re-routes
-them per its per-broker convention. The `Type` column carries
-`Cash` / `Margin` and is promoted on `positions.type`.
+`FZFXX`, similar) as ordinary rows on the positions CSV with a
+`*` or `**` suffix on the Symbol column — a channel signal
+marking the cash-sweep core. The loader **strips** the suffix
+on the way into silver and promotes the signal to a separate
+`is_core_position INTEGER` column. Without this normalisation the
+same fund would have two identities across tables (`FDRXX**` in
+positions, `FDRXX` in transactions); with it, `instrument_key`
+joins cleanly.
+
+`asset_class` is the loader's best-effort classification of the
+Symbol shape into a small enum:
+
+| `asset_class`  | Heuristic                                        | Example          |
+| --- | --- | --- |
+| `money_market` | `is_core_position = 1`                           | `FDRXX`          |
+| `plan_fund`    | `[A-Z]{3}[0-9]{6}` (529 plan investment option)  | (3-letter prefix + 6-digit code) |
+| `bond`         | 9-char alphanumeric, trailing digit (CUSIP-9)    | `000000AA0`      |
+| `mutual_fund`  | 5-char ticker ending in `X` (industry convention) | `FXAIX`         |
+| `equity`       | default fall-through (stocks, ETFs, ADRs)         | `AAPL`, `SPY`   |
+
+The classifier is order-sensitive: `plan_fund` is checked before
+`bond` because the plan-fund shape is a stricter subset of
+CUSIP-9. Anything Fidelity adds in the future that doesn't match
+the above falls into `equity` — gold can override via its own
+reference data.
+
+The `Type` column on `positions` carries `Cash` / `Margin` — that's
+the account margin bucket, NOT an instrument category; it stays
+promoted separately on `positions.type`. The `wealthdb` gold
+adapter re-routes money-market positions per its per-broker
+convention.
 
 ### 4.4 Portfolio classification
 
@@ -607,6 +647,7 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — documents: tax forms (multi-year via `#options-select-TimeFilter`, one click per form by unique anchor id) | done |
 | `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
 | `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
+| `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
 | Statement-PDF parser (529 historical reconstruction) | not started |
 | One-shot architecture collapse (login + walk + exit) | not started |
 | `wealthdb` Fidelity adapter | separate repo |
