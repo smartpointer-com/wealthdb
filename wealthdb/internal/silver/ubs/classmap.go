@@ -117,3 +117,101 @@ func taxWrapperForSafekeepingAcctTp(code, desc string) canonical.TaxWrapper {
 	}
 	return ""
 }
+
+// managementStyleForSafekeepingSubType maps the silver-side
+// `safekeeping_accounts.payload.AcctSubTypeDesc` string to the
+// canonical ManagementStyle. UBS's safekeeping sub-type tags the
+// mandate type directly:
+//
+//   "managed securities account"              → discretionary
+//                                               (UBS Vermögens-
+//                                                verwaltung — the
+//                                                bank places trades
+//                                                under limited POA)
+//   "securities account with dvisory agreement" → advisory
+//                                                 (UBS Anlage-
+//                                                  beratung; note
+//                                                  the missing 'a'
+//                                                  is the actual
+//                                                  string in UBS's
+//                                                  payload)
+//   "securities account with advisory agreement" → advisory
+//                                                  (if UBS ever
+//                                                   fixes the typo)
+//
+// Unknown sub-types return "" so the caller leaves
+// ManagementStyle nil; the render-time default surfaces
+// self_directed. One-shot WARN per unique unknown string, same
+// dedup mechanism as the AcctTpCd switch. Empty sub-type
+// (cash-only safekeeping accounts that have no mandate
+// designation) is silent.
+//
+// Cash accounts have no AcctSubTypeDesc — they're transactional
+// accounts independent of any investment mandate — so the cash
+// side legitimately leaves management_style nil, and the portfolio
+// rollup picks up the discretionary / advisory tag from the
+// safekeeping account in the same portfolio.
+// propagateManagementStyleByPortfolio walks the per-snapshot
+// AccountChange slice once to lift the mandate type the
+// safekeeping account carries onto its sibling cash / overlay
+// accounts that share the same portfolio_external_id and don't
+// already have ManagementStyle set.
+//
+// UBS labels Vermögensverwaltung / Anlageberatung on the
+// safekeeping account; cash accounts and forward-contract
+// overlays in the same portfolio are part of the same mandate
+// but the silver payload doesn't tag them. Without this pass
+// every cash account renders as `self_directed` (the default-
+// aware fallback) which is misleading when the portfolio is
+// actually discretionary.
+//
+// Conflict handling: if two safekeeping accounts share a
+// portfolio and disagree on style (shouldn't happen in real
+// UBS data — one mandate per portfolio — but defensive), the
+// first one seen wins; the propagation only fills nils, never
+// overrides.
+func propagateManagementStyleByPortfolio(accounts []canonical.AccountChange) {
+	styleByPortfolio := make(map[string]canonical.ManagementStyle)
+	for i := range accounts {
+		a := &accounts[i]
+		if a.AccountKind != canonical.AccountKindSafekeeping {
+			continue
+		}
+		if a.ManagementStyle == nil || a.PortfolioExternalID == nil {
+			continue
+		}
+		if _, set := styleByPortfolio[*a.PortfolioExternalID]; !set {
+			styleByPortfolio[*a.PortfolioExternalID] = *a.ManagementStyle
+		}
+	}
+	if len(styleByPortfolio) == 0 {
+		return
+	}
+	for i := range accounts {
+		a := &accounts[i]
+		if a.ManagementStyle != nil || a.PortfolioExternalID == nil {
+			continue
+		}
+		if s, ok := styleByPortfolio[*a.PortfolioExternalID]; ok {
+			s := s
+			a.ManagementStyle = &s
+		}
+	}
+}
+
+func managementStyleForSafekeepingSubType(subType string) canonical.ManagementStyle {
+	switch subType {
+	case "managed securities account":
+		return canonical.ManagementStyleDiscretionary
+	case "securities account with dvisory agreement",
+		"securities account with advisory agreement":
+		return canonical.ManagementStyleAdvisory
+	}
+	if subType == "" {
+		return ""
+	}
+	if _, seen := unknownAcctTpCdSeen.LoadOrStore("safekeeping-subtype:"+subType, true); !seen {
+		log.Printf("warn: ubs adapter: unknown safekeeping AcctSubTypeDesc %q; leaving management_style unset. If this names a mandate type (managed / advisory / etc.), extend internal/silver/ubs/classmap.go.", subType)
+	}
+	return ""
+}

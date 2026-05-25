@@ -46,6 +46,16 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err := c.appendSafekeepingAccounts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
+	// Propagate the safekeeping account's management_style to its
+	// sibling cash / overlay accounts within the same portfolio.
+	// The safekeeping account is where UBS labels the mandate
+	// type (Vermögensverwaltung / Anlageberatung); the cash
+	// accounts and forward-contract overlays are part of the
+	// same mandate but have no per-account mandate tag of their
+	// own.
+	for _, batch := range byTime {
+		propagateManagementStyleByPortfolio(batch.Accounts)
+	}
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
 	}
@@ -249,6 +259,9 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		}
 		if w := taxWrapperForSafekeepingAcctTp(p.AcctTpCd, p.AcctTpDesc); w != "" {
 			change.TaxWrapper = &w
+		}
+		if s := managementStyleForSafekeepingSubType(p.AcctSubTypeDesc); s != "" {
+			change.ManagementStyle = &s
 		}
 		batch.Accounts = append(batch.Accounts, change)
 	}
