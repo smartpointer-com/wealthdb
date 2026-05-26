@@ -16,19 +16,25 @@ Currently implemented:
   - parse_statement_period(text) — extracts (start_date, end_date)
   - parse_transactions(text)     — extracts the "Transaction Details"
                                    rows as a list of dicts
-
-Not yet implemented (well-shaped TODO):
-  - parse_positions(text)        — extract per-section position rows
-                                   (Cash, Fixed Income, Equities, ETFs)
-  - parse_summary(text)          — Account Summary block (begin/end value,
-                                   per-period deposits/withdrawals/dividends)
+  - parse_positions(text)        — extracts per-section position rows
+                                   ("Positions - Equities", "Positions -
+                                   Exchange Traded Funds", etc.)
+  - parse_cash_summary(text)     — extracts the "Transactions -
+                                   Summary" cash-flow block
+                                   (BeginningCash → EndingCash with the
+                                   seven inflow/outflow subtotals)
 
 Design notes:
 
-PDF text extraction is line-based via pdfplumber.extract_text().
-Schwab's tabular layout in the source PDF survives reasonably well
-into the line stream because each row starts at the same x and
-columns are space-separated when there is no value collision.
+PDF text extraction goes through pypdfium2 (Python bindings to
+Google's PDFium, the renderer Chrome uses). pdfplumber/pdfminer
+worked but were CPU-bound on pure-Python loops — pypdfium2 is
+roughly 5-10x faster on Schwab statements because it pushes the
+text-layout work into PDFium's C++ core.
+
+Schwab's tabular layout in the source PDF survives reasonably
+well into the line stream because each row starts at the same x
+and columns are space-separated when there is no value collision.
 Where rows wrap (long descriptions, "IndustryFee$0.16" notes,
 continuation symbols), we attach the continuation to the
 previously-seen row via heuristics on the leading character set.
@@ -371,6 +377,521 @@ def parse_transactions(text: str, statement_year: int | None = None) -> list[Tra
 
 
 # ============================================================
+# Position snapshots
+# ============================================================
+#
+# Schwab statements list holdings in one block per asset class:
+#   "Positions - Equities"
+#   "Positions - Exchange Traded Funds"
+#   "Positions - Mutual Funds"
+#   "Positions - Fixed Income"
+#   …
+# Each block opens with a header row of column labels and ends
+# with a "Total<Section>" footer line. The body rows are
+# space-separated columns:
+#   Symbol Description Quantity Price MarketValue CostBasis
+#   UnrealizedGain EstYield EstAnnualIncome PctOfAcct
+# (with `N/A` placeholders for any column the row can't fill —
+# typically Yield + AnnualIncome on non-income-bearing equities).
+#
+# A "Positions - Summary" block also exists (one-line roll-up of
+# values) — we explicitly EXCLUDE it from position parsing
+# because it's not per-instrument data.
+
+_POSITIONS_HEADER_RE = re.compile(
+    r"^Positions\s*-\s*(?P<section>[A-Za-z][\w &/+\-]*)\s*$",
+)
+# Footer terminator: "TotalEquities", "Total Equities",
+# "TotalExchangeTradedFunds", "Total Exchange Traded Funds", etc.
+# pdfplumber emits the squashed form (no spaces between Total
+# and the section); pypdfium2 emits the spaced form. Accept
+# both.
+_POSITIONS_FOOTER_RE = re.compile(r"^Total\s*[A-Z][\w &/+\-]*\s*\$")
+
+# Per-row leading token must look like a ticker or CUSIP. We
+# reuse _TICKER_RE / _CUSIP_RE from the transactions parser.
+# Note: section headings sometimes carry a parenthesised marker
+# like "(M)" right after the ticker in row body — that's handled
+# at parse-time, not via the regex.
+
+
+def parse_positions(text: str) -> list[dict]:
+    """Extract position rows from the "Positions - <Section>"
+    blocks in a statement's full-text.
+
+    Returns a list of dicts — see _parse_position_row for the
+    keys carried. Cash positions ("Cash and Cash Investments")
+    are NOT included (they live in the cash-balances parser),
+    and "Positions - Summary" is skipped (it's a one-line
+    roll-up, not per-instrument).
+
+    Layout robustness: pypdfium2 preserves the source PDF's
+    glyph layout and tends to split each position row across
+    THREE lines for Schwab statements ("TICKER COMPANY NAME" /
+    "(M)" / "100.0000 50.0 5000 ..."). A line-at-a-time parser
+    would mis-segment those. We instead accumulate consecutive
+    lines into a per-row buffer; flushing happens whenever the
+    next line starts with a fresh ticker (or at a section
+    footer / end of input). _parse_position_row then sees the
+    full row joined with single spaces — equivalent to what
+    pdfplumber's tighter packing gave us as one line.
+    """
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    rows: list[dict] = []
+    section: str | None = None
+    buffer: list[str] = []
+    raw_buffer: list[str] = []
+
+    def _flush():
+        nonlocal buffer, raw_buffer
+        if not buffer or section is None:
+            buffer, raw_buffer = [], []
+            return
+        parsed = _parse_position_block(buffer, section)
+        if parsed is not None:
+            parsed["raw_lines"] = list(raw_buffer)
+            rows.append(parsed)
+        buffer, raw_buffer = [], []
+
+    for raw in lines:
+        line = raw.strip()
+        m_head = _POSITIONS_HEADER_RE.match(line)
+        if m_head:
+            _flush()
+            sec_name = m_head.group("section").strip()
+            section = None if sec_name.lower() == "summary" else sec_name
+            continue
+        if section is None:
+            continue
+        if _POSITIONS_FOOTER_RE.match(line):
+            _flush()
+            section = None
+            continue
+        if not line:
+            continue
+        tokens = line.split()
+        if not tokens:
+            continue
+        # A "new row starts here" signal is a leading token that
+        # looks like a ticker or CUSIP. Column-header chrome
+        # like "Symbol Description ..." doesn't match (lowercase
+        # chars present in token[0]), and continuation lines
+        # ("(M)", "SPONSORED ADR", "1,234.56 ...") don't either.
+        # If the flush of a stray header buffer fails to produce
+        # numeric content, _flush silently discards it.
+        if _TICKER_RE.match(tokens[0]) or _CUSIP_RE.match(tokens[0]):
+            _flush()
+            buffer = [line]
+            raw_buffer = [raw]
+        elif buffer:
+            buffer.append(line)
+            raw_buffer.append(raw)
+        # else: pre-row chrome before the first ticker; skip.
+    _flush()
+    return rows
+
+
+def _is_trailing_col_token(s: str) -> bool:
+    """True if `s` fits a Positions-row trailing column slot —
+    a number, a number-with-%, an integer, or one of the literal
+    placeholders Schwab emits when a column is "not applicable"
+    or "less than 1%".
+    """
+    if s in ("N/A", "<1%"):
+        return True
+    s = s.rstrip(",")
+    if s.endswith("%"):
+        core = s[:-1]
+        if core == "<1":
+            return True
+        s = core
+    if _NUM_RE.fullmatch(s):
+        return True
+    if re.fullmatch(r"-?\d+", s):
+        return True
+    return False
+
+
+def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
+    """Parse a multi-line position block (typically 1-3 lines)
+    into a position row dict.
+
+    A block is the run of lines from one ticker to the next.
+    Within it exactly one line carries the numeric columns
+    (>= 3 trailing trailing-col tokens) — that's the "numbers
+    line". Everything else is description (free-text tokens
+    that may appear before OR after the numbers line, depending
+    on whether the source PDF wrapped the description). Cheap
+    to identify by scanning trailing-col tokens; cleaner than
+    naive string-join because it doesn't collapse description-
+    after-numbers continuations into the trailing-column area.
+    """
+    if not block_lines:
+        return None
+    # Find the numbers line.
+    numbers_idx = -1
+    trailing_tokens: list[str] = []
+    for i, line in enumerate(block_lines):
+        toks = line.split()
+        cnt = 0
+        for tok in reversed(toks):
+            if _is_trailing_col_token(tok):
+                cnt += 1
+            else:
+                break
+        if cnt >= 3:
+            numbers_idx = i
+            trailing_tokens = toks[len(toks) - cnt:]
+            break
+    if numbers_idx < 0:
+        return None
+
+    # Validate the ticker (must be the first token of the first
+    # line of the block).
+    first_toks = block_lines[0].split()
+    if not first_toks:
+        return None
+    ticker = first_toks[0]
+    if not (_TICKER_RE.match(ticker) or _CUSIP_RE.match(ticker)):
+        return None
+
+    # Gather description tokens from every line, excluding the
+    # ticker itself and excluding the trailing numeric tokens of
+    # the numbers line.
+    desc_parts: list[str] = []
+    for i, line in enumerate(block_lines):
+        toks = line.split()
+        if not toks:
+            continue
+        start = 1 if i == 0 else 0
+        end = (len(toks) - len(trailing_tokens)) if i == numbers_idx else len(toks)
+        desc_parts.extend(toks[start:end])
+    description = " ".join(desc_parts)
+    description = re.sub(r"\(M\),?", "", description).strip()
+
+    def _as_num(s):
+        s = s.rstrip("%").rstrip(",")
+        if s in ("N/A", "<1%"):
+            return None
+        return _parse_number(s)
+
+    quantity = _as_num(trailing_tokens[0]) if len(trailing_tokens) >= 1 else None
+    market_price = _as_num(trailing_tokens[1]) if len(trailing_tokens) >= 2 else None
+    market_value = _as_num(trailing_tokens[2]) if len(trailing_tokens) >= 3 else None
+    cost_basis = _as_num(trailing_tokens[3]) if len(trailing_tokens) >= 4 else None
+    unrealized = _as_num(trailing_tokens[4]) if len(trailing_tokens) >= 5 else None
+    est_yield = trailing_tokens[5] if len(trailing_tokens) >= 6 else None
+    est_annual_income = (
+        _as_num(trailing_tokens[6]) if len(trailing_tokens) >= 7 else None
+    )
+    pct_of_acct = trailing_tokens[-1] if trailing_tokens and (
+        trailing_tokens[-1].endswith("%") or trailing_tokens[-1] == "<1%"
+    ) else None
+
+    return {
+        "instrument_key": ticker,
+        "description": description,
+        "quantity": quantity,
+        "market_price": market_price,
+        "market_value": market_value,
+        "cost_basis": cost_basis,
+        "unrealized_gain_loss": unrealized,
+        "accrued_interest": None,
+        "est_yield": est_yield,
+        "est_annual_income": est_annual_income,
+        "pct_of_acct": pct_of_acct,
+        "section": section,
+        "raw_lines": [],
+    }
+
+
+def _parse_position_row(line: str, section: str) -> dict | None:
+    """Parse one row of a Positions block. Returns the row dict
+    or None if `line` doesn't look like a position-row header
+    (in which case the caller treats it as a description
+    continuation of the previous row).
+    """
+    tokens = line.split()
+    if len(tokens) < 4:
+        return None
+    first = tokens[0]
+    # Must be a plausible ticker or CUSIP.
+    if not (_TICKER_RE.match(first) or _CUSIP_RE.match(first)):
+        return None
+
+    # Schwab annotates margin-eligible equities with a trailing
+    # "(M)" or "(M)," glued to the description. Strip the marker
+    # but keep the rest of the description intact.
+    # Peel trailing-column tokens off the end. A trailing-column
+    # token is one of:
+    #   - a decimal number, optionally comma-grouped, optionally
+    #     parened-negative ("1,234.56", "(5,000.00)");
+    #   - an integer ("100", "27");
+    #   - any of those with a "%" suffix ("1%", "27%", "0.86%");
+    #   - the literal placeholders "N/A" and "<1%".
+    trailing_nums = []
+    cut = len(tokens)
+    while cut > 0 and _is_trailing_col_token(tokens[cut - 1]):
+        trailing_nums.append(tokens[cut - 1])
+        cut -= 1
+    trailing_nums.reverse()
+
+    desc_tokens = tokens[1:cut]
+    description = " ".join(desc_tokens)
+    # Strip "(M)" / "(M)," margin marker.
+    description = re.sub(r"\(M\),?", "", description).strip()
+    # Position rows have at most 8 numeric-ish trailing columns:
+    #   Quantity, Price, MarketValue, CostBasis, UnrealizedGain,
+    #   EstYield, EstAnnualIncome, PctOfAcct
+    # but Yield / AnnualIncome / pct can be "N/A" or "<1%". Map
+    # by position from the END (more reliable than from the
+    # START when descriptions are missing).
+    if len(trailing_nums) < 3:
+        # Not a position row.
+        return None
+
+    def _as_num(s):
+        s = s.rstrip("%").rstrip(",")
+        if s in ("N/A", "<1%"):
+            return None
+        return _parse_number(s)
+
+    # Slot trailing_nums right-aligned into the canonical
+    # column order. Position rows we've seen carry either:
+    #   - all 8 columns (full equity row with yield + income)
+    #   - 5 columns: quantity, price, mv, cb, gain (no yield/income, "N/A" stripped)
+    #   - others
+    # We map by indexing from the start of `trailing_nums`.
+    quantity = _as_num(trailing_nums[0]) if len(trailing_nums) >= 1 else None
+    market_price = _as_num(trailing_nums[1]) if len(trailing_nums) >= 2 else None
+    market_value = _as_num(trailing_nums[2]) if len(trailing_nums) >= 3 else None
+    cost_basis = _as_num(trailing_nums[3]) if len(trailing_nums) >= 4 else None
+    unrealized = _as_num(trailing_nums[4]) if len(trailing_nums) >= 5 else None
+    # Trailing yield / annual_income / pct_of_acct keep their
+    # original printed form when they're percent-shaped — the
+    # printed form is what users will compare against the source
+    # PDF. Numeric annual_income still gets coerced via _as_num.
+    est_yield = trailing_nums[5] if len(trailing_nums) >= 6 else None
+    est_annual_income = (
+        _as_num(trailing_nums[6]) if len(trailing_nums) >= 7 else None
+    )
+    pct_of_acct = trailing_nums[-1] if trailing_nums and (
+        trailing_nums[-1].endswith("%") or trailing_nums[-1] == "<1%"
+    ) else None
+    # When pct_of_acct is the last token, est_annual_income may
+    # actually be at trailing_nums[-2]. The fixed-position mapping
+    # above is the common case for full rows; we'll let the
+    # payload preserve the raw line so consumers can re-derive.
+
+    return {
+        "instrument_key": first,
+        "description": description,
+        "quantity": quantity,
+        "market_price": market_price,
+        "market_value": market_value,
+        "cost_basis": cost_basis,
+        "unrealized_gain_loss": unrealized,
+        "accrued_interest": None,
+        "est_yield": est_yield,
+        "est_annual_income": est_annual_income,
+        "pct_of_acct": pct_of_acct,
+        "section": section,
+        "raw_lines": [],
+    }
+
+
+# ============================================================
+# Cash-balance summary
+# ============================================================
+#
+# Schwab puts a single-line cash-flow block at the top of the
+# Activity page, labelled "Transactions - Summary". The line
+# below the header carries eight $-prefixed numbers:
+#
+#   BeginningCash + Deposits + Withdrawals + Purchases
+#   + Sales/Redemptions + Dividends/Interest + Expenses
+#   = EndingCash
+#
+# Inflows are positive; outflows print as ($...). Withdrawals
+# and Purchases are outflows by convention.
+
+_CASH_SUMMARY_HEADER_RE = re.compile(
+    r"^\s*Transactions\s*-\s*Summary\b", re.IGNORECASE,
+)
+# The data line is the first one matching this pattern after
+# the header. It's eight $-amounts in a row.
+_CASH_DATA_RE = re.compile(
+    r"\$\(?[\d,]+\.\d{2}\)?|\(\$[\d,]+\.\d{2}\)"
+)
+
+
+def parse_cash_summary(text: str) -> dict | None:
+    """Extract the cash-flow numbers from a statement's
+    "Transactions - Summary" block.
+
+    Returns a dict with keys:
+        opening_balance, closing_balance,
+        deposits, withdrawals, purchases, sales_redemptions,
+        dividends_interest, expenses, other_activity,
+        total_credits, total_debits, currency_iso, raw_line
+    Numeric values may be None when the column is missing from
+    the source. total_credits / total_debits are derived
+    (Deposits + Sales/Redemptions + Dividends/Interest, and
+    abs(Withdrawals + Purchases + Expenses) respectively) —
+    if any input is missing the totals stay None.
+
+    Returns None if the section isn't present in `text`.
+    """
+    lines = text.split("\n")
+    in_section = False
+    captured: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not in_section:
+            if _CASH_SUMMARY_HEADER_RE.search(line):
+                in_section = True
+            continue
+        # Inside the section: capture every line, the data line
+        # may be the next non-blank or two-down because Schwab
+        # sometimes splits the column-header line across two
+        # rows. We give up once we hit "OtherActivity" or
+        # "Transaction Details" or an empty stretch.
+        if not line:
+            if captured:
+                break
+            continue
+        if "Transaction Details" in line:
+            break
+        captured.append(line)
+        if len(captured) >= 5:
+            break
+    if not captured:
+        return None
+
+    # Find the data line — the first one with at least 7 $-amounts.
+    data_line: str | None = None
+    for cand in captured:
+        nums = _CASH_DATA_RE.findall(cand)
+        if len(nums) >= 7:
+            data_line = cand
+            break
+    if data_line is None:
+        return None
+
+    nums_text = _CASH_DATA_RE.findall(data_line)
+
+    def _clean(s: str) -> float | None:
+        # Strip leading $, leading ( and trailing ).
+        if s is None:
+            return None
+        s = s.strip()
+        neg = (s.startswith("(") and s.endswith(")")) or (
+            s.startswith("($") and s.endswith(")")
+        )
+        if neg:
+            s = s[1:-1]
+        s = s.lstrip("$")
+        # Stray paren around $ already removed; "$" might still
+        # lead if we had "(${num})" form.
+        s = s.lstrip("$").replace(",", "")
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        return -v if neg else v
+
+    # Map by position; missing columns leave NULL.
+    def _at(i):
+        return _clean(nums_text[i]) if i < len(nums_text) else None
+
+    opening = _at(0)
+    deposits = _at(1)
+    withdrawals = _at(2)
+    purchases = _at(3)
+    sales_redemptions = _at(4)
+    dividends_interest = _at(5)
+    expenses = _at(6)
+    closing = _at(7)
+
+    # Look for an "OtherActivity" line within the captured
+    # block (it carries a single $-amount).
+    other_activity = None
+    for cand in captured:
+        if "OtherActivity" in cand or "Other Activity" in cand:
+            ms = _CASH_DATA_RE.findall(cand)
+            if ms:
+                other_activity = _clean(ms[0])
+            break
+
+    def _sum_or_none(*vals):
+        if any(v is None for v in vals):
+            return None
+        return sum(vals)
+
+    total_credits = _sum_or_none(deposits, sales_redemptions, dividends_interest)
+    total_debits_raw = _sum_or_none(withdrawals, purchases, expenses)
+    # Outflows print as negatives; debits convention is
+    # positive magnitude.
+    total_debits = (
+        -total_debits_raw if total_debits_raw is not None else None
+    )
+
+    return {
+        "opening_balance": opening,
+        "closing_balance": closing,
+        "deposits": deposits,
+        "withdrawals": withdrawals,
+        "purchases": purchases,
+        "sales_redemptions": sales_redemptions,
+        "dividends_interest": dividends_interest,
+        "expenses": expenses,
+        "other_activity": other_activity,
+        "total_credits": total_credits,
+        "total_debits": total_debits,
+        "currency_iso": "USD",
+        "raw_line": data_line,
+    }
+
+
+# ============================================================
+# PDF text extraction (pypdfium2)
+# ============================================================
+
+def _extract_pdf_text(path) -> str:
+    """Open `path` with pypdfium2 and return the concatenated
+    text of every page joined with '\\n'.
+
+    pypdfium2 reads the PDF via PDFium's C++ core; the text we
+    get back is layout-ordered (top-to-bottom, left-to-right
+    within each page) which is what the line-anchored parsers
+    expect. Each page's text is taken via PdfPage.get_textpage()
+    and PdfTextPage.get_text_range() — the latter returns the
+    full text without coordinate filtering.
+
+    Resources are released explicitly (textpage/page/document
+    close()) — PDFium handles are C pointers and Python GC isn't
+    deterministic enough to rely on across hundreds of PDFs.
+    """
+    import pypdfium2 as pdfium
+    parts: list[str] = []
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        for i in range(len(pdf)):
+            page = pdf[i]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    parts.append(textpage.get_text_range() or "")
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    return "\n".join(parts)
+
+
+# ============================================================
 # Convenience: open + parse a file path
 # ============================================================
 
@@ -385,20 +906,22 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     year extracted from the manifest doc-date so the row parser
     can still resolve MM/DD dates to full timestamps.
 
-    Importing pdfplumber inside this function keeps the module
-    importable in environments that don't have pdfplumber
-    available (e.g. parser unit tests with hand-crafted text).
+    Importing pypdfium2 inside this function keeps the module
+    importable in environments that don't have it (e.g. parser
+    unit tests with hand-crafted text).
     """
-    import pdfplumber
-    with pdfplumber.open(str(path)) as pdf:
-        full_text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+    full_text = _extract_pdf_text(path)
     period = parse_statement_period(full_text)
     txs = parse_transactions(full_text, statement_year=statement_year)
+    positions = parse_positions(full_text)
+    cash = parse_cash_summary(full_text)
     return {
         "path": str(path),
         "period_start": period[0].isoformat() if period else None,
         "period_end": period[1].isoformat() if period else None,
         "transactions": [t.to_dict() for t in txs],
+        "positions": positions,
+        "cash_summary": cash,
     }
 
 

@@ -20,11 +20,14 @@
 camoufox[geoip]>=0.4.11,<0.5
 playwright==1.49.0
 
-# pdfplumber sits on top of pdfminer.six and exposes a clean
-# table-extraction API. Used by pdf_parsers.py to reconstruct
-# transactions / position snapshots from Schwab's monthly
-# statement and year-end 1099 PDFs.
-pdfplumber>=0.11,<1
+# pypdfium2 ships Python bindings to Google's PDFium (the
+# renderer Chrome uses). Pure-C++ under the hood, an order of
+# magnitude faster than the pdfplumber / pdfminer.six pure-Python
+# stack we used originally — pdf_parsers.py does text-only
+# extraction across hundreds of monthly statement PDFs, and that
+# was CPU-bound on Python-loop overhead. Apache/BSD-licensed,
+# wheel-distributed.
+pypdfium2>=4.30,<5
 
 # pytest is bundled in the image so tests can be run inside the
 # container with `./schwab-web-dump sh -c "cd /app && pytest"`,

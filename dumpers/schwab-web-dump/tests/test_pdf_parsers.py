@@ -330,3 +330,256 @@ class TestStatementYearOverride:
         )
         with pytest.raises(ValueError, match="statement period"):
             pp.parse_transactions(text)
+
+
+# ============================================================
+# parse_positions
+# ============================================================
+#
+# Synthetic position-block wrappers. Tickers SYN1..SYNn are
+# made-up placeholders; no real Schwab account data appears here.
+
+def _wrap_equities_block(rows_text: str) -> str:
+    return (
+        "Positions - Equities\n"
+        "Unrealized Est. Est.Annual %of\n"
+        "Symbol Description Quantity Price($) Market Value($) "
+        "CostBasis($) Gain/(Loss)($) Yield Income($) Acct\n"
+        + rows_text
+        + "TotalEquities $0.00 $0.00 $0.00 N/A 0%\n"
+    )
+
+
+class TestParsePositions:
+    def test_full_row_with_pct_int_suffix(self):
+        # Trailing "1%" (integer-percent, no decimal) — used to
+        # break the trailing-column scan; now handled.
+        text = _wrap_equities_block(
+            "SYN1 SyntheticOneInc(M) 100.0000 50.00000 5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["instrument_key"] == "SYN1"
+        assert r["section"] == "Equities"
+        assert r["quantity"] == 100.0
+        assert r["market_price"] == 50.0
+        assert r["market_value"] == 5000.0
+        assert r["cost_basis"] == 4000.0
+        assert r["unrealized_gain_loss"] == 1000.0
+        assert r["pct_of_acct"] == "1%"
+        assert r["est_yield"] == "N/A"  # raw string preserved
+
+    def test_negative_unrealized_in_parens(self):
+        text = _wrap_equities_block(
+            "SYN2 SyntheticTwoCorp(M) 400.0000 10.00000 4,000.00 9,000.00 (5,000.00) N/A N/A <1%\n"
+        )
+        rows = pp.parse_positions(text)
+        r = rows[0]
+        assert r["unrealized_gain_loss"] == -5000.0
+        assert r["pct_of_acct"] == "<1%"
+
+    def test_two_consecutive_rows_dont_merge(self):
+        text = _wrap_equities_block(
+            "SYN1 SyntheticOne(M) 100.0000 50.00000 5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
+            "SYN2 SyntheticTwo(M) 200.0000 25.00000 5,000.00 3,000.00 2,000.00 N/A N/A 1%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert [r["instrument_key"] for r in rows] == ["SYN1", "SYN2"]
+        assert rows[0]["quantity"] == 100.0
+        assert rows[1]["quantity"] == 200.0
+
+    def test_description_continuation_attaches(self):
+        # Multi-line description (Schwab does this for ADRs etc.).
+        text = _wrap_equities_block(
+            "SYN3 SyntheticThreeAg F 5,000.0000 1.00000 5,000.00 4,000.00 1,000.00 N/A N/A <1%\n"
+            "SPONSOREDADR\n"
+            "1ADRREPS 0.2 ORDSHS\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        assert "SPONSOREDADR" in rows[0]["description"]
+        assert "1ADRREPS" in rows[0]["description"]
+
+    def test_etf_section_label_preserved(self):
+        text = (
+            "Positions - Exchange Traded Funds\n"
+            "Symbol Description Quantity Price($) Market Value($) "
+            "CostBasis($) Gain/(Loss)($) Yield Income($) Acct\n"
+            "SYN4 SyntheticETF(M), 1,000.0000 100.00000 100,000.00 95,000.00 5,000.00 1.00% 1,000.00 50%\n"
+            "TotalExchangeTradedFunds $100,000.00 $95,000.00 $5,000.00 $1,000.00 50%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        assert rows[0]["section"] == "Exchange Traded Funds"
+        assert rows[0]["est_yield"] == "1.00%"
+        assert rows[0]["est_annual_income"] == 1000.0
+
+    def test_summary_section_is_excluded(self):
+        # The one-line "Positions - Summary" roll-up should NOT
+        # yield any per-instrument rows.
+        text = (
+            "Positions - Summary\n"
+            "BeginningValue Transfer Reinvested Activity EndingValue\n"
+            "$1,000,000.00 $0.00 $0.00 $0.00 $1,000,000.00\n"
+            "Cash and Cash Investments\n"
+            "Cash 100.00 100.00 0.00 0.00 <1%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert rows == []
+
+    def test_cash_section_is_excluded(self):
+        # "Cash and Cash Investments" is its own section; its rows
+        # don't go into position_snapshots. The parser should
+        # only emit rows for sections matching "Positions - X"
+        # AND not "Summary".
+        text = (
+            "Cash and Cash Investments\n"
+            "Type Symbol Description Quantity Price Beginning Ending\n"
+            "Cash 1,000.00 800.00 (200.00) 0.00 <1%\n"
+            "TotalCashandCashInvestments $1,000.00 $800.00 ($200.00) <1%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert rows == []
+
+    def test_missing_cost_basis_stays_none(self):
+        # Edge: cost_basis column is blank — should be None, NOT
+        # coerced to 0.0.
+        text = _wrap_equities_block(
+            "SYN5 SyntheticFive(M) 100.0000 50.00000 5,000.00\n"
+        )
+        rows = pp.parse_positions(text)
+        # The 3-column row should give us quantity / price /
+        # market_value with cost_basis None.
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["quantity"] == 100.0
+        assert r["market_price"] == 50.0
+        assert r["market_value"] == 5000.0
+        assert r["cost_basis"] is None
+        assert r["unrealized_gain_loss"] is None
+
+    def test_empty_input_returns_empty_list(self):
+        assert pp.parse_positions("") == []
+
+    def test_no_positions_section_returns_empty(self):
+        text = "Transaction Details\nsomething\nTotalTransactions $1 $2\n"
+        assert pp.parse_positions(text) == []
+
+
+# ============================================================
+# parse_cash_summary
+# ============================================================
+
+class TestParseCashSummary:
+    DATA_LINE = (
+        "$1,000.00 $500.00 ($800.00) $0.00 $400.00 "
+        "$10.00 $0.00 $1,110.00\n"
+    )
+
+    def _wrap_cash_summary(self, data_line: str | None = None) -> str:
+        return (
+            "Transactions - Summary\n"
+            "BeginningCash*asof01/01 + Deposits + Withdrawals + Purchases "
+            "+ Sales/Redemptions + Dividends/Interest + Expenses = "
+            "EndingCash*asof01/31\n"
+            + (data_line or self.DATA_LINE)
+            + "OtherActivity $0.00 Other activity includes...\n"
+            + "Transaction Details\n"
+        )
+
+    def test_extracts_all_eight_columns(self):
+        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        assert cash is not None
+        assert cash["opening_balance"] == 1000.00
+        assert cash["closing_balance"] == 1110.00
+        assert cash["deposits"] == 500.00
+        assert cash["withdrawals"] == -800.00
+        assert cash["purchases"] == 0.0
+        assert cash["sales_redemptions"] == 400.00
+        assert cash["dividends_interest"] == 10.00
+        assert cash["expenses"] == 0.0
+        assert cash["currency_iso"] == "USD"
+
+    def test_total_credits_and_debits_derived(self):
+        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        # credits = deposits + sales_redemptions + dividends_interest
+        assert cash["total_credits"] == pytest.approx(500 + 400 + 10)
+        # debits = abs(withdrawals + purchases + expenses)
+        assert cash["total_debits"] == pytest.approx(800.00)
+
+    def test_other_activity_captured(self):
+        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        assert cash["other_activity"] == 0.0
+
+    def test_raw_line_preserved(self):
+        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        assert "$1,000.00" in cash["raw_line"]
+        assert "$1,110.00" in cash["raw_line"]
+
+    def test_no_section_returns_none(self):
+        text = "Account Summary\nSomething else\n"
+        assert pp.parse_cash_summary(text) is None
+
+    def test_data_line_with_seven_amounts_still_parses(self):
+        # Edge: if Schwab ever ships a missing column, we should
+        # still capture what's there. Seven $-amounts (no
+        # Expenses column).
+        seven = "$100.00 $50.00 ($25.00) $0.00 $30.00 $5.00 $160.00\n"
+        cash = pp.parse_cash_summary(self._wrap_cash_summary(seven))
+        assert cash is not None
+        assert cash["opening_balance"] == 100.00
+        # The 8th slot is missing; closing_balance ends up None
+        # rather than being silently assigned a wrong column.
+        assert cash["closing_balance"] is None
+
+    def test_nulls_preserved_when_input_missing(self):
+        # If a column was blank in the row (e.g. parser gives us
+        # only six numbers), the derived totals should be None
+        # rather than 0.0.
+        six_line = "$100.00 $50.00 ($25.00) $0.00 $30.00 $5.00\n"
+        text = (
+            "Transactions - Summary\n"
+            + "BeginningCash + Deposits ...\n"
+            + six_line
+            + "Transaction Details\n"
+        )
+        cash = pp.parse_cash_summary(text)
+        # Below the 7-amount threshold — parser returns None.
+        assert cash is None
+
+
+# ============================================================
+# parse_statement_pdf — return-dict shape
+# ============================================================
+
+class TestStatementPdfReturnShape:
+    def test_dict_carries_positions_and_cash_keys(self):
+        # Build a tiny synthetic full-text that has every section
+        # the high-level function looks at. We then call the
+        # public functions individually since parse_statement_pdf
+        # itself opens a real PDF (covered separately by
+        # test_pdf_parsers_fixture).
+        text = (
+            "February 1-28, 2026\n"
+            "Transactions - Summary\n"
+            "header\n"
+            "$1.00 $2.00 ($3.00) $0.00 $5.00 $0.50 $0.00 $5.50\n"
+            "Transaction Details\n"
+            "Symbol/ Price/Rate\n"
+            "02/02 Deposit FundsReceived WIRE 100.00\n"
+            "TotalTransactions $1 $2\n"
+            "Positions - Equities\n"
+            "Symbol Description Quantity Price MV CB Gain Yield Income Acct\n"
+            "SYN1 SyntheticOne(M) 10.0000 1.00000 10.00 8.00 2.00 N/A N/A 1%\n"
+            "TotalEquities $10.00 $8.00 $2.00 N/A 1%\n"
+        )
+        # Each parser is callable in isolation.
+        period = pp.parse_statement_period(text)
+        assert period is not None
+        txs = pp.parse_transactions(text)
+        assert any(t.category == "Deposit" for t in txs)
+        positions = pp.parse_positions(text)
+        assert positions and positions[0]["instrument_key"] == "SYN1"
+        cash = pp.parse_cash_summary(text)
+        assert cash and cash["closing_balance"] == 5.50

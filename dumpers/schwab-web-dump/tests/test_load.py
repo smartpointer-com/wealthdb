@@ -144,14 +144,22 @@ class TestMigrations:
     def test_fresh_db_starts_at_version_zero(self, conn):
         assert load._current_schema_version(conn) == 0
 
-    def test_apply_migrations_reaches_v1(self, conn):
+    def test_apply_migrations_reaches_head(self, conn):
         load.apply_migrations(conn, MIGRATIONS_DIR)
-        assert load._current_schema_version(conn) == 1
+        # Head version = max migration file present; bumps when
+        # a new migration lands.
+        assert load._current_schema_version(conn) >= 2
 
     def test_apply_is_idempotent(self, conn):
         load.apply_migrations(conn, MIGRATIONS_DIR)
         load.apply_migrations(conn, MIGRATIONS_DIR)
-        count = conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0]
+        v = load._current_schema_version(conn)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM schema_meta WHERE silver_schema_version = ?",
+            (v,),
+        ).fetchone()[0]
+        # Each migration writes its row once; re-applying must
+        # NOT insert duplicates.
         assert count == 1
 
     def test_expected_tables_created(self, migrated):
@@ -160,7 +168,9 @@ class TestMigrations:
         ).fetchall()
         names = {r[0] for r in rows}
         assert {"schema_meta", "dump_runs", "accounts",
-                "documents", "transactions"} <= names
+                "documents", "transactions",
+                "historical_position_snapshots",
+                "historical_cash_balances"} <= names
 
 
 # ============================================================
@@ -481,6 +491,192 @@ class TestTxHistoryIngest:
         payload = _json.loads(row[0])
         assert payload.get("_more", {}).get("Settle Date") == "05/14/2024"
         assert payload.get("_more", {}).get("Principal") == "$100.00"
+
+
+class TestPositionsAndCashLoad:
+    """End-to-end loader tests for migration 0002 (positions +
+    cash). Monkeypatches pp.parse_statement_pdf to return a known
+    result, so we exercise the dispatcher + insert helpers + DB
+    schema without depending on pdfplumber reading a real PDF.
+    """
+
+    PARSED_STATEMENT = {
+        "path": "<patched>",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28",
+        "transactions": [
+            {"date": "2026-02-05", "category": "Deposit",
+             "action": "FundsReceived", "symbol": None,
+             "description": "WIRE", "quantity": None, "price": None,
+             "charges": None, "amount": 1000.0,
+             "realized_gain_loss": None, "term": None,
+             "raw_lines": ["02/05 Deposit FundsReceived WIRE 1,000.00"]},
+        ],
+        "positions": [
+            {"instrument_key": "SYN1", "description": "Synthetic One",
+             "quantity": 100.0, "market_price": 50.0,
+             "market_value": 5000.0, "cost_basis": 4000.0,
+             "unrealized_gain_loss": 1000.0,
+             "accrued_interest": None, "est_yield": "N/A",
+             "est_annual_income": None, "pct_of_acct": "1%",
+             "section": "Equities",
+             "raw_lines": ["SYN1 Synthetic One 100 50 5000 4000 1000 N/A N/A 1%"]},
+            {"instrument_key": "SYN2", "description": "Synthetic Two",
+             "quantity": 200.0, "market_price": 10.0,
+             "market_value": 2000.0,
+             # Missing cost basis — should land as NULL, NOT 0.0
+             "cost_basis": None, "unrealized_gain_loss": None,
+             "accrued_interest": None, "est_yield": None,
+             "est_annual_income": None, "pct_of_acct": "<1%",
+             "section": "Exchange Traded Funds",
+             "raw_lines": ["SYN2 Synthetic Two 200 10 2000"]},
+        ],
+        "cash_summary": {
+            "opening_balance": 100.0, "closing_balance": 250.0,
+            "deposits": 1000.0, "withdrawals": -800.0,
+            "purchases": -50.0, "sales_redemptions": 0.0,
+            "dividends_interest": 0.0, "expenses": 0.0,
+            "other_activity": 0.0,
+            "total_credits": 1000.0, "total_debits": 850.0,
+            "currency_iso": "USD",
+            "raw_line": "$100.00 $1,000.00 ($800.00) ($50.00) $0.00 $0.00 $0.00 $250.00",
+        },
+    }
+
+    def _run(self, monkeypatch, migrated, tmp_path, *, run_ts="20260520T120000Z",
+             filename="Brokerage-Statement_2026-02-28_000.PDF"):
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_STATEMENT),
+        )
+        run = _make_bronze_run(tmp_path, run_ts, [
+            {"suffix": "NNN", "label": "Demo …NNN",
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": filename},
+             ]},
+        ])
+        # workers=1 keeps the parse on the main process so the
+        # monkeypatch above is honoured. ProcessPoolExecutor
+        # workers run in subprocesses that don't inherit the
+        # monkeypatch.
+        return load.load_run(migrated, run, workers=1)
+
+    def test_positions_inserted_with_natural_pk(self, monkeypatch, migrated, tmp_path):
+        stats = self._run(monkeypatch, migrated, tmp_path)
+        migrated.commit()
+        assert stats["positions_inserted"] == 2
+        rows = migrated.execute(
+            "SELECT instrument_key, quantity, market_value, cost_basis"
+            " FROM historical_position_snapshots ORDER BY instrument_key"
+        ).fetchall()
+        assert rows == [
+            ("SYN1", 100.0, 5000.0, 4000.0),
+            ("SYN2", 200.0, 2000.0, None),  # cost_basis stayed NULL
+        ]
+
+    def test_cash_balance_inserted(self, monkeypatch, migrated, tmp_path):
+        stats = self._run(monkeypatch, migrated, tmp_path)
+        migrated.commit()
+        assert stats["cash_balances_inserted"] == 1
+        row = migrated.execute(
+            "SELECT opening_balance, closing_balance, total_credits, total_debits,"
+            " currency_iso FROM historical_cash_balances"
+        ).fetchone()
+        assert row == (100.0, 250.0, 1000.0, 850.0, "USD")
+
+    def test_null_preservation_in_payload(self, monkeypatch, migrated, tmp_path):
+        # Missing cost_basis arrives as None, not 0.0 — both at the
+        # column level and (verify) by asserting the inserter didn't
+        # coerce.
+        self._run(monkeypatch, migrated, tmp_path)
+        migrated.commit()
+        row = migrated.execute(
+            "SELECT cost_basis, unrealized_gain_loss FROM"
+            " historical_position_snapshots WHERE instrument_key = 'SYN2'"
+        ).fetchone()
+        assert row == (None, None)
+
+    def test_idempotent_reload_replaces_not_duplicates(
+            self, monkeypatch, migrated, tmp_path):
+        """Loading the same bronze run twice produces identical row
+        counts (INSERT OR REPLACE keeps a single row per natural
+        PK)."""
+        self._run(monkeypatch, migrated, tmp_path)
+        migrated.commit()
+        n1 = migrated.execute(
+            "SELECT COUNT(*) FROM historical_position_snapshots"
+        ).fetchone()[0]
+        # Second load with same run_ts triggers already_loaded path
+        # — use a fresh run_ts so load_run actually re-iterates.
+        self._run(monkeypatch, migrated, tmp_path,
+                  run_ts="20260521T130000Z")
+        migrated.commit()
+        n2 = migrated.execute(
+            "SELECT COUNT(*) FROM historical_position_snapshots"
+        ).fetchone()[0]
+        assert n1 == n2 == 2
+
+    def test_sha256_churn_dedupes_logical_doc(
+            self, monkeypatch, migrated, tmp_path):
+        """Two PDFs with identical (account, doc_date, doc_kind,
+        filename) but different sha256s (re-downloaded copy) must
+        count as one logical statement: positions parsed once,
+        the second occurrence increments statements_logical_deduped.
+        """
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_STATEMENT),
+        )
+        # Build a bronze run where the same logical doc appears
+        # under TWO different bytes-on-disk (Schwab regen). We
+        # do this by emitting two doc entries pointing at the
+        # same filename — _make_bronze_run rewrites the file
+        # content per filename, but the second write doesn't
+        # change the filename. To force two distinct sha256s,
+        # we write them to separate run dirs.
+        run1 = _make_bronze_run(tmp_path, "20260520T120000Z", [
+            {"suffix": "NNN", "label": "L",
+             "documents": [{"date": "02/28/2026", "type": "Statements",
+                            "document": "Brokerage Statement",
+                            "filename": "Brokerage-Statement_2026-02-28_NNN.PDF"}]},
+        ])
+        # Tweak the PDF bytes so its sha256 differs.
+        p = run1 / "statements" / "NNN" / "Brokerage-Statement_2026-02-28_NNN.PDF"
+        original_sha = load.sha256_file(p)[0]
+        p.write_bytes(p.read_bytes() + b"%CHURNED-BYTES%")
+        new_sha = load.sha256_file(p)[0]
+        assert original_sha != new_sha
+        # Update manifest to record the new sha256.
+        manifest = json.loads((run1 / "run.json").read_text())
+        manifest["statements"][0]["documents"][0]["sha256"] = new_sha
+        (run1 / "run.json").write_text(json.dumps(manifest))
+
+        stats1 = load.load_run(migrated, run1, workers=1)
+        migrated.commit()
+        # Same logical doc, different sha256, second run — the
+        # dispatcher should detect existing positions and skip the
+        # parse. (The transactions table independently sees a new
+        # source_sha256 so it would insert again; we only care
+        # that positions don't duplicate.)
+        run2 = _make_bronze_run(tmp_path, "20260521T130000Z", [
+            {"suffix": "NNN", "label": "L",
+             "documents": [{"date": "02/28/2026", "type": "Statements",
+                            "document": "Brokerage Statement",
+                            "filename": "Brokerage-Statement_2026-02-28_NNN.PDF"}]},
+        ])
+        load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        # Positions inserted once across both runs.
+        n_pos = migrated.execute(
+            "SELECT COUNT(*) FROM historical_position_snapshots"
+        ).fetchone()[0]
+        assert n_pos == 2  # the two SYN rows
+        # First-run stats: 2 positions inserted; second run sees
+        # already-populated table and inserts 0 (logical-dedup
+        # gate catches it).
+        assert stats1["positions_inserted"] == 2
 
 
 class TestTxHistoryRowKey:

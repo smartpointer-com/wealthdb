@@ -38,10 +38,12 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,10 +112,40 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "source first, then re-inserts. Use after a parser fix."),
     )
     p.add_argument(
+        "--workers", type=int, default=None,
+        help=("Number of parallel worker processes for PDF parsing. "
+              "Default: os.cpu_count(). PDF parsing is CPU-bound "
+              "(text extraction via PDFium runs in C++ but each PDF "
+              "is one shot, so we get the speedup by sharding across "
+              "cores). Pass --workers 1 to force serial — useful for "
+              "debugging."),
+    )
+    p.add_argument(
         "-v", "--verbose", action="store_true",
         help="DEBUG-level logging.",
     )
     return p.parse_args(argv)
+
+
+# ============================================================
+# Parallel-parse worker
+# ============================================================
+#
+# Module-level so ProcessPoolExecutor can pickle it. Imports
+# pdf_parsers afresh in each worker (Python's fork semantics
+# share heap state, but spawn on macOS does not — write code
+# that works under both).
+
+def _parse_pdf_worker(args: tuple[str, int]) -> dict:
+    """Worker target: parse one PDF, return the parsed dict
+    (or `{"_error": "<repr>"}` on failure so the parent can log
+    and continue rather than crashing the whole pool).
+    """
+    pdf_path, year_hint = args
+    try:
+        return pp.parse_statement_pdf(pdf_path, statement_year=year_hint)
+    except Exception as e:
+        return {"_error": repr(e)}
 
 
 # ============================================================
@@ -356,7 +388,8 @@ def _account_nickname(label: str | None, suffix: str) -> str | None:
 # ============================================================
 
 def load_run(conn: sqlite3.Connection, run_dir: Path,
-             reparse: bool = False) -> dict:
+             reparse: bool = False,
+             workers: int | None = None) -> dict:
     """Load one bronze-run dir. Returns a stats dict for logging."""
     snapshot_at = parse_snapshot_at(run_dir.name)
     stats = {
@@ -369,7 +402,26 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "transactions_inserted": 0,
         "transactions_reparsed": 0,
         "pdf_parse_errors": 0,
+        "positions_inserted": 0,
+        "cash_balances_inserted": 0,
+        "statements_logical_deduped": 0,
     }
+    # Per-run dedup set: (account_suffix, doc_date, doc_kind,
+    # filename). Schwab regenerates statement PDFs on every
+    # download (different sha256 each time — see INTEROP.md §3),
+    # but the parser output is byte-identical for the same logical
+    # document. We parse the first sha256 we see per logical doc,
+    # then skip subsequent re-downloads for positions / cash. The
+    # transactions table still gets a row per sha256 by design
+    # (see migration 0001) — gold dedupes that side itself.
+    seen_logical_docs: set[tuple] = set()
+
+    # Parse jobs accumulated during the manifest walk. Each entry
+    # captures everything the serial-insert phase needs (suffix,
+    # sha256, doc_date, gate flags). The actual PDF parse happens
+    # in a worker pool once the walk completes — see the
+    # parallel-parse block below.
+    parse_jobs: list[dict] = []
     manifest_path = run_dir / "run.json"
     if not manifest_path.is_file():
         log.warning("no run.json in %s; skipping", run_dir)
@@ -448,39 +500,142 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 stats["documents_missing_on_disk"] += 1
                 continue
 
-            # Skip re-parse unless --reparse or no transactions yet
-            # reference this source.
-            already_has_rows = conn.execute(
+            # Three independent gates: transactions (per-sha256),
+            # positions (per logical statement), cash (per logical
+            # statement). Each gate decides if its inserter should
+            # run; the PDF is parsed once if ANY gate is open.
+            tx_already = conn.execute(
                 "SELECT 1 FROM transactions WHERE source_sha256 = ?",
                 (sha256,),
             ).fetchone() is not None
-            if already_has_rows and not reparse:
-                continue
-            if already_has_rows and reparse:
-                conn.execute(
-                    "DELETE FROM transactions WHERE source_sha256 = ?",
-                    (sha256,),
-                )
-                stats["transactions_reparsed"] += 1
 
-            # Old quarterly statements lack the auto-detectable
-            # period header; pass the year from the manifest as
-            # a fallback so the row parser can still resolve
-            # MM/DD → full date.
+            logical_key = (suffix, doc_date, doc_kind, filename)
+            logical_dup = logical_key in seen_logical_docs
+            if logical_dup:
+                stats["statements_logical_deduped"] += 1
+
+            need_tx = (not tx_already) or reparse
+            # Skip positions/cash parsing if we've already done this
+            # logical doc THIS run (sha256 churn). Across runs the
+            # INSERT OR REPLACE in the inserters keeps things
+            # idempotent, but we still gate on existing rows to
+            # avoid wasted parsing.
+            pos_already = (
+                logical_dup
+                or conn.execute(
+                    "SELECT 1 FROM historical_position_snapshots"
+                    " WHERE account_external_id = ? AND as_of_date = ?",
+                    (suffix, doc_date),
+                ).fetchone() is not None
+            )
+            cash_already = (
+                logical_dup
+                or conn.execute(
+                    "SELECT 1 FROM historical_cash_balances"
+                    " WHERE account_external_id = ? AND period_end = ?",
+                    (suffix, doc_date),
+                ).fetchone() is not None
+            )
+            need_pos = (not pos_already) or reparse
+            need_cash = (not cash_already) or reparse
+
+            if not (need_tx or need_pos or need_cash):
+                continue
+
+            # Mark this logical doc as in-flight so any later
+            # churned re-download in THIS run hits logical_dup
+            # and stays out of the parse list.
+            seen_logical_docs.add(logical_key)
+
             year_hint = datetime.fromtimestamp(doc_date, tz=timezone.utc).year
-            try:
-                parsed = pp.parse_statement_pdf(
-                    pdf_path, statement_year=year_hint,
+            parse_jobs.append({
+                "suffix": suffix,
+                "sha256": sha256,
+                "pdf_path": str(pdf_path),
+                "doc_date": doc_date,
+                "year_hint": year_hint,
+                "need_tx": need_tx,
+                "need_pos": need_pos,
+                "need_cash": need_cash,
+                "tx_reparse_delete": need_tx and tx_already and reparse,
+            })
+
+    # Parallel-parse every collected statement PDF, then insert
+    # serially. PDF text extraction (pypdfium2 → PDFium C++) is
+    # the expensive step per job; SQLite's single-writer model
+    # makes inserts serial anyway, so the gain comes from
+    # sharding the parse work across cores. Worker count
+    # defaults to os.cpu_count(); pass workers=1 for serial.
+    if parse_jobs:
+        worker_count = workers if workers and workers > 0 else (os.cpu_count() or 1)
+        worker_count = max(1, min(worker_count, len(parse_jobs)))
+        log.info(
+            "parallel-parsing %d statement PDF(s) across %d worker(s)",
+            len(parse_jobs), worker_count,
+        )
+        t0 = time.monotonic()
+        if worker_count == 1:
+            parsed_results = [
+                _parse_pdf_worker((j["pdf_path"], j["year_hint"]))
+                for j in parse_jobs
+            ]
+        else:
+            with ProcessPoolExecutor(max_workers=worker_count) as pool:
+                parsed_results = list(pool.map(
+                    _parse_pdf_worker,
+                    [(j["pdf_path"], j["year_hint"]) for j in parse_jobs],
+                ))
+        log.info(
+            "parsed %d PDF(s) in %.2fs (%.3fs/PDF wall)",
+            len(parse_jobs), time.monotonic() - t0,
+            (time.monotonic() - t0) / max(1, len(parse_jobs)),
+        )
+
+        for job, parsed in zip(parse_jobs, parsed_results):
+            if parsed.get("_error"):
+                log.warning(
+                    "PDF parse failed for %s: %s",
+                    job["pdf_path"], parsed["_error"],
                 )
-            except Exception as e:
-                log.warning("PDF parse failed for %s: %s", pdf_path, e)
                 stats["pdf_parse_errors"] += 1
                 continue
 
-            n = _insert_statement_transactions(
-                conn, suffix, parsed.get("transactions", []), sha256,
+            if job["tx_reparse_delete"]:
+                conn.execute(
+                    "DELETE FROM transactions WHERE source_sha256 = ?",
+                    (job["sha256"],),
+                )
+                stats["transactions_reparsed"] += 1
+
+            if job["need_tx"]:
+                n = _insert_statement_transactions(
+                    conn, job["suffix"],
+                    parsed.get("transactions", []), job["sha256"],
+                )
+                stats["transactions_inserted"] += n
+
+            period_end_ts = (
+                parse_iso_date(parsed.get("period_end"))
+                or job["doc_date"]
             )
-            stats["transactions_inserted"] += n
+            period_start_ts = (
+                parse_iso_date(parsed.get("period_start"))
+                or job["doc_date"]
+            )
+
+            if job["need_pos"]:
+                n_pos = _insert_position_snapshots(
+                    conn, job["suffix"], period_end_ts,
+                    parsed.get("positions") or [], job["sha256"],
+                )
+                stats["positions_inserted"] += n_pos
+
+            if job["need_cash"]:
+                n_cash = _insert_cash_balance(
+                    conn, job["suffix"], period_end_ts, period_start_ts,
+                    parsed.get("cash_summary"), job["sha256"],
+                )
+                stats["cash_balances_inserted"] += n_cash
 
     # Tx-history exports: per-account CSV/JSON/XML + a landing
     # HTML capture. JSON is the canonical source for silver rows;
@@ -744,6 +899,102 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
     return inserted
 
 
+def _insert_position_snapshots(conn: sqlite3.Connection,
+                                account_external_id: str,
+                                as_of_date: int,
+                                positions: list[dict],
+                                source_sha256: str) -> int:
+    """INSERT OR REPLACE one row per parsed position. Returns the
+    count of rows written. PK is
+    (as_of_date, account_external_id, instrument_key) — a
+    re-parse of the same logical statement (different sha256,
+    same content) collapses onto the same row.
+
+    Rows missing an instrument_key are dropped (parser failure
+    indicator); a position row with no symbol can't be joined
+    against anything downstream.
+    """
+    written = 0
+    for pos in positions:
+        instrument_key = pos.get("instrument_key")
+        if not instrument_key:
+            log.warning(
+                "skipping position with no instrument_key in payload "
+                "(account=%s, as_of=%s)",
+                account_external_id, as_of_date,
+            )
+            continue
+        payload = canonical_json({
+            "section": pos.get("section"),
+            "description": pos.get("description"),
+            "est_yield": pos.get("est_yield"),
+            "est_annual_income": pos.get("est_annual_income"),
+            "pct_of_acct": pos.get("pct_of_acct"),
+            "raw_lines": pos.get("raw_lines"),
+        })
+        conn.execute(
+            "INSERT OR REPLACE INTO historical_position_snapshots"
+            " (as_of_date, account_external_id, instrument_key,"
+            "  quantity, market_price, market_value, cost_basis,"
+            "  unrealized_gain_loss, accrued_interest,"
+            "  source_sha256, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                as_of_date, account_external_id, instrument_key,
+                pos.get("quantity"), pos.get("market_price"),
+                pos.get("market_value"), pos.get("cost_basis"),
+                pos.get("unrealized_gain_loss"),
+                pos.get("accrued_interest"),
+                source_sha256, payload,
+            ),
+        )
+        written += 1
+    return written
+
+
+def _insert_cash_balance(conn: sqlite3.Connection,
+                          account_external_id: str,
+                          period_end: int,
+                          period_start: int,
+                          cash: dict | None,
+                          source_sha256: str) -> int:
+    """INSERT OR REPLACE one row per (period_end, account,
+    currency). Returns 0 (no cash_summary parsed) or 1.
+
+    NULLs are preserved: missing opening / closing / debits /
+    credits stay NULL in the row rather than being coerced to
+    0.0 — the consumer needs to distinguish "not reported" from
+    "actually zero".
+    """
+    if not cash:
+        return 0
+    currency = cash.get("currency_iso") or "USD"
+    payload = canonical_json({
+        "deposits":            cash.get("deposits"),
+        "withdrawals":         cash.get("withdrawals"),
+        "purchases":           cash.get("purchases"),
+        "sales_redemptions":   cash.get("sales_redemptions"),
+        "dividends_interest":  cash.get("dividends_interest"),
+        "expenses":            cash.get("expenses"),
+        "other_activity":      cash.get("other_activity"),
+        "raw_line":            cash.get("raw_line"),
+    })
+    conn.execute(
+        "INSERT OR REPLACE INTO historical_cash_balances"
+        " (period_end, period_start, account_external_id, currency_iso,"
+        "  opening_balance, closing_balance, total_debits, total_credits,"
+        "  source_sha256, payload)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            period_end, period_start, account_external_id, currency,
+            cash.get("opening_balance"), cash.get("closing_balance"),
+            cash.get("total_debits"), cash.get("total_credits"),
+            source_sha256, payload,
+        ),
+    )
+    return 1
+
+
 # ============================================================
 # Top-level
 # ============================================================
@@ -766,16 +1017,23 @@ def run_load(args: argparse.Namespace) -> int:
                 continue
             log.info("loading %s (snapshot_at=%d)", run_dir.name, snapshot_at)
             try:
-                stats = load_run(conn, run_dir, reparse=args.reparse)
+                stats = load_run(
+                    conn, run_dir, reparse=args.reparse,
+                    workers=args.workers,
+                )
                 conn.commit()
                 log.info(
                     "loaded %s: accts +%d/-%d, docs +%d/-%d, "
-                    "tx +%d (reparsed %d), pdf errors %d",
+                    "tx +%d (reparsed %d), positions +%d, cash +%d, "
+                    "logical-dup %d, pdf errors %d",
                     run_dir.name,
                     stats["accounts_inserted"], stats["accounts_deduped"],
                     stats["documents_new"], stats["documents_dup"],
                     stats["transactions_inserted"],
                     stats["transactions_reparsed"],
+                    stats["positions_inserted"],
+                    stats["cash_balances_inserted"],
+                    stats["statements_logical_deduped"],
                     stats["pdf_parse_errors"],
                 )
             except Exception:
