@@ -150,7 +150,22 @@ _TX_DETAILS_HEADER_RE = re.compile(
     r"^\s*Transaction\s*Details\b", re.IGNORECASE,
 )
 _TX_END_RE = re.compile(
-    r"^\s*(TotalTransactions|Pending\s*/\s*Open\s*Activity|Endnotes)\b",
+    # Match in either pdfplumber's tight form ("TotalTransactions",
+    # "Pending/Open Activity") or pypdfium2's spaced form ("Total
+    # Transactions", "Pending / Open Activity"). The whitespace
+    # tolerance matters: without it, custodial-account statements
+    # (which don't emit a Pending block and only show "Total
+    # Transactions") would leave the section open forever and the
+    # parser would sweep the trailing Endnotes/disclosure paragraphs
+    # — including the page-header repeats with the custodian
+    # name and account number — into the last row's description.
+    r"^\s*(?:"
+    r"Total\s*Transactions"
+    r"|Pending\s*/?\s*Open\s*Activity"
+    r"|Pending\s+Corporate\s+Actions"
+    r"|Endnotes"
+    r"|Terms\s+and\s+Conditions"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -416,6 +431,16 @@ def _parse_transactions_new(text: str, statement_year: int) -> list[TransactionR
             continue
         if not line:
             continue
+        # Soft boundary: page-header repeats, mid-section
+        # disclosure paragraphs, sibling-section starts. Flush
+        # the current block so its description stops absorbing
+        # surrounding page chrome (which carries the account
+        # holder's name + account number on every page) — same
+        # defense as the legacy parser. Stay in_section in case
+        # more data rows follow on a later page.
+        if _NEW_TX_ROW_STOP_RE.match(line):
+            _flush()
+            continue
         if _line_starts_new_row(line):
             _flush()
             block = [line]
@@ -429,11 +454,44 @@ def _parse_transactions_new(text: str, statement_year: int) -> list[TransactionR
                     current_date = date(statement_year, int(mm), int(dd))
                 except ValueError:
                     pass
-        elif block:
+        elif block and len(" ".join(block)) < _NEW_TX_BLOCK_MAX_CHARS:
             block.append(line)
-        # else: stray pre-row chrome — skip.
+        # else: stray pre-row chrome or block already at cap; skip.
     _flush()
     return rows
+
+
+# Page-chrome / sibling-section markers that flush the current
+# block in the 2025+ parser. Same idea as _LEGACY_TX_ROW_STOP_RE
+# but tuned for the new layout (no "Bank Sweep:" / "Investment
+# Detail" / etc. — those don't appear in 2025+).
+_NEW_TX_ROW_STOP_RE = re.compile(
+    r"^(?:"
+    r"\d+\s+of\s+\d+\s*$"           # page footer "6 of 8"
+    r"|Statement\s+Period\b"
+    r"|Account\s+Number\b"
+    r"|Schwab\s+One\b"              # page-header repeat
+    r"|Education\s+Savings\b"       # ESA page-header repeat
+    r"|Contributory\s+IRA\b"        # IRA page-header repeat
+    r"|Roth\s+IRA\b"
+    r"|Traditional\s+IRA\b"
+    r"|Inherited\s+IRA\b"
+    r"|Designated\s+Bene\b"
+    r"|Charles\s+Schwab\b"
+    r"|Please\s+see\b"
+    r"|For\s+(?:the\s+)?Schwab\b"   # disclosure paragraph
+    r"|Terms\s+and\s+Conditions\b"
+    r"|Endnotes\b"
+    r")"
+    # Catch the custodial-header line by content marker.
+    r"|.*\b(?:FBO|CUST\s+FOR|UCA?UTMA|UCAUGMA|UTMA|UGMA)\b",
+    re.IGNORECASE,
+)
+# Cap on the block's joined-line length before _parse_new_tx_block
+# is called. Same belt-and-suspenders logic as the legacy parser:
+# a future Schwab layout quirk can't smuggle a page of chrome
+# through if the block can't grow past this many characters.
+_NEW_TX_BLOCK_MAX_CHARS = 400
 
 
 # Per-row charge/fee notes that pypdfium2 emits on their own
@@ -595,6 +653,70 @@ _LEGACY_TX_SECTION_HEADER_RE = re.compile(
 _LEGACY_TX_SECTION_END_RE = re.compile(
     r"^(?:Total\s+Account\s+Value\b|Endnotes\s+For\s+Your\s+Account\b)"
 )
+# Hard boundary inside a transactions section. A row's continuation
+# absorption STOPS when one of these matches the line — even though
+# the section itself hasn't ended. The legacy layout interleaves a
+# transaction sub-section with page-header repeats, disclosure
+# paragraphs, Pending Corporate Actions, Open Orders, etc.; without
+# these stops a Bank-Interest row whose data lives on the very last
+# row of a sub-section would absorb the entire trailing page chrome
+# (full account-holder name, account number, disclosure boilerplate,
+# pending trades — i.e. a PII leak into silver). Note we don't drop
+# `in_section`: more legitimate data rows may follow on a later page.
+# Page-chrome / sibling-section markers that flush the current
+# row in the legacy parser. The keep-list mixes structural
+# anchors (Statement Period / Account Number) and the
+# custodial-account-specific headers Schwab uses for ESA / UTMA
+# / IRA pages — those carry the full custodian + beneficiary
+# names ("Education Savings of <NAME> FBO <NAME> ED SAVINGS
+# ACCT CHARLES SCHWAB & CO INC CUST", "<NAME> CUST FOR <NAME>
+# UCAUTMA UNTIL AGE <N>") which we absolutely don't want
+# bleeding into the description column.
+_LEGACY_TX_ROW_STOP_RE = re.compile(
+    r"^(?:"
+    r"Page\s+\d+\s+of\s+\d+\b"
+    r"|Account\s+Number\b"
+    r"|Statement\s+Period\b"
+    r"|Please\s+see\b"
+    r"|For\s+(?:the\s+)?Schwab\s+One\b"
+    r"|Schwab\s+One\b"
+    r"|Education\s+Savings\b"
+    r"|Contributory\s+IRA\b"
+    r"|Roth\s+IRA\b"
+    r"|Traditional\s+IRA\b"
+    r"|Inherited\s+IRA\b"
+    r"|Designated\s+Bene\b"
+    r"|Charles\s+Schwab\b"
+    r"|Pending\s+Corporate\s+Actions\b"
+    r"|Open\s+Orders\b"
+    r"|Margin\s+Loan\s+Information\b"
+    r"|Asset\s+Composition\b"
+    r"|Investment\s+Detail\b"
+    r"|Cash\s+Transactions\s+Summary\b"
+    r"|Opening\s+Balance\b"
+    r"|Ending\s+Balance\b"
+    r"|Bank\s+Sweep:"
+    r"|Total\s+Cash\s+Transaction\s+Detail\b"
+    r"|Latest\s+Price\b"
+    r"|©"  # copyright line
+    r")"
+    # Also stop on any line containing custodial-header markers
+    # ("FBO" / "CUST FOR" / "UCAUTMA") anywhere — Schwab emits
+    # them as the FIRST page-header line for ESA / UTMA accounts.
+    r"|.*\b(?:FBO|CUST\s+FOR|UCA?UTMA|UCAUGMA|UTMA|UGMA)\b",
+    re.IGNORECASE,
+)
+# Belt-and-suspenders cap. A legitimate transaction description in
+# this layout is at most a couple of short uppercase fragments
+# ("CLASS A", "SPONSORED ADR", "1 ADR REPS 8 ORD SHS", "NOTE
+# DUE12/31/99"); anything past ~200 chars is parser drift. The
+# cap drops further continuation lines once the description has
+# hit it.
+_LEGACY_TX_DESC_MAX_CHARS = 200
+# Cap on the number of continuation lines per row. Real
+# descriptions wrap onto at most 2-3 lines; 5 is generous enough
+# to handle edge cases without swallowing a page of chrome.
+_LEGACY_TX_MAX_CONTINUATIONS = 5
 # Activity sub-header: "<AssetClass> Activity" — used as the
 # row's category hint when the main section header is the
 # bare 2017-2019 "Transaction Detail".
@@ -785,6 +907,11 @@ def _parse_transactions_legacy(text: str,
     in_section = False
     current_row: TransactionRow | None = None
 
+    # Per-row continuation counter; reset each time a fresh row
+    # starts. Used together with _LEGACY_TX_DESC_MAX_CHARS and
+    # _LEGACY_TX_ROW_STOP_RE to bound how much surrounding page
+    # chrome a row can absorb.
+    continuations = 0
     for raw in lines:
         line = raw.strip()
         if not line:
@@ -799,6 +926,16 @@ def _parse_transactions_legacy(text: str,
                 rows.append(current_row)
                 current_row = None
             in_section = False
+            continue
+        # Soft boundary: page-header repeats, disclosure paras,
+        # sibling-section starts. Flush any current row so its
+        # description stops growing, but stay in the section in
+        # case more data rows follow on a later page.
+        if _LEGACY_TX_ROW_STOP_RE.match(line):
+            if current_row is not None:
+                rows.append(current_row)
+                current_row = None
+                continuations = 0
             continue
         # Skip the multi-line column-header block: "Settle",
         # "Date", "Trade", "Date Transaction Description ...",
@@ -820,11 +957,21 @@ def _parse_transactions_legacy(text: str,
                 rows.append(current_row)
             current_row = parsed
             current_row.raw_lines.append(raw)
+            continuations = 0
         elif current_row is not None:
             # Continuation — append to description, look for
             # an embedded "<NAME>: <TICKER>" that may carry the
-            # ticker if the main row didn't.
+            # ticker if the main row didn't. Bounded by both a
+            # max-line count and a max char count so a row near
+            # the end of a sub-section can't swallow the
+            # trailing page of chrome (which contains the
+            # account holder's full name + account number in
+            # this layout).
+            if (continuations >= _LEGACY_TX_MAX_CONTINUATIONS
+                    or len(current_row.description) >= _LEGACY_TX_DESC_MAX_CHARS):
+                continue
             current_row.raw_lines.append(raw)
+            continuations += 1
             if current_row.symbol is None:
                 ms = list(_LEGACY_TX_SYMBOL_IN_DESC_RE.finditer(line))
                 if ms:
@@ -832,6 +979,13 @@ def _parse_transactions_legacy(text: str,
             current_row.description = (
                 current_row.description + " " + line
             ).strip()
+            # If we just crossed the cap, truncate cleanly so
+            # consumers see a deterministic length rather than
+            # whatever the last line happened to add.
+            if len(current_row.description) > _LEGACY_TX_DESC_MAX_CHARS:
+                current_row.description = (
+                    current_row.description[:_LEGACY_TX_DESC_MAX_CHARS].rstrip()
+                )
     if current_row is not None:
         rows.append(current_row)
     return rows

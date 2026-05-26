@@ -259,6 +259,46 @@ class TestSectionBoundaries:
         assert len(rows) == 1
         assert rows[0].symbol == "SYN1"
 
+    def test_total_transactions_spaced_form_terminates(self):
+        # pypdfium2 emits "Total Transactions" with a space
+        # (pdfplumber's tight output gave us "TotalTransactions"
+        # — the original anchor). Both must terminate the
+        # section; without the spaced-form support, a statement
+        # with no Pending block would leave the section open and
+        # sweep the trailing Endnotes / disclosure paragraphs
+        # (which carry the custodian name + account number) into
+        # the last row's description.
+        text = (
+            PERIOD_HEADER
+            + "Transaction Details\n"
+            + "Symbol/ Price/Rate\n"
+            + "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
+            + "Total Transactions $50.00 $50.00\n"
+            + "Endnotes For Your Account\n"
+            + "Interest: For the Schwab One Interest, Bank Sweep ...\n"
+            + "paid for a period that may differ from the Statement Period.\n"
+        )
+        rows = pp.parse_transactions(text)
+        assert len(rows) == 1
+        assert rows[0].symbol == "SYN1"
+        assert "Interest" not in rows[0].description
+        assert "Bank Sweep" not in rows[0].description
+
+    def test_terms_and_conditions_terminates(self):
+        # Belt-and-suspenders: even without Total Transactions
+        # or Endnotes, "Terms and Conditions" is a clean break.
+        text = (
+            PERIOD_HEADER
+            + "Transaction Details\n"
+            + "Symbol/ Price/Rate\n"
+            + "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
+            + "Terms and Conditions\n"
+            + "Interest: For the Schwab One Interest, Bank Sweep ...\n"
+        )
+        rows = pp.parse_transactions(text)
+        assert len(rows) == 1
+        assert "Bank Sweep" not in rows[0].description
+
 
 class TestNumberParsing:
     @pytest.mark.parametrize("s,expected", [
@@ -1000,6 +1040,55 @@ class TestParseTransactionsLegacy:
         )
         rows = pp.parse_transactions(text, statement_year=2019)
         assert rows[0].category == "Dividend"
+
+    def test_description_does_not_absorb_page_chrome(self):
+        # Pre-2024 layout: an Interest row sitting at the end of
+        # its sub-section had the parser sweep up everything
+        # until the next "Total Account Value", which included
+        # the page-footer repeat (Schwab page header + the
+        # account-holder's name + account number) and any
+        # following section. Description must STOP at the
+        # page-chrome boundary.
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "12/15 12/16 Bank InterestX,Z BANK INT 111621-121521 1.15\n"
+            "Bank Sweep: Interest Rate as of 12/31/21 was 0.01%.\n"
+            "Schwab One International Account of\n"
+            "PLACEHOLDER CUST FOR PLACEHOLDER\n"
+            "Account Number\n"
+            "0000-0000\n"
+            "Statement Period\n"
+            "December 1-31, 2021\n"
+            "Page 17 of 18\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 1
+        # Bank Sweep disclosure starts with "Bank Sweep:" which
+        # is a row-stop marker; everything from there must NOT
+        # be in the description.
+        assert "Account Number" not in rows[0].description
+        assert "PLACEHOLDER" not in rows[0].description
+        assert "0000" not in rows[0].description
+        assert "Page 17 of 18" not in rows[0].description
+        # The legitimate "BANK INT 111621-121521" content stays.
+        assert "BANK INT" in rows[0].description
+
+    def test_description_capped_at_max_chars(self):
+        # Belt-and-suspenders: if a row picks up several short
+        # continuation lines that AREN'T row-stop markers (no
+        # leading keyword), the total description still has a
+        # ceiling so a future Schwab layout quirk can't smuggle
+        # in another page of chrome.
+        long_continuation = "FAKEFRAGMENT" * 30  # 360 chars
+        text = self._wrap(
+            "Investments Activity\n"
+            "12/30 12/30 Reinvested Shares ALPHACORP INC: ALPH 0.1 100.0 (10.00)\n"
+            + long_continuation + "\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert len(rows) == 1
+        # Cap is _LEGACY_TX_DESC_MAX_CHARS (200).
+        assert len(rows[0].description) <= 200
 
     def test_new_format_wins_over_legacy(self):
         # If the text has the 2025+ "Transaction Details" anchor
