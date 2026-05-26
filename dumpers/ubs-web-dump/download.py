@@ -1078,13 +1078,11 @@ def export_positions(page, run_dir: Path,
     portfolios = _enumerate_portfolios(page, screenshot_dir)
     results: list[dict] = []
     # Always pull the consolidated default-portfolio view, even when
-    # we have explicit portfolioUids. UBS includes a few customer-
-    # facing cash accounts in the consolidated view that are NOT
-    # attached to any named portfolio (strategy-cash sub-accounts
-    # for alternative-investment products; fee / charges accounts;
-    # etc.) — UBS files them under a synthetic catch-all portfolio
-    # code in the default view. Skipping the consolidated view
-    # leaves those accounts entirely out of silver.
+    # we have explicit portfolioUids. UBS may file a number of
+    # customer-facing cash accounts under a synthetic catch-all
+    # portfolio code in the default view rather than under a named
+    # portfolio. Skipping the consolidated view leaves those
+    # accounts entirely out of silver.
     log.info("downloading default consolidated positions")
     meta = _download_positions_csv(
         page, ubs.ROUTE_POSITIONS_DEFAULT, out_dir,

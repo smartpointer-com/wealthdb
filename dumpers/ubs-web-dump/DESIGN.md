@@ -113,20 +113,17 @@ hang off cash and safekeeping accounts.
 **Three kinds of portfolio rows can appear in web silver:**
 
 1. **Real customer-facing portfolios** that appear on the
-   UBS homepage as separate tiles (e.g. a managed CHF mandate, a
-   USD discretionary portfolio). The web loader pulls one
+   UBS homepage as separate tiles. The web loader pulls one
    `positions_<sha>.csv` per portfolio via the `portfolioUid`
    anchors enumerated from the homepage.
 2. **A synthetic catch-all portfolio** that the consolidated
    default view (`positions.csv`, the `preselectFirstPortfolio
    =true` route) uses to file accounts that aren't attached to
-   any real portfolio — strategy-cash sub-accounts for
-   alternative-investment products, fee / charges accounts, etc.
-   The web loader processes per-portfolio CSVs first, then the
-   consolidated CSV, and only inserts accounts + positions for
-   `(account, isin)` pairs not yet seen. Net effect: real
-   portfolio assignments win; the catch-all only ever owns the
-   genuinely-unattached accounts.
+   any real portfolio. The web loader processes per-portfolio
+   CSVs first, then the consolidated CSV, and only inserts
+   accounts + positions for `(account, isin)` pairs not yet seen.
+   Net effect: real portfolio assignments win; the catch-all only
+   ever owns the genuinely-unattached accounts.
 
 **Web loader contract:** when parsing each positions.csv,
 extract the trailing token of the "Portfolio" column (split on
