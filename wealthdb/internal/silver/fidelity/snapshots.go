@@ -133,32 +133,42 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 }
 
 // appendAccounts joins each silver account against its portfolio
-// to lift the silver-side `portfolios.kind` discriminator
-// (529 / trust_managed / other) into the canonical taxonomy:
+// to lift the silver-side `portfolios.kind` discriminator into
+// the canonical taxonomy:
 //
 //   - kind=529           → TaxWrapper=529 (US education-savings).
-//   - kind=trust_managed → TaxWrapper=trust_non_grantor +
-//                          ManagementStyle=discretionary, since
-//                          "trust_managed" by definition implies
-//                          a third-party investment manager
-//                          holding limited POA.
-//   - kind=other         → leave TaxWrapper/ManagementStyle nil
-//                          so a config-side override can pin
-//                          per-account values (e.g. an IRA
-//                          nickname that silver can't classify).
+//   - kind=trust_managed → TaxWrapper=trust_non_grantor.
+//   - kind=other         → leave TaxWrapper nil so a config-side
+//                          override can pin per-account values.
 //
-// Both columns stay nil for accounts whose portfolio has no
-// classification or no portfolio at all; the gold COALESCE
+// ManagementStyle comes from silver's promoted column
+// `accounts.management_style` (added in fidelity-web-dump silver
+// migration 0003 — '529' → 'self_directed', 'trust_managed' →
+// 'discretionary', 'other'/NULL → NULL). Pre-v3 silvers don't
+// have the column; the adapter degrades gracefully via a
+// PRAGMA-based hasColumn probe and falls back to deriving the
+// style from portfolios.kind in the same shape.
+//
+// All taxonomy columns stay nil for accounts whose portfolio has
+// no classification or no portfolio at all; the gold COALESCE
 // upsert preserves whatever a later writer / override supplies.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	const q = `
+	hasMgmt, err := c.hasColumn(ctx, "accounts", "management_style")
+	if err != nil {
+		return err
+	}
+	mgmtCol := "NULL"
+	if hasMgmt {
+		mgmtCol = "a.management_style"
+	}
+	q := fmt.Sprintf(`
 SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
-       a.nickname, a.payload, p.kind
+       a.nickname, a.payload, p.kind, COALESCE(%s, '')
   FROM accounts a
   LEFT JOIN portfolios p
     ON p.snapshot_at = a.snapshot_at
    AND p.portfolio_external_id = a.portfolio_external_id
- WHERE a.snapshot_at BETWEEN ? AND ?`
+ WHERE a.snapshot_at BETWEEN ? AND ?`, mgmtCol)
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
@@ -168,10 +178,11 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 	for rows.Next() {
 		var (
 			snap                                          int64
-			extID, payload                                string
+			extID, payload, silverMgmt                    string
 			portfolioID, nickname, portfolioKind          sql.NullString
 		)
-		if err := rows.Scan(&snap, &extID, &portfolioID, &nickname, &payload, &portfolioKind); err != nil {
+		if err := rows.Scan(&snap, &extID, &portfolioID, &nickname, &payload,
+			&portfolioKind, &silverMgmt); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -189,15 +200,33 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 			Payload:             json.RawMessage(payload),
 		}
 		applyPortfolioKindTaxonomy(portfolioKind.String, &change)
+		if silverMgmt != "" {
+			// Silver-side management_style (v3+) wins over the
+			// adapter-derived value: trust_managed accounts get
+			// discretionary from both paths and agree; 529
+			// accounts get self_directed from silver only (the
+			// adapter's kind→style mapping doesn't have a 529
+			// entry, intentionally — the silver column is the
+			// canonical source for that).
+			s := canonical.ManagementStyle(silverMgmt)
+			change.ManagementStyle = &s
+		}
 		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
 }
 
-// applyPortfolioKindTaxonomy stamps TaxWrapper / ManagementStyle
-// on an AccountChange based on the joined silver portfolios.kind.
-// See appendAccounts for the mapping rationale. No-op when kind
-// is empty or 'other'.
+// applyPortfolioKindTaxonomy stamps TaxWrapper (and on pre-v3
+// silvers, ManagementStyle) on an AccountChange based on the
+// joined silver portfolios.kind. See appendAccounts for the
+// mapping rationale. No-op when kind is empty or 'other'.
+//
+// ManagementStyle here is only meaningful for the trust_managed
+// branch — it's the backward-compat path for silvers without
+// the v3 management_style column. v3+ silvers overwrite this
+// in the caller with the explicit silver value (which also
+// covers 529 → self_directed, the case this helper doesn't
+// classify).
 func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 	switch kind {
 	case "529":
@@ -209,6 +238,32 @@ func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 		change.TaxWrapper = &w
 		change.ManagementStyle = &s
 	}
+}
+
+// hasColumn reports whether the given table contains the given
+// column. SQLite-only; shape mirrored from the schwab + ubs
+// adapters.
+func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid           int
+			name, ctype   string
+			notnull, pk   int
+			dflt          sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // appendPositionsAndCash walks `positions` once and splits each
