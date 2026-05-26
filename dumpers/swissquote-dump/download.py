@@ -315,9 +315,13 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
     those strings into structured entries and write them to
     `accounts.json` in the run dir.
 
-    The list also drives silver's `accounts.account_type` column;
-    see migrations/0002. For single-account customers the result is
-    one entry; the schema supports multi-account customers natively.
+    The list also drives silver's `accounts.account_product` column
+    (added in migration 0002 as `account_type`, renamed in 0005).
+    For single-account customers the result is one entry; the schema
+    supports multi-account customers natively (the wealthdb gold
+    adapter maps these to `tax_wrapper`: "Trading"/"Savings" →
+    taxable_personal, "Säule 3a" → pillar_3a, "Freizügigkeit" →
+    vested_benefits).
     """
     page.goto(sq.EBANKING_BASE_URL, wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle", timeout=LANDMARK_TIMEOUT_MS)
@@ -336,7 +340,7 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
             log.warning("Skipping unparseable account-list entry: %r", line)
             continue
         accounts.append({
-            "account_type": m.group("type").strip(),
+            "account_product": m.group("type").strip(),
             "account_external_id": m.group("id"),
         })
     target = run_dir / "accounts.json"

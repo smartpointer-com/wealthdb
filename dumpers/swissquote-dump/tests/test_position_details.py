@@ -7,8 +7,8 @@ Run from the repo root inside the container:
 Pure stdlib — no pytest, no fixtures binary files. The tests cover:
   - `parse_position_details` builds the right (symbol, currency)
     lookup, including the symbol-only fallback when currency is null.
-  - Migrations 0001, 0002, 0003 apply cleanly in sequence; the
-    positions table has the new name + isin columns.
+  - Migrations 0001..0005 apply cleanly in sequence; the positions
+    table has the new name + isin columns.
   - A non-ASCII instrument name round-trips through SQLite without
     encoding damage.
 """
@@ -61,12 +61,17 @@ class MigrationSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
             conn = _apply_all_migrations(db_path)
-            self.assertEqual(load.current_schema_version(conn), 4)
+            self.assertEqual(load.current_schema_version(conn), 5)
             cols = [r["name"] for r in conn.execute(
                 "PRAGMA table_info(positions);")]
             self.assertIn("name", cols)
             self.assertIn("isin", cols)
             self.assertIn("source", cols)
+            # accounts table renamed by 0005: account_product, not account_type
+            acct_cols = [r["name"] for r in conn.execute(
+                "PRAGMA table_info(accounts);")]
+            self.assertIn("account_product", acct_cols)
+            self.assertNotIn("account_type", acct_cols)
             # name/isin are nullable (added without DEFAULT in 0003).
             for r in conn.execute(
                 "SELECT name, type, [notnull], dflt_value "

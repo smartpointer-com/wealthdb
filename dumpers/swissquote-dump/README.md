@@ -126,7 +126,7 @@ port-forwarding), then run scripted afterwards.
 │   ├── position_details.json       DOM scrape: per-position long `name` + `isin` (joined into silver)
 │   ├── list_of_assets.xls          Trading Platform List of Assets export (.xls binary; per-currency cash + FX)
 │   ├── account_overview.pdf        Server-rendered portfolio-summary PDF (~35 KB)
-│   ├── accounts.json               DOM scrape: per-account `{account_type, account_external_id}` from #accountOverview/main
+│   ├── accounts.json               DOM scrape: per-account `{account_product, account_external_id}` from #accountOverview/main
 │   ├── documents/
 │   │   ├── <docid>.pdf             eDocuments (trade confirms, statements, tax statements, fee notes, ...)
 │   │   └── ...
@@ -392,11 +392,15 @@ Reload semantics mirror the Schwab loader:
 
 - **Snapshots** (`accounts`, `positions`, `currency_balances`) are
   append-only. Each dump produces a new row per (snapshot, entity).
-  - `accounts` does content-dedup per `(account_external_id, account_type)`
+  - `accounts` does content-dedup per `(account_external_id, account_product)`
     (only inserts when the canonical-JSON payload differs from the
-    most recent row for that account). The `account_type` column is
-    populated from `accounts.json`; older bronze dumps without it
-    fall back to `account_type=''`.
+    most recent row for that account). The `account_product` column
+    is populated from `accounts.json`; older bronze dumps without it
+    fall back to `account_product=''`. The bronze key was previously
+    `account_type` (migration 0002); migration 0005 renamed the
+    silver column to `account_product` for cross-bank gold-layer
+    clarity, and `load.py` reads either bronze key for backward
+    compatibility.
   - `positions` rows get their `name` and `isin` columns populated
     from `position_details.json` when present (joined on
     `(symbol, currency)`); older bronze dumps without the sidecar
@@ -470,3 +474,41 @@ migration. Each file:
 The loader executes each new migration in numeric order and commits
 between files. Silver databases must always be at the latest schema —
 never write code that handles "if column X exists".
+
+## Gold-layer integration (wealthdb)
+
+[wealthdb](https://github.com/ptu/wealthdb) is the cross-bank gold
+layer that consumes this silver DB (alongside silver from
+schwab-dump, ubs-psn-dump, etc.) and projects everything into a
+canonical schema. Two columns on the gold side that the Swissquote
+adapter should populate from this repo's silver:
+
+- **gold `instruments.name`** ← silver `positions.name`
+  (with `positions.isin` as the cross-bank join key — Swissquote's
+  `symbol` column differs between the Positions XLS and the
+  Transactions CSV for the same instrument; ISIN is stable).
+
+- **gold `accounts.tax_wrapper`** ← derive from
+  silver `accounts.account_product` per this mapping:
+
+  | Swissquote `account_product` | wealthdb `tax_wrapper` |
+  | --- | --- |
+  | `Trading` | `taxable_personal` |
+  | `Savings` | `taxable_personal` |
+  | `Säule 3a` | `pillar_3a` |
+  | `Freizügigkeit` | `vested_benefits` |
+  | _(anything else)_ | `taxable_personal` (default) |
+
+  `account_product` is scraped from the eBanking
+  `#accountOverview/main` listing where each account is rendered as
+  a `<PRODUCT> <CUSTOMER_ID>` line ("Trading 1234567", "Säule 3a
+  1234567", etc.). The scraper handles German diacritics via
+  Python's Unicode-aware `\w`.
+
+  A Swissquote account label that the regex can't parse
+  (e.g. one starting with a lowercase letter like "ePrivate
+  Banking") gets logged as a warning at scrape time and is
+  absent from `accounts`. The wealthdb adapter should accept
+  `account_product = ''` as the same as "unknown" and default to
+  `taxable_personal`, optionally allowing a per-account override
+  in `wealthdb.cfg`.
