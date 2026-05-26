@@ -13,3 +13,7 @@ playwright==1.59.0
 # not read .xls. If Swissquote ever switches to .xlsx, drop xlrd and
 # switch the loader to openpyxl.
 xlrd==1.2.0
+
+# pypdf is used by load.py to extract position snapshots from
+# Account Statement / Portfolio performance PDFs.
+pypdf==5.1.0

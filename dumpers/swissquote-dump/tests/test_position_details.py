@@ -62,11 +62,12 @@ class MigrationSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "silver.db"
             conn = _apply_all_migrations(db_path)
-            self.assertEqual(load.current_schema_version(conn), 3)
+            self.assertEqual(load.current_schema_version(conn), 4)
             cols = [r["name"] for r in conn.execute(
                 "PRAGMA table_info(positions);")]
             self.assertIn("name", cols)
             self.assertIn("isin", cols)
+            self.assertIn("source", cols)
             # name/isin are nullable (added without DEFAULT in 0003).
             for r in conn.execute(
                 "SELECT name, type, [notnull], dflt_value "

@@ -47,7 +47,7 @@ persisted session cookie across runs until it expires.
 | --- | --- | --- |
 | [`login.py`](login.py) | implemented | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes the on-screen Operation No. (TAN) so the operator can compare against their phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
 | [`download.py`](download.py) | implemented | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`load.py`](load.py) | implemented | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. |
+| [`load.py`](load.py) | implemented | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
 
 ## Container build
 
@@ -401,6 +401,17 @@ Reload semantics mirror the Schwab loader:
     from `position_details.json` when present (joined on
     `(symbol, currency)`); older bronze dumps without the sidecar
     leave them `NULL` (forward-fill — see migration 0003).
+  - `positions` rows carry a `source` column (see migration 0004):
+    `'live'` for rows from the current Positions XLS export, and
+    `'pp:<doc_id>'` for rows reconstructed from a Portfolio
+    Performance PDF in bronze. The PP-sourced rows are how silver
+    gets year-end historical snapshots — `download.py` only ever
+    sees the current state. Re-parsing a PP doc is idempotent
+    (DELETE-then-INSERT under the same source tag). Cash entries
+    in the PP table are skipped; they belong in `currency_balances`.
+    **Account Statement PDFs are *not* parsed**: they are cash-flow
+    ledgers, not position snapshots. Account Statements remain
+    indexed in the `documents` table for future use.
 - **Events** (`transactions`) use window-DELETE-then-INSERT per
   `(account, time-window)`. Re-running a window converges to
   Swissquote's current truth even if dates/amounts were amended.

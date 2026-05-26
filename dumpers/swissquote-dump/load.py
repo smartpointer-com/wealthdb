@@ -370,6 +370,289 @@ def parse_position_details(path: Path) -> dict[tuple[str, str | None], dict]:
     return out
 
 
+# ============================================================
+# Portfolio Performance PDF parser
+#
+# Each Portfolio Performance PDF is an annual snapshot — its page-2
+# "Asset allocation" table lists every held position at year-end
+# (date in the title: "Portfolio performance at DD.MM.YYYY") with
+# quantity, ISIN, average cost, market price, and CHF valuation.
+# We parse it into a `pp:<doc_id>`-tagged set of `positions` rows
+# so the silver `positions` table also covers historical year-ends
+# rather than only the cluster of recent live snapshots.
+#
+# Cash rows are intentionally skipped — cash belongs in
+# `currency_balances` (silver). Securities-only here, matching the
+# `positions` table's existing scope.
+# ============================================================
+
+_PP_ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{10})\b")
+_PP_DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
+_PP_TITLE_DATE_RE = re.compile(
+    r"Portfolio performance at\s+(\d{2})\.(\d{2})\.(\d{4})"
+)
+_PP_ACCOUNT_RE = re.compile(r"Account(?:\s*number)?\s+(\d{6,10})")
+# Section header on the asset-allocation page: "Bonds in CHF",
+# "Funds in CHF", "Equities in CHF", "Metals in CHF", etc.
+_PP_SECTION_RE = re.compile(
+    r"^\s*(Bonds|Funds|Equities|Metals|Structured products|Options|Other)\s+in\s+([A-Z]{3})\s*$"
+)
+
+
+def _pp_to_number(s: str) -> float:
+    """Parse a Swiss-locale number like "1'234'567.89" or "106.150%"."""
+    return float(s.replace("'", "").rstrip("%").strip())
+
+
+def parse_portfolio_performance(pdf_path: Path) -> dict:
+    """Parse a Portfolio Performance PDF into a snapshot dict.
+
+    Returns: {
+        "snapshot_date":        "YYYY-MM-DD",       # as-of date from title
+        "account_external_id":  "<customer id>",
+        "positions":            [{
+            "asset_class":    "Bonds" | "Funds" | ...,
+            "currency":       "CHF",
+            "name":           "<security description>",
+            "isin":           "<ISIN>",
+            "quantity":       <float>,
+            "avg_price":      <float>,
+            "market_price":   <float>,
+            "price_date":     "YYYY-MM-DD",
+            "valuation_chf":  <float>,
+            "account_pct":    <float>,
+        }, ...]
+    }
+
+    Raises SystemExit on structural surprises (missing title, no
+    asset-allocation page, unparseable row, etc.) — the goal is to
+    fail loud rather than silently drop data.
+    """
+    import pypdf  # local import — only this code path needs it
+
+    reader = pypdf.PdfReader(str(pdf_path))
+
+    # Title + account ID can appear on any page; grep across all.
+    snapshot_date = account_id = None
+    for page in reader.pages:
+        t = page.extract_text()
+        if not snapshot_date:
+            m = _PP_TITLE_DATE_RE.search(t)
+            if m:
+                snapshot_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        if not account_id:
+            m = _PP_ACCOUNT_RE.search(t)
+            if m:
+                account_id = m.group(1)
+    if not snapshot_date:
+        raise SystemExit(
+            f"{pdf_path}: no 'Portfolio performance at <date>' title found"
+        )
+    if not account_id:
+        raise SystemExit(f"{pdf_path}: no 'Account <number>' field found")
+
+    # The asset-allocation table is on a single page; layout-mode
+    # extraction keeps columns aligned enough for line-based parse.
+    # Multiple pages may match the surface "Asset allocation" text
+    # (the Table of Contents on page 0 includes it). We try every
+    # candidate and return the first that yields rows; the TOC will
+    # parse to zero rows and quietly skip.
+    positions: list[dict] = []
+    for page in reader.pages:
+        layout = page.extract_text(extraction_mode="layout")
+        if "Asset allocation" not in layout:
+            continue
+        rows = _pp_parse_asset_allocation(layout, pdf_path)
+        if rows:
+            positions = rows
+            break
+    if not positions:
+        raise SystemExit(
+            f"{pdf_path}: no asset-allocation page yielded any "
+            "positions — PDF layout may have shifted."
+        )
+
+    return {
+        "snapshot_date": snapshot_date,
+        "account_external_id": account_id,
+        "positions": positions,
+    }
+
+
+def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
+    """Walk the asset-allocation page's text lines, emit one dict per
+    securities row. Cash rows are skipped (they belong in
+    currency_balances). Section context comes from "<Class> in <CCY>"
+    header lines preceding each block.
+    """
+    out: list[dict] = []
+    current_class: str | None = None
+    current_currency: str | None = None
+    for raw_line in layout_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Section header? Sets context for following rows.
+        m = _PP_SECTION_RE.match(line)
+        if m:
+            current_class, current_currency = m.group(1), m.group(2)
+            continue
+        # Plain "Cash" header — skip section entirely; cash is not a
+        # security and goes elsewhere in silver.
+        if line == "Cash":
+            current_class, current_currency = "Cash", None
+            continue
+        # Total / subtotal / header rows — not positions.
+        if line.lower().startswith("total "):
+            continue
+        if "Currency" in line and "Reference" in line:
+            continue
+        if "Quantity" in line and "Security" in line:
+            continue
+        if "incl. accrued interests" in line:
+            continue
+
+        # Skip cash-section content rows.
+        if current_class == "Cash":
+            continue
+
+        # A securities row contains an ISIN. The line layout is
+        # quantity | security | ISIN | avg price | market price |
+        # price date | valuation_chf | %. Numbers are Swiss-locale.
+        m = _PP_ISIN_RE.search(line)
+        if not m:
+            continue
+        isin = m.group(1)
+        before, after = line.split(isin, 1)
+        # `before` is "<quantity><whitespace><security text>" — the
+        # PDF layout extraction collapses inner whitespace so the
+        # quantity is the leading token.
+        before_tokens = before.split()
+        if not before_tokens:
+            continue
+        try:
+            quantity = _pp_to_number(before_tokens[0])
+        except ValueError:
+            continue
+        name = " ".join(before_tokens[1:]).strip()
+
+        # The tail has 5 tokens: avg, market, date, valuation, %.
+        # Bonds also carry an accrued-interests value on a separate
+        # line (not on this one in layout mode) — we don't capture
+        # it here; the valuation column already includes it per the
+        # column-header text "Valuation in CHF incl. accrued interests".
+        tail_tokens = after.split()
+        if len(tail_tokens) < 5:
+            raise SystemExit(
+                f"{pdf_path}: positions row for {isin} has only "
+                f"{len(tail_tokens)} tail tokens, expected 5+: {line!r}"
+            )
+        avg_price_raw, market_price_raw, price_date_raw = tail_tokens[:3]
+        valuation_raw, pct_raw = tail_tokens[3], tail_tokens[4]
+
+        md = _PP_DATE_RE.match(price_date_raw)
+        if not md:
+            raise SystemExit(
+                f"{pdf_path}: unparseable price date {price_date_raw!r}"
+                f" in row {line!r}"
+            )
+        price_date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
+
+        out.append({
+            "asset_class": current_class,
+            "currency": current_currency,
+            "name": name,
+            "isin": isin,
+            "quantity": quantity,
+            "avg_price": _pp_to_number(avg_price_raw),
+            "market_price": _pp_to_number(market_price_raw),
+            "price_date": price_date,
+            "valuation_chf": _pp_to_number(valuation_raw),
+            "account_pct": _pp_to_number(pct_raw),
+        })
+
+    return out
+
+
+def load_portfolio_performance_docs(
+    conn: sqlite3.Connection, bronze_root: Path,
+) -> int:
+    """Parse every not-yet-ingested Portfolio Performance doc and
+    insert source-tagged positions rows.
+
+    A doc is "already ingested" if any positions row has
+    source='pp:<doc_id>'. Re-parses are idempotent: we DELETE then
+    INSERT under that source tag in a transaction.
+
+    Returns the number of newly-loaded docs.
+    """
+    docs = list(conn.execute(
+        "SELECT swissquote_doc_id, account_external_id, bronze_path "
+        "FROM documents "
+        "WHERE document_type = 'Portfolio performance' "
+        "  AND swissquote_doc_id IS NOT NULL"
+    ))
+    loaded = 0
+    for r in docs:
+        doc_id = r["swissquote_doc_id"]
+        source_tag = f"pp:{doc_id}"
+        already = conn.execute(
+            "SELECT 1 FROM positions WHERE source = ? LIMIT 1;",
+            (source_tag,),
+        ).fetchone()
+        if already:
+            continue
+
+        pdf_path = bronze_root / r["bronze_path"]
+        log.info("Parsing Portfolio Performance: %s", pdf_path.name)
+        try:
+            result = parse_portfolio_performance(pdf_path)
+        except SystemExit as e:
+            # One bad PDF shouldn't kill the whole load; record the
+            # parse failure and continue. Operator can investigate
+            # by re-running with -v.
+            log.error("Skip %s — parser failed: %s", pdf_path.name, e)
+            continue
+
+        # Anchor snapshot_at to end-of-day in Europe/Zurich on the
+        # snapshot date. Consistent with how live-XLS rows derive
+        # snapshot_at from the dump-run timestamp.
+        d = datetime.fromisoformat(result["snapshot_date"])
+        snapshot_at = int(
+            d.replace(hour=23, minute=59, second=59,
+                      tzinfo=SWISSQUOTE_TZ).timestamp()
+        )
+        account_id = r["account_external_id"] or result["account_external_id"]
+
+        conn.execute("BEGIN;")
+        try:
+            conn.execute(
+                "DELETE FROM positions WHERE source = ?;", (source_tag,),
+            )
+            for pos in result["positions"]:
+                # PP doesn't surface the live-XLS-style ticker; the
+                # human-readable security name is our best symbol
+                # value. wealthdb-side joins should key on ISIN.
+                symbol = pos["name"]
+                currency = pos["currency"] or ""
+                payload = canonical_json(pos)
+                conn.execute(
+                    "INSERT INTO positions("
+                    " snapshot_at, account_external_id, symbol, currency,"
+                    " name, isin, payload, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    (snapshot_at, account_id, symbol, currency,
+                     pos["name"], pos["isin"], payload, source_tag),
+                )
+            conn.execute("COMMIT;")
+            loaded += 1
+        except Exception:
+            conn.execute("ROLLBACK;")
+            raise
+    return loaded
+
+
 def load_positions(
     conn: sqlite3.Connection,
     snapshot_at: int,
@@ -749,6 +1032,16 @@ def run(args: argparse.Namespace) -> int:
         n_manual = ingest_manual_dir(conn, args.bronze_dir)
         if n_manual:
             log.info("Indexed %d new manual document(s)", n_manual)
+
+        # Portfolio Performance docs may now be in the documents table
+        # but not yet parsed into positions snapshots. Same call is
+        # idempotent — re-parses replace under their `pp:<doc_id>` tag.
+        n_pp = load_portfolio_performance_docs(conn, args.bronze_dir)
+        if n_pp:
+            log.info(
+                "Reconstructed positions from %d Portfolio Performance "
+                "PDF(s)", n_pp,
+            )
     finally:
         conn.close()
     return 0
