@@ -146,6 +146,19 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
 		{Name: "portfolio_nickname", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.Nickname) }},
+		// Portfolio-level taxonomy rollups. Strict semantics in
+		// the gold layer: tax_wrapper non-nil only when every
+		// component account agrees AND none is unclassified;
+		// management_style non-nil only when every non-overlay
+		// component agrees (and none is unclassified). Blank
+		// cells genuinely mean "ambiguous / mixed / unknown" —
+		// not the same as the accounts table's render-time
+		// default fallback, where blank would silently show
+		// taxable_personal / self_directed.
+		{Name: "tax_wrapper", Align: output.AlignLeft,
+			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.TaxWrapper) }},
+		{Name: "management_style", Align: output.AlignLeft,
+			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.ManagementStyle) }},
 
 		{Name: "positions_value", Align: output.AlignRight,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.PositionsValueBase) }},
@@ -164,7 +177,8 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 }
 
 var defaultPortfolioColumns = []string{
-	"silver_source", "snapshot_date", "portfolio", "base_currency",
+	"silver_source", "snapshot_date", "portfolio",
+	"tax_wrapper", "management_style", "base_currency",
 	"positions_value", "cash_balance", "total_value",
 	"total_value_outccy",
 }

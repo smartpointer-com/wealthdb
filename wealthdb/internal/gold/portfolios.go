@@ -30,6 +30,31 @@ type PortfolioRow struct {
 	RelationshipID      *string
 	Nickname            *string
 
+	// TaxWrapper is the portfolio-level wrapper rolled up from
+	// its component accounts. STRICT semantics: non-nil only when
+	// every component account carries a non-NULL tax_wrapper AND
+	// all values agree. Any disagreement OR any unclassified
+	// component renders the portfolio's wrapper as NULL — the
+	// column is sensitive enough that "ambiguous" is preferable
+	// to "possibly wrong".
+	TaxWrapper *string
+	// ManagementStyle answers "what mandate is this portfolio
+	// under?". Computed from non-overlay component accounts only
+	// (overlay accounts are synthetic per-portfolio buckets the
+	// UBS adapter emits for forward contracts and OTC positions
+	// the bank attributes directly to the portfolio with no sub-
+	// account; their per-row management_style stays self_directed
+	// even when the surrounding mandate is discretionary, so they
+	// shouldn't poison the rollup). Non-nil only when every non-
+	// overlay component has a non-NULL management_style AND all
+	// values agree. The propagation pass in the UBS adapter
+	// already lifts the safekeeping-account mandate to its sibling
+	// cash accounts, so the named-mandate portfolios naturally
+	// collapse to one style; "general banking" portfolios with
+	// residual advisory securities resolve to NULL (correct — no
+	// single mandate covers everything).
+	ManagementStyle *string
+
 	PositionsValueBase *string
 	CashBalanceBase    *string
 	TotalValueBase     *string
@@ -63,6 +88,15 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 	}
 	// Account → portfolio_external_id (or "") mapping per source.
 	accountPortfolio, sourcesSeen, err := loadAccountPortfolioMap(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	// Portfolio-level rolled-up taxonomy (tax_wrapper +
+	// management_style). Pulled in a single SQL pass; the per-
+	// portfolio values either agree across all qualifying
+	// component accounts (and become the rollup) or any
+	// disagreement / NULL component leaves the rollup nil.
+	taxonomy, err := loadPortfolioTaxonomy(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +174,16 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		} else {
 			p.SnapshotAt = sourceMaxSnap[p.SilverSourceID]
 		}
+		if t, ok := taxonomy[[2]string{p.SilverSourceID, p.PortfolioExternalID}]; ok {
+			if t.taxWrapper != "" {
+				v := t.taxWrapper
+				p.TaxWrapper = &v
+			}
+			if t.managementStyle != "" {
+				v := t.managementStyle
+				p.ManagementStyle = &v
+			}
+		}
 
 		if p.BaseCurrency != nil && *p.BaseCurrency != "" {
 			base := *p.BaseCurrency
@@ -188,6 +232,101 @@ SELECT silver_source_id, portfolio_external_id,
 		r.RelationshipID = nullStringToPtr(relID)
 		r.Nickname = nullStringToPtr(nickname)
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// portfolioTaxonomy carries the rolled-up tax_wrapper and
+// management_style per (silver_source_id, portfolio_external_id).
+// Empty string means "no rollup possible" (mixed values, or
+// any qualifying component had a NULL value); the caller leaves
+// the corresponding PortfolioRow field nil.
+type portfolioTaxonomy struct {
+	taxWrapper      string
+	managementStyle string
+}
+
+// loadPortfolioTaxonomy rolls up tax_wrapper and management_style
+// from gold.accounts to the portfolio level via a single SQL
+// pass. Both rollups are STRICT: a value lands only when all
+// qualifying component accounts agree AND no qualifying
+// component is unclassified (NULL).
+//
+// Both rollups exclude overlay accounts. Overlays are synthetic
+// per-portfolio buckets the UBS adapter emits for forward
+// contracts and OTC positions the bank attributes directly to
+// the portfolio with no sub-account; the user doesn't think of
+// them as separate accounts. Their per-row tax_wrapper and
+// management_style are unclassified (NULL) by construction —
+// including them would silently poison every rollup with a
+// "disagreement" that isn't real.
+//
+//   tax_wrapper rollup: among non-overlay accounts, every one
+//     must carry a non-NULL tax_wrapper AND all values must
+//     agree. Sensitive column; "ambiguous" is preferable to
+//     "possibly wrong" so any disagreement or any unclassified
+//     real account → NULL.
+//
+//   management_style rollup: same shape, among non-overlay
+//     accounts. With overlays excluded, named-mandate
+//     portfolios collapse to one style (the propagation pass
+//     in the UBS adapter has already lifted the safekeeping
+//     mandate to the sibling cash accounts); general-banking
+//     portfolios with residual advisory securities resolve to
+//     NULL (correct — no single mandate covers everything).
+//
+// Portfolios with no qualifying accounts (e.g. a portfolio
+// whose only component is an overlay) return both values
+// empty.
+//
+// Accounts whose portfolio_external_id IS NULL are NOT
+// rolled into a sentinel here; sentinels are computed in the
+// caller and intentionally don't carry a wrapper/style — the
+// "no portfolio" bucket aggregates accounts that may have
+// disparate wrappers (Schwab's 4 wrapper variants under the
+// "no portfolio" Schwab sentinel being the obvious example).
+func loadPortfolioTaxonomy(ctx context.Context, db *sql.DB) (map[[2]string]portfolioTaxonomy, error) {
+	const q = `
+SELECT
+    silver_source_id,
+    portfolio_external_id,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE account_kind != 'overlay') > 0
+         AND COUNT(*) FILTER (WHERE account_kind != 'overlay' AND tax_wrapper IS NULL) = 0
+         AND COUNT(DISTINCT CASE WHEN account_kind != 'overlay' THEN tax_wrapper END) = 1
+        THEN MAX(CASE WHEN account_kind != 'overlay' THEN tax_wrapper END)
+        ELSE NULL
+    END AS rolled_tax_wrapper,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE account_kind != 'overlay') > 0
+         AND COUNT(*) FILTER (WHERE account_kind != 'overlay' AND management_style IS NULL) = 0
+         AND COUNT(DISTINCT CASE WHEN account_kind != 'overlay' THEN management_style END) = 1
+        THEN MAX(CASE WHEN account_kind != 'overlay' THEN management_style END)
+        ELSE NULL
+    END AS rolled_management_style
+  FROM accounts
+ WHERE portfolio_external_id IS NOT NULL
+ GROUP BY silver_source_id, portfolio_external_id`
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("loadPortfolioTaxonomy: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[[2]string]portfolioTaxonomy)
+	for rows.Next() {
+		var src, port string
+		var wrapper, style sql.NullString
+		if err := rows.Scan(&src, &port, &wrapper, &style); err != nil {
+			return nil, fmt.Errorf("loadPortfolioTaxonomy scan: %w", err)
+		}
+		t := portfolioTaxonomy{}
+		if wrapper.Valid {
+			t.taxWrapper = wrapper.String
+		}
+		if style.Valid {
+			t.managementStyle = style.String
+		}
+		out[[2]string{src, port}] = t
 	}
 	return out, rows.Err()
 }
