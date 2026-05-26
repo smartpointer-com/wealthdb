@@ -177,10 +177,23 @@ func (r *webReader) snapshotsDimensions(
 	if !w.HasChanges {
 		return nil
 	}
-	const q = `
-SELECT snapshot_at, account_external_id, nickname, payload
+	// Silver migration 0003 added `account_registration` (the
+	// verbatim statement-PDF registration label —
+	// "Contributory IRA" / "Schwab One® Custodial Account
+	// (UTMA)" / "Education Savings" / etc.). Older silvers
+	// don't have the column; degrade gracefully.
+	hasRegistration, err := r.hasColumn(ctx, "accounts", "account_registration")
+	if err != nil {
+		return err
+	}
+	regCol := "NULL"
+	if hasRegistration {
+		regCol = "account_registration"
+	}
+	q := fmt.Sprintf(`
+SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
   FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`
+ WHERE snapshot_at BETWEEN ? AND ?`, regCol)
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("schwab-web snapshotsDimensions: %w", err)
@@ -188,12 +201,13 @@ SELECT snapshot_at, account_external_id, nickname, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap          int64
-			suffix        string
-			nickname      sql.NullString
-			payload       string
+			snap         int64
+			suffix       string
+			nickname     sql.NullString
+			payload      string
+			registration string
 		)
-		if err := rows.Scan(&snap, &suffix, &nickname, &payload); err != nil {
+		if err := rows.Scan(&snap, &suffix, &nickname, &payload, &registration); err != nil {
 			return err
 		}
 		hash, ok := bridge[suffix]
@@ -204,16 +218,53 @@ SELECT snapshot_at, account_external_id, nickname, payload
 		if !ok {
 			continue
 		}
-		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		change := canonical.AccountChange{
 			AccountExternalID: hash,
 			AccountKind:       canonical.AccountKindBrokerage,
 			Nickname:          nullStringPtrSchwabWeb(nickname),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
-		})
+		}
+		if registration != "" {
+			// Forward the raw Schwab label as AccountCategory
+			// (verbatim, for forensics) and derive the canonical
+			// TaxWrapper. Unknown labels leave TaxWrapper nil so
+			// the render-time default (taxable_personal) kicks in.
+			cat := registration
+			change.AccountCategory = &cat
+			if tw := taxWrapperForRegistration(registration); tw != "" {
+				change.TaxWrapper = &tw
+			}
+		}
+		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
+}
+
+// hasColumn reports whether the given table contains the given
+// column. SQLite-only; same shape as apiReader.hasColumn.
+func (r *webReader) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid           int
+			name, ctype   string
+			notnull, pk   int
+			dflt          sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // transactionsBeforeAPIStart emits web transactions that are
