@@ -627,11 +627,13 @@ _LEGACY_TX_KIND_PHRASES: list[tuple[str, str]] = [
     ("Bank Interest",           "Interest"),
     ("Credit Interest",         "Interest"),
     ("Margin Interest",         "Interest"),
+    ("Interest Paid",           "Interest"),
     ("Reverse Split",           "Split"),
     ("Forward Split",           "Split"),
     ("Funds Received",          "Deposit"),
     ("Funds Paid",              "Withdrawal"),
     ("MoneyLink Txn",           "Transfer"),
+    ("Auto Transfer",           "Transfer"),
     ("Journal",                 "Journal"),
     ("Spin-Off",                "Spin-Off"),
     ("Merger",                  "Merger"),
@@ -654,6 +656,25 @@ _LEGACY_TX_KIND_PHRASES: list[tuple[str, str]] = [
     ("Transfer",                "Transfer"),
     ("Split",                   "Split"),
 ]
+
+# Footnote-marker suffix Schwab glues to the transaction-type
+# column with no separating whitespace, e.g. "Bank InterestX,Z",
+# "Interest PaidX,Z", "Auto TransferX". The markers are single
+# letters, comma-separated, max ~3 in practice; full taxonomy is
+# in each statement's "Endnotes For Your Account" section. Used
+# to make the kind-phrase match tolerant of the gluing.
+_LEGACY_TX_FOOTNOTE_SUFFIX = r"(?:[A-Za-z](?:,[A-Za-z]){0,4})?"
+
+# Compiled once from _LEGACY_TX_KIND_PHRASES: matches a kind
+# phrase at the start of the description, optionally followed by
+# a glued footnote marker, then whitespace or end-of-string. The
+# phrase group lets us look up the (kind, phrase-len) to surface.
+_LEGACY_TX_KIND_RE = re.compile(
+    r"^(?P<phrase>" +
+    "|".join(re.escape(p) for p, _ in _LEGACY_TX_KIND_PHRASES) +
+    r")" + _LEGACY_TX_FOOTNOTE_SUFFIX + r"(?:\s|$)"
+)
+_LEGACY_TX_KIND_LOOKUP = dict(_LEGACY_TX_KIND_PHRASES)
 
 
 def _parse_legacy_tx_date(token: str, statement_year: int) -> date | None:
@@ -726,13 +747,18 @@ def _parse_legacy_tx_row_line(line: str, statement_year: int):
     if matches:
         symbol = matches[-1].group(1)
 
-    # Categorise. Match the longest known phrase that appears
-    # at the start of the description.
+    # Categorise. The regex matches the longest known phrase at
+    # the start of the description, tolerating a glued footnote
+    # marker like "X", "X,Z", "M,F" between the phrase and the
+    # next token (Schwab renders footnote letters as inline
+    # superscripts that pypdfium2 lowers to the baseline with no
+    # whitespace — without the tolerance, "Bank InterestX,Z BANK
+    # INT ..." wouldn't match "Bank Interest" and the row would
+    # land as kind=Unknown).
     kind = None
-    for phrase, normalised in _LEGACY_TX_KIND_PHRASES:
-        if desc == phrase or desc.startswith(phrase + " "):
-            kind = normalised
-            break
+    m_kind = _LEGACY_TX_KIND_RE.match(desc)
+    if m_kind:
+        kind = _LEGACY_TX_KIND_LOOKUP[m_kind.group("phrase")]
 
     row = TransactionRow(
         date=settle,

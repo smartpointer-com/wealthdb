@@ -951,6 +951,56 @@ class TestParseTransactionsLegacy:
         assert len(rows) == 1
         assert rows[0].category == "Reinvest"
 
+    def test_footnote_marker_glued_to_kind_phrase(self):
+        # Schwab statements glue footnote-marker letters (X for
+        # margin, Z for FDIC bank sweep, etc.) to the
+        # transaction-type column with no separating whitespace,
+        # so what the eye reads as "Bank Interest" arrives as
+        # "Bank InterestX,Z". The category match has to tolerate
+        # the suffix or the row falls through as kind=Unknown.
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "12/15 12/16 Bank InterestX,Z BANK INT 111621-121521 1.15\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 1
+        assert rows[0].category == "Interest"
+        assert rows[0].amount == 1.15
+
+    def test_footnote_marker_single_letter(self):
+        # Single-letter footnote (e.g. just "X" without a Z
+        # paired) must also match — typical for Margin Interest.
+        text = self._wrap(
+            "Investments Activity\n"
+            "04/01 04/01 Margin InterestX INTEREST 03/01THRU 04/01 (4321.00)\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 1
+        assert rows[0].category == "Interest"
+        assert rows[0].amount == -4321.00
+
+    def test_auto_transfer_categorised(self):
+        # Bank-sweep transfer rows ("Auto TransferX,Z BANK
+        # CREDIT FROM BROKERAGE ...") were also slipping past
+        # the kind dispatch — now explicitly mapped to Transfer.
+        text = self._wrap(
+            "Cash, Bank Sweep, and Money Market Funds Activity\n"
+            "12/03 12/03 Auto TransferX BANK CREDIT FROM BROKERAGE 800.00 1,000.00\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2021)
+        assert len(rows) == 1
+        assert rows[0].category == "Transfer"
+
+    def test_no_footnote_still_matches(self):
+        # The footnote group is optional — phrases that appear
+        # without any glued letters must continue to match.
+        text = self._wrap(
+            "Investments Activity\n"
+            "12/20 12/20 Qualified Dividend ALPHACORP INC: ALPH 5.60\n"
+        )
+        rows = pp.parse_transactions(text, statement_year=2019)
+        assert rows[0].category == "Dividend"
+
     def test_new_format_wins_over_legacy(self):
         # If the text has the 2025+ "Transaction Details" anchor
         # (plural) the new parser handles it and the legacy
