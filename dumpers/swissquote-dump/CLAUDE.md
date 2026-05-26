@@ -18,8 +18,9 @@ navigate to or click within:
   inputs and the export dropdown only.
 - Trading Platform SPA `#portfoliooverview` route — the three
   export buttons (Positions, List of Assets, Export account
-  overview) only. The Buy/Sell buttons inside position rows are
-  present in the DOM but must never be clicked.
+  overview), and hovering the per-position symbol cells to expose
+  the long-name tooltip. The Buy/Sell buttons inside position rows
+  are present in the DOM but must never be clicked.
 - eBanking SPA `#documents` route — date-range filter and Apply
   only; document PDFs are fetched via Playwright's request API
   (the `getPdfDocument` REST endpoint with the session cookie),

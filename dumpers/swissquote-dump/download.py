@@ -343,6 +343,107 @@ def scrape_accounts(page, run_dir: Path) -> list[dict]:
     return accounts
 
 
+def scrape_position_details(page, run_dir: Path) -> list[dict]:
+    """Scrape per-position long name + ISIN off the Portfolio Overview.
+
+    The Positions XLS export only carries the ticker. The same page
+    surfaces:
+      - ISIN as the first path segment in each row's FullQuote link
+        href (`…#fullQuote/{ISIN}/{type}_{CCY}`), available at rest.
+      - Long instrument name in a hover tooltip on the symbol cell.
+        Not in the DOM at rest — we hover each cell once.
+
+    Writes one entry per (symbol, currency) position to
+    `position_details.json`. The loader joins on (symbol, currency)
+    to promote `name` and `isin` columns in the silver positions
+    table. Forward-fill only — older bronze dumps that predate this
+    artefact load with NULL for these columns.
+
+    The Buy/Sell buttons inside each row are intentionally NOT
+    interacted with; see CLAUDE.md §1.
+    """
+    # Defensive: expand any collapsed widgets so the Positions table
+    # is in the DOM. Idempotent on already-expanded widgets.
+    for c in page.locator(sq.WIDGET_COLLAPSED).all():
+        try:
+            c.locator(sq.WIDGET_HEADER).first.click(timeout=2000)
+        except Exception as e:  # noqa: BLE001 - best-effort
+            log.debug("Skipped collapsed widget (no header click): %s", e)
+    page.wait_for_timeout(800)
+
+    containers = page.locator(sq.POSITION_SYMBOL_CONTAINER)
+    n = containers.count()
+    log.info("Scraping detail for %d position(s)", n)
+    isin_re = re.compile(
+        r"#fullQuote/(?P<isin>[A-Z0-9]{8,12})/[^/]+$"
+    )
+
+    entries: list[dict] = []
+    for i in range(n):
+        container = containers.nth(i)
+        link = container.locator(sq.POSITION_SYMBOL_LINK).first
+        try:
+            symbol = link.inner_text(timeout=2000).strip()
+            href = link.get_attribute("href", timeout=2000) or ""
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "Skip position container %d (no symbol link): %s", i, e,
+            )
+            continue
+        m = isin_re.search(href)
+        isin = m.group("isin") if m else None
+
+        # Currency lives in a sibling column. Cheaper to derive at
+        # load time by joining against positions.xls on symbol, but
+        # we record the row's column for the loader's safety net.
+        # The href's trailing fragment (`…/4_CHF`) encodes the
+        # market+currency; we extract the currency suffix.
+        ccy = None
+        ccy_re = re.search(r"_([A-Z]{3})$", href)
+        if ccy_re:
+            ccy = ccy_re.group(1)
+
+        # Hover to expose the tooltip. The tooltip is portal-rendered;
+        # after hover settles, the popup appears in the DOM root.
+        name = None
+        try:
+            container.locator(sq.POSITION_TOOLTIP_TARGET).first.hover(timeout=3000)
+            page.wait_for_selector(
+                sq.POSITION_TOOLTIP_POPUP, state="visible", timeout=3000,
+            )
+            # First visible tooltip popup wins.
+            popups = page.locator(sq.POSITION_TOOLTIP_POPUP)
+            for j in range(popups.count()):
+                p = popups.nth(j)
+                if p.is_visible():
+                    name = p.inner_text().strip() or None
+                    break
+        except Exception as e:  # noqa: BLE001 - non-fatal; record symbol+ISIN
+            log.warning(
+                "Tooltip miss for %s — only symbol+isin captured: %s",
+                symbol, e,
+            )
+        # Move the mouse to a corner so the tooltip dismisses before
+        # we hover the next row.
+        page.mouse.move(0, 0)
+        page.wait_for_timeout(150)
+
+        entries.append({
+            "symbol": symbol,
+            "currency": ccy,
+            "isin": isin,
+            "name": name,
+        })
+
+    target = run_dir / "position_details.json"
+    target.write_text(
+        json.dumps(entries, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    log.info("Saved %s (%d entr(ies))", target, len(entries))
+    return entries
+
+
 def export_account_overview(page, run_dir: Path) -> Path:
     """Click the 'Export account overview' button; save account_overview.pdf.
 
@@ -588,6 +689,11 @@ def run(args: argparse.Namespace) -> int:
             _, customer_id = export_positions(page, run_dir)
             export_list_of_assets(page, run_dir)
             export_account_overview(page, run_dir)
+            # Per-position long name + ISIN (DOM scrape, not in any
+            # of the file exports). Runs on the same page as the
+            # exports above; ordering after them avoids any risk of
+            # hover state interfering with the export-button clicks.
+            position_details = scrape_position_details(page, run_dir)
             log.info("Customer ID (from XLS filename): %s",
                      customer_id or "<unknown>")
 
@@ -652,6 +758,10 @@ def run(args: argparse.Namespace) -> int:
                     "end": documents_until.isoformat(),
                 },
                 "positions": {"file": "positions.xls"},
+                "position_details": {
+                    "file": "position_details.json",
+                    "entries": position_details,
+                },
                 "list_of_assets": {"file": "list_of_assets.xls"},
                 "account_overview": {"file": "account_overview.pdf"},
             }

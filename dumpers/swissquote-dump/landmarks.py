@@ -202,6 +202,31 @@ PORTFOLIO_POSITION_ROW = (
     "tr.TableRow:not(.TableRow--subTotalRow):not(.TableRow--totalRow)"
 )
 
+# The Positions widget is sometimes collapsed by default; download.py
+# expands any `WidgetWrapper--collapsed` before scraping per-row
+# detail.
+WIDGET_COLLAPSED = "section.WidgetWrapper--collapsed"
+WIDGET_HEADER = ".WidgetWrapper__header"
+
+# Per-position symbol-cell content on the Portfolio Overview.
+# `SRP_SymbolContainer` wraps exactly one element per position row;
+# `td.SRP_Cell` is too broad (it also matches every numerical data
+# cell in the same table) and burns Playwright timeout budget.
+#
+# Inside each container:
+#   - `.SRP_SymbolContent a` is the FullQuote link; its href is
+#     `…#fullQuote/{ISIN}/{type}_{CCY}` — ISIN is the path segment
+#     right after /fullQuote/.
+#   - `._Tooltip__target` is the hover target; hovering renders a
+#     `div.Tooltip[role=tooltip]` (portal-rendered) whose text is
+#     the long instrument name (the human-readable issuer / fund
+#     description that Swissquote attaches in the UI; format varies
+#     per instrument type).
+POSITION_SYMBOL_CONTAINER = ".SRP_SymbolContainer"
+POSITION_SYMBOL_LINK = ".SRP_SymbolContent a"
+POSITION_TOOLTIP_TARGET = "._Tooltip__target"
+POSITION_TOOLTIP_POPUP = "div.Tooltip[role=tooltip]"
+
 # ============================================================
 # Documents page (eBanking)
 # ============================================================

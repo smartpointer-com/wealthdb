@@ -123,12 +123,14 @@ port-forwarding), then run scripted afterwards.
 ├── 20260514T093122Z/               one bronze dump per run
 │   ├── transactions_000.csv        single CSV covering --since..--until
 │   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
+│   ├── position_details.json       DOM scrape: per-position long `name` + `isin` (joined into silver)
 │   ├── list_of_assets.xls          Trading Platform List of Assets export (.xls binary; per-currency cash + FX)
 │   ├── account_overview.pdf        Server-rendered portfolio-summary PDF (~35 KB)
+│   ├── accounts.json               DOM scrape: per-account `{account_type, account_external_id}` from #accountOverview/main
 │   ├── documents/
 │   │   ├── <docid>.pdf             eDocuments (trade confirms, statements, tax statements, fee notes, ...)
 │   │   └── ...
-│   └── run.json                    metadata: customer ID, windows, doc IDs + types seen
+│   └── run.json                    metadata: customer ID, accounts entries, transaction + documents windows, per-doc metadata
 ├── 20260514T210105Z/
 │   └── ...
 ├── manual/                         user-uploaded bronze artefacts
@@ -235,7 +237,12 @@ mid-fetch.
 
 Per run, the script:
 
-1. Navigates to `#portfoliooverview` on the Trading Platform SPA and
+1. Verifies the session is alive by navigating to the eBanking SPA
+   root and checking that F5 hasn't bounced us to `/my.policy`.
+   While there, scrapes the per-account list from
+   `#accountOverview/main` (`<TYPE> <CUSTOMER_ID>` lines like
+   `Trading 1234567`) into `accounts.json`.
+2. Navigates to `#portfoliooverview` on the Trading Platform SPA and
    triggers three exports from that page:
    - **Positions** export (top-right of the Positions table) →
      `positions.xls`.
@@ -250,26 +257,32 @@ Per run, the script:
    modern `.xlsx`); `load.py` reads them via `xlrd==1.2.0`, the last
    `xlrd` line that supports `.xls`. The PDF is bronze-only at this
    stage — it is not parsed into silver.
-2. Navigates to `#transactions`, mutates the Period filter to the
+3. Still on `#portfoliooverview`, scrapes per-position long names
+   and ISINs into `position_details.json`. ISIN is the first path
+   segment in each row's FullQuote link href; the long name is in a
+   hover tooltip on the symbol cell. The Positions XLS only carries
+   the ticker, so this DOM scrape is what gets `name` and `isin`
+   into the silver `positions` table.
+4. Navigates to `#transactions`, mutates the Period filter to the
    requested window via the React-native-setter trick (the inputs
    ignore plain Playwright `.fill()`), clicks Apply, then triggers
    the export dropdown and saves `transactions_000.csv`. Swissquote
    does not enforce a window cap, so the entire range goes in a
    single CSV — no chunking.
-3. Navigates to the eBanking SPA's `#documents` route (loaded by
+5. Navigates to the eBanking SPA's `#documents` route (loaded by
    mutating `location.hash` after the SPA bootstraps; direct
    navigation strips the hash), widens the Period filter to
-   `--documents-since..--documents-until` (default: same as
-   `--since`/`--until`), and waits for the `.LoadingTable` spinner
-   to clear.
-4. Scrapes the rendered DOM for `a[href*='getPdfDocument']` anchors,
+   `--documents-since..--documents-until` (default: ~25 years), and
+   waits for the `.LoadingTable` spinner to clear.
+6. Scrapes the rendered DOM for `a[href*='getPdfDocument']` anchors,
    parses each URL into `(customer, doc_id, doc_type, contract_no,
    date, target_user)`, skips any IDs already present in prior bronze
    runs (filename-based dedup), and fetches each new PDF via
    Playwright's request API (cookie reused, no per-row clicking) into
    `documents/<doc_id>.pdf`.
-5. Writes `run.json` with the customer ID, transaction window bounds,
-   documents window bounds, and per-document metadata.
+7. Writes `run.json` with the customer ID, accounts entries,
+   transaction window bounds, documents window bounds, and per-document
+   metadata.
 
 Every response is written to disk verbatim — no parsing, no
 normalisation, no filtering happens at this stage. That's silver's
@@ -313,10 +326,12 @@ maps to `~/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | --- | --- |
 | `transactions_000.csv` | Trading Platform → `#transactions` → top-right download menu (CSV) |
 | `positions.xls` | Trading Platform → `#portfoliooverview` → Positions export (legacy `.xls`, securities only) |
+| `position_details.json` | Trading Platform → `#portfoliooverview` → DOM scrape (per-position long `name` from hover tooltip + `isin` from FullQuote link href) |
 | `list_of_assets.xls` | Trading Platform → `#portfoliooverview` → List of Assets export (legacy `.xls`, per-currency cash + FX) |
 | `account_overview.pdf` | Trading Platform → `#portfoliooverview` → Export account overview (server-rendered PDF) |
+| `accounts.json` | eBanking `#accountOverview/main` → DOM scrape (per-account `<TYPE> <CUSTOMER_ID>` lines) |
 | `documents/<docid>.pdf` | eBanking `#documents` → `getPdfDocument` REST endpoint (cookie reused) |
-| `run.json` | metadata: customer ID, transaction window, documents window, per-doc metadata |
+| `run.json` | metadata: customer ID, accounts entries, transaction window, documents window, per-doc metadata |
 
 #### Flags
 
@@ -377,8 +392,15 @@ Reload semantics mirror the Schwab loader:
 
 - **Snapshots** (`accounts`, `positions`, `currency_balances`) are
   append-only. Each dump produces a new row per (snapshot, entity).
-  `accounts` does content-dedup (only inserts when the canonical-JSON
-  payload differs from the most recent row for that customer).
+  - `accounts` does content-dedup per `(account_external_id, account_type)`
+    (only inserts when the canonical-JSON payload differs from the
+    most recent row for that account). The `account_type` column is
+    populated from `accounts.json`; older bronze dumps without it
+    fall back to `account_type=''`.
+  - `positions` rows get their `name` and `isin` columns populated
+    from `position_details.json` when present (joined on
+    `(symbol, currency)`); older bronze dumps without the sidecar
+    leave them `NULL` (forward-fill — see migration 0003).
 - **Events** (`transactions`) use window-DELETE-then-INSERT per
   `(account, time-window)`. Re-running a window converges to
   Swissquote's current truth even if dates/amounts were amended.

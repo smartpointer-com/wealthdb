@@ -352,13 +352,33 @@ def parse_positions_xls(path: Path) -> list[dict]:
     return out
 
 
+def parse_position_details(path: Path) -> dict[tuple[str, str | None], dict]:
+    """Read position_details.json and build a (symbol, currency) lookup.
+
+    The lookup falls back to (symbol, None) when the JSON entry has
+    no currency — caller can prefer the exact-currency match first.
+    """
+    if not path.is_file():
+        return {}
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    out: dict[tuple[str, str | None], dict] = {}
+    for e in entries:
+        sym = (e.get("symbol") or "").strip()
+        ccy = e.get("currency")
+        if sym:
+            out[(sym, ccy)] = e
+    return out
+
+
 def load_positions(
     conn: sqlite3.Connection,
     snapshot_at: int,
     customer_id: str,
     xls_path: Path,
+    details_path: Path | None = None,
 ) -> int:
     rows = parse_positions_xls(xls_path)
+    details = parse_position_details(details_path) if details_path else {}
     n = 0
     for r in rows:
         symbol = r["symbol"] or ""
@@ -368,12 +388,23 @@ def load_positions(
                 f"positions row missing CCY: {r}. The XLS schema may "
                 f"have shifted; investigate."
             )
+        # Look up by (symbol, currency) first; fall back to symbol
+        # alone (None-currency entry from position_details.json,
+        # which means the href didn't carry a currency suffix).
+        match = (
+            details.get((symbol, currency))
+            or details.get((symbol, None))
+            or {}
+        )
+        name = match.get("name")
+        isin = match.get("isin")
         payload = canonical_json(r)
         conn.execute(
             "INSERT INTO positions("
-            " snapshot_at, account_external_id, symbol, currency, payload) "
-            "VALUES (?, ?, ?, ?, ?);",
-            (snapshot_at, customer_id, symbol, currency, payload),
+            " snapshot_at, account_external_id, symbol, currency,"
+            " name, isin, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+            (snapshot_at, customer_id, symbol, currency, name, isin, payload),
         )
         n += 1
     return n
@@ -647,11 +678,18 @@ def load_one_dump(
         else:
             log.info("  no list_of_assets.xls")
 
-        # positions (positions.xls)
+        # positions (positions.xls + position_details.json sidecar)
         pos_path = run_dir / "positions.xls"
+        details_path = run_dir / "position_details.json"
         if pos_path.is_file():
-            n = load_positions(conn, snapshot_at, customer_id, pos_path)
-            log.info("  +%d positions", n)
+            n = load_positions(
+                conn, snapshot_at, customer_id, pos_path,
+                details_path if details_path.is_file() else None,
+            )
+            log.info(
+                "  +%d positions (details: %s)",
+                n, "present" if details_path.is_file() else "absent",
+            )
         else:
             log.info("  no positions.xls")
 

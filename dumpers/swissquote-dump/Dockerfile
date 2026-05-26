@@ -23,6 +23,7 @@ RUN pip install -r requirements.txt
 # .dockerignore is incomplete.
 COPY login.py download.py load.py landmarks.py /app/
 COPY migrations /app/migrations
+COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
