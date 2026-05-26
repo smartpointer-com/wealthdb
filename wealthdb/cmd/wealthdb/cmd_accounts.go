@@ -41,6 +41,8 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	currency := fs.String("x", "", "output currency for the _<CCY> aggregate columns (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	privacy := fs.Bool("p", false, "redact account IDs / quantities / monetary amounts in the output")
+	fs.BoolVar(privacy, "privacy", false, "redact account IDs / quantities / monetary amounts in the output")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, accountsUsage())
 	}
@@ -112,7 +114,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
 }
 
 // ---- column registry -----------------------------------------------------
@@ -131,13 +133,13 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			}
 			return formatDate(a.SnapshotAt)
 		}},
-		{Name: "account", Align: output.AlignLeft, Extract: func(a gold.AccountRow) string {
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(a gold.AccountRow) string {
 			if a.DisplayName != nil && *a.DisplayName != "" {
 				return *a.DisplayName
 			}
 			return a.AccountExternalID
 		}},
-		{Name: "account_id", Align: output.AlignLeft,
+		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
@@ -162,13 +164,13 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			}},
 		{Name: "base_currency", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.BaseCurrency) }},
-		{Name: "relationship_id", Align: output.AlignLeft,
+		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.Nickname) }},
 		{Name: "account_category", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.AccountCategory) }},
-		{Name: "portfolio_external_id", Align: output.AlignLeft,
+		{Name: "portfolio_external_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.PortfolioExternalID) }},
 
 		// Base-currency aggregates. The header has no _<CCY>
@@ -176,21 +178,21 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 		// base_currency — there's no single column-wide currency
 		// to advertise. Blank when the account's base_currency is
 		// nil.
-		{Name: "positions_value", Align: output.AlignRight,
+		{Name: "positions_value", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueBase) }},
-		{Name: "cash_balance", Align: output.AlignRight,
+		{Name: "cash_balance", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceBase) }},
-		{Name: "total_value", Align: output.AlignRight,
+		{Name: "total_value", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueBase) }},
 
 		// Output-currency aggregates. Single column-wide currency
 		// (the user's -x/--currency choice) so the header carries
 		// the suffix.
-		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight,
+		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueOutCcy) }},
-		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight,
+		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.CashBalanceOutCcy) }},
-		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight,
+		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueOutCcy) }},
 	}
 }
@@ -208,7 +210,7 @@ func resolveAccountColumns(flagValue, outCcy string) ([]columnSpec[gold.AccountR
 
 func accountsUsage() string {
 	registry := buildAccountColumnRegistry("CCY")
-	return `usage: wealthdb accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE]
+	return `usage: wealthdb accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print one row per registered account, with derived aggregate
 columns rolled up over the account's positions and cash balances.
@@ -226,6 +228,8 @@ Flags:
                            (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
+  -p, --privacy            redact account IDs, quantities, and monetary amounts
+                           (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:
   ` + joinColumnNames(registry) + `

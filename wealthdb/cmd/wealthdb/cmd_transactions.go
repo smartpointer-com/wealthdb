@@ -75,6 +75,8 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at occurred_at, interpolated) or 'current' (latest available)")
 	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
 	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
+	privacy := fs.Bool("p", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
+	fs.BoolVar(privacy, "privacy", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, transactionsUsage())
@@ -154,7 +156,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	if err != nil {
 		return err
 	}
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet, *privacy, fmtChoice))
 }
 
 // renderedTx pairs a raw transaction with its net_amount
@@ -204,14 +206,14 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[renderedTx] {
 			Extract: func(r renderedTx) string { return formatDate(r.Row.OccurredAt) }},
 		{Name: "datetime", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return formatDateTime(r.Row.OccurredAt) }},
-		{Name: "account", Align: output.AlignLeft,
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r renderedTx) string {
 				if r.Row.DisplayName != nil && *r.Row.DisplayName != "" {
 					return *r.Row.DisplayName
 				}
 				return r.Row.AccountExternalID
 			}},
-		{Name: "account_id", Align: output.AlignLeft,
+		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r renderedTx) string { return r.Row.AccountExternalID }},
 		{Name: "kind", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return r.Row.Kind }},
@@ -238,24 +240,24 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[renderedTx] {
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return r.Row.Currency }},
-		{Name: "gross_amount", Align: output.AlignRight,
+		{Name: "gross_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r renderedTx) string { return formatCents(r.Row.GrossAmount) }},
-		{Name: "net_amount", Align: output.AlignRight,
+		{Name: "net_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r renderedTx) string { return formatCents(r.Row.NetAmount) }},
-		{Name: "quantity", Align: output.AlignRight,
+		{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Quantity) }},
-		{Name: "price", Align: output.AlignRight,
+		{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Price) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight,
+		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r renderedTx) string {
 				if r.ConvertedValue == nil {
 					return ""
 				}
 				return r.ConvertedValue.StringFixed(2)
 			}},
-		{Name: "tx_id", Align: output.AlignLeft,
+		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r renderedTx) string { return r.Row.TransactionExternalID }},
-		{Name: "relationship_id", Align: output.AlignLeft,
+		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
 			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Nickname) }},
@@ -275,7 +277,7 @@ func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[renderedT
 
 func transactionsUsage() string {
 	registry := buildTransactionColumnRegistry("CCY")
-	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE]
+	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print transactions over a date range. Default: past 30 days,
 table format, oldest first, default column set, output currency
@@ -302,6 +304,8 @@ Flags:
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at occurred_at) or 'current' (latest rate)
+  -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts
+                           (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:
   ` + joinColumnNames(registry) + `

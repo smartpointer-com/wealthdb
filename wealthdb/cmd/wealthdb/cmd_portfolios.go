@@ -39,6 +39,8 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	currency := fs.String("x", "", "output currency for the _<CCY> aggregate columns (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	privacy := fs.Bool("p", false, "redact portfolio / account IDs and monetary amounts in the output")
+	fs.BoolVar(privacy, "privacy", false, "redact portfolio / account IDs and monetary amounts in the output")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, portfoliosUsage())
 	}
@@ -110,7 +112,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
 }
 
 // ---- column registry -----------------------------------------------------
@@ -126,7 +128,7 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 			}
 			return formatDate(r.SnapshotAt)
 		}},
-		{Name: "portfolio", Align: output.AlignLeft, Extract: func(r gold.PortfolioRow) string {
+		{Name: "portfolio", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r gold.PortfolioRow) string {
 			// Sentinel rows render as "(no portfolio)" so the user
 			// can spot them at a glance; real portfolios show their
 			// display_name if present, else their external_id.
@@ -138,11 +140,11 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 			}
 			return r.PortfolioExternalID
 		}},
-		{Name: "portfolio_id", Align: output.AlignLeft,
+		{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return r.PortfolioExternalID }},
 		{Name: "base_currency", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.BaseCurrency) }},
-		{Name: "relationship_id", Align: output.AlignLeft,
+		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
 		{Name: "portfolio_nickname", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.Nickname) }},
@@ -160,18 +162,18 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 		{Name: "management_style", Align: output.AlignLeft,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.ManagementStyle) }},
 
-		{Name: "positions_value", Align: output.AlignRight,
+		{Name: "positions_value", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.PositionsValueBase) }},
-		{Name: "cash_balance", Align: output.AlignRight,
+		{Name: "cash_balance", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.CashBalanceBase) }},
-		{Name: "total_value", Align: output.AlignRight,
+		{Name: "total_value", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.TotalValueBase) }},
 
-		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight,
+		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.PositionsValueOutCcy) }},
-		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight,
+		{Name: "cash_balance_outccy", Header: "cash_balance" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.CashBalanceOutCcy) }},
-		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight,
+		{Name: "total_value_outccy", Header: "total_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(r gold.PortfolioRow) string { return formatCents(r.TotalValueOutCcy) }},
 	}
 }
@@ -189,7 +191,7 @@ func resolvePortfolioColumns(flagValue, outCcy string) ([]columnSpec[gold.Portfo
 
 func portfoliosUsage() string {
 	registry := buildPortfolioColumnRegistry("CCY")
-	return `usage: wealthdb portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE]
+	return `usage: wealthdb portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print one row per portfolio (wealth-management wrapper grouping
 component accounts) plus one sentinel row per silver_source that
@@ -206,6 +208,8 @@ Flags:
                            (e.g. -C+relationship_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
       --fx-mode MODE       'historic' (default) or 'current'
+  -p, --privacy            redact portfolio / account IDs and monetary amounts
+                           (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:
   ` + joinColumnNames(registry) + `

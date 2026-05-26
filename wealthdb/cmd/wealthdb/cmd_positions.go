@@ -36,6 +36,8 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
 	withCash := fs.Bool("with-cash", false, "also emit one synthetic row per account+currency with non-zero cash")
+	privacy := fs.Bool("p", false, "redact account IDs / share quantities / monetary amounts in the output")
+	fs.BoolVar(privacy, "privacy", false, "redact account IDs / share quantities / monetary amounts in the output")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
 	}
@@ -122,7 +124,7 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 		return err
 	}
 
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet))
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet, *privacy, fmtChoice))
 }
 
 // writeFormatted dispatches to the right output.Write* function
@@ -199,7 +201,7 @@ func buildColumnRegistry(outCcy string) []columnSpec[renderedRow] {
 			Extract: func(rr renderedRow) string { return rr.Row.SilverSourceID }},
 		{Name: "snapshot_date", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return formatDate(rr.Row.SnapshotAt) }},
-		{Name: "account", Align: output.AlignLeft, Extract: func(rr renderedRow) string {
+		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(rr renderedRow) string {
 			// Display name preferred (Schwab accountNumber);
 			// fall back to the raw external_id when no display
 			// name is known (UBS IBAN, Swissquote customer ID).
@@ -208,8 +210,12 @@ func buildColumnRegistry(outCcy string) []columnSpec[renderedRow] {
 			}
 			return rr.Row.AccountExternalID
 		}},
-		{Name: "account_id", Align: output.AlignLeft,
+		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(rr renderedRow) string { return rr.Row.AccountExternalID }},
+		// position_key is the gold-side instrument identifier
+		// (CUSIP / ISIN / ticker); instrument identifiers stay
+		// legible under -p / --privacy. See columns.go for the
+		// per-class privacy contract.
 		{Name: "position_key", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return rr.Row.PositionKey }},
 		{Name: "symbol", Align: output.AlignLeft,
@@ -220,18 +226,18 @@ func buildColumnRegistry(outCcy string) []columnSpec[renderedRow] {
 			Extract: func(rr renderedRow) string { return rr.Row.AssetClass }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return rr.Row.Currency }},
-		{Name: "quantity", Align: output.AlignRight,
+		{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
 			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Quantity) }},
-		{Name: "market_value", Align: output.AlignRight,
+		{Name: "market_value", Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(rr renderedRow) string { return formatCents(rr.Row.MarketValue) }},
-		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight,
+		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(rr renderedRow) string {
 				if rr.ConvertedValue == nil {
 					return ""
 				}
 				return rr.ConvertedValue.StringFixed(2)
 			}},
-		{Name: "relationship_id", Align: output.AlignLeft,
+		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
 			Extract: func(rr renderedRow) string { return strOrEmpty(rr.Row.Nickname) }},
@@ -279,7 +285,7 @@ func positionsUsage() string {
 	// We don't know the user's chosen output currency at usage-
 	// print time; show a placeholder for the dynamic column.
 	registry := buildColumnRegistry("CCY")
-	return `usage: wealthdb positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE]
+	return `usage: wealthdb positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print consolidated positions as of a date. For each silver source,
 the latest snapshot ≤ the as-of date is used. Default: today UTC,
@@ -294,6 +300,8 @@ Flags:
                            (e.g. -C+account_id-market_value)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
       --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
+  -p, --privacy            redact account IDs, share quantities, and monetary amounts
+                           (table: visible placeholders; csv: empty cells; json: keys omitted)
       --with-cash          also emit one row per account+currency with non-zero cash
 
 Available columns:

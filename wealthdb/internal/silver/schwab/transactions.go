@@ -201,7 +201,7 @@ func (c *apiReader) Transactions(ctx context.Context, w canonical.Window) (silve
 	// payloads only carry the security name as free text (no
 	// CUSIP / symbol leg), so this is the only path for getting
 	// a symbol on dividend rows where the same name has been
-	// seen on a position the user has held.
+	// seen on a position previously held in the silver source.
 	descToInstrument, err := c.buildDescriptionToInstrumentKey(ctx)
 	if err != nil {
 		return nil, err
