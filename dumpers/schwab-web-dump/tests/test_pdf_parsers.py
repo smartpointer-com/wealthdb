@@ -84,6 +84,152 @@ def _wrap(rows_text: str) -> str:
     )
 
 
+class TestAccountRegistration:
+    """The header line we surface as silver's
+    `accounts.account_registration` — verbatim from the
+    statement-PDF header so wealthdb's gold adapter can map to
+    its `tax_wrapper` enum. Three layout eras, three anchors."""
+
+    def test_2025_plus_format(self):
+        # 2025+: a single line "<LABEL> of Account Nickname".
+        text = (
+            "1 of 8\n"
+            "Statement Period\n"
+            "PLACEHOLDER NAME February 1-28, 2026\n"
+            "Account Number\n"
+            "0000-0000\n"
+            "Schwab One International® Account of Account Nickname\n"
+            "Nickname Goes Here\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One International® Account"
+        )
+
+    def test_2025_plus_ira(self):
+        text = (
+            "1 of 6\n"
+            "Statement Period\n"
+            "PLACEHOLDER NAME February 1-28, 2026\n"
+            "Account Number\n"
+            "0000-0000\n"
+            "Contributory IRA of Account Nickname\n"
+            "Nickname Goes Here\n"
+        )
+        assert pp.parse_account_registration(text) == "Contributory IRA"
+
+    def test_2020_2024_format(self):
+        # 2020-2024: "<LABEL> of" alone, followed by the
+        # holder's name on the next line.
+        text = (
+            "Schwab One® International Account of\n"
+            "PLACEHOLDER NAME\n"
+            "Manage Your Account\n"
+            "Account Number\n"
+            "0000-0000\n"
+            "Statement Period\n"
+            "June 1-30, 2024\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One® International Account"
+        )
+
+    def test_2020_2024_custodial_utma(self):
+        # The custodial header line is the same string for both
+        # UTMA and UGMA accounts, so the parser also scans the
+        # holder block immediately below it for a "<state>UTMA"
+        # / "<state>UGMA" marker (UCAUTMA = California UTMA,
+        # NYUTMA = New York UTMA, etc.) and promotes the label to
+        # "<label> (UTMA)" / "<label> (UGMA)". Silver resolves
+        # this so the wealthdb gold adapter doesn't have to
+        # re-read bronze.
+        text = (
+            "Schwab One® Custodial Account of\n"
+            "PLACEHOLDER CUST FOR\n"
+            "PLACEHOLDER UCAUTMA\n"
+            "UNTIL AGE 18\n"
+            "Account Number\n"
+            "0000-0000\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One® Custodial Account (UTMA)"
+        )
+
+    def test_2020_2024_custodial_ugma(self):
+        text = (
+            "Schwab One® Custodial Account of\n"
+            "PLACEHOLDER CUST FOR\n"
+            "PLACEHOLDER NYUGMA\n"
+            "UNTIL AGE 18\n"
+            "Account Number\n"
+            "0000-0000\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One® Custodial Account (UGMA)"
+        )
+
+    def test_custodial_without_marker_stays_unaugmented(self):
+        # Defensive: if neither UTMA nor UGMA appears in the
+        # holder block (no real statement we've observed), the
+        # raw header survives unaugmented.
+        text = (
+            "Schwab One® Custodial Account of\n"
+            "PLACEHOLDER CUST FOR\n"
+            "PLACEHOLDER\n"
+            "Account Number\n"
+            "0000-0000\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One® Custodial Account"
+        )
+
+    def test_non_custodial_not_augmented(self):
+        # The augmentation only fires for custodial labels —
+        # other registrations are returned verbatim even if the
+        # surrounding text happens to contain "UTMA" / "UGMA"
+        # (e.g. a fund name).
+        text = (
+            "Contributory IRA of\n"
+            "PLACEHOLDER UTMA FUND HOLDINGS\n"
+            "Account Number\n"
+            "0000-0000\n"
+        )
+        assert pp.parse_account_registration(text) == "Contributory IRA"
+
+    def test_2017_2019_format(self):
+        # 2017-2019: bare label immediately above
+        # "Account Number: <NNNN-NNNN>".
+        text = (
+            "Mail To\n"
+            "Account Value Summary\n"
+            "Total Account Value $ 0.00\n"
+            "Schwab One® Account\n"
+            "Account Number: 0000-0000\n"
+            "Statement Period: June 1, 2018 to June 30, 2018\n"
+        )
+        assert pp.parse_account_registration(text) == "Schwab One® Account"
+
+    def test_returns_none_when_no_header(self):
+        # Random prose that doesn't contain any registration
+        # anchor must return None.
+        text = (
+            "This statement was provided by Schwab.\n"
+            "Cost basis information is not a guarantee.\n"
+            "Please see the disclosures section.\n"
+        )
+        assert pp.parse_account_registration(text) is None
+
+    def test_internal_whitespace_normalised(self):
+        # Multiple spaces inside the label collapse to one —
+        # so comparisons across statements are robust to
+        # incidental spacing drift in pypdfium2's output.
+        text = (
+            "Schwab    One®   International   Account of Account Nickname\n"
+        )
+        assert pp.parse_account_registration(text) == (
+            "Schwab One® International Account"
+        )
+
+
 class TestSaleRows:
     def test_sale_with_realized_gain_short_term(self):
         text = _wrap(

@@ -541,6 +541,7 @@ class TestPositionsAndCashLoad:
             "currency_iso": "USD",
             "raw_line": "$100.00 $1,000.00 ($800.00) ($50.00) $0.00 $0.00 $0.00 $250.00",
         },
+        "account_registration": "Schwab One International® Account",
     }
 
     def _run(self, monkeypatch, migrated, tmp_path, *, run_ts="20260520T120000Z",
@@ -677,6 +678,128 @@ class TestPositionsAndCashLoad:
         # already-populated table and inserts 0 (logical-dedup
         # gate catches it).
         assert stats1["positions_inserted"] == 2
+
+
+class TestAccountRegistrationLoad:
+    """Loader tests for migration 0003 — the
+    `accounts.account_registration` column populated from the
+    parsed statement header, with a tax-form filename fallback
+    for accounts whose statements didn't surface a label."""
+
+    PARSED_WITH_REG = {
+        "path": "<patched>",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28",
+        "transactions": [],
+        "positions": [],
+        "cash_summary": None,
+        "account_registration": "Contributory IRA",
+    }
+
+    PARSED_NO_REG = dict(PARSED_WITH_REG, account_registration=None)
+
+    def test_registration_populated_from_statement(
+            self, monkeypatch, migrated, tmp_path):
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_WITH_REG),
+        )
+        run = _make_bronze_run(tmp_path, "20260520T120000Z", [
+            {"suffix": "NNN", "label": "Demo …NNN",
+             "documents": [{"date": "02/28/2026", "type": "Statements",
+                            "document": "Brokerage Statement",
+                            "filename": "Brokerage-Statement_2026-02-28_NNN.PDF"}]},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["account_registration_updated"] == 1
+        row = migrated.execute(
+            "SELECT account_registration FROM accounts "
+            "WHERE account_external_id = 'NNN'"
+        ).fetchone()
+        assert row == ("Contributory IRA",)
+
+    def test_tax_form_fallback_5498_esa(
+            self, monkeypatch, migrated, tmp_path):
+        # Statement parser returns None — fallback should pick
+        # up "Education Savings" from a 5498-ESA filename.
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_NO_REG),
+        )
+        run = _make_bronze_run(tmp_path, "20260520T120000Z", [
+            {"suffix": "MMM", "label": "Demo …MMM",
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": "Brokerage-Statement_2026-02-28_MMM.PDF"},
+                 {"date": "05/01/2001", "type": "Tax Forms",
+                  "document": "5498-ESA",
+                  "filename": "5498-ESA---2000_2001-05-01_MMM.PDF"},
+             ]},
+        ])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        row = migrated.execute(
+            "SELECT account_registration FROM accounts "
+            "WHERE account_external_id = 'MMM'"
+        ).fetchone()
+        assert row == ("Education Savings",)
+
+    def test_tax_form_fallback_5498_ira(
+            self, monkeypatch, migrated, tmp_path):
+        # Same as above but the tax form is a plain 5498 (IRA,
+        # not ESA) — fallback maps to "Contributory IRA".
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_NO_REG),
+        )
+        run = _make_bronze_run(tmp_path, "20260520T120000Z", [
+            {"suffix": "MMM", "label": "Demo …MMM",
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": "Brokerage-Statement_2026-02-28_MMM.PDF"},
+                 {"date": "05/01/2001", "type": "Tax Forms",
+                  "document": "5498",
+                  "filename": "5498---2000_2001-05-01_MMM.PDF"},
+             ]},
+        ])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        row = migrated.execute(
+            "SELECT account_registration FROM accounts "
+            "WHERE account_external_id = 'MMM'"
+        ).fetchone()
+        assert row == ("Contributory IRA",)
+
+    def test_no_signal_leaves_column_null(
+            self, monkeypatch, migrated, tmp_path):
+        # Neither statement nor a 5498-style tax form — column
+        # stays NULL and the gold adapter falls back to its
+        # default at render time.
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_NO_REG),
+        )
+        run = _make_bronze_run(tmp_path, "20260520T120000Z", [
+            {"suffix": "MMM", "label": "Demo …MMM",
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": "Brokerage-Statement_2026-02-28_MMM.PDF"},
+                 {"date": "03/01/2001", "type": "Tax Forms",
+                  "document": "1042-S",
+                  "filename": "1042S---2000_2001-03-01_MMM.PDF"},
+             ]},
+        ])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        row = migrated.execute(
+            "SELECT account_registration FROM accounts "
+            "WHERE account_external_id = 'MMM'"
+        ).fetchone()
+        assert row == (None,)
 
 
 class TestTxHistoryRowKey:

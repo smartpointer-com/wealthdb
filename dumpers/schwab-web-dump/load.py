@@ -405,6 +405,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "positions_inserted": 0,
         "cash_balances_inserted": 0,
         "statements_logical_deduped": 0,
+        "account_registration_updated": 0,
     }
     # Per-run dedup set: (account_suffix, doc_date, doc_kind,
     # filename). Schwab regenerates statement PDFs on every
@@ -607,6 +608,15 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             (time.monotonic() - t0) / max(1, len(parse_jobs)),
         )
 
+        # Harvest the account-registration label from one
+        # parsed statement per account. The label is stable
+        # across statements for a given account; we take the
+        # first non-null value we see. The wealthdb gold
+        # adapter keys off this string (verbatim) for its
+        # `tax_wrapper` enum mapping — see migration 0003
+        # comment + DESIGN.md §8.
+        registration_by_acct: dict[str, str] = {}
+
         for job, parsed in zip(parse_jobs, parsed_results):
             if parsed.get("_error"):
                 log.warning(
@@ -615,6 +625,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 )
                 stats["pdf_parse_errors"] += 1
                 continue
+
+            reg = parsed.get("account_registration")
+            if reg and job["suffix"] not in registration_by_acct:
+                registration_by_acct[job["suffix"]] = reg
 
             if job["tx_reparse_delete"]:
                 conn.execute(
@@ -652,6 +666,42 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                     parsed.get("cash_summary"), job["sha256"],
                 )
                 stats["cash_balances_inserted"] += n_cash
+
+        # Pin the account-registration label onto each
+        # account's accounts-table row. Stable across runs —
+        # the column drifts only if Schwab restyles the
+        # registration line.
+        for suffix, reg in registration_by_acct.items():
+            conn.execute(
+                "UPDATE accounts SET account_registration = ?"
+                " WHERE account_external_id = ?",
+                (reg, suffix),
+            )
+        n_updated = len(registration_by_acct)
+
+        # Tax-form fallback: for any account whose statements
+        # didn't surface a registration (e.g. a brand-new
+        # account that hasn't received a monthly statement
+        # yet, or one whose statement format we don't handle
+        # yet), check the documents table for the cleanest
+        # tax-form signal — Schwab's 5498 / 5498-ESA filenames
+        # carry the account type by definition (the forms are
+        # only ever issued for IRA / ESA accounts).
+        null_rows = conn.execute(
+            "SELECT DISTINCT account_external_id FROM accounts "
+            "WHERE account_registration IS NULL"
+        ).fetchall()
+        for (suffix,) in null_rows:
+            reg = _registration_from_tax_forms(conn, suffix)
+            if reg is None:
+                continue
+            conn.execute(
+                "UPDATE accounts SET account_registration = ?"
+                " WHERE account_external_id = ?",
+                (reg, suffix),
+            )
+            n_updated += 1
+        stats["account_registration_updated"] = n_updated
 
     # Tx-history exports: per-account CSV/JSON/XML + a landing
     # HTML capture. JSON is the canonical source for silver rows;
@@ -915,6 +965,37 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
     return inserted
 
 
+def _registration_from_tax_forms(conn: sqlite3.Connection,
+                                  account_external_id: str) -> str | None:
+    """Fallback registration-label lookup for accounts whose
+    statement PDFs didn't yield a parseable header. Schwab
+    issues 5498 / 5498-ESA tax forms only for IRA / ESA
+    accounts; the filename alone is enough to tell those two
+    apart from each other and from anything else. Returns one
+    of the same verbatim labels parse_account_registration
+    surfaces, or None if no tax-form signal is available.
+
+    Roth / Inherited / SEP / SIMPLE IRA disambiguation requires
+    parsing the 5498 body and isn't done here; the loader emits
+    the generic "Contributory IRA" label, which the wealthdb
+    gold adapter can refine if it needs to (e.g. by re-reading
+    the source PDF via documents.sha256).
+    """
+    rows = conn.execute(
+        "SELECT filename FROM documents "
+        "WHERE account_external_id = ? AND doc_kind = 'tax_form' "
+        "ORDER BY doc_date DESC",
+        (account_external_id,),
+    ).fetchall()
+    for (filename,) in rows:
+        f = filename.upper()
+        if f.startswith("5498-ESA"):
+            return "Education Savings"
+        if f.startswith("5498"):
+            return "Contributory IRA"
+    return None
+
+
 def _insert_position_snapshots(conn: sqlite3.Connection,
                                 account_external_id: str,
                                 as_of_date: int,
@@ -1041,7 +1122,7 @@ def run_load(args: argparse.Namespace) -> int:
                 log.info(
                     "loaded %s: accts +%d/-%d, docs +%d/-%d, "
                     "tx +%d (reparsed %d), positions +%d, cash +%d, "
-                    "logical-dup %d, pdf errors %d",
+                    "logical-dup %d, registrations %d, pdf errors %d",
                     run_dir.name,
                     stats["accounts_inserted"], stats["accounts_deduped"],
                     stats["documents_new"], stats["documents_dup"],
@@ -1050,14 +1131,44 @@ def run_load(args: argparse.Namespace) -> int:
                     stats["positions_inserted"],
                     stats["cash_balances_inserted"],
                     stats["statements_logical_deduped"],
+                    stats["account_registration_updated"],
                     stats["pdf_parse_errors"],
                 )
             except Exception:
                 conn.rollback()
                 log.exception("load failed for %s; rolled back", run_dir.name)
+
+        _log_registration_histogram(conn)
     finally:
         conn.close()
     return 0
+
+
+def _log_registration_histogram(conn: sqlite3.Connection) -> None:
+    """Print the per-account registration label landed in
+    silver after all runs are loaded. Cheap sanity check that
+    the parser kept up with Schwab's layout drift — if a label
+    that was present last run is now NULL, the most likely
+    cause is a header anchor regressing.
+    """
+    rows = conn.execute(
+        "SELECT account_external_id, account_registration FROM accounts "
+        "WHERE account_registration IS NOT NULL "
+        "GROUP BY account_external_id "
+        "ORDER BY account_external_id"
+    ).fetchall()
+    null_count = conn.execute(
+        "SELECT COUNT(DISTINCT account_external_id) FROM accounts "
+        "WHERE account_registration IS NULL"
+    ).fetchone()[0]
+    log.info("account_registration after load:")
+    for acct, reg in rows:
+        log.info("  …%s  %s", acct, reg)
+    if null_count:
+        log.warning(
+            "  %d account(s) have NULL account_registration "
+            "(no parseable statement header)", null_count,
+        )
 
 
 def main(argv: list[str]) -> int:

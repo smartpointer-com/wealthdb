@@ -305,3 +305,120 @@ under `_more` (keyed by `_tx_history_row_key`).
   default** — it adds ~1 modal click per transaction, on the
   order of an hour per ~5k-tx account. Use it for a one-off
   enrichment pass; routine runs should leave it off.
+
+## 8. `account_registration` column (migration 0003)
+
+Schwab's Trader API doesn't surface the per-account tax
+wrapper (see `schwab-api-dump/DESIGN.md` §4.10). The web feed
+does — every statement PDF prints the registration label at
+the top of page 1, adjacent to the account number. Migration
+0003 promotes that label to a top-level column on `accounts`:
+
+```sql
+ALTER TABLE accounts ADD COLUMN account_registration TEXT;
+```
+
+The column carries the **raw** Schwab label, verbatim, so the
+wealthdb gold adapter can do the mapping to its canonical
+`tax_wrapper` enum in Go where that enum is defined.
+`pdf_parsers.parse_account_registration` handles all three
+layout eras (see §7); the loader UPDATEs the column once per
+load run, using the first non-null label it sees per account.
+A re-load of newer statements overwrites with the most recent
+seen value.
+
+### 8.1 Registration labels
+
+These are registration labels Schwab is known to print — i.e.
+the values the `account_registration` silver column can carry. Schwab's typography drifts a little
+across layout revisions — the registered-mark glyph migrates
+between "Schwab One® International Account" and "Schwab One International®
+Account" for the same account. The wealthdb adapter should treat the two
+forms as equivalent.
+
+  Schwab label (verbatim)              → wealthdb tax_wrapper
+  ─────────────────────────────────────────────────────────────
+  Schwab One® Account                  → taxable_personal
+  Schwab One® International Account    → taxable_personal
+  Schwab One International® Account    → taxable_personal
+  Brokerage Account                    → taxable_personal
+  Schwab One® Custodial Account (UTMA) → custodial_utma
+  Schwab One® Custodial Account (UGMA) → custodial_ugma
+  Schwab One® Custodial Account        → custodial_utma OR
+                                         custodial_ugma — bare
+                                         label means silver
+                                         could not disambiguate
+                                         (see §8.2)
+  Contributory IRA                     → traditional_ira
+  Roth IRA                             → roth_ira
+  Rollover IRA                         → traditional_ira
+  Inherited IRA                        → traditional_ira
+  SEP-IRA                              → sep_ira
+  SIMPLE IRA                           → simple_ira
+  Education Savings                    → coverdell_esa
+  Coverdell Education Savings Acct     → coverdell_esa
+  529 College Savings Plan             → 529
+  Solo 401(k) / Individual 401(k)      → 401k
+  Trust Account                        → trust_non_grantor
+
+### 8.2 UTMA vs UGMA — resolved via holder-block markers
+
+Schwab prints "Schwab One® Custodial Account of" as the
+header line regardless of the underlying UTMA / UGMA
+structure, so the header alone is not enough. Silver bridges
+the gap by scanning the holder block immediately below the
+header (still on page 1) for a "<state>UTMA" /
+"<state>UGMA" marker (e.g. `TXUTMA` for a Texas UTMA) and
+promotes the label to
+`Schwab One® Custodial Account (UTMA)` or
+`Schwab One® Custodial Account (UGMA)`. Silver does the
+refinement because it understands the Schwab statement
+format intimately; the wealthdb gold adapter then keys off a
+single column without having to re-read bronze.
+
+If neither marker is present (defensive — custodial statements carry one), the bare
+`Schwab One® Custodial Account` is preserved and the gold
+adapter can default to `custodial_utma` (UTMA is the modern,
+near-universal standard).
+
+This is the only place silver consults content below the
+registration header. Every other wrapper distinction Schwab
+makes IS in the header line ("Contributory IRA of", "Roth
+IRA of", "Education Savings of", etc.), so the header alone
+is sufficient for every wrapper except the UTMA / UGMA
+split.
+
+### 8.3 Tax-form filename fallback
+
+For accounts whose statements don't yield a parseable
+registration (e.g. a brand-new account that hasn't received
+its first monthly statement, or one in an unparseable layout
+era), the loader falls back to the documents table:
+
+  `5498-ESA*.PDF`  →  "Education Savings"
+  `5498*.PDF`      →  "Contributory IRA"  (generic-IRA default;
+                                           Roth / Inherited /
+                                           SEP / SIMPLE require
+                                           5498-body parsing
+                                           which we don't do —
+                                           gold can refine via
+                                           documents.sha256)
+
+5498 forms are uniquely issued for IRA / ESA accounts, so
+their existence is itself a definitive signal. The fallback
+does NOT touch the column if a statement label was already
+landed; it only sets a value when the column was NULL.
+
+### 8.4 Sanity histogram
+
+At the end of every load, the loader logs the per-account
+registration as a fixture-free smoke test:
+
+  account_registration after load:
+    …NNN  Schwab One® Account
+    …NNN  Brokerage Account
+    ...
+    (W: K account(s) have NULL account_registration ...)
+
+The WARNING line is suppressed when every account got a
+label.
