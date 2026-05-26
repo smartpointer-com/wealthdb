@@ -72,6 +72,19 @@ PORTFOLIO_KIND = {
     "Authorized": "trust_managed",
 }
 
+# Per-portfolio-kind default management style. Fidelity does not
+# emit a per-account style indicator (see DESIGN.md §11.6), but
+# kind alone pins the style for the categories silver models:
+#   529            → self_directed (holder picks the investment
+#                    option from the plan menu; no manager).
+#   trust_managed  → discretionary (a third-party manager places trades;
+#                    custodian executes).
+# 'other' / unknown labels stay NULL — gold handles them.
+MANAGEMENT_STYLE_BY_KIND = {
+    "529": "self_directed",
+    "trust_managed": "discretionary",
+}
+
 
 # ============================================================
 # CLI
@@ -356,9 +369,10 @@ def _load_master(conn, snapshot_at, dump_dir, run_meta):
             continue
         portfolio_ext = entry.get("portfolio")
         nickname = entry.get("nickname")
+        kind = PORTFOLIO_KIND.get(portfolio_ext, "other") if portfolio_ext else None
+        management_style = MANAGEMENT_STYLE_BY_KIND.get(kind) if kind else None
         if portfolio_ext and portfolio_ext not in seen_portfolios:
             seen_portfolios.add(portfolio_ext)
-            kind = PORTFOLIO_KIND.get(portfolio_ext, "other")
             conn.execute(
                 "INSERT OR REPLACE INTO portfolios ("
                 "snapshot_at, portfolio_external_id, kind, payload"
@@ -370,11 +384,12 @@ def _load_master(conn, snapshot_at, dump_dir, run_meta):
         conn.execute(
             "INSERT OR REPLACE INTO accounts ("
             "snapshot_at, account_external_id, portfolio_external_id, "
-            "nickname, payload"
-            ") VALUES (?, ?, ?, ?, ?)",
+            "nickname, payload, management_style"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
             (snapshot_at, aid, portfolio_ext, nickname,
              normalize_payload({"source": "run.json/account_dimensions",
-                                "hash": hashed})),
+                                "hash": hashed}),
+             management_style),
         )
         accounts_inserted += 1
     return portfolios_inserted, accounts_inserted
@@ -420,7 +435,7 @@ def _load_positions(conn, snapshot_at, dump_dir):
     inserted = 0
     for (account_ext, raw_instr), views in merged.items():
         # Strip trailing '*' chars Fidelity appends to money-market
-        # core-position symbols (e.g. 'FDRXX**' → 'FDRXX'). The
+        # core-position symbols (e.g. 'CORE_X**' → 'CORE_X'). The
         # asterisks are a channel signal we promote to the
         # is_core_position flag; the silver instrument_key joins
         # cleanly against transactions where the same fund appears

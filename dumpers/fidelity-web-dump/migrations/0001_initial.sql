@@ -44,7 +44,7 @@
 --     Equity / ETF / mutual-fund TICKER as Fidelity surfaces it in
 --     the Symbol column. Plan-internal codes (e.g. XXX###### for
 --     state 529-plan target-date sleeves) and money-market core
---     codes (FDRXX, SPAXX, …) flow through unchanged — silver
+--     codes (CORE_X, CORE_Y, …) flow through unchanged — silver
 --     stores what Fidelity emits and a future `instrument_kind`
 --     column or gold-side lookup discriminates. NULL only for
 --     genuinely-instrumentless rows (pure cash transfers, fees,

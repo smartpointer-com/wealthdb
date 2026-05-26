@@ -4,9 +4,7 @@ Design document for the `fidelity-web-dump` toolkit. The audience
 is the engineer (current author, future contributor) implementing
 and maintaining `download.py` and the silver loader
 against the live `www.fidelity.com` UI. It is also the contract
-between this silver and the `wealthdb` Fidelity adapter (which
-doesn't exist yet but will follow the [`schwab` adapter](https://github.com/ptu/wealthdb/blob/main/docs/adapters/schwab.md)
-shape).
+between this silver and the [`wealthdb` Fidelity adapter](https://github.com/ptu/wealthdb).
 
 This document is the planning artefact, not the journal. Decisions
 that get revised should be revised here, in place. See §11 for the
@@ -44,10 +42,18 @@ toolkit today.
 
 ### 1.2 Account-category model
 
-Fidelity's account selector groups accounts under section labels.
-Silver classifies each label into a `portfolios.kind` (see §4.4). A
-Donor-Advised Fund has a 7-digit account id (the others are 9-digit),
-so walk() auto-excludes it by length.
+Fidelity's account selector groups accounts under section
+labels rendered as `<section aria-label="…">` blocks. The
+toolkit captures the label at bronze time
+(`account_dimensions[*].portfolio`) and silver classifies it
+into a stable `portfolios.kind`:
+
+| Section label                  | `portfolios.kind` | Notes |
+| ---                            | ---               | --- |
+| `Education`                    | `529`             | 529 College Investing Plan participant accounts. Statement PDFs are generated and surface in the document center's Statements sub-page. |
+| `Authorized`                   | `trust_managed`   | Accounts under a trust agreement whose investments a third-party manager runs, with Fidelity as custodian (see §1.3). The web document center may serve no statement PDFs for this group; statements supplied out-of-band are ingested separately (see §4.5). Its tax forms surface in the read-through view. |
+| `Fidelity Charitable® Giving`  | (auto-excluded)   | Donor-Advised Fund. Fidelity uses a shorter account-id length for DAFs than for brokerage / trust / 529 accounts; `download.py` auto-excludes by id length so DAFs never enter silver. |
+| any other label                | `other`           | Fall-through so future Fidelity labels don't need a schema migration. |
 
 ### 1.3 Third-party managers and institutional feeds
 
@@ -66,7 +72,7 @@ bronze subdirectory holds documents that arrive out-of-band.
 - **The Fidelity Charitable DAF.** Excluded by id length.
 - **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
 - **Prospectuses / fund supplements / disclosures.** Out of
-  document-center scope per the user's spec.
+  document-center scope (CLAUDE.md §1).
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
 
 ## 2. Bronze layout
@@ -163,7 +169,7 @@ auto-excludes any account whose id isn't exactly 9 characters.
 CUSIP when present, ticker otherwise. Fidelity's CSVs surface
 CUSIP for bonds (9-char alphanumeric in the `Symbol` column) and
 ticker for equities / ETFs / mutual funds. Money-market core
-positions use Fidelity-internal codes (`FDRXX**` and similar; the
+positions use Fidelity-internal codes (`CORE_X**` and similar; the
 asterisks are footnote markers, not part of the ticker). 529-plan
 positions use plan-internal codes (e.g. `XXX######` for state
 529-plan target-date sleeves).
@@ -185,9 +191,8 @@ gold does not attempt cross-source per-row matching on it.
 
 Two values, with sub-trust extensibility:
 
-- `self` — the user's personal accounts (529 sleeves, the
-  unidentified ninth account if it turns out to be retail).
-- `trust` — accounts under any of the trust agreements.
+- `self` — personal accounts (retail, brokerage, 529).
+- `trust` — accounts under a trust agreement.
 
 The owner discriminator is derived at silver-load time from the
 `portfolio` field captured at bronze time by
@@ -197,7 +202,7 @@ that is stable across logins:
 - `Authorized` → `trust`
 - `Education` → `self`
 - `Fidelity Charitable® Giving` → out-of-scope (DAF, auto-
-  excluded by 7-digit-id length check before walk reaches it)
+  excluded by account-id length before walk reaches it)
 
 ### 3.5 `account_dimensions` capture
 
@@ -240,7 +245,7 @@ databases always conform to the latest schema.
 | `schema_meta` | meta | `silver_schema_version` | `applied_at` |
 | `dump_runs` | meta | `snapshot_at` | `silver_schema_version`, `run_dir`, `mode`, `activity_since`, `activity_until`, `positions_present`, `activity_present`, `documents_present` |
 | `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
-| `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`; rest in `payload` |
+| `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`, `management_style`; rest in `payload` |
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
@@ -279,14 +284,14 @@ is the open question in §11.1.
 
 ### 4.3 Cash routing + asset_class
 
-Fidelity surfaces money-market core positions (`FDRXX`, `SPAXX`,
-`FZFXX`, similar) as ordinary rows on the positions CSV with a
+Fidelity surfaces money-market core positions (`CORE_X`, `CORE_Y`,
+`CORE_Z`, similar) as ordinary rows on the positions CSV with a
 `*` or `**` suffix on the Symbol column — a channel signal
 marking the cash-sweep core. The loader **strips** the suffix
 on the way into silver and promotes the signal to a separate
 `is_core_position INTEGER` column. Without this normalisation the
-same fund would have two identities across tables (`FDRXX**` in
-positions, `FDRXX` in transactions); with it, `instrument_key`
+same fund would have two identities across tables (`CORE_X**` in
+positions, `CORE_X` in transactions); with it, `instrument_key`
 joins cleanly.
 
 `asset_class` is the loader's best-effort classification of the
@@ -294,7 +299,7 @@ Symbol shape into a small enum:
 
 | `asset_class`  | Heuristic                                        | Example          |
 | --- | --- | --- |
-| `money_market` | `is_core_position = 1`                           | `FDRXX`          |
+| `money_market` | `is_core_position = 1`                           | `CORE_X`          |
 | `plan_fund`    | `[A-Z]{3}[0-9]{6}` (529 plan investment option)  | (3-letter prefix + 6-digit code) |
 | `bond`         | 9-char alphanumeric, trailing digit (CUSIP-9)    | `000000AA0`      |
 | `mutual_fund`  | 5-char ticker ending in `X` (industry convention) | `FXAIX`         |
@@ -331,21 +336,31 @@ can re-derive the mapping if it wants a different taxonomy);
 Any future Fidelity group label drops cleanly into `other`
 without a schema change.
 
+`accounts.management_style` is derived from the same `kind` —
+silver pins what's structurally implied without needing per-
+account UI signals (Fidelity emits none — see §11.6):
+
+| `portfolios.kind` | `accounts.management_style` |
+| --- | --- |
+| `529`            | `self_directed`             |
+| `trust_managed`  | `discretionary`             |
+| `other` / NULL   | NULL                        |
+
 ### 4.5 Historical reconstruction — statement PDFs
 
 **Critical constraint:** Fidelity generates monthly / quarterly
 statement PDFs only for some account groups, such as 529 plan
-accounts; the document center shows nothing for the others. The DAF
-has its own statement type but is out of scope.
+accounts; the document center shows nothing for the others. The DAF has its own
+statement type but is out of scope.
 
 Consequence: `historical_position_snapshots` and
 `historical_cash_balances` (which would normally populate from
-statement PDFs) are 529-only. For the trust, historical position
-reconstruction requires:
+statement PDFs) are 529-only. For trust accounts, historical
+position reconstruction requires:
 
 - documents supplied out-of-band (PDF, via the
   `manual/` channel), OR
-- The Activity & Orders transaction history, which lets gold
+- the Activity & Orders transaction history, which lets gold
   *replay* positions forward from some baseline date.
 
 This is the single biggest architectural caveat: the historical-
@@ -357,9 +372,8 @@ Fidelity's Consolidated 1099 is available as **PDF only** from
 the Tax forms sub-page. The download anchors carry aria-labels
 ending in ` (pdf)` exclusively; an early DOM snapshot suggested
 CSV / XML variants may exist for some 1099 types, but live
-testing across the available years (2019-2025, 7 anchors total
-for this account set) found no such variants on this customer's
-forms. Silver stores the PDFs in `documents` keyed by
+testing found no such variants surface in practice. Silver
+stores the PDFs in `documents` keyed by
 `content_sha256` with `doc_kind='tax_form'` and the parsed
 `tax_year`. Structured per-lot extraction (1099 detail into a
 `tax_form_rows` table) is a follow-up; parser TBD (pdfplumber
@@ -603,14 +617,13 @@ in the TimeFilter select), wait for the spinner to clear AND
 either form anchors to appear OR an empty-state message, then
 enumerate the `(pdf)`-suffixed anchors and click each by its
 unique id, capturing the CSV via `page.expect_download`. Most
-forms can sit below the fold;
-scroll-into-view is applied before each click.
+forms below the fold need scroll-into-view before each click.
 
 **Scope filter.** Only Statements + Tax-forms sub-pages are
-visited; prospectus / supplementary categories are off-limits per
-the user's spec. The external IRS-instructions links on each
-form row don't carry the `(pdf)` aria-label suffix, so they
-don't enter the enumeration.
+visited; prospectus / supplementary categories are out of scope
+(per CLAUDE.md §1). The external IRS-instructions links on
+each form row don't carry the `(pdf)` aria-label suffix, so
+they don't enter the enumeration.
 
 ### 8.6 Balances + Performance
 
@@ -649,7 +662,8 @@ the rendered HTML; silver scrapes from there.
 | `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
 | `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
 | Statement-PDF parser (529 historical reconstruction) | not started |
-| One-shot architecture collapse (login + walk + exit) | not started |
+| Per-account `account_registration` | deferred — see §11.5 |
+| `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `self_directed`, trust_managed → `discretionary`) | done — see §11.6 |
 | `wealthdb` Fidelity adapter | separate repo |
 
 ## 11. Open questions
@@ -663,20 +677,14 @@ sha256s. The silver loader currently plans to dedup on
 switch to `(account, doc_date, doc_kind, filename)` dedup à la
 schwab-web-dump.
 
-### 11.2 The unidentified ninth account
-The tenth account in the selector (after auto-excluding the DAF)
-doesn't appear in the consolidated positions CSV. Possibly
-empty, possibly a non-brokerage account type. Resolved by
-inspecting the account-detail page for it.
-
-### 11.3 GraphQL endpoint
+### 11.2 GraphQL endpoint
 `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`
 is reachable from the post-auth session. Schema unknown; could
 provide cleaner / more stable access than HTML scraping for
 positions and activity. Out of scope for v1; flagged for a
 future-iteration alternative.
 
-### 11.4 Balance Letter wizard
+### 11.3 Balance Letter wizard
 The Balances actions menu's 'Create Balance Letter' opens a
 multi-step wizard (select letter type → select account →
 Generate). The letter types (`sample letter balance`,
@@ -686,6 +694,80 @@ so we skip the wizard. Deferred unless a formal as-of PDF is
 later needed — the per-account totals are already accessible
 from the persisted `balances.html`.
 
-### 11.5 Third-party-manager institutional feed
+### 11.4 Third-party-manager institutional feed
 Out-of-band; such a feed would live in its own collector
 (see §1.3), so it blocks nothing here.
+
+### 11.5 Per-account registration label (`account_registration`)
+The wealthdb gold layer's three-column account taxonomy wants a
+promoted `account_registration` on `accounts` — the Fidelity-
+exposed wrapper label (`Roth IRA`, `Traditional IRA`,
+`Coverdell ESA`, `Health Savings Account`, `Joint WROS`,
+`Individual TOD`, etc.).
+
+**Finding (2026-05):** Fidelity does NOT emit a per-account
+registration label on any surface we currently scrape. Sweeping
+the captured DOM for keyword shapes (`Roth IRA`, `Coverdell`,
+`HSA`, `TOD`, `WROS`, `Joint`, `Individual`, `Trust`, …) across:
+
+* account-selector sidebar (`balances.html`, `performance.html`,
+  every `screenshots/*-positions-*.html`)
+* per-account balances cards (`<acct>-totalaccountvalue-label`,
+  `<acct>-currentvalue-label`, … no `-registration-label` or
+  similar)
+* positions / activity / documents page bodies
+* the consolidated positions CSV (`Account Name` carries only
+  the account nickname)
+
+…surfaces no structured registration tag. The keyword hits we DO
+find ("Health Savings Account", "Strategic Disciplines",
+"Fidelity Wealth Services") are all in page-wide disclosure /
+footer text, not per-account tags.
+
+For the account categories silver currently models, the
+registration is implied by `portfolios.kind`:
+
+| `portfolios.kind` | Implied registration                         |
+| --- | --- |
+| `529`            | 529 College Savings Plan participant account |
+| `trust_managed`  | Trust account, managed                        |
+
+Other account types (retirement, brokerage) would extend this
+table. The most likely place a registration label surfaces
+is the dedicated `/portfolio/accounts/<account-id>` detail page,
+which `download.py` does NOT currently visit. The path forward
+when that signal materialises:
+1. Extend `download.py` to nav each in-scope account-id detail
+   page; capture `account-registration` (or similar testid)
+   into `run.json/account_dimensions[*].registration`.
+2. Migration to add `accounts.account_registration TEXT`.
+3. Loader populates the column from the captured value.
+
+Until then, gold treats `portfolios.kind` as the registration
+proxy and the column stays unimplemented.
+
+### 11.6 Advisory vs discretionary within `trust_managed`
+Migration 0003 promotes `accounts.management_style`, derived
+from `portfolios.kind` (see §4.4):
+- `529` → `self_directed`
+- `trust_managed` → `discretionary`
+- other / unknown kind → NULL
+
+What's NOT derivable: the advisory-vs-discretionary distinction
+inside `trust_managed`. Fidelity's relevant product taxonomy
+(`Fidelity® Wealth Services`, `Fidelity® Strategic Disciplines`,
+`Portfolio Advisory Services`, `Fidelity Personal and Workplace
+Advisors`, the generic `Managed Accounts` umbrella) appears
+ONLY in page-wide disclosure / footer / marketing-sidebar text
+across every captured surface — none of it surfaces as a
+per-account tag. The current default of `discretionary` is the
+common case for the trust-account pattern silver models; gold
+can override per-account if it has out-of-band knowledge that
+a specific trust agreement is an advisory rather than
+discretionary arrangement.
+
+If a future Fidelity build emits a structured indicator —
+candidates: a `data-testid$='-managed-by-label'` on the
+account-detail page, or an `aria-label` on the section header
+that names the advisory product — the path mirrors §11.5:
+extend `download.py`, schema migration, loader populates.

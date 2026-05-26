@@ -34,7 +34,7 @@ Login, bronze fetch, and silver loader are operational.
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). Statement-PDF parser for 529 historical reconstruction is a follow-up. |
-| `wealthdb` Fidelity adapter | separate repo (not yet created) |
+| `wealthdb` Fidelity adapter | implemented in the [`wealthdb`](https://github.com/ptu/wealthdb) repo |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).
 
@@ -66,11 +66,26 @@ to pass. See [DESIGN.md §6](DESIGN.md) / `vnc-login` subcommand.
 
 ## Account composition
 
-Fidelity's account selector groups accounts under section labels.
-Every account surfaces through the same Portfolio / Activity /
-Documents pages and is dumped in one bronze run; the DAF is
-auto-excluded by account-id length. Silver classifies each label into
-a `portfolios.kind`; see [DESIGN.md §1.2](DESIGN.md).
+Fidelity's account selector groups accounts under section labels
+(`Education` for 529 sleeves, `Authorized` for trust accounts under a third-party investment manager, `Fidelity Charitable®
+Giving` for DAFs, etc.). The toolkit auto-excludes the DAF by
+account-id length (Fidelity uses a shorter id for it than for
+brokerage / trust / 529 accounts) and dumps everything else into
+one bronze run.
+
+Silver classifies each section label into a stable
+`portfolios.kind`:
+
+- `529` — 529 College Investing Plan participant accounts
+- `trust_managed` — Trust accounts under a third-party investment manager (Fidelity-as-custodian; manager places trades)
+- `other` — anything else, kept as a fall-through so future
+  Fidelity labels don't need a schema migration
+
+The gold layer in `wealthdb` propagates `portfolios.kind` to its
+`owner` dimension (529 → `self`, trust_managed → `trust`). A trust can be a separate tax entity, so this is not a cosmetic split.
+
+See [DESIGN.md §1.2](DESIGN.md) for the account-category model
+in more depth; §1.3 for third-party managers.
 
 ## Operational model
 

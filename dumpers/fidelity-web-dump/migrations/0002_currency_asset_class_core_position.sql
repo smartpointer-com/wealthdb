@@ -18,8 +18,8 @@
 -- 3. Promoted `is_core_position` on positions, plus normalisation
 --    of the `**` suffix Fidelity appends to money-market core
 --    positions in the Symbol column. Pre-migration silver had
---    'FDRXX**' in positions and 'FDRXX' in transactions — two
---    keys for one instrument. Post-migration: 'FDRXX' in both,
+--    'CORE_X**' in positions and 'CORE_X' in transactions — two
+--    keys for one instrument. Post-migration: 'CORE_X' in both,
 --    with `is_core_position = 1` on the positions row.
 --
 -- 4. Drop the cosmetic `balances_present` / `performance_present`

@@ -78,7 +78,7 @@ def _write_dump(root: Path, ts: str) -> Path:
         },
     }
     run = {
-        "trigger_config": {"mode": "all"},
+        "cli_config": {"mode": "all"},
         "accounts_enumerated": [ACCT_529, ACCT_TRUST],
         "accounts_in_scope":   [ACCT_529, ACCT_TRUST],
         "account_dimensions": dims,
@@ -316,7 +316,7 @@ def test_money_market_suffix_stripped_and_flagged(migrated, tmp_path):
     csv = dump / "positions" / "positions_summary.csv"
     text = csv.read_text()
     text += (
-        f"{ACCT_TRUST},Trust: Under Agreement,FDRXX**,"
+        f"{ACCT_TRUST},Trust: Under Agreement,CORE_X**,"
         "FIDELITY GOVERNMENT CASH RESERVES,1000,$1.00,+$0.00,$1000.00,"
         "$0,0.0%,+$0,0.0%,5%,$1000.00,$1.00,Cash,\n"
     )
@@ -328,12 +328,12 @@ def test_money_market_suffix_stripped_and_flagged(migrated, tmp_path):
         "AND description LIKE 'FIDELITY GOVERNMENT%'",
         (ACCT_TRUST,),
     ).fetchone()
-    assert row == ("FDRXX", 1, "money_market")
+    assert row == ("CORE_X", 1, "money_market")
 
 
 def test_asset_class_classifier_covers_known_shapes():
     # Money-market via is_core_position=1
-    assert load._classify_asset_class("FDRXX", "anything", 1) == "money_market"
+    assert load._classify_asset_class("CORE_X", "anything", 1) == "money_market"
     # CUSIP-shaped 9-char ticker → bond
     assert load._classify_asset_class(
         "000000AA0", "EXAMPLE CITY BDS", 0,
@@ -367,3 +367,31 @@ def test_dump_runs_no_balances_or_performance_columns(migrated, tmp_path):
     assert "balances_present" not in cols
     assert "performance_present" not in cols
     assert "positions_present" in cols  # the data-bearing phases stay
+
+
+# ============================================================
+# Migration-0003 column: management_style on accounts
+# ============================================================
+
+def test_management_style_derived_from_portfolio_kind(migrated, tmp_path):
+    _write_dump(tmp_path, "20260101T120000Z")
+    load.load_dump(migrated, tmp_path / "20260101T120000Z", 3)
+    rows = migrated.execute(
+        "SELECT a.portfolio_external_id, p.kind, a.management_style "
+        "FROM accounts a "
+        "JOIN portfolios p "
+        "  ON p.snapshot_at = a.snapshot_at "
+        " AND p.portfolio_external_id = a.portfolio_external_id "
+        "ORDER BY a.account_external_id"
+    ).fetchall()
+    by_kind = {kind: style for _, kind, style in rows}
+    assert by_kind["529"] == "self_directed"
+    assert by_kind["trust_managed"] == "discretionary"
+
+
+def test_management_style_other_kind_is_null(migrated):
+    """Anything that doesn't match the 529 / trust_managed kinds
+    in PORTFOLIO_KIND falls through to NULL management_style — the
+    silver loader doesn't guess for unknown group labels."""
+    assert load.MANAGEMENT_STYLE_BY_KIND.get("other") is None
+    assert load.MANAGEMENT_STYLE_BY_KIND.get(None) is None
