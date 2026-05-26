@@ -43,18 +43,22 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	if err := c.appendCashAccounts(ctx, w, byTime); err != nil {
 		return nil, err
 	}
-	if err := c.appendSafekeepingAccounts(ctx, w, byTime); err != nil {
+	mandatePortfolios, err := c.appendSafekeepingAccounts(ctx, w, byTime)
+	if err != nil {
 		return nil, err
 	}
 	// Propagate the safekeeping account's management_style to its
-	// sibling cash / overlay accounts within the same portfolio.
-	// The safekeeping account is where UBS labels the mandate
-	// type (Vermögensverwaltung / Anlageberatung); the cash
-	// accounts and forward-contract overlays are part of the
-	// same mandate but have no per-account mandate tag of their
-	// own.
-	for _, batch := range byTime {
-		propagateManagementStyleByPortfolio(batch.Accounts)
+	// sibling cash / overlay accounts within the same portfolio,
+	// gated on the portfolio being a "named mandate" (i.e. its
+	// safekeeping carries a non-empty AcctDesc — strategy name
+	// like "EMERGING MARKETS ASIA" or "PRIVATE MARKETS").
+	// Portfolios whose safekeeping has no AcctDesc are residuals
+	// in general-banking portfolios; the cash there is personal
+	// banking and should stay self_directed, not inherit the
+	// safekeeping's advisory tag. See propagateManagementStyle
+	// ByPortfolio for the discriminator rationale.
+	for snap, batch := range byTime {
+		propagateManagementStyleByPortfolio(batch.Accounts, mandatePortfolios[snap])
 	}
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
 		return nil, err
@@ -211,9 +215,23 @@ type safekeepingPayload struct {
 	AcctTpCd        string `json:"AcctTpCd"`
 	AcctTpDesc      string `json:"AcctTpDesc"`
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
+	// AcctDesc is the strategy / mandate name UBS attaches to
+	// safekeeping accounts that hold a dedicated investment
+	// mandate (e.g. "EMERGING MARKETS ASIA", "PRIVATE MARKETS",
+	// "ADVICE HEDGE FUND"). Empty when the safekeeping is a
+	// residual sitting in a general-banking portfolio rather
+	// than a named mandate. Used by the cash-propagation pass
+	// to decide whether the sibling cash accounts in this
+	// portfolio inherit the safekeeping's management_style.
+	AcctDesc string `json:"AcctDesc"`
 }
 
-func (c *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+// appendSafekeepingAccounts also returns a per-snapshot set of
+// "mandate portfolios" — those whose safekeeping carries a
+// non-empty AcctDesc (strategy name). Used by the cash-
+// propagation pass to gate which cash accounts inherit their
+// portfolio's safekeeping mandate.
+func (c *psnReader) appendSafekeepingAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) (map[int64]map[string]bool, error) {
 	const q = `
 SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
@@ -221,9 +239,10 @@ SELECT snapshot_at, relationship_id, account_external_id,
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
-		return fmt.Errorf("appendSafekeepingAccounts: %w", err)
+		return nil, fmt.Errorf("appendSafekeepingAccounts: %w", err)
 	}
 	defer rows.Close()
+	mandatePortfolios := map[int64]map[string]bool{}
 	for rows.Next() {
 		var (
 			snap         int64
@@ -232,7 +251,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			payload      string
 		)
 		if err := rows.Scan(&snap, &relID, &extID, &portfolioID, &payload); err != nil {
-			return err
+			return nil, err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
@@ -264,8 +283,15 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			change.ManagementStyle = &s
 		}
 		batch.Accounts = append(batch.Accounts, change)
+
+		if p.AcctDesc != "" && portfolioID.Valid && portfolioID.String != "" {
+			if mandatePortfolios[snap] == nil {
+				mandatePortfolios[snap] = map[string]bool{}
+			}
+			mandatePortfolios[snap][portfolioID.String] = true
+		}
 	}
-	return rows.Err()
+	return mandatePortfolios, rows.Err()
 }
 
 func (c *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {

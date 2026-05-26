@@ -71,13 +71,13 @@ func assetClassForCFI(cfi string) canonical.AssetClass {
 // existed.
 
 var knownCashAcctTpCd = map[string]canonical.TaxWrapper{
-	"OA155": canonical.TaxWrapperTaxablePersonal, // UBS current account
-	"OA157": canonical.TaxWrapperTaxablePersonal, // investment-solutions cash
-	"OA159": canonical.TaxWrapperTaxablePersonal, // Lombard limit
-	"OA197": canonical.TaxWrapperTaxablePersonal, // personal account
-	"OA350": canonical.TaxWrapperTaxablePersonal, // savings
-	"OA352": canonical.TaxWrapperTaxablePersonal, // savings (variant)
-	"OA519": canonical.TaxWrapperTaxablePersonal, // forward-contract cash
+	"OA155": canonical.TaxWrapperTaxablePersonal, // UBS current account for private clients
+	"OA157": canonical.TaxWrapperTaxablePersonal, // UBS current account for private clients (variant)
+	"OA159": canonical.TaxWrapperTaxablePersonal, // Cash Account for investment solutions (mandate cash)
+	"OA197": canonical.TaxWrapperTaxablePersonal, // Limit Account Lombard (credit line)
+	"OA350": canonical.TaxWrapperTaxablePersonal, // UBS personal account
+	"OA352": canonical.TaxWrapperTaxablePersonal, // UBS savings account
+	"OA519": canonical.TaxWrapperTaxablePersonal, // Forward Contract Account AG. For Curr.
 }
 
 var knownSafekeepingAcctTpCd = map[string]canonical.TaxWrapper{
@@ -152,25 +152,44 @@ func taxWrapperForSafekeepingAcctTp(code, desc string) canonical.TaxWrapper {
 // rollup picks up the discretionary / advisory tag from the
 // safekeeping account in the same portfolio.
 // propagateManagementStyleByPortfolio walks the per-snapshot
-// AccountChange slice once to lift the mandate type the
-// safekeeping account carries onto its sibling cash / overlay
-// accounts that share the same portfolio_external_id and don't
-// already have ManagementStyle set.
+// AccountChange slice to lift the mandate type the safekeeping
+// account carries onto its sibling cash / overlay accounts in
+// the same portfolio — but only when the portfolio is a *named
+// mandate*, gated by the `mandatePortfolios` set (built in
+// appendSafekeepingAccounts from rows with a non-empty
+// AcctDesc).
 //
-// UBS labels Vermögensverwaltung / Anlageberatung on the
-// safekeeping account; cash accounts and forward-contract
-// overlays in the same portfolio are part of the same mandate
-// but the silver payload doesn't tag them. Without this pass
-// every cash account renders as `self_directed` (the default-
-// aware fallback) which is misleading when the portfolio is
-// actually discretionary.
+// Why the gate. UBS labels Vermögensverwaltung / Anlageberatung
+// on every safekeeping via AcctSubTypeDesc, but the
+// *portfolio* can still be a general-banking package even when
+// its (residual) safekeeping technically has an advisory tag.
+// Concretely: a "private banking" portfolio that holds personal
+// chequing / savings / current accounts plus a residual
+// advisory securities position carries advisory-tagged
+// safekeeping rows (AcctSubTypeDesc = "securities account with
+// dvisory agreement"), but the cash accounts in the portfolio
+// are personal banking that the customer manages directly —
+// not part of any investment mandate. Those safekeeping rows
+// have an EMPTY AcctDesc (no strategy name like "EMERGING
+// MARKETS ASIA" / "PRIVATE MARKETS"). Named-mandate
+// safekeeping accounts always carry an AcctDesc; their cash
+// siblings ARE part of the mandate (typically labelled in
+// silver as "Cash Account for investment solutions"), and
+// inheriting the safekeeping's style is correct. Staging cash
+// in a named-mandate portfolio (e.g. USD pre-positioned to
+// fund a Private Equity capital call) is also part of the
+// mandate and inherits — the customer doesn't direct that cash
+// independently; they fund the mandate, the mandate deploys.
 //
 // Conflict handling: if two safekeeping accounts share a
 // portfolio and disagree on style (shouldn't happen in real
 // UBS data — one mandate per portfolio — but defensive), the
 // first one seen wins; the propagation only fills nils, never
 // overrides.
-func propagateManagementStyleByPortfolio(accounts []canonical.AccountChange) {
+func propagateManagementStyleByPortfolio(accounts []canonical.AccountChange, mandatePortfolios map[string]bool) {
+	if len(mandatePortfolios) == 0 {
+		return
+	}
 	styleByPortfolio := make(map[string]canonical.ManagementStyle)
 	for i := range accounts {
 		a := &accounts[i]
@@ -178,6 +197,9 @@ func propagateManagementStyleByPortfolio(accounts []canonical.AccountChange) {
 			continue
 		}
 		if a.ManagementStyle == nil || a.PortfolioExternalID == nil {
+			continue
+		}
+		if !mandatePortfolios[*a.PortfolioExternalID] {
 			continue
 		}
 		if _, set := styleByPortfolio[*a.PortfolioExternalID]; !set {
