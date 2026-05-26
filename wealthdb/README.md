@@ -39,8 +39,9 @@ web export), Swissquote, and Fidelity (web scrape).
 Accounts carry a three-dimensional taxonomy: `account_kind`
 (technical container — brokerage / cash / safekeeping / custody /
 overlay / crypto_exchange / crypto_self_custody / other),
-`tax_wrapper` (taxable_personal / IRA / 529 / pillar_3a /
-vested_benefits / trust / DAF / HSA / …; covers US + Switzerland),
+`tax_wrapper` (taxable_personal / IRA / Roth / 529 / coverdell_esa /
+custodial_utma / custodial_ugma / pillar_3a / vested_benefits /
+trust / DAF / HSA / …; covers US + Switzerland),
 and `management_style` (self_directed / advisory / discretionary /
 automated). Adapters populate what silver carries; config-side
 `account_overrides` fills the rest.
