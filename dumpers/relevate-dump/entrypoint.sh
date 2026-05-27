@@ -23,9 +23,9 @@ case "${1:-help}" in
         exec python3 /app/download.py "$@"
         ;;
     load)
-        # Parse bronze into silver SQLite. Not yet implemented.
-        echo "load: not yet implemented." >&2
-        exit 64
+        # Parse bronze into silver SQLite.
+        shift
+        exec python3 /app/load.py "$@"
         ;;
     sh|bash)
         shift
@@ -50,7 +50,9 @@ Subcommands:
             enumerate without per-portfolio / per-document
             fetches. Use --mode + --limit-* for iteration-cheap
             reruns.
-  load      Parse bronze into silver SQLite (NOT YET IMPLEMENTED).
+  load      Parse bronze into silver SQLite. Idempotent: skips
+            dumps already loaded (tracked via dump_runs.snapshot_at).
+            Default reads /data, writes /data/relevate.db.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.
 

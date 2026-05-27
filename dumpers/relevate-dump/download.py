@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 3 — REST dump for Relevate (portal.pens-expert.ch).
+REST bronze dump for Relevate (portal.pens-expert.ch).
 
 Replays the `/middlelayer/v2/` REST surface from a persisted
 session (cookies established by `login.py`) and lands JSON + PDF
@@ -10,14 +10,14 @@ artefacts in a versioned bronze tree:
     ├── run.json
     ├── accounts/
     │   ├── investment-overview.json
-    │   ├── services.json
     │   ├── compliance-products.json
     │   ├── contact-messages.json
-    │   ├── sso-claims.json
-    │   └── …
+    │   ├── contact-notification.json
+    │   ├── contact-risk-protection.json
+    │   └── sso-claims.json
     ├── portfolios/
     │   └── <sha256(externalId)[:16]>/
-    │       ├── deposits-YYYY.json   (one per year from firstInvestmentDate→now)
+    │       ├── deposits.json         (or deposits-YYYY.json per year if --year-from is set)
     │       ├── performance.json
     │       ├── fees.json
     │       ├── investment-allocation.json
@@ -27,14 +27,13 @@ artefacts in a versioned bronze tree:
         ├── <docId>.pdf
         └── <docId>.unexpected.<ext>   (only if API returned non-PDF)
 
-Read-only: only GETs against the observed `/middlelayer/v2/`
-endpoints. No write surfaces, no `/change` URLs, no mutation
-flags accepted.
+Read-only: only GETs against `/middlelayer/v2/`. No write
+surfaces, no `/change` URLs, no mutation flags accepted.
 
-Iteration-cheap flags (per the user's standing feedback): use
---mode / --skip-documents / --limit-portfolios / --limit-documents
-so iterating on one phase doesn't pay for the others. --dry-run
-hits only the master listing endpoints (investment-overview +
+Iteration-cheap flags: --mode / --skip-documents /
+--limit-portfolios / --limit-documents let one section of the
+work be re-run without paying for the others. --dry-run hits
+only the master listing endpoints (investment-overview +
 documents) to enumerate work without fetching per-portfolio or
 per-document payloads.
 """
@@ -70,14 +69,14 @@ SEC_CH_UA = (
 )
 
 # Endpoints. Note the inconsistent casing of "Portfolio" vs
-# "portfolio" — observed in the wire; do NOT normalise.
+# "portfolio" — observed on the wire; do NOT normalise.
+# /portfolio/services (400 without query params we can't synthesise)
+# and /contact/language (405 on GET) are deliberately omitted.
 EP_INVESTMENT_OVERVIEW = "/middlelayer/v2/portfolio/investment-overview"
 EP_DOCUMENTS_INDEX = "/middlelayer/v2/documents"
-EP_SERVICES = "/middlelayer/v2/portfolio/services"
 EP_COMPLIANCE_PRODUCTS = "/middlelayer/v2/compliance/products"
 EP_CONTACT_MESSAGES = "/middlelayer/v2/contact/messages"
 EP_CONTACT_NOTIFICATION = "/middlelayer/v2/contact/notification"
-EP_CONTACT_LANGUAGE = "/middlelayer/v2/contact/language"
 EP_CONTACT_RISK_PROTECTION = "/middlelayer/v2/contact/risk-protection"
 EP_SSO_CLAIMS = "/middlelayer/v2/sso/claims"
 
@@ -106,12 +105,10 @@ def ep_document(doc_id: int) -> str:
     return f"/middlelayer/v2/document/{doc_id}"
 
 
-# Ancillary GETs that return useful 200/204 bodies. First real run
-# revealed that /portfolio/services 400s without query params we
-# can't synthesise, and /contact/language 405s on GET — dropped
-# both. /contact/risk-protection returns 204 (no content) for
-# accounts without protection set up; kept and handled specially
-# in get_and_save_json so 204 is a non-error.
+# Ancillary GETs that return useful 200/204 bodies.
+# /contact/risk-protection returns 204 (no content) for accounts
+# without protection set up; kept and handled specially in
+# get_and_save_json so 204 is a non-error.
 ANCILLARY_ACCOUNTS = (
     ("compliance-products.json", EP_COMPLIANCE_PRODUCTS),
     ("contact-messages.json", EP_CONTACT_MESSAGES),
@@ -155,7 +152,13 @@ def state_into_jar(state_cookies: list[dict[str, Any]], jar) -> None:
         )
 
 
-def new_session_from_state(state_path: Path) -> requests.Session:
+def new_session_from_state(
+    state_path: Path,
+) -> tuple[requests.Session, str | None]:
+    """Load the persisted state file and build a ready-to-use
+    requests.Session. Returns (session, minted_at) where minted_at
+    is the ISO timestamp the state was minted at (or None if
+    absent from the file)."""
     state = load_state(state_path)
     if state is None:
         raise FileNotFoundError(
@@ -182,8 +185,7 @@ def new_session_from_state(state_path: Path) -> requests.Session:
         "X-Same-Domain": "1",
     })
     state_into_jar(state.get("cookies", []), session.cookies)
-    session.relevate_state_minted_at = state.get("minted_at")  # type: ignore[attr-defined]
-    return session
+    return session, state.get("minted_at")
 
 
 def probe_session_alive(session: requests.Session) -> bool:
@@ -647,7 +649,7 @@ def do_dry_run(
 
 def do_download(args: argparse.Namespace) -> int:
     try:
-        session = new_session_from_state(args.state_path)
+        session, state_minted_at = new_session_from_state(args.state_path)
     except FileNotFoundError as exc:
         logger.error("%s", exc)
         return 64
@@ -665,7 +667,7 @@ def do_download(args: argparse.Namespace) -> int:
     logger.info("bronze run dir: %s", run_dir)
 
     manifest = Manifest(run_dir, mode=args.mode, dry_run=args.dry_run)
-    manifest.set_state_minted_at(getattr(session, "relevate_state_minted_at", None))
+    manifest.set_state_minted_at(state_minted_at)
 
     if args.dry_run:
         rc = do_dry_run(session, run_dir, manifest)
@@ -716,7 +718,7 @@ def do_download(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Phase 3 — REST bronze dump from /middlelayer/v2/.",
+        description="REST bronze dump from /middlelayer/v2/.",
     )
     p.add_argument(
         "--state-path", type=Path, default=DEFAULT_STATE_PATH,

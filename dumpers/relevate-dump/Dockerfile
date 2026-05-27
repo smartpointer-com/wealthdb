@@ -19,7 +19,8 @@ RUN pip install -r requirements.txt
 # Copy scripts last. Listed explicitly so accidentally-present host
 # artefacts never make it into the image even if .dockerignore is
 # incomplete.
-COPY login.py download.py /app/
+COPY login.py download.py load.py /app/
+COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

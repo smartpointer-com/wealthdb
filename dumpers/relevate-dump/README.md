@@ -18,11 +18,13 @@ their ground rules (read-only, never weaken auth, never leak PII).
 
 - **Bronze (login + download) — working.** `login.py` replays
   Relevate's Airlock IAM auth flow (mTAN via SMS, no bearer
-  token — cookie-only session), `download.py` walks
+  token — cookie-only session); `download.py` walks
   `/middlelayer/v2/` and lands per-portfolio JSON + per-document
   PDFs into a versioned bronze tree.
-- **Silver loader — not yet implemented.** Schema is sketched in
-  [DESIGN.md §7](DESIGN.md); `load.py` is the next milestone.
+- **Silver loader — working.** `load.py` walks the bronze tree,
+  applies SQL migrations, and ingests each not-yet-loaded run in
+  one transaction. Idempotent via `dump_runs.snapshot_at`.
+  Schema in [DESIGN.md §7](DESIGN.md).
 
 ## What it scrapes
 
@@ -81,6 +83,10 @@ their ground rules (read-only, never weaken auth, never leak PII).
 # 5. Dump bronze. ~10 sec for ~50 files (per-portfolio JSON +
 #    per-document PDFs).
 ./relevate-dump download
+
+# 6. Parse bronze into silver SQLite (~/wealthdb/relevate/relevate.db).
+#    Idempotent: re-running skips dumps already loaded.
+./relevate-dump load
 ```
 
 Iteration-cheap reruns of `download` for one slice:
@@ -100,8 +106,11 @@ relevate-dump/
 ├── relevate-dump        # host wrapper around docker run
 ├── Dockerfile           # python:3.12-slim + requests
 ├── entrypoint.sh        # login / download / load / sh dispatch
-├── login.py             # Airlock auth: GET /b2c/access -> POST /password/check -> POST /mtan/otp/check
+├── login.py             # Airlock auth: POST /b2c/access -> /password/check -> /mtan/otp/check
 ├── download.py          # GET /middlelayer/v2/{...} into bronze tree
+├── load.py              # bronze -> silver SQLite, idempotent via dump_runs
+├── migrations/          # numbered SQL migrations
+│   └── 0001_initial.sql
 ├── requirements.txt     # requests only
 ├── README.md            # this file
 ├── DESIGN.md            # the design doc — read this
@@ -159,7 +168,7 @@ export RELEVATE_PASSWORD='your-password-with-$pecial-chars'
 | `build`    | Working |
 | `login`    | Working (use `--check` to probe without burning an mTAN) |
 | `download` | Working (use `--dry-run` to enumerate; `--mode` / `--limit-*` for iteration) |
-| `load`     | NOT YET IMPLEMENTED |
+| `load`     | Working (applies migrations, ingests not-yet-loaded bronze runs into SQLite silver) |
 | `sh`       | Working (interactive shell in the container) |
 
 `./relevate-dump help` prints the canonical list.

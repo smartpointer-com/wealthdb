@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Phase 2 — REST auth for Relevate (portal.pens-expert.ch).
+REST auth for Relevate (portal.pens-expert.ch).
 
-Replays the three-step Airlock IAM flow that Phase 1 discovery
-observed:
+Replays the three-step Airlock IAM flow:
 
   1. GET  /auth/ui/app/auth/flow/b2c/password?lang=en
      — primes the cookie jar (AL_SESS-S, CSRFT759-S,
@@ -14,7 +13,7 @@ observed:
   3. POST /auth/rest/public/authentication/password/check
      — body {"username": ..., "password": ...}; on 200 Airlock
        sends an mTAN to the registered phone and returns the
-       (masked) phone number + nextAuthStep.
+       phone number + nextAuthStep.
   4. POST /auth/rest/public/authentication/mtan/otp/check
      — body {"otp": ...}; on 200 the session cookie is promoted
        server-side from "anonymous" to "authenticated". No
@@ -64,10 +63,9 @@ PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
 
 DEFAULT_STATE_PATH = Path("/secrets/relevate-state.json")
 
-# Realistic Chrome-on-macOS UA + matching client-hint headers. The
-# observed Airlock setup did not appear to fingerprint beyond
-# accepting valid headers, but Phase 1 used these exact values, so
-# mirror them defensively.
+# Realistic Chrome-on-macOS UA + matching client-hint headers.
+# Airlock didn't appear to fingerprint beyond accepting valid
+# headers, but the SPA sends these values so we mirror them.
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -80,15 +78,14 @@ SEC_CH_UA = (
 logger = logging.getLogger("login")
 
 
+class LoginError(Exception):
+    pass
+
+
 # ----------------------------------------------------------------------
 # CookieJar persistence (manual JSON; no pickle, no LWP — readable
 # and chmod-600-friendly).
 # ----------------------------------------------------------------------
-
-COOKIE_FIELDS = (
-    "name", "value", "domain", "path",
-    "secure", "expires", "rest",
-)
 
 
 def jar_to_state(jar: requests.cookies.RequestsCookieJar) -> list[dict[str, Any]]:
@@ -179,14 +176,6 @@ def csrf_header(session: requests.Session) -> dict[str, str]:
     raise LoginError(
         "CSRFT759-S cookie missing; did the initial GET succeed?",
     )
-
-
-# ----------------------------------------------------------------------
-# Error type
-# ----------------------------------------------------------------------
-
-class LoginError(Exception):
-    pass
 
 
 def mask_phone(phone: str) -> str:
@@ -395,11 +384,11 @@ def do_login(args: argparse.Namespace) -> int:
         )
 
     # Surface the phone number so the operator knows which device
-    # to look at. Airlock returns the FULL number (Phase-1 discovery
-    # showed the value is unmasked), so mask it here before
-    # display — the operator already knows their own number, and a
-    # partially-redacted version is enough to confirm "yes, that's
-    # the right phone" without leaking digits if the log is shared.
+    # to look at. Airlock returns the FULL number (unmasked), so
+    # mask it here before display — the operator already knows
+    # their own number, and a partially-redacted version is enough
+    # to confirm "yes, that's the right phone" without leaking
+    # digits if the log is shared.
     if phone:
         print(
             f"login: mTAN sent to {mask_phone(phone)}.  next_step={next_step}",
@@ -484,7 +473,7 @@ def do_login(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Phase 2 — REST auth for Relevate.",
+        description="REST auth for Relevate.",
     )
     p.add_argument(
         "--state-path",

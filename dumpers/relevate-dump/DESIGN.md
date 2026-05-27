@@ -113,10 +113,15 @@ auth POSTs require it; the middlelayer GETs do not.
 
 - Three portfolios visible under one login, all FZ products
   (vested benefits / Pillar 2 / Freizügigkeit):
-  - `product.key = FZPF` ("PensFree") — foundation-managed
-    discretionary. Two of three portfolios.
-  - `product.key = FZI` ("Independent") — self-directed
-    safekeeping. One of three.
+  - `product.key = FZPF` ("PensFree"). Two of three portfolios.
+  - `product.key = FZI` ("Independent"). One of three portfolios.
+  Both products surface the same interface, fees, and investment
+  menu in the SPA — the holder picks from a small set of pre-
+  built strategies in either case, and the foundation doesn't let
+  the holder choose individual securities or funds. With no
+  human manager or advisor in the loop, both products map to
+  `management_style='automated'` in wealthdb gold (robo-advisor
+  shape, not self-directed brokerage).
 - All three CHF-denominated, `isActive=true`,
   `portfolioTypeId=0`, `portfolioStatusId=0`.
 - The URL `/dashboard/3a/depots` exists in the SPA, but
@@ -516,157 +521,113 @@ Path conventions:
 
 ## 7. Silver schema
 
-The schema is now grounded in the observed REST response
-shapes rather than guessed. SQLite + JSON1; JSON payloads
-preserve the raw response for audit and to absorb future
-field-level drift.
+SQLite + JSON1. Migrations live in `migrations/`; the loader
+reads `MAX(silver_schema_version)` from `schema_meta` and applies
+any newer files in order. Migration discipline matches the
+sibling repos: every change lands as a new numbered file, no
+backward-compatible drift, silver DBs always conform to the
+latest schema.
 
-```sql
-CREATE TABLE schema_meta (...);              -- migration version tracking
-CREATE TABLE dump_runs (
-    snapshot_at      INTEGER PRIMARY KEY,    -- Unix seconds UTC
-    run_dir          TEXT NOT NULL,
-    status           TEXT NOT NULL           -- 'ok' | 'partial' | 'failed'
-);
+Storage conventions:
 
-CREATE TABLE accounts (
-    -- One row per Relevate portfolio.
-    account_external_id    TEXT PRIMARY KEY, -- portfolios[].externalId (NNNN.NNNNNN.N form)
-    portfolio_internal_id  INTEGER,          -- portfolios[].id (small int; opaque)
-    contact_id             INTEGER,          -- portfolios[].contactId
-    contact_group_id       INTEGER,
-    product_key            TEXT,             -- 'FZPF', 'FZI', ...
-    product_name           TEXT,             -- 'PensFree', 'Independent', ...
-    product_external_id    TEXT,
-    product_offer_id       INTEGER,
-    tax_wrapper            TEXT NOT NULL,    -- 'vested_benefits' for every FZ* product
-    management_style       TEXT,             -- 'discretionary' for FZPF, 'self_directed' for FZI
-    base_currency          TEXT NOT NULL,    -- 'CHF' observed
-    portfolio_type_id      INTEGER,
-    portfolio_status_id    INTEGER,
-    portfolio_proposal_id  INTEGER,
-    is_active              INTEGER,          -- 0/1
-    first_investment_date  TEXT,             -- ISO yyyy-mm-dd
-    first_seen_at          INTEGER NOT NULL,
-    last_seen_at           INTEGER NOT NULL,
-    payload                TEXT               -- the full portfolios[i] JSON object
-);
+- Unix-seconds-UTC integers for all timestamps.
+- Stable filter columns promoted; rest in `payload TEXT` JSON.
+- Snapshot tables monotemporal on `snapshot_at` (PK starts with
+  it, so the implicit B-tree is the as-of index).
+- Event tables (`transactions`) keyed by stable external id;
+  INSERT OR REPLACE so re-loading a window converges.
+- Documents content-deduped via PRIMARY KEY `content_sha256`.
 
-CREATE TABLE positions (
-    -- Per-portfolio target allocation snapshot (from modelportfolio).
-    -- Relevate doesn't expose actual unit holdings on the
-    -- /middlelayer/v2/ endpoints we've mapped — it exposes the
-    -- MODEL/target allocation + portfolio currentValue. If a
-    -- future endpoint surfaces actual holdings this table extends.
-    snapshot_at           INTEGER NOT NULL,
-    account_external_id   TEXT NOT NULL,
-    position_key          TEXT NOT NULL,     -- modelportfolio.positions[].security.id
-    instrument_external_id TEXT,             -- = position_key
-    isin                  TEXT,
-    asset_class           TEXT,              -- security.assetClass.name
-    asset_class_external  TEXT,              -- security.assetClass.externalId
-    country_code          TEXT,
-    currency              TEXT NOT NULL,
-    allocation            REAL,              -- positions[].allocation (target %, 0..1 or 0..100)
-    trading_price         REAL,
-    payload               TEXT,
-    PRIMARY KEY (snapshot_at, account_external_id, position_key)
-);
+### 7.1 Tables (as built — see `migrations/0001_initial.sql`)
 
-CREATE TABLE cash_balances (
-    -- Per-portfolio cash + total balances, one row per
-    -- investment-overview snapshot.
-    snapshot_at           INTEGER NOT NULL,
-    account_external_id   TEXT NOT NULL,
-    currency              TEXT NOT NULL,
-    balance_kind          TEXT NOT NULL,     -- 'cash', 'invested', 'total', 'current_value'
-    amount                REAL NOT NULL,
-    payload               TEXT,
-    PRIMARY KEY (snapshot_at, account_external_id, currency, balance_kind)
-);
+| Table | PK | Purpose |
+|---|---|---|
+| `schema_meta` | `silver_schema_version` | Migration version registry. |
+| `dump_runs` | `snapshot_at` | One row per ingested bronze run; carries the `run.json` manifest verbatim in `payload`. `dry_run` flag preserves provenance. |
+| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, Relevate portfolio). Promotes product_key, currency, portfolio_proposal_id, is_active, first_investment_date, contact_id; rest in payload. |
+| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). `balance_kind` ∈ {cash, invested, current, securities, saving, investment, virtual, target_inv, target_sav} — derived from the matching `portfolios[i]` fields. |
+| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | One row per (snapshot, account, modelportfolio position). **TARGET allocation**, not actual unit holdings. Promotes isin, asset_class, country_code, allocation, trading_price. |
+| `instruments` | `instrument_external_id` | Slow-changing master data; upsert advances `last_seen_at`. Cross-portfolio dedup'd on `security.id`. |
+| `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. ~219 points per portfolio per snapshot. `value_date` is Unix seconds at the day's midnight UTC. |
+| `transactions` | `transaction_external_id` | Currently empty for FZ accounts; `/deposits` returns no rows. Schema present for forward compatibility — when credit-note PDFs are parsed by a future loader pass, events land here with `source='credit_note_pdf'`. |
+| `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not yet known; `doc_kind` is a best-effort label that returns `'other'` for production data). |
 
-CREATE TABLE transactions (
-    -- From /Portfolio/{id}/deposits per year. Schema TBC until we
-    -- see a populated body (the Phase-1 capture got empty arrays).
-    transaction_external_id TEXT PRIMARY KEY,
-    occurred_at           INTEGER NOT NULL,
-    account_external_id   TEXT NOT NULL,
-    kind                  TEXT NOT NULL,     -- 'deposit','withdrawal','fee','interest','rebalance',...
-    currency              TEXT NOT NULL,
-    gross_amount          REAL,
-    net_amount            REAL,
-    payload               TEXT
-);
+#### 7.1.1 `accounts.product_key` is forensic, not behavioural
 
-CREATE TABLE performance_points (
-    -- /portfolio/{id}/performance daily time series.
-    -- One row per (portfolio, date).
-    snapshot_at           INTEGER NOT NULL,  -- ingest snapshot, NOT the value date
-    account_external_id   TEXT NOT NULL,
-    value_date            TEXT NOT NULL,     -- ISO yyyy-mm-dd
-    value                 REAL,
-    cash_balance          REAL,
-    securities_balance    REAL,
-    cash_flow             REAL,
-    deposits              REAL,
-    payouts               REAL,
-    profit                REAL,
-    profit_all            REAL,
-    profit_virtual        REAL,
-    currency              TEXT,
-    payload               TEXT,
-    PRIMARY KEY (snapshot_at, account_external_id, value_date)
-);
+The observed values `FZI` (product_name `Independent`) and
+`FZPF` (product_name `PensFree`) look like two product lines
+with potentially different investment menus, fees, or
+operational characteristics. They aren't.
 
-CREATE TABLE instruments (
-    -- Securities seen in modelportfolios. Cross-portfolio dedup'd
-    -- on ISIN if present, else on security.id.
-    instrument_external_id TEXT PRIMARY KEY,
-    isin                  TEXT,
-    name                  TEXT,
-    asset_class           TEXT,
-    country_code          TEXT,
-    currency              TEXT,
-    first_seen_at         INTEGER NOT NULL,
-    last_seen_at          INTEGER NOT NULL,
-    payload               TEXT
-);
+PensExpert operates these as **two legally separate
+foundations** that surface the IDENTICAL investment-product
+menu, IDENTICAL fee schedule, and IDENTICAL strategy-
+configuration UI. The two-foundation structure exists as a
+Swiss regulatory workaround: vested-benefits law caps a
+customer's vested-benefits assets at two custody accounts when
+transferring, so PensExpert runs `Independent` and `PensFree`
+side-by-side under one roof to support that without forcing
+customers to a third-party foundation. A customer's assets can
+land in either or both; the customer experiences no
+behavioural difference between them.
 
-CREATE TABLE documents (
-    document_external_id  TEXT PRIMARY KEY,  -- documents[].id (small int)
-    account_external_id   TEXT,              -- if document is per-portfolio
-    foundation_id         INTEGER,
-    document_type_code    INTEGER,           -- documents[].documentType enum
-    document_type_label   TEXT,              -- derived
-    category_code         INTEGER,           -- documents[].category enum
-    category_label        TEXT,              -- derived
-    file_name             TEXT,
-    create_date           TEXT,
-    valid_till            TEXT,
-    bronze_path           TEXT NOT NULL,     -- relative to bronze root
-    sha256                TEXT NOT NULL,
-    payload               TEXT
-);
+**Consequences for downstream consumers** (the future wealthdb
+`relevate` adapter being the concrete example):
 
-CREATE TABLE fx_rates (
-    -- Empty in v1 — all portfolios observed are CHF. The table
-    -- exists so wealthdb gold's adapter contract is satisfied
-    -- even before we see foreign-currency holdings.
-    snapshot_at           INTEGER NOT NULL,
-    base_currency         TEXT NOT NULL,
-    quote_currency        TEXT NOT NULL,
-    mid_rate              REAL NOT NULL,
-    payload               TEXT,
-    PRIMARY KEY (snapshot_at, base_currency, quote_currency)
-);
+- `product_key` MUST NOT drive any taxonomy / classification
+  decision — `asset_class`, `tax_wrapper`, `management_style`,
+  `account_kind`, fee handling, etc. Both foundations
+  classify identically. The wealthdb mappings in §8 hold for
+  both values of `product_key`.
+- The column is still surfaced verbatim because it's
+  forensically useful: "which foundation does this account
+  live in", legal-entity attribution, cross-checks against
+  the credit-note PDFs that name the issuing Stiftung.
+- If a future PensExpert product_key actually changes
+  behaviour (e.g. a managed-account product, or a separate
+  fee schedule), §8's mapping needs new branches — but the
+  current FZI/FZPF distinction should NOT trigger that
+  pattern by accident.
+
+### 7.2 Validation against the first real load
+
+3 bronze dumps (1 dry-run + 2 real) loaded into silver:
+
+```
+dump_runs               3
+accounts                9    -- 3 portfolios × 3 snapshots
+cash_balances          63    -- 9 accounts × 7 populated kinds
+positions              44    -- 22 positions × 2 non-dry-run snapshots
+instruments            10    -- distinct securities across modelportfolios
+performance_points  1,330    -- 3 portfolios × ~219 points × 2 non-dry-run
+transactions            0    -- /deposits empty for FZ
+documents              26    -- content-deduped across the 3 dumps
 ```
 
-Note `positions` models the **target allocation** (model
-portfolio), not actual unit holdings. Vested-benefits funds
-typically don't surface unit-level holdings to the customer —
-the portfolio's value is opaque-NAV-derived. If an actual-
-holdings endpoint is discovered we extend; otherwise this is the
-right granularity for wealthdb gold.
+Asset-class distribution across `positions`: `Stocks, Liquidity,
+Bonds, Real Estate, Alternatives` — all 100% ISIN-populated.
+Re-running `load` against the same bronze is a no-op (the
+`dump_runs.snapshot_at` PK is the idempotency anchor).
+
+### 7.3 What's deliberately NOT a table
+
+- **`fx_rates`**: every observed portfolio is CHF-denominated and
+  every observed `currentValue` is in `currency.currencyCode = "CHF"`.
+  If a future Relevate product surfaces foreign-currency holdings
+  the loader will materialise an `fx_rates` table in a follow-on
+  migration; doing it now would be empty-table speculation.
+- **`fees`**: `/portfolio/{id}/fees` returns a single `{value,
+  isPercent, displayValue}` object per portfolio. The raw JSON
+  stays on disk under `portfolios/<slug>/fees.json` in the
+  bronze tree; the loader doesn't project it into silver in v1.
+  A future migration can promote it into the `accounts` row's
+  payload or its own table once gold consumers care.
+- **`investment_allocation`**: the
+  `/portfolio/{id}/investment/allocation` endpoint's
+  `{totalValuation, investmentValuation, savingValuation}` is
+  redundant with the matching `cash_balances` rows the loader
+  already derives from `investment-overview`. The raw response
+  stays in bronze.
 
 ## 8. Identity strategy + wealthdb gold bridge
 
@@ -696,9 +657,20 @@ wealthdb config-side override.
 
 ### 8.4 `management_style`
 
-- `FZPF` → `'discretionary'` (foundation-managed)
-- `FZI` → `'self_directed'`
-- Anything else → `'other'`
+- `FZPF` → `'automated'`
+- `FZI` → `'automated'`
+- Anything else → `'other'` (the adapter will need explicit
+  classification before another FZ-prefixed product is
+  introduced)
+
+Both observed products are robo-advisor-shaped: the holder picks
+one of a small menu of pre-built strategies at setup, and the
+strategy then runs by rules with no further human input. There
+is no foundation manager (so not `'discretionary'`), no advisor
+(so not `'advisory'`), and the holder cannot pick individual
+securities or funds (so not `'self_directed'`). If Relevate
+later introduces a truly foundation-managed or fully-self-
+directed FZ product, this mapping needs a new branch.
 
 ### 8.5 Future `relevate.md` adapter doc
 
