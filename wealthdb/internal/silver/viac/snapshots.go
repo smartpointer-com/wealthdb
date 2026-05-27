@@ -236,10 +236,9 @@ SELECT instrument_external_id, COALESCE(isin, ''),
 }
 
 func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// silver column semantics (despite the schema comment, `amount`
-	// is units not CHF):
-	//   amount             = number of fund units held
-	//   ratio_chf          = CHF market value (== amount * asset_price)
+	// silver column semantics (viac-dump schema v2):
+	//   quantity           = number of fund units held
+	//   market_value_chf   = CHF market value (= quantity * asset_price)
 	//   acquisition_price  = per-unit cost basis in CHF
 	//   asset_price        = per-unit current price in CHF
 	//   ratio              = fraction of account NAV (0..1), unused
@@ -248,8 +247,8 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_external_id,
        COALESCE(asset_class, ''),
-       CAST(amount            AS VARCHAR),
-       CAST(ratio_chf         AS VARCHAR),
+       CAST(quantity          AS VARCHAR),
+       CAST(market_value_chf  AS VARCHAR),
        CAST(acquisition_price AS VARCHAR),
        payload
   FROM positions
