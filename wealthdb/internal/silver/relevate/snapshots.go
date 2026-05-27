@@ -60,6 +60,34 @@ func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, e
 
 func (s *snapshotStream) Close() error { return nil }
 
+// hasColumn reports whether the given table contains the given
+// column. SQLite-only; shape mirrored from the fidelity / schwab
+// / ubs adapters. Used to keep the adapter tolerant of older
+// silver schemas that haven't yet been re-dumped with newer
+// promoted columns.
+func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid           int
+			name, ctype   string
+			notnull, pk   int
+			dflt          sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // snapshotTimesInWindow unions dump_runs with the content
 // tables. dump_runs is the live-time signal but the content
 // tables drive the batch dispatch — if a future Relevate dump
@@ -94,27 +122,43 @@ ORDER BY snapshot_at`
 }
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	const q = `
+	// Silver may or may not carry a promoted `management_style`
+	// column (the relevate-dump loader was updated to stamp it
+	// per-account after the gold-side adapter shipped). Read
+	// the silver value when present; fall back to the adapter
+	// default ('automated') otherwise. Relevate's robo-style
+	// strategy menu maps to canonical 'automated': the holder
+	// picks a strategy from a fixed list, then an algorithm
+	// allocates and rebalances with no human in the loop.
+	hasMgmt, err := c.hasColumn(ctx, "accounts", "management_style")
+	if err != nil {
+		return err
+	}
+	mgmtCol := "NULL"
+	if hasMgmt {
+		mgmtCol = "management_style"
+	}
+	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, currency_code,
        COALESCE(name, ''),
        COALESCE(product_name, ''),
+       COALESCE(%s, ''),
        payload
   FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`
+ WHERE snapshot_at BETWEEN ? AND ?`, mgmtCol)
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
 	}
 	defer rows.Close()
 	wrapper := canonical.TaxWrapperVestedBenefits
-	style := canonical.ManagementStyleSelfDirected
 	for rows.Next() {
 		var (
-			snap                            int64
-			extID, currency, name, product  string
-			payload                         string
+			snap                                       int64
+			extID, currency, name, product, silverMgmt string
+			payload                                    string
 		)
-		if err := rows.Scan(&snap, &extID, &currency, &name, &product, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &currency, &name, &product, &silverMgmt, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -122,14 +166,17 @@ SELECT snapshot_at, account_external_id, currency_code,
 			continue
 		}
 		w := wrapper
-		s := style
+		style := canonical.ManagementStyleAutomated
+		if silverMgmt != "" {
+			style = canonical.ManagementStyle(silverMgmt)
+		}
 		ccy := currency
 		change := canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
 			BaseCurrency:      &ccy,
 			TaxWrapper:        &w,
-			ManagementStyle:   &s,
+			ManagementStyle:   &style,
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
