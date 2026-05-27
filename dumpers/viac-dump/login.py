@@ -6,12 +6,12 @@ Replays VIAC's auth flow against `app.viac.ch`, prompts for the
 mTAN SMS code on stdin, and persists the resulting cookies +
 CSRF metadata to a state file at chmod 0600.
 
-Auth flow (discovered in Phase 1, see DESIGN.md):
+Auth flow (see DESIGN.md §2.1 for the full table):
 
     GET    /                                                  (sets initial cookies)
-    DELETE /external-login/public/authentication/flow/        (clear any prior flow)
+    DELETE /external-login/public/authentication/flow/        (clear stale flow)
     POST   /external-login/public/authentication/password/check/
-           {"username": <phone-E164>, "password": <pw>}      → 200; OTP sent via SMS
+           {"username": <phone-E164>, "password": <pw>}      → 200; SMS sent
     POST   /external-login/public/authentication/mtan/otp/check/
            {"otp": <code>}                                    → 200
     GET    /external-login/public/authentication/             → 200 (session confirmed)
@@ -20,7 +20,7 @@ Auth flow (discovered in Phase 1, see DESIGN.md):
 Credentials are sourced from /secrets/viac.env (or
 ~/.secrets/viac.env outside the container); never from a CLI
 flag — see CLAUDE.md §3. The `username` field is the user's
-phone number in E.164 format (`+41...`).
+phone number in E.164 format (`+CC<digits>`).
 
 `--check` probes existing state with one cheap GET against the
 heartbeat endpoint. No credential submit, no MFA push. Allowed
@@ -61,10 +61,9 @@ def normalize_login(raw: str) -> str:
     """Cosmetic cleanup of an E.164 phone-number login.
 
     VIAC's API expects the mobile number in E.164 form with a
-    country-code prefix (Phase 1 capture confirmed the wire
-    format). Strip whitespace, dashes, and parens after the
-    leading `+` so the operator can use the prettified form
-    (e.g. `+CC XX XXX XX XX`) in their viac.env. Validation
+    country-code prefix. Strip whitespace, dashes, and parens
+    after the leading `+` so the operator can use the prettified
+    form (e.g. `+CC XX XXX XX XX`) in their viac.env. Validation
     that the result is actually E.164-shaped happens in main()
     via `looks_like_e164`.
     """
@@ -130,8 +129,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def source_env_file(path: Path) -> bool:
     """Source `path` as bash and merge KEY=VALUE bindings into
-    os.environ (setdefault). Same pattern as explore.py — see the
-    feedback_bash_source_env_files memory."""
+    os.environ (setdefault). See feedback_bash_source_env_files
+    memory for why we shell out to bash instead of handrolling."""
     if not path.is_file():
         return False
     syntax_check = subprocess.run(
@@ -206,9 +205,12 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         log.info("bootstrap: GET /")
         resp = client.get("/")
         resp.raise_for_status()
-        if not detect_csrf_or_warn(client):
+        client._ensure_csrf_known()
+        if not client.csrf_cookie_name:
             log.error("no CSRFT<N>-S cookie set by GET /; aborting.")
             return 2
+        log.info("CSRF: cookie=%s header=%s",
+                 client.csrf_cookie_name, client.csrf_header_name)
 
         # Step 2: clear any stale auth flow.
         log.info("clear prior flow: DELETE /external-login/public/authentication/flow/")
@@ -296,15 +298,6 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         client.save_state(state_path)
         log.info("session persisted to %s (chmod 0600)", state_path)
         return 0
-
-
-def detect_csrf_or_warn(client: ViacClient) -> bool:
-    client._ensure_csrf_known()
-    if client.csrf_cookie_name:
-        log.info("CSRF: cookie=%s header=%s",
-                 client.csrf_cookie_name, client.csrf_header_name)
-        return True
-    return False
 
 
 def _diagnose_auth_error(resp, *, step: str, hint: str) -> None:

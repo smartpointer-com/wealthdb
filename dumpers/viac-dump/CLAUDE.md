@@ -16,17 +16,9 @@ navigate to or click within (final list TBD once the live SPA is
 mapped in Phase 1, but the allow-list pattern below is binding):
 
 - The VIAC login form and the MFA approval page that follows it.
-- Read-only listing pages for: account / portfolio overview,
-  positions / allocations per account, transaction / contribution
-  history, document archive.
-- Date-range / period filter inputs and "Apply" / "Search" /
-  "Filter" buttons on the above pages.
-- Export / download buttons that produce CSV / PDF copies of
-  already-displayed data, including Pillar-3a tax
-  *Bescheinigungen*.
-- Document download endpoints reachable via the session cookie /
-  bearer token (typically REST endpoints fetched via Playwright's
-  request API rather than per-row link clicks).
+- The REST endpoints listed in DESIGN.md §2.2 (customer profile,
+  wealth summary / allocation, per-portfolio strategy / assets /
+  fees, transactions, document index, individual PDFs).
 - Logout (optional; not required between runs, but harmless).
 
 Forbidden — do not navigate to, click, or scrape:
@@ -81,9 +73,6 @@ Allowed without asking:
 
 Not allowed unless the user explicitly asks:
 
-- Run `vnc-explore` (Phase 1 discovery; the operator logs in by
-  hand, which mints a fresh session and sends a push to their
-  phone).
 - Run `login.py` without `--check` (mints a fresh session, sends a
   push to the user's phone).
 - Run `download.py` without `--dry-run`.
@@ -113,36 +102,31 @@ The session cookie / bearer token is the keys to the kingdom (see
 - Reduce the `chmod` on `~/.secrets/viac.env` (or any persisted
   session-state file) below `0600`, or store it in a location
   wider than `~/.secrets/` defaults.
-- Default any debug or transient artefact (screenshot, trace
-  bundle, scratch log, Phase 1 discovery dump) to a path under
-  `~/.secrets/`. The secrets dir is for persistent credentials
-  only; debug paths must be user-provided (`--screenshot-dir`,
-  `--trace-dir`, `--discovery-dir`) with no fallback to the
-  secrets-dir parent. `--trace` is therefore a paired flag — it
-  requires `--screenshot-dir`.
+- Default any debug or transient artefact (scratch log, trace
+  bundle) to a path under `~/.secrets/`. The secrets dir is for
+  persistent credentials only; debug paths must be user-provided
+  with no fallback to the secrets-dir parent.
 
 ## 4. Do not leak private information into source
 
 The repo is intended to be publishable. Do not write any of the
 following into tracked files (source, configs, comments, commit
-messages, test fixtures, recorded Playwright traces, sample HTML
-or JSON drops the user provides for landmarking):
+messages, test fixtures, sample JSON drops the user shares for
+debugging):
 
 - VIAC login username, customer ID, contract number, any of the
   many ID formats VIAC may use.
 - Personal data: names, addresses, phone numbers, email
   addresses, birth dates, SSN / AHV fragments, beneficiary
   identifiers.
-- Real session cookies / bearer tokens, browser-profile contents,
-  or MFA codes.
+- Real session cookies / bearer tokens or MFA codes.
 - Any data returned by VIAC — balances, allocations, transactions,
   contribution history, fees, document IDs, fund holdings, fund
   weights.
-- Screenshots from Playwright trace capture or user-supplied
-  reference screenshots showing logged-in UI with real values. If
-  a debug screenshot needs to be committed for documentation,
-  redact identifiers first; the preferred default is "don't
-  commit screenshots at all".
+- Captured API response bodies, request headers, or any artefact
+  from a live session that shows real values. If a debug fragment
+  needs to be committed for documentation, redact identifiers
+  first.
 
 Bank name (VIAC), generic widely-held example tickers
 (SPX / QQQ / VTI), and IBAN-spec placeholder letters
@@ -151,9 +135,8 @@ examples in docs only — never copy real account IDs into
 examples, even comments.
 
 **Pre-commit:** grep the staged diff for known real values BEFORE
-the first `git add`, not after. When the user drops a sample HTML
-download or JSON response or screenshot into the repo as part of
-bootstrapping `explore.py` / `login.py` / `download.py`, **strip
+the first `git add`, not after. When the user shares a captured
+response body or log fragment in chat for debugging, **strip
 identifiers before committing** anything derived from it — even
 comments and test fixtures. When in doubt, ask the user before
 adding a value that looks identifier-shaped.

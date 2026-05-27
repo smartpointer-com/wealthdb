@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,11 +68,10 @@ DEFAULT_STATE_PATH = Path("/secrets/viac-state.json")
 DEFAULT_DEST = Path("/data")
 
 # Build-bound endpoint version suffixes. The SPA appends these
-# (e.g. `customer/current/7-5`); we don't know what they encode
-# (cache version? schema version?). They appear stable per VIAC
-# deploy and survived between our discovery sessions. If any
-# endpoint starts 404-ing, re-run explore.py to discover the new
-# suffixes.
+# (e.g. `customer/current/7-5`); the digits are bundle-build-
+# bound and appear stable per VIAC deploy. If any endpoint
+# starts 404-ing, capture a fresh login flow against the SPA to
+# discover the new suffixes (see DESIGN.md §2.2).
 ENDPOINT_SUFFIXES = {
     "customer/current": "7-5",
     "notification": "6-2",
@@ -88,6 +88,46 @@ ALWAYS_DOWNLOAD_TX_SUBTYPES = frozenset({"SECURITY_FUSION"})
 
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+# Transient httpx errors worth retrying. Empirically VIAC has
+# dropped an HTTP/2 stream once during a 1019-PDF run with the
+# h2 "ConnectionTerminated" diagnostic — that surfaces in httpx
+# as RemoteProtocolError. Network blips during the same run could
+# also trip TimeoutException or NetworkError; treat them all the
+# same.
+RETRYABLE_HTTPX_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.NetworkError,
+    httpx.TimeoutException,
+)
+
+
+def with_retry(
+    fn,
+    *,
+    label: str,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+):
+    """Call `fn()` with simple exponential backoff on transient
+    httpx-level errors. Non-transient errors (4xx via
+    raise_for_status, programming bugs, etc.) propagate
+    immediately."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except RETRYABLE_HTTPX_ERRORS as e:
+            if attempt == max_attempts:
+                log.warning(
+                    "%s: %s after %d attempts; giving up",
+                    label, type(e).__name__, attempt)
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            log.warning(
+                "%s: transient %s (attempt %d/%d): %s; retry in %.1fs",
+                label, type(e).__name__, attempt, max_attempts, e, delay)
+            time.sleep(delay)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -124,15 +164,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def fetch_json(client: ViacClient, path: str, dest_file: Path) -> dict | list:
-    """GET `path`, save the response body to `dest_file`, return the
-    parsed JSON. Raises on non-2xx."""
+    """GET `path` (with retry on transient errors), save the
+    response body to `dest_file`, return the parsed JSON.
+    Raises on non-2xx."""
     log.debug("GET %s", path)
-    resp = client.get(path)
+    resp = with_retry(lambda: client.get(path), label=f"GET {path}")
     if resp.status_code != 200:
         raise RuntimeError(
             f"GET {path}: HTTP {resp.status_code} (expected 200) — "
-            f"if a /N-N suffix changed, re-run explore.py to "
-            f"discover the new value.")
+            f"if a /N-N suffix changed, re-discover from a fresh "
+            f"login capture (see DESIGN.md §2.2).")
     dest_file.parent.mkdir(parents=True, exist_ok=True)
     dest_file.write_bytes(resp.content)
     return resp.json()
@@ -172,16 +213,27 @@ def fetch_pdf(client: ViacClient, docid: str, target: Path,
                       existing, target, e)
     path = f"/files/document/{docid}"
     log.debug("GET %s", path)
-    n_bytes = 0
-    with client.stream("GET", path) as resp:
-        if resp.status_code != 200:
-            resp.read()
-            raise RuntimeError(
-                f"GET {path}: HTTP {resp.status_code} (expected 200)")
-        with target.open("wb") as fh:
-            for chunk in resp.iter_bytes(chunk_size=65536):
-                fh.write(chunk)
-                n_bytes += len(chunk)
+
+    def _stream_to_disk() -> int:
+        # If a prior attempt wrote a partial file, drop it — we
+        # restart from scratch on retry (range-resume isn't
+        # supported by VIAC's CDN as far as we can tell, and
+        # PDFs are small enough that re-fetching is cheap).
+        if target.exists():
+            target.unlink()
+        n = 0
+        with client.stream("GET", path) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                raise RuntimeError(
+                    f"GET {path}: HTTP {resp.status_code} (expected 200)")
+            with target.open("wb") as fh:
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    fh.write(chunk)
+                    n += len(chunk)
+        return n
+
+    n_bytes = with_retry(_stream_to_disk, label=f"GET {path}")
     return ("fetched", n_bytes)
 
 

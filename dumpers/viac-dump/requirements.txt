@@ -1,20 +1,6 @@
-# The base image (mcr.microsoft.com/playwright/python:v1.59.0-noble)
-# ships only the *browser binaries* under /ms-playwright (with the
-# PLAYWRIGHT_BROWSERS_PATH env var pointing at them). The Python
-# `playwright` package itself must be installed here, and the
-# version MUST match the base-image tag so the package finds
-# compatible browser binaries. When bumping the Dockerfile FROM
-# line, bump this version in lockstep.
-#
-# Phase 1 (explore.py) drives Chromium under Playwright for SPA
-# discovery. Phase 2 (login.py) and Phase 3 (download.py) replay
-# the REST flow with httpx — no browser needed. Playwright is
-# still useful for re-discovery when VIAC's bundle rotates the
-# CSRF cookie name or the /N-N endpoint version suffixes.
-playwright==1.59.0
-
-# Pure-HTTP client for the post-discovery scripts. http2 extra
-# because VIAC's app is served over HTTP/2 (capture showed
-# :authority / :method pseudo-headers); requests don't break
-# over HTTP/1.1 but HTTP/2 matches what the SPA does.
+# Pure-HTTP client for the VIAC REST API. The http2 extra brings
+# in `h2` — VIAC's app is served over HTTP/2 (capture showed
+# :authority / :method pseudo-headers); requests still work over
+# HTTP/1.1 but HTTP/2 matches what the SPA does and gives us
+# multiplexed PDF streaming for the documents phase.
 httpx[http2]==0.28.1

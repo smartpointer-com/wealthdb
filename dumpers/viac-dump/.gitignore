@@ -37,30 +37,25 @@ Thumbs.db
 # Logs
 *.log
 
-# Linux coredumps. The Phase 1 container runs fluxbox under Xvfb
-# for VNC; fluxbox has been observed to crash and leave a `core`
-# in $PWD (which is /app inside the container, bind-mounted to
-# the repo dir on the host).
+# Linux coredumps — defensive. The toolkit is REST-only now (no
+# browser, no Xvfb), so we don't expect any; the pattern stays
+# in to catch the unexpected.
 core
 core.*
 
-# Playwright debugging artefacts — may contain logged-in screenshots,
-# real network responses, or session state. Never commit.
-trace*.zip
-screenshots/
-playwright-report/
+# Network-capture artefacts. The toolkit is REST-only and doesn't
+# emit these, but a one-off curl --trace or browser save-as could.
 *.har
 *.mhtml
 
-# Never commit credentials, browser profiles, or downloaded portfolio
-# data. The default mount layout puts these on the host under
-# ~/.secrets/ and ~/wealthdb/viac/ respectively, but a stray in-tree
-# drop must still be blocked.
+# Never commit credentials or downloaded portfolio data. The
+# default mount layout puts these on the host under ~/.secrets/
+# and ~/wealthdb/viac/ respectively, but a stray in-tree drop
+# must still be blocked.
 *.pem
 *.key
-storageState*.json
+viac-state*.json
 viac_state*.json
-viac-profile/
 token.json
 tokens.json
 .env

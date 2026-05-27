@@ -15,8 +15,10 @@ runtime from the cookie jar (regex `^CSRFT\\d+-S$`) and derive
 the header name by stripping the `-S` and lowercasing.
 
 login.py and download.py both use this client; neither needs a
-real browser. (Phase 1's `explore.py` keeps Playwright for the
-discovery role; once the API surface drifts we re-run that.)
+real browser. If VIAC ever rotates the CSRF cookie name or the
+per-endpoint `/N-N` version suffixes, capture a fresh login
+flow against the SPA in a throwaway branch rather than carry
+discovery scaffolding in the main toolkit.
 """
 
 from __future__ import annotations
@@ -30,9 +32,8 @@ import httpx
 
 BASE_URL = "https://app.viac.ch"
 
-# Realistic Chromium UA. VIAC accepts it across captured sessions.
-# No fingerprinting evidence in the auth flow — the server doesn't
-# appear to challenge non-browser clients with this UA.
+# Realistic Chromium UA. VIAC accepts it; no fingerprinting
+# evidence in the auth flow.
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"

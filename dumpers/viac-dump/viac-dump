@@ -1,21 +1,12 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the viac-dump container.
-# Mounts ~/.secrets/ (RW; profile dir + state file land here) and
-# the bronze directory (RW), and forwards all arguments to the
-# container's entrypoint.
+# Host-side wrapper around `docker run` for the viac-dump
+# container. Mounts ~/.secrets/ (RW; cookie-jar state file lands
+# here) and the bronze directory (RW), and forwards all arguments
+# to the container's entrypoint.
 
 set -euo pipefail
 
 IMAGE="${VIAC_IMAGE:-viac-dump:latest}"
-
-# Fixed container name. A live `vnc-explore` session keeps the
-# container alive while the operator clicks around; a parallel
-# wrapper invocation must NOT silently `docker rm -f` it (the
-# schwab-web-dump-style mistake the [Wrapper kills running
-# container] memory warns against). Same name across subcommands
-# means we implicitly enforce "only one viac-dump container at a
-# time", which matches the per-profile-dir single-writer model the
-# browser profile needs anyway.
 CONTAINER_NAME="${VIAC_CONTAINER:-viac-dump}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -23,66 +14,43 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Mount points on the host. Override via env if your layout differs.
 HOST_SECRETS="${VIAC_SECRETS_DIR:-$HOME/.secrets}"
 HOST_DATA="${VIAC_DATA_DIR:-$HOME/wealthdb/viac}"
-# A separate writable dir for opt-in debug artefacts (screenshots,
-# Playwright trace bundles, discovery dumps). Kept OUT of HOST_DATA
-# so the bronze + silver tree stays clean — only `--screenshot-dir
-# /debug/...`, `--trace-dir /debug/...`, and the Phase 1
-# discovery dir should write here.
-HOST_DEBUG="${VIAC_DEBUG_DIR:-$HOME/.cache/viac-dump-debug}"
 
 usage() {
     cat <<EOF
 viac-dump — host wrapper
 
 Subcommands:
-  build                  Build the Docker image (\`docker build\`).
-  vnc-explore [args...]  Phase 1: VNC-driven exploration. Connect
-                         with a VNC client to 127.0.0.1:5900 to
-                         drive the browser; explore.py records the
-                         network / DOM / downloads to the discovery
-                         dir.
-  login [args...]        Phase 2: mint or refresh the persistent
-                         session. Use --check for a cheap liveness
-                         probe (no MFA push).
-  download [args...]     Phase 3: live scrape. Use --dry-run to
-                         walk the UI without exporting any
-                         artefacts.
-  load [args...]         Phase 4: parse bronze into the silver
-                         SQLite DB.
-  sh|bash                Open an interactive shell in the
-                         container.
-  help                   Show this message.
+  build               Build the Docker image (\`docker build\`).
+  login [args...]     Mint or refresh the session cookie jar +
+                      CSRF metadata. Use --check for a cheap
+                      liveness probe (no MFA push).
+  download [args...]  Bronze dump. Use --dry-run to walk JSON
+                      endpoints without fetching PDFs;
+                      --with-transaction-documents to also pull
+                      the per-event TRANSACTION PDFs (adds ~950
+                      docs to the run).
+  load [args...]      Parse bronze into the silver SQLite DB.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (env file + browser profile dir)
+  $HOST_SECRETS  ->  /secrets   (viac.env + viac-state.json)
   $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces /
-                                 Phase 1 discovery dumps)
 
 Override mounts via env:
   VIAC_SECRETS_DIR=/path/to/secrets
   VIAC_DATA_DIR=/path/to/data
-  VIAC_DEBUG_DIR=/path/to/debug
 
 Credentials:
-  The login is read from \$VIAC_LOGIN inside the container; the
-  password from \$VIAC_PASSWORD. The login script sources
-  /secrets/viac.env automatically (= \$HOME/.secrets/viac.env on
-  the host), so a two-line file is enough:
-
-    VIAC_LOGIN='your-login'
-    VIAC_PASSWORD='your-password-with-\$pecial-chars'
-
-  Use SINGLE quotes around values containing \$, \!, backtick, or
-  other shell metacharacters; double quotes would let \`source\`
-  do \$-expansion and silently mangle the value. chmod 600 the
-  file.
+  VIAC_LOGIN (E.164 mobile number, e.g. +CC<digits>) and
+  VIAC_PASSWORD are read from /secrets/viac.env automatically
+  (= \$HOME/.secrets/viac.env on the host). Use SINGLE quotes
+  around values containing \$, \!, backtick.
 
 Container concurrency:
   Only one viac-dump container runs at a time (fixed name
-  '$CONTAINER_NAME'). The wrapper refuses to clobber a RUNNING
-  container — useful when a long-lived \`vnc-explore\` session is
-  still active. Set VIAC_FORCE_REPLACE=1 to override.
+  '$CONTAINER_NAME'). The wrapper refuses to clobber a
+  RUNNING container — set VIAC_FORCE_REPLACE=1 to override.
 EOF
 }
 
@@ -98,50 +66,29 @@ if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
 fi
 
 # Ensure mount points exist on the host before we mount them.
-# Docker will silently create them as root-owned directories if
-# we don't.
+# Docker would silently create them as root-owned otherwise.
 mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
 if [[ ! -d "$HOST_SECRETS" ]]; then
     echo "viac-dump: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
 
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes
-# the wrapper safe to pipe (e.g. for log capture) while still
-# giving interactive prompts when run from a terminal. The
-# `${arr[@]+...}` idiom expands to nothing when the array is
-# empty, which keeps bash 3.2 (Apple's /bin/bash) happy under
-# `set -u`.
+# Allocate a TTY only when stdin AND stdout are TTYs. Safe to
+# pipe (e.g. for log capture) while still giving interactive
+# prompts when run from a terminal.
 TTY_ARGS=()
 if [[ -t 0 && -t 1 ]]; then
     TTY_ARGS=(-it)
 fi
 
-# `vnc-explore` needs the VNC port forwarded to the host so the
-# operator's VNC client can connect. Bind to 127.0.0.1 only — the
-# VNC server inside the container uses a single-use password (see
-# entrypoint.sh) but the LAN exposure isn't worth the convenience.
-EXTRA_ARGS=()
-if [[ "${1:-}" == "vnc-explore" ]]; then
-    EXTRA_ARGS+=(-p 127.0.0.1:5900:5900)
-fi
-
-# Safety guard: refuse to clobber a live container.
-#
-# A `vnc-explore` session can sit idle for minutes while the
-# operator completes 2FA on their phone; a parallel wrapper
-# invocation must not `docker rm -f` it (and therefore kill the
-# nascent session). See the [Wrapper kills running container]
-# memory — the schwab-web-dump bug we're avoiding repeating.
-#
-# Pass VIAC_FORCE_REPLACE=1 to override (useful when the live
-# session is known-stuck and we genuinely want to recycle).
+# Safety guard: refuse to clobber a RUNNING container. Two
+# concurrent viac-dump invocations would race on
+# /secrets/viac-state.json (login writes, download reads).
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${VIAC_FORCE_REPLACE:-0}" != "1" ]]; then
         echo "viac-dump: a container named '$CONTAINER_NAME' is already running." >&2
-        echo "  Refusing to evict it — that would kill any live VIAC session." >&2
+        echo "  Refusing to evict — that could clobber a state-file write in progress." >&2
         echo "  Options:" >&2
         echo "    * Use a different name:    VIAC_CONTAINER=otherthing $0 $*" >&2
         echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
@@ -151,21 +98,19 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | 
     echo "viac-dump: VIAC_FORCE_REPLACE=1 — evicting live container" >&2
 fi
 
-# Evict any prior (stopped) container with this name (best-effort
-# — no-op when the name isn't in use). Past this point we've
-# already refused to clobber a RUNNING container; this only
-# affects exited-but-not-cleaned-up state.
+# Evict any prior (stopped) container with this name — no-op
+# when the name isn't in use. Past this point we've already
+# refused to clobber a RUNNING container; only stopped state
+# is affected.
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 exec docker run --rm --name "$CONTAINER_NAME" \
     ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e VIAC_LOGIN \
     -e VIAC_PASSWORD \
     -v "$HOST_SECRETS:/secrets" \
     -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
     -v "$HERE:/app" \
     "$IMAGE" "$@"
