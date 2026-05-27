@@ -216,9 +216,9 @@ CREATE TABLE positions (
     sub_asset_class        TEXT,                                 -- raw (SHARES_SWITZERLAND/...)
     currency_code          TEXT,                                 -- native fund currency
     name                   TEXT,
-    amount                 REAL,                                 -- CHF value of the holding
+    amount                 REAL,                                 -- fund UNITS held (VIAC's JSON key, despite the name; renamed to `quantity` in 0002)
     ratio                  REAL,                                 -- fraction of portfolio (0..1)
-    ratio_chf              REAL,                                 -- ratioInChf from VIAC payload
+    ratio_chf              REAL,                                 -- CHF market value (= amount * asset_price; renamed to `market_value_chf` in 0002)
     acquisition_price      REAL,                                 -- cost basis per unit (CHF)
     asset_price            REAL,                                 -- current price per unit (CHF)
     rate_of_return         REAL,                                 -- VIAC's per-position return %

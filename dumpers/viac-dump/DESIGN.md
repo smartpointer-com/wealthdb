@@ -222,9 +222,9 @@ the overview.
 | --- | --- | --- |
 | `schema_meta` | `silver_schema_version` | Migration version registry. |
 | `dump_runs` | `snapshot_at` | One row per ingested bronze run; full `run.json` in `payload`. Promotes `dry_run`, `with_transaction_documents`, document-counter columns. |
-| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. |
+| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. `management_style` is `'automated'` for every VIAC account today (see §7). |
 | `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). Currently only `balance_kind='cash'` (`assetsOverview.cashAmount`); schema extensible. |
-| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | ACTUAL holdings from `assetsOverview` (not target allocation). `instrument_external_id` is the ISIN. Promotes both wealthdb-canonical `asset_class` and VIAC's raw `viac_asset_class` + `sub_asset_class` for forensics. |
+| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | ACTUAL holdings from `assetsOverview` (not target allocation). `instrument_external_id` is the ISIN. Promotes `quantity` (fund units; VIAC's confusingly-named `amount` JSON field), `market_value_chf` (CHF mark-to-market; VIAC's `ratioInChf`), `ratio` (fraction of portfolio), `acquisition_price`, `asset_price`, both wealthdb-canonical `asset_class` and VIAC's raw `viac_asset_class` + `sub_asset_class` for forensics. |
 | `instruments` | `instrument_external_id` | Slow-changing master data; ISIN-keyed. Upserts advance `last_seen_at`. |
 | `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). |
 | `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. NOT per-portfolio (VIAC's API doesn't expose per-portfolio history). |
@@ -263,15 +263,18 @@ contract:
   - `'3'` (Pillar-3a) → `'pillar_3a'`
   - `'2'` (PVB) → `'vested_benefits'`
   - `'1'` (INV, not yet observed) → `'taxable_personal'`
-- `accounts.management_style` = `'automated'` for ALL VIAC
-  accounts. VIAC is robo-advisor-shaped — the holder picks a
-  strategy from a menu (or builds one within VIAC's
+- `accounts.management_style` is carried in silver (added in
+  migration 0002); the loader sets it to `'automated'` for
+  every account. VIAC is robo-advisor-shaped — the holder
+  picks a strategy from a menu (or builds one within VIAC's
   concentration limits), then rebalancing runs by rules. The
   custom-strategy capability looks self-directed but isn't:
   the holder can only pick from VIAC's listed fund universe,
   with concentration / risk-level guards. Same management
-  style as Relevate's FZ products (which are similarly
-  robo-shaped with even narrower strategy choice).
+  style as Relevate's FZ products. If VIAC ever ships a
+  non-robo product line, the loader branches without a
+  wealthdb release (the adapter reads silver's column
+  directly).
 - `accounts.account_kind`:
   - `'brokerage'` for ACTIVE p3a portfolios
   - `'cash'` for PASSIVE pvb portfolios until the pvb endpoint

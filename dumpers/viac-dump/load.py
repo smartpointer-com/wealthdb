@@ -299,6 +299,11 @@ def load_accounts_phase(
             "strategy": strategy_payload or None,
         }
 
+        # management_style: every VIAC product line we've observed
+        # is robo-managed (see DESIGN.md §7). The column is set
+        # explicitly here so the loader documents the contract; if
+        # VIAC ever ships a non-robo product, this branches on
+        # product_code or strategy.
         conn.execute(
             """
             INSERT INTO accounts (
@@ -311,8 +316,9 @@ def load_accounts_phase(
                 custody_bank, remainder_allocation,
                 investment_type, interest_rate,
                 foundation, portfolio_type,
+                management_style,
                 currency_code, payload
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 snapshot_at, number,
@@ -329,6 +335,7 @@ def load_accounts_phase(
                 strategy_payload.get("interestRate"),
                 entry.get("foundation"),
                 entry.get("portfolioType"),
+                "automated",
                 "CHF",
                 canonical_json(merged_payload),
             ),
@@ -393,13 +400,17 @@ def load_positions_phase(
                         number, viac_class, pos.get("name"),
                     )
                     continue
+                # VIAC's JSON key `amount` carries units (NOT CHF —
+                # that's `ratioInChf`); the silver columns are
+                # named `quantity` / `market_value_chf` after the
+                # 0002 rename to match canonical / gold semantics.
                 conn.execute(
                     """
                     INSERT INTO positions (
                         snapshot_at, account_external_id, instrument_external_id,
                         asset_class, viac_asset_class, sub_asset_class,
                         currency_code, name,
-                        amount, ratio, ratio_chf,
+                        quantity, ratio, market_value_chf,
                         acquisition_price, asset_price, rate_of_return,
                         payload
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -408,8 +419,9 @@ def load_positions_phase(
                         snapshot_at, number, isin,
                         canonical, viac_class, pos.get("subAssetClassType"),
                         pos.get("currencyCode"), pos.get("name"),
-                        pos.get("amount"),
-                        pos.get("ratio"), pos.get("ratioInChf"),
+                        pos.get("amount"),         # → quantity
+                        pos.get("ratio"),
+                        pos.get("ratioInChf"),     # → market_value_chf
                         pos.get("acquisitionPrice"),
                         pos.get("assetPrice"),
                         pos.get("rateOfReturn"),
