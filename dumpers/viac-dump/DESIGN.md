@@ -1,475 +1,336 @@
 # viac-dump — design
 
 Design document for the `viac-dump` toolkit. The audience is the
-engineer (current author, future contributor) implementing and
-maintaining `explore.py`, `login.py`, `download.py`, and the
-silver loader against the live `app.viac.ch` SPA. It is also the
-contract between this silver and a future `wealthdb` VIAC adapter.
-
-This document is the planning artefact, not the journal.
-Decisions that get revised should be revised here, in place. The
-silver-schema sketch in §8 is deliberately under-specified until
-Phase 1 discovery reveals VIAC's actual JSON shape; the rest of
-the design is committed.
+engineer (current author, future contributor) maintaining
+`login.py`, `download.py`, and `load.py` against the live
+`app.viac.ch` SPA. It is also the contract between this silver
+and a future `wealthdb` VIAC adapter.
 
 The shared three-layer model (bronze on disk, silver SQLite +
 JSON1, gold DuckDB cross-bank canonical) is documented in
 [`schwab-api-dump/DESIGN.md`](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md);
 this document only covers what's VIAC-specific.
 
+## Status
+
+| Verb | Status |
+| --- | --- |
+| `login.py` | implemented (pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600) |
+| `download.py` | implemented (pure httpx; `--with-transaction-documents` gate; hard-link dedup across prior bronze runs; h2-stream-drop retry) |
+| `load.py` + `migrations/0001_initial.sql` | implemented (idempotent on `dump_runs.snapshot_at`) |
+
+What's NOT implemented: PVB (Pillar-2 vested-benefits) per-
+portfolio endpoint surface — `accounts` carries the inventory
+entry but positions / strategy / fees aren't fetched. See §9.
+
 ## 1. Context and non-goals
 
-### 1.1 Why a web scraper
+### 1.1 Why a scraper
 
 VIAC has no retail-accessible read API. The provider supplies a
 web SPA at `app.viac.ch` and a companion mobile app; both run on
-top of the same internal backend, but neither's API surface is
-exposed for personal aggregation:
+the same internal backend, but neither's API surface is exposed
+for personal aggregation:
 
-- **OpenWealth** — B2B-only. VIAC's parent (WIR Group / Terzo) has
-  no published retail OpenWealth participation.
-- **PSD2** — Switzerland is outside the EU PSD2 regime; the Swiss
-  fintech-driven alternative (Open Banking Project Switzerland)
-  has no Pillar-3a coverage today.
-- **Aggregators** — Plaid / TrueLayer / Tink / Powers / Akoya all
-  decline Pillar-3a providers as too niche.
+- **OpenWealth** — B2B-only. VIAC's parent (WIR Group / Terzo)
+  has no published retail OpenWealth participation.
+- **PSD2** — Switzerland is outside the EU PSD2 regime.
+- **Aggregators** — Plaid / TrueLayer / Tink / Powers / Akoya
+  all decline Pillar-3a providers as too niche.
 - **Email feeds** — "document available" notifications with no
   payload.
 
-The remaining channel is the SPA driven under Playwright. VIAC is
-a relatively small Swiss financial-services brand and the SPA is
-likely vanilla anti-CSRF + session cookies, not Akamai-grade
-fingerprinting — so the starting point is the
-[swissquote-dump](https://github.com/ptu/swissquote-dump) /
-[ubs-web-dump](https://github.com/ptu/ubs-web-dump) shape (vanilla
-Playwright Chromium), not the
-[schwab-web-dump](https://github.com/ptu/schwab-web-dump) /
-[fidelity-web-dump](https://github.com/ptu/fidelity-web-dump)
-shape (Camoufox).
+The remaining channel is the SPA's REST surface, which is plain
+JSON over cookies (Airlock IAM session cookie + double-submit-
+cookie CSRF). The toolkit replays it with httpx — no browser
+needed for the operational path.
 
 ### 1.2 Account composition
 
-VIAC users typically hold:
+VIAC's `/rest/web/wealth/portfolio-inventory` returns three
+arrays:
 
-- One **Vorsorgekonto** — interest-bearing cash sub-account, the
-  default landing for new contributions before they're invested.
-- One or more **Vorsorge-Portfolios** — investment sleeves, each
-  with a chosen strategy (e.g. Global 100 / Global 60 /
-  Sustainable 40) and a per-strategy allocation across underlying
-  ETFs / index funds.
+- `p3a[]` — Pillar-3a portfolios. Per-portfolio strategy /
+  positions / fees endpoints exist.
+- `pvb[]` — Pillar-2 vested-benefits portfolios. Typically
+  PASSIVE while still actively employed; per-portfolio
+  endpoint surface not yet mapped (see §9).
+- `inv[]` — VIAC's non-retirement investment product line.
+  Empty for users who only hold retirement assets.
 
-The toolkit must enumerate and scrape every sub-account. The
-silver schema needs to discriminate cash vs investment sleeves
-because the gold-layer `account_kind` differs (`cash` vs
-`brokerage`).
+The first dotted segment of each portfolio number encodes the
+product line: `3.*` is p3a, `2.*` is pvb, `1.*` is inv.
 
 ### 1.3 Non-goals
 
-- **Real-time / near-real-time pull.** MFA gates every truly-fresh
-  login.
+- **Real-time / near-real-time pull.** SMS mTAN gates every
+  fresh login.
 - **Strategy changes, contributions, beneficiary edits,
-  withdrawals.** See [CLAUDE.md §1](CLAUDE.md) — the contract is
-  read-only.
-- **MFA automation.** Human-in-the-loop on every truly-fresh
-  login; see §5.
+  withdrawals.** See [CLAUDE.md §1](CLAUDE.md) — the contract
+  is read-only.
+- **MFA automation.** Human-in-the-loop on every fresh login.
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
-- **The VIAC mobile app's signed-payload feed.** If it exists and
-  is reachable, it lives in a separate `viac-mobile-dump` repo;
-  this toolkit covers the web SPA only.
+- **The VIAC mobile app's signed-payload feed.** If reachable
+  it lives in a separate `viac-mobile-dump` repo.
 
-## 2. SPA / hash-route handling
+## 2. Auth + REST surface
 
-VIAC's portal is a JavaScript single-page application served at
-`https://app.viac.ch/`. The login URL is a hash-route:
+VIAC's portal is a JS SPA whose backend is JSON-over-cookies.
+The login URL is a hash-route:
 
 ```
 https://app.viac.ch/#/ext(modal:core/session/login)
 ```
 
-Two consequences for the scraper:
+— but the toolkit doesn't load it; the auth flow is a sequence
+of REST calls. The SPA's hash-route is operationally irrelevant
+once you know the wire shape.
 
-1. **Wait for content, not page-load events.** The initial HTTP
-   response is a small SPA shell. Playwright's `wait_for_load_state`
-   fires before the SPA bootstraps. Every navigation that depends
-   on a particular view being rendered must wait for an explicit
-   landmark (`page.wait_for_selector`, or a network response that
-   the view's data hangs on).
-2. **Direct navigation to deep hash routes is unreliable.** Setting
-   `location.hash` after the SPA has bootstrapped is the convention
-   for sibling SPAs (`swissquote-dump` does this for the `#documents`
-   route); pre-bootstrap hash navigation tends to be stripped. The
-   expected pattern is: navigate to `https://app.viac.ch/`, wait
-   for the SPA to mount, then mutate `location.hash`.
+### 2.1 Auth flow (replayed by `login.py`)
 
-The structured data is **almost certainly behind XHR / fetch
-calls returning JSON**. Phase 1 discovery exists to capture those
-bodies; the silver loader will likely consume them directly
-rather than DOM-scraping HTML. The bronze tree is therefore
-JSON-first, with HTML kept as a fallback for views that turn out
-to be server-rendered or to have no clean endpoint.
+```
+GET    /                                          (sets AL_SESS-S + CSRFT<N>-S cookies)
+DELETE /external-login/public/authentication/flow/        (clear stale flow; 204)
+POST   /external-login/public/authentication/password/check/
+       {"username": "<E.164 phone>", "password": "<...>"}   (200; SMS sent)
+POST   /external-login/public/authentication/mtan/otp/check/
+       {"otp": "<code>"}                                    (200)
+GET    /external-login/public/authentication/               (200; session confirmed)
+POST   /rest/web/customer/loginHook                         (204; web-side activate)
+```
+
+After step 4 the `AL_SESS-S` cookie is server-side promoted
+from anonymous to authenticated; the cookie value itself
+doesn't rotate. `CSRFT<N>-S` (digit suffix is bundle-build-
+bound) is echoed as the `x-csrft<N>` request header on
+POST / PUT / PATCH / DELETE only. See `viac_client.py` for the
+double-submit-cookie machinery.
+
+### 2.2 Data surface (replayed by `download.py`)
+
+| Endpoint | Returns |
+| --- | --- |
+| `/rest/web/customer/current/<N-N>` | customer profile |
+| `/rest/web/wealth/portfolio-inventory` | p3a / pvb / inv arrays |
+| `/rest/web/wealth/summary` | daily NAV time series (cross-portfolio) |
+| `/rest/web/wealth/allocation` | cross-portfolio allocation breakdown |
+| `/rest/web/p3a/portfolio/<num>/strategySummary` | strategy / risk / custody bank |
+| `/rest/web/p3a/portfolio/<num>/assetsOverview` | per-fund holdings + cost basis |
+| `/rest/web/p3a/portfolio/<num>/fees-<N>` | fee config |
+| `/rest/web/p3a/portfolio/transactions` | all transactions, keyed by portfolio number |
+| `/rest/web/document/<N-N>` | document index (~1000+ entries) |
+| `/files/document/<docid>` | PDF binary |
+
+Several endpoints carry build-bound `/N-N` version suffixes
+(`customer/current/7-5`, `notification/6-2`, `document/7-0`,
+`fees-70`). The values appear stable per VIAC deploy. They're
+hardcoded as constants in `download.py`; if they rotate, the
+loader fails fast with a clear error.
+
+No pagination needed — `transactions` and `document` return
+the full set in one response.
 
 ## 3. Identity strategy
 
-Two key identifiers must be stable across runs and bridgeable to
-the future `wealthdb` VIAC adapter:
-
 ### 3.1 `account_external_id`
 
-Provisional choice: **whatever opaque per-account identifier VIAC
-uses in its own JSON payloads.** Most SPAs key sub-accounts on
-either a UUID or a short numeric/string code embedded in API URLs
-(`/api/v1/accounts/<id>/positions`). Phase 1 discovery will
-confirm the shape. The bronze loader stores the verbatim VIAC
-identifier; the silver loader promotes it to
-`accounts.account_external_id`.
+The dotted portfolio number, verbatim: `<product>.<customer-id>.<portfolio-index>`.
 
-If VIAC also surfaces a customer-visible account number (e.g. a
-12-digit Pillar-3a contract number on the annual statement PDF),
-the loader carries that as a secondary `account_contract_number`
-column in `accounts.payload` for human-readability and for the
-wealthdb-side cross-bank bridge.
+Examples (placeholder shape — synthetic):
+- `3.NNN.NNN.NNN.NN` (Pillar-3a)
+- `2.NNN.NNN.NNN.O` / `2.NNN.NNN.NNN.U` (PVB mandatory / extra-mandatory)
+- `1.NNN.NNN.NNN.NN` (INV, not yet observed)
+
+Silver promotes the first dotted segment to `product_code` and
+the last to `portfolio_index` for the gold-layer `tax_wrapper`
+mapping (see §7).
 
 ### 3.2 `instrument_external_id`
 
-VIAC's investment sleeves hold a small basket of ETFs / index
-funds (e.g. CSIF Switzerland Equity, iShares Core MSCI World).
-**ISIN** is the natural cross-bank join key (`wealthdb`'s
-`instruments.isin` is the canonical index) and ISIN is almost
-certainly carried in VIAC's per-position JSON. The adapter keys
-`instrument_external_id` on ISIN where present, falling back to
-the fund's short code if ISIN is absent on a specific row.
+**ISIN.** VIAC carries an ISIN on every position; the silver
+loader uses it directly as the per-instrument key. Mirrors
+wealthdb gold's `instruments.isin` so cross-bank joins are
+free.
 
 ### 3.3 `transaction_external_id`
 
-Provisional choice: **synthetic SHA-256 prefix over the row's
-promoted columns** (`account | occurred_at | kind | amount |
-currency | counterparty-or-symbol`), mirroring the swissquote /
-schwab-web pattern. VIAC may expose a stable per-event ID — if
-so, the adapter uses it; otherwise the synthetic hash converges
-under the gold-layer window-DELETE-then-INSERT model.
+Synthetic SHA-256 prefix over
+`(account | type | value_date | amount_chf | document_number)`.
+VIAC doesn't surface a stable per-event id on the wire — the
+`documentNumber` is shared across some legs of corporate-
+action pairs, so we hash a tuple. Deterministic → re-loading
+the same bronze converges.
 
-### 3.4 Wealthdb bridge
+## 4. Anti-bot — resolved
 
-The wealthdb gold layer has `accounts.tax_wrapper = 'pillar_3a'`
-for these accounts. The VIAC adapter:
+VIAC's backend is plain JSON over cookies. No fingerprinting,
+no JS challenge, no anti-replay guard observed at any of the
+endpoints in §2. Vanilla httpx with a realistic Chrome
+User-Agent + the SPA's standard headers (see
+`viac_client.py:DEFAULT_HEADERS`) gets through every endpoint
+the toolkit needs.
 
-- Sets every VIAC `accounts.tax_wrapper` to `pillar_3a`.
-- Maps the Vorsorgekonto sub-account to `account_kind = 'cash'`.
-- Maps each Vorsorge-Portfolio sub-account to
-  `account_kind = 'brokerage'` (or whatever the post-Phase-1 shape
-  best fits — `account_kind = 'custody'` is a possibility if VIAC
-  is technically the custodian and the investment-strategy
-  manager is the underlying fund issuer).
-- Sets `management_style = 'self_directed'` for the cash sub-
-  account; for the investment sleeves, the choice between
-  `self_directed` (user picks the strategy from VIAC's menu) and
-  `automated` (the strategy itself runs rule-driven rebalancing)
-  is open until Phase 1 confirms the product model.
+If VIAC later adds an anti-bot layer (e.g. an Akamai upgrade),
+the escalation path mirrors the sibling repos: stealth
+plugins, then Camoufox-patched Firefox. None of the existing
+code would need to change beyond the underlying HTTP client.
 
-## 4. Anti-bot strategy
-
-Three rungs, in escalation order. The current target is **rung
-1**.
-
-| Rung | Configuration | Use when |
-| --- | --- | --- |
-| 1 | Vanilla Playwright + stock headless Chromium, persistent profile dir | Default. The starting target. |
-| 2 | + stealth plugins / undetected-chromedriver-style tweaks | If rung 1 fingerprints get flagged. |
-| 3 | Camoufox-patched Firefox (à la schwab-web-dump / fidelity-web-dump) | Last resort if VIAC ships Akamai-grade detection. |
-
-VIAC is a smaller Swiss brand and not generally believed to
-deploy Akamai Bot Manager; rung 1 should suffice. The Phase 1
-discovery container is built to support all three rungs by
-mounting the profile dir read-write under `/secrets/viac-profile/`
-— escalating to rung 3 means swapping the browser launch line
-without touching the rest of the toolkit.
-
-## 5. Bootstrap flow
-
-Three phases, in order. Phase N+1 requires Phase N's artefacts.
-
-### 5.1 Phase 1 — VNC-driven exploration (`vnc-explore`)
-
-Container starts Xvfb + x11vnc + fluxbox on display `:99`,
-forwards VNC on `127.0.0.1:5900` with a fresh single-use password
-printed to stderr, and runs `explore.py` in a long-timeout
-loop. The operator:
-
-1. Connects with a VNC viewer.
-2. Logs in to VIAC by hand.
-3. Completes 2FA on their phone.
-4. Clicks through every relevant view:
-   - Account / portfolio list.
-   - Per-account positions / allocation (the pie-chart strategy
-     view).
-   - Per-account contribution / transaction history.
-   - Documents area (annual statements, *Bescheinigungen*, fund
-     prospectuses if present).
-   - Any "export" / "download" / "PDF" buttons on each view.
-
-Before the operator connects, `explore.py` pre-fills the
-`VIAC_LOGIN` / `VIAC_PASSWORD` env-var values into the SPA login
-form. macOS Screen Sharing (the default VNC client on the
-operator's host) does not synchronise the host clipboard with the
-in-container browser, so without pre-fill the operator would have
-to type the password character-by-character through VNC. The
-operator still completes the click on "Log in" and the 2FA tap
-on their phone via the VNC viewer (so we burn no MFA push the
-operator didn't trigger themselves).
-
-The username-field selector is heuristic: locate the visible
-`input[type="password"]`, then mark the closest preceding visible
-non-password input as the login field. Phase 1 confirms whether
-that holds for VIAC's exact form (or whether a fixed selector
-should replace the heuristic in Phase 2's `login.py`).
-
-While the operator clicks, `explore.py` records:
-
-- Every request URL + method + status, plus request and response
-  headers (excluding `Cookie` / `Authorization`, which are
-  separately captured under a redacted storage snapshot).
-- Every response body for `application/json` — full, since
-  VIAC's SPA almost certainly returns clean JSON here.
-- Every response body for `text/html`.
-- Every DOM snapshot at the URLs the operator lands on.
-- Every download trigger + the resulting file.
-- Screenshots at each landmark.
-- Cookies + `localStorage` + `sessionStorage` at logical
-  waypoints (SPAs commonly stash auth tokens in storage rather
-  than cookies).
-
-Output lands under `--discovery-dir`. No default; must be
-user-provided per [CLAUDE.md §3](CLAUDE.md). Conventional path:
-`/debug/discovery-<UTC-ts>/` on the container side,
-`~/.cache/viac-dump-debug/discovery-<UTC-ts>/` on the host.
-
-**Long-timeout human-in-the-loop.** Per the
-[No immediate-response interactive flows] memory: the operator
-may take an hour to complete the walk-through. `explore.py`'s
-session-end heuristic must therefore be either operator-driven
-(a "press Enter when done" stdin prompt, or a sentinel URL
-visited by the operator) or a generous inactivity timer (≥1
-hour). Do not impose a tight wall-clock cap.
-
-### 5.2 Phase 2 — persistent session minting (`login`)
-
-With Phase 1's discovery logs in hand, `login.py`:
-
-- Maintains a persistent browser profile dir at
-  `/secrets/viac-profile/` (configurable path, NOT in
-  `~/.secrets/` for debug artefacts — see [CLAUDE.md §3](CLAUDE.md)
-  for the secrets-vs-debug separation).
-- On invocation:
-  - If the profile already has a valid session, probe one cheap
-    landmark URL (or one of the discovered JSON endpoints) and
-    exit successfully with no MFA.
-  - Otherwise: launch Chromium (headed or headless), navigate to
-    the hash-route login URL, wait for the SPA login form to
-    render, fill login + password from the env vars, surface the
-    2FA prompt on stdin (`VIAC 2FA: enter the code`), wait for
-    the post-MFA landing.
-- Persists the session token / cookie set so the next
-  `download.py` run can skip MFA if the session's still alive.
-- `--check` mode: probe-only, no credential submit, reports
-  "session alive / dead". Allowed without asking the user (see
-  [CLAUDE.md §2](CLAUDE.md)).
-- Running `login.py` without `--check` (mints a fresh session,
-  fires an MFA push) is **not** allowed without the user's
-  explicit ask.
-
-### 5.3 Phase 3 — bronze scrape (`download`)
-
-After login is reliable, `download.py` iterates over every
-account and downloads:
-
-- Positions / allocations (preferring whatever structured JSON
-  the SPA endpoints surface; falling back to DOM scraping for
-  any view that turns out to be server-rendered or to have no
-  clean endpoint).
-- Transactions / contributions for the longest available window.
-- Documents (PDFs; *Bescheinigungen* highest priority).
-
-Manifests each run as `run.json` (timestamp, accounts seen,
-per-phase counts, paths to artefacts).
-
-`--dry-run` walks the UI to confirm selectors / endpoints still
-match landmarks, exits without exporting. Allowed without asking.
-Live `download.py` runs are not allowed without the user's
-explicit ask.
-
-## 6. Login + MFA flow
-
-Working assumptions (to be confirmed by Phase 1):
-
-1. The login URL is a hash-route SPA modal:
-   `https://app.viac.ch/#/ext(modal:core/session/login)`.
-2. The login form takes a username (`VIAC_LOGIN`) and a password
-   (`VIAC_PASSWORD`) loaded from `~/.secrets/viac.env`.
-3. The 2FA mechanism is in-app TOTP / push via VIAC's own
-   mobile app. (Plausible based on VIAC's product positioning;
-   to be confirmed.)
-4. The post-auth session sets either a session cookie, a bearer
-   token in `localStorage`, or both. The profile-dir-based
-   approach handles either case transparently.
-
-### 6.1 The `--check` probe
-
-The probe must be cheap (one short HTTP request, no UI walk)
-AND must not refresh the session (some session backends extend
-the cookie lifetime on every request — fine if VIAC works that
-way; if not, the probe must use a verb that doesn't extend the
-session). Phase 1 discovery picks the cheapest authenticated
-JSON endpoint as the probe target.
-
-### 6.2 Long timeouts on human-in-the-loop steps
-
-Per the [No immediate-response interactive flows] memory:
-
-- `vnc-explore` waits for the operator with a multi-hour timeout
-  (default 4h); the operator may need to find their phone,
-  authenticate to the VIAC mobile app, complete biometric, and
-  walk every view.
-- `login.py` (non-`--check`) prompts on stdin with a multi-hour
-  timeout.
-- `download.py` does not gate on human input.
-
-The wrapper sets no hard wall-clock timeout on `docker run`; the
-operator decides when to ctrl-C.
-
-## 7. Bronze layout
-
-Mirrors the sibling projects.
+## 5. Bronze layout
 
 ```
-<bronze-dir>/                            e.g. ~/wealthdb/viac/
-├── 20260526T120000Z/                    one bronze dump per run
-│   ├── run.json                         manifest: accounts, per-phase counts
-│   ├── positions/
-│   │   └── <account>/                   one dir per sub-account
-│   │       ├── positions.json           SPA response, verbatim
-│   │       └── positions.html           DOM fallback
-│   ├── transactions/
-│   │   └── <account>/
-│   │       ├── transactions_<since>__<until>.json
-│   │       └── transactions_<since>__<until>.html
+<bronze-dir>/                          e.g. ~/wealthdb/viac/
+├── <YYYYMMDDTHHMMSSZ>/                one bronze dump per run
+│   ├── run.json                       manifest (timestamp, flags, doc counts)
+│   ├── customer.json                  /rest/web/customer/current/<N-N>
+│   ├── wealth/
+│   │   ├── portfolio-inventory.json   master list (p3a + pvb + inv)
+│   │   ├── summary.json               daily NAV time series across all wealth
+│   │   └── allocation.json            cross-portfolio allocation breakdown
+│   ├── positions/<portfolio-num>/
+│   │   ├── strategy.json
+│   │   ├── assets.json                current holdings per fund
+│   │   └── fees.json
+│   ├── transactions/all.json          every tx keyed by portfolio
 │   ├── documents/
-│   │   ├── <doc_id>.pdf                 Bescheinigungen, statements, ...
-│   │   └── ...
-│   └── allocations/                     post-Phase-1: per-portfolio target weights
-│       └── <account>/allocations.json
-├── 20260527T120000Z/
-│   └── ...
-├── manual/                              user-uploaded bronze artefacts
-└── viac.db                              silver SQLite (default name)
+│   │   ├── index.json                 document catalogue
+│   │   └── <docid>.pdf                PDF binaries (see gating below)
+│   └── (manual/ ... user-uploaded artefacts; same dedup path)
+└── viac.db                            silver SQLite (default name)
 ```
 
-`run.json` carries the customer / login dimension (hashed so an
-`ls` of the bronze tree doesn't expose the raw login), per-
-account inventory, the transaction window bounds, and per-
-document metadata. The canonical mapping `hash → raw login` lives
-in the manifest of the most recent run only, never tracked.
+**PDF gating** (`download.py`):
 
-Phase 1 discovery dumps stay in `/debug/discovery-<UTC-ts>/`,
-outside the bronze tree.
+- **Default**: download non-TRANSACTION docs (statements,
+  Bescheinigungen, contracts, investment profiles) plus
+  `SECURITY_FUSION` TRANSACTION docs — the only place the
+  old→new ISIN mapping for fund mergers lives.
+- **`--with-transaction-documents`**: also download the per-
+  event TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE,
+  INTEREST, DIVIDEND_CANCELLATION).
 
-## 8. Silver schema sketch
+**Cross-run dedup** — PDFs are hard-linked from prior bronze
+runs when the document number matches, so a re-run only
+fetches genuinely-new documents.
 
-**Deliberately under-specified until Phase 1 discovery lands.**
-VIAC's JSON shape will dictate the column inventory; pre-
-designing it would either over-fit or under-fit the actual
-response. The committed parts:
+## 6. Silver schema
 
-- One row per (snapshot, account, position_key) on `positions`;
-  per-account JSON payload as `payload`.
-- One row per (occurred_at, account, transaction_external_id) on
-  `transactions`; per-event JSON payload as `payload`.
-- One row per (account_external_id, snapshot_at) on `accounts`;
-  per-account JSON payload as `payload`.
-- One row per (content_sha256) on `documents`; PDFs themselves
-  stay on disk.
+Materialised in [`migrations/0001_initial.sql`](migrations/0001_initial.sql);
+read that file for column-level commentary, this section for
+the overview.
+
+| Table | PK | Purpose |
+| --- | --- | --- |
+| `schema_meta` | `silver_schema_version` | Migration version registry. |
+| `dump_runs` | `snapshot_at` | One row per ingested bronze run; full `run.json` in `payload`. Promotes `dry_run`, `with_transaction_documents`, document-counter columns. |
+| `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. |
+| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). Currently only `balance_kind='cash'` (`assetsOverview.cashAmount`); schema extensible. |
+| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | ACTUAL holdings from `assetsOverview` (not target allocation). `instrument_external_id` is the ISIN. Promotes both wealthdb-canonical `asset_class` and VIAC's raw `viac_asset_class` + `sub_asset_class` for forensics. |
+| `instruments` | `instrument_external_id` | Slow-changing master data; ISIN-keyed. Upserts advance `last_seen_at`. |
+| `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). |
+| `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. NOT per-portfolio (VIAC's API doesn't expose per-portfolio history). |
+| `documents` | `content_sha256` | Content-deduped PDF index. Promotes `viac_doc_id`, `doc_type`, `doc_subtype`, `timestamp`, `product`. `bronze_path` is relative to bronze root. |
 
 Migrations land under `migrations/NNNN_<slug>.sql`. The loader
-runs pending migrations on every invocation. Same discipline as
-the siblings — never rewrite an applied migration, always add a
-new file.
+runs pending migrations on every invocation. Same discipline
+as the sibling repos — never rewrite an applied migration,
+always add a new file.
 
-## 9. Gold-layer integration
+### 6.1 Validation against the first real load
+
+Two bronze dumps (one full, one re-fetch of a single missed PDF)
+loaded into silver:
+
+| Table | Count |
+| --- | --- |
+| `accounts` | 14 (7 portfolios × 2 snapshots) |
+| `cash_balances` | 10 |
+| `positions` | 80 (8 funds × 5 p3a × 2 snapshots) |
+| `instruments` | 16 (distinct ISINs) |
+| `transactions` | 972 (4 collapsed; see §9 open Q5) |
+| `wealth_history` | 3284 (1642 daily × 2 snapshots) |
+| `documents` | 1019 (content-dedup'd; 1018 in both, 1 only in second) |
+
+Re-running `load` is a no-op (`dump_runs.snapshot_at` is the
+idempotency anchor).
+
+## 7. Gold-layer integration
 
 VIAC silver feeds a future `wealthdb` VIAC adapter (separate
 commit in the wealthdb repo; out of scope here). The adapter
 contract:
 
-- `accounts.tax_wrapper` = `'pillar_3a'` for every account.
-- `account_kind` distinguishes the Vorsorgekonto (`cash`) from
-  the Vorsorge-Portfolios (`brokerage` or `custody`, TBD).
-- `instruments.isin` is the cross-bank join key.
-- `transactions.kind` maps from VIAC's discriminator into
-  wealthdb's canonical taxonomy (`buy` / `sell` / `dividend` /
-  `coupon` / `fee` / `tax` / `deposit` / `withdrawal` /
-  `interest` / `corporate_action` / `transfer_in` /
-  `transfer_out` / `journal` / `other`).
+- `accounts.tax_wrapper` derived from `product_code`:
+  - `'3'` (Pillar-3a) → `'pillar_3a'`
+  - `'2'` (PVB) → `'vested_benefits'`
+  - `'1'` (INV, not yet observed) → `'taxable_personal'`
+- `accounts.management_style` = `'automated'` for ALL VIAC
+  accounts. VIAC is robo-advisor-shaped — the holder picks a
+  strategy from a menu (or builds one within VIAC's
+  concentration limits), then rebalancing runs by rules. The
+  custom-strategy capability looks self-directed but isn't:
+  the holder can only pick from VIAC's listed fund universe,
+  with concentration / risk-level guards. Same management
+  style as Relevate's FZ products (which are similarly
+  robo-shaped with even narrower strategy choice).
+- `accounts.account_kind`:
+  - `'brokerage'` for ACTIVE p3a portfolios
+  - `'cash'` for PASSIVE pvb portfolios until the pvb endpoint
+    surface is mapped
+- `instruments.isin` is the cross-bank join key (always
+  populated; VIAC ships ISIN on every position).
+- `transactions.kind` is already mapped in silver via
+  `VIAC_TX_KIND_MAP` in `load.py`. Adapter projects 1:1.
 - `LatestChangeNumber` = `MAX(dump_runs.snapshot_at)`, or `-1`
   if `dump_runs` is empty.
 
-The taxonomy mapping table will be filled out in the wealthdb
-adapter's own design doc once Phase 1 confirms VIAC's transaction
-discriminator values.
-
-## 10. What we do NOT do
+## 8. What we do NOT do
 
 - **Mutations** — no contributions, no strategy changes, no
   withdrawals, no beneficiary edits. See [CLAUDE.md §1](CLAUDE.md).
-- **MFA automation** — human-in-the-loop on every truly-fresh
-  login. See [CLAUDE.md §3](CLAUDE.md).
+- **MFA automation** — human-in-the-loop on every fresh login.
 - **Cron / launchd / GitHub-Actions scheduling** — see
-  [CLAUDE.md §2](CLAUDE.md). Unattended runs can't pass the MFA
-  gate anyway.
-- **Cross-bank semantic alignment** — gold's job, not silver's.
-- **The VIAC mobile app's payload** — out of scope; if it
-  becomes a viable channel, a separate `viac-mobile-dump` repo.
+  [CLAUDE.md §2](CLAUDE.md). Unattended runs can't pass the
+  mTAN gate anyway.
+- **Cross-bank semantic alignment** — gold's job.
+- **PDF body parsing for transaction documents** — Phase 1
+  established that the per-transaction PDFs carry rich data
+  for TRADE / DIVIDEND / FUSION events (ISIN, units, FX rate,
+  old→new ISIN map). Parsing them into structured silver
+  events is a future migration; today silver records them
+  only by sha256 + (type, subType) metadata.
+- **The VIAC mobile app's payload** — separate `viac-mobile-dump`
+  repo if ever.
 
-## 11. Open questions
+## 9. Open questions
 
-Recorded here so Phase 1 discovery is targeted. Each gets either
-"answered, here's what we found" or "still open" in the next
-revision of this document.
+Outstanding work — currently neither implemented nor blocking:
 
-1. **2FA mechanism.** In-app TOTP, push via VIAC's mobile app,
-   SMS fallback, or something else? Affects the `login.py` stdin
-   prompt wording.
-2. **Session storage.** Cookie-only, `localStorage` bearer
-   token, both? Determines the probe path for
-   `login.py --check`.
-3. **Session lifetime.** How long does an idle session last? How
-   long does an active session last? Determines the runbook for
-   "I logged in this morning, can I still run `download.py` this
-   evening?".
-4. **Per-account API shape.** Does VIAC return a clean
-   per-account `/accounts/<id>/positions.json`-style endpoint, or
-   are positions buried in a graph-shaped composite response?
-   Determines whether the loader can stay JSON-first or has to
-   fall back to DOM scraping.
-5. **Document IDs.** What does the URL / filename of a downloaded
-   PDF look like? Stable per document or regenerated per
-   request? Determines the bronze dedup key.
-6. **Contribution / *Bescheinigung* identifier.** Is the annual
-   tax certificate keyed on `(year, customer_id)` or on a unique
-   document ID? Determines how the silver loader dedups across
-   years.
-7. **Multi-account API.** Does the SPA require switching
-   sub-accounts in the UI (and the URL) before each account's
-   data is fetched, or is there a consolidated endpoint? Affects
-   the `download.py` walk order.
-8. **Currency.** All Pillar-3a balances are CHF, but the
-   underlying ETFs may price in USD / EUR. Does VIAC surface the
-   per-fund native currency + FX rate, or only the CHF-converted
-   value? Determines the `cash_balances` / `positions` columns.
-9. **Strategy identifier.** Is the per-portfolio strategy
-   (`Global 100`, `Sustainable 40`, …) emitted as a stable
-   machine identifier, a free-text label, or both? The wealthdb
-   adapter needs the stable form for the `management_style`
-   discriminator.
-10. **Anti-bot escalation triggers.** Does rung 1 (vanilla
-    Playwright Chromium) get all the way through login, or does
-    something flag the headless / persistent-profile combination?
-    First Phase 1 attempt is the empirical test.
+1. **Session lifetime.** Airlock typically defaults to ~30 min
+   idle / ~8 h absolute. Determine empirically with periodic
+   `login --check` runs.
+2. **`/N-N` endpoint suffixes rotating.** Hardcoded as
+   constants today. If VIAC ever rotates, the loader fails
+   fast with a clear "endpoint changed" pointer (we don't
+   silently 404).
+3. **PVB per-portfolio endpoints.** PVB portfolios are present
+   in the inventory but `download.py` doesn't fetch their
+   detail. If a future VIAC user has ACTIVE PVB, mapping the
+   `/pvb/portfolio/<num>/...` surface matters; symmetric to
+   p3a is the likely shape.
+4. **`INV` product line.** Not observed in any user; the
+   `inv[]` array is in the inventory schema. Mapping to
+   wealthdb `tax_wrapper='taxable_personal'` is speculative
+   until we see one.
+5. **Transaction collision rate.** 4/976 source rows collapsed
+   in silver on identical-to-16-decimals (account, type, date,
+   amount, doc) keys — most likely duplicate reports of the
+   same dividend in VIAC's API rather than legitimately
+   distinct events. Worth a follow-up if a future bronze dump
+   shows a higher collision rate, which would suggest the
+   synthesizer needs a row-index disambiguator.
+6. **Transaction-document PDF body parsing.** TRADE / DIVIDEND
+   / SECURITY_FUSION PDFs carry data not in the JSON
+   (per-event ISIN, units, FX rate, old→new ISIN mapping for
+   fusions). A future loader pass could project these into a
+   structured silver column. Phase 1 inspected the layouts;
+   the work is mechanical pdfplumber given that.
