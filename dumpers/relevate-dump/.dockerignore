@@ -1,0 +1,52 @@
+# Keep the build context lean and credential-free.
+
+# VCS
+.git/
+.gitignore
+.github/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Documentation that the image doesn't need at runtime
+README.md
+CLAUDE.md
+DESIGN.md
+
+# Credentials and downloaded data — must never enter the image
+*.pem
+*.key
+relevate_state*.json
+.env
+.envrc
+relevate.env
+data/
+downloads/
+
+# Local logs / traces
+*.log
+
+# Silver databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
