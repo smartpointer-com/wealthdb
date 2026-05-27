@@ -114,9 +114,35 @@ fi
 # user's VNC client can connect. Bind to 127.0.0.1 only — the VNC
 # server inside the container has no password and we don't want
 # it reachable from the LAN.
+#
+# Default host port is 5900 (IANA VNC display :0), but if it's
+# already taken (another VNC server, a prior crashed container
+# whose `docker run -p` lingers, a stray macOS Screen Sharing
+# session...) we walk +1 until something is free. The container
+# side always binds to 5900 — only the host-side mapping moves.
+# The host-port number is passed through as VNC_HOST_PORT so the
+# in-container entrypoint can print correct tunnelling
+# instructions. The cap at +100 is defensive — if every TCP port
+# in that range is taken the host has bigger problems than VNC.
 EXTRA_ARGS=()
 if [[ "${1:-}" == "vnc-login" ]]; then
-    EXTRA_ARGS+=(-p 127.0.0.1:5900:5900)
+    vnc_host_port=""
+    for ((p = 5900; p <= 6000; p++)); do
+        if ! lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+            vnc_host_port="$p"
+            break
+        fi
+    done
+    if [[ -z "$vnc_host_port" ]]; then
+        echo "schwab-web-dump: no free TCP port between 5900-6000 on this host." >&2
+        echo "  Close some applications and retry." >&2
+        exit 3
+    fi
+    if [[ "$vnc_host_port" != "5900" ]]; then
+        echo "schwab-web-dump: 127.0.0.1:5900 is taken; using ${vnc_host_port} instead." >&2
+    fi
+    EXTRA_ARGS+=(-p "127.0.0.1:${vnc_host_port}:5900")
+    EXTRA_ARGS+=(-e "VNC_HOST_PORT=${vnc_host_port}")
 fi
 
 # Safety guard: refuse to clobber a live container.

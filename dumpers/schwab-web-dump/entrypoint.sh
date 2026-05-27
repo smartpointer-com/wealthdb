@@ -67,8 +67,9 @@ case "${1:-help}" in
         # code challenge (security question, push-to-device) is
         # required. A fresh VNC password is generated each
         # launch and printed to stderr; the wrapper publishes
-        # the port on 127.0.0.1:5900 only — tunnel from your
-        # laptop with ssh -L.
+        # the port on 127.0.0.1 only (typically 5900, but moves
+        # +1 each time 5900 is already taken on the host) —
+        # tunnel from your laptop with ssh -L.
         start_xvfb
         # openssl rand -hex 8 is a single command, no pipe — so
         # `set -euo pipefail` doesn't trip on SIGPIPE the way
@@ -77,12 +78,18 @@ case "${1:-help}" in
         x11vnc -display ":$VFB_DISPLAY" -passwd "$VNC_PASSWORD" \
             -forever -shared -rfbport 5900 -bg \
             -o /tmp/x11vnc.log >/dev/null 2>&1
-        echo "vnc-login: VNC ready on 127.0.0.1:5900" >&2
+        # The wrapper picks the host-side port (it knows which
+        # ones are free); we publish it through this env var so
+        # the messages below print the actual port the operator
+        # needs to tunnel. Defaults to 5900 for direct
+        # `docker run` invocations that skip the wrapper.
+        host_port="${VNC_HOST_PORT:-5900}"
+        echo "vnc-login: VNC ready on 127.0.0.1:${host_port}" >&2
         echo "vnc-login: password (single-use):  $VNC_PASSWORD" >&2
         echo "vnc-login: tunnel from your laptop with" >&2
-        echo "vnc-login:   ssh -L 5900:127.0.0.1:5900 <mbp-host>" >&2
+        echo "vnc-login:   ssh -L ${host_port}:127.0.0.1:${host_port} <mbp-host>" >&2
         echo "vnc-login: then on the laptop:" >&2
-        echo "vnc-login:   open vnc://localhost:5900" >&2
+        echo "vnc-login:   open vnc://localhost:${host_port}" >&2
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \

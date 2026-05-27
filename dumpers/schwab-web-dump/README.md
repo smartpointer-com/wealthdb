@@ -144,7 +144,10 @@ The CLI is intentionally minimal:
 # Prints:
 #   vnc-login: VNC ready on 127.0.0.1:5900
 #   vnc-login: password (single-use):  <16 hex chars>
-# Then on your laptop:
+# (If 5900 is already taken on the host — another VNC server, a
+# stray macOS Screen Sharing session — the wrapper walks +1 to
+# the first free port and announces it before the banner above.)
+# Then on your laptop, using the port the wrapper printed:
 ssh -L 5900:127.0.0.1:5900 <mbp-host>      # tunnel
 open vnc://localhost:5900                  # macOS Screen Sharing
 # (use the single-use password printed above)
