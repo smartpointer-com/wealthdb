@@ -14,6 +14,7 @@ import (
 	_ "github.com/ptu/wealthdb/internal/silver/schwab"
 	_ "github.com/ptu/wealthdb/internal/silver/swissquote"
 	_ "github.com/ptu/wealthdb/internal/silver/ubs"
+	_ "github.com/ptu/wealthdb/internal/silver/viac"
 )
 
 func main() {
