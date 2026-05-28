@@ -1,5 +1,5 @@
 -- ============================================================
--- fidelity-web-dump silver, migration 0003 — management_style on accounts.
+-- fidelity-web silver, migration 0003 — management_style on accounts.
 --
 -- Follow-up to the gold-layer punch list note in DESIGN.md §11.6:
 -- Fidelity does NOT emit a per-account management-style indicator

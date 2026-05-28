@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-log = logging.getLogger("swissquote-dump.load")
+log = logging.getLogger("swissquote.load")
 
 # All transaction times in Swissquote CSVs are wall-clock Europe/Zurich
 # (CET in winter, CEST in summer). The loader converts to UTC epoch

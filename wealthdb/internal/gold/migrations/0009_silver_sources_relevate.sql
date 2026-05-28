@@ -1,5 +1,5 @@
 -- Add 'relevate' to the silver_kind CHECK constraint so the
--- relevate adapter (silver source: relevate-dump) can be
+-- relevate adapter (silver source: relevate) can be
 -- registered alongside schwab / ubs / swissquote / fidelity.
 --
 -- DuckDB doesn't support modifying a CHECK constraint in place,

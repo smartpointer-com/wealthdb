@@ -1,5 +1,5 @@
 -- ============================================================
--- schwab-web-dump silver schema, migration 0002
+-- schwab-web silver schema, migration 0002
 -- — per-statement position snapshots and cash-flow summaries.
 --
 -- Schwab Trader API coverage starts mid-2024;
@@ -33,7 +33,7 @@
 -- columns (currency, debits, credits) from polluting the
 -- security-position schema.
 --
--- Mirrors ubs-web-dump/migrations/0002 in structure, with
+-- Mirrors ubs-web/migrations/0002 in structure, with
 -- Schwab-specific column renames (instrument_key vs.
 -- instrument_isin, account suffix vs. portfolio_external_id
 -- pair).

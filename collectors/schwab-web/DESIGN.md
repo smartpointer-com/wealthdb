@@ -225,7 +225,7 @@ but that's a gold-layer derivation, not a silver one.
 
 ## 5. Recommendations for schwab-api
 
-These are nice-to-haves for the api-dump maintainer; the web
+These are nice-to-haves for the schwab-api maintainer; the web
 silver doesn't strictly need any of them.
 
 - **Persist a stable mapping `hashValue → accountNumber` in

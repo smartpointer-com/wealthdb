@@ -142,7 +142,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 //                          override can pin per-account values.
 //
 // ManagementStyle comes from silver's promoted column
-// `accounts.management_style` (added in fidelity-web-dump silver
+// `accounts.management_style` (added in fidelity-web silver
 // migration 0003 — '529' → 'self_directed', 'trust_managed' →
 // 'discretionary', 'other'/NULL → NULL). Pre-v3 silvers don't
 // have the column; the adapter degrades gracefully via a

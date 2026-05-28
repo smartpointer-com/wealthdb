@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-viac-dump Phase 2: session minter (pure httpx, no browser).
+viac Phase 2: session minter (pure httpx, no browser).
 
 Replays VIAC's auth flow against `app.viac.ch`, prompts for the
 mTAN SMS code on stdin, and persists the resulting cookies +
@@ -46,7 +46,7 @@ import httpx
 
 from viac_client import ViacClient
 
-log = logging.getLogger("viac-dump.login")
+log = logging.getLogger("viac.login")
 
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/viac.env"),

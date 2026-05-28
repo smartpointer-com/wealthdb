@@ -35,7 +35,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
-log = logging.getLogger("swissquote-dump.download")
+log = logging.getLogger("swissquote.download")
 
 # Same UA as login.py — Swissquote's anti-bot heuristics may key on
 # the UA across requests within a session, so we hold it constant.

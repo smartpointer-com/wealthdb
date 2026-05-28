@@ -1,5 +1,5 @@
 -- ============================================================
--- ubs-web-dump silver schema, migration 0003 — backfill
+-- ubs-web silver schema, migration 0003 — backfill
 -- historical_position_snapshots.portfolio_external_id
 --
 -- Before this migration, the PDF parser in pdf_parsers.py

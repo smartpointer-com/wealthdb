@@ -33,7 +33,7 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-log = logging.getLogger("ubs-web-dump.login")
+log = logging.getLogger("ubs-web.login")
 
 # Real desktop Chrome UA, not HeadlessChrome. Banks commonly sniff
 # `HeadlessChrome` and either block or add anti-bot steps; this

@@ -19,7 +19,7 @@ gold layer that needs to converge them.
   (manual map for accounts; date-splice for transactions) and a
   **logical-document dedup** on the web side because Schwab
   regenerates PDFs per download.
-- The api-dump itself does **not** need to change. One nice-to-have
+- The schwab-api collector itself does **not** need to change. One nice-to-have
   suggested below; everything else is gold-layer work.
 
 ---

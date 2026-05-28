@@ -10,7 +10,7 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// Historical-snapshot reader for the ubs-web-dump silver
+// Historical-snapshot reader for the ubs-web silver
 // migration 0002 tables (`historical_position_snapshots`,
 // `historical_cash_balances`). These tables are reconstructed
 // from PDF Statements of Assets (quarterly) and Account Statements

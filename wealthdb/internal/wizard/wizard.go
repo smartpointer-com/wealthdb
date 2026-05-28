@@ -226,7 +226,7 @@ func probeSilverDB(path string) error {
 		return fmt.Errorf("could not inspect schema: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("file is missing the `dump_runs` table — is it really a silver SQLite from a *-dump tool?")
+		return fmt.Errorf("file is missing the `dump_runs` table — is it really a silver SQLite from a wealthdb collector?")
 	}
 	return nil
 }

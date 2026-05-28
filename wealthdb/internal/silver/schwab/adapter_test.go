@@ -238,7 +238,7 @@ func TestSnapshotsBasic(t *testing.T) {
 }
 
 // TestSnapshotsAccountNicknameAndInstrumentEnrichment covers the
-// schwab-api-dump v3 enhancements: the promoted `nickname` column on
+// schwab-api v3 enhancements: the promoted `nickname` column on
 // accounts populates AccountChange.Nickname, and the optional
 // `instruments` table fills in InstrumentChange.Name when the
 // per-position descriptor has no description (typical for the

@@ -1,5 +1,5 @@
 -- Add 'viac' to the silver_kind CHECK constraint so the viac
--- adapter (silver source: viac-dump) can be registered alongside
+-- adapter (silver source: viac) can be registered alongside
 -- schwab / ubs / swissquote / fidelity / relevate.
 --
 -- Same DuckDB rename-table workaround as migrations 0007 (fidelity),

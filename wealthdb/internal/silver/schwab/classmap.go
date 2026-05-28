@@ -43,7 +43,7 @@ func isCashAssetType(rawAssetType string) bool {
 
 // taxWrapperFor maps the verbatim Schwab statement registration
 // label (silver column `accounts.account_registration` populated
-// by schwab-web-dump from statement-PDF parsing — see that
+// by schwab-web from statement-PDF parsing — see that
 // repo's silver migration 0003) to the canonical TaxWrapper
 // enum. The Trader API doesn't expose this; statement PDFs are
 // the only source on the Schwab side.

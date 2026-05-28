@@ -1,5 +1,5 @@
 -- ============================================================
--- viac-dump silver schema, migration 0002.
+-- viac silver schema, migration 0002.
 --
 -- Three changes, all driven by feedback from the first wealthdb
 -- VIAC adapter pass:

@@ -1,5 +1,5 @@
 -- ============================================================
--- fidelity-web-dump silver, migration 0002 — gold-layer feedback.
+-- fidelity-web silver, migration 0002 — gold-layer feedback.
 --
 -- Four nice-to-have changes the gold-side adapter author flagged:
 --

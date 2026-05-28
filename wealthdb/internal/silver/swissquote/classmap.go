@@ -5,7 +5,7 @@ import "github.com/ptu/wealthdb/internal/canonical"
 // taxWrapperFor maps the silver-side `accounts.account_product`
 // label (Swissquote's per-account product designation, scraped
 // from the eBanking account-overview page) to the canonical
-// TaxWrapper enum. Mapping is documented in the swissquote-dump
+// TaxWrapper enum. Mapping is documented in the swissquote
 // README's "Gold-layer integration" section; keep the two
 // aligned when either side changes.
 //

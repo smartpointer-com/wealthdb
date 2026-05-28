@@ -19,7 +19,7 @@ toolkit inherits. The rest of this document covers only how
 
 ## 3. The toolkit: three scripts
 
-Each `*-dump` repo should expose three top-level tools with these
+Each collector should expose three top-level tools with these
 responsibilities. Names and shapes don't have to match exactly, but
 the separation of concerns does.
 
@@ -506,7 +506,7 @@ Will need adaptation:
   a per-asset-class JSON shape in `payload` — pick after looking at
   real bronze samples.
 
-If you're starting a new `*-dump` repo, the recommended order is:
+If you're starting a new collector, the recommended order is:
 1. Implement `login.py` first (you need credentials before anything
    else). Cap effort at "mints a token / verifies a key".
 2. Implement `download.py` and write the bronze format to disk. Stop

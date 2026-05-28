@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Bronze → silver loader for schwab-web-dump.
+Bronze → silver loader for schwab-web.
 
 Walks a bronze tree (one or more `<UTC-ts>/` dirs produced by
 download.walk()), applies any pending schema migrations, and
 loads each bronze dump into the silver SQLite database defined
 by `migrations/0001_initial.sql`.
 
-The silver schema mirrors `schwab-api-dump`'s conventions so the
+The silver schema mirrors `schwab-api`'s conventions so the
 gold layer can splice the two feeds with minimal special-casing.
 See migration 0001 for the full identifier-convention rationale,
 including the irreconcilable differences (account-id space,
@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pdf_parsers as pp
 
-log = logging.getLogger("schwab-web-dump.load")
+log = logging.getLogger("schwab-web.load")
 
 # Bronze run-dir names look like `20260520T120000Z`. Parsed into
 # Unix seconds UTC for snapshot_at.
@@ -155,7 +155,7 @@ def _parse_pdf_worker(args: tuple[str, int]) -> dict:
 def canonical_json(obj) -> str:
     """JSON encoding suitable for content-dedup: stable key order,
     no whitespace, ensure_ascii=False so non-ASCII labels compare
-    bit-for-bit. Matches schwab-api-dump's convention."""
+    bit-for-bit. Matches schwab-api's convention."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False)
 
@@ -324,7 +324,7 @@ def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
                     account_external_id: str, payload_dict: dict) -> bool:
     """Insert (snapshot_at, account_external_id) row only when its
     canonical payload differs from the most recent row for the
-    same account_external_id. Mirrors schwab-api-dump.load_accounts.
+    same account_external_id. Mirrors schwab-api.load_accounts.
 
     Returns True if a row was inserted, False if dedup skipped it."""
     payload = canonical_json(payload_dict)

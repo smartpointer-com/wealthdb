@@ -1,5 +1,5 @@
 -- ============================================================
--- ubs-psn-dump silver schema, migration 0002 —
+-- ubs-psn silver schema, migration 0002 —
 --   canonicalise account identifiers across silver tables, and
 --   promote portfolio linkage / base currency from payload JSON to
 --   first-class columns.

@@ -20,6 +20,6 @@ Pillow>=10.0,<12
 pdfplumber>=0.11,<1
 
 # pytest is bundled in the image so tests can be run inside the
-# container with `./ubs-web-dump sh -c "cd /app && pytest"`, no
+# container with `./ubs-web sh -c "cd /app && pytest"`, no
 # host-side Python toolchain required.
 pytest>=8,<9

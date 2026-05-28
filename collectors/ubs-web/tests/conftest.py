@@ -1,4 +1,4 @@
-"""Pytest configuration for ubs-web-dump.
+"""Pytest configuration for ubs-web.
 
 Puts the repo root on `sys.path` so test modules can `import
 pdf_parsers`, `load`, etc. without an installable package layout.

@@ -94,7 +94,7 @@ _MONTH_NUMS = {
 # Account", "Education Savings", etc.) at the very top of page
 # 1, adjacent to the account number. This is the only Schwab-
 # side signal for the per-account tax wrapper — the Trader API
-# doesn't surface it (see schwab-api-dump DESIGN.md §4.10).
+# doesn't surface it (see schwab-api DESIGN.md §4.10).
 # wealthdb's gold adapter maps the verbatim string we return
 # here to its canonical `tax_wrapper` enum.
 #

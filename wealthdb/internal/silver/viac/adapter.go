@@ -1,4 +1,4 @@
-// Package viac projects the viac-dump silver SQLite (VIAC /
+// Package viac projects the viac silver SQLite (VIAC /
 // Terzo / WIR Group Swiss Pillar-3a + vested-benefits app) into
 // canonical change records.
 //

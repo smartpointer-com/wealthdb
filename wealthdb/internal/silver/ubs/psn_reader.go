@@ -2,7 +2,7 @@ package ubs
 
 import "database/sql"
 
-// psnReader reads from the ubs-psn-dump silver SQLite. Methods are
+// psnReader reads from the ubs-psn silver SQLite. Methods are
 // spread across snapshots.go / transactions.go / status.go — this
 // file just defines the type and lifecycle.
 type psnReader struct {

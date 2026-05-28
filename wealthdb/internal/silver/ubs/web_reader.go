@@ -11,7 +11,7 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// webReader reads from the ubs-web-dump silver SQLite. It owns
+// webReader reads from the ubs-web silver SQLite. It owns
 // the splice cutoff: every record passed downstream has either no
 // known PSN counterpart (no cutoff) or a value/snapshot timestamp
 // strictly less than PSN-start for its banking relationship.

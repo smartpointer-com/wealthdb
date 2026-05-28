@@ -2,7 +2,7 @@ package fidelity
 
 import "github.com/ptu/wealthdb/internal/canonical"
 
-// assetClassFor maps fidelity-web-dump's `positions.asset_class`
+// assetClassFor maps fidelity-web's `positions.asset_class`
 // (the silver-side classification: 'equity' / 'etf' / 'mutual_fund'
 // / 'bond' / 'plan_fund' / 'money_market' / ...) to the canonical
 // AssetClass. Unknown / empty values fall through to AssetClassOther.

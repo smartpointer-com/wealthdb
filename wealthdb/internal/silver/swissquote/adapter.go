@@ -1,4 +1,4 @@
-// Package swissquote projects the swissquote-dump silver SQLite
+// Package swissquote projects the swissquote silver SQLite
 // into canonical change records. See docs/adapters/swissquote.md
 // for the mapping contract.
 package swissquote

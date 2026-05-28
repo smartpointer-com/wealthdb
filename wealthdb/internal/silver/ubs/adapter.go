@@ -1,4 +1,4 @@
-// Package ubs projects the ubs-psn-dump silver SQLite into
+// Package ubs projects the ubs-psn silver SQLite into
 // canonical change records. See docs/adapters/ubs.md for the
 // mapping contract.
 package ubs

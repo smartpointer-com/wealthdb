@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-schwab-api-dump silver loader.
+schwab-api silver loader.
 
 Reads bronze JSON dumps (produced by download.py) and inserts them into
 a SQLite silver database. Applies any pending schema migrations on
@@ -11,7 +11,7 @@ Usage:
     load.py --silver-db <path> --bronze-dir <path>
 
 Each immediate subdirectory of <bronze-dir> whose name matches the
-schwab-api-dump timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
+schwab-api timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
 Already-loaded dumps (recorded in dump_runs) are skipped.
 """
 

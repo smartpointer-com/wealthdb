@@ -5,7 +5,7 @@
 # rejected at credential-submit with the generic "Sorry, we can't
 # complete this action right now" page. Camoufox's `os="macos"` mode
 # spoofs the entire fingerprint stack consistently, presenting as a
-# macOS Firefox to Akamai. See DESIGN.md §6 and the schwab-web-dump
+# macOS Firefox to Akamai. See DESIGN.md §6 and the schwab-web
 # precedent for the same vendor.
 #
 # camoufox-py 0.4.11 (Jan 2025) downloads Firefox 135.0.1-beta.24
@@ -29,6 +29,6 @@ playwright==1.49.0
 pdfplumber>=0.11,<1
 
 # pytest is bundled in the image so tests can be run inside the
-# container with `./fidelity-web-dump sh -c "cd /app && pytest"`,
+# container with `./fidelity-web sh -c "cd /app && pytest"`,
 # no host-side Python toolchain required.
 pytest>=8,<9

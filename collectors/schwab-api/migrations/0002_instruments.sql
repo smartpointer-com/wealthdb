@@ -1,5 +1,5 @@
 -- ============================================================
--- schwab-api-dump silver schema, migration 0002 — add instruments table.
+-- schwab-api silver schema, migration 0002 — add instruments table.
 --
 -- Background: Schwab's positions and transactions endpoints omit the
 -- `description` field for assetType=EQUITY but populate it for every

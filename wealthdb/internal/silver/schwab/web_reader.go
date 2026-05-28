@@ -11,7 +11,7 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// webReader reads from the schwab-web-dump silver SQLite. The web
+// webReader reads from the schwab-web silver SQLite. The web
 // feed complements the api feed by:
 //
 //   - Backfilling transactions older than each account's

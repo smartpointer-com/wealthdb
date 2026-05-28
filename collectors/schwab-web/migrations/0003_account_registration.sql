@@ -1,12 +1,12 @@
 -- ============================================================
--- schwab-web-dump silver schema, migration 0003
+-- schwab-web silver schema, migration 0003
 -- — per-account `account_registration` column.
 --
 -- The wealthdb gold layer carries a `tax_wrapper` column on its
 -- canonical `accounts` (traditional_ira / roth_ira /
 -- coverdell_esa / 529 / custodial_utma / custodial_ugma /
 -- trust_* / etc.). Schwab's Trader API doesn't surface the
--- wrapper (see schwab-api-dump DESIGN.md §4.10), so the only
+-- wrapper (see schwab-api DESIGN.md §4.10), so the only
 -- per-account signal we can derive is the registration line
 -- Schwab prints at the top of page 1 of every statement PDF
 -- — "Schwab One® International Account", "Contributory IRA",

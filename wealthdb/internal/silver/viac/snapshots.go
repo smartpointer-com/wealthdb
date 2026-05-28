@@ -93,7 +93,7 @@ ORDER BY snapshot_at`
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// silver may or may not carry a promoted `management_style`
-	// column (forward-compat with a future viac-dump loader
+	// column (forward-compat with a future viac loader
 	// update). When present, the silver value wins; otherwise
 	// the default is `automated` — every observed VIAC product
 	// is robo-managed.
@@ -236,7 +236,7 @@ SELECT instrument_external_id, COALESCE(isin, ''),
 }
 
 func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// silver column semantics (viac-dump schema v2):
+	// silver column semantics (viac schema v2):
 	//   quantity           = number of fund units held
 	//   market_value_chf   = CHF market value (= quantity * asset_price)
 	//   acquisition_price  = per-unit cost basis in CHF

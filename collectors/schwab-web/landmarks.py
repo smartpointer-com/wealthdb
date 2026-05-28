@@ -163,7 +163,7 @@ DATE_RANGE_VALUES = (
     "Custom",
 )
 # 3-month default matches the convention of the sibling
-# *-dump tools (schwab-api-dump, ubs-psn-dump, ubs-web-dump).
+# collectors (schwab-api, ubs-psn, ubs-web).
 # Bump explicitly with `--range Last10Years` for a full backfill.
 DATE_RANGE_DEFAULT = "Last3Months"
 

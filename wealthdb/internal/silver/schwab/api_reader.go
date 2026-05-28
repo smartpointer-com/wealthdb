@@ -2,7 +2,7 @@ package schwab
 
 import "database/sql"
 
-// apiReader reads from the schwab-api-dump silver SQLite. Methods
+// apiReader reads from the schwab-api silver SQLite. Methods
 // are spread across snapshots.go / transactions.go / status.go —
 // this file just defines the type and lifecycle. Mirrors
 // internal/silver/ubs/psn_reader.go.

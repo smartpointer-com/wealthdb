@@ -1,5 +1,5 @@
 -- ============================================================
--- relevate-dump silver schema, migration 0001 — initial schema.
+-- relevate silver schema, migration 0001 — initial schema.
 --
 -- Migration discipline: every change lands as a new numbered file
 -- in this directory. The loader checks the maximum applied

@@ -1,5 +1,5 @@
 -- ============================================================
--- ubs-web-dump silver schema, migration 0001 — initial schema.
+-- ubs-web silver schema, migration 0001 — initial schema.
 --
 -- The web-scraped silver complements the PSN-fed silver
 -- (`ubs-psn`, `~/wealthdb/ubs-psn/ubs-psn.db`). Gold-layer logic
@@ -20,7 +20,7 @@
 -- the `payload` JSON column. Mirror of the PSN silver convention.
 --
 -- ------------------------------------------------------------
--- Identifier conventions (designed to align with ubs-psn-dump)
+-- Identifier conventions (designed to align with ubs-psn)
 -- ------------------------------------------------------------
 --
 --   account_external_id

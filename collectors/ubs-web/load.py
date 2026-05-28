@@ -40,7 +40,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-log = logging.getLogger("ubs-web-dump.load")
+log = logging.getLogger("ubs-web.load")
 
 # UTC timestamp directory pattern from download.py's ts_slug().
 DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")

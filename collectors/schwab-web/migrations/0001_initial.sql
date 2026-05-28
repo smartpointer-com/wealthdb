@@ -1,7 +1,7 @@
 -- ============================================================
--- schwab-web-dump silver schema, migration 0001 — initial schema.
+-- schwab-web silver schema, migration 0001 — initial schema.
 --
--- The web-scraped silver complements `schwab-api-dump`'s
+-- The web-scraped silver complements `schwab-api`'s
 -- Trader-API silver. Gold-layer logic merges the two by splicing
 -- transactions at the date Schwab's Trader API access started
 -- (mid-2024) and falling back to the web feed for
@@ -14,7 +14,7 @@
 -- always conform to the latest schema; no backward-compatible
 -- drift.
 --
--- Storage conventions (mirror schwab-api-dump + ubs-*):
+-- Storage conventions (mirror schwab-api + ubs-*):
 --   * Unix-seconds-UTC integers for all timestamps.
 --   * Stable filter columns promoted; rest in `payload` TEXT JSON.
 --   * Snapshot tables monotemporal on snapshot_at (PK starts with
@@ -25,13 +25,13 @@
 --
 -- ------------------------------------------------------------
 -- Identifier conventions (and irreconcilable differences with
--- schwab-api-dump — flagged so the gold layer can join correctly)
+-- schwab-api — flagged so the gold layer can join correctly)
 -- ------------------------------------------------------------
 --
 --   account_external_id
 --     The trailing 3-to-5-digit account suffix Schwab renders in
 --     the UI ("…NNN"). NOT the same value space as
---     schwab-api-dump's `account_external_id`, which is the
+--     schwab-api's `account_external_id`, which is the
 --     opaque `hashValue` returned by /accounts/accountNumbers.
 --     Gold cannot join web↔api on this column directly. The
 --     bridge is the FULL account number, which web statement
@@ -46,7 +46,7 @@
 --     "<account_external_id>|<date>|<amount>|<description>|
 --      <symbol>|<index_within_statement>|<source_document_sha256>".
 --     This is stable across re-loads but NOT join-able with
---     schwab-api-dump's `activity_id`, which is the Schwab
+--     schwab-api's `activity_id`, which is the Schwab
 --     activityId/orderId. Gold must match web↔api transactions
 --     by (resolved account, timestamp, amount, description)
 --     with tolerance, NOT by activity_id.
@@ -174,7 +174,7 @@ CREATE INDEX ix_documents_kind         ON documents(doc_kind);
 -- layer so new categories don't need a migration.
 --
 -- `source` distinguishes the bronze artefact this row came from.
--- Not constrained at the schema layer (mirroring api-dump's
+-- Not constrained at the schema layer (mirroring schwab-api's
 -- `kind`) so new sources can land without a migration. Known
 -- values today:
 --   'statement_pdf'     parsed by pdf_parsers from monthly /

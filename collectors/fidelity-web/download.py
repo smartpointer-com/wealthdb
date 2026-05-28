@@ -86,7 +86,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-log = logging.getLogger("fidelity-web-dump.download")
+log = logging.getLogger("fidelity-web.download")
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ product line: `3.*` is p3a, `2.*` is pvb, `1.*` is inv.
 - **MFA automation.** Human-in-the-loop on every fresh login.
 - **Cross-bank semantic alignment.** `wealthdb` gold's job.
 - **The VIAC mobile app's signed-payload feed.** If reachable
-  it lives in a separate `viac-mobile-dump` repo.
+  it lives in a separate `viac-mobile` repo.
 
 ## 2. Auth + REST surface
 
@@ -298,7 +298,7 @@ The silver-side facts the adapter reads:
   old→new ISIN map). Parsing them into structured silver
   events is a future migration; today silver records them
   only by sha256 + (type, subType) metadata.
-- **The VIAC mobile app's payload** — separate `viac-mobile-dump`
+- **The VIAC mobile app's payload** — separate `viac-mobile`
   repo if ever.
 
 ## 9. Open questions

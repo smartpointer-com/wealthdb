@@ -1,11 +1,11 @@
 -- ============================================================
--- schwab-api-dump silver schema, migration 0004 — promote
+-- schwab-api silver schema, migration 0004 — promote
 -- account_number on accounts.
 --
 -- The accountNumber from /accounts/accountNumbers is already stored
 -- inside accounts.payload (added in migration 0001 / refined in 0003).
 -- Promoting it as a real column lets downstream consumers — notably
--- the wealthdb gold layer's bridge against schwab-web-dump (see
+-- the wealthdb gold layer's bridge against schwab-web (see
 -- INTEROP.md §1) — join on the plaintext account number directly,
 -- without a json_extract per row.
 --

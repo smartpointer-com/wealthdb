@@ -2,7 +2,7 @@ package fidelity
 
 import "github.com/ptu/wealthdb/internal/canonical"
 
-// kindFor maps fidelity-web-dump's `transactions.kind` (the
+// kindFor maps fidelity-web's `transactions.kind` (the
 // first word of Fidelity's "Action" column, e.g. "BUY",
 // "DIVIDEND", "CASH_SWEEP_IN") to canonical TxKind values.
 //

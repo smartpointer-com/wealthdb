@@ -1,7 +1,7 @@
 -- ============================================================
--- fidelity-web-dump silver schema, migration 0001 — initial schema.
+-- fidelity-web silver schema, migration 0001 — initial schema.
 --
--- Built to mirror schwab-web-dump and ubs-web-dump's silver
+-- Built to mirror schwab-web and ubs-web's silver
 -- conventions so the (planned) `wealthdb` Fidelity adapter can
 -- compose with the sibling silvers using the same shapes.
 --

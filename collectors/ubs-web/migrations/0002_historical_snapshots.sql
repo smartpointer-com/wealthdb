@@ -1,5 +1,5 @@
 -- ============================================================
--- ubs-web-dump silver schema, migration 0002 — historical snapshots
+-- ubs-web silver schema, migration 0002 — historical snapshots
 -- reconstructed from PDF documents in the bronze archive.
 --
 -- Two new tables, both as-of-date-keyed:

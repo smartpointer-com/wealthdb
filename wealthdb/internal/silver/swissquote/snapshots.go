@@ -99,7 +99,7 @@ ORDER BY snapshot_at`
 // `account_type` on pre-v5 silvers) into both AccountCategory
 // (free-text descriptor, preserved verbatim) and TaxWrapper
 // (canonical enum, mapped per the table documented in the
-// swissquote-dump README "Gold-layer integration" section):
+// swissquote README "Gold-layer integration" section):
 //
 //   Trading / Savings      → taxable_personal (default)
 //   Säule 3a               → pillar_3a

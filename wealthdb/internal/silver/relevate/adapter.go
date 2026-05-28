@@ -1,4 +1,4 @@
-// Package relevate projects the relevate-dump silver SQLite
+// Package relevate projects the relevate silver SQLite
 // (Swiss Pillar-2 vested-benefits foundation: Pensexpert /
 // pens-expert.ch) into canonical change records.
 //

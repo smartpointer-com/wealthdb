@@ -28,7 +28,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module: DOM landmarks + URL constants
 
-log = logging.getLogger("swissquote-dump.login")
+log = logging.getLogger("swissquote.login")
 
 # Real Chrome UA, not HeadlessChrome. Banks commonly sniff
 # `HeadlessChrome` and either block or add extra anti-bot steps; this

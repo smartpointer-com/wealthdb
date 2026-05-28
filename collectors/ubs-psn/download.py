@@ -64,7 +64,7 @@ ORDER_TYPES = (
     "ZMD", "ZME", "ZMG",
 )
 
-log = logging.getLogger("ubs-psn-dump")
+log = logging.getLogger("ubs-psn")
 
 
 def sha256_fingerprint(key: paramiko.PKey) -> str:

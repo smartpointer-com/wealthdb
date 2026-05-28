@@ -1802,7 +1802,7 @@ Sketch of where this lands when designed:
   pages. The chosen source dictates the bronze format.
 - **Layer.** Likely its own silver-equivalent (a separate
   bronze→silver pipeline, possibly as a new sibling collector like
-  `marketdata-dump`), feeding into gold via the same plugin
+  `marketdata`), feeding into gold via the same plugin
   contract as the bank silvers — `Adapter`, `Status`, `ChangeWindow`,
   `Snapshots`, `Transactions`. Reusing the plugin pattern means
   gold doesn't have to special-case market data.

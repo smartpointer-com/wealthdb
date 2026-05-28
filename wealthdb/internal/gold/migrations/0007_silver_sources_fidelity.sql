@@ -1,5 +1,5 @@
 -- Add 'fidelity' to the silver_kind CHECK constraint so the
--- fidelity adapter (silver source: fidelity-web-dump) can be
+-- fidelity adapter (silver source: fidelity-web) can be
 -- registered alongside schwab / ubs / swissquote.
 --
 -- DuckDB doesn't support modifying a CHECK constraint in place,

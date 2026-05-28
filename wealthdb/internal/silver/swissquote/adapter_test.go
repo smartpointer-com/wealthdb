@@ -106,7 +106,7 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 	}
 }
 
-// TestSnapshotsInstrumentNameAndISIN verifies the swissquote-dump
+// TestSnapshotsInstrumentNameAndISIN verifies the swissquote
 // v3 `name` and `isin` columns surface on the InstrumentChange,
 // and that the per-bank identifier becomes the ISIN when one is
 // known (column-level on this row, or inherited from another row
@@ -227,7 +227,7 @@ func keysOf(m map[string]canonical.InstrumentChange) []string {
 }
 
 // TestSnapshotsAccountCategoryPassthrough verifies the
-// swissquote-dump v2 `account_type` column is forwarded as
+// swissquote v2 `account_type` column is forwarded as
 // AccountCategory, and that the empty string maps to nil (older
 // snapshots predate the column).
 func TestSnapshotsAccountCategoryPassthrough(t *testing.T) {

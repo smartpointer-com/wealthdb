@@ -30,6 +30,6 @@ playwright==1.49.0
 pypdfium2>=4.30,<5
 
 # pytest is bundled in the image so tests can be run inside the
-# container with `./schwab-web-dump sh -c "cd /app && pytest"`,
+# container with `./schwab-web sh -c "cd /app && pytest"`,
 # no host-side Python toolchain required.
 pytest>=8,<9

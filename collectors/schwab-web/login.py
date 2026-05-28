@@ -46,7 +46,7 @@ from pathlib import Path
 
 import landmarks as schwab
 
-log = logging.getLogger("schwab-web-dump.login")
+log = logging.getLogger("schwab-web.login")
 
 # Playwright timeouts (milliseconds). Generous defaults — WAN
 # latency from arbitrary cloud regions to Schwab can be high, and
@@ -73,7 +73,7 @@ DEFAULT_ENV_FILE_CANDIDATES = (
 # and `SCHWAB_PASSWORD=<password>` (single-quoted if the values
 # contain shell metacharacters — see load_env_file's docstring).
 #
-# Note the asymmetry vs. schwab-dump (Trader API), which uses
+# Note the asymmetry vs. schwab-api (Trader API), which uses
 # SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET for OAuth credentials.
 # These are the web-login credentials and live in a separate
 # namespace so the two sets never collide in a single shell env.
@@ -154,7 +154,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=schwab.DATE_RANGE_DEFAULT,
         help=("Date-range preset for the Statements filter. "
               "Default %(default)s aligns with the sibling "
-              "schwab-api-dump / ubs-*-dump tools; pass "
+              "schwab-api / ubs-* collectors; pass "
               "Last10Years for a full historical backfill."),
     )
     p.add_argument(
@@ -499,7 +499,7 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
                 rc = 0
             else:
                 log.error(
-                    "session DEAD: %s — run `./schwab-web-dump login` to mint a new session",
+                    "session DEAD: %s — run `./schwab-web login` to mint a new session",
                     url,
                 )
                 rc = 2
@@ -573,7 +573,7 @@ def run_manual(profile_dir: Path,
                     if not ok:
                         log.warning(
                             "CLI-MFA path failed; falling back to manual "
-                            "drive — open a VNC session (./schwab-web-dump "
+                            "drive — open a VNC session (./schwab-web "
                             "vnc-login) and complete the login yourself"
                         )
 
@@ -581,7 +581,7 @@ def run_manual(profile_dir: Path,
                 log.info(
                     "2FA submitted; waiting for post-auth landing page "
                     "(/app/...). If anything stalls, open a VNC "
-                    "session (./schwab-web-dump vnc-login) to recover."
+                    "session (./schwab-web vnc-login) to recover."
                 )
             else:
                 log.info(

@@ -123,7 +123,7 @@ ORDER BY snapshot_at`
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// Silver may or may not carry a promoted `management_style`
-	// column (the relevate-dump loader was updated to stamp it
+	// column (the relevate loader was updated to stamp it
 	// per-account after the gold-side adapter shipped). Read
 	// the silver value when present; fall back to the adapter
 	// default ('automated') otherwise. Relevate's robo-style

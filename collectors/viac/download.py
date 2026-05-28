@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-viac-dump Phase 3: bronze scrape (pure httpx, no browser).
+viac Phase 3: bronze scrape (pure httpx, no browser).
 
 Reads the session-state file produced by login.py, walks the
 VIAC REST API, and writes a timestamped bronze dump to disk.
@@ -62,7 +62,7 @@ import httpx
 
 from viac_client import ViacClient
 
-log = logging.getLogger("viac-dump.download")
+log = logging.getLogger("viac.download")
 
 DEFAULT_STATE_PATH = Path("/secrets/viac-state.json")
 DEFAULT_DEST = Path("/data")

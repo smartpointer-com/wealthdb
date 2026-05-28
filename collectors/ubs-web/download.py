@@ -32,7 +32,7 @@ from urllib.parse import urlsplit, parse_qs
 
 import landmarks as ubs  # local module
 
-log = logging.getLogger("ubs-web-dump.download")
+log = logging.getLogger("ubs-web.download")
 
 # Hold the UA constant across login.py and download.py so UBS's
 # anti-bot heuristics see a single session.
@@ -49,7 +49,7 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 # Default lookback when --since is missing: 90 days. UBS's
 # transactions UI defaults to "Maximum (current year and last 2
 # years)" — so without --since we'd accidentally fetch ~3y of data
-# on every cron-style run. 90d matches the swissquote-dump default
+# on every cron-style run. 90d matches the swissquote default
 # for parity; users doing a one-off historic backfill must pass
 # --since explicitly (e.g. --since 2015-01-01).
 DEFAULT_LOOKBACK_DAYS = 90

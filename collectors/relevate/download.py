@@ -163,7 +163,7 @@ def new_session_from_state(
     if state is None:
         raise FileNotFoundError(
             f"state file missing: {state_path}. Run "
-            "`./relevate-dump login` first.",
+            "`./relevate login` first.",
         )
     session = requests.Session()
     session.headers.update({
@@ -211,7 +211,7 @@ class Manifest:
     def __init__(self, run_dir: Path, mode: str, dry_run: bool) -> None:
         self.path = run_dir / "run.json"
         self.data: dict[str, Any] = {
-            "tool": "relevate-dump.download",
+            "tool": "relevate.download",
             "schema_version": 1,
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "ended_at": None,
@@ -656,7 +656,7 @@ def do_download(args: argparse.Namespace) -> int:
 
     if not probe_session_alive(session):
         logger.error(
-            "session probe failed — run `./relevate-dump login` "
+            "session probe failed — run `./relevate login` "
             "to mint a fresh session.",
         )
         return 1

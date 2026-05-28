@@ -32,7 +32,7 @@ from pathlib import Path
 # inside main() so that --help works on a fresh checkout without the
 # dependency installed.
 
-log = logging.getLogger("schwab-api-dump")
+log = logging.getLogger("schwab-api")
 
 # Read-only artefact names. Filenames never contain account numbers (plain
 # or hashed) so that ls'ing a dest dir does not leak identifiers.

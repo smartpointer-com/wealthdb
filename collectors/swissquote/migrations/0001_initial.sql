@@ -1,5 +1,5 @@
 -- ============================================================
--- swissquote-dump silver schema, migration 0001 — initial schema.
+-- swissquote silver schema, migration 0001 — initial schema.
 --
 -- Migration discipline: every change lands as a new numbered file in
 -- this directory. load.py reads MAX(silver_schema_version) from
@@ -14,7 +14,7 @@
 -- payload for traceability.
 --
 -- Stable filter columns are promoted; everything else lives in the
--- `payload` JSON column. See sibling repos' DESIGN.md (schwab-dump)
+-- `payload` JSON column. See sibling repos' DESIGN.md (schwab-api)
 -- for the semi-relational contract.
 -- ============================================================
 

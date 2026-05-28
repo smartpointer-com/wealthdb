@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fidelity-web-dump silver loader.
+fidelity-web silver loader.
 
 Walks the bronze directory laid down by download.py, applies any
 pending schema migrations, and loads each new dump into the silver
@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-log = logging.getLogger("fidelity-web-dump.load")
+log = logging.getLogger("fidelity-web.load")
 
 
 DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")

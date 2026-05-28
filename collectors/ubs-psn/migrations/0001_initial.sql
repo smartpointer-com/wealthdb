@@ -1,5 +1,5 @@
 -- ============================================================
--- ubs-psn-dump silver schema, migration 0001 — initial schema.
+-- ubs-psn silver schema, migration 0001 — initial schema.
 --
 -- Migration discipline: every change to the silver schema lands as a
 -- new numbered file in this directory. The loader checks the maximum

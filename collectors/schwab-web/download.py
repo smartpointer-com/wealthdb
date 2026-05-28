@@ -40,7 +40,7 @@ from pathlib import Path
 
 import landmarks as schwab
 
-log = logging.getLogger("schwab-web-dump.download")
+log = logging.getLogger("schwab-web.download")
 
 # Same as login.py — generous defaults for the heavy SPA.
 NAV_TIMEOUT_MS = 60_000

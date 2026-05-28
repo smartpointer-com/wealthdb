@@ -96,7 +96,7 @@ func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
 // values across dump_runs and every PSN content table whose
-// snapshot_at column the adapter reads. ubs-psn-dump promotes
+// snapshot_at column the adapter reads. ubs-psn promotes
 // snapshot_at on content tables to the business-date midnight
 // (UTC) of the dump's effective as-of date, which differs from
 // the dump's wall-clock run time recorded in dump_runs. So

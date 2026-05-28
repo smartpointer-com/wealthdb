@@ -1,4 +1,4 @@
--- Minimal subset of ubs-psn-dump's silver schema for adapter
+-- Minimal subset of ubs-psn's silver schema for adapter
 -- tests. Mirrors the column types of the upstream migration but
 -- skips PRAGMAs and FK declarations that don't affect the
 -- adapter's read path.

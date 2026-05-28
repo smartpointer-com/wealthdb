@@ -49,7 +49,7 @@ func assetClassForCFI(cfi string) canonical.AssetClass {
 // taxWrapperForCashAcctTp / taxWrapperForSafekeepingAcctTp map a
 // PSN account's `AcctTpCd` (the UBS product code embedded in the
 // SDCA payload) to the canonical TaxWrapper enum. Per the
-// ubs-psn-dump DESIGN.md §1 contract:
+// ubs-psn DESIGN.md §1 contract:
 //
 //   - Known codes map explicitly (currently all → taxable_personal;
 //     every observed PSN code so far is a private-banking
@@ -64,7 +64,7 @@ func assetClassForCFI(cfi string) canonical.AssetClass {
 //
 // The tables are deliberately not "default everything to
 // taxable_personal" — overreaching that way is what the
-// ubs-psn-dump maintainer corrected on 2026-05-24, because the
+// ubs-psn maintainer corrected on 2026-05-24, because the
 // current customer happens to hold no Swiss pension assets at
 // UBS at all, so the absence of pension codes in the silver
 // proves nothing about whether PSN would surface them if they

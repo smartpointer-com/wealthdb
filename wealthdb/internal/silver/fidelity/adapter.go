@@ -1,4 +1,4 @@
-// Package fidelity projects the fidelity-web-dump silver SQLite
+// Package fidelity projects the fidelity-web silver SQLite
 // into canonical change records.
 //
 // Single-source web-only adapter (Fidelity retired ofx.fidelity.com

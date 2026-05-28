@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ubs-psn-dump silver loader.
+ubs-psn silver loader.
 
 Reads bronze dump directories (produced by download.py) and inserts them
 into a SQLite silver database. Applies any pending schema migrations on
@@ -11,7 +11,7 @@ Usage:
     load.py --silver-db <path> --bronze-dir <path> [--relationship-id ID]
 
 Each immediate subdirectory of <bronze-dir> whose name matches the
-ubs-psn-dump timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
+ubs-psn timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
 Already-loaded dumps (recorded in dump_runs) are skipped.
 
 Currently loaded:

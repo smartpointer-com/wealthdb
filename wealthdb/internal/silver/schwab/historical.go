@@ -10,10 +10,10 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// Historical-snapshot reader for the schwab-web-dump silver
+// Historical-snapshot reader for the schwab-web silver
 // migration-0002 tables (`historical_position_snapshots`,
 // `historical_cash_balances`). Parsed from monthly statement
-// PDFs — see schwab-web-dump/INTEROP.md §5. These complement
+// PDFs — see schwab-web/INTEROP.md §5. These complement
 // the api feed which carries only live (intra-day) positions
 // per dump run.
 //
@@ -152,7 +152,7 @@ SELECT as_of_date, account_external_id, instrument_key,
 // rows from `historical_cash_balances`. period_start anchors the
 // opening; period_end anchors the closing. NULL-valued sides are
 // skipped — the silver loader preserves NULL distinct from a
-// real zero balance (see schwab-web-dump's migration 0002 fix).
+// real zero balance (see schwab-web's migration 0002 fix).
 //
 // total_debits / total_credits are kept in the silver row's
 // payload (forwarded through PositionChange's payload field) but
