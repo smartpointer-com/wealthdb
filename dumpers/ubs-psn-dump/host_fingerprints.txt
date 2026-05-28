@@ -1,0 +1,18 @@
+# Trusted UBS PSN SFTP server host key fingerprints (SHA-256, OpenSSH base64).
+# One fingerprint per line; lines starting with '#' and blank lines are ignored.
+# An optional "SHA256:" prefix is accepted.
+#
+# Source: confirmed directly by UBS PSN support via email on 2026-05-10
+# (Switzerland endpoint, sftp-keyport-ch.ubs.com / 94.154.164.145 and
+# 94.154.166.145, port 26701). Supersedes the values printed in the
+# Feb 2025 PSN SFTP factsheet, which were no longer current.
+#
+# UBS may rotate these keys again. If you see a fingerprint mismatch, do
+# not use --ignore-fingerprint-mismatch blindly: confirm the new value
+# out-of-band with UBS (sh-psn@ubs.com), then update this file.
+
+# Key 1 (94.154.164.145)
+tkC/ch8xKFs7lfOTwDaEfDwpisqzkjmNYSOL9XfAWXA
+
+# Key 2 (94.154.166.145)
+bHRqUemrDhGZ0FCbuL07EljAp+7T5aAssppOtczOcYo
