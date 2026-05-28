@@ -1,0 +1,19 @@
+# The base image (mcr.microsoft.com/playwright/python:v1.59.0-noble)
+# ships only the *browser binaries* under /ms-playwright (with the
+# PLAYWRIGHT_BROWSERS_PATH env var pointing at them). The Python
+# `playwright` package itself must be installed here, and the version
+# MUST match the base-image tag so the package finds compatible
+# browser binaries. When bumping the Dockerfile FROM line, bump this
+# version in lockstep.
+playwright==1.59.0
+
+# Swissquote's positions export is a CDFV2 Microsoft Excel file (the
+# legacy binary .xls format, not modern .xlsx). The `xlrd` 2.x line
+# dropped .xls support; pin to the last 1.x release. openpyxl does
+# not read .xls. If Swissquote ever switches to .xlsx, drop xlrd and
+# switch the loader to openpyxl.
+xlrd==1.2.0
+
+# pypdf is used by load.py to extract position snapshots from
+# Account Statement / Portfolio performance PDFs.
+pypdf==5.1.0
