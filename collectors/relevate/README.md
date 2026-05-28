@@ -3,16 +3,12 @@
 Scrape Vested Benefits account positions, balances, transactions,
 and documents from Relevate's customer portal
 (`portal.pens-expert.ch`) and land them in a queryable SQLite
-"silver" database. Read-only; CLI-only; REST-only; human-triggered;
-bridges to [wealthdb](https://github.com/ptu/wealthdb) at the gold
-layer as the future `relevate` adapter source.
+"silver" database. Read-only; CLI-only; REST-only; human-triggered.
 
-Companion to [`swissquote-dump`](https://github.com/ptu/swissquote-dump),
-[`ubs-web-dump`](https://github.com/ptu/ubs-web-dump),
-[`fidelity-web-dump`](https://github.com/ptu/fidelity-web-dump),
-and [`schwab-web-dump`](https://github.com/ptu/schwab-web-dump);
-mirrors their bronze → silver → (wealthdb gold) layering and
-their ground rules (read-only, never weaken auth, never leak PII).
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions.
 
 ## Status
 
@@ -59,8 +55,10 @@ their ground rules (read-only, never weaken auth, never leak PII).
   populate `mounts:` in `colima.yaml`, you must list
   `/Users/<you>` explicitly or the default `$HOME` share goes
   away).
-- `~/.secrets/` directory (`chmod 700`) with a `relevate.env`
-  file (`chmod 600`).
+- Credentials in `~/.secrets/relevate.env` (`RELEVATE_LOGIN`,
+  `RELEVATE_PASSWORD`); see
+  [collectors/README.md](../README.md#conventions-shared-across-collectors)
+  for the shared env-file rules.
 
 ## Quick start
 
@@ -151,15 +149,9 @@ RELEVATE_CONTAINER=relevate-dump
 ```
 
 `RELEVATE_LOGIN` and `RELEVATE_PASSWORD` live in
-`$RELEVATE_SECRETS_DIR/relevate.env` (`chmod 600`). The file is
-plain bash — the wrapper `source`s it before invoking docker, so
-use `export KEY='value'` with single quotes to keep shell
-metachars literal:
-
-```sh
-export RELEVATE_LOGIN='your-login-or-OASI-number'
-export RELEVATE_PASSWORD='your-password-with-$pecial-chars'
-```
+`$RELEVATE_SECRETS_DIR/relevate.env`; see
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
 
 ## Subcommands
 

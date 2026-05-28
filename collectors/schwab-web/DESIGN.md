@@ -1,5 +1,7 @@
 # schwab-web-dump — design notes for the gold-layer merge
 
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+
 This document is the contract between `schwab-web-dump` and the
 `wealthdb` gold layer that converges the web-scraped silver with
 `schwab-api-dump`'s Trader-API silver. It supplements the
@@ -29,12 +31,12 @@ machine feed.
     camoufox)           └────────────────────────┘   ▼
                                                    ┌─────────────────────┐
                                                    │   wealthdb gold     │
-                                                   │  (separate repo)    │
+                                                   │  (sibling: wealthdb)│
                                                    └─────────────────────┘
                                                      ▲
                         ┌────────────────────────┐   │
    Trader API   ─────►  │   schwab-api silver    │ ──┘
-   (OAuth)              │   (schwab-api-dump)    │
+   (OAuth)              │   (sibling: schwab-api)│
                         └────────────────────────┘
 ```
 
@@ -318,48 +320,47 @@ the top of page 1, adjacent to the account number. Migration
 ALTER TABLE accounts ADD COLUMN account_registration TEXT;
 ```
 
-The column carries the **raw** Schwab label, verbatim, so the
-wealthdb gold adapter can do the mapping to its canonical
-`tax_wrapper` enum in Go where that enum is defined.
+The column carries the **raw** Schwab label, verbatim.
 `pdf_parsers.parse_account_registration` handles all three
 layout eras (see §7); the loader UPDATEs the column once per
 load run, using the first non-null label it sees per account.
 A re-load of newer statements overwrites with the most recent
-seen value.
+seen value. How gold maps this label to its canonical
+`tax_wrapper` enum is owned by the wealthdb Schwab adapter — see
+[the adapter doc](../../wealthdb/docs/adapters/schwab.md).
 
 ### 8.1 Registration labels
 
 These are registration labels Schwab is known to print — i.e.
-the values the `account_registration` silver column can carry. Schwab's typography drifts a little
-across layout revisions — the registered-mark glyph migrates
-between "Schwab One® International Account" and "Schwab One International®
-Account" for the same account. The wealthdb adapter should treat the two
-forms as equivalent.
+the values the
+`account_registration` silver column can carry. Schwab's
+typography drifts a little across layout revisions: the
+registered-mark glyph migrates between "Schwab One® International Account" and "Schwab One International®
+Account" for the same account, so the column holds both
+forms across snapshots. (How gold collapses such variants and maps
+them to canonical wrappers is the adapter's job — see
+[the adapter doc](../../wealthdb/docs/adapters/schwab.md).)
 
-  Schwab label (verbatim)              → wealthdb tax_wrapper
-  ─────────────────────────────────────────────────────────────
-  Schwab One® Account                  → taxable_personal
-  Schwab One® International Account    → taxable_personal
-  Schwab One International® Account    → taxable_personal
-  Brokerage Account                    → taxable_personal
-  Schwab One® Custodial Account (UTMA) → custodial_utma
-  Schwab One® Custodial Account (UGMA) → custodial_ugma
-  Schwab One® Custodial Account        → custodial_utma OR
-                                         custodial_ugma — bare
-                                         label means silver
-                                         could not disambiguate
-                                         (see §8.2)
-  Contributory IRA                     → traditional_ira
-  Roth IRA                             → roth_ira
-  Rollover IRA                         → traditional_ira
-  Inherited IRA                        → traditional_ira
-  SEP-IRA                              → sep_ira
-  SIMPLE IRA                           → simple_ira
-  Education Savings                    → coverdell_esa
-  Coverdell Education Savings Acct     → coverdell_esa
-  529 College Savings Plan             → 529
-  Solo 401(k) / Individual 401(k)      → 401k
-  Trust Account                        → trust_non_grantor
+  Schwab One® Account
+  Schwab One® International Account
+  Schwab One International® Account
+  Brokerage Account
+  Schwab One® Custodial Account (UTMA)
+  Schwab One® Custodial Account (UGMA)
+  Schwab One® Custodial Account        (bare — silver could not
+                                        disambiguate UTMA vs UGMA;
+                                        see §8.2)
+  Contributory IRA
+  Roth IRA
+  Rollover IRA
+  Inherited IRA
+  SEP-IRA
+  SIMPLE IRA
+  Education Savings
+  Coverdell Education Savings Acct
+  529 College Savings Plan
+  Solo 401(k) / Individual 401(k)
+  Trust Account
 
 ### 8.2 UTMA vs UGMA — resolved via holder-block markers
 
@@ -377,9 +378,9 @@ format intimately; the wealthdb gold adapter then keys off a
 single column without having to re-read bronze.
 
 If neither marker is present (defensive — custodial statements carry one), the bare
-`Schwab One® Custodial Account` is preserved and the gold
-adapter can default to `custodial_utma` (UTMA is the modern,
-near-universal standard).
+`Schwab One® Custodial Account` is preserved in the column; how
+gold resolves the undisambiguated case is the adapter's call —
+see [the adapter doc](../../wealthdb/docs/adapters/schwab.md).
 
 This is the only place silver consults content below the
 registration header. Every other wrapper distinction Schwab

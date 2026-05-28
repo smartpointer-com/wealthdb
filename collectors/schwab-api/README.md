@@ -1,11 +1,11 @@
 # schwab-api-dump
 
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+
 A toolkit for ingesting Charles Schwab Trader API portfolio data:
 fetching account metadata, positions, transactions, and open orders
 over the read-only subset of the Schwab REST API, then parsing the
-raw JSON into a queryable SQLite silver database for downstream
-tools — e.g. local LLM-based agents and the `wealthdb` gold
-layer — to consume.
+raw JSON into a queryable SQLite silver database.
 
 ## Tools
 
@@ -15,10 +15,9 @@ layer — to consume.
 | [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
 | [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
 
-See [DESIGN.md](DESIGN.md) for the design rationale (three-layer
-bronze/silver/gold model, semi-relational silver schema, temporal
-model, why each script exists). The audience there is engineers
-building parallel tools for other bank/broker backends.
+See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
+(semi-relational silver schema, temporal model, why each script
+exists).
 
 ## Layout
 
@@ -98,7 +97,7 @@ Check whether the current token still has refresh-window life left
 | --- | --- | --- |
 | `--token-path` | _(required)_ | Path to read/write the OAuth token JSON file. |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
-| `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. Prefer the env var in shared environments. |
+| `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
 | `--callback-url` | `https://127.0.0.1:8182` | OAuth callback URL. Must exactly match the value registered in your Schwab app. |
 | `--manual` | off | Use the paste-the-URL flow instead of the local-HTTPS-server flow. |
 | `--check` | off | Inspect the token file and print its age and estimated expiry. No browser, no network. |
@@ -153,15 +152,10 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Provide your app credentials to the scripts. Storing them in a dedicated
-env file that you `source` only when running schwab-api-dump (rather than in
-your default shell rc) keeps them out of every interactive session:
-
-```sh
-# ~/.secrets/schwab-api.env (chmod 600, never committed)
-export SCHWAB_CLIENT_ID=<CLIENT_ID>
-export SCHWAB_CLIENT_SECRET=<CLIENT_SECRET>
-```
+Credentials go in `~/.secrets/schwab-api.env` (`SCHWAB_CLIENT_ID`,
+`SCHWAB_CLIENT_SECRET`); see
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
 
 ```sh
 source ~/.secrets/schwab-api.env
@@ -179,8 +173,7 @@ environment variables. Defaults are conservative:
   endpoint at 365 days per request; 364 keeps the call within one chunk).
 - Client ID / Client Secret: passed via `--client-id` / `--client-secret`,
   or read from `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` env vars as
-  fallback. Prefer the env-var path in shared environments to avoid
-  secrets in `ps` output and shell history.
+  fallback.
 
 ### Usage
 
@@ -229,7 +222,7 @@ the dump layer; full order history is intentionally not captured.
 | `--token-path` | _(required)_ | Path to the OAuth token JSON file. |
 | `--dest` | _(required)_ | Local destination directory. |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
-| `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. Prefer the env var in shared environments. |
+| `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
 | `--since` | _today - 364d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the window at 1 year per request. |
 | `--until` | _today (UTC)_ | Latest transaction date (YYYY-MM-DD, inclusive). |
 | `--with-instruments` | off | After positions and transactions, look up metadata for every symbol seen and write a separate `instruments.json` artefact. Schwab omits `description` on equity positions/transactions; this fills the gap consistently across asset classes. Intended for reduced-schedule runs (instrument metadata changes rarely). |

@@ -16,11 +16,11 @@ and PDF-reconstructed historical fills the pre-PSN-start range.
 ## 1. Silver sources
 
 - Upstream feeds:
-  - PSN: [`ubs-psn-dump`](https://github.com/ptu/ubs-psn-dump).
-    Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/ubs-psn-dump/blob/main/migrations/0001_initial.sql).
-  - Web: [`ubs-web-dump`](https://github.com/ptu/ubs-web-dump).
-    Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/ubs-web-dump/blob/main/migrations/0001_initial.sql)
-    + [migrations/0002_historical_snapshots.sql](https://github.com/ptu/ubs-web-dump/blob/main/migrations/0002_historical_snapshots.sql).
+  - PSN: [`ubs-psn`](../../../collectors/ubs-psn/).
+    Silver schema: [migrations/0001_initial.sql](../../../collectors/ubs-psn/migrations/0001_initial.sql).
+  - Web: [`ubs-web`](../../../collectors/ubs-web/).
+    Silver schema: [migrations/0001_initial.sql](../../../collectors/ubs-web/migrations/0001_initial.sql)
+    + [migrations/0002_historical_snapshots.sql](../../../collectors/ubs-web/migrations/0002_historical_snapshots.sql).
 
 ## 2. Identifier conventions
 

@@ -1,13 +1,17 @@
 # Notes for Claude / coding agents
 
-Three ground rules apply when working on this repo. All are
-non-negotiable.
+Shared, repo-wide ground rules (authentication discipline, no PII in
+source, git/commit conventions) live in the repo-root
+[CLAUDE.md](../../CLAUDE.md). The schwab-api-specific surface below
+applies on top of those shared rules.
+
+- Schwab refresh tokens have a hard 7-day lifetime, renewable only via
+  an interactive browser login.
 
 ## 1. Read-only Schwab access — never call write endpoints
 
-The Schwab Trader API does not offer read-only OAuth scopes: any token
-issued for an Accounts and Trading app can place, replace, and cancel
-orders. This repo's contract is that it *only* reads. Concretely:
+Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
+concrete surface for schwab-api:
 
 Allowed:
 - `GET /trader/v1/accounts` and `/accounts/{hash}` (with or without
@@ -27,52 +31,7 @@ Forbidden in this repo — do not call, import, or wrap:
   API, but still — do not write code that would call such an endpoint
   if it ever appears).
 
-If a future Schwab endpoint would let the holder of a token affect
-account state, treat it as forbidden until the user explicitly opts in
-in writing.
+## Authentication & private data
 
-The CLI must never accept a flag that would trigger a write operation.
-
-## 2. Do not run real Schwab API calls unless the user asks
-
-`download.py` consumes OAuth refresh capacity and counts against rate
-limits. Schwab refresh tokens have a hard 7-day lifetime that requires
-an interactive browser login to renew. Burning that window during agent
-exploration is bad.
-
-Allowed without asking:
-- Read the code, configs, and docs.
-- Run `download.py --dry-run` (loads tokens, validates they refresh,
-  lists account hashes via `accountNumbers`, exits without fetching
-  positions or transactions).
-- Run unit tests and mocked-HTTP exercises.
-
-Not allowed unless the user explicitly asks:
-- Run `download.py` without `--dry-run`.
-- Make any non-dry-run HTTP call against `api.schwabapi.com`, whether
-  from the script, an ad-hoc REPL, or a one-off shell command.
-- Trigger the initial OAuth browser login flow (interactive; consumes
-  the user's attention and creates a fresh 7-day refresh window).
-- Add or change scheduling (cron, launchd, systemd timer, GitHub
-  Actions, etc.) that would cause downloads to fire automatically.
-
-## 3. Do not leak private information into source
-
-The repo is intended to be publishable. Do not write any of the
-following into tracked files (source, configs, comments, commit
-messages, test fixtures):
-
-- Schwab OAuth Client ID / Client Secret. These are credentials.
-- Account numbers (plain or hashed). The hash is opaque but still
-  user-specific.
-- Personal data: names, addresses, phone numbers, email addresses,
-  brokerage relationship identifiers.
-- Real OAuth tokens, refresh tokens, or token files.
-- Any data returned by the Schwab API — positions, transactions,
-  balances, instrument lists scoped to a specific account.
-
-Test fixtures must be synthetic. Examples in docs should use
-placeholders like `<CLIENT_ID>`, `<CLIENT_SECRET>`, and `<ACCOUNT_HASH>`.
-
-When in doubt, ask the user before adding a value that looks
-identifier-shaped.
+See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and
+§4 (no private information in source). They apply in full here.

@@ -1,27 +1,23 @@
 # schwab-web-dump
 
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+
 A toolkit for ingesting Charles Schwab data the Trader API does
 not cover: driving the Schwab client UI (`client.schwab.com`)
 under Playwright to export historic account statements, position
 snapshots, transaction history exports, and other archived
 documents, then (in subsequent scripts) parsing the raw downloads
-into a queryable SQLite silver database for downstream tools —
-e.g. local LLM-based agents and the
-[`wealthdb`](https://github.com/ptu-gh/wealthdb) gold layer — to
-consume.
+into a queryable SQLite silver database.
 
-Sibling projects:
-[schwab-api-dump](https://github.com/ptu-gh/schwab-api-dump),
-[ubs-psn-dump](https://github.com/ptu-gh/ubs-psn-dump),
-[ubs-web-dump](https://github.com/ptu-gh/ubs-web-dump),
-[swissquote-dump](https://github.com/ptu-gh/swissquote-dump). The
-[DESIGN.md](https://github.com/ptu-gh/schwab-api-dump/blob/main/DESIGN.md)
-document in `schwab-api-dump` covers the shared three-layer (bronze/
-silver/gold) model and the conventions reused here.
+Sibling collectors:
+[schwab-api](../schwab-api/),
+[ubs-psn](../ubs-psn/),
+[ubs-web](../ubs-web/),
+[swissquote](../swissquote/).
 
 ## Why this design
 
-[`schwab-api-dump`](https://github.com/ptu-gh/schwab-api-dump) already
+[`schwab-api`](../schwab-api/) already
 ingests Schwab Trader API data, which carries current account
 metadata, positions, transactions, and open orders over a clean
 read-only REST surface. The Trader API is the right channel for
@@ -160,16 +156,24 @@ open vnc://localhost:5900                  # macOS Screen Sharing
 
 ## Container build
 
-Playwright + Firefox + PDF tooling is heavy; running it directly
-on the host pollutes the OS. This toolkit ships as a Docker image
-and runs entirely inside the container.
+This is a Docker collector; the host wrapper and the standard
+`~/.secrets → /secrets` / `~/wealthdb/schwab-web → /data` mounts
+follow the shared rules in
+[collectors/README.md](../README.md#conventions-shared-across-collectors).
+Tool-specific notes only:
 
-Base image: `mcr.microsoft.com/playwright/python:v1.59.0-noble`
-(Ubuntu Noble with all the OS-level deps Playwright wants
-pre-installed at `/ms-playwright/`, including the Firefox build
-this codebase uses). The Playwright Python package is pulled via
-`requirements.txt`, version-pinned to match the base-image tag —
-bump both in lockstep.
+- **Base image:** `mcr.microsoft.com/playwright/python:v1.59.0-noble`
+  (Ubuntu Noble with all the OS-level deps Playwright wants
+  pre-installed at `/ms-playwright/`, including the Firefox build
+  this codebase uses). The Playwright Python package is pulled via
+  `requirements.txt`, version-pinned to match the base-image tag —
+  bump both in lockstep.
+- **Extra `/debug` mount** (`~/.cache/schwab-web-debug` by default):
+  opt-in screenshots / Playwright traces. Pass any debug-flag value
+  as `/debug/...` so debug artefacts stay out of the bronze/silver
+  tree.
+- **Path overrides:** `SCHWAB_WEB_SECRETS_DIR`, `SCHWAB_WEB_DATA_DIR`,
+  `SCHWAB_WEB_DEBUG_DIR`.
 
 ### Build
 
@@ -181,45 +185,12 @@ cd schwab-web-dump
 
 ### Run
 
-The repo ships a thin `schwab-web-dump` shell wrapper around
-`docker run` that mounts three host paths into the container:
-
-| Container path | Host path (default) | Purpose |
-| --- | --- | --- |
-| `/secrets` | `~/.secrets` | Firefox profile dir, `schwab-web.env` |
-| `/data` | `~/wealthdb/schwab-web` | bronze artefacts + silver DB |
-| `/debug` | `~/.cache/schwab-web-debug` | opt-in screenshots / Playwright traces |
-
-Pass any debug-flag value as `/debug/...` so debug artefacts stay
-out of the bronze/silver tree.
-
 ```sh
 ./schwab-web-dump download                                   # CLI-MFA login + scrape
 ./schwab-web-dump download --range Last10Years --with-more-detail   # full backfill
 ./schwab-web-dump download --dry-run --screenshot-dir /debug/download
 ./schwab-web-dump vnc-login                                  # VNC fallback
 ./schwab-web-dump load --silver-db /data/schwab-web.db --bronze-dir /data
-```
-
-Inside the container, `login.py`, `download.py`, and `load.py`
-live at `/app/`; `/secrets/` is the credential mount; `/data/` is
-the bronze + silver mount; `/debug/` is the opt-in debug-artefact
-mount.
-
-Override any of the host paths via env vars:
-`SCHWAB_WEB_SECRETS_DIR`, `SCHWAB_WEB_DATA_DIR`,
-`SCHWAB_WEB_DEBUG_DIR`.
-
-If you prefer to drive `docker run` directly, the equivalent of
-`./schwab-web-dump <cmd>` is:
-
-```sh
-docker run --rm -it \
-    -v ~/.secrets:/secrets \
-    -v ~/wealthdb/schwab-web:/data \
-    -v ~/.cache/schwab-web-debug:/debug \
-    schwab-web-dump:latest \
-    <cmd> <flags>
 ```
 
 ### Credentials
@@ -235,16 +206,16 @@ These deliberately do *not* share a prefix with `schwab-api-dump`'s
 the Trader API), so the two credential sets never collide in a
 single shell env.
 
-The wrapper forwards both env vars from the host into the
-container via `-e`. The login script also reads
-`/secrets/schwab-web.env` directly (file value wins over an
+Credentials go in `~/.secrets/schwab-web.env`; see
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules. The wrapper forwards both env vars
+from the host into the container via `-e`. The login script also
+reads `/secrets/schwab-web.env` directly (file value wins over an
 already-set host env var — see the file-vs-host rationale in
 `login.py`'s `load_env_file` docstring).
 
 ```sh
-# ~/.secrets/schwab-web.env (chmod 600, never committed)
-# Use SINGLE quotes around values with $/!/backtick — double
-# quotes let `source` do $-expansion and silently mangle them.
+# ~/.secrets/schwab-web.env
 SCHWAB_LOGIN_ID='your-login-id'
 SCHWAB_PASSWORD='your-password-with-$pecial-chars'
 ```

@@ -3,22 +3,18 @@
 A toolkit for ingesting UBS Switzerland retail e-banking data the
 PSN feed does not cover: driving the UBS netbanking web UI under
 Playwright to export historic account statements, custody/portfolio
-statements, transaction reports, and other eDocuments, then (in
-subsequent scripts) parsing the raw downloads into a queryable
-SQLite silver database for downstream tools — e.g. local LLM-based
-agents and the [`wealthdb`](https://github.com/ptu/wealthdb) gold
-layer — to consume.
+statements, transaction reports, and other eDocuments, then parsing
+the raw downloads into a queryable SQLite silver database.
 
-Sibling projects: [ubs-psn-dump](https://github.com/ptu/ubs-psn-dump),
-[swissquote-dump](https://github.com/ptu/swissquote-dump),
-[schwab-dump](https://github.com/ptu/schwab-dump). The
-[DESIGN.md](https://github.com/ptu/schwab-dump/blob/main/DESIGN.md)
-document in `schwab-dump` covers the shared three-layer (bronze/
-silver/gold) model and the conventions reused here.
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
+for the bronze → silver → gold model and [collectors/README.md](../README.md)
+for shared collector conventions. The companion UBS collector is
+[ubs-psn](../ubs-psn/) (see [Relationship to ubs-psn-dump](#relationship-to-ubs-psn-dump)
+below).
 
 ## Why this design
 
-[`ubs-psn-dump`](https://github.com/ptu/ubs-psn-dump) already
+[`ubs-psn`](../ubs-psn/) already
 ingests UBS Private Standard Network (PSN) SFTP feeds, which carry
 the canonical trade confirmations, MT940 cash statements, MT535
 holdings, FX rates, and master data. PSN is the right channel for
@@ -177,12 +173,19 @@ referenced in `Dockerfile` exist — see Status above.)
 ### Run
 
 The repo ships a thin `ubs-web-dump` shell wrapper around
-`docker run` that mounts three host paths into the container:
+`docker run`; the standard `~/.secrets → /secrets` and
+`~/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
+described in [collectors/README.md](../README.md#conventions-shared-across-collectors).
+Credentials go in `~/.secrets/ubs.env`; see
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
+
+In addition to the two standard mounts, this tool adds a third,
+tool-specific `/debug` mount for opt-in screenshots / Playwright
+traces / ad-hoc QR PNGs:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/secrets` | `~/.secrets` | Playwright `storageState.json`, `ubs.env` |
-| `/data` | `~/wealthdb/ubs-web` | bronze artefacts + silver DB |
 | `/debug` | `~/.cache/ubs-web-debug` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs |
 
 Pass any debug-flag value as `/debug/...` so debug artefacts stay
@@ -195,25 +198,8 @@ out of the bronze/silver tree.
 ./ubs-web-dump load --silver-db /data/ubs-web.db --bronze-dir /data
 ```
 
-Inside the container, `login.py`, `download.py`, and `load.py`
-live at `/app/`; `/secrets/` is the credential mount; `/data/` is
-the bronze + silver mount; `/debug/` is the opt-in debug-artefact
-mount.
-
 Override any of the host paths via env vars:
 `UBS_WEB_SECRETS_DIR`, `UBS_WEB_DATA_DIR`, `UBS_WEB_DEBUG_DIR`.
-
-If you prefer to drive `docker run` directly, the equivalent of
-`./ubs-web-dump <cmd>` is:
-
-```sh
-docker run --rm -it \
-    -v ~/.secrets:/secrets \
-    -v ~/wealthdb/ubs-web:/data \
-    -v ~/.cache/ubs-web-debug:/debug \
-    ubs-web-dump:latest \
-    <cmd>.py <flags>
-```
 
 ### Headless remote host
 
@@ -263,20 +249,21 @@ mechanism as the auto-fetched eDocuments.
 
 ## Relationship to ubs-psn-dump
 
-Both toolkits load into UBS-shaped silver databases that the
-`wealthdb` UBS adapter can consume. They do not share a silver DB
-file: `ubs-psn-dump` lands in `ubs.db` (canonical PSN MT/XML),
-`ubs-web-dump` lands in `ubs-web.db` (web-scraped statements +
-PDF-derived rows). The wealthdb gold layer merges them at the
-canonical-layer level — same as the UBS/Schwab cross-bank merge
-already in place.
+UBS has two collectors in this repo: this one and the sibling
+[ubs-psn](../ubs-psn/). They are separate collectors with separate
+silver DBs — `ubs-psn` lands in `ubs-psn.db` (canonical PSN MT/XML),
+`ubs-web` lands in `ubs-web.db` (web-scraped statements +
+PDF-derived rows) — that the wealthdb UBS adapter consumes side by
+side.
 
 The two silver shapes overlap (both produce transactions, holdings,
 account-level snapshots) but differ in fidelity: PSN is the
 authoritative source for any date where both feeds carry the same
-event; `ubs-web-dump` is the only source for historic dates before
-the PSN agreement was activated. Gold-layer reconciliation rules
-will be defined in a follow-up wealthdb design note.
+event; `ubs-web` is the only source for historic dates before the
+PSN agreement was activated. The two feeds therefore splice on a
+per-relationship cutover date — see [DESIGN.md](DESIGN.md) and
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md) for how gold
+reconciles them.
 
 ## Session lifecycle (expected)
 

@@ -8,8 +8,10 @@ stdin during login.
 
 Lands per-portfolio JSON + per-document PDFs into a versioned
 bronze tree, then parses them into a queryable SQLite silver
-database. Future `wealthdb` integration consumes the silver as the
-`relevate` adapter source.
+database. Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions.
 
 Sections:
 
@@ -20,7 +22,7 @@ Sections:
 5. [`load.py` (silver loader)](#5-loadpy-silver-loader)
 6. [Bronze layout](#6-bronze-layout)
 7. [Silver schema](#7-silver-schema)
-8. [Identity strategy + wealthdb gold bridge](#8-identity-strategy--wealthdb-gold-bridge)
+8. [Identity strategy](#8-identity-strategy)
 9. [Container + wrapper architecture](#9-container--wrapper-architecture)
 10. [What we do NOT do](#10-what-we-do-not-do)
 11. [Open questions](#11-open-questions)
@@ -118,10 +120,9 @@ auth POSTs require it; the middlelayer GETs do not.
   Both products surface the same interface, fees, and investment
   menu in the SPA — the holder picks from a small set of pre-
   built strategies in either case, and the foundation doesn't let
-  the holder choose individual securities or funds. With no
-  human manager or advisor in the loop, both products map to
-  `management_style='automated'` in wealthdb gold (robo-advisor
-  shape, not self-directed brokerage).
+  the holder choose individual securities or funds. No human
+  manager or advisor is in the loop (robo-advisor shape, not
+  self-directed brokerage).
 - All three CHF-denominated, `isActive=true`,
   `portfolioTypeId=0`, `portfolioStatusId=0`.
 - The URL `/dashboard/3a/depots` exists in the SPA, but
@@ -165,7 +166,7 @@ auth POSTs require it; the middlelayer GETs do not.
                                                               (SQLite silver)
                                                               │
                                                               ▼
-                                          wealthdb gold (out of scope — separate repo)
+                                          wealthdb gold (out of scope — sibling component: wealthdb/)
 ```
 
 All three Python scripts run inside the same Docker image
@@ -524,7 +525,7 @@ Path conventions:
 SQLite + JSON1. Migrations live in `migrations/`; the loader
 reads `MAX(silver_schema_version)` from `schema_meta` and applies
 any newer files in order. Migration discipline matches the
-sibling repos: every change lands as a new numbered file, no
+sibling collectors: every change lands as a new numbered file, no
 backward-compatible drift, silver DBs always conform to the
 latest schema.
 
@@ -571,23 +572,16 @@ customers to a third-party foundation. A customer's assets can
 land in either or both; the customer experiences no
 behavioural difference between them.
 
-**Consequences for downstream consumers** (the future wealthdb
-`relevate` adapter being the concrete example):
-
-- `product_key` MUST NOT drive any taxonomy / classification
-  decision — `asset_class`, `tax_wrapper`, `management_style`,
-  `account_kind`, fee handling, etc. Both foundations
-  classify identically. The wealthdb mappings in §8 hold for
-  both values of `product_key`.
-- The column is still surfaced verbatim because it's
-  forensically useful: "which foundation does this account
-  live in", legal-entity attribution, cross-checks against
-  the credit-note PDFs that name the issuing Stiftung.
-- If a future PensExpert product_key actually changes
-  behaviour (e.g. a managed-account product, or a separate
-  fee schedule), §8's mapping needs new branches — but the
-  current FZI/FZPF distinction should NOT trigger that
-  pattern by accident.
+The column is surfaced verbatim because it's forensically
+useful: "which foundation does this account live in",
+legal-entity attribution, cross-checks against the credit-note
+PDFs that name the issuing Stiftung. Both foundations classify
+identically, so `product_key` is not a behavioural
+discriminator — a downstream consumer should treat FZI and FZPF
+the same. How gold interprets this column is owned by the
+wealthdb relevate adapter — see [the canonical
+model](../../ARCHITECTURE.md) and the adapter source
+[`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
 ### 7.2 Validation against the first real load
 
@@ -629,7 +623,14 @@ Re-running `load` against the same bronze is a no-op (the
   already derives from `investment-overview`. The raw response
   stays in bronze.
 
-## 8. Identity strategy + wealthdb gold bridge
+## 8. Identity strategy
+
+The silver-side identity choices for the columns the loader
+promotes. How gold interprets these columns (the
+`tax_wrapper` / `management_style` / `account_kind` mapping) is
+owned by the wealthdb relevate adapter — see [the canonical
+model](../../ARCHITECTURE.md) and the adapter source
+[`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
 ### 8.1 `account_external_id`
 
@@ -645,38 +646,6 @@ appropriate as the canonical external identifier.
 non-null (wealthdb gold's `instruments.isin` is indexed for
 cross-bank joins). Otherwise use `security.id` as an
 adapter-scoped identifier.
-
-### 8.3 `tax_wrapper`
-
-Hard-coded to `'vested_benefits'` for any portfolio whose
-`product.key` starts with `FZ` (currently `FZPF`, `FZI`). When
-Pillar 3a portfolios materialise (`product.key` starting with
-`3A` or similar — TBD), map them to `'pillar_3a'`. The adapter
-catches anything else as `'other'` and the user fixes via
-wealthdb config-side override.
-
-### 8.4 `management_style`
-
-- `FZPF` → `'automated'`
-- `FZI` → `'automated'`
-- Anything else → `'other'` (the adapter will need explicit
-  classification before another FZ-prefixed product is
-  introduced)
-
-Both observed products are robo-advisor-shaped: the holder picks
-one of a small menu of pre-built strategies at setup, and the
-strategy then runs by rules with no further human input. There
-is no foundation manager (so not `'discretionary'`), no advisor
-(so not `'advisory'`), and the holder cannot pick individual
-securities or funds (so not `'self_directed'`). If Relevate
-later introduces a truly foundation-managed or fully-self-
-directed FZ product, this mapping needs a new branch.
-
-### 8.5 Future `relevate.md` adapter doc
-
-Mirrors `swissquote.md`. Goes in
-`~/github/wealthdb/docs/adapters/relevate.md` once `load.py`
-exists and has produced one good silver. Out of scope here.
 
 ## 9. Container + wrapper architecture
 
@@ -706,10 +675,13 @@ refuses to evict a running container without
 
 ### 9.3 Mounts
 
+The standard `/secrets` (`~/.secrets`) and `/data`
+(`~/wealthdb/relevate`) bind-mounts follow the shared collector
+convention — see [collectors/README.md](../README.md). On top of
+those, relevate-dump bind-mounts a third, tool-specific path:
+
 | Container path | Host default | Purpose |
 |---|---|---|
-| `/secrets` | `~/.secrets` | env file + cookie jar state file |
-| `/data` | `~/wealthdb/relevate` | bronze runs + silver DB |
 | `/debug` | `~/.cache/relevate-debug` | opt-in scratch logs / traces |
 
 All three are bind-mounted RW. No ports published — the

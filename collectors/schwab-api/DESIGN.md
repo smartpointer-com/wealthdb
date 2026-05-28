@@ -1,63 +1,21 @@
 # schwab-api-dump: Design
 
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+
 ## 1. Audience and scope
 
-This document describes the design of `schwab-api-dump` for engineers
-building parallel tools against other bank/broker backends — most
-immediately the author of `ubs-psn-data`, which has the same goal
-(a queryable, agent-consumable view of one institution's account data)
-but a very different transport, format, and identifier model.
-
-The patterns here are intended to be portable. Where a choice is
-specific to Schwab's API, that is called out explicitly so the
-reader can substitute the equivalent.
-
-`schwab-api-dump` is one corner of a larger system:
-
-```
-┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-│   ubs-psn-data       │  │   schwab-api-dump    │  │   (future banks)     │
-│   ┌──────────────┐   │  │   ┌──────────────┐   │  │   ┌──────────────┐   │
-│   │ bronze (zip) │   │  │   │ bronze (JSON)│   │  │   │ bronze (?)   │   │
-│   └──────┬───────┘   │  │   └──────┬───────┘   │  │   └──────┬───────┘   │
-│          ▼           │  │          ▼           │  │          ▼           │
-│   ┌──────────────┐   │  │   ┌──────────────┐   │  │   ┌──────────────┐   │
-│   │ silver SQLite│   │  │   │ silver SQLite│   │  │   │ silver SQLite│   │
-│   └──────────────┘   │  │   └──────┬───────┘   │  │   └──────────────┘   │
-└──────────────────────┘  └──────────│───────────┘  └──────────────────────┘
-                                     ▼
-                              ┌──────────────────────────────────────┐
-                              │   wealthdb (DuckDB)                  │
-                              │   - per-broker silver adapters       │
-                              │   - canonical gold schema            │
-                              │   - portfolio analytics, agent face  │
-                              └──────────────────────────────────────┘
-```
-
-Each `*-dump` repo owns its own bronze format and silver schema as
-*published contracts*. `wealthdb` is a downstream consumer with
-broker-specific adapters; it has no rights over silver shape.
+This document describes the Schwab-specific design of
+`schwab-api-dump`: how the OAuth fetch loop, the source-shaped silver
+schema, and the temporal model are put together. Where a choice is
+specific to Schwab's API it is called out so a reader adapting the
+pattern to another backend can substitute the equivalent.
 
 ## 2. The three layers
 
-| Layer | Owner | Storage | Purpose |
-|---|---|---|---|
-| **Bronze** | each `*-dump` repo | files on disk (JSON for Schwab, ZIPs of SWIFT-MT/XML for UBS) | Faithful, auditable archive of exactly what the upstream emitted. Never written by silver. |
-| **Silver** | each `*-dump` repo | SQLite + JSON1 | Queryable view of bronze. Per-broker, source-shaped, slightly cleaned (per-request noise dropped) but otherwise faithful. |
-| **Gold** | `wealthdb` | DuckDB (`ATTACH`es silver) | Cross-broker canonical schema. Strictly relational. The agent-facing layer. |
-
-Three layers exist because the writes-fast / queries-fast tension is
-real. Bronze is optimised for "exactly what arrived"; silver for
-"per-broker queryable" without prematurely committing to a canonical
-shape; gold for "joined across brokers, indexed, normalised, fast".
-
-**Rule of thumb for which layer owns a decision:**
-- Bronze: how to talk to the bank, what the bank emits, file naming.
-- Silver: schema for one broker, what to discard as pure noise.
-- Gold: cross-broker semantic unification, computed/derived columns,
-  the agent's query shape.
-
-If a problem can be deferred to a later layer without harm, defer it.
+See [the architecture overview](../../ARCHITECTURE.md) for the
+bronze → silver → gold model and the layer-ownership boundaries this
+toolkit inherits. The rest of this document covers only how
+`schwab-api-dump` realises its bronze and silver.
 
 ## 3. The toolkit: three scripts
 
@@ -472,45 +430,16 @@ column (`nickname`, populated by `_build_account_metadata` from
 `userPreference.accounts[*].nickName`; see migration 0003). No further
 field is available to promote.
 
-**Guidance for downstream adapters (e.g. wealthdb):**
+The two structured signals that exist (`account_type` ∈ {`CASH`,
+`MARGIN`}, the free-text `nickname`) are both promoted as silver
+columns. How gold interprets these columns — including the
+nickname-token → `tax_wrapper` inference and config overrides — is
+owned by the wealthdb Schwab adapter — see
+[the adapter doc](../../wealthdb/docs/adapters/schwab.md).
 
-1. Map the structured fields where they are unambiguous:
-   - `account_type = MARGIN` → margin-enabled (not a wrapper signal).
-   - `account_type = CASH` → cash-only (also not a wrapper signal).
-   - These do not determine the wrapper; do not infer.
-2. Fall back to a regex on `nickname` for the wrapper. The full Schwab
-   wrapper vocabulary (across both individual and entity accounts)
-   maps to known nickname tokens. A reasonable starting matcher:
-
-   | Wrapper | Token(s) commonly found in nicknames |
-   |---|---|
-   | Roth IRA | `Roth IRA`, `Roth` |
-   | Rollover IRA | `Rollover IRA`, `Rollover` |
-   | SEP-IRA | `SEP IRA`, `SEP-IRA`, `SEP` |
-   | SIMPLE IRA | `SIMPLE IRA`, `SIMPLE` |
-   | Inherited IRA | `Inherited IRA`, `Beneficiary IRA` |
-   | Traditional IRA | `IRA` (after matching the more specific variants above) |
-   | Coverdell ESA | `ESA`, `Coverdell` |
-   | 529 plan | `529` |
-   | UTMA | `UTMA` |
-   | UGMA | `UGMA` |
-   | Trust | `Trust`, `Revocable`, `Irrevocable` |
-   | Solo 401(k) | `Solo 401k`, `Individual 401k`, `i401k` |
-   | Taxable / personal | anything else (default) |
-
-   Match more-specific tokens before generic ones (e.g. `Roth IRA`
-   before `IRA`).
-3. Treat the regex as best-effort, not authoritative. The nickname
-   is user-set: people can name an inherited IRA `"Mom's Account"`
-   with no wrapper token, and they routinely will. The gold layer
-   should support an explicit per-account override in config that
-   takes precedence over the nickname inference.
-
-**Do not** invent a structured-field column on silver to hold the
-adapter's regex-derived wrapper — that classification lives in gold,
-where the adapter combines the nickname signal with config overrides.
-Silver's contract is "what the source said"; the source said nothing
-structured here.
+**Do not** invent a structured-field column on silver to hold a
+derived wrapper. Silver's contract is "what the source said"; the
+source said nothing structured here.
 
 ## 5. What silver deliberately omits
 
@@ -531,32 +460,24 @@ structured here.
 
 ## 6. Gold-layer expectations
 
-`wealthdb` is the agent-facing gold layer. Per-broker adapters
-live inside `wealthdb`, not in the dump repos. The adapter's job
-is to read one broker's silver schema and project it into gold's
-canonical tables (`accounts`, `instruments`, `holdings`, `cash_flows`,
-`fx_rates`).
+How gold reads and projects this silver is owned by the wealthdb
+Schwab adapter — see [the adapter doc](../../wealthdb/docs/adapters/schwab.md).
+The implications that bear on *silver schema design* here:
 
-Read pattern: DuckDB `ATTACH 'path/to/schwab-api.db' AS schwab;`
-then transforms run as pure SQL across the attached SQLite tables.
-No Python row-by-row marshalling.
-
-Implications for silver schema authors:
 - **Silver schema is a public contract.** Bumping a silver schema
   version may require updating the corresponding wealthdb adapter.
   Communicate breaking changes.
-- **Promote anything wealthdb needs as a filter or join key.**
-  If wealthdb ends up doing `json_extract(...)` on every row
-  during silver→gold transforms, that's a sign the column should be
+- **Promote anything the adapter needs as a filter or join key.**
+  If gold ends up doing `json_extract(...)` on every row during
+  silver→gold transforms, that's a sign the column should be
   promoted.
-- **Don't over-design for wealthdb.** Adapters can handle
-  reasonable joins, type coercion, and JSON extraction. Don't
-  materialize "convenience columns" silver doesn't otherwise need.
+- **Don't over-design for gold.** Adapters can handle reasonable
+  joins, type coercion, and JSON extraction. Don't materialize
+  "convenience columns" silver doesn't otherwise need.
 
 ## 7. Notes for other-bank backends
 
 Reusable wholesale:
-- The bronze/silver/gold three-layer split.
 - The monotemporal source-time model.
 - Snapshot vs event archetype distinction.
 - One transaction per dump load, dump_runs as last write.

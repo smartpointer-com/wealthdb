@@ -4,12 +4,12 @@ Design document for the `viac-dump` toolkit. The audience is the
 engineer (current author, future contributor) maintaining
 `login.py`, `download.py`, and `load.py` against the live
 `app.viac.ch` SPA. It is also the contract between this silver
-and a future `wealthdb` VIAC adapter.
+and the `wealthdb` VIAC adapter.
 
-The shared three-layer model (bronze on disk, silver SQLite +
-JSON1, gold DuckDB cross-bank canonical) is documented in
-[`schwab-api-dump/DESIGN.md`](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md);
-this document only covers what's VIAC-specific.
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions. This document only covers what's VIAC-specific.
 
 ## Status
 
@@ -171,7 +171,7 @@ User-Agent + the SPA's standard headers (see
 the toolkit needs.
 
 If VIAC later adds an anti-bot layer (e.g. an Akamai upgrade),
-the escalation path mirrors the sibling repos: stealth
+the escalation path mirrors the sibling collectors: stealth
 plugins, then Camoufox-patched Firefox. None of the existing
 code would need to change beyond the underlying HTTP client.
 
@@ -232,7 +232,7 @@ the overview.
 
 Migrations land under `migrations/NNNN_<slug>.sql`. The loader
 runs pending migrations on every invocation. Same discipline
-as the sibling repos — never rewrite an applied migration,
+as the sibling collectors — never rewrite an applied migration,
 always add a new file.
 
 ### 6.1 Validation against the first real load
@@ -253,38 +253,35 @@ loaded into silver:
 Re-running `load` is a no-op (`dump_runs.snapshot_at` is the
 idempotency anchor).
 
-## 7. Gold-layer integration
+## 7. Silver columns for the gold bridge
 
-VIAC silver feeds a future `wealthdb` VIAC adapter (separate
-commit in the wealthdb repo; out of scope here). The adapter
-contract:
+How gold interprets these columns (the `tax_wrapper` /
+`management_style` / `account_kind` mapping) is owned by the
+wealthdb viac adapter — see [the canonical
+model](../../ARCHITECTURE.md) and the adapter source
+[`wealthdb/internal/silver/viac/`](../../wealthdb/internal/silver/viac/).
+The silver-side facts the adapter reads:
 
-- `accounts.tax_wrapper` derived from `product_code`:
-  - `'3'` (Pillar-3a) → `'pillar_3a'`
-  - `'2'` (PVB) → `'vested_benefits'`
-  - `'1'` (INV, not yet observed) → `'taxable_personal'`
-- `accounts.management_style` is carried in silver (added in
+- `accounts.product_code` — `'3'` (Pillar-3a), `'2'` (PVB),
+  `'1'` (INV, not yet observed); parsed from the first dotted
+  segment of the portfolio number (§3.1).
+- `accounts.management_style` — carried in silver (added in
   migration 0002); the loader sets it to `'automated'` for
   every account. VIAC is robo-advisor-shaped — the holder
   picks a strategy from a menu (or builds one within VIAC's
   concentration limits), then rebalancing runs by rules. The
   custom-strategy capability looks self-directed but isn't:
   the holder can only pick from VIAC's listed fund universe,
-  with concentration / risk-level guards. Same management
-  style as Relevate's FZ products. If VIAC ever ships a
-  non-robo product line, the loader branches without a
-  wealthdb release (the adapter reads silver's column
-  directly).
-- `accounts.account_kind`:
-  - `'brokerage'` for ACTIVE p3a portfolios
-  - `'cash'` for PASSIVE pvb portfolios until the pvb endpoint
-    surface is mapped
-- `instruments.isin` is the cross-bank join key (always
-  populated; VIAC ships ISIN on every position).
-- `transactions.kind` is already mapped in silver via
-  `VIAC_TX_KIND_MAP` in `load.py`. Adapter projects 1:1.
-- `LatestChangeNumber` = `MAX(dump_runs.snapshot_at)`, or `-1`
-  if `dump_runs` is empty.
+  with concentration / risk-level guards. Same product shape
+  as Relevate's FZ products. If VIAC ever ships a non-robo
+  product line, the loader branches and the adapter reads the
+  silver column directly.
+- `accounts` state — ACTIVE p3a vs PASSIVE pvb (the latter
+  until the pvb endpoint surface is mapped, §9).
+- `instruments.isin` — always populated; VIAC ships ISIN on
+  every position, so it is the cross-bank join key.
+- `transactions.kind` — already the canonical mapping in
+  silver via `VIAC_TX_KIND_MAP` in `load.py`.
 
 ## 8. What we do NOT do
 

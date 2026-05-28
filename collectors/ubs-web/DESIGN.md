@@ -1,11 +1,19 @@
-# ubs-web-dump — design notes for the gold-layer merge
+# ubs-web-dump — design notes
 
-This document is the contract between `ubs-web-dump` and the
-wealthdb gold layer that converges web-scraped UBS data with the
-PSN-fed silver (`ubs-psn-dump`). It supplements the schema
-comments in [migrations/0001_initial.sql](migrations/0001_initial.sql);
-read that file for column-level definitions, this file for
-inter-feed merge logic.
+This document describes what the `ubs-web` silver carries and how it
+lines up with the PSN-fed silver from the sibling
+[ubs-psn](../ubs-psn/) collector — the source-specific facts a
+reader needs to understand the two UBS feeds. It supplements the
+schema comments in
+[migrations/0001_initial.sql](migrations/0001_initial.sql); read
+that file for column-level definitions, this file for the
+feed-shape detail.
+
+How gold actually merges the two UBS silvers (join keys, splice
+rules, sign conventions, which feed wins) is owned by the wealthdb
+UBS adapter — see [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
+The notes below describe the silver shapes that make those merge
+decisions possible, not the merge policy itself.
 
 The companion silvers, by path:
 
@@ -14,38 +22,21 @@ The companion silvers, by path:
 | `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: ~28-month transactions + on-demand positions + 1.5k PDF document index. Historical tables: quarterly position snapshots back to 2022 + monthly cash balances back to late 2021, both reconstructed from the bronze PDF archive | `~/wealthdb/ubs-web/ubs-web.db` |
 | `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `~/wealthdb/ubs-psn/ubs-psn.db` |
 
-## 1. Lambda architecture overview
-
-```
-                        ┌────────────────────────┐
-   web archive   ─────► │   ubs-web silver       │ ──┐
-   (Playwright)         │   (this repo)          │   │
-                        └────────────────────────┘   ▼
-                                                   ┌─────────────────────┐
-                                                   │   wealthdb gold     │
-                                                   │  (separate repo)    │
-                                                   └─────────────────────┘
-                                                     ▲
-                        ┌────────────────────────┐   │
-   PSN nightly  ─────►  │   ubs-psn silver       │ ──┘
-   (SFTP)               │   (ubs-psn-dump)       │
-                        └────────────────────────┘
-```
+## 1. The two UBS feeds
 
 Both silvers expose the same logical entities (accounts, portfolios,
 positions, transactions) plus a few feed-specific extras. The web
 silver is the **historical source of truth** (it carries multi-year
 data PSN can't); PSN takes over from its activation date forward.
+The two feeds splice on a per-relationship cutover date: web before
+it, PSN after it. Documents (PDFs) are web-only — PSN has no
+equivalent.
 
-Gold's job is the merge:
-
-- For every entity that exists in both silvers, ensure the records
-  reconcile (same account, same portfolio, same instrument).
-- For transactions specifically, splice on `value_date` at the PSN
-  activation date per banking relationship.
-- For positions, prefer PSN snapshots (daily, machine-format) over
-  web snapshots when both cover the same day.
-- For documents (PDFs), use web only — PSN has no equivalent.
+How gold reconciles the overlap (which feed wins per entity, the
+exact join keys and splice boundary) is owned by the wealthdb UBS
+adapter — see [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
+The sections below document the silver-side facts that make the
+splice possible.
 
 ## 2. Identifier conventions
 
@@ -61,7 +52,12 @@ defines every identifier. Recap of the cross-silver join keys:
 | Instrument | `instrument_isin` (ISO 6166 ISIN-12) on `positions` | `isin` on `instruments` / `holdings` | Equality on ISIN |
 | Transaction | `(transaction_external_id, account_external_id)` compound PK — UBS reuses the Transaction no. for both debit + credit sides of an inter-account transfer | `event_external_id` (derived from the SWIFT message reference), unique per event | **DO NOT JOIN** — the two ID schemes do not overlap in practice. See §3.6 for the date-splice-only merge strategy. |
 
-## 3. Per-entity merge contracts
+## 3. Per-entity silver shapes
+
+This section documents the identifiers and entity shapes each feed
+carries. How gold pairs them across the two silvers (config schema,
+join keys, which feed wins) is owned by the wealthdb UBS adapter —
+see [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
 ### 3.1 Banking relationships
 
@@ -69,34 +65,20 @@ An e-banking login can hold 1+ banking relationships.
 PSN sees each as a separate SFTP endpoint (`SFTPCH01`, `SFTPCH02`,
 …). Web sees each as an opaque `bankingRelationId` URL token.
 
-**There is no shared key**, only proxies:
+**There is no shared key**, only proxies the silver surfaces:
 
 - `account_number_prefix` — the 12-char shared prefix of all
   account numbers under the relationship (`BBBB AAAAAAAA`).
   PSN's `AcctId` values can be sliced to derive the same prefix
-  (positions 1–4 + reformat the middle). Gold can match on this
-  prefix if it's unique enough across the user's relationships.
-- `description` — manually populated. The web silver leaves
-  `banking_relationships.description` empty by default; the user
-  (or gold's config) fills in a human label that pairs each web
-  relationship with its PSN counterpart.
-
-**Recommended gold config schema:**
-
-```yaml
-banking_relationship_map:
-  - web_relationship_id: <ubs-opaque-token-1>           # bankingRelationId from SPA URLs
-    psn_relationship_id: SFTPCH01
-    label: "Primary"
-  - web_relationship_id: <ubs-opaque-token-2>
-    psn_relationship_id: SFTPCH02
-    label: "Secondary"
-```
+  (positions 1–4 + reformat the middle).
+- `description` — the web silver leaves
+  `banking_relationships.description` empty by default, a slot for
+  a human label pairing each web relationship with its PSN
+  counterpart.
 
 When the user runs `download.py` against a different relationship
 (by first switching it in the UBS UI), a new
 `banking_relationships` row appears with its own opaque token.
-Gold's config pairs it with the right PSN side.
 
 ### 3.2 Portfolios
 
@@ -130,12 +112,8 @@ extract the trailing token of the "Portfolio" column (split on
 whitespace, take the last word) as `portfolio_external_id`.
 Store the full original string in `portfolio_full_id` for
 traceability. Read the "Valued in: <CCY>" footer line and write
-it as `portfolios.base_currency`.
-
-**Gold join:** equality on `portfolio_external_id`. The
-catch-all is a real row in silver; gold can treat it as either a
-distinct portfolio or as "unassigned cash" depending on the
-roll-up.
+it as `portfolios.base_currency`. The catch-all is a real row in
+silver, distinct from the customer-facing portfolios.
 
 ### 3.3 Cash accounts
 
@@ -177,143 +155,89 @@ acct_id_psn_form = branch + "0000" + "00" + base + "0000" + chk
 ```
 
 The web loader computes `account_acct_id_psn_form` from the IBAN
-and stores it as a parallel column. **Gold can join on either side;
-both are present in both silvers.**
+and stores it as a parallel column, so both the IBAN and the
+21-char AcctId form are present in both silvers.
 
 #### Accounts PSN sees but web doesn't
 
 PSN can report internal UBS booking accounts that the customer UI
-does not expose. For gold:
-
-- Use PSN data for these accounts unconditionally; web has no
-  rows to splice in.
-- Mark them with a flag (e.g. `psn_only=true`) in gold so dashboards
-  can hide them if the user doesn't care about internal flows.
+does not expose. The web feed has no rows
+for them at all — they exist only on the PSN side.
 
 ### 3.4 Safekeeping accounts (securities depots)
 
 PSN exposes them directly (`safekeeping_accounts` table); web
 does not surface them as first-class rows. The web `positions.csv`
 flattens everything to portfolio + product, hiding the depot
-layer.
+layer. The web `positions.portfolio_external_id` does link to
+`psn.holdings` (which carries both `safekeeping_external_id` and
+`isin`), though not strictly 1-to-1 — multiple safekeepings can
+exist under one portfolio.
 
-**Today's contract:** gold uses PSN for safekeeping-account
-metadata when present. Web `positions` rows can be aggregated
-into PSN safekeeping accounts via the portfolio link
-(`positions.portfolio_external_id` → `psn.holdings` which carries
-both `safekeeping_external_id` and `isin`). The mapping isn't
-strict 1-to-1 — multiple safekeepings can exist under one
-portfolio — but for snapshots it's good enough.
-
-**Future work:** if the wealthdb gold layer needs per-safekeeping
-attribution from web data, we'd need to scrape the
-"Investment positions (custody account)" navigation tree, which
-exposes the depot hierarchy. Not done in v1.
+**Future work:** per-safekeeping attribution from web data would
+need scraping the "Investment positions (custody account)"
+navigation tree, which exposes the depot hierarchy. Not done in v1.
 
 ### 3.5 Positions (snapshots)
 
 Both silvers emit complete snapshots. Web is on-demand (one per
 `download.py` run); PSN is daily.
 
-**Use PSN for identity; fold web payload on top.** PSN's
-holdings carry the full safekeeping / portfolio hierarchy and the
+The two `positions` shapes differ in fidelity. PSN's `holdings`
+carry the full safekeeping / portfolio hierarchy and the
 authoritative pricing snapshot per (safekeeping, instrument). The
-web silver's `positions` table flattens that hierarchy (one
+web silver's `positions` table flattens that hierarchy: one
 portfolio code per row, no safekeeping link, market value in
-portfolio base currency only) — it cannot express the same
-identity faithfully. So the gold layer:
-
-```
-identity   = PSN.holdings(snapshot_date, safekeeping, isin)
-payload    = LEFT JOIN web.positions
-              ON  web.portfolio_external_id = PSN.holdings.portfolio_external_id
-              AND web.instrument_isin       = PSN.holdings.isin
-```
-
-This picks up web's `cost_price`, `lending_value`,
-`lending_value_ratio`, `description`, etc. without trying to
-flatten PSN through the web's narrower identity model.
-
-For dates before PSN's activation, gold falls back to web
-`positions` standalone — accepting the flattened identity model
-for the pre-PSN window. The pricing in that window is whatever
-the customer's snapshot captured (no canonical bank mark).
+portfolio base currency only. What the web rows add on top is
+`cost_price`, `lending_value`, `lending_value_ratio`,
+`description`, etc. — fields PSN does not carry. The web
+`positions` rows key on `portfolio_external_id` + `instrument_isin`.
 
 **Cash positions** (the "Liquidity - Accounts" rows in
-positions.csv) join to PSN's `cash_balances` the same way:
-join on `(snapshot_date, account_external_id)` and fold the web
-columns. `account_external_id` is the canonical IBAN per §2 — it
-joins directly.
+positions.csv) carry `account_external_id` as the canonical IBAN
+per §2, the same form PSN's `cash_balances` use.
 
 ### 3.6 Transactions (the splice)
 
-This is the cleanest merge. Per the user's design:
+This is where the two UBS feeds meet. Rather than matching
+individual transactions, the histories splice on a date boundary:
+web before PSN's go-live, PSN after it. The wealthdb UBS adapter
+owns the actual cut — see
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md). The
+silver-side facts that make a clean date-splice possible:
 
-> Matching individual transactions will not be necessary, if there
-> is a clean way to splice the transaction history based on
-> transaction dates.
-
-**Splice key: `value_date`** (promoted column on both silvers).
-
-For each cash account A and each banking relationship R:
-
-```sql
--- pseudo-SQL
-SELECT * FROM web_silver.transactions
- WHERE account_external_id = A
-   AND value_date < cutoff_date(R)
-UNION ALL
-SELECT * FROM psn_silver.events
- WHERE account_external_id = A
-   AND kind = 'cash_movement'
-   AND timestamp >= cutoff_date(R)
-```
-
-`cutoff_date(R)` is the date PSN's feed went live for relationship
-R. Pull from `psn.dump_runs` (`MIN(snapshot_at)`) or the user's
-own config.
-
-**Why this works:**
-
-- PSN's `events.timestamp` is the MT940 booking/value date. Web's
-  `transactions.value_date` is the CSV "Value date" column.
-  Spot-checked: identical for cash movements in the overlap window.
-- Both promote the same field as the splice key; no per-row
-  matching required.
+- **Both silvers promote `value_date`.** PSN's `events.timestamp`
+  is the MT940 booking/value date; web's `transactions.value_date`
+  is the CSV "Value date" column. Spot-checked identical for cash
+  movements in the overlap window, so the splice needs no per-row
+  matching.
+- **The cutover date is derivable from PSN silver:** PSN's feed
+  go-live for a relationship is `MIN(snapshot_at)` in
+  `psn.dump_runs`.
 - **Inter-account transfers carry both sides.** UBS reuses the
   same `Transaction no.` for the debit row in the source account
   and the credit row in the destination account; the web silver
-  uses a compound PK on `(transaction_external_id, account_
-  external_id)` so both rows survive. Gold's per-account splice
-  picks up the correct side automatically — no special handling
-  needed.
-- If both feeds happen to carry the same transaction for an
-  overlap day (unlikely with a strict `<` vs `>=` boundary), the
-  PSN row wins and the web row is silently dropped. Acceptable.
-
-**Do not attempt per-row identity matching.** The two silvers carry
-totally different transaction-ID schemes (web uses UBS's "Transaction
-no." e.g. `0104030TJ0060041`; PSN derives event IDs from SWIFT
-message references e.g. `mt515:…`). Empirically there is **zero
-overlap** between the two ID spaces, so any cross-silver join on
-`transaction_external_id = event_external_id` returns nothing.
-The hard `<` vs `>=` cut on `value_date` is the only safe merge.
+  uses a compound PK on `(transaction_external_id,
+  account_external_id)` so both rows survive a per-account splice.
+- **The two transaction-ID schemes do not overlap.** Web uses
+  UBS's "Transaction no."; PSN derives event IDs from SWIFT
+  message references (`mt515:…`). Empirically there is zero overlap
+  between the two ID spaces, so per-row identity matching is not
+  possible — the date-splice is the only safe merge.
 
 **Note on Trade date vs Value date.** Web's CSV has four dates per
 row: Trade date, Trade time, Booking date, Value date. PSN MT940
-exposes booking + value date. Use **Value date** as the splice
-key on both sides for consistency.
+exposes booking + value date. Both silvers promote **Value date**
+as the splice key for consistency.
 
 ### 3.7 Documents (PDFs)
 
-Web-only. PSN has no document concept. Gold either:
-
-- Surfaces them as a flat table (one row per PDF, indexed by date
-  and type) for browse / audit, OR
-- Joins them to accounts / portfolios via best-effort label
-  parsing (the web loader populates `documents.account_external_id`
-  / `documents.portfolio_external_id` when the listing-row label
-  contains a discoverable IBAN / portfolio code).
+Web-only — PSN has no document concept. The silver `documents`
+table is one row per PDF, indexed by date and type. The web loader
+populates `documents.account_external_id` /
+`documents.portfolio_external_id` via best-effort label parsing,
+when the listing-row label contains a discoverable IBAN / portfolio
+code.
 
 The PDF binaries live on disk under
 `<bronze-root>/<dump-ts>/documents/` — the silver `documents`
@@ -342,29 +266,19 @@ tables.** Two reasons:
    column that gold would still have to filter on every query.
 2. **Cadence + authority differ.** PDFs are bank-of-record end-
    of-period snapshots, semi-annual at best for positions. Live
-   fetches are intra-day customer-side snapshots. Gold can pick
-   per use case (e.g. PDF snapshots are the right source for
-   historical performance attribution; live fetch is the right
-   source for "what does the customer see right now").
+   fetches are intra-day customer-side snapshots. Keeping them in
+   separate tables lets a consumer pick per use case (PDF snapshots
+   for historical attribution; live fetch for "what does the
+   customer see right now").
 
-**Gold join.** For overlap dates where PSN is also present, gold
-should prefer PSN for both identity and pricing. For dates that
-predate PSN's go-live, `historical_position_snapshots` is the
-canonical source. The portfolio identifier joins directly:
-
-```sql
-SELECT *
-FROM web_silver.historical_position_snapshots
-WHERE as_of_date < cutoff_date(R)
-UNION ALL
-SELECT *
-FROM psn_silver.holdings  -- shaped equivalently
-WHERE snapshot_at >= cutoff_date(R);
-```
-
-`historical_cash_balances` joins to the live `accounts` table via
-the IBAN (`account_external_id`) — same canonical form on both
-sides.
+**Cross-feed join keys.** `historical_position_snapshots` carries
+the portfolio identifier in PSN's `PrtflId`-aligned form (per the
+`BBBBAAAAAAAANN` expansion above), so it lines up directly with
+PSN `holdings`. `historical_cash_balances` carries
+`account_external_id` as the IBAN — the same canonical form PSN
+uses. How gold splices the historical and PSN snapshots (which feed
+wins per date) is owned by the wealthdb UBS adapter — see
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
 **Known parser limitations.** The parsers in
 [pdf_parsers.py](pdf_parsers.py) are best-effort:
@@ -426,41 +340,25 @@ sides.
 - **Atomicity.** One transaction per dump-run. Roll back on any
   parsing failure; user re-runs after fixing.
 
-## 5. Open questions for the gold layer
+## 5. Feed-coverage gaps the adapter must reckon with
+
+These are source-specific limits of what the silvers carry. How the
+wealthdb UBS adapter resolves them is owned by
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md); they are
+listed here because they are properties of the feeds, not of gold.
 
 - **Multi-relationship sweep.** The web SPA only exposes the
   currently-selected relationship; the toolkit currently
-  produces one silver per relationship per session. Gold can
-  load multiple silvers but the operator needs to remember to
-  switch + re-run. Could be automated in download.py later.
-- **Cost-basis carryforward.** Web carries `cost_price`; PSN
-  does not. Once gold cuts over to PSN, cost basis goes stale.
-  Either re-run web periodically for snapshot refresh, or
-  derive cost basis from web's transaction history (buy/sell
-  events).
-- **FX rates.** PSN has 980+ FX rates; web has only the 8
-  CHF/* pairs in `positions.csv` footer. Gold should source FX
-  from PSN (or from a third-party feed) for any base-currency
-  conversion.
-- **Document → instrument linking.** Trade confirmations and
-  corporate-action notices reference ISINs in the PDF body. The
-  web loader doesn't parse PDF bodies; today `documents` is
-  only indexed by type + date + account. If gold wants per-ISIN
-  document attribution, add a PDF text-extraction pass.
-
-## 6. Sanity checks gold should run
-
-- **Account-count parity per relationship.** Web's
-  `COUNT(DISTINCT account_external_id) WHERE kind = 'cash'`
-  should equal PSN's count minus the 2 internal accounts. A
-  larger diff suggests a missed account on the web side
-  (relationship-switch needed) or a stale silver.
-- **Position market-value sum per portfolio per snapshot.**
-  Web's `SUM(market_value_base)` for the active portfolio
-  should match PSN's portfolio-performance totals (PSN's
-  `TDPOPF` records emit a portfolio-level NAV) within a small
-  rounding tolerance.
-- **Transaction continuity.** No date gaps between the latest
-  web `value_date` and the earliest PSN `events.timestamp` per
-  account. A gap = the user missed a `download.py` window;
-  alert and let them re-run for the missing dates.
+  produces one silver per relationship per session — the operator
+  has to switch + re-run. Could be automated in download.py later.
+- **Cost basis is web-only.** Web carries `cost_price`; PSN does
+  not. Past the PSN cutover the web cost basis stops refreshing
+  unless web is re-run or cost basis is derived from web's
+  transaction history (buy/sell events).
+- **FX coverage differs sharply.** PSN carries 980+ FX rates; web
+  carries only the 8 CHF/* pairs in the `positions.csv` footer.
+- **Documents are not indexed by instrument.** Trade confirmations
+  and corporate-action notices reference ISINs in the PDF body, but
+  the web loader does not parse PDF bodies; `documents` is indexed
+  by type + date + account only. Per-ISIN attribution would need a
+  PDF text-extraction pass.

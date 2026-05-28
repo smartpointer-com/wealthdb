@@ -7,11 +7,10 @@ raw CSVs and PDFs into a queryable SQLite silver database for
 downstream tools — e.g. local LLM-based agents and the `wealthdb`
 gold layer — to consume.
 
-Sibling projects: [schwab-dump](https://github.com/ptu/schwab-dump),
-[ubs-psn-dump](https://github.com/ptu/ubs-psn-dump). The
-[DESIGN.md](DESIGN.md) document in `schwab-dump` covers the shared
-three-layer (bronze/silver/gold) model and the conventions reused
-here.
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions.
 
 ## Why this design
 
@@ -72,30 +71,15 @@ cd swissquote-dump
 
 ### Run
 
-The repo ships a thin `swissquote-dump` shell wrapper around `docker
-run` that mounts `~/.secrets/` and the bronze directory into the
-container (both RW — `login.py` writes the state file, `download.py`
-writes bronze):
+The `swissquote-dump` wrapper drives `docker run`; see
+[collectors/README.md](../README.md) for the shared Docker
+mount/wrapper conventions (`~/.secrets → /secrets`,
+`~/wealthdb/swissquote → /data`).
 
 ```sh
 ./swissquote-dump login --check
 ./swissquote-dump download --dry-run
 ./swissquote-dump load --silver-db /data/swissquote.db --bronze-dir /data
-```
-
-Inside the container, `login.py`, `download.py`, and `load.py` live
-at `/app/`; `/secrets/` is the mounted credential dir; `/data/` is
-the mounted bronze + silver directory.
-
-If you prefer to drive `docker run` directly, the equivalent of
-`./swissquote-dump <cmd>` is:
-
-```sh
-docker run --rm -it \
-    -v ~/.secrets:/secrets \
-    -v ~/wealthdb/swissquote:/data \
-    swissquote-dump:latest \
-    <cmd>.py <flags>
 ```
 
 ### Headless remote host
@@ -201,9 +185,10 @@ Initial mint (and re-mint when the session expires):
 
 `--username` may also be provided via `SWISSQUOTE_USERNAME`. The
 password is read from `SWISSQUOTE_PASSWORD` if set, otherwise
-prompted interactively (echo disabled). See
-[CLAUDE.md](CLAUDE.md) §3 — passwords are never accepted as CLI
-flags.
+prompted interactively (echo disabled). Credentials go in
+`~/.secrets/swissquote.env`; see
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
 
 Check whether the current session cookie still authenticates (no
 new MFA push, no fresh login):
@@ -434,10 +419,9 @@ of band) is treated as a parallel bronze input on every run: each
 file's sha256 is compared against `documents.content_sha256`, and only
 new files are recorded as `source = 'manual'`.
 
-See the schwab-dump [DESIGN.md](https://github.com/ptu/schwab-dump/blob/main/DESIGN.md)
-§4 for the full rationale behind the snapshot/event archetype split
-and the semi-relational JSON1 pattern; this repo follows the same
-conventions.
+See [the architecture overview](../../ARCHITECTURE.md) for the
+bronze → silver → gold model; this collector follows the shared
+snapshot/event and semi-relational JSON1 conventions.
 
 ### Usage
 
@@ -475,40 +459,20 @@ The loader executes each new migration in numeric order and commits
 between files. Silver databases must always be at the latest schema —
 never write code that handles "if column X exists".
 
-## Gold-layer integration (wealthdb)
+## Silver: `accounts.account_product`
 
-[wealthdb](https://github.com/ptu/wealthdb) is the cross-bank gold
-layer that consumes this silver DB (alongside silver from
-schwab-dump, ubs-psn-dump, etc.) and projects everything into a
-canonical schema. Two columns on the gold side that the Swissquote
-adapter should populate from this repo's silver:
+`accounts.account_product` is scraped from the eBanking
+`#accountOverview/main` listing, where each account is rendered as
+a `<PRODUCT> <CUSTOMER_ID>` line ("Trading 1234567", "Säule 3a
+1234567", etc.). The scraper handles German diacritics via Python's
+Unicode-aware `\w`. A label the regex can't parse (e.g. one
+starting with a lowercase letter like "ePrivate Banking") is logged
+as a warning at scrape time and is absent from `accounts`, so
+`account_product` falls back to `''`.
 
-- **gold `instruments.name`** ← silver `positions.name`
-  (with `positions.isin` as the cross-bank join key — Swissquote's
-  `symbol` column differs between the Positions XLS and the
-  Transactions CSV for the same instrument; ISIN is stable).
+## Gold integration
 
-- **gold `accounts.tax_wrapper`** ← derive from
-  silver `accounts.account_product` per this mapping:
-
-  | Swissquote `account_product` | wealthdb `tax_wrapper` |
-  | --- | --- |
-  | `Trading` | `taxable_personal` |
-  | `Savings` | `taxable_personal` |
-  | `Säule 3a` | `pillar_3a` |
-  | `Freizügigkeit` | `vested_benefits` |
-  | _(anything else)_ | `taxable_personal` (default) |
-
-  `account_product` is scraped from the eBanking
-  `#accountOverview/main` listing where each account is rendered as
-  a `<PRODUCT> <CUSTOMER_ID>` line ("Trading 1234567", "Säule 3a
-  1234567", etc.). The scraper handles German diacritics via
-  Python's Unicode-aware `\w`.
-
-  A Swissquote account label that the regex can't parse
-  (e.g. one starting with a lowercase letter like "ePrivate
-  Banking") gets logged as a warning at scrape time and is
-  absent from `accounts`. The wealthdb adapter should accept
-  `account_product = ''` as the same as "unknown" and default to
-  `taxable_personal`, optionally allowing a per-account override
-  in `wealthdb.cfg`.
+The wealthdb Swissquote adapter consumes this silver and derives
+the canonical columns (e.g. `tax_wrapper` from
+`accounts.account_product`, instrument joins via `positions.isin`).
+See [the adapter doc](../../wealthdb/docs/adapters/swissquote.md).

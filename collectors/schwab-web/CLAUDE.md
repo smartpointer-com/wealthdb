@@ -1,14 +1,14 @@
 # Notes for Claude / coding agents
 
-Four ground rules apply when working on this repo. All are
-non-negotiable.
+Shared, repo-wide ground rules (authentication discipline, no PII in
+source, git/commit conventions) live in the repo-root
+[CLAUDE.md](../../CLAUDE.md). The schwab-web-specific surface below
+applies on top of those shared rules.
 
 ## 1. Read-only Schwab web access — never trigger write actions
 
-The Schwab session this toolkit drives is a fully privileged
-session — the same one a human uses to place trades, move money,
-issue transfers, and change settings. There is no read-only sub-
-session or scope. This repo's contract is that it *only* reads.
+Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
+concrete surface for schwab-web:
 
 Allowed UI surfaces — `download.py` may only navigate to or click
 within (final list TBD once the live UI is mapped, but the
@@ -46,98 +46,7 @@ Forbidden — do not navigate to, click, or scrape:
   read-only filter Apply actions, and explicit export-generation
   triggers.
 
-The CLI must never accept a flag that would trigger a write action.
-If a future Schwab feature exposes structured "place order" or
-"submit transfer" endpoints reachable via the logged-in session,
-treat them as forbidden until the user explicitly opts in in
-writing.
+## Authentication & private data
 
-## 2. Do not run real Schwab sessions unless the user asks
-
-Every fresh login from this toolkit triggers an MFA challenge
-(SMS code / push / voice — exact factor depends on the user's
-configuration) to the user's device. Repeated logins:
-
-- Annoy the user (one code or biometric tap each).
-- May trigger Schwab-side fraud heuristics, device-trust
-  reverification, or temporary lock-out — there is no published
-  "max sessions per day" limit, so err well below any plausible
-  threshold.
-- Burn the persistent session cookie's lifetime if invalidated by
-  parallel logins.
-
-Allowed without asking:
-
-- Read the code, configs, and docs.
-- Run `login.py --check` (opens the persistent Firefox profile,
-  hits one cheap landmark URL, reports whether the session is
-  still valid). No new login, no MFA push.
-- Run `download.py --dry-run` (uses the existing session if alive,
-  walks the UI to confirm selectors still match landmarks, exits
-  without exporting). Counts as one navigation, not a new login.
-- Run unit tests and fixture-based parsing exercises.
-
-Not allowed unless the user explicitly asks:
-
-- Run `login.py` without `--check` (mints a fresh session, sends
-  an MFA challenge to the user's phone).
-- Run `download.py` without `--dry-run`.
-- Trigger any non-`--check` navigation to a live `schwab.com` URL
-  from a REPL or one-off shell command.
-- Add or change scheduling (cron, launchd, systemd timer, GitHub
-  Actions, etc.) that would cause logins or downloads to fire
-  automatically. This toolkit is intentionally human-triggered;
-  unattended cron does not work past the MFA gate anyway.
-
-## 3. Do not weaken authentication
-
-The session cookie is the keys to the kingdom (see §1). Do not:
-
-- Write code that disables, bypasses, or downgrades MFA — even
-  "temporarily for testing."
-- Persist the user's password in plaintext anywhere on disk or in
-  environment files committed to the repo. Passwords come from
-  interactive prompt at `login.py` time, or from an env var that
-  the user manages outside the repo (`SCHWAB_PASSWORD`).
-- Cache the password "for the next login.py invocation" in process
-  state or on disk.
-- Add a `--password VALUE` CLI flag that puts the password in `ps`
-  output or shell history. Credentials reach the script via the
-  `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` env vars, typically loaded
-  from `~/.secrets/schwab-web.env`.
-- Reduce the `chmod` on the state file below `0600`, or store it
-  in a location wider than `~/.secrets/` defaults.
-- Default any debug or transient artefact (screenshot, trace
-  bundle, scratch log) to a path under `~/.secrets/`. The secrets
-  dir is for persistent credentials only; debug paths must be
-  user-provided (`--screenshot-dir` etc.) with no fallback to the
-  secrets-dir parent. `--trace` is therefore a paired flag — it
-  requires `--screenshot-dir`.
-
-## 4. Do not leak private information into source
-
-The repo is intended to be publishable. Do not write any of the
-following into tracked files (source, configs, comments, commit
-messages, test fixtures, recorded Playwright traces, sample HTML
-drops the user provides for landmarking):
-
-- Schwab login username, customer ID, advisor / relationship IDs.
-- Account numbers (plain or hashed), account nicknames that
-  embed identifying info.
-- Personal data: names, addresses, phone numbers, email addresses,
-  birth dates, SSN fragments, beneficiary identifiers.
-- Real session cookies, browser-profile contents, or MFA tokens.
-- Any data returned by Schwab — positions, transactions, balances,
-  fees, cost basis, realised gains, document IDs, instrument
-  lists scoped to a specific account.
-- Screenshots from Playwright trace capture (or user-supplied
-  reference screenshots) that show logged-in UI with real values.
-  If a debug screenshot needs to be committed for documentation,
-  redact identifiers first; the preferred default is "don't commit
-  screenshots at all".
-
-When the user drops a sample HTML download or screenshot into the
-repo as part of bootstrapping `login.py` / `download.py`,
-**strip identifiers before committing** anything derived from
-it — even comments and test fixtures. When in doubt, ask the user
-before adding a value that looks identifier-shaped.
+See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and
+§4 (no private information in source). They apply in full here.

@@ -8,7 +8,7 @@ layers are owned by per-bank dump repositories (`schwab-api-dump`,
 `ubs-psn-dump`, `ubs-web-dump`, `swissquote-dump`, future siblings).
 
 It is intended to be read alongside
-[schwab-api-dump/DESIGN.md](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md),
+[schwab-api/DESIGN.md](../../collectors/schwab-api/DESIGN.md),
 which establishes the three-layer (bronze/silver/gold) model and the
 per-broker silver-schema conventions reused here. This document covers
 only what gold adds.
@@ -708,9 +708,9 @@ maps from each bank's discriminator, identifier conventions,
 deferred silver tables, open questions) live in their own files
 to keep this document focused on gold-side architecture:
 
-- [docs/adapters/schwab.md](docs/adapters/schwab.md)
-- [docs/adapters/ubs.md](docs/adapters/ubs.md)
-- [docs/adapters/swissquote.md](docs/adapters/swissquote.md)
+- [adapters/schwab.md](adapters/schwab.md)
+- [adapters/ubs.md](adapters/ubs.md)
+- [adapters/swissquote.md](adapters/swissquote.md)
 
 Each adapter doc is self-contained for the engineer writing or
 maintaining that adapter. New bank adapters add a new file in
@@ -1801,7 +1801,7 @@ Sketch of where this lands when designed:
   with caveats (Alpha Vantage), or local scraping of public IR
   pages. The chosen source dictates the bronze format.
 - **Layer.** Likely its own silver-equivalent (a separate
-  bronze→silver pipeline, possibly in a new sibling repo like
+  bronze→silver pipeline, possibly as a new sibling collector like
   `marketdata-dump`), feeding into gold via the same plugin
   contract as the bank silvers — `Adapter`, `Status`, `ChangeWindow`,
   `Snapshots`, `Transactions`. Reusing the plugin pattern means

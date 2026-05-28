@@ -1,13 +1,15 @@
 # ubs-psn-dump
 
 A toolkit for ingesting UBS Private Standard Network (PSN) banking data:
-fetching the raw per-order-type zips over SFTP Pull, parsing them into
-a queryable SQLite silver database, and serving as one of the
-per-broker sources for the `wealthdb` gold layer (separate repo) which
-projects all broker silvers into a single cross-broker view.
+fetching the raw per-order-type zips over SFTP Pull and parsing them into
+a queryable SQLite silver database.
+
+Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
+for the bronze → silver → gold model and [collectors/README.md](../README.md)
+for shared collector conventions.
 
 See [DESIGN.md](DESIGN.md) for the silver-schema contract and the
-design notes targeted at gold-layer adapter authors.
+source-specific design notes.
 
 ## Tools
 

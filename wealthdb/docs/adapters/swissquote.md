@@ -8,8 +8,8 @@ the canonical gold schema. Implements the `silver.Adapter` /
 ## 1. Silver source
 
 - Upstream: `swissquote-dump` repository.
-- Silver schema: [swissquote-dump/migrations/0001_initial.sql](https://github.com/ptu/swissquote-dump/blob/main/migrations/0001_initial.sql).
-- Silver README: [swissquote-dump/README.md](https://github.com/ptu/swissquote-dump/blob/main/README.md).
+- Silver schema: [swissquote/migrations/0001_initial.sql](../../../collectors/swissquote/migrations/0001_initial.sql).
+- Silver README: [swissquote/README.md](../../../collectors/swissquote/README.md).
 
 ## 2. Identifier conventions
 

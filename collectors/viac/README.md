@@ -7,24 +7,16 @@ Xvfb, no VNC. CLI-only; the SMS mTAN is prompted on stdin during
 login.
 
 Lands per-portfolio JSON + per-document PDFs into a versioned
-bronze tree, then (Phase 4) parses them into a queryable SQLite
-silver database. Future `wealthdb` integration consumes the
-silver as the `viac` adapter source.
+bronze tree, then parses them into a queryable SQLite silver
+database.
 
-Sibling projects:
-[swissquote-dump](https://github.com/ptu/swissquote-dump),
-[ubs-web-dump](https://github.com/ptu/ubs-web-dump),
-[ubs-psn-dump](https://github.com/ptu/ubs-psn-dump),
-[schwab-web-dump](https://github.com/ptu/schwab-web-dump),
-[schwab-api-dump](https://github.com/ptu/schwab-api-dump),
-[fidelity-web-dump](https://github.com/ptu/fidelity-web-dump),
-[relevate-dump](https://github.com/ptu/relevate-dump) (the
-closest analogue — Swiss vested-benefits, same Airlock-shaped
-auth stack). The shared three-layer (bronze / silver / gold)
-model is documented in
-[`schwab-api-dump/DESIGN.md`](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md);
-this repo's own [DESIGN.md](DESIGN.md) covers VIAC-specific
-decisions.
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions. The closest sibling is
+[relevate](../relevate/) (Swiss vested-benefits, same
+Airlock-shaped auth stack); this collector's own
+[DESIGN.md](DESIGN.md) covers VIAC-specific decisions.
 
 ## Status
 
@@ -93,12 +85,12 @@ cd viac-dump
 ## Run
 
 The repo ships a thin `viac-dump` shell wrapper around `docker
-run` that mounts two host paths into the container:
-
-| Container path | Host path (default) | Purpose |
-| --- | --- | --- |
-| `/secrets` | `~/.secrets` | `viac.env` (credentials), `viac-state.json` (cookies + CSRF metadata) |
-| `/data` | `~/wealthdb/viac` | bronze artefacts + silver DB |
+run` that bind-mounts `~/.secrets` and `~/wealthdb/viac` into the
+container per the shared collector convention — see
+[collectors/README.md](../README.md). Inside the container that
+puts `viac.env` (credentials) and `viac-state.json` (cookies +
+CSRF metadata) at `/secrets`, and bronze artefacts + silver DB at
+`/data`.
 
 ```sh
 ./viac-dump login --check                       # cheap session-alive probe; no mTAN push
@@ -113,7 +105,7 @@ Override the host mounts via env: `VIAC_SECRETS_DIR`, `VIAC_DATA_DIR`.
 
 ### Credentials
 
-`login.py` reads two env vars sourced from `/secrets/viac.env`:
+`login.py` reads two env vars from `~/.secrets/viac.env`:
 
 - `VIAC_LOGIN` — your mobile number in **E.164 form including
   the country code** (e.g. `+417XXXXXXXX` for a Swiss number).
@@ -121,17 +113,9 @@ Override the host mounts via env: `VIAC_SECRETS_DIR`, `VIAC_DATA_DIR`.
   API does not.
 - `VIAC_PASSWORD` — VIAC login password.
 
-```sh
-# ~/.secrets/viac.env (chmod 600, never committed)
-# Treated as a bash script (`source`d via bash). SINGLE quotes
-# around values containing $/!/backtick — double quotes let
-# `source` do $-expansion and silently mangle the password.
-export VIAC_LOGIN=+417XXXXXXXX
-export VIAC_PASSWORD='your-password-with-$pecial-chars'
-```
-
-Passwords are NEVER accepted as CLI flags
-(see [CLAUDE.md §3](CLAUDE.md)).
+See
+[collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
 
 ## Bronze layout
 
@@ -177,4 +161,4 @@ See [CLAUDE.md §1](CLAUDE.md). VIAC's portal exposes mutation
 surfaces (initiate a contribution, change strategy, change
 beneficiary, request a withdrawal). This toolkit is **read-only**
 and never POSTs / PUTs / DELETEs anything beyond the auth flow.
-Same contract as the sibling repos.
+Same contract as the sibling collectors.

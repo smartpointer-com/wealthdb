@@ -4,16 +4,17 @@ Design document for the `fidelity-web-dump` toolkit. The audience
 is the engineer (current author, future contributor) implementing
 and maintaining `download.py` and the silver loader
 against the live `www.fidelity.com` UI. It is also the contract
-between this silver and the [`wealthdb` Fidelity adapter](https://github.com/ptu/wealthdb).
+between this silver and the wealthdb Fidelity adapter
+([`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/)).
 
 This document is the planning artefact, not the journal. Decisions
 that get revised should be revised here, in place. See §11 for the
 explicit punch list of unknowns that remain.
 
-The shared three-layer model (bronze on disk, silver SQLite +
-JSON1, gold DuckDB cross-bank canonical) is documented in
-[`schwab-api-dump/DESIGN.md`](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md);
-this document only covers what's Fidelity-specific.
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions. This document only covers what's Fidelity-specific.
 
 ## 1. Context and non-goals
 
@@ -416,7 +417,7 @@ Confirmed empirically: after a successful login that writes the
 profile dir to disk, closing the Camoufox process and reopening
 with the same profile dir lands on a signin redirect — Fidelity
 treats the cookie as dead even though the file persists. This
-matches the [schwab-web-dump session model](https://github.com/ptu/schwab-web-dump/blob/main/DESIGN.md#5-login--mfa-flow)
+matches the [schwab-web session model](../schwab-web/DESIGN.md#5-login--mfa-flow)
 exactly.
 
 Consequence: **login and scrape share one continuous Camoufox
@@ -645,7 +646,7 @@ the rendered HTML; silver scrapes from there.
 - MFA automation — human-in-the-loop on every truly-fresh login.
 - Cross-bank semantic alignment — gold's job.
 - Trust statement reconstruction from PDFs — no statements exist.
-- Outside investment-manager data sources — out-of-band; separate repo when needed.
+- Outside investment-manager data sources — out-of-band; its own future collector when needed.
 
 ## 10. Implementation status
 
@@ -664,7 +665,7 @@ the rendered HTML; silver scrapes from there.
 | Statement-PDF parser (529 historical reconstruction) | not started |
 | Per-account `account_registration` | deferred — see §11.5 |
 | `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `self_directed`, trust_managed → `discretionary`) | done — see §11.6 |
-| `wealthdb` Fidelity adapter | separate repo |
+| `wealthdb` Fidelity adapter | sibling component (`wealthdb/`) |
 
 ## 11. Open questions
 

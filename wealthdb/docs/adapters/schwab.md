@@ -23,12 +23,12 @@ and skips the orchestrator's merge layer.
 
 ## 1. Silver sources
 
-- API: [`schwab-api-dump`](https://github.com/ptu/schwab-api-dump).
-  Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/schwab-api-dump/blob/main/migrations/0001_initial.sql).
-- Web: [`schwab-web-dump`](https://github.com/ptu/schwab-web-dump).
-  Silver schema: [migrations/0001_initial.sql](https://github.com/ptu/schwab-web-dump/blob/main/migrations/0001_initial.sql)
-  + [migrations/0002_historical_snapshots.sql](https://github.com/ptu/schwab-web-dump/blob/main/migrations/0002_historical_snapshots.sql).
-- Cross-repo interop notes: [schwab-web-dump/INTEROP.md](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md).
+- API: [`schwab-api`](../../../collectors/schwab-api/).
+  Silver schema: [migrations/0001_initial.sql](../../../collectors/schwab-api/migrations/0001_initial.sql).
+- Web: [`schwab-web`](../../../collectors/schwab-web/).
+  Silver schema: [migrations/0001_initial.sql](../../../collectors/schwab-web/migrations/0001_initial.sql)
+  + [migrations/0002_historical_snapshots.sql](../../../collectors/schwab-web/migrations/0002_historical_snapshots.sql).
+- Cross-collector interop notes: [schwab-web/INTEROP.md](../../../collectors/schwab-web/INTEROP.md).
 
 ## 2. Identifier conventions
 
@@ -182,7 +182,7 @@ gold rows.
 
 ### 7.2. Transaction splice — hard cut, not overlap merge
 
-Per [INTEROP §2](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md#2-transaction-identifier-mismatch):
+Per [INTEROP §2](../../../collectors/schwab-web/INTEROP.md#2-transaction-identifier-mismatch):
 the two silvers' `activity_id` spaces are disjoint (api uses
 Schwab's real `activityId`; web uses a synthetic SHA-256 prefix).
 Any cross-source per-row match would be heuristic and risk
@@ -211,7 +211,7 @@ wealthdb doesn't need to dedupe further.
 - **`open_orders` projection.** Reserved for a future `wealthdb
   orders` subcommand; no schema work needed in gold yet.
 - **1099-XML structured tax-lot data.** Per
-  [INTEROP §4](https://github.com/ptu/schwab-web-dump/blob/main/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
+  [INTEROP §4](../../../collectors/schwab-web/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
   schwab-web silver carries 1099 Composite as PDF/XML/CSV; the
   XML has lot-level detail (cost basis, term, wash-sale flag)
   the api doesn't surface. Wealthdb doesn't ingest this yet — a

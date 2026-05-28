@@ -5,20 +5,13 @@ the `www.fidelity.com` client UI under Camoufox (a stealth-patched
 Firefox) to export portfolio positions, transaction history, and
 the archived PDF document set (statements + tax forms), then (in
 subsequent scripts) parsing the raw downloads into a queryable
-SQLite silver database for downstream tools — e.g. local LLM-based
-agents and the [`wealthdb`](https://github.com/ptu/wealthdb) gold
-layer — to consume.
+SQLite silver database for downstream tools to consume.
 
-Sibling projects:
-[schwab-api-dump](https://github.com/ptu/schwab-api-dump),
-[schwab-web-dump](https://github.com/ptu/schwab-web-dump),
-[ubs-psn-dump](https://github.com/ptu/ubs-psn-dump),
-[ubs-web-dump](https://github.com/ptu/ubs-web-dump),
-[swissquote-dump](https://github.com/ptu/swissquote-dump). See
-[`schwab-api-dump/DESIGN.md`](https://github.com/ptu/schwab-api-dump/blob/main/DESIGN.md)
-for the shared three-layer (bronze / silver / gold) model;
-[DESIGN.md](DESIGN.md) here covers Fidelity-specific design
-decisions.
+Part of the **wealthdb** suite — see [the architecture
+overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+model and [collectors/README.md](../README.md) for shared collector
+conventions. [DESIGN.md](DESIGN.md) here covers Fidelity-specific
+design decisions.
 
 ## Status
 
@@ -34,7 +27,7 @@ Login, bronze fetch, and silver loader are operational.
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). Statement-PDF parser for 529 historical reconstruction is a follow-up. |
-| `wealthdb` Fidelity adapter | implemented in the [`wealthdb`](https://github.com/ptu/wealthdb) repo |
+| `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).
 
@@ -81,8 +74,10 @@ Silver classifies each section label into a stable
 - `other` — anything else, kept as a fall-through so future
   Fidelity labels don't need a schema migration
 
-The gold layer in `wealthdb` propagates `portfolios.kind` to its
-`owner` dimension (529 → `self`, trust_managed → `trust`). A trust can be a separate tax entity, so this is not a cosmetic split.
+A trust can be a separate tax entity, so this `portfolios.kind` split is not cosmetic; how
+gold consumes it is the adapter's concern — see [the canonical
+model](../../ARCHITECTURE.md) and the adapter source
+[`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/).
 
 See [DESIGN.md §1.2](DESIGN.md) for the account-category model
 in more depth; §1.3 for third-party managers.
@@ -117,17 +112,15 @@ juggler-protocol revision — do NOT bump without also bumping
 
 ### Run
 
-The wrapper mounts three host paths into the container:
+The wrapper drives `docker run` with the shared
+`~/.secrets → /secrets` and `~/wealthdb/fidelity-web → /data`
+mounts (see [collectors/README.md](../README.md)). On top of
+those it adds two Fidelity-specific mounts:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/secrets` | `~/.secrets` | env file (`fidelity-web.env`), Firefox profile dir |
-| `/data` | `~/wealthdb/fidelity-web` | bronze artefacts + silver DB |
 | `/debug` | `~/.cache/fidelity-web-debug` | opt-in screenshots / traces |
-
-Plus the repo dir is mounted at `/app` so edits to `download.py`
-on the host are picked up by the next container spawn (no
-rebuild needed during iteration).
+| `/app` | repo dir | edits to `download.py` picked up by the next spawn — no rebuild during iteration |
 
 Override host paths via env: `FIDELITY_WEB_SECRETS_DIR`,
 `FIDELITY_WEB_DATA_DIR`, `FIDELITY_WEB_DEBUG_DIR`.
@@ -205,15 +198,10 @@ logs how many accounts each classified portfolio holds; failures are logged as w
 - `FIDELITY_USERNAME` — Fidelity login username (treat as sensitive).
 - `FIDELITY_PASSWORD` — Fidelity login password.
 
-The script sources `/secrets/fidelity-web.env` automatically.
-
-```sh
-# ~/.secrets/fidelity-web.env (chmod 600, never committed)
-# SINGLE quotes for values containing $/!/backtick (defeats
-# host-shell $-expansion when `source` is run).
-FIDELITY_USERNAME='your-username'
-FIDELITY_PASSWORD='your-password'
-```
+Credentials go in `~/.secrets/fidelity-web.env` (sourced
+automatically as `/secrets/fidelity-web.env` inside the container);
+see [collectors/README.md](../README.md#conventions-shared-across-collectors)
+for the shared env-file rules.
 
 ### Session lifecycle
 

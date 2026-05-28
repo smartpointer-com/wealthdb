@@ -8,12 +8,12 @@ what the silver data does and does not contain, and why.
 
 ## 1. Account taxonomy and pension accounts
 
-**Short version for the wealthdb adapter:** in the silver data
-observed to date, every cash and safekeeping account maps to
-`tax_wrapper = 'taxable_personal'`. The adapter should still
-consult `AcctTpCd` / `AcctTpDesc` as a guard rather than mapping
-unconditionally, because we cannot prove PSN never surfaces a
-pension account — only that the current customer doesn't have one.
+What the silver carries: each `cash_accounts` /
+`safekeeping_accounts` row promotes the UBS product code in its
+`payload.AcctTpCd` / `AcctTpDesc` fields. This section records what
+those values do and don't reveal about pension assets. How gold
+interprets these columns is owned by the wealthdb UBS adapter — see
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
 ### What we know vs. what we suspect
 
@@ -46,25 +46,11 @@ PSN is bound to a UBS AG banking relationship (`ClntId`, the
 `0230…` form). Those pension foundations have their own customer-
 number and reporting plumbing. It is therefore *likely* — but not
 verified — that PSN does not deliver pension data even when a UBS
-customer has pension assets in a UBS-affiliated foundation.
-
-### Adapter guidance
-
-- **For each PSN account, look at `cash_accounts.payload.AcctTpCd` /
-  `AcctTpDesc` (cash side) or the equivalent on
-  `safekeeping_accounts` to derive `tax_wrapper`.**
-- Map every currently-observed code (above) to `taxable_personal`.
-- Default a previously-unseen `AcctTpCd` to `taxable_personal` plus a
-  WARN log, so an unknown code doesn't silently misclassify. The
-  WARN is the prompt to re-examine this section when it fires.
-- If/when a pension-shaped value ever does appear in `AcctTpDesc`
-  (German: `Vorsorge`, `Säule`, `Freizügigkeit`; English: `pension`,
-  `pillar`, `vested`; French: `prévoyance`, `pilier`), revisit the
-  mapping with the actual evidence in hand.
-
-The previous version of this section claimed "PSN never surfaces a
-pension account, map unconditionally". That overstated what we
-actually knew — corrected on 2026-05-24.
+customer has pension assets in a UBS-affiliated foundation. The
+pension-shaped marker values to watch for, should they ever appear
+in `AcctTpDesc`, are German `Vorsorge` / `Säule` / `Freizügigkeit`,
+English `pension` / `pillar` / `vested`, French `prévoyance` /
+`pilier`.
 
 ## 2. Account identifier canonicalisation
 
