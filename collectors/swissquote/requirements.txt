@@ -17,3 +17,8 @@ xlrd==1.2.0
 # pypdf is used by load.py to extract position snapshots from
 # Account Statement / Portfolio performance PDFs.
 pypdf==5.1.0
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./swissquote sh -c "cd /app && pytest"`, no
+# host-side Python toolchain required.
+pytest>=8,<9
