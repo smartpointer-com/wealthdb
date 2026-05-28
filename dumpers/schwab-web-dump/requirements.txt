@@ -1,0 +1,35 @@
+# Camoufox — stealth-patched Firefox fork that masks the
+# fingerprint surfaces (canvas, WebGL, audio, fonts, navigator.*)
+# upstream Playwright Firefox does not. Schwab's anti-bot rules
+# flag the OS-mismatch a plain Linux Playwright Firefox presents
+# even with a macOS UA string; camoufox's `os="macos"` mode
+# spoofs everything consistently. Brings Playwright as a
+# transitive dep, so the rest of the Playwright API surface
+# (cookies, evaluate, frame_locator, wait_for_event) keeps working
+# unchanged.
+# camoufox-py 0.4.11 (Jan 2025) downloads Firefox 135.0.1-beta.24
+# whose juggler patches target the contemporaneous Playwright
+# 1.49.x release line. The mcr.microsoft.com playwright image
+# ships a much newer Playwright (1.60), whose juggler protocol
+# revision causes camoufox-launched Firefox to crash the driver
+# (`coreBundle.js: Cannot read 'url' of undefined` on every
+# pageerror). Pinning Playwright back to the camoufox-aligned
+# version is the simplest fix — the image's bundled browsers at
+# /ms-playwright are unused (camoufox brings its own Firefox at
+# $HOME/.cache/camoufox/).
+camoufox[geoip]>=0.4.11,<0.5
+playwright==1.49.0
+
+# pypdfium2 ships Python bindings to Google's PDFium (the
+# renderer Chrome uses). Pure-C++ under the hood, an order of
+# magnitude faster than the pdfplumber / pdfminer.six pure-Python
+# stack we used originally — pdf_parsers.py does text-only
+# extraction across hundreds of monthly statement PDFs, and that
+# was CPU-bound on Python-loop overhead. Apache/BSD-licensed,
+# wheel-distributed.
+pypdfium2>=4.30,<5
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./schwab-web-dump sh -c "cd /app && pytest"`,
+# no host-side Python toolchain required.
+pytest>=8,<9
