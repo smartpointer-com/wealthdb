@@ -1,0 +1,208 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the fidelity-web-dump
+# container. Mounts ~/.secrets/ (RW; the container needs to write
+# the state file there during login) and the bronze directory (RW),
+# and forwards all arguments to the container's entrypoint.
+
+set -euo pipefail
+
+IMAGE="${FIDELITY_WEB_IMAGE:-fidelity-web-dump:latest}"
+
+# Fixed container name. Image-hash drift (e.g. after a rebuild)
+# would otherwise hide running containers from
+# `docker ps --filter ancestor=fidelity-web-dump:latest`; with a
+# fixed name, `docker rm -f fidelity-web-dump` is a reliable
+# kill-switch regardless of which image revision a container was
+# started against. Single-name across subcommands means we
+# implicitly enforce "only one fidelity-web-dump container at a
+# time" — which matches the per-profile single-writer model the
+# session state needs anyway. See the safety-guard block below for
+# the lesson that motivated this — schwab-web-dump's wrapper
+# without it would silently evict a live VNC-login session.
+CONTAINER_NAME="${FIDELITY_WEB_CONTAINER:-fidelity-web-dump}"
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Mount points on the host. Override via env if your layout differs.
+HOST_SECRETS="${FIDELITY_WEB_SECRETS_DIR:-$HOME/.secrets}"
+HOST_DATA="${FIDELITY_WEB_DATA_DIR:-$HOME/wealthdb/fidelity-web}"
+# A separate writable dir for opt-in debug artefacts (screenshots,
+# Playwright trace bundles, ad-hoc HTML drops). Kept OUT of HOST_DATA
+# so the bronze + silver tree stays clean — only `--screenshot-dir
+# /debug/...`, `--trace /debug/...`, etc. should write here.
+HOST_DEBUG="${FIDELITY_WEB_DEBUG_DIR:-$HOME/.cache/fidelity-web-debug}"
+
+usage() {
+    cat <<EOF
+fidelity-web-dump — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (\`docker build\`).
+  download [args...]    One-shot: log in (prompts on stdin for the
+                        Fidelity 2FA code if MFA fires; auto-skips
+                        when the device-trust cookie is valid), run
+                        the requested walk phases, log out, exit.
+                        Stdin must be a TTY when MFA is expected.
+                        Pass --check to validate the session without
+                        scraping.
+  load [args...]        Parse bronze into the silver SQLite DB.
+                        Runs host-side (pure stdlib Python; no
+                        Docker spawn).
+  vnc-login [args...]   First-time profile-dir seed: pre-fills
+                        credentials, hands off to a VNC client for
+                        the human-driven click + 2FA, then runs the
+                        walk (or just exits with --mode none).
+                        Starts x11vnc on 127.0.0.1:5900.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  $HOST_SECRETS  ->  /secrets   (env file + profile dir)
+  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
+  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces)
+
+Override mounts via env:
+  FIDELITY_WEB_SECRETS_DIR=/path/to/secrets
+  FIDELITY_WEB_DATA_DIR=/path/to/data
+  FIDELITY_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  Read from \$FIDELITY_USERNAME / \$FIDELITY_PASSWORD inside the
+  container. The script sources /secrets/fidelity-web.env
+  automatically (= \$HOME/.secrets/fidelity-web.env on the host).
+
+  Use SINGLE QUOTES around values containing \$, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do \$-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    FIDELITY_USERNAME='your-username'
+    FIDELITY_PASSWORD='your-password-with-\$pecial-chars'
+  chmod 600 the file.
+EOF
+}
+
+# ./fidelity-web-dump build [extra docker build flags]
+if [[ "${1:-}" == "build" ]]; then
+    shift
+    exec docker build -t "$IMAGE" "$@" "$HERE"
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+    usage
+    exit 0
+fi
+
+# ./fidelity-web-dump load [args...]  → host-side python3 invocation.
+#
+# The silver loader is pure-stdlib Python (sqlite3 + csv + json
+# + hashlib + re); no Camoufox / Playwright / container needed.
+# Running it host-side avoids the docker-spin overhead for what's
+# just a file walk + SQLite writes, and bypasses the safety
+# guard further down so it can run while a `download` container
+# is mid-flight.
+#
+# Defaults match the container layout (silver under <data>/...,
+# bronze tree = <data>). Forward all flags through.
+if [[ "${1:-}" == "load" ]]; then
+    mkdir -p "$HOST_DATA"
+    shift
+    SILVER_DB="$HOST_DATA/fidelity-web.db"
+    BRONZE_DIR="$HOST_DATA"
+    PASSTHRU=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --silver-db) shift; SILVER_DB="$1" ;;
+            --bronze-dir) shift; BRONZE_DIR="$1" ;;
+            -h|--help)
+                cat <<EOH
+fidelity-web-dump load — parse bronze into silver SQLite
+
+Runs host-side (pure stdlib Python). Default silver DB lives at
+\$HOST_DATA/fidelity-web.db; default bronze tree is \$HOST_DATA
+itself.
+
+Flags:
+  --silver-db <file>    SQLite path (default: \$HOST_DATA/fidelity-web.db)
+  --bronze-dir <dir>    Bronze tree root (default: \$HOST_DATA)
+  -v, --verbose         DEBUG-level logging
+EOH
+                exit 0
+                ;;
+            *) PASSTHRU+=("$1") ;;
+        esac
+        shift
+    done
+    exec python3 "$HERE/load.py" \
+        --silver-db "$SILVER_DB" \
+        --bronze-dir "$BRONZE_DIR" \
+        ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+fi
+
+# Ensure mount points exist on the host before we mount them. Docker
+# will silently create them as root-owned directories if we don't.
+mkdir -p "$HOST_DATA"
+mkdir -p "$HOST_DEBUG"
+if [[ ! -d "$HOST_SECRETS" ]]; then
+    echo "fidelity-web-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
+    exit 1
+fi
+
+# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
+# wrapper safe to pipe (e.g. for log capture) while still giving
+# interactive prompts when run from a terminal. The `${arr[@]+...}`
+# idiom expands to nothing when the array is empty, which keeps
+# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
+TTY_ARGS=()
+if [[ -t 0 && -t 1 ]]; then
+    TTY_ARGS=(-it)
+fi
+
+# `vnc-login` needs the VNC port forwarded to the host so the
+# user's VNC client can connect. Bind to 127.0.0.1 only — the VNC
+# server inside the container has no network-facing auth and we
+# don't want it reachable from the LAN.
+EXTRA_ARGS=()
+if [[ "${1:-}" == "vnc-login" ]]; then
+    EXTRA_ARGS+=(-p 127.0.0.1:5900:5900)
+fi
+
+# Safety guard: refuse to clobber a live container.
+#
+# A second wrapper invocation while a `download` or `vnc-login` is
+# mid-MFA would otherwise `docker rm -f` the live container and
+# kill the in-flight Fidelity session — costing a fresh MFA round
+# (and during VNC handoff, losing the human's in-progress click).
+# Pass FIDELITY_WEB_FORCE_REPLACE=1 to override when the live
+# session is known-stuck.
+if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
+    if [[ "${FIDELITY_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
+        echo "fidelity-web-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "  Refusing to evict it — that would kill any live Fidelity session." >&2
+        echo "  Options:" >&2
+        echo "    * Use a different name:    FIDELITY_WEB_CONTAINER=otherthing $0 $*" >&2
+        echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
+        echo "    * Force replace:           FIDELITY_WEB_FORCE_REPLACE=1 $0 $*" >&2
+        exit 2
+    fi
+    echo "fidelity-web-dump: FIDELITY_WEB_FORCE_REPLACE=1 — evicting live container" >&2
+fi
+
+# Evict any prior (stopped) container with this name (best-effort
+# — no-op when the name isn't in use). Past this point we've
+# already refused to clobber a RUNNING container; this only affects
+# exited-but-not-cleaned-up state.
+docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+exec docker run --rm --name "$CONTAINER_NAME" \
+    ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    -e FIDELITY_USERNAME \
+    -e FIDELITY_PASSWORD \
+    -v "$HOST_SECRETS:/secrets" \
+    -v "$HOST_DATA:/data" \
+    -v "$HOST_DEBUG:/debug" \
+    -v "$HERE:/app" \
+    "$IMAGE" "$@"
