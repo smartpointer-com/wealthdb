@@ -1,5 +1,5 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the relevate-dump
+# Host-side wrapper around `docker run` for the relevate
 # container. Mounts ~/.secrets/ (RW; the container reads the env
 # file and writes the persistent cookie jar) and the bronze data
 # directory (RW), and forwards arguments to the container's
@@ -7,16 +7,16 @@
 
 set -euo pipefail
 
-IMAGE="${RELEVATE_IMAGE:-relevate-dump:latest}"
+IMAGE="${RELEVATE_IMAGE:-wealthdb/relevate:latest}"
 
 # Fixed container name. Image-hash drift (e.g. after a rebuild)
 # would otherwise hide running containers from `docker ps
 # --filter ancestor`; with a fixed name, `docker rm -f
-# relevate-dump` is a reliable kill-switch regardless of which
+# relevate` is a reliable kill-switch regardless of which
 # image revision a container was started against. Single-name
-# across subcommands also enforces "one relevate-dump container
+# across subcommands also enforces "one relevate container
 # at a time".
-CONTAINER_NAME="${RELEVATE_CONTAINER:-relevate-dump}"
+CONTAINER_NAME="${RELEVATE_CONTAINER:-relevate}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -24,7 +24,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # defaults so the user can override paths there instead of in env
 # vars. The file is plain bash (key=value lines). Absent file is
 # fine.
-RELEVATE_CFG="${RELEVATE_CFG:-$HOME/.config/relevate-dump.cfg}"
+RELEVATE_CFG="${RELEVATE_CFG:-$HOME/.config/relevate.cfg}"
 if [[ -f "$RELEVATE_CFG" ]]; then
     # shellcheck disable=SC1090
     source "$RELEVATE_CFG"
@@ -41,7 +41,7 @@ HOST_DEBUG="${RELEVATE_DEBUG_DIR:-$HOME/.cache/relevate-debug}"
 
 usage() {
     cat <<EOF
-relevate-dump — host wrapper
+relevate — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
@@ -67,7 +67,7 @@ Mounted into the container:
   $HOST_DATA     ->  /data       (bronze artefacts + silver DB)
   $HOST_DEBUG    ->  /debug      (opt-in scratch logs / traces)
 
-Override mounts via env (or in \$HOME/.config/relevate-dump.cfg):
+Override mounts via env (or in \$HOME/.config/relevate.cfg):
   RELEVATE_SECRETS_DIR=/path/to/secrets
   RELEVATE_DATA_DIR=/path/to/data
   RELEVATE_DEBUG_DIR=/path/to/debug
@@ -88,7 +88,7 @@ Credentials:
 EOF
 }
 
-# ./relevate-dump build [extra docker build flags]
+# ./relevate build [extra docker build flags]
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
@@ -105,7 +105,7 @@ fi
 mkdir -p "$HOST_DATA"
 mkdir -p "$HOST_DEBUG"
 if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "relevate-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "relevate: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
@@ -116,7 +116,7 @@ fi
 # `source`-ing pulls the values into this shell so the subsequent
 # `docker run -e RELEVATE_LOGIN -e RELEVATE_PASSWORD` forwards them
 # into the container. The file is optional; absence is fine (e.g.
-# for `./relevate-dump help`, `./relevate-dump sh`).
+# for `./relevate help`, `./relevate sh`).
 RELEVATE_ENV_FILE="${RELEVATE_ENV_FILE:-$HOST_SECRETS/relevate.env}"
 if [[ -f "$RELEVATE_ENV_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -137,14 +137,14 @@ fi
 # Safety guard: refuse to clobber a live container.
 #
 # If a `login` session is mid-mTAN-prompt and the user runs
-# another wrapper invocation (`./relevate-dump sh`, etc.), a
+# another wrapper invocation (`./relevate sh`, etc.), a
 # naive `docker rm -f $CONTAINER_NAME` would kill the live
 # session and burn the 2FA push in flight. Refuse instead; let
 # the user decide. Override with RELEVATE_FORCE_REPLACE=1 only
 # when the running container is known-stuck.
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${RELEVATE_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "relevate-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "relevate: a container named '$CONTAINER_NAME' is already running." >&2
         echo "  Refusing to evict it — that would kill any live Relevate session." >&2
         echo "  Options:" >&2
         echo "    * Use a different name:    RELEVATE_CONTAINER=otherthing $0 $*" >&2
@@ -152,7 +152,7 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | 
         echo "    * Force replace:           RELEVATE_FORCE_REPLACE=1 $0 $*" >&2
         exit 2
     fi
-    echo "relevate-dump: RELEVATE_FORCE_REPLACE=1 — evicting live container" >&2
+    echo "relevate: RELEVATE_FORCE_REPLACE=1 — evicting live container" >&2
 fi
 
 # Evict any prior (stopped) container with this name (best-effort

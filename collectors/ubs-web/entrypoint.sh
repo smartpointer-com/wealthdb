@@ -23,7 +23,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-ubs-web-dump container
+ubs-web container
 
 Usage:
   <wrapper> <subcommand> [args...]
@@ -40,7 +40,7 @@ EOF
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run ubs-web-dump python -c '...'`.
+        # e.g. `docker run ubs-web python -c '...'`.
         exec "$@"
         ;;
 esac

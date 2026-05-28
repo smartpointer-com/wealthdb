@@ -30,7 +30,7 @@ form and the **input contract** to gold. One silver DB per source.
 | Runtime | Collectors | How you run it |
 | --- | --- | --- |
 | **Host venv** | `schwab-api`, `ubs-psn` | `.venv/bin/python {download,load}.py …` — pure-stdlib plus one thin dependency; no container. |
-| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac` | A host wrapper script drives `docker run`: `./<tool>-dump {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
+| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
 ## Conventions shared across collectors
 

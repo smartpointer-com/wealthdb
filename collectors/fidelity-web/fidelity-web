@@ -1,25 +1,25 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the fidelity-web-dump
+# Host-side wrapper around `docker run` for the fidelity-web
 # container. Mounts ~/.secrets/ (RW; the container needs to write
 # the state file there during login) and the bronze directory (RW),
 # and forwards all arguments to the container's entrypoint.
 
 set -euo pipefail
 
-IMAGE="${FIDELITY_WEB_IMAGE:-fidelity-web-dump:latest}"
+IMAGE="${FIDELITY_WEB_IMAGE:-wealthdb/fidelity-web:latest}"
 
 # Fixed container name. Image-hash drift (e.g. after a rebuild)
 # would otherwise hide running containers from
-# `docker ps --filter ancestor=fidelity-web-dump:latest`; with a
-# fixed name, `docker rm -f fidelity-web-dump` is a reliable
+# `docker ps --filter ancestor=wealthdb/fidelity-web:latest`; with a
+# fixed name, `docker rm -f fidelity-web` is a reliable
 # kill-switch regardless of which image revision a container was
 # started against. Single-name across subcommands means we
-# implicitly enforce "only one fidelity-web-dump container at a
+# implicitly enforce "only one fidelity-web container at a
 # time" — which matches the per-profile single-writer model the
 # session state needs anyway. See the safety-guard block below for
-# the lesson that motivated this — schwab-web-dump's wrapper
+# the lesson that motivated this — schwab-web's wrapper
 # without it would silently evict a live VNC-login session.
-CONTAINER_NAME="${FIDELITY_WEB_CONTAINER:-fidelity-web-dump}"
+CONTAINER_NAME="${FIDELITY_WEB_CONTAINER:-fidelity-web}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -34,7 +34,7 @@ HOST_DEBUG="${FIDELITY_WEB_DEBUG_DIR:-$HOME/.cache/fidelity-web-debug}"
 
 usage() {
     cat <<EOF
-fidelity-web-dump — host wrapper
+fidelity-web — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
@@ -81,7 +81,7 @@ Credentials:
 EOF
 }
 
-# ./fidelity-web-dump build [extra docker build flags]
+# ./fidelity-web build [extra docker build flags]
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
@@ -92,7 +92,7 @@ if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     exit 0
 fi
 
-# ./fidelity-web-dump load [args...]  → host-side python3 invocation.
+# ./fidelity-web load [args...]  → host-side python3 invocation.
 #
 # The silver loader is pure-stdlib Python (sqlite3 + csv + json
 # + hashlib + re); no Camoufox / Playwright / container needed.
@@ -115,7 +115,7 @@ if [[ "${1:-}" == "load" ]]; then
             --bronze-dir) shift; BRONZE_DIR="$1" ;;
             -h|--help)
                 cat <<EOH
-fidelity-web-dump load — parse bronze into silver SQLite
+fidelity-web load — parse bronze into silver SQLite
 
 Runs host-side (pure stdlib Python). Default silver DB lives at
 \$HOST_DATA/fidelity-web.db; default bronze tree is \$HOST_DATA
@@ -143,7 +143,7 @@ fi
 mkdir -p "$HOST_DATA"
 mkdir -p "$HOST_DEBUG"
 if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "fidelity-web-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "fidelity-web: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
@@ -177,7 +177,7 @@ fi
 # session is known-stuck.
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${FIDELITY_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "fidelity-web-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "fidelity-web: a container named '$CONTAINER_NAME' is already running." >&2
         echo "  Refusing to evict it — that would kill any live Fidelity session." >&2
         echo "  Options:" >&2
         echo "    * Use a different name:    FIDELITY_WEB_CONTAINER=otherthing $0 $*" >&2
@@ -185,7 +185,7 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | 
         echo "    * Force replace:           FIDELITY_WEB_FORCE_REPLACE=1 $0 $*" >&2
         exit 2
     fi
-    echo "fidelity-web-dump: FIDELITY_WEB_FORCE_REPLACE=1 — evicting live container" >&2
+    echo "fidelity-web: FIDELITY_WEB_FORCE_REPLACE=1 — evicting live container" >&2
 fi
 
 # Evict any prior (stopped) container with this name (best-effort

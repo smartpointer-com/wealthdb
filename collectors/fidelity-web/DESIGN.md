@@ -1,6 +1,6 @@
-# fidelity-web-dump — design
+# fidelity-web — design
 
-Design document for the `fidelity-web-dump` toolkit. The audience
+Design document for the `fidelity-web` toolkit. The audience
 is the engineer (current author, future contributor) implementing
 and maintaining `download.py` and the silver loader
 against the live `www.fidelity.com` UI. It is also the contract
@@ -185,7 +185,7 @@ Fidelity activity CSVs do NOT carry a stable per-row identifier
 across exports. Plan: synthesise a deterministic SHA-256 prefix
 over the row's promoted columns (`account_external_id |
 timestamp | amount | description | symbol | source_sha256`),
-mirroring `schwab-web-dump`'s pattern. Silver-internal only;
+mirroring `schwab-web`'s pattern. Silver-internal only;
 gold does not attempt cross-source per-row matching on it.
 
 ### 3.4 `owner` dimension
@@ -425,10 +425,10 @@ process.** The sibling-tool "login mints `storageState.json`,
 download reuses it across runs" pattern (UBS, Swissquote) does
 not apply.
 
-`./fidelity-web-dump download` is a one-shot:
+`./fidelity-web download` is a one-shot:
 
 ```
-./fidelity-web-dump download [flags]
+./fidelity-web download [flags]
     → docker spawn → Camoufox launch
     → IUA accept (if non-US locale) → signin
     → MFA auto-skip via device-trust cookie, or stdin prompt
@@ -480,7 +480,7 @@ operator drives the login + 2FA via VNC.
 
 ## 7. Login + MFA flow
 
-Default flow (`./fidelity-web-dump download`), assuming a profile
+Default flow (`./fidelity-web download`), assuming a profile
 dir that already has Akamai trust + Fidelity device-trust
 cookies:
 
@@ -676,7 +676,7 @@ does? Resolve by downloading the same statement twice and diffing
 sha256s. The silver loader currently plans to dedup on
 `content_sha256` (assumes stable hashes); if regenerated, we
 switch to `(account, doc_date, doc_kind, filename)` dedup à la
-schwab-web-dump.
+schwab-web.
 
 ### 11.2 GraphQL endpoint
 `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`

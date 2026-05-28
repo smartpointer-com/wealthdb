@@ -1,32 +1,27 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the ubs-web-dump
-# container. Mounts ~/.secrets/ (RW; the container needs to write
+# Host-side wrapper around `docker run` for the swissquote
+# container. Mounts ~/.secrets/ (RO-ish; the container needs to write
 # the state file there during login) and the bronze directory (RW),
 # and forwards all arguments to the container's entrypoint.
 
 set -euo pipefail
 
-IMAGE="${UBS_WEB_IMAGE:-ubs-web-dump:latest}"
+IMAGE="${SWISSQUOTE_IMAGE:-wealthdb/swissquote:latest}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # Mount points on the host. Override via env if your layout differs.
-HOST_SECRETS="${UBS_WEB_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${UBS_WEB_DATA_DIR:-$HOME/wealthdb/ubs-web}"
-# A separate writable dir for opt-in debug artefacts (screenshots,
-# Playwright trace bundles, ad-hoc QR PNGs). Kept OUT of HOST_DATA
-# so the bronze + silver tree stays clean — only `--screenshot-dir
-# /debug/...`, `--qr-png /debug/...`, etc. should write here.
-HOST_DEBUG="${UBS_WEB_DEBUG_DIR:-$HOME/.cache/ubs-web-debug}"
+HOST_SECRETS="${SWISSQUOTE_SECRETS_DIR:-$HOME/.secrets}"
+HOST_DATA="${SWISSQUOTE_DATA_DIR:-$HOME/wealthdb/swissquote}"
 
 usage() {
     cat <<EOF
-ubs-web-dump — host wrapper
+swissquote — host wrapper
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
   login [args...]     Mint or refresh the session state file.
-  download [args...]  Export bronze artefacts from netbanking.
+  download [args...]  Export bronze artefacts from e-banking.
   load [args...]      Parse bronze into the silver SQLite DB.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
@@ -34,22 +29,18 @@ Subcommands:
 Mounted into the container:
   $HOST_SECRETS  ->  /secrets   (state file lives here)
   $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces / QR PNGs)
 
 Override mounts via env:
-  UBS_WEB_SECRETS_DIR=/path/to/secrets
-  UBS_WEB_DATA_DIR=/path/to/data
-  UBS_WEB_DEBUG_DIR=/path/to/debug
+  SWISSQUOTE_SECRETS_DIR=/path/to/secrets
+  SWISSQUOTE_DATA_DIR=/path/to/data
 
-Credentials:
-  The contract number is read from \$UBS_CONTRACT_NUMBER inside the
-  container. The login script sources /secrets/ubs.env automatically
-  (= \$HOME/.secrets/ubs.env on the host), so dropping a single line
-  UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough.
+Pass-through env (set on host, available inside container):
+  SWISSQUOTE_USERNAME
+  SWISSQUOTE_PASSWORD
 EOF
 }
 
-# ./ubs-web-dump build [extra docker build flags]
+# ./swissquote build [extra docker build flags]
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
@@ -63,9 +54,8 @@ fi
 # Ensure mount points exist on the host before we mount them. Docker
 # will silently create them as root-owned directories if we don't.
 mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
 if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "ubs-web-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "swissquote: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
@@ -83,8 +73,8 @@ fi
 exec docker run --rm ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
-    -e UBS_CONTRACT_NUMBER \
+    -e SWISSQUOTE_USERNAME \
+    -e SWISSQUOTE_PASSWORD \
     -v "$HOST_SECRETS:/secrets" \
     -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
     "$IMAGE" "$@"

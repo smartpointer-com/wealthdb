@@ -1,11 +1,11 @@
-# schwab-api-dump: Design
+# schwab-api: Design
 
 Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 ## 1. Audience and scope
 
 This document describes the Schwab-specific design of
-`schwab-api-dump`: how the OAuth fetch loop, the source-shaped silver
+`schwab-api`: how the OAuth fetch loop, the source-shaped silver
 schema, and the temporal model are put together. Where a choice is
 specific to Schwab's API it is called out so a reader adapting the
 pattern to another backend can substitute the equivalent.
@@ -15,7 +15,7 @@ pattern to another backend can substitute the equivalent.
 See [the architecture overview](../../ARCHITECTURE.md) for the
 bronze → silver → gold model and the layer-ownership boundaries this
 toolkit inherits. The rest of this document covers only how
-`schwab-api-dump` realises its bronze and silver.
+`schwab-api` realises its bronze and silver.
 
 ## 3. The toolkit: three scripts
 

@@ -1,4 +1,4 @@
-# schwab-web-dump
+# schwab-web
 
 Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
@@ -72,7 +72,7 @@ runs until Schwab invalidates it.
 
 ## Tools
 
-The architecture follows the `ubs-web-dump` / `swissquote-dump`
+The architecture follows the `ubs-web` / `swissquote`
 template; subcommand names and roles are the same:
 
 | Script | Status | Purpose |
@@ -80,7 +80,7 @@ template; subcommand names and roles are the same:
 | [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` keeps the legacy VNC-driven flow where the operator drives Log In + 2FA. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
 | [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally. `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`, plus one landing HTML capture for debug. `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions section) | Extracts the "Transaction Details" table from Schwab monthly brokerage statement PDFs. Statement-period header parsing gives us the year for the MM/DD dates. Output: a list of `TransactionRow` dicts with category (Sale/Purchase/Withdrawal/Deposit/Dividend/Interest), symbol/CUSIP, quantity, price, charges, amount, and realised gain/loss (with ST/LT term). Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Will be used by `load.py` for closed-account history backfill (closed accounts disappear from the Transaction History page; PDF parsing is the only path). |
-| [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Silver schema mirrors `schwab-api-dump`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
+| [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
 ### Browser choice — camoufox-patched Firefox
 
@@ -126,16 +126,16 @@ The CLI is intentionally minimal:
 #   Schwab 2FA: enter your VIP / SMS code, then press Enter.
 #   > _
 # at which point you type the code and press Enter.
-./schwab-web-dump download \
+./schwab-web download \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 
 # Full backfill (10 years of statements):
-./schwab-web-dump download --range Last10Years --with-more-detail
+./schwab-web download --range Last10Years --with-more-detail
 
 # Fallback path: VNC. Start the container with VNC enabled, then
 # tunnel + open the display from your laptop. Use this if the
 # CLI-MFA flow misses (e.g. Schwab restyles the gateway).
-./schwab-web-dump vnc-login \
+./schwab-web vnc-login \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 # Prints:
 #   vnc-login: VNC ready on 127.0.0.1:5900
@@ -179,18 +179,18 @@ Tool-specific notes only:
 
 ```sh
 git clone <this repo>
-cd schwab-web-dump
-./schwab-web-dump build       # one-time, ~2-3 min on first build
+cd collectors/schwab-web
+./schwab-web build       # one-time, ~2-3 min on first build
 ```
 
 ### Run
 
 ```sh
-./schwab-web-dump download                                   # CLI-MFA login + scrape
-./schwab-web-dump download --range Last10Years --with-more-detail   # full backfill
-./schwab-web-dump download --dry-run --screenshot-dir /debug/download
-./schwab-web-dump vnc-login                                  # VNC fallback
-./schwab-web-dump load --silver-db /data/schwab-web.db --bronze-dir /data
+./schwab-web download                                   # CLI-MFA login + scrape
+./schwab-web download --range Last10Years --with-more-detail   # full backfill
+./schwab-web download --dry-run --screenshot-dir /debug/download
+./schwab-web vnc-login                                  # VNC fallback
+./schwab-web load --silver-db /data/schwab-web.db --bronze-dir /data
 ```
 
 ### Credentials
@@ -201,7 +201,7 @@ cd schwab-web-dump
   treat as sensitive even though it is not strictly a secret.
 - `SCHWAB_PASSWORD` — Schwab login password.
 
-These deliberately do *not* share a prefix with `schwab-api-dump`'s
+These deliberately do *not* share a prefix with `schwab-api`'s
 `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` (OAuth credentials for
 the Trader API), so the two credential sets never collide in a
 single shell env.
@@ -264,12 +264,12 @@ Bronze and silver paths are independently configurable. Trade
 Confirmations are deliberately skipped at the chip-filter step
 (low signal, high volume — see [CLAUDE.md](CLAUDE.md) §1).
 
-## Relationship to schwab-api-dump
+## Relationship to schwab-api
 
 Both toolkits land into Schwab-shaped silver databases that the
 `wealthdb` Schwab adapter consumes. They do not share a silver
-DB file: `schwab-api-dump` writes to `schwab-api.db` (Trader API
-JSON projected into a relational shape), `schwab-web-dump` writes
+DB file: `schwab-api` writes to `schwab-api.db` (Trader API
+JSON projected into a relational shape), `schwab-web` writes
 to `schwab-web.db` (web-scraped documents + PDF-parsed
 transactions). The wealthdb gold layer merges them at the
 canonical-layer level — same as the UBS-PSN ↔ UBS-Web
@@ -281,7 +281,7 @@ dedup) but operate on **different identifier spaces** — gold
 needs an explicit bridge for account-id and transaction-id
 alignment. The full merge contract lives in
 [DESIGN.md](DESIGN.md); for the focused cross-repo summary
-(asks for `schwab-api-dump`, hints for the `wealthdb`
+(asks for `schwab-api`, hints for the `wealthdb`
 gold-layer maintainer) see [INTEROP.md](INTEROP.md).
 
 ## Session lifecycle

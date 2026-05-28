@@ -37,7 +37,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-viac-dump container
+viac container
 
 Usage:
   <wrapper> <subcommand> [args...]
@@ -63,7 +63,7 @@ EOF
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run viac-dump python -c '...'`.
+        # e.g. `docker run viac python -c '...'`.
         exec "$@"
         ;;
 esac

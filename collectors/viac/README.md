@@ -1,4 +1,4 @@
-# viac-dump
+# viac
 
 A read-only scraper for [VIAC](https://viac.ch)'s Pillar-3a
 customer portal at `app.viac.ch`. **Replays the auth flow and the
@@ -78,13 +78,13 @@ and runs entirely inside the container.
 
 ```sh
 git clone <this repo>
-cd viac-dump
-./viac-dump build         # one-time, ~30 s on first build
+cd collectors/viac
+./viac build         # one-time, ~30 s on first build
 ```
 
 ## Run
 
-The repo ships a thin `viac-dump` shell wrapper around `docker
+The repo ships a thin `viac` shell wrapper around `docker
 run` that bind-mounts `~/.secrets` and `~/wealthdb/viac` into the
 container per the shared collector convention — see
 [collectors/README.md](../README.md). Inside the container that
@@ -93,12 +93,12 @@ CSRF metadata) at `/secrets`, and bronze artefacts + silver DB at
 `/data`.
 
 ```sh
-./viac-dump login --check                       # cheap session-alive probe; no mTAN push
-./viac-dump login                               # mints a fresh session; SMS goes to your phone
-./viac-dump download --dry-run                  # walk JSON endpoints, skip PDFs
-./viac-dump download                            # full bronze dump (default-tier PDFs only)
-./viac-dump download --with-transaction-documents  # also pull the ~950 per-event TRANSACTION PDFs
-./viac-dump load                                # parse bronze → silver SQLite
+./viac login --check                       # cheap session-alive probe; no mTAN push
+./viac login                               # mints a fresh session; SMS goes to your phone
+./viac download --dry-run                  # walk JSON endpoints, skip PDFs
+./viac download                            # full bronze dump (default-tier PDFs only)
+./viac download --with-transaction-documents  # also pull the ~950 per-event TRANSACTION PDFs
+./viac load                                # parse bronze → silver SQLite
 ```
 
 Override the host mounts via env: `VIAC_SECRETS_DIR`, `VIAC_DATA_DIR`.

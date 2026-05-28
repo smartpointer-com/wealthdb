@@ -33,7 +33,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-relevate-dump container
+relevate container
 
 Usage:
   <wrapper> <subcommand> [args...]
@@ -61,7 +61,7 @@ EOF
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run relevate-dump python -c '...'`.
+        # e.g. `docker run relevate python -c '...'`.
         exec "$@"
         ;;
 esac

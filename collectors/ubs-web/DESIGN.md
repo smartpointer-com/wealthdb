@@ -1,4 +1,4 @@
-# ubs-web-dump — design notes
+# ubs-web — design notes
 
 This document describes what the `ubs-web` silver carries and how it
 lines up with the PSN-fed silver from the sibling
@@ -308,7 +308,7 @@ wins per date) is owned by the wealthdb UBS adapter — see
 
 - **Migration runner.** Applies pending migrations in numeric
   order, commit after each, record version in `schema_meta`.
-  Mirror `ubs-psn-dump/load.py`'s pattern.
+  Mirror `ubs-psn/load.py`'s pattern.
 - **Bronze scan.** Walk `<bronze-root>` for subdirectories
   matching `YYYYMMDDTHHMMSSZ` and skip those already in
   `dump_runs`.

@@ -1,4 +1,4 @@
-# schwab-api-dump
+# schwab-api
 
 Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
@@ -147,7 +147,7 @@ placement, replacement, cancellation, or transfers). See
 
 ```sh
 git clone <this repo>
-cd schwab-api-dump
+cd collectors/schwab-api
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```

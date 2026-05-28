@@ -1,4 +1,4 @@
-# ubs-psn-dump: Design notes for downstream consumers
+# ubs-psn: Design notes for downstream consumers
 
 This document captures decisions and contracts that aren't obvious from
 the operational README — primarily for engineers writing adapters

@@ -4,8 +4,8 @@
 
 This document describes the design of `wealthdb` — the **gold**
 layer of the personal-portfolio data pipeline whose bronze and silver
-layers are owned by per-bank dump repositories (`schwab-api-dump`,
-`ubs-psn-dump`, `ubs-web-dump`, `swissquote-dump`, future siblings).
+layers are owned by per-bank dump repositories (`schwab-api`,
+`ubs-psn`, `ubs-web`, `swissquote`, future siblings).
 
 It is intended to be read alongside
 [schwab-api/DESIGN.md](../../collectors/schwab-api/DESIGN.md),
@@ -17,7 +17,7 @@ only what gold adds.
 
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
-│   ubs-psn-dump     │  │   schwab-api-dump  │  │   swissquote-dump  │
+│   ubs-psn     │  │   schwab-api  │  │   swissquote  │
 │   bronze: zips     │  │   bronze: JSON     │  │   bronze: CSV+XLS  │
 │   silver: SQLite   │  │   silver: SQLite   │  │   silver: SQLite   │
 └──────────┬─────────┘  └─────────┬──────────┘  └─────────┬──────────┘
@@ -1890,7 +1890,7 @@ Adapter-supplied values today:
   trust_non_grantor` + `management_style=discretionary`. Per-
   account registration labels (Roth IRA / Coverdell ESA / etc.)
   aren't currently surfaced by silver; the path to add them is
-  documented in fidelity-web-dump's DESIGN.md §11.6.
+  documented in fidelity-web's DESIGN.md §11.6.
 
 Adapters use SQLite PRAGMA-based feature detection where the
 silver schema has evolved (e.g. Swissquote's pre-v5 silvers used

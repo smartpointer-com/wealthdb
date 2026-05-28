@@ -98,4 +98,4 @@ before committing anything derived from it. When in doubt, ask.
 - **Host-venv collectors** (`schwab-api`, `ubs-psn`):
   `.venv/bin/python {download,load}.py`.
 - **Docker collectors** (the other six): the per-tool wrapper
-  (`./<tool>-dump <login|download|load>`) drives `docker run`.
+  (`./<tool> <login|download|load>`) drives `docker run`.

@@ -1,13 +1,13 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the viac-dump
+# Host-side wrapper around `docker run` for the viac
 # container. Mounts ~/.secrets/ (RW; cookie-jar state file lands
 # here) and the bronze directory (RW), and forwards all arguments
 # to the container's entrypoint.
 
 set -euo pipefail
 
-IMAGE="${VIAC_IMAGE:-viac-dump:latest}"
-CONTAINER_NAME="${VIAC_CONTAINER:-viac-dump}"
+IMAGE="${VIAC_IMAGE:-wealthdb/viac:latest}"
+CONTAINER_NAME="${VIAC_CONTAINER:-viac}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -17,7 +17,7 @@ HOST_DATA="${VIAC_DATA_DIR:-$HOME/wealthdb/viac}"
 
 usage() {
     cat <<EOF
-viac-dump — host wrapper
+viac — host wrapper
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
@@ -48,13 +48,13 @@ Credentials:
   around values containing \$, \!, backtick.
 
 Container concurrency:
-  Only one viac-dump container runs at a time (fixed name
+  Only one viac container runs at a time (fixed name
   '$CONTAINER_NAME'). The wrapper refuses to clobber a
   RUNNING container — set VIAC_FORCE_REPLACE=1 to override.
 EOF
 }
 
-# ./viac-dump build [extra docker build flags]
+# ./viac build [extra docker build flags]
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
@@ -69,7 +69,7 @@ fi
 # Docker would silently create them as root-owned otherwise.
 mkdir -p "$HOST_DATA"
 if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "viac-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "viac: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
@@ -83,11 +83,11 @@ if [[ -t 0 && -t 1 ]]; then
 fi
 
 # Safety guard: refuse to clobber a RUNNING container. Two
-# concurrent viac-dump invocations would race on
+# concurrent viac invocations would race on
 # /secrets/viac-state.json (login writes, download reads).
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${VIAC_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "viac-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "viac: a container named '$CONTAINER_NAME' is already running." >&2
         echo "  Refusing to evict — that could clobber a state-file write in progress." >&2
         echo "  Options:" >&2
         echo "    * Use a different name:    VIAC_CONTAINER=otherthing $0 $*" >&2
@@ -95,7 +95,7 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | 
         echo "    * Force replace:           VIAC_FORCE_REPLACE=1 $0 $*" >&2
         exit 2
     fi
-    echo "viac-dump: VIAC_FORCE_REPLACE=1 — evicting live container" >&2
+    echo "viac: VIAC_FORCE_REPLACE=1 — evicting live container" >&2
 fi
 
 # Evict any prior (stopped) container with this name — no-op

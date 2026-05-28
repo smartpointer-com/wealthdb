@@ -1,23 +1,23 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the schwab-web-dump
+# Host-side wrapper around `docker run` for the schwab-web
 # container. Mounts ~/.secrets/ (RW; the container needs to write
 # the state file there during login) and the bronze directory (RW),
 # and forwards all arguments to the container's entrypoint.
 
 set -euo pipefail
 
-IMAGE="${SCHWAB_WEB_IMAGE:-schwab-web-dump:latest}"
+IMAGE="${SCHWAB_WEB_IMAGE:-wealthdb/schwab-web:latest}"
 
 # Fixed container name. Image-hash drift (e.g. after a rebuild)
 # would otherwise hide running containers from
-# `docker ps --filter ancestor=schwab-web-dump:latest`; with a
-# fixed name, `docker rm -f schwab-web-dump` is a reliable
+# `docker ps --filter ancestor=wealthdb/schwab-web:latest`; with a
+# fixed name, `docker rm -f schwab-web` is a reliable
 # kill-switch regardless of which image revision a container was
 # started against. Single-name across subcommands means we
-# implicitly enforce "only one schwab-web-dump container at a
+# implicitly enforce "only one schwab-web container at a
 # time" — which matches the per-profile single-writer model the
 # Firefox profile dir needs anyway.
-CONTAINER_NAME="${SCHWAB_WEB_CONTAINER:-schwab-web-dump}"
+CONTAINER_NAME="${SCHWAB_WEB_CONTAINER:-schwab-web}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -32,7 +32,7 @@ HOST_DEBUG="${SCHWAB_WEB_DEBUG_DIR:-$HOME/.cache/schwab-web-debug}"
 
 usage() {
     cat <<EOF
-schwab-web-dump — host wrapper
+schwab-web — host wrapper
 
 Subcommands:
   build                 Build the Docker image (\`docker build\`).
@@ -79,7 +79,7 @@ Credentials:
 EOF
 }
 
-# ./schwab-web-dump build [extra docker build flags]
+# ./schwab-web build [extra docker build flags]
 if [[ "${1:-}" == "build" ]]; then
     shift
     exec docker build -t "$IMAGE" "$@" "$HERE"
@@ -95,7 +95,7 @@ fi
 mkdir -p "$HOST_DATA"
 mkdir -p "$HOST_DEBUG"
 if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "schwab-web-dump: secrets dir does not exist: $HOST_SECRETS" >&2
+    echo "schwab-web: secrets dir does not exist: $HOST_SECRETS" >&2
     echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
     exit 1
 fi
@@ -134,12 +134,12 @@ if [[ "${1:-}" == "vnc-login" ]]; then
         fi
     done
     if [[ -z "$vnc_host_port" ]]; then
-        echo "schwab-web-dump: no free TCP port between 5900-6000 on this host." >&2
+        echo "schwab-web: no free TCP port between 5900-6000 on this host." >&2
         echo "  Close some applications and retry." >&2
         exit 3
     fi
     if [[ "$vnc_host_port" != "5900" ]]; then
-        echo "schwab-web-dump: 127.0.0.1:5900 is taken; using ${vnc_host_port} instead." >&2
+        echo "schwab-web: 127.0.0.1:5900 is taken; using ${vnc_host_port} instead." >&2
     fi
     EXTRA_ARGS+=(-p "127.0.0.1:${vnc_host_port}:5900")
     EXTRA_ARGS+=(-e "VNC_HOST_PORT=${vnc_host_port}")
@@ -147,9 +147,9 @@ fi
 
 # Safety guard: refuse to clobber a live container.
 #
-# Past mistake: running `./schwab-web-dump sh -c "pytest ..."` while
+# Past mistake: running `./schwab-web sh -c "pytest ..."` while
 # a `download` session was mid-MFA killed Schwab's session (the
-# rm -f below evicts whatever's named schwab-web-dump). The cost:
+# rm -f below evicts whatever's named schwab-web). The cost:
 # a fresh MFA round. Now we check whether a RUNNING container
 # with this name exists; if so, we refuse and explain the
 # options. The user can pass `SCHWAB_WEB_FORCE_REPLACE=1` to
@@ -157,7 +157,7 @@ fi
 # genuinely want to recycle).
 if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
     if [[ "${SCHWAB_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "schwab-web-dump: a container named '$CONTAINER_NAME' is already running." >&2
+        echo "schwab-web: a container named '$CONTAINER_NAME' is already running." >&2
         echo "  Refusing to evict it — that would kill any live Schwab session." >&2
         echo "  Options:" >&2
         echo "    * Use a different name:    SCHWAB_WEB_CONTAINER=otherthing $0 $*" >&2
@@ -165,7 +165,7 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | 
         echo "    * Force replace:           SCHWAB_WEB_FORCE_REPLACE=1 $0 $*" >&2
         exit 2
     fi
-    echo "schwab-web-dump: SCHWAB_WEB_FORCE_REPLACE=1 — evicting live container" >&2
+    echo "schwab-web: SCHWAB_WEB_FORCE_REPLACE=1 — evicting live container" >&2
 fi
 
 # Evict any prior (stopped) container with this name (best-effort

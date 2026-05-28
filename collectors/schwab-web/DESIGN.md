@@ -1,10 +1,10 @@
-# schwab-web-dump — design notes for the gold-layer merge
+# schwab-web — design notes for the gold-layer merge
 
 Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
-This document is the contract between `schwab-web-dump` and the
+This document is the contract between `schwab-web` and the
 `wealthdb` gold layer that converges the web-scraped silver with
-`schwab-api-dump`'s Trader-API silver. It supplements the
+`schwab-api`'s Trader-API silver. It supplements the
 column-level commentary in
 [migrations/0001_initial.sql](migrations/0001_initial.sql); read
 that file for the schema, this file for the inter-feed merge
@@ -18,7 +18,7 @@ The companion silvers:
 | `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Multi-decade historical: statement PDFs back to 2016 (Schwab's UI cap), tax forms back to 2014, transaction-history HTML drops for the same window | `~/wealthdb/schwab-web/schwab-web.db` |
 | `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from API access activation (mid-2024 for this user) | `~/wealthdb/schwab-api/schwab-api.db` |
 
-This split mirrors the `ubs-web-dump` ↔ `ubs-psn-dump` pattern: a
+This split mirrors the `ubs-web` ↔ `ubs-psn` pattern: a
 slow, lossy, multi-year web archive plus a fast, lossless, recent
 machine feed.
 
@@ -223,7 +223,7 @@ statement transactions feed gives ENOUGH activity context to
 recompute positions retroactively if the user really needs them,
 but that's a gold-layer derivation, not a silver one.
 
-## 5. Recommendations for schwab-api-dump
+## 5. Recommendations for schwab-api
 
 These are nice-to-haves for the api-dump maintainer; the web
 silver doesn't strictly need any of them.
@@ -311,7 +311,7 @@ under `_more` (keyed by `_tx_history_row_key`).
 ## 8. `account_registration` column (migration 0003)
 
 Schwab's Trader API doesn't surface the per-account tax
-wrapper (see `schwab-api-dump/DESIGN.md` §4.10). The web feed
+wrapper (see `schwab-api/DESIGN.md` §4.10). The web feed
 does — every statement PDF prints the registration label at
 the top of page 1, adjacent to the account number. Migration
 0003 promotes that label to a top-level column on `accounts`:

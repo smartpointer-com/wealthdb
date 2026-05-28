@@ -1,6 +1,6 @@
-# schwab-web-dump ↔ schwab-api-dump interop notes
+# schwab-web ↔ schwab-api interop notes
 
-A focused cross-repo memo for the `schwab-api-dump` maintainer
+A focused cross-repo memo for the `schwab-api` maintainer
 and the `wealthdb` gold-layer maintainer. Extracted from
 [DESIGN.md](DESIGN.md) §§4–5 plus the bronze observations from
 the May 2026 first-end-to-end run. Two silvers, one user, one
@@ -26,7 +26,7 @@ gold layer that needs to converge them.
 
 ## 1. Account identifier mismatch
 
-| | `schwab-web-dump` | `schwab-api-dump` |
+| | `schwab-web` | `schwab-api` |
 | --- | --- | --- |
 | Column | `accounts.account_external_id` | `accounts.account_external_id` |
 | Value | 3-to-5-digit account suffix (e.g. `"NNN"`) | Schwab opaque `hashValue` |
@@ -59,7 +59,7 @@ opaque). One-line lookup.
 
 ## 2. Transaction identifier mismatch
 
-| | `schwab-web-dump` | `schwab-api-dump` |
+| | `schwab-web` | `schwab-api` |
 | --- | --- | --- |
 | Column | `transactions.activity_id` | `transactions.activity_id` |
 | Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index\|source_sha256>` | Schwab-supplied `activityId` |
@@ -89,7 +89,7 @@ substitutes synthetic descriptions.
 
 ## 3. Schwab regenerates PDFs per download (sha256 churn)
 
-Empirically observed across multiple `schwab-web-dump` scrape
+Empirically observed across multiple `schwab-web` scrape
 runs: the **same logical statement** (same account, same period,
 same Schwab-supplied filename) downloaded in two different
 sessions yields **different sha256s**. We've seen up to 4
@@ -141,7 +141,7 @@ IRS-level categorisation.
 ### Gold-layer mitigation
 
 Add a **1099-XML parser** in the gold layer (or as a follow-up
-in `schwab-web-dump.load.py`); project the per-lot detail into
+in `schwab-web.load.py`); project the per-lot detail into
 a gold-only `tax_lots` table. **Do not** modify the api silver —
 the data simply isn't in the api.
 
@@ -162,7 +162,7 @@ historical date, recompute from the statement-transaction feed
 
 ---
 
-## 6. Asks for `schwab-api-dump` (none required, one nice-to-have)
+## 6. Asks for `schwab-api` (none required, one nice-to-have)
 
 The api silver already does the right thing in every spot we
 checked. The one nice-to-have:
@@ -170,7 +170,7 @@ checked. The one nice-to-have:
 - **Promote `account_number` as a column on `accounts`.** The
   api already gets `accountNumber` back from
   `/accounts/accountNumbers`, and the payload JSON already
-  carries it (per `schwab-api-dump/migrations/0001` comments).
+  carries it (per `schwab-api/migrations/0001` comments).
   Promoting it would skip a `json_extract` step in the gold
   bridge above. Low-priority; the payload pull is cheap.
 
@@ -179,7 +179,7 @@ silver is correct as-is.
 
 ---
 
-## 7. Open issues in `schwab-web-dump` itself (for transparency)
+## 7. Open issues in `schwab-web` itself (for transparency)
 
 These are tracked in [DESIGN.md §7](DESIGN.md) and don't block
 gold-layer work — but the gold-layer author should know what

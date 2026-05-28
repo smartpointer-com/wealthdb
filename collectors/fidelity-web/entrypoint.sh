@@ -89,7 +89,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-fidelity-web-dump container
+fidelity-web container
 
 Usage:
   <wrapper> <subcommand> [args...]
@@ -113,7 +113,7 @@ EOF
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run fidelity-web-dump python -c '...'`.
+        # e.g. `docker run fidelity-web python -c '...'`.
         exec "$@"
         ;;
 esac

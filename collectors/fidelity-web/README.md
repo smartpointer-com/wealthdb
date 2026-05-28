@@ -1,4 +1,4 @@
-# fidelity-web-dump
+# fidelity-web
 
 A toolkit for ingesting Fidelity (USA) brokerage data by driving
 the `www.fidelity.com` client UI under Camoufox (a stealth-patched
@@ -86,7 +86,7 @@ in more depth; §1.3 for third-party managers.
 
 Fidelity binds its session to the Firefox-process lifetime
 (confirmed empirically; same model as Schwab). Login and scrape
-share one continuous Camoufox process — `./fidelity-web-dump
+share one continuous Camoufox process — `./fidelity-web
 download` does login → walk → logout → exit in one shot. The
 device-trust cookie in the profile dir lets subsequent runs skip
 the MFA prompt for ~30 days; once it expires the next run
@@ -96,8 +96,8 @@ prompts on stdin for a fresh 6-digit code.
 
 ```sh
 git clone <this repo>
-cd fidelity-web-dump
-./fidelity-web-dump build       # one-time, ~10 min on first build
+cd collectors/fidelity-web
+./fidelity-web build       # one-time, ~10 min on first build
                                 # (~700 MB of that is the Camoufox-
                                 # patched Firefox binary fetch)
 ```
@@ -133,7 +133,7 @@ hand off:
 
 ```sh
 rm -rf ~/.secrets/fidelity-web-profile/
-./fidelity-web-dump vnc-login --mode none -v
+./fidelity-web vnc-login --mode none -v
 ```
 
 `entrypoint.sh` prints a fresh single-use VNC password at startup;
@@ -151,18 +151,18 @@ login lands.
 Once the profile dir is seeded, every run is one-shot:
 
 ```sh
-./fidelity-web-dump download --mode all     # positions + activity + documents + balances + performance
-./fidelity-web-dump download --mode positions
-./fidelity-web-dump download --mode activity
-./fidelity-web-dump download --mode documents
-./fidelity-web-dump download --mode balances    # balances.html (no CSV export)
-./fidelity-web-dump download --mode performance # HTML snapshot (no structured export)
-./fidelity-web-dump download --mode activity \
+./fidelity-web download --mode all     # positions + activity + documents + balances + performance
+./fidelity-web download --mode positions
+./fidelity-web download --mode activity
+./fidelity-web download --mode documents
+./fidelity-web download --mode balances    # balances.html (no CSV export)
+./fidelity-web download --mode performance # HTML snapshot (no structured export)
+./fidelity-web download --mode activity \
   --since 2022-06-01 --until 2025-12-31    # Custom-range backfill (chunked
                                             # into ≤93-day windows, clamped
                                             # to Fidelity's ~4-year retention)
-./fidelity-web-dump download --dry-run      # walk + enumerate, no artefact writes
-./fidelity-web-dump download --check        # validate session, no walk
+./fidelity-web download --dry-run      # walk + enumerate, no artefact writes
+./fidelity-web download --check        # validate session, no walk
 ```
 
 Each invocation spins up Camoufox, logs in (auto-MFA-skip via the
@@ -178,11 +178,11 @@ silver SQLite DB. Idempotent on the synthetic `activity_id` and
 the `content_sha256` document key, so re-running converges.
 
 ```sh
-./fidelity-web-dump load                              # uses defaults
-./fidelity-web-dump load \
+./fidelity-web load                              # uses defaults
+./fidelity-web load \
     --silver-db /path/to/fidelity.db \
     --bronze-dir /path/to/bronze
-./fidelity-web-dump load -v                           # DEBUG logging
+./fidelity-web load -v                           # DEBUG logging
 ```
 
 Runs host-side (pure-stdlib Python; no Docker, no Camoufox), so
@@ -264,7 +264,7 @@ auto-fetched documents.
 
 ## Relationship to a hypothetical Fidelity API source
 
-`schwab-api-dump` exists alongside `schwab-web-dump` because
+`schwab-api` exists alongside `schwab-web` because
 Schwab publishes a retail Trader API; for Fidelity in 2026 there
 is no equivalent api-side toolkit. A direct institutional feed,
 if one ever materialises, would live in its own collector; The

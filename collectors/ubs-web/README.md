@@ -1,4 +1,4 @@
-# ubs-web-dump
+# ubs-web
 
 A toolkit for ingesting UBS Switzerland retail e-banking data the
 PSN feed does not cover: driving the UBS netbanking web UI under
@@ -9,7 +9,7 @@ the raw downloads into a queryable SQLite silver database.
 Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
 for the bronze → silver → gold model and [collectors/README.md](../README.md)
 for shared collector conventions. The companion UBS collector is
-[ubs-psn](../ubs-psn/) (see [Relationship to ubs-psn-dump](#relationship-to-ubs-psn-dump)
+[ubs-psn](../ubs-psn/) (see [Relationship to ubs-psn](#relationship-to-ubs-psn)
 below).
 
 ## Why this design
@@ -60,7 +60,7 @@ cookie across runs until UBS invalidates it.
 
 ## Tools
 
-The architecture follows the `swissquote-dump` template; subcommand
+The architecture follows the `swissquote` template; subcommand
 names and roles are the same:
 
 | Script | Status | Purpose |
@@ -123,7 +123,7 @@ prefix, so a naive slice would collide silently — hashing avoids it.
 
 Silver lives at `~/wealthdb/ubs-web/ubs-web.db` by default;
 companion PSN silver is at `~/wealthdb/ubs-psn/ubs-psn.db` (from
-`ubs-psn-dump`). Schemas in [migrations/](migrations/):
+`ubs-psn`). Schemas in [migrations/](migrations/):
 
 - [`0001_initial.sql`](migrations/0001_initial.sql) — live-fetch
   tables: `banking_relationships`, `portfolios`, `accounts`,
@@ -163,16 +163,16 @@ a specific tag so reruns are deterministic.
 
 ```sh
 git clone <this repo>
-cd ubs-web-dump
-./ubs-web-dump build         # one-time, ~10 min on first build
+cd collectors/ubs-web
+./ubs-web build         # one-time, ~10 min on first build
 ```
 
-(`./ubs-web-dump build` will fail until the Python scripts
+(`./ubs-web build` will fail until the Python scripts
 referenced in `Dockerfile` exist — see Status above.)
 
 ### Run
 
-The repo ships a thin `ubs-web-dump` shell wrapper around
+The repo ships a thin `ubs-web` shell wrapper around
 `docker run`; the standard `~/.secrets → /secrets` and
 `~/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
 described in [collectors/README.md](../README.md#conventions-shared-across-collectors).
@@ -192,10 +192,10 @@ Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
 
 ```sh
-./ubs-web-dump login --check
-./ubs-web-dump login --qr-png /debug/qr.png
-./ubs-web-dump download --dry-run --screenshot-dir /debug/download
-./ubs-web-dump load --silver-db /data/ubs-web.db --bronze-dir /data
+./ubs-web login --check
+./ubs-web login --qr-png /debug/qr.png
+./ubs-web download --dry-run --screenshot-dir /debug/download
+./ubs-web load --silver-db /data/ubs-web.db --bronze-dir /data
 ```
 
 Override any of the host paths via env vars:
@@ -247,7 +247,7 @@ the netbanking archive before this toolkit existed. `load.py` will
 ingest `manual/` on every run using the same dedup-by-hash
 mechanism as the auto-fetched eDocuments.
 
-## Relationship to ubs-psn-dump
+## Relationship to ubs-psn
 
 UBS has two collectors in this repo: this one and the sibling
 [ubs-psn](../ubs-psn/). They are separate collectors with separate

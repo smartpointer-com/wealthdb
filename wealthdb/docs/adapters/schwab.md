@@ -3,9 +3,9 @@
 Adapter that projects two Schwab silver SQLite databases into the
 canonical gold schema:
 
-- `schwab-api-dump` — Trader-API JSON, live position / cash
+- `schwab-api` — Trader-API JSON, live position / cash
   snapshots and ~2y of transactions.
-- `schwab-web-dump` — netbanking scrape (live account list +
+- `schwab-web` — netbanking scrape (live account list +
   reconstructed historical positions, cash balances, and
   transactions from monthly statement PDFs).
 
@@ -88,11 +88,11 @@ So gold's `name` column is empty for any Schwab equity position
 `name` column shows blank for equity rows but populated for
 funds/bonds). The company name lives on Schwab's
 `/marketdata/instruments` or `/marketdata/quotes` endpoints,
-which `schwab-api-dump` doesn't currently call.
+which `schwab-api` doesn't currently call.
 
 Three places this could be fixed; we're deliberately not doing
 any of them in wealthdb v1:
-1. `schwab-api-dump` enriches positions/instruments by calling
+1. `schwab-api` enriches positions/instruments by calling
    `/marketdata/quotes` (or `instruments?projection=symbol-search`)
    once per held symbol. Right place architecturally — silver is
    the per-broker faithful projection.
@@ -105,7 +105,7 @@ any of them in wealthdb v1:
 
 Until either (1) or (2) lands, equity rows render with an empty
 `name` column. The `symbol` column is still populated. (The
-planned `schwab-web-dump` source is a likely third path —
+planned `schwab-web` source is a likely third path —
 scraping the company name out of the brokerage UI's holdings
 page — but that's its own design question.)
 
@@ -133,7 +133,7 @@ with the original string preserved in payload.
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
-## 7. Web subsource (schwab-web-dump)
+## 7. Web subsource (schwab-web)
 
 When the `schwab-web` subsource is configured, the adapter
 contributes three things the api silver doesn't have:
@@ -195,7 +195,7 @@ account.
 
 INTEROP §3 documents that Schwab regenerates statement PDFs per
 download (different sha256 each time, same logical content).
-Mitigation lives in `schwab-web-dump` silver — the historical
+Mitigation lives in `schwab-web` silver — the historical
 tables use INSERT OR REPLACE on the natural PK
 `(as_of_date | period_end, account, instrument_key | currency)`
 so a re-parse of a churned PDF converges on a single row.

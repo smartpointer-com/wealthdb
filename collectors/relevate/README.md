@@ -1,4 +1,4 @@
-# relevate-dump
+# relevate
 
 Scrape Vested Benefits account positions, balances, transactions,
 and documents from Relevate's customer portal
@@ -68,40 +68,40 @@ conventions.
 #       export RELEVATE_PASSWORD='your-password'
 #
 # 2. Build the image.
-./relevate-dump build
+./relevate build
 
 # 3. Mint a session. Prompts on stdin for the mTAN code sent to
 #    your phone. Writes ~/.secrets/relevate-state.json (chmod 600).
-./relevate-dump login
+./relevate login
 
 # 4. (Optional) verify the session is alive without burning a
 #    fresh mTAN.
-./relevate-dump login --check     # prints ALIVE / DEAD / MISSING
+./relevate login --check     # prints ALIVE / DEAD / MISSING
 
 # 5. Dump bronze. ~10 sec for ~50 files (per-portfolio JSON +
 #    per-document PDFs).
-./relevate-dump download
+./relevate download
 
 # 6. Parse bronze into silver SQLite (~/wealthdb/relevate/relevate.db).
 #    Idempotent: re-running skips dumps already loaded.
-./relevate-dump load
+./relevate load
 ```
 
 Iteration-cheap reruns of `download` for one slice:
 
 ```sh
-./relevate-dump download --dry-run                       # just enumerate; no fetches
-./relevate-dump download --mode accounts                 # master listing + ancillaries
-./relevate-dump download --mode portfolios --limit-portfolios 1
-./relevate-dump download --mode documents --limit-documents 3
-./relevate-dump download --skip-documents                # everything except PDFs
+./relevate download --dry-run                       # just enumerate; no fetches
+./relevate download --mode accounts                 # master listing + ancillaries
+./relevate download --mode portfolios --limit-portfolios 1
+./relevate download --mode documents --limit-documents 3
+./relevate download --skip-documents                # everything except PDFs
 ```
 
 ## Layout
 
 ```
-relevate-dump/
-├── relevate-dump        # host wrapper around docker run
+relevate/
+├── relevate        # host wrapper around docker run
 ├── Dockerfile           # python:3.12-slim + requests
 ├── entrypoint.sh        # login / download / load / sh dispatch
 ├── login.py             # Airlock auth: POST /b2c/access -> /password/check -> /mtan/otp/check
@@ -137,15 +137,15 @@ $HOME/.cache/relevate-debug/          # opt-in scratch logs / traces
 
 ## Configuration
 
-The wrapper sources `$HOME/.config/relevate-dump.cfg` if present
+The wrapper sources `$HOME/.config/relevate.cfg` if present
 (plain bash, `key=value`). Override defaults:
 
 ```sh
 RELEVATE_SECRETS_DIR=/path/to/secrets
 RELEVATE_DATA_DIR=/path/to/wealthdb/relevate
 RELEVATE_DEBUG_DIR=/path/to/cache/relevate-debug
-RELEVATE_IMAGE=relevate-dump:latest
-RELEVATE_CONTAINER=relevate-dump
+RELEVATE_IMAGE=wealthdb/relevate:latest
+RELEVATE_CONTAINER=relevate
 ```
 
 `RELEVATE_LOGIN` and `RELEVATE_PASSWORD` live in
@@ -163,7 +163,7 @@ for the shared env-file rules.
 | `load`     | Working (applies migrations, ingests not-yet-loaded bronze runs into SQLite silver) |
 | `sh`       | Working (interactive shell in the container) |
 
-`./relevate-dump help` prints the canonical list.
+`./relevate help` prints the canonical list.
 
 ## Privacy
 

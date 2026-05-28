@@ -1,4 +1,4 @@
-# ubs-psn-dump
+# ubs-psn
 
 A toolkit for ingesting UBS Private Standard Network (PSN) banking data:
 fetching the raw per-order-type zips over SFTP Pull and parsing them into
@@ -58,7 +58,7 @@ SFTP factsheet.
 
 ```sh
 git clone <this repo>
-cd ubs-psn-dump
+cd collectors/ubs-psn
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```

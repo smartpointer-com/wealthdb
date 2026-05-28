@@ -1,4 +1,4 @@
-# relevate-dump — design (REST-only)
+# relevate — design (REST-only)
 
 A read-only scraper for Relevate's customer portal at
 `portal.pens-expert.ch`. **Replays the Airlock IAM authentication
@@ -320,7 +320,7 @@ browser-class consumer to Airlock:
 
 1. Load `/secrets/relevate-state.json` and restore the cookie
    jar into a `requests.Session`. Missing file → exit `64`,
-   print "run `./relevate-dump login` first".
+   print "run `./relevate login` first".
 2. Configure session headers to mirror the SPA: realistic Chrome
    UA, `Sec-Ch-Ua-*` client hints, `X-Same-Domain: 1`, and the
    placeholder `Authorization: bearer undefined`. No `X-CSRFT759`
@@ -389,7 +389,7 @@ Manifest shape (as written):
 
 ```json
 {
-  "tool": "relevate-dump.download",
+  "tool": "relevate.download",
   "schema_version": 1,
   "started_at": "...", "ended_at": "...",
   "mode": "all", "dry_run": false,
@@ -512,7 +512,7 @@ $HOME/wealthdb/relevate/                     (= /data inside container)
 Path conventions:
 
 - **Account / portfolio slugs are `sha256(externalId)[:16]`** —
-  same pattern as ubs-web-dump's `<sha256-prefix>`. Keeps
+  same pattern as ubs-web's `<sha256-prefix>`. Keeps
   raw external IDs out of any path string that might leak into
   shell history, ps output, error messages.
 - **Document filenames key on Relevate's own document `id`**
@@ -658,7 +658,7 @@ only. Build takes a few seconds.
 ### 9.2 Wrapper subcommand surface
 
 ```
-./relevate-dump <verb>
+./relevate <verb>
 
 build       Build the Docker image.
 login       login.py — mint or refresh the cookie jar.
@@ -678,7 +678,7 @@ refuses to evict a running container without
 The standard `/secrets` (`~/.secrets`) and `/data`
 (`~/wealthdb/relevate`) bind-mounts follow the shared collector
 convention — see [collectors/README.md](../README.md). On top of
-those, relevate-dump bind-mounts a third, tool-specific path:
+those, relevate bind-mounts a third, tool-specific path:
 
 | Container path | Host default | Purpose |
 |---|---|---|

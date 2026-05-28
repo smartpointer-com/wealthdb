@@ -1,13 +1,13 @@
 # Swissquote adapter
 
-Adapter that projects the `swissquote-dump` silver SQLite into
+Adapter that projects the `swissquote` silver SQLite into
 the canonical gold schema. Implements the `silver.Adapter` /
 `silver.Connection` interface defined in
 [../DESIGN.md](../DESIGN.md) §6.
 
 ## 1. Silver source
 
-- Upstream: `swissquote-dump` repository.
+- Upstream: `swissquote` repository.
 - Silver schema: [swissquote/migrations/0001_initial.sql](../../../collectors/swissquote/migrations/0001_initial.sql).
 - Silver README: [swissquote/README.md](../../../collectors/swissquote/README.md).
 
@@ -97,7 +97,7 @@ lands as `other` with the raw type preserved in payload.
 
 ## 8. Instrument identity — name, ISIN, and historical positions
 
-Two `swissquote-dump` migrations shape the instrument-side mapping:
+Two `swissquote` migrations shape the instrument-side mapping:
 
 - **Migration 0003** added optional `name` and `isin` columns to
   `positions`. `name` is scraped from the hover tooltip on the

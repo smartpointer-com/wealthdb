@@ -1,4 +1,4 @@
-# swissquote-dump
+# swissquote
 
 A toolkit for ingesting Swissquote Bank private-client portfolio data:
 driving the e-banking web UI under Playwright to export positions,
@@ -65,21 +65,21 @@ specific tag so reruns are deterministic.
 
 ```sh
 git clone <this repo>
-cd swissquote-dump
-./swissquote-dump build         # one-time, ~10 min on first build
+cd collectors/swissquote
+./swissquote build         # one-time, ~10 min on first build
 ```
 
 ### Run
 
-The `swissquote-dump` wrapper drives `docker run`; see
+The `swissquote` wrapper drives `docker run`; see
 [collectors/README.md](../README.md) for the shared Docker
 mount/wrapper conventions (`~/.secrets → /secrets`,
 `~/wealthdb/swissquote → /data`).
 
 ```sh
-./swissquote-dump login --check
-./swissquote-dump download --dry-run
-./swissquote-dump load --silver-db /data/swissquote.db --bronze-dir /data
+./swissquote login --check
+./swissquote download --dry-run
+./swissquote load --silver-db /data/swissquote.db --bronze-dir /data
 ```
 
 ### Headless remote host
@@ -178,7 +178,7 @@ fingerprint, the script completes silently in milliseconds.
 Initial mint (and re-mint when the session expires):
 
 ```sh
-./swissquote-dump login \
+./swissquote login \
     --state-path /secrets/swissquote_state.json \
     --username <USERNAME>
 ```
@@ -194,7 +194,7 @@ Check whether the current session cookie still authenticates (no
 new MFA push, no fresh login):
 
 ```sh
-./swissquote-dump login --state-path /secrets/swissquote_state.json --check
+./swissquote login --state-path /secrets/swissquote_state.json --check
 ```
 
 #### Flags
@@ -290,7 +290,7 @@ confirm landmark selectors match, exits without exporting any
 artefacts:
 
 ```sh
-./swissquote-dump download \
+./swissquote download \
     --state-path /secrets/swissquote_state.json \
     --dest /data \
     --dry-run
@@ -299,7 +299,7 @@ artefacts:
 Real download:
 
 ```sh
-./swissquote-dump download \
+./swissquote download \
     --state-path /secrets/swissquote_state.json \
     --dest /data
 ```
@@ -426,7 +426,7 @@ snapshot/event and semi-relational JSON1 conventions.
 ### Usage
 
 ```sh
-./swissquote-dump load \
+./swissquote load \
     --silver-db /data/swissquote.db \
     --bronze-dir /data
 ```

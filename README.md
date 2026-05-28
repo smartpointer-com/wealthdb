@@ -73,10 +73,10 @@ cd collectors/schwab-api
 
 # Docker collectors (the six web/REST ones): a host wrapper drives docker run
 cd collectors/viac
-./viac-dump build                 # build the image (wrapper name still carries -dump for now)
-./viac-dump login                 # mint/refresh session (prompts for MFA)
-./viac-dump download              # bronze dump
-./viac-dump load                  # bronze → silver
+./viac build                 # build the image
+./viac login                 # mint/refresh session (prompts for MFA)
+./viac download              # bronze dump
+./viac load                  # bronze → silver
 ```
 
 Orchestration helpers in `~/bin` (`wealthdb-nightly` for the

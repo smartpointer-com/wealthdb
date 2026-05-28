@@ -3,8 +3,8 @@
 Adapter that projects two UBS silver SQLite databases into the
 canonical gold schema:
 
-- `ubs-psn-dump` — daily SDFI/MT-message feed delivered via SFTP.
-- `ubs-web-dump` — netbanking scrape (live snapshots + reconstructed
+- `ubs-psn` — daily SDFI/MT-message feed delivered via SFTP.
+- `ubs-web` — netbanking scrape (live snapshots + reconstructed
   historical PDFs).
 
 Implements the `silver.Adapter` / `silver.Connection` interface
@@ -168,9 +168,9 @@ Common narrative prefixes (extend as observed):
 `LatestChangeNumber = MAX(dump_runs.snapshot_at)`, or `-1` if
 `dump_runs` is empty.
 
-## 8. Historical (PDF-reconstructed) data — ubs-web-dump migration 0002
+## 8. Historical (PDF-reconstructed) data — ubs-web migration 0002
 
-`ubs-web-dump` migration 0002 added two parallel tables built
+`ubs-web` migration 0002 added two parallel tables built
 from the customer's eDocuments PDF archive:
 
 | Silver table | Source PDF | Cadence | Gold target |

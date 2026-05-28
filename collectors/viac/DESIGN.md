@@ -1,6 +1,6 @@
-# viac-dump — design
+# viac — design
 
-Design document for the `viac-dump` toolkit. The audience is the
+Design document for the `viac` toolkit. The audience is the
 engineer (current author, future contributor) maintaining
 `login.py`, `download.py`, and `load.py` against the live
 `app.viac.ch` SPA. It is also the contract between this silver
