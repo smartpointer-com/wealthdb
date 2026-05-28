@@ -1,0 +1,25 @@
+# The base image (mcr.microsoft.com/playwright/python:v1.59.0-noble)
+# ships only the *browser binaries* under /ms-playwright (with the
+# PLAYWRIGHT_BROWSERS_PATH env var pointing at them). The Python
+# `playwright` package itself must be installed here, and the version
+# MUST match the base-image tag so the package finds compatible
+# browser binaries. When bumping the Dockerfile FROM line, bump this
+# version in lockstep.
+playwright==1.59.0
+
+# Pillow renders the Access-App QR PNG to the terminal as Unicode
+# half-blocks. The Playwright base image happens to ship a recent
+# Pillow already; pinning here so we are not at the mercy of base-
+# image changes.
+Pillow>=10.0,<12
+
+# pdfplumber sits on top of pdfminer.six and exposes a clean table-
+# extraction API. Used by load.py to reconstruct historical position
+# snapshots from UBS's semi-annual "Statement of assets" PDFs and
+# month-end "Account Statement" PDFs in the documents archive.
+pdfplumber>=0.11,<1
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./ubs-web-dump sh -c "cd /app && pytest"`, no
+# host-side Python toolchain required.
+pytest>=8,<9
