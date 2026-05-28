@@ -1,0 +1,63 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+)
+
+func init() {
+	register("help", cmdHelp)
+}
+
+// helpText is the per-subcommand short help shown by `wealthdb
+// help <subcommand>`. Subcommand handlers register their longer
+// usage via flag.Usage; this map is for the brief overview only.
+var helpText = map[string]string{
+	"config":       "Interactive first-time setup; writes the wealthdb.cfg file.",
+	"init":         "Initialise an empty gold DB at the configured gold_db path.",
+	"load":         "Merge new silver snapshots into gold (one source, or -a for all).",
+	"reset":        "Purge a silver source's data from gold (one source, or -a for all).",
+	"positions":    "Print consolidated positions as of a date (-f table|csv|csv_plain|json, -x CCY).",
+	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
+	"status":       "Report gold state vs each silver source (-v for taxonomy drift counts).",
+	"snapshots":    "List snapshots gold has loaded for a silver source (-a for all).",
+	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.symbol_resolution.model.",
+	"resolutions":     "Dump the symbol_resolutions table (LLM-derived + manual-override tickers).",
+	"help":         "Show this help, or detailed help for a subcommand.",
+}
+
+func cmdHelp(_ context.Context, _ globalFlags, subargs []string, _ io.Reader, _, stderr io.Writer) error {
+	if len(subargs) == 0 {
+		printGlobalHelp(stderr)
+		return nil
+	}
+	name := subargs[0]
+	if _, ok := subcommands[name]; !ok {
+		fmt.Fprintf(stderr, "wealthdb help: unknown subcommand %q\n\n", name)
+		printGlobalHelp(stderr)
+		return nil
+	}
+	fmt.Fprintf(stderr, "Use 'wealthdb %s -h' for detailed flags.\n%s\n", name, helpText[name])
+	return nil
+}
+
+func printGlobalHelp(w io.Writer) {
+	fmt.Fprint(w, globalUsage)
+
+	names := make([]string, 0, len(subcommands))
+	for n := range subcommands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	fmt.Fprintln(w, "Registered subcommands:")
+	for _, n := range names {
+		desc, ok := helpText[n]
+		if !ok {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(w, "  %-12s %s\n", n, desc)
+	}
+}

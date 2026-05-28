@@ -1,0 +1,58 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// expandPath resolves `~`, `$HOME`, environment vars, and relative
+// paths in a config path value. The `baseDir` argument is the
+// directory of the config file, used as the root for relative
+// paths so users can write paths like `./data/silver.db` without
+// caring where the wealthdb binary's cwd is.
+//
+// Resolution order:
+//  1. Replace leading `~/` or `$HOME/` with the user's home dir.
+//  2. Expand environment variables ($FOO, ${FOO}) via os.Expand.
+//  3. If the result is still relative, resolve against baseDir.
+//
+// Empty input returns an error.
+func expandPath(p, baseDir string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("expandPath: empty path")
+	}
+
+	// Step 1: explicit ~ / $HOME prefix expansion.
+	switch {
+	case p == "~":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
+		}
+		p = home
+	case strings.HasPrefix(p, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
+		}
+		p = filepath.Join(home, p[2:])
+	case strings.HasPrefix(p, "$HOME/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expandPath: read $HOME: %w", err)
+		}
+		p = filepath.Join(home, p[len("$HOME/"):])
+	}
+
+	// Step 2: generic env-var expansion for the rest.
+	p = os.ExpandEnv(p)
+
+	// Step 3: resolve relative against baseDir.
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(baseDir, p)
+	}
+
+	return filepath.Clean(p), nil
+}
