@@ -16,3 +16,17 @@ tkC/ch8xKFs7lfOTwDaEfDwpisqzkjmNYSOL9XfAWXA
 
 # Key 2 (94.154.166.145)
 bHRqUemrDhGZ0FCbuL07EljAp+7T5aAssppOtczOcYo
+
+# --- Upcoming rotation -------------------------------------------------
+# Announced by UBS via email 2026-05-28; effective ~1 month later
+# (≈2026-06-28). Pre-loaded so the pull keeps validating across the
+# rotation. Keys 1 and 2 above stay valid until then and can be pruned
+# once these are confirmed live. Both are "no comment" RSA keys; MD5
+# retained for out-of-band cross-check with UBS.
+
+# Upcoming Key A (MD5:87:3f:46:24:0c:14:64:26:75:9b:7d:cb:6b:f3:0b:b8)
+hds2XqxFCZ95OIN1+O3d/H1PbZ7xiL22fj4PmJ6l5bA
+
+# Upcoming Key B (MD5:62:ec:f6:f5:c2:82:75:0d:e5:58:29:d0:a9:53:e1:c8)
+25fxkwBnSAuD0ebmxg+SNuvY9/45WoLsnGWzvMmnrCM
+
