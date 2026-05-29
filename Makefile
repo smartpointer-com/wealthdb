@@ -102,6 +102,7 @@ build-$(1):
 			$(PYTHON) -m venv collectors/$(1)/.venv; \
 		fi; \
 		collectors/$(1)/.venv/bin/pip install -q -r collectors/$(1)/requirements.txt; \
+		collectors/$(1)/.venv/bin/pip install -q -e shared/collectorkit; \
 	else \
 		echo "    $(1): nothing to build"; \
 	fi
