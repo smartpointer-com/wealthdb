@@ -1,17 +1,12 @@
-# Pin to a specific Playwright Python image tag for the underlying
-# OS layer. The base image ships Playwright 1.59 bundled browsers
-# at /ms-playwright, but those are UNUSED here — camoufox brings
-# its own patched Firefox at $HOME/.cache/camoufox/, and we pin the
-# Python `playwright` package back to 1.49.0 in requirements.txt
-# to match camoufox's juggler-protocol revision. The base image is
-# kept at v1.59.0-noble purely for its OS deps (libnss, libdrm,
-# fonts) which Firefox still depends on at runtime.
-FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Headed-browser (Camoufox) collector: build on the shared Playwright
+# base for its OS deps (libnss, libdrm, fonts that Firefox needs), the
+# Python/pip env, and a pre-installed collectorkit. The base image's
+# bundled Playwright browsers are unused — camoufox brings its own
+# patched Firefox and requirements.txt pins the `playwright` package
+# back to 1.49.0 to match camoufox's juggler-protocol revision. The
+# Xvfb/x11vnc setup and Camoufox fetch below stay here for now; the
+# base-camoufox consolidation will absorb them later.
+FROM wealthdb/base-playwright:latest
 
 # Xvfb gives Chromium a virtual X11 display so it can run headed
 # inside the container with no real GPU/monitor. x11vnc serves

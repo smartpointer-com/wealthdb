@@ -1,12 +1,9 @@
-# Pin to a specific Playwright Python image tag for the underlying
-# OS layer and bundled browsers. Playwright 1.59.0 ships Firefox
-# at /ms-playwright/firefox-1511, which is what this build expects.
-FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Headed-browser (Camoufox) collector: build on the shared Playwright
+# base, which provides the pinned Playwright image (whose OS deps Firefox
+# needs), the Python/pip env, and a pre-installed collectorkit. The
+# Xvfb/x11vnc setup and Camoufox fetch below stay here for now; the
+# base-camoufox consolidation will absorb them later.
+FROM wealthdb/base-playwright:latest
 
 # Xvfb gives Firefox a virtual X11 display so it can run headed
 # inside the container with no real GPU/monitor. x11vnc serves

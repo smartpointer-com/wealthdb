@@ -32,6 +32,11 @@ from zoneinfo import ZoneInfo
 
 from collectorkit import cli, silver
 
+# Re-export for backward compatibility with existing tests that call
+# load.apply_migrations(...) / load.current_schema_version(...) directly.
+apply_migrations = silver.apply_migrations
+current_schema_version = silver.current_schema_version
+
 log = logging.getLogger("swissquote.load")
 
 # All transaction times in Swissquote CSVs are wall-clock Europe/Zurich

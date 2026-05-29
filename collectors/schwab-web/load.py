@@ -47,6 +47,13 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from collectorkit import cli, silver
+
+# Re-export for backward compatibility with existing tests that call
+# load.apply_migrations(...) / load._current_schema_version(...) directly.
+apply_migrations = silver.apply_migrations
+_current_schema_version = silver.current_schema_version
+
 import pdf_parsers as pp
 
 log = logging.getLogger("schwab-web.load")
@@ -213,19 +220,8 @@ def sha256_file(path: Path) -> tuple[str, int]:
 # Schema migration
 # ============================================================
 
-def _current_schema_version(conn: sqlite3.Connection) -> int:
-    """Read max(silver_schema_version) from schema_meta. Returns
-    0 if the table doesn't exist yet (fresh DB) or is empty."""
-    row = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='schema_meta'"
-    ).fetchone()
-    if not row:
-        return 0
-    row = conn.execute(
-        "SELECT MAX(silver_schema_version) FROM schema_meta"
-    ).fetchone()
-    return int(row[0] or 0)
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic).
 
 
 def _resolve_migrations_dir(arg: Path | None) -> Path:
@@ -242,35 +238,8 @@ def _resolve_migrations_dir(arg: Path | None) -> Path:
     )
 
 
-def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
-    """Apply any migrations newer than schema_meta's current
-    version, in numeric order. Each migration file is expected
-    to end with an INSERT into schema_meta that records its own
-    version — the loader doesn't add that line itself."""
-    current = _current_schema_version(conn)
-    log.info("silver schema currently at v%d", current)
-    files = sorted(
-        f for f in migrations_dir.glob("*.sql")
-        if re.match(r"^\d+_.*\.sql$", f.name)
-    )
-    for f in files:
-        try:
-            version = int(f.name.split("_", 1)[0])
-        except ValueError:
-            log.warning("skipping unparseable migration filename: %s", f.name)
-            continue
-        if version <= current:
-            continue
-        log.info("applying migration: %s (v%d)", f.name, version)
-        sql = f.read_text(encoding="utf-8")
-        conn.executescript(sql)
-        conn.commit()
-        new_current = _current_schema_version(conn)
-        if new_current < version:
-            raise SystemExit(
-                f"migration {f.name} did not insert into schema_meta "
-                f"(current still v{new_current}); fix the migration"
-            )
+# apply_migrations now lives in collectorkit.silver (same numeric-order
+# logic + the "migration must advance schema_meta" guard).
 
 
 # ============================================================
@@ -351,7 +320,7 @@ def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
         "INSERT INTO dump_runs"
         " (snapshot_at, silver_schema_version, run_dir)"
         " VALUES (?, ?, ?)",
-        (snapshot_at, _current_schema_version(conn), str(run_dir)),
+        (snapshot_at, silver.current_schema_version(conn), str(run_dir)),
     )
 
 
@@ -1102,7 +1071,7 @@ def run_load(args: argparse.Namespace) -> int:
     conn = sqlite3.connect(str(args.silver_db))
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        apply_migrations(conn, migrations_dir)
+        silver.apply_migrations(conn, migrations_dir)
 
         runs = discover_bronze_runs(args.bronze_dir)
         log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
@@ -1173,10 +1142,7 @@ def _log_registration_histogram(conn: sqlite3.Connection) -> None:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     return run_load(args)
 
 

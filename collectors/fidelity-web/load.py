@@ -46,6 +46,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from collectorkit import cli, silver
+
+# Re-export for backward compatibility with existing tests that call
+# load.apply_migrations(...) directly.
+apply_migrations = silver.apply_migrations
 
 log = logging.getLogger("fidelity-web.load")
 
@@ -103,17 +108,14 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(argv or sys.argv[1:])
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(args.silver_db))
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         migrations_dir = Path(__file__).parent / "migrations"
-        apply_migrations(conn, migrations_dir)
-        schema_version = _current_schema_version(conn)
+        silver.apply_migrations(conn, migrations_dir)
+        schema_version = silver.current_schema_version(conn)
         dumps = scan_bronze(args.bronze_dir)
         loaded = skipped = 0
         for dump in dumps:
@@ -141,38 +143,9 @@ def main(argv=None):
 # Migrations
 # ============================================================
 
-def apply_migrations(conn, migrations_dir):
-    current = _current_schema_version(conn)
-    pending = []
-    for path in sorted(migrations_dir.iterdir()):
-        m = MIGRATION_FILE_RE.match(path.name)
-        if not m:
-            continue
-        ver = int(m.group(1))
-        if ver > current:
-            pending.append((ver, path))
-    if not pending:
-        log.debug("schema at version %d; no migrations to apply", current)
-        return
-    for ver, path in pending:
-        log.info("applying migration %d (%s)", ver, path.name)
-        sql = path.read_text(encoding="utf-8")
-        conn.executescript(sql)
-        conn.commit()
-    log.info("schema now at version %d", _current_schema_version(conn))
-
-
-def _current_schema_version(conn):
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='schema_meta'"
-    )
-    if not cur.fetchone():
-        return 0
-    cur = conn.execute(
-        "SELECT COALESCE(MAX(silver_schema_version), 0) FROM schema_meta"
-    )
-    return int(cur.fetchone()[0])
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic). The silver
+# connection is created inline in main() with default isolation.
 
 
 # ============================================================
