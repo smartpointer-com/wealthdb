@@ -48,11 +48,12 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from collectorkit import cli, silver
+
 log = logging.getLogger("ubs-load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
-MIGRATION_FILE_RE = re.compile(r"^(\d{4})_.*\.sql$")
 
 
 # --------------------------------------------------------------------------
@@ -118,38 +119,9 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def current_schema_version(conn: sqlite3.Connection) -> int:
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_meta'"
-    )
-    if cur.fetchone() is None:
-        return 0
-    cur = conn.execute(
-        "SELECT COALESCE(MAX(silver_schema_version), 0) FROM schema_meta"
-    )
-    return cur.fetchone()[0]
-
-
-def discover_migrations() -> list[tuple[int, Path]]:
-    # `sorted(... .glob("*.sql"))` is filename-sorted, which for the
-    # required NNNN_*.sql convention is the same as numeric.
-    items: list[tuple[int, Path]] = []
-    for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        m = MIGRATION_FILE_RE.match(f.name)
-        if m:
-            items.append((int(m.group(1)), f))
-    return items
-
-
-def apply_migrations(conn: sqlite3.Connection) -> None:
-    current = current_schema_version(conn)
-    for version, path in discover_migrations():
-        if version <= current:
-            continue
-        log.info("Applying migration %s", path.name)
-        conn.executescript(path.read_text(encoding="utf-8"))
-        conn.commit()
-    log.info("Schema at version %d", current_schema_version(conn))
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic); open_db stays local
+# because ubs-psn uses the default isolation model for per-dump atomicity.
 
 
 # --------------------------------------------------------------------------
@@ -1191,7 +1163,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
         conn.execute(
             "INSERT INTO dump_runs"
             "(snapshot_at, silver_schema_version, run_dir) VALUES (?, ?, ?)",
-            (snapshot_at, current_schema_version(conn), str(dump_dir.resolve())),
+            (snapshot_at, silver.current_schema_version(conn), str(dump_dir.resolve())),
         )
     return stats
 
@@ -1217,16 +1189,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
 
     conn = open_db(args.silver_db)
-    apply_migrations(conn)
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     dumps = [
         d for d in sorted(args.bronze_dir.iterdir())
