@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from collectorkit import cli, silver
+
 logger = logging.getLogger("load")
 
 # Bronze run dir name: YYYYMMDDTHHMMSSZ — same convention as the
@@ -91,41 +93,9 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def current_schema_version(conn: sqlite3.Connection) -> int:
-    """Read MAX(silver_schema_version), or 0 if schema_meta is absent."""
-    row = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='schema_meta'"
-    ).fetchone()
-    if not row:
-        return 0
-    row = conn.execute(
-        "SELECT COALESCE(MAX(silver_schema_version), 0) AS v FROM schema_meta"
-    ).fetchone()
-    return int(row["v"])
-
-
-def run_migrations(conn: sqlite3.Connection) -> int:
-    """Apply any pending migration files in order. Returns the
-    version after migrations have run."""
-    if not MIGRATIONS_DIR.is_dir():
-        raise RuntimeError(f"migrations dir not found: {MIGRATIONS_DIR}")
-    current = current_schema_version(conn)
-    files = sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    if not files:
-        logger.warning("no migration files found under %s", MIGRATIONS_DIR)
-        return current
-    for path in files:
-        version = int(path.name[:4])
-        if version <= current:
-            continue
-        logger.info("applying migration %s", path.name)
-        # executescript() does an implicit COMMIT before running,
-        # then runs the script under autocommit; the migration
-        # file is responsible for its own BEGIN/COMMIT.
-        conn.executescript(path.read_text(encoding="utf-8"))
-        current = version
-    return current
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic). open_db stays local
+# per the decision not to unify collector transaction models.
 
 
 # ============================================================
@@ -740,7 +710,7 @@ def list_pending_dumps(
 def do_load(args: argparse.Namespace) -> int:
     conn = open_db(args.silver_db)
     try:
-        version = run_migrations(conn)
+        version = silver.apply_migrations(conn, MIGRATIONS_DIR)
         logger.info("silver schema at version %d", version)
         pending = list_pending_dumps(conn, args.bronze_dir)
         if not pending:
@@ -778,10 +748,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     return do_load(args)
 
 

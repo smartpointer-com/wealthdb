@@ -42,7 +42,7 @@ PYTHON := $(or \
         build-wealthdb test-wealthdb \
         build-collectors test-collectors \
         clean cleanall clean-wealthdb cleanall-wealthdb \
-        clean-collectors cleanall-collectors
+        clean-collectors cleanall-collectors base-images
 
 # ---- aggregates --------------------------------------------------------
 
@@ -50,8 +50,19 @@ all: build-wealthdb build-collectors
 build: all
 test: test-wealthdb test-collectors
 
-build-collectors: $(addprefix build-,$(COLLECTORS))
+build-collectors: base-images $(addprefix build-,$(COLLECTORS))
 test-collectors:  $(addprefix test-,$(COLLECTORS))
+
+# Shared Docker base images: shared/images/*.Dockerfile, built with
+# context=shared/ so they can bake in collectorkit. Docker collectors
+# FROM these. Building one Docker collector on its own? run this first.
+base-images:
+	@for f in shared/images/*.Dockerfile; do \
+		[ -e "$$f" ] || continue; \
+		tag=wealthdb/$$(basename "$$f" .Dockerfile):latest; \
+		echo "==> build base image $$tag"; \
+		docker build -q -f "$$f" -t "$$tag" shared/ >/dev/null; \
+	done
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
 # cleanall = clean + the heavy outputs (docker images, venvs)
