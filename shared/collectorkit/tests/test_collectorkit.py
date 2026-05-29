@@ -48,6 +48,18 @@ class MigrationsTest(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         conn.close()
 
+    def test_apply_under_default_isolation(self):
+        # A connection using the *default* transaction model (not the
+        # manual isolation_level=None of open_db) must still persist
+        # migrations — verified by reopening the DB fresh.
+        conn = sqlite3.connect(str(self.db))
+        conn.execute("PRAGMA foreign_keys = ON")
+        self.assertEqual(silver.apply_migrations(conn, self.migrations), 2)
+        conn.close()
+        reopened = sqlite3.connect(str(self.db))
+        self.assertEqual(silver.current_schema_version(reopened), 2)
+        reopened.close()
+
     def test_migration_must_bump_version(self):
         (self.migrations / "0003_bad.sql").write_text(BAD_SQL)
         conn = silver.open_db(self.db)

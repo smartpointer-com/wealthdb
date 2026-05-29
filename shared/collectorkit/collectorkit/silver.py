@@ -19,10 +19,14 @@ MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 
 
 def open_db(path: Path) -> sqlite3.Connection:
-    """Open (creating parent dirs) the silver DB in autocommit mode.
+    """Open (creating parent dirs) the silver DB with manual transaction
+    control (`isolation_level=None`): callers issue BEGIN/COMMIT per dump
+    so each source load is atomic. Foreign keys and WAL are per-connection
+    PRAGMAs, re-set on every connection.
 
-    `isolation_level=None` means callers BEGIN/COMMIT explicitly. Foreign
-    keys and WAL are per-connection PRAGMAs, re-set on every connection.
+    Provided for collectors that already use this model; collectors with a
+    different transaction style keep their own open_db. `apply_migrations`
+    below works regardless of which model the passed connection uses.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +58,12 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> int:
     Each migration must end by inserting its own `silver_schema_version`
     into `schema_meta`; we verify the version advanced and fail loudly if
     not (a migration that forgets would otherwise re-run forever).
+
+    Transaction-model agnostic: we `commit()` after each migration, which
+    persists the change under default-isolation connections and is a no-op
+    under manual (`isolation_level=None`) connections. Migrations are
+    independent of per-dump load atomicity, which each collector still
+    manages itself.
     """
     migrations_dir = Path(migrations_dir)
     if not migrations_dir.is_dir():
@@ -75,6 +85,7 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> int:
         # crash mid-migration leaves a partial schema (recovery: delete
         # the .db and re-run from bronze).
         conn.executescript(path.read_text(encoding="utf-8"))
+        conn.commit()  # persist under default isolation; no-op under manual
         applied = current_schema_version(conn)
         if applied < n:
             raise SystemExit(
