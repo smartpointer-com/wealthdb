@@ -40,7 +40,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, silver
+from collectorkit import bronze, cli, silver
 
 log = logging.getLogger("ubs-web.load")
 
@@ -129,10 +129,7 @@ def already_loaded(conn: sqlite3.Connection, dump_dir: Path) -> bool:
 
 def ts_from_dir(name: str) -> int:
     """Parse 'YYYYMMDDTHHMMSSZ' -> Unix seconds UTC."""
-    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(
-        tzinfo=timezone.utc,
-    )
-    return int(dt.timestamp())
+    return bronze.parse_run_ts(name)
 
 
 def ts_from_iso(s: str | None) -> int | None:

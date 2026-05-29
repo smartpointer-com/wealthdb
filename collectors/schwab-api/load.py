@@ -27,7 +27,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, silver
+from collectorkit import bronze, cli, silver
 
 log = logging.getLogger("schwab-load")
 
@@ -51,8 +51,7 @@ def parse_snapshot_at(dump_dir_name: str) -> int:
     m = SNAPSHOT_DIR_RE.match(dump_dir_name)
     if not m:
         raise ValueError(f"Not a snapshot directory name: {dump_dir_name!r}")
-    dt = datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return bronze.parse_run_ts(m.group(1))
 
 
 def parse_schwab_timestamp(s: str) -> int:

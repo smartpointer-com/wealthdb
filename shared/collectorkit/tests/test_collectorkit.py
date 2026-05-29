@@ -97,6 +97,23 @@ class BronzeTest(unittest.TestCase):
         self.assertEqual(bronze.canonical_json({"b": 1, "a": 2}),
                          '{"a":2,"b":1}')
 
+    def test_parse_run_ts_roundtrips_ts_slug(self):
+        from datetime import datetime as _dt, timezone as _tz
+        for slug in ("20260101T000000Z", "20260529T071530Z",
+                     "19700101T000000Z"):
+            epoch = bronze.parse_run_ts(slug)
+            self.assertEqual(
+                bronze.ts_slug(_dt.fromtimestamp(epoch, tz=_tz.utc)),
+                slug)
+        # spot-check: epoch math matches stdlib
+        expected = int(_dt(2026, 5, 29, 7, 15, 30,
+                           tzinfo=_tz.utc).timestamp())
+        self.assertEqual(bronze.parse_run_ts("20260529T071530Z"), expected)
+
+    def test_parse_run_ts_rejects_bad_format(self):
+        with self.assertRaises(ValueError):
+            bronze.parse_run_ts("not-a-run-dir")
+
 
 class EnvFileTest(unittest.TestCase):
     def test_bash_source_handles_quoting(self):

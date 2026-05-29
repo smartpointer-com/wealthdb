@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import cli, silver
+from collectorkit import bronze, cli, silver
 
 logger = logging.getLogger("load")
 
@@ -104,8 +104,7 @@ def open_db(path: Path) -> sqlite3.Connection:
 
 def ts_from_run_dir(name: str) -> int:
     """Parse YYYYMMDDTHHMMSSZ into Unix seconds UTC."""
-    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return bronze.parse_run_ts(name)
 
 
 def iso_date_to_epoch(s: str | None) -> int | None:

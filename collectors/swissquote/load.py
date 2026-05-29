@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from collectorkit import cli, silver
+from collectorkit import bronze, cli, silver
 
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) / load.current_schema_version(...) directly.
@@ -111,8 +111,7 @@ def find_pending_dumps(
 
 def _run_dir_to_epoch(name: str) -> int:
     """Convert a YYYYMMDDTHHMMSSZ run-dir name to a UTC epoch second."""
-    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return bronze.parse_run_ts(name)
 
 
 # ============================================================

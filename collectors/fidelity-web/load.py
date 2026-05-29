@@ -46,7 +46,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, silver
+from collectorkit import bronze, cli, silver
 
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) directly.
@@ -175,8 +175,7 @@ def already_loaded(conn, dump_dir):
 # ============================================================
 
 def ts_from_dir(name):
-    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return bronze.parse_run_ts(name)
 
 
 def ts_from_iso(s):

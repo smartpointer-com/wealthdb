@@ -21,6 +21,16 @@ def ts_slug(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
 
 
+def parse_run_ts(name: str) -> int:
+    """Parse a run-dir slug (`YYYYmmddTHHMMSSZ`) to Unix epoch seconds (UTC).
+
+    Inverse of `ts_slug`; raises ValueError if the slug doesn't match the
+    expected format. Every silver loader uses this to stamp records with
+    the bronze run's timestamp."""
+    dt = datetime.strptime(name, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
 def run_dir(dest: Path, slug: str | None = None) -> Path:
     """`<dest>/<slug>` (slug defaults to a fresh UTC timestamp)."""
     return Path(dest) / (slug or ts_slug())
