@@ -123,9 +123,9 @@ test-$(1): build-$(1)
 	@if [ ! -d collectors/$(1)/tests ] && ! ls collectors/$(1)/test_*.py >/dev/null 2>&1; then \
 		echo "    $(1): no tests"; \
 	elif [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
-		collectors/$(1)/$(1) sh -c "cd /app && pytest -q"; \
+		collectors/$(1)/$(1) sh -c "cd /app && pytest -q -p no:cacheprovider"; \
 	elif [ -x collectors/$(1)/.venv/bin/python ]; then \
-		collectors/$(1)/.venv/bin/python -m pytest -q collectors/$(1); \
+		collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
 	else \
 		echo "    $(1): cannot run tests (no image or venv)"; \
 	fi
