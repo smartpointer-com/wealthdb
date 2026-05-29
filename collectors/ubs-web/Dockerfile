@@ -1,19 +1,10 @@
-# Pin to a specific Playwright Python image tag for reproducibility.
-# Microsoft publishes one image per Playwright version; the Python
-# bindings and Chromium binaries inside are version-matched. Bump this
-# tag when upgrading Playwright; do NOT mix it with a different
-# `playwright` pip version in requirements.txt.
-FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
+# Headless-browser collector: build on the shared Playwright base
+# (collectorkit pre-installed; the Playwright image tag is pinned there
+# and must stay in lockstep with the `playwright` pin in requirements.txt).
+FROM wealthdb/base-playwright:latest
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-WORKDIR /app
-
-# Install Python deps first so editing scripts doesn't bust the pip
-# cache layer.
+# Install collector-specific deps first so editing scripts doesn't bust
+# the pip cache layer.
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 

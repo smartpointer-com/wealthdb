@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from collectorkit import cli, silver
+
 log = logging.getLogger("swissquote.load")
 
 # All transaction times in Swissquote CSVs are wall-clock Europe/Zurich
@@ -67,46 +69,9 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def current_schema_version(conn: sqlite3.Connection) -> int:
-    """Read MAX(silver_schema_version), or 0 if schema_meta is absent."""
-    row = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='schema_meta'"
-    ).fetchone()
-    if not row:
-        return 0
-    row = conn.execute(
-        "SELECT COALESCE(MAX(silver_schema_version), 0) AS v FROM schema_meta"
-    ).fetchone()
-    return int(row["v"])
-
-
-def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
-    """Apply migrations whose number exceeds the current schema version."""
-    if not migrations_dir.is_dir():
-        raise SystemExit(f"Migrations dir not found: {migrations_dir}")
-    files = []
-    for f in migrations_dir.iterdir():
-        m = re.match(r"^(\d+)_.*\.sql$", f.name)
-        if m:
-            files.append((int(m.group(1)), f))
-    files.sort()
-    current = current_schema_version(conn)
-    log.info("Schema version on disk: %d; %d migration file(s) found",
-             current, len(files))
-    for n, path in files:
-        if n <= current:
-            continue
-        log.info("Applying migration %s", path.name)
-        sql = path.read_text(encoding="utf-8")
-        # In autocommit mode (isolation_level=None), executescript()
-        # commits each statement individually. We rely on the final
-        # `INSERT INTO schema_meta` statement to mark the migration
-        # complete; a crash before that insert leaves the partially-
-        # applied schema visible. Recovery: delete the .db, re-run.
-        conn.executescript(sql)
-    final = current_schema_version(conn)
-    log.info("Schema version after migrations: %d", final)
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic). open_db stays local
+# per the decision not to unify collector transaction models.
 
 
 def canonical_json(obj) -> str:
@@ -1027,8 +992,8 @@ def run(args: argparse.Namespace) -> int:
 
     conn = open_db(args.silver_db)
     try:
-        apply_migrations(conn, migrations_dir)
-        schema_version = current_schema_version(conn)
+        silver.apply_migrations(conn, migrations_dir)
+        schema_version = silver.current_schema_version(conn)
 
         pending = find_pending_dumps(conn, args.bronze_dir)
         log.info("%d pending dump(s) to load", len(pending))
@@ -1068,10 +1033,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
     return run(args)
 
 

@@ -40,6 +40,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from collectorkit import cli, silver
+
 log = logging.getLogger("ubs-web.load")
 
 # UTC timestamp directory pattern from download.py's ts_slug().
@@ -93,43 +95,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Migrations
 # ============================================================
 
-def apply_migrations(conn: sqlite3.Connection,
-                     migrations_dir: Path) -> None:
-    """Apply every migration newer than the current
-    schema_meta.silver_schema_version, in numeric order."""
-    current = _current_schema_version(conn)
-    pending: list[tuple[int, Path]] = []
-    for path in sorted(migrations_dir.iterdir()):
-        m = MIGRATION_FILE_RE.match(path.name)
-        if not m:
-            continue
-        ver = int(m.group(1))
-        if ver > current:
-            pending.append((ver, path))
-    if not pending:
-        log.debug("schema at version %d; no migrations to apply", current)
-        return
-    for ver, path in pending:
-        log.info("applying migration %d (%s)", ver, path.name)
-        sql = path.read_text(encoding="utf-8")
-        conn.executescript(sql)
-        conn.commit()
-    new_ver = _current_schema_version(conn)
-    log.info("schema is now at version %d", new_ver)
-
-
-def _current_schema_version(conn: sqlite3.Connection) -> int:
-    """Returns 0 if schema_meta doesn't exist yet."""
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND name='schema_meta'"
-    )
-    if not cur.fetchone():
-        return 0
-    cur = conn.execute(
-        "SELECT COALESCE(MAX(silver_schema_version), 0) FROM schema_meta"
-    )
-    return int(cur.fetchone()[0])
+# Schema versioning + the migration runner now live in
+# collectorkit.silver (transaction-model agnostic). The silver
+# connection is created inline in main() with default isolation.
 
 
 # ============================================================
@@ -826,18 +794,15 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    cli.configure_logging(args.verbose)
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(args.silver_db))
     conn.execute("PRAGMA foreign_keys = ON;")
 
     migrations_dir = Path(__file__).parent / "migrations"
-    apply_migrations(conn, migrations_dir)
-    schema_version = _current_schema_version(conn)
+    silver.apply_migrations(conn, migrations_dir)
+    schema_version = silver.current_schema_version(conn)
 
     dumps = scan_bronze(args.bronze_dir)
     log.info("found %d bronze dump dir(s) under %s",
