@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from collectorkit import bronze, envfile, session, silver
+from collectorkit import bronze, envfile, parse, session, silver
 
 INIT_SQL = (
     "CREATE TABLE schema_meta (silver_schema_version INTEGER NOT NULL);\n"
@@ -143,6 +143,26 @@ class EnvFileTest(unittest.TestCase):
         os.environ.pop("CK_CRED", None)
         with self.assertRaises(SystemExit):
             envfile.resolve_credential(None, "CK_CRED", "--x")
+
+
+class ParseTest(unittest.TestCase):
+    def test_iso_date_to_epoch_bare_date(self):
+        from datetime import datetime as _dt, timezone as _tz
+        expected = int(_dt(2026, 1, 1, tzinfo=_tz.utc).timestamp())
+        self.assertEqual(parse.iso_date_to_epoch("2026-01-01"), expected)
+
+    def test_iso_date_to_epoch_with_trailing_time(self):
+        from datetime import datetime as _dt, timezone as _tz
+        expected = int(_dt(2026, 5, 29, tzinfo=_tz.utc).timestamp())
+        # Should produce the same midnight epoch regardless of trailing time.
+        for inp in ("2026-05-29", "2026-05-29T07:15:30",
+                    "2026-05-29T07:15:30.123456", "2026-05-29 noise"):
+            self.assertEqual(parse.iso_date_to_epoch(inp), expected, inp)
+
+    def test_iso_date_to_epoch_none_on_falsy_or_bad(self):
+        for bad in (None, "", "   ", "not-a-date", "20260101",
+                    "2026/01/01", "2026-13-99"):
+            self.assertIsNone(parse.iso_date_to_epoch(bad), bad)
 
 
 class SessionTest(unittest.TestCase):

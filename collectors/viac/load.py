@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, parse, silver
 
 logger = logging.getLogger("load")
 
@@ -111,14 +111,7 @@ def iso_date_to_epoch(s: str | None) -> int | None:
     """Parse an ISO date (with or without time) into Unix seconds
     UTC at the day's midnight. Returns None for falsy /
     unparseable input."""
-    if not s:
-        return None
-    head = s[:10]  # 'YYYY-MM-DD'
-    try:
-        dt = datetime.strptime(head, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except ValueError:
-        return None
+    return parse.iso_date_to_epoch(s)
 
 
 def iso_datetime_to_epoch(s: str | None) -> int | None:
