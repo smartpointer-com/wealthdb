@@ -56,12 +56,18 @@ test-collectors:  $(addprefix test-,$(COLLECTORS))
 # Shared Docker base images: shared/images/*.Dockerfile, built with
 # context=shared/ so they can bake in collectorkit. Docker collectors
 # FROM these. Building one Docker collector on its own? run this first.
+#
+# The order matters: base-camoufox FROMs base-playwright, so the parent
+# has to be built first. Explicit list rather than the alphabetised glob
+# (which would put camoufox before playwright).
+BASE_IMAGES := base-python base-playwright base-camoufox
+
 base-images:
-	@for f in shared/images/*.Dockerfile; do \
+	@for img in $(BASE_IMAGES); do \
+		f="shared/images/$$img.Dockerfile"; \
 		[ -e "$$f" ] || continue; \
-		tag=wealthdb/$$(basename "$$f" .Dockerfile):latest; \
-		echo "==> build base image $$tag"; \
-		docker build -q -f "$$f" -t "$$tag" shared/ >/dev/null; \
+		echo "==> build base image wealthdb/$$img:latest"; \
+		docker build -q -f "$$f" -t "wealthdb/$$img:latest" shared/ >/dev/null; \
 	done
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)

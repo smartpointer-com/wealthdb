@@ -1,47 +1,17 @@
-# Headed-browser (Camoufox) collector: build on the shared Playwright
-# base for its OS deps (libnss, libdrm, fonts that Firefox needs), the
-# Python/pip env, and a pre-installed collectorkit. The base image's
-# bundled Playwright browsers are unused — camoufox brings its own
-# patched Firefox and requirements.txt pins the `playwright` package
-# back to 1.49.0 to match camoufox's juggler-protocol revision. The
-# Xvfb/x11vnc setup and Camoufox fetch below stay here for now; the
-# base-camoufox consolidation will absorb them later.
-FROM wealthdb/base-playwright:latest
-
-# Xvfb gives Chromium a virtual X11 display so it can run headed
-# inside the container with no real GPU/monitor. x11vnc serves
-# that display over VNC so the operator can drive the browser
-# (`vnc-login` subcommand) from a host-side VNC client.
-#
-# Pre-create /tmp/.X11-unix world-writable + sticky. Xvfb tries
-# to mkdir it on startup; when the container runs as a non-root
-# host user (which we do for volume-ownership reasons), that
-# mkdir fails (_XSERVTransmkdir: ERROR: euid != 0) and Xvfb wedges.
-# Provisioning the dir at image-build time sidesteps the race.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends xvfb x11vnc && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /tmp/.X11-unix && \
-    chmod 1777 /tmp/.X11-unix
+# Headed-browser (Camoufox) collector: builds on the shared base-camoufox
+# image, which provides Firefox/Xvfb/x11vnc OS deps, camoufox + the
+# matching Playwright pin, the pre-fetched Firefox bundle at
+# /opt/camoufox-cache, and collectorkit. Per-collector extras
+# (pdfplumber for statement parsing, pytest for in-container tests)
+# go into requirements.txt below.
+FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app
 
-# Install Python deps first so editing scripts doesn't bust the pip
-# cache layer.
+# Install per-collector deps only — camoufox/playwright are already
+# pre-installed in the base.
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
-
-# Camoufox doesn't bundle the patched Firefox binary in the wheel —
-# fetch it explicitly here so the image is self-contained and first-
-# run is fast. The fetch runs as root, lands under
-# /root/.cache/camoufox/. The runtime user has HOME=/tmp, so a naive
-# setup would force a 700MB re-download on every container start.
-# Stage the fetched tree under a world-readable /opt/camoufox-cache
-# and symlink it into the runtime user's cache path at entrypoint
-# time (see entrypoint.sh).
-RUN python3 -m camoufox fetch && \
-    cp -a /root/.cache/camoufox /opt/camoufox-cache && \
-    chmod -R go+rX /opt/camoufox-cache
 
 # Copy scripts last. Listed explicitly so accidentally-present
 # host artefacts (.venv, real-credential JSONs, recorded Playwright
