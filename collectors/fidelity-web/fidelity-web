@@ -132,7 +132,11 @@ EOH
         esac
         shift
     done
-    exec python3 "$HERE/load.py" \
+    # load.py imports collectorkit (lives at <repo>/shared/collectorkit
+    # relative to this wrapper). Expose it on PYTHONPATH so the host
+    # python3 can find it with no separate install step.
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/load.py" \
         --silver-db "$SILVER_DB" \
         --bronze-dir "$BRONZE_DIR" \
         ${PASSTHRU[@]+"${PASSTHRU[@]}"}
