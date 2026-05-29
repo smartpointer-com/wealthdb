@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
+
+from collectorkit import session
 
 import httpx
 
@@ -166,15 +167,12 @@ class ViacClient:
                 "expires": c.expires,
             })
         state = {
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "saved_at": session.iso_now(),
             "csrf_cookie_name": self.csrf_cookie_name,
             "csrf_header_name": self.csrf_header_name,
             "cookies": cookies,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Write then chmod so the temporary mode never widens 0600.
-        path.write_text(json.dumps(state, indent=2))
-        path.chmod(0o600)
+        session.save_state(path, state)
 
     @classmethod
     def from_state(cls, path: Path) -> "ViacClient":

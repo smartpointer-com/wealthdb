@@ -31,11 +31,12 @@ import argparse
 import json
 import logging
 import os
-import stat
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from collectorkit import session
 
 log = logging.getLogger("schwab-login")
 
@@ -108,18 +109,6 @@ def resolve_credential(value: str | None, env_name: str, flag_name: str) -> str:
         f"Missing credential: pass {flag_name} or set {env_name}. "
         f"Source your Schwab credentials env file before running."
     )
-
-
-def secure_token_file(path: Path) -> None:
-    """Best-effort chmod the token file to 0600 so other users can't read it.
-
-    schwab-py writes the file with whatever umask is active; we tighten
-    it after the fact. Silently ignores the call on filesystems that
-    don't honour POSIX modes."""
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError as exc:
-        log.warning("Could not chmod 0600 on %s: %s", path, exc)
 
 
 def read_token_creation_time(path: Path) -> datetime | None:
@@ -222,7 +211,7 @@ def cmd_login(args: argparse.Namespace) -> int:
         log.error("OAuth flow completed but no token file was written to %s",
                   args.token_path)
         return 4
-    secure_token_file(args.token_path)
+    session.secure_file(args.token_path)
     issued = read_token_creation_time(args.token_path) or datetime.now(timezone.utc)
     renew_by = datetime.fromtimestamp(
         issued.timestamp() + REFRESH_TOKEN_TTL_SECONDS, tz=timezone.utc,

@@ -53,6 +53,8 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
+from collectorkit import session
+
 BASE = "https://portal.pens-expert.ch"
 
 LOGIN_PAGE = f"{BASE}/auth/ui/app/auth/flow/b2c/password?lang=en"
@@ -117,27 +119,17 @@ def state_into_jar(state: list[dict[str, Any]], jar: requests.cookies.RequestsCo
 
 def save_state(path: Path, jar: requests.cookies.RequestsCookieJar) -> None:
     payload = {
-        "minted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "minted_at": session.iso_now(),
         "issuer": "portal.pens-expert.ch",
         "schema_version": 1,
         "cookies": jar_to_state(jar),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
+    session.save_state(path, payload)
     logger.info("state saved: %s (%d cookies)", path, len(payload["cookies"]))
 
 
 def load_state(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("could not load state %s: %s", path, exc)
-        return None
+    return session.load_state(path)
 
 
 # ----------------------------------------------------------------------

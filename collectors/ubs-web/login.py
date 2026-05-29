@@ -33,6 +33,8 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
+from collectorkit import session
+
 log = logging.getLogger("ubs-web.login")
 
 # Real desktop Chrome UA, not HeadlessChrome. Banks commonly sniff
@@ -532,9 +534,8 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
             maybe_screenshot(page, screenshot_dir, "stage4-workbench")
             state_path.parent.mkdir(parents=True, exist_ok=True)
             context.storage_state(path=str(state_path))
-            os.chmod(state_path, STATE_FILE_MODE)
-            log.info("session state written to %s (chmod 0%o)",
-                     state_path, STATE_FILE_MODE)
+            session.secure_file(state_path)
+            log.info("session state written to %s (chmod 0600)", state_path)
             return 0
 
         except PWTimeout as e:

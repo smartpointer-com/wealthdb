@@ -28,6 +28,8 @@ from pathlib import Path
 
 import landmarks as sq  # local module: DOM landmarks + URL constants
 
+from collectorkit import session
+
 log = logging.getLogger("swissquote.login")
 
 # Real Chrome UA, not HeadlessChrome. Banks commonly sniff
@@ -405,7 +407,7 @@ def login(args: argparse.Namespace) -> int:
 
             log.info("Persisting session state to %s", args.state_path)
             context.storage_state(path=str(args.state_path))
-            os.chmod(args.state_path, STATE_FILE_MODE)
+            session.secure_file(args.state_path)
             print(f"session minted: {args.state_path}", flush=True)
             return 0
         finally:

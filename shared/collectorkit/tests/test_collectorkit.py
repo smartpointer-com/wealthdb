@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from collectorkit import bronze, envfile, silver
+from collectorkit import bronze, envfile, session, silver
 
 INIT_SQL = (
     "CREATE TABLE schema_meta (silver_schema_version INTEGER NOT NULL);\n"
@@ -126,6 +126,51 @@ class EnvFileTest(unittest.TestCase):
         os.environ.pop("CK_CRED", None)
         with self.assertRaises(SystemExit):
             envfile.resolve_credential(None, "CK_CRED", "--x")
+
+
+class SessionTest(unittest.TestCase):
+    def test_save_and_load_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "sub" / "state.json"
+            payload = {
+                "saved_at": "2026-05-29T00:00:00+00:00",
+                "cookies": [{"name": "sid", "value": "x"}],
+            }
+            session.save_state(p, payload)
+            self.assertTrue(p.is_file())
+            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(session.load_state(p), payload)
+            # tmp sibling cleaned up by rename
+            self.assertFalse((Path(d) / "sub" / "state.json.tmp").exists())
+
+    def test_save_state_mkdir_parents(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "a" / "b" / "c" / "state.json"
+            session.save_state(p, {"k": 1})
+            self.assertTrue(p.is_file())
+
+    def test_load_missing_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(session.load_state(Path(d) / "nope.json"))
+
+    def test_load_invalid_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "bad.json"
+            p.write_text("{not valid json")
+            self.assertIsNone(session.load_state(p))
+
+    def test_secure_file_tightens_perms(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "f"
+            p.write_text("hi")
+            p.chmod(0o644)
+            self.assertTrue(session.secure_file(p))
+            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+
+    def test_iso_now_format(self):
+        s = session.iso_now()
+        self.assertRegex(
+            s, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
 
 
 if __name__ == "__main__":
