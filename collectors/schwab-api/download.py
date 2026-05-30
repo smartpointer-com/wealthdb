@@ -28,6 +28,8 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from collectorkit import cli
+
 # schwab-py is a thin wrapper over the Schwab Trader API. We import it
 # inside main() so that --help works on a fresh checkout without the
 # dependency installed.
@@ -46,12 +48,6 @@ ARTIFACT_INSTRUMENTS = "instruments.json"
 # Schwab caps the transactions endpoint window at 1 year per request. We
 # chunk longer ranges into successive sub-ranges to stay within the cap.
 TRANSACTION_WINDOW_DAYS = 365
-
-# Default lookback when --since is omitted. ~3 months: matches the
-# rest of the collector fleet, which all default to a narrow recent
-# window so a forgotten flag never silently triggers a multi-year
-# backfill. wealthdb-refresh --lookback can widen it.
-DEFAULT_LOOKBACK_DAYS = 90
 
 # Order statuses considered "open" — i.e. the order can still execute,
 # be cancelled, or be replaced. Excludes terminal states (FILLED,
@@ -138,23 +134,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "environment variable if omitted. Avoid passing on the command "
              "line in shared environments — prefer the env var.",
     )
-    p.add_argument(
-        "--since",
-        type=date.fromisoformat,
-        default=None,
-        help="Earliest transaction date to fetch (YYYY-MM-DD). "
-             "Defaults to 90 days before --until. For a one-off bulk "
-             "backfill pass an older --since explicitly (e.g. "
-             "--since 2015-01-01); Schwab caps each API call at 1 year "
-             "and the loader chunks longer ranges automatically.",
-    )
-    p.add_argument(
-        "--until",
-        type=date.fromisoformat,
-        default=None,
-        help="Latest transaction date to fetch (YYYY-MM-DD, inclusive). "
-             "Defaults to today (UTC).",
-    )
+    # --since / --until / --lookback — shared contract. No
+    # --documents-* (Schwab API has no document archive surface).
+    # Schwab caps each transactions call at 1 year; the loader
+    # chunks longer ranges automatically via TRANSACTION_WINDOW_DAYS.
+    cli.add_lookback_args(p, has_documents=False)
     p.add_argument(
         "--with-instruments",
         action="store_true",
@@ -465,10 +449,7 @@ def run(args: argparse.Namespace) -> int:
     # set the default lookback so the entire range fits in a single Schwab
     # call and we don't emit a 1-day trailing chunk on the boundary.
     today = datetime.now(timezone.utc).date()
-    until = args.until or today
-    since = args.since or (until - timedelta(days=DEFAULT_LOOKBACK_DAYS))
-    if since > until:
-        raise SystemExit(f"--since {since} is after --until {until}")
+    since, until, _, _ = cli.resolve_lookback(args, has_documents=False)
     log.info("Transaction window: %s -> %s", since, until)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

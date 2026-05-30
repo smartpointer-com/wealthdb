@@ -46,6 +46,8 @@ from pathlib import Path
 
 import landmarks as schwab
 
+from collectorkit import cli
+
 log = logging.getLogger("schwab-web.login")
 
 # Playwright timeouts (milliseconds). Generous defaults — WAN
@@ -148,14 +150,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "modal contents. See download.py --with-more-detail "
               "help. Off by default."),
     )
+    # Shared --since / --until / --lookback / --documents-since /
+    # --documents-until contract. schwab-web's UI is preset-driven
+    # (Last3Months / Last6Months / Last5Years / Last10Years), so the
+    # CLI maps an explicit --since (or its --lookback shortcut) to
+    # the closest preset that covers it. --range is kept as the
+    # explicit-preset escape hatch and wins when set.
+    cli.add_lookback_args(p)
     p.add_argument(
         "--range", dest="date_range",
         choices=tuple(v for v in schwab.DATE_RANGE_VALUES if v != "Custom"),
-        default=schwab.DATE_RANGE_DEFAULT,
-        help=("Date-range preset for the Statements filter. "
-              "Default %(default)s aligns with the sibling "
-              "schwab-api / ubs-* collectors; pass "
-              "Last10Years for a full historical backfill."),
+        default=None,
+        help=("Explicit Schwab Statements preset (escape hatch). "
+              "Overrides any --since / --lookback. Common values: "
+              "Last3Months (default if no --since/--lookback set), "
+              "Last6Months, Last5Years, Last10Years (full backfill)."),
     )
     p.add_argument(
         "--post-auth-timeout", type=int, default=7200,
@@ -1079,6 +1088,23 @@ def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> Non
 # Entry point
 # ============================================================
 
+def _since_to_schwab_preset(since, until) -> str:
+    """Map a (since, until) date pair to the closest Statements preset.
+
+    Schwab's filter is preset-driven, not date-range, so the shared
+    --since/--lookback contract translates to whichever preset
+    fully covers the requested window. Same buckets the old
+    SCHWAB_PRESET dict in wealthdb-refresh used."""
+    days = (until - since).days
+    if days <= 90:
+        return "Last3Months"
+    if days <= 180:
+        return "Last6Months"
+    if days < 1825:  # i.e. up to and incl. 4y; 5y → Last10Years per legacy mapping
+        return "Last5Years"
+    return "Last10Years"
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -1087,6 +1113,12 @@ def main(argv: list[str]) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
+    # Translate the shared date-window contract into a Schwab preset.
+    # --range wins (explicit-preset escape hatch); otherwise pick the
+    # preset that covers the resolved (since, until) window.
+    if args.date_range is None:
+        since, until, _, _ = cli.resolve_lookback(args)
+        args.date_range = _since_to_schwab_preset(since, until)
     maybe_source_env_files(args)
     prepare_profile_dir(args.profile_dir)
     if args.check:

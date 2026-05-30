@@ -85,6 +85,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from collectorkit import cli
+
 
 log = logging.getLogger("fidelity-web.download")
 
@@ -2574,17 +2576,16 @@ def run_oneshot(args):
                     "at %s", args.profile_dir,
                 )
                 return 0
+            since, until, docs_since, docs_until = cli.resolve_lookback(args)
             config = {
                 "dest": str(args.dest),
                 "mode": args.mode,
                 "dry_run": "true" if args.dry_run else "false",
+                "since": since.isoformat(),
+                "until": until.isoformat(),
+                "documents_since": docs_since.isoformat(),
+                "documents_until": docs_until.isoformat(),
             }
-            if args.since:
-                config["since"] = args.since
-            if args.until:
-                config["until"] = args.until
-            if args.documents_since:
-                config["documents_since"] = args.documents_since
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
             try:
@@ -2666,24 +2667,11 @@ def parse_args(argv):
               "phase. 'none' is for --vnc handoffs that only seed "
               "the profile dir."),
     )
-    p.add_argument(
-        "--since", default=None,
-        help=("Activity window start, YYYY-MM-DD. With --until, "
-              "the request is bisected into ≤93-day chunks."),
-    )
-    p.add_argument(
-        "--until", default=None,
-        help="Activity window end, YYYY-MM-DD. Default: today UTC.",
-    )
-    p.add_argument(
-        "--documents-since", default=None,
-        help=("Earliest document date (YYYY-MM-DD). Default: 90 "
-              "days before today. The statements + tax-forms walk "
-              "filters at YEAR granularity (row labels are mixed "
-              "monthly/quarterly/annual). For a one-off historical "
-              "backfill pass an older date (e.g. 2010-01-01); "
-              "wealthdb-refresh --lookback widens it uniformly."),
-    )
+    # Shared date-window contract. Fidelity bisects the activity
+    # range into ≤93-day chunks internally; the statements +
+    # tax-forms walk filters at YEAR granularity (row labels are
+    # mixed monthly / quarterly / annual).
+    cli.add_lookback_args(p)
     p.add_argument(
         "--exclude-accounts", default=None,
         help="Comma-separated account ids to skip.",

@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from collectorkit import bronze, envfile, parse, session, silver
+import argparse
+
+from collectorkit import bronze, cli, envfile, parse, session, silver
 
 INIT_SQL = (
     "CREATE TABLE schema_meta (silver_schema_version INTEGER NOT NULL);\n"
@@ -143,6 +145,79 @@ class EnvFileTest(unittest.TestCase):
         os.environ.pop("CK_CRED", None)
         with self.assertRaises(SystemExit):
             envfile.resolve_credential(None, "CK_CRED", "--x")
+
+
+def _build_parser(has_documents=True):
+    p = argparse.ArgumentParser()
+    cli.add_lookback_args(p, has_documents=has_documents)
+    return p
+
+
+class LookbackTest(unittest.TestCase):
+    def test_default_with_no_flags(self):
+        from datetime import date, timedelta
+        ns = _build_parser().parse_args([])
+        since, until, ds, du = cli.resolve_lookback(ns)
+        # Defaults: until=today, since=today-90d, docs mirror.
+        self.assertEqual(until - since, timedelta(days=cli.DEFAULT_LOOKBACK_DAYS))
+        self.assertEqual(ds, since)
+        self.assertEqual(du, until)
+
+    def test_explicit_since_wins_over_lookback(self):
+        from datetime import date
+        ns = _build_parser().parse_args(
+            ["--since", "2020-01-01", "--lookback", "1y", "--until", "2020-12-31"])
+        since, until, ds, du = cli.resolve_lookback(ns)
+        self.assertEqual(since, date(2020, 1, 1))
+        self.assertEqual(until, date(2020, 12, 31))
+
+    def test_lookback_shortcuts(self):
+        from datetime import date, timedelta
+        for preset, days in [("3m", 90), ("6m", 180), ("1y", 365),
+                              ("2y", 730), ("5y", 1825)]:
+            ns = _build_parser().parse_args(["--lookback", preset])
+            since, until, _, _ = cli.resolve_lookback(ns)
+            self.assertEqual(until - since, timedelta(days=days), preset)
+
+    def test_lookback_all_is_30_years(self):
+        from datetime import timedelta
+        ns = _build_parser().parse_args(["--lookback", "all"])
+        since, until, ds, du = cli.resolve_lookback(ns)
+        self.assertEqual(until - since, timedelta(days=365 * 30))
+        self.assertEqual(du - ds, timedelta(days=365 * 30))
+
+    def test_documents_since_inherits_from_since(self):
+        ns = _build_parser().parse_args(["--since", "2020-01-01"])
+        _, _, ds, _ = cli.resolve_lookback(ns)
+        from datetime import date
+        self.assertEqual(ds, date(2020, 1, 1))
+
+    def test_documents_since_overrides(self):
+        from datetime import date
+        ns = _build_parser().parse_args(
+            ["--since", "2020-01-01", "--documents-since", "2018-01-01",
+             "--until", "2021-01-01"])
+        _, _, ds, _ = cli.resolve_lookback(ns)
+        self.assertEqual(ds, date(2018, 1, 1))
+
+    def test_since_after_until_raises(self):
+        ns = _build_parser().parse_args(
+            ["--since", "2021-01-01", "--until", "2020-01-01"])
+        with self.assertRaises(SystemExit):
+            cli.resolve_lookback(ns)
+
+    def test_has_documents_false(self):
+        ns = _build_parser(has_documents=False).parse_args(
+            ["--since", "2020-01-01", "--until", "2020-12-31"])
+        since, until, ds, du = cli.resolve_lookback(ns, has_documents=False)
+        self.assertIsNone(ds)
+        self.assertIsNone(du)
+
+    def test_default_days_override(self):
+        from datetime import timedelta
+        ns = _build_parser().parse_args([])
+        since, until, _, _ = cli.resolve_lookback(ns, default_days=30)
+        self.assertEqual(until - since, timedelta(days=30))
 
 
 class ParseTest(unittest.TestCase):

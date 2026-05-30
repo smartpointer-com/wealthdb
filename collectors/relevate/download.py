@@ -52,6 +52,8 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
+from collectorkit import cli
+
 BASE = "https://portal.pens-expert.ch"
 PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
 DASHBOARD_REFERER = f"{BASE}/dashboard/"
@@ -645,18 +647,36 @@ def do_dry_run(
 
 
 def do_download(args: argparse.Namespace) -> int:
+    # Translate the shared --since/--until/--lookback contract into
+    # relevate's year-granularity. Explicit --year-from / --year-to
+    # always wins; otherwise we derive year_from = since.year,
+    # year_to = until.year.
+    since, until, docs_since, docs_until = cli.resolve_lookback(args)
+    if args.year_from is None:
+        args.year_from = since.year
+    if args.year_to is None:
+        args.year_to = until.year
+    if args.documents_since is not None or args.documents_until is not None:
+        logger.warning(
+            "--documents-since / --documents-until are not yet "
+            "implemented for relevate (TODO); the documents listing "
+            "endpoint has no date filter. Full index is fetched on "
+            "each run. Use --skip-documents to suppress the doc walk."
+        )
+
     try:
-        session, state_minted_at = new_session_from_state(args.state_path)
+        sess, state_minted_at = new_session_from_state(args.state_path)
     except FileNotFoundError as exc:
         logger.error("%s", exc)
         return 64
 
-    if not probe_session_alive(session):
+    if not probe_session_alive(sess):
         logger.error(
             "session probe failed — run `./relevate login` "
             "to mint a fresh session.",
         )
         return 1
+    session = sess  # restore local name for the rest of the function
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.dest / ts
@@ -752,20 +772,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--skip-documents", action="store_true",
         help="Even in --mode all, skip document PDFs.",
     )
+    # Shared date-window contract — collector-fleet-wide flag set.
+    # relevate's /deposits endpoint takes year-granularity only; the
+    # CLI translates --since.year → --year-from. --year-from is kept
+    # as the explicit-year escape hatch (e.g. --year-from 1900 for a
+    # full backfill). --documents-since/--documents-until are
+    # currently no-ops (logged at WARN); documents are fetched via a
+    # listing endpoint that has no date filter, see DESIGN §11. TODO.
+    cli.add_lookback_args(p)
     p.add_argument(
         "--year-from", type=int, default=None,
-        help=(
-            "Earliest year for /deposits iteration. Default: the "
-            "current year (matches the rest of the collector fleet's "
-            "~3-month narrow default — year is the smallest "
-            "granularity /deposits accepts). For a one-off historical "
-            "backfill pass an explicit year (e.g. --year-from 1900); "
-            "wealthdb-refresh --lookback widens it uniformly."
-        ),
+        help=("Explicit earliest year for /deposits iteration "
+              "(escape hatch). Overrides --since's year. Default: "
+              "derived from --since (or its --lookback shortcut)."),
     )
     p.add_argument(
         "--year-to", type=int, default=None,
-        help="Latest year for /deposits iteration. Default: current.",
+        help=("Explicit latest year for /deposits iteration. "
+              "Overrides --until's year. Default: derived from "
+              "--until."),
     )
     p.add_argument(
         "--limit-portfolios", type=int, default=None,

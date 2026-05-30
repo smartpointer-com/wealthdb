@@ -60,6 +60,7 @@ from pathlib import Path
 
 import httpx
 
+from collectorkit import cli
 from viac_client import ViacClient
 
 log = logging.getLogger("viac.download")
@@ -151,6 +152,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "DIVIDEND_CANCELLATION). ~950 PDFs at present. "
               "SECURITY_FUSION is downloaded regardless of this flag."),
     )
+    # Shared date-window contract — accepted for argv-level symmetry
+    # with the rest of the collector fleet. Currently a NO-OP for
+    # viac: the REST API exposes the full transaction + document
+    # history with no date-filter knob, and the bronze + silver
+    # pipelines content-hash dedup keeps re-runs cheap. Setting any
+    # of the flags logs a "not implemented" warning. TODO: add a
+    # post-fetch client-side filter in the silver loader and/or
+    # short-circuit untouched-since-last-run by document id.
+    cli.add_lookback_args(p)
     p.add_argument(
         "--dry-run", action="store_true",
         help=("Walk the REST API and write the JSON artefacts but "
@@ -323,12 +333,32 @@ def walk(client: ViacClient, dest_root: Path, *,
     return manifest
 
 
+def _warn_lookback_noop(args: argparse.Namespace) -> None:
+    """Log a TODO warning if any date-window flag was passed.
+
+    viac's REST endpoints have no date filter, so the flags are
+    accepted (for argv parity with other collectors) but ignored.
+    The full snapshot is pulled every run; bronze + silver dedup
+    keeps it cheap."""
+    if any(getattr(args, k, None) is not None for k in
+           ("since", "until", "lookback",
+            "documents_since", "documents_until")):
+        log.warning(
+            "viac: --since / --until / --lookback / --documents-* "
+            "are accepted for argv parity but not yet implemented "
+            "(TODO). The full REST snapshot is pulled every run; "
+            "bronze + silver content-hash dedup means re-runs are "
+            "cheap."
+        )
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    _warn_lookback_noop(args)
 
     if not args.state_path.is_file():
         log.error(

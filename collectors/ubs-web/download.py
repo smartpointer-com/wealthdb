@@ -30,6 +30,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
+from collectorkit import cli
+
 import landmarks as ubs  # local module
 
 log = logging.getLogger("ubs-web.download")
@@ -46,17 +48,13 @@ NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
 
-# Default lookback when --since is missing: 90 days. UBS's
-# transactions UI defaults to "Maximum (current year and last 2
-# years)" — so without --since we'd accidentally fetch ~3y of data
-# on every cron-style run. 90d matches the swissquote default
-# for parity; users doing a one-off historic backfill must pass
-# --since explicitly (e.g. --since 2015-01-01).
-DEFAULT_LOOKBACK_DAYS = 90
-
-# Documents page default window is shorter (last 3 months). Without
-# --documents-since we'd miss anything older. We default both to
-# --since/--until to keep one knob for the common case.
+# Date-window defaults resolve through collectorkit.cli (default
+# DEFAULT_LOOKBACK_DAYS = 90). Important context for UBS:
+# - transactions UI defaults to "Maximum (current year and last 2
+#   years)" — so without --since we would accidentally fetch ~3y
+#   of data on every cron-style run.
+# - documents page defaults to last 3 months; without
+#   --documents-since older PDFs would be missed.
 
 # Minimum window when bisecting either the documents list (999-row
 # cap) or the MT940 export (1000-trx cap). If a single day still
@@ -86,22 +84,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Path to the Playwright storageState.json.")
     p.add_argument("--dest", required=True, type=Path,
                    help="Output dir; a UTC-timestamped subdir is created per run.")
-    p.add_argument("--since", type=date.fromisoformat, default=None,
-                   help=("Earliest transaction date (YYYY-MM-DD). "
-                         f"Default: {DEFAULT_LOOKBACK_DAYS} days before --until. "
-                         "UBS's UI caps the 'Maximum' preset to ~3y; for older "
-                         "data pass --since explicitly (e.g. 2015-01-01)."))
-    p.add_argument("--until", type=date.fromisoformat, default=None,
-                   help="Latest transaction date (YYYY-MM-DD, inclusive). "
-                        "Default: today (UTC).")
-    p.add_argument("--documents-since", type=date.fromisoformat, default=None,
-                   help="Earliest document date (YYYY-MM-DD). Default: "
-                        "same as --since. The Documents page filter defaults "
-                        "to the last 3 months; without this flag older PDFs "
-                        "would be missed.")
-    p.add_argument("--documents-until", type=date.fromisoformat, default=None,
-                   help="Latest document date (YYYY-MM-DD, inclusive). "
-                        "Default: same as --until.")
+    # Shared date-window contract. UBS's UI caps the 'Maximum' preset
+    # to ~3 years; for older transactions pass an explicit older
+    # --since (e.g. 2015-01-01) or use --lookback all (~30y).
+    cli.add_lookback_args(p)
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -118,18 +104,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def resolve_windows(args: argparse.Namespace) -> tuple[date, date, date, date]:
-    """Fill in defaults for --since/--until/--documents-since/-until."""
-    today = datetime.now(timezone.utc).date()
-    until = args.until or today
-    since = args.since or (until - timedelta(days=DEFAULT_LOOKBACK_DAYS))
-    if since > until:
-        raise SystemExit(f"--since {since} is after --until {until}")
-    docs_until = args.documents_until or until
-    docs_since = args.documents_since or since
-    if docs_since > docs_until:
-        raise SystemExit(
-            f"--documents-since {docs_since} is after --documents-until {docs_until}"
-        )
+    """Resolve --since/--until/--documents-{since,until}/--lookback."""
+    since, until, docs_since, docs_until = cli.resolve_lookback(args)
     return since, until, docs_since, docs_until
 
 

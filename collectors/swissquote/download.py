@@ -35,6 +35,8 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
+from collectorkit import cli
+
 log = logging.getLogger("swissquote.download")
 
 # Same UA as login.py — Swissquote's anti-bot heuristics may key on
@@ -49,21 +51,12 @@ NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
 
-# Default --since for transactions: ~3 months. Sensible for
-# incremental runs because silver's window-DELETE-INSERT replaces
-# overlapping rows on each load. Users doing a one-off bulk backfill
-# pass --since explicitly.
-DEFAULT_TRANSACTIONS_LOOKBACK_DAYS = 90
-
-# Default --documents-since: ~3 months, matching the transactions
-# default and the rest of the collector fleet. Earlier default was
-# 25 years (the documents corpus reconstructs historical snapshots),
-# but a forgotten flag on a regular run shouldn't trigger a full
-# multi-year scrape. wealthdb-refresh --lookback widens the window
-# uniformly; for an explicit one-off backfill pass --documents-since
-# (e.g. 2000-01-01). Content-sha256 dedup means re-runs don't
+# --since / --until / --lookback / --documents-* defaults are all
+# resolved through collectorkit.cli.resolve_lookback (default
+# DEFAULT_LOOKBACK_DAYS = 90). Sensible for incremental runs because
+# silver's window-DELETE-INSERT replaces overlapping rows on each
+# load, and the content-sha256 dedup means a wider re-run does not
 # re-download already-captured PDFs.
-DEFAULT_DOCUMENTS_LOOKBACK_DAYS = 90
 
 # Customer ID is captured from the Positions XLS download filename
 # (`Positions_<cust>_<ddmmyyyy>_<hh>_<mm>.xls`). This regex pulls it
@@ -79,25 +72,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Path to the Playwright storageState.json.")
     p.add_argument("--dest", required=True, type=Path,
                    help="Output directory; a UTC-timestamped subdir is created per run.")
-    p.add_argument("--since", type=date.fromisoformat, default=None,
-                   help="Earliest transaction date (YYYY-MM-DD). "
-                        "Default: 90 days before --until. Swissquote does "
-                        "not enforce a window cap, so for a one-off bulk "
-                        "backfill pass an older --since explicitly (e.g. "
-                        "--since 2010-01-01).")
-    p.add_argument("--until", type=date.fromisoformat, default=None,
-                   help="Latest transaction date (YYYY-MM-DD, inclusive). "
-                        "Default: today (UTC).")
-    p.add_argument("--documents-since", type=date.fromisoformat, default=None,
-                   help="Earliest document date (YYYY-MM-DD). "
-                        "Default: 90 days before --documents-until. "
-                        "For a one-off historical backfill pass an older "
-                        "--documents-since explicitly (e.g. 2000-01-01); "
-                        "content-sha256 dedup means existing PDFs are not "
-                        "re-downloaded.")
-    p.add_argument("--documents-until", type=date.fromisoformat, default=None,
-                   help="Latest document date (YYYY-MM-DD, inclusive). "
-                        "Default: same as --until.")
+    # Shared date-window contract: --since/--until/--lookback +
+    # --documents-since/--documents-until. Swissquote enforces no
+    # window cap, so an explicit older --since (or --lookback all)
+    # triggers a bulk backfill.
+    cli.add_lookback_args(p)
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -622,20 +601,7 @@ def run(args: argparse.Namespace) -> int:
     if not args.dest.is_dir():
         raise SystemExit(f"Destination does not exist: {args.dest}")
 
-    today = datetime.now(timezone.utc).date()
-    until = args.until or today
-    since = args.since or (until - timedelta(days=DEFAULT_TRANSACTIONS_LOOKBACK_DAYS))
-    if since > until:
-        raise SystemExit(f"--since {since} is after --until {until}")
-    documents_until = args.documents_until or until
-    documents_since = args.documents_since or (
-        documents_until - timedelta(days=DEFAULT_DOCUMENTS_LOOKBACK_DAYS)
-    )
-    if documents_since > documents_until:
-        raise SystemExit(
-            f"--documents-since {documents_since} is after "
-            f"--documents-until {documents_until}"
-        )
+    since, until, documents_since, documents_until = cli.resolve_lookback(args)
 
     run_ts_str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.dest / run_ts_str
