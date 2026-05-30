@@ -2290,8 +2290,11 @@ def _extract_pdf_text(path) -> str:
     get back is layout-ordered (top-to-bottom, left-to-right
     within each page) which is what the line-anchored parsers
     expect. Each page's text is taken via PdfPage.get_textpage()
-    and PdfTextPage.get_text_range() — the latter returns the
-    full text without coordinate filtering.
+    and PdfTextPage.get_text_bounded() — the latter returns the
+    full text without coordinate filtering. (Older code called
+    get_text_range() with default args; pypdfium2 deprecated
+    that to a redirect — calling get_text_bounded() directly
+    avoids the per-PDF UserWarning.)
 
     Resources are released explicitly (textpage/page/document
     close()) — PDFium handles are C pointers and Python GC isn't
@@ -2306,7 +2309,7 @@ def _extract_pdf_text(path) -> str:
             try:
                 textpage = page.get_textpage()
                 try:
-                    parts.append(textpage.get_text_range() or "")
+                    parts.append(textpage.get_text_bounded() or "")
                 finally:
                     textpage.close()
             finally:
