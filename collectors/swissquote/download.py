@@ -55,13 +55,15 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 # pass --since explicitly.
 DEFAULT_TRANSACTIONS_LOOKBACK_DAYS = 90
 
-# Default --documents-since: ~25 years. The documents corpus is the
-# raw material for reconstructing historical snapshots, so we want
-# every run to scan the full available history and pick up anything
-# new since the last run. The content-sha256 dedup in download.py
-# (filename-based) and load.py (hash-based) keeps the cost bounded
-# to one extra scrape of the listing — no PDFs get re-downloaded.
-DEFAULT_DOCUMENTS_LOOKBACK_DAYS = 365 * 25
+# Default --documents-since: ~3 months, matching the transactions
+# default and the rest of the collector fleet. Earlier default was
+# 25 years (the documents corpus reconstructs historical snapshots),
+# but a forgotten flag on a regular run shouldn't trigger a full
+# multi-year scrape. wealthdb-refresh --lookback widens the window
+# uniformly; for an explicit one-off backfill pass --documents-since
+# (e.g. 2000-01-01). Content-sha256 dedup means re-runs don't
+# re-download already-captured PDFs.
+DEFAULT_DOCUMENTS_LOOKBACK_DAYS = 90
 
 # Customer ID is captured from the Positions XLS download filename
 # (`Positions_<cust>_<ddmmyyyy>_<hh>_<mm>.xls`). This regex pulls it
@@ -88,11 +90,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "Default: today (UTC).")
     p.add_argument("--documents-since", type=date.fromisoformat, default=None,
                    help="Earliest document date (YYYY-MM-DD). "
-                        "Default: 25 years ago — every run scans the full "
-                        "available document history and fetches anything "
-                        "new since the last run; existing PDFs are not "
-                        "re-downloaded. Pass a closer date only when you "
-                        "deliberately want a narrower window.")
+                        "Default: 90 days before --documents-until. "
+                        "For a one-off historical backfill pass an older "
+                        "--documents-since explicitly (e.g. 2000-01-01); "
+                        "content-sha256 dedup means existing PDFs are not "
+                        "re-downloaded.")
     p.add_argument("--documents-until", type=date.fromisoformat, default=None,
                    help="Latest document date (YYYY-MM-DD, inclusive). "
                         "Default: same as --until.")

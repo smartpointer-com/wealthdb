@@ -470,30 +470,27 @@ def fetch_portfolio(
     # Resolve the deposits-iteration policy:
     # - --year-from + --year-to override: iterate that explicit
     #   range.
-    # - firstInvestmentDate is plausible (parses to year >= 1900,
-    #   not the 0001-01-01 sentinel): iterate from that year to
-    #   current.
-    # - Otherwise (sentinel or unparseable): call once without
-    #   ?year=. The first real run showed that /deposits returns
-    #   the same empty {transactions:[]} envelope regardless of
-    #   ?year=YYYY for these account types — transactions are
-    #   exposed via credit-note PDFs, not this endpoint (see
-    #   DESIGN §11). One call is enough to record "asked, empty".
+    # - firstInvestmentDate is plausible (not the 0001-01-01
+    #   sentinel): default to the current year only. Year is the
+    #   smallest granularity /deposits accepts, so it's the closest
+    #   analog of "last 3 months" the other collectors default to.
+    #   wealthdb-refresh --lookback widens the window uniformly;
+    #   pass --year-from explicitly (e.g. --year-from 1900) for a
+    #   one-off historical backfill.
+    # - Otherwise (sentinel or unparseable firstInvestmentDate):
+    #   call once without ?year=. The first real run showed that
+    #   /deposits returns the same empty {transactions:[]} envelope
+    #   regardless of ?year=YYYY for these account types —
+    #   transactions are exposed via credit-note PDFs, not this
+    #   endpoint (see DESIGN §11). One call is enough to record
+    #   "asked, empty".
     year_window: tuple[int, int] | None = None
+    current_year = datetime.now(timezone.utc).year
     if year_from is not None:
-        year_window = (
-            year_from,
-            year_to or datetime.now(timezone.utc).year,
-        )
+        year_window = (year_from, year_to or current_year)
     elif (first_investment_date
           and not str(first_investment_date).startswith(SENTINEL_DATE_PREFIX)):
-        try:
-            yf = int(str(first_investment_date)[:4])
-            if yf >= 1900:
-                yt = year_to or datetime.now(timezone.utc).year
-                year_window = (min(yf, yt), yt)
-        except ValueError:
-            pass
+        year_window = (current_year, year_to or current_year)
 
     logger.info(
         "portfolio id=%s slug=%s product=%s proposal=%s "
@@ -758,8 +755,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--year-from", type=int, default=None,
         help=(
-            "Earliest year for /deposits iteration. Defaults to "
-            "each portfolio's firstInvestmentDate's year."
+            "Earliest year for /deposits iteration. Default: the "
+            "current year (matches the rest of the collector fleet's "
+            "~3-month narrow default — year is the smallest "
+            "granularity /deposits accepts). For a one-off historical "
+            "backfill pass an explicit year (e.g. --year-from 1900); "
+            "wealthdb-refresh --lookback widens it uniformly."
         ),
     )
     p.add_argument(

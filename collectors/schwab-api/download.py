@@ -47,6 +47,12 @@ ARTIFACT_INSTRUMENTS = "instruments.json"
 # chunk longer ranges into successive sub-ranges to stay within the cap.
 TRANSACTION_WINDOW_DAYS = 365
 
+# Default lookback when --since is omitted. ~3 months: matches the
+# rest of the collector fleet, which all default to a narrow recent
+# window so a forgotten flag never silently triggers a multi-year
+# backfill. wealthdb-refresh --lookback can widen it.
+DEFAULT_LOOKBACK_DAYS = 90
+
 # Order statuses considered "open" — i.e. the order can still execute,
 # be cancelled, or be replaced. Excludes terminal states (FILLED,
 # CANCELED, REJECTED, EXPIRED, REPLACED). UNKNOWN is kept in case
@@ -137,7 +143,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=date.fromisoformat,
         default=None,
         help="Earliest transaction date to fetch (YYYY-MM-DD). "
-             "Defaults to 1 year before --until.",
+             "Defaults to 90 days before --until. For a one-off bulk "
+             "backfill pass an older --since explicitly (e.g. "
+             "--since 2015-01-01); Schwab caps each API call at 1 year "
+             "and the loader chunks longer ranges automatically.",
     )
     p.add_argument(
         "--until",
@@ -457,7 +466,7 @@ def run(args: argparse.Namespace) -> int:
     # call and we don't emit a 1-day trailing chunk on the boundary.
     today = datetime.now(timezone.utc).date()
     until = args.until or today
-    since = args.since or (until - timedelta(days=TRANSACTION_WINDOW_DAYS - 1))
+    since = args.since or (until - timedelta(days=DEFAULT_LOOKBACK_DAYS))
     if since > until:
         raise SystemExit(f"--since {since} is after --until {until}")
     log.info("Transaction window: %s -> %s", since, until)
