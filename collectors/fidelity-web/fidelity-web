@@ -1,38 +1,42 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the fidelity-web
-# container. Mounts ~/.secrets/ (RW; the container needs to write
-# the state file there during login) and the bronze directory (RW),
-# and forwards all arguments to the container's entrypoint.
+# Host-side wrapper around `docker run` for the fidelity-web container.
+# Mounts ~/.secrets/ (RW; profile dir holding the "Trust this browser"
+# cookie + env file), the bronze tree (RW), and a /debug dir for
+# opt-in screenshots / traces. Lives in single-writer mode (named
+# container, refuse-to-clobber-running safety guard) because Fidelity's
+# Camoufox profile and 2FA prompts can't tolerate concurrent
+# invocations.
+#
+# Two special host-side paths:
+#   * `load` runs the silver loader host-side via PYTHONPATH instead
+#     of through docker (pure-stdlib python; saves the docker-spin
+#     overhead and lets the loader run while a `download` container
+#     is mid-flight).
+#   * `vnc-login` forwards a free 5900-6000 host port for the
+#     human-driven first-time profile-seed.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
 
-IMAGE="${FIDELITY_WEB_IMAGE:-wealthdb/fidelity-web:latest}"
-
-# Fixed container name. Image-hash drift (e.g. after a rebuild)
-# would otherwise hide running containers from
-# `docker ps --filter ancestor=wealthdb/fidelity-web:latest`; with a
-# fixed name, `docker rm -f fidelity-web` is a reliable
-# kill-switch regardless of which image revision a container was
-# started against. Single-name across subcommands means we
-# implicitly enforce "only one fidelity-web container at a
-# time" — which matches the per-profile single-writer model the
-# session state needs anyway. See the safety-guard block below for
-# the lesson that motivated this — schwab-web's wrapper
-# without it would silently evict a live VNC-login session.
-CONTAINER_NAME="${FIDELITY_WEB_CONTAINER:-fidelity-web}"
+NAME=fidelity-web
+ENV_PREFIX=FIDELITY_WEB
+ENV_VARS=(FIDELITY_USERNAME FIDELITY_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_SAFETY=1        # refuse to evict a live MFA / VNC handoff
+HAS_VNC=1           # forward a free 5900-6000 port for vnc-login
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
 
-# Mount points on the host. Override via env if your layout differs.
-HOST_SECRETS="${FIDELITY_WEB_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${FIDELITY_WEB_DATA_DIR:-$HOME/wealthdb/fidelity-web}"
-# A separate writable dir for opt-in debug artefacts (screenshots,
-# Playwright trace bundles, ad-hoc HTML drops). Kept OUT of HOST_DATA
-# so the bronze + silver tree stays clean — only `--screenshot-dir
-# /debug/...`, `--trace /debug/...`, etc. should write here.
-HOST_DEBUG="${FIDELITY_WEB_DEBUG_DIR:-$HOME/.cache/fidelity-web-debug}"
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
 
-usage() {
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 fidelity-web — host wrapper
 
@@ -52,14 +56,14 @@ Subcommands:
                         credentials, hands off to a VNC client for
                         the human-driven click + 2FA, then runs the
                         walk (or just exits with --mode none).
-                        Starts x11vnc on 127.0.0.1:5900.
+                        Starts x11vnc on the first free port in
+                        127.0.0.1:5900-6000 (printed at handoff);
+                        tunnel + connect from your local VNC client.
   sh|bash               Open an interactive shell in the container.
   help                  Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (env file + profile dir)
-  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces)
+$(wrapper_mounts_help)
 
 Override mounts via env:
   FIDELITY_WEB_SECRETS_DIR=/path/to/secrets
@@ -79,27 +83,16 @@ Credentials:
     FIDELITY_PASSWORD='your-password-with-\$pecial-chars'
   chmod 600 the file.
 EOF
-}
-
-# ./fidelity-web build [extra docker build flags]
-if [[ "${1:-}" == "build" ]]; then
-    shift
-    exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
-    usage
     exit 0
 fi
 
-# ./fidelity-web load [args...]  → host-side python3 invocation.
+# `./fidelity-web load [args...]` → host-side python invocation.
 #
 # The silver loader is pure-stdlib Python (sqlite3 + csv + json
 # + hashlib + re); no Camoufox / Playwright / container needed.
-# Running it host-side avoids the docker-spin overhead for what's
-# just a file walk + SQLite writes, and bypasses the safety
-# guard further down so it can run while a `download` container
-# is mid-flight.
+# Running it host-side avoids docker-spin overhead for what's just
+# a file walk + SQLite writes, and bypasses the safety guard so it
+# can run while a `download` container is mid-flight.
 #
 # Defaults match the container layout (silver under <data>/...,
 # bronze tree = <data>). Forward all flags through.
@@ -142,71 +135,4 @@ EOH
         ${PASSTHRU[@]+"${PASSTHRU[@]}"}
 fi
 
-# Ensure mount points exist on the host before we mount them. Docker
-# will silently create them as root-owned directories if we don't.
-mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
-if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "fidelity-web: secrets dir does not exist: $HOST_SECRETS" >&2
-    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
-    exit 1
-fi
-
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
-# wrapper safe to pipe (e.g. for log capture) while still giving
-# interactive prompts when run from a terminal. The `${arr[@]+...}`
-# idiom expands to nothing when the array is empty, which keeps
-# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
-TTY_ARGS=()
-if [[ -t 0 && -t 1 ]]; then
-    TTY_ARGS=(-it)
-fi
-
-# `vnc-login` needs the VNC port forwarded to the host so the
-# user's VNC client can connect. Bind to 127.0.0.1 only — the VNC
-# server inside the container has no network-facing auth and we
-# don't want it reachable from the LAN.
-EXTRA_ARGS=()
-if [[ "${1:-}" == "vnc-login" ]]; then
-    EXTRA_ARGS+=(-p 127.0.0.1:5900:5900)
-fi
-
-# Safety guard: refuse to clobber a live container.
-#
-# A second wrapper invocation while a `download` or `vnc-login` is
-# mid-MFA would otherwise `docker rm -f` the live container and
-# kill the in-flight Fidelity session — costing a fresh MFA round
-# (and during VNC handoff, losing the human's in-progress click).
-# Pass FIDELITY_WEB_FORCE_REPLACE=1 to override when the live
-# session is known-stuck.
-if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
-    if [[ "${FIDELITY_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "fidelity-web: a container named '$CONTAINER_NAME' is already running." >&2
-        echo "  Refusing to evict it — that would kill any live Fidelity session." >&2
-        echo "  Options:" >&2
-        echo "    * Use a different name:    FIDELITY_WEB_CONTAINER=otherthing $0 $*" >&2
-        echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
-        echo "    * Force replace:           FIDELITY_WEB_FORCE_REPLACE=1 $0 $*" >&2
-        exit 2
-    fi
-    echo "fidelity-web: FIDELITY_WEB_FORCE_REPLACE=1 — evicting live container" >&2
-fi
-
-# Evict any prior (stopped) container with this name (best-effort
-# — no-op when the name isn't in use). Past this point we've
-# already refused to clobber a RUNNING container; this only affects
-# exited-but-not-cleaned-up state.
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-exec docker run --rm --name "$CONTAINER_NAME" \
-    ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e FIDELITY_USERNAME \
-    -e FIDELITY_PASSWORD \
-    -v "$HOST_SECRETS:/secrets" \
-    -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
-    -v "$HERE:/app" \
-    "$IMAGE" "$@"
+wrapper_main "$@"

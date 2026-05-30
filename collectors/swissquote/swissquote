@@ -1,20 +1,29 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the swissquote
-# container. Mounts ~/.secrets/ (RO-ish; the container needs to write
-# the state file there during login) and the bronze directory (RW),
-# and forwards all arguments to the container's entrypoint.
+# Host-side wrapper around `docker run` for the swissquote container.
+# Mounts ~/.secrets/ (RW for the state-file write) and the bronze
+# directory (RW), and forwards all arguments to the container.
+# The common docker-run plumbing lives in
+# shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
 
-IMAGE="${SWISSQUOTE_IMAGE:-wealthdb/swissquote:latest}"
+NAME=swissquote
+ENV_PREFIX=SWISSQUOTE
+ENV_VARS=(SWISSQUOTE_USERNAME SWISSQUOTE_PASSWORD)
+# No optional features: swissquote has no /debug mount, no live-code
+# /app mount, no safety guard (no long-running interactive container),
+# and no VNC subcommand.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
 
-# Mount points on the host. Override via env if your layout differs.
-HOST_SECRETS="${SWISSQUOTE_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${SWISSQUOTE_DATA_DIR:-$HOME/wealthdb/swissquote}"
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
 
-usage() {
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 swissquote — host wrapper
 
@@ -27,8 +36,7 @@ Subcommands:
   help                Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (state file lives here)
-  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
+$(wrapper_mounts_help)
 
 Override mounts via env:
   SWISSQUOTE_SECRETS_DIR=/path/to/secrets
@@ -38,43 +46,7 @@ Pass-through env (set on host, available inside container):
   SWISSQUOTE_USERNAME
   SWISSQUOTE_PASSWORD
 EOF
-}
-
-# ./swissquote build [extra docker build flags]
-if [[ "${1:-}" == "build" ]]; then
-    shift
-    exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
-    usage
     exit 0
 fi
 
-# Ensure mount points exist on the host before we mount them. Docker
-# will silently create them as root-owned directories if we don't.
-mkdir -p "$HOST_DATA"
-if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "swissquote: secrets dir does not exist: $HOST_SECRETS" >&2
-    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
-    exit 1
-fi
-
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
-# wrapper safe to pipe (e.g. for log capture) while still giving
-# interactive prompts when run from a terminal. The `${arr[@]+...}`
-# idiom expands to nothing when the array is empty, which keeps
-# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
-TTY_ARGS=()
-if [[ -t 0 && -t 1 ]]; then
-    TTY_ARGS=(-it)
-fi
-
-exec docker run --rm ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e SWISSQUOTE_USERNAME \
-    -e SWISSQUOTE_PASSWORD \
-    -v "$HOST_SECRETS:/secrets" \
-    -v "$HOST_DATA:/data" \
-    "$IMAGE" "$@"
+wrapper_main "$@"

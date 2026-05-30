@@ -1,45 +1,40 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the relevate
-# container. Mounts ~/.secrets/ (RW; the container reads the env
-# file and writes the persistent cookie jar) and the bronze data
-# directory (RW), and forwards arguments to the container's
-# entrypoint.
+# Host-side wrapper around `docker run` for the relevate container.
+# Mounts ~/.secrets/ (RW; env file in, cookie jar out), the bronze
+# data dir (RW), and a separate /debug dir for opt-in scratch logs.
+# Sources an optional XDG-style config file at ~/.config/relevate.cfg
+# (overrides paths without env vars) and the credentials env file
+# (so RELEVATE_LOGIN / RELEVATE_PASSWORD reach the container). The
+# common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
 
-IMAGE="${RELEVATE_IMAGE:-wealthdb/relevate:latest}"
-
-# Fixed container name. Image-hash drift (e.g. after a rebuild)
-# would otherwise hide running containers from `docker ps
-# --filter ancestor`; with a fixed name, `docker rm -f
-# relevate` is a reliable kill-switch regardless of which
-# image revision a container was started against. Single-name
-# across subcommands also enforces "one relevate container
-# at a time".
-CONTAINER_NAME="${RELEVATE_CONTAINER:-relevate}"
+NAME=relevate
+ENV_PREFIX=RELEVATE
+ENV_VARS=(RELEVATE_LOGIN RELEVATE_PASSWORD)
+HAS_DEBUG=1
+HAS_SAFETY=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# Optional XDG-style config file. Sourced before mount-point
-# defaults so the user can override paths there instead of in env
-# vars. The file is plain bash (key=value lines). Absent file is
-# fine.
+# Optional XDG-style config file, sourced BEFORE wrapper_init so it
+# can override the per-prefix env knobs (RELEVATE_SECRETS_DIR etc.).
+# Plain bash, key=value style. Absent file is fine.
 RELEVATE_CFG="${RELEVATE_CFG:-$HOME/.config/relevate.cfg}"
 if [[ -f "$RELEVATE_CFG" ]]; then
     # shellcheck disable=SC1090
     source "$RELEVATE_CFG"
 fi
 
-# Mount points on the host. Override via env (or via the config
-# file above) if your layout differs.
-HOST_SECRETS="${RELEVATE_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${RELEVATE_DATA_DIR:-$HOME/wealthdb/relevate}"
-# A separate writable dir for opt-in debug artefacts (scratch
-# logs, trace bundles). Kept OUT of HOST_DATA so the bronze +
-# silver tree stays clean.
-HOST_DEBUG="${RELEVATE_DEBUG_DIR:-$HOME/.cache/relevate-debug}"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
 
-usage() {
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 relevate — host wrapper
 
@@ -63,9 +58,7 @@ Subcommands:
   help                  Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets    (env file + cookie jar state file)
-  $HOST_DATA     ->  /data       (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug      (opt-in scratch logs / traces)
+$(wrapper_mounts_help)
 
 Override mounts via env (or in \$HOME/.config/relevate.cfg):
   RELEVATE_SECRETS_DIR=/path/to/secrets
@@ -86,88 +79,16 @@ Credentials:
     export RELEVATE_PASSWORD='your-password-with-\$pecial-chars'
   chmod 600 the file.
 EOF
-}
-
-# ./relevate build [extra docker build flags]
-if [[ "${1:-}" == "build" ]]; then
-    shift
-    exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
-    usage
     exit 0
 fi
 
-# Ensure mount points exist on the host before we mount them.
-# Docker will silently create them as root-owned directories if
-# we don't.
-mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
-if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "relevate: secrets dir does not exist: $HOST_SECRETS" >&2
-    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
-    exit 1
-fi
-
-# Source the env file (RELEVATE_LOGIN / RELEVATE_PASSWORD) if it
-# exists. The file is plain bash — convention is `export
-# KEY='value'` with single quotes to keep shell metachars literal.
-# `source`-ing pulls the values into this shell so the subsequent
-# `docker run -e RELEVATE_LOGIN -e RELEVATE_PASSWORD` forwards them
-# into the container. The file is optional; absence is fine (e.g.
-# for `./relevate help`, `./relevate sh`).
+# Source the credentials env file (RELEVATE_LOGIN / RELEVATE_PASSWORD)
+# if present so the subsequent docker-run can forward them. Absence is
+# fine for help / sh / build paths.
 RELEVATE_ENV_FILE="${RELEVATE_ENV_FILE:-$HOST_SECRETS/relevate.env}"
 if [[ -f "$RELEVATE_ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$RELEVATE_ENV_FILE"
 fi
 
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes
-# the wrapper safe to pipe (e.g. for log capture) while still
-# giving interactive prompts when run from a terminal. The
-# `${arr[@]+...}` idiom expands to nothing when the array is
-# empty, which keeps bash 3.2 (Apple's /bin/bash) happy under
-# `set -u`.
-TTY_ARGS=()
-if [[ -t 0 && -t 1 ]]; then
-    TTY_ARGS=(-it)
-fi
-
-# Safety guard: refuse to clobber a live container.
-#
-# If a `login` session is mid-mTAN-prompt and the user runs
-# another wrapper invocation (`./relevate sh`, etc.), a
-# naive `docker rm -f $CONTAINER_NAME` would kill the live
-# session and burn the 2FA push in flight. Refuse instead; let
-# the user decide. Override with RELEVATE_FORCE_REPLACE=1 only
-# when the running container is known-stuck.
-if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
-    if [[ "${RELEVATE_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "relevate: a container named '$CONTAINER_NAME' is already running." >&2
-        echo "  Refusing to evict it — that would kill any live Relevate session." >&2
-        echo "  Options:" >&2
-        echo "    * Use a different name:    RELEVATE_CONTAINER=otherthing $0 $*" >&2
-        echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
-        echo "    * Force replace:           RELEVATE_FORCE_REPLACE=1 $0 $*" >&2
-        exit 2
-    fi
-    echo "relevate: RELEVATE_FORCE_REPLACE=1 — evicting live container" >&2
-fi
-
-# Evict any prior (stopped) container with this name (best-effort
-# — no-op when the name isn't in use). Past this point we've
-# already refused to clobber a RUNNING container; this only
-# affects exited-but-not-cleaned-up state.
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-exec docker run --rm --name "$CONTAINER_NAME" \
-    ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e RELEVATE_LOGIN \
-    -e RELEVATE_PASSWORD \
-    -v "$HOST_SECRETS:/secrets" \
-    -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
-    "$IMAGE" "$@"
+wrapper_main "$@"

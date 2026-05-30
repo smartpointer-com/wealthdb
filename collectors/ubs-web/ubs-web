@@ -1,25 +1,27 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the ubs-web
-# container. Mounts ~/.secrets/ (RW; the container needs to write
-# the state file there during login) and the bronze directory (RW),
-# and forwards all arguments to the container's entrypoint.
+# Host-side wrapper around `docker run` for the ubs-web container.
+# Mounts ~/.secrets/ (RW for the state-file write), the bronze tree
+# (RW), and a separate /debug dir for opt-in screenshots / Playwright
+# trace bundles / ad-hoc QR PNGs. The common docker-run plumbing lives
+# in shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
 
-IMAGE="${UBS_WEB_IMAGE:-wealthdb/ubs-web:latest}"
+NAME=ubs-web
+ENV_PREFIX=UBS_WEB
+ENV_VARS=(UBS_CONTRACT_NUMBER)
+HAS_DEBUG=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
 
-# Mount points on the host. Override via env if your layout differs.
-HOST_SECRETS="${UBS_WEB_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${UBS_WEB_DATA_DIR:-$HOME/wealthdb/ubs-web}"
-# A separate writable dir for opt-in debug artefacts (screenshots,
-# Playwright trace bundles, ad-hoc QR PNGs). Kept OUT of HOST_DATA
-# so the bronze + silver tree stays clean — only `--screenshot-dir
-# /debug/...`, `--qr-png /debug/...`, etc. should write here.
-HOST_DEBUG="${UBS_WEB_DEBUG_DIR:-$HOME/.cache/ubs-web-debug}"
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
 
-usage() {
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 ubs-web — host wrapper
 
@@ -32,9 +34,7 @@ Subcommands:
   help                Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (state file lives here)
-  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces / QR PNGs)
+$(wrapper_mounts_help)
 
 Override mounts via env:
   UBS_WEB_SECRETS_DIR=/path/to/secrets
@@ -47,44 +47,7 @@ Credentials:
   (= \$HOME/.secrets/ubs.env on the host), so dropping a single line
   UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough.
 EOF
-}
-
-# ./ubs-web build [extra docker build flags]
-if [[ "${1:-}" == "build" ]]; then
-    shift
-    exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
-    usage
     exit 0
 fi
 
-# Ensure mount points exist on the host before we mount them. Docker
-# will silently create them as root-owned directories if we don't.
-mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
-if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "ubs-web: secrets dir does not exist: $HOST_SECRETS" >&2
-    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
-    exit 1
-fi
-
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
-# wrapper safe to pipe (e.g. for log capture) while still giving
-# interactive prompts when run from a terminal. The `${arr[@]+...}`
-# idiom expands to nothing when the array is empty, which keeps
-# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
-TTY_ARGS=()
-if [[ -t 0 && -t 1 ]]; then
-    TTY_ARGS=(-it)
-fi
-
-exec docker run --rm ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e UBS_CONTRACT_NUMBER \
-    -v "$HOST_SECRETS:/secrets" \
-    -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
-    "$IMAGE" "$@"
+wrapper_main "$@"

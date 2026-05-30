@@ -1,36 +1,34 @@
 #!/bin/bash
-# Host-side wrapper around `docker run` for the schwab-web
-# container. Mounts ~/.secrets/ (RW; the container needs to write
-# the state file there during login) and the bronze directory (RW),
-# and forwards all arguments to the container's entrypoint.
+# Host-side wrapper around `docker run` for the schwab-web container.
+# Mounts ~/.secrets/ (RW; profile dir + env file), the bronze tree
+# (RW), and a /debug dir for opt-in screenshots / traces. Lives
+# in single-writer mode (named container, refuse-to-clobber-running
+# safety guard) because Schwab's Firefox profile + 2FA prompts can't
+# tolerate concurrent invocations. `vnc-login` forwards a 5900-6000
+# host port so the operator can drive the live browser.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
 set -euo pipefail
 
-IMAGE="${SCHWAB_WEB_IMAGE:-wealthdb/schwab-web:latest}"
-
-# Fixed container name. Image-hash drift (e.g. after a rebuild)
-# would otherwise hide running containers from
-# `docker ps --filter ancestor=wealthdb/schwab-web:latest`; with a
-# fixed name, `docker rm -f schwab-web` is a reliable
-# kill-switch regardless of which image revision a container was
-# started against. Single-name across subcommands means we
-# implicitly enforce "only one schwab-web container at a
-# time" — which matches the per-profile single-writer model the
-# Firefox profile dir needs anyway.
-CONTAINER_NAME="${SCHWAB_WEB_CONTAINER:-schwab-web}"
+NAME=schwab-web
+ENV_PREFIX=SCHWAB_WEB
+ENV_VARS=(SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_SAFETY=1        # refuse to evict a live MFA/VNC session
+HAS_VNC=1           # forward a free 5900-6000 port for vnc-login
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
 
-# Mount points on the host. Override via env if your layout differs.
-HOST_SECRETS="${SCHWAB_WEB_SECRETS_DIR:-$HOME/.secrets}"
-HOST_DATA="${SCHWAB_WEB_DATA_DIR:-$HOME/wealthdb/schwab-web}"
-# A separate writable dir for opt-in debug artefacts (screenshots,
-# Playwright trace bundles, ad-hoc HTML drops). Kept OUT of HOST_DATA
-# so the bronze + silver tree stays clean — only `--screenshot-dir
-# /debug/...`, `--trace /debug/...`, etc. should write here.
-HOST_DEBUG="${SCHWAB_WEB_DEBUG_DIR:-$HOME/.cache/schwab-web-debug}"
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
 
-usage() {
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 schwab-web — host wrapper
 
@@ -53,9 +51,7 @@ Subcommands:
   help                  Show this message.
 
 Mounted into the container:
-  $HOST_SECRETS  ->  /secrets   (state file lives here)
-  $HOST_DATA     ->  /data      (bronze artefacts + silver DB)
-  $HOST_DEBUG    ->  /debug     (opt-in screenshots / traces)
+$(wrapper_mounts_help)
 
 Override mounts via env:
   SCHWAB_WEB_SECRETS_DIR=/path/to/secrets
@@ -77,112 +73,7 @@ Credentials:
   chmod 600 the file. Password may also be left out and supplied
   interactively at \`login\` time.
 EOF
-}
-
-# ./schwab-web build [extra docker build flags]
-if [[ "${1:-}" == "build" ]]; then
-    shift
-    exec docker build -t "$IMAGE" "$@" "$HERE"
-fi
-
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
-    usage
     exit 0
 fi
 
-# Ensure mount points exist on the host before we mount them. Docker
-# will silently create them as root-owned directories if we don't.
-mkdir -p "$HOST_DATA"
-mkdir -p "$HOST_DEBUG"
-if [[ ! -d "$HOST_SECRETS" ]]; then
-    echo "schwab-web: secrets dir does not exist: $HOST_SECRETS" >&2
-    echo "Create it with: mkdir -p $HOST_SECRETS && chmod 700 $HOST_SECRETS" >&2
-    exit 1
-fi
-
-# Allocate a TTY only when stdin AND stdout are TTYs. This makes the
-# wrapper safe to pipe (e.g. for log capture) while still giving
-# interactive prompts when run from a terminal. The `${arr[@]+...}`
-# idiom expands to nothing when the array is empty, which keeps
-# bash 3.2 (Apple's /bin/bash) happy under `set -u`.
-TTY_ARGS=()
-if [[ -t 0 && -t 1 ]]; then
-    TTY_ARGS=(-it)
-fi
-
-# `vnc-login` needs the VNC port forwarded to the host so the
-# user's VNC client can connect. Bind to 127.0.0.1 only — the VNC
-# server inside the container has no password and we don't want
-# it reachable from the LAN.
-#
-# Default host port is 5900 (IANA VNC display :0), but if it's
-# already taken (another VNC server, a prior crashed container
-# whose `docker run -p` lingers, a stray macOS Screen Sharing
-# session...) we walk +1 until something is free. The container
-# side always binds to 5900 — only the host-side mapping moves.
-# The host-port number is passed through as VNC_HOST_PORT so the
-# in-container entrypoint can print correct tunnelling
-# instructions. The cap at +100 is defensive — if every TCP port
-# in that range is taken the host has bigger problems than VNC.
-EXTRA_ARGS=()
-if [[ "${1:-}" == "vnc-login" ]]; then
-    vnc_host_port=""
-    for ((p = 5900; p <= 6000; p++)); do
-        if ! lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-            vnc_host_port="$p"
-            break
-        fi
-    done
-    if [[ -z "$vnc_host_port" ]]; then
-        echo "schwab-web: no free TCP port between 5900-6000 on this host." >&2
-        echo "  Close some applications and retry." >&2
-        exit 3
-    fi
-    if [[ "$vnc_host_port" != "5900" ]]; then
-        echo "schwab-web: 127.0.0.1:5900 is taken; using ${vnc_host_port} instead." >&2
-    fi
-    EXTRA_ARGS+=(-p "127.0.0.1:${vnc_host_port}:5900")
-    EXTRA_ARGS+=(-e "VNC_HOST_PORT=${vnc_host_port}")
-fi
-
-# Safety guard: refuse to clobber a live container.
-#
-# Past mistake: running `./schwab-web sh -c "pytest ..."` while
-# a `download` session was mid-MFA killed Schwab's session (the
-# rm -f below evicts whatever's named schwab-web). The cost:
-# a fresh MFA round. Now we check whether a RUNNING container
-# with this name exists; if so, we refuse and explain the
-# options. The user can pass `SCHWAB_WEB_FORCE_REPLACE=1` to
-# override (useful when the live session is known-stuck and we
-# genuinely want to recycle).
-if docker ps --filter "name=^${CONTAINER_NAME}$" --filter "status=running" -q | grep -q .; then
-    if [[ "${SCHWAB_WEB_FORCE_REPLACE:-0}" != "1" ]]; then
-        echo "schwab-web: a container named '$CONTAINER_NAME' is already running." >&2
-        echo "  Refusing to evict it — that would kill any live Schwab session." >&2
-        echo "  Options:" >&2
-        echo "    * Use a different name:    SCHWAB_WEB_CONTAINER=otherthing $0 $*" >&2
-        echo "    * Enter the existing one:  docker exec -it $CONTAINER_NAME sh" >&2
-        echo "    * Force replace:           SCHWAB_WEB_FORCE_REPLACE=1 $0 $*" >&2
-        exit 2
-    fi
-    echo "schwab-web: SCHWAB_WEB_FORCE_REPLACE=1 — evicting live container" >&2
-fi
-
-# Evict any prior (stopped) container with this name (best-effort
-# — no-op when the name isn't in use). Past this point we've
-# already refused to clobber a RUNNING container; this only
-# affects exited-but-not-cleaned-up state.
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-exec docker run --rm --name "$CONTAINER_NAME" \
-    ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
-    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp \
-    -e SCHWAB_LOGIN_ID \
-    -e SCHWAB_PASSWORD \
-    -v "$HOST_SECRETS:/secrets" \
-    -v "$HOST_DATA:/data" \
-    -v "$HOST_DEBUG:/debug" \
-    -v "$HERE:/app" \
-    "$IMAGE" "$@"
+wrapper_main "$@"

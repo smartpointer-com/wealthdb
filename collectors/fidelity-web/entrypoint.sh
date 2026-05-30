@@ -56,9 +56,10 @@ case "${1:-help}" in
     vnc-login)
         # First-time profile-dir seed: drive Camoufox to the
         # pre-filled login form, then HAND OFF to the operator via
-        # VNC. Start x11vnc on the Xvfb display; the wrapper
-        # publishes 127.0.0.1:5900 so the VNC port is only reachable
-        # via a host-side SSH tunnel. A VNC password is required
+        # VNC. Start x11vnc on the Xvfb display; the wrapper publishes
+        # the port on 127.0.0.1 only (typically 5900, but moves +1
+        # each time 5900 is already taken on the host) — tunnel from
+        # your laptop with ssh -L. A VNC password is required
         # regardless (macOS Screen Sharing refuses no-auth servers);
         # we generate a fresh one every launch.
         #
@@ -70,12 +71,18 @@ case "${1:-help}" in
         x11vnc -display ":$VFB_DISPLAY" -passwd "$VNC_PASSWORD" \
             -forever -shared -rfbport 5900 -bg \
             -o /tmp/x11vnc.log >/dev/null 2>&1
-        echo "vnc-login: VNC ready on 127.0.0.1:5900" >&2
+        # The wrapper picks the host-side port (it knows which ones
+        # are free); we publish it through this env var so the
+        # messages below print the actual port the operator needs to
+        # tunnel. Defaults to 5900 for direct `docker run` invocations
+        # that skip the wrapper.
+        host_port="${VNC_HOST_PORT:-5900}"
+        echo "vnc-login: VNC ready on 127.0.0.1:${host_port}" >&2
         echo "vnc-login: password (single-use):  $VNC_PASSWORD" >&2
         echo "vnc-login: tunnel from your laptop with" >&2
-        echo "vnc-login:   ssh -L 5900:127.0.0.1:5900 <host>" >&2
+        echo "vnc-login:   ssh -L ${host_port}:127.0.0.1:${host_port} <host>" >&2
         echo "vnc-login: then on the laptop:" >&2
-        echo "vnc-login:   open vnc://localhost:5900" >&2
+        echo "vnc-login:   open vnc://localhost:${host_port}" >&2
         shift
         exec python3 /app/download.py --vnc "$@"
         ;;
@@ -102,8 +109,9 @@ Subcommands:
   vnc-login   First-time profile-dir seed: pre-fills credentials,
               hands off to a VNC client for the human-driven click +
               2FA, then continues with the walk. Starts x11vnc on
-              127.0.0.1:5900. Pass `--mode none` to skip the walk
-              and just seed cookies.
+              the first free host port in 127.0.0.1:5900-6000 (the
+              wrapper picks; printed at handoff). Pass `--mode none`
+              to skip the walk and just seed cookies.
   load        Parse bronze into the silver SQLite database.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
