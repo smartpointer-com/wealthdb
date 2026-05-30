@@ -120,9 +120,10 @@ def parse_args() -> argparse.Namespace:
                    help="UBS SFTP server port (default: 26701).")
     p.add_argument("--client-id", required=True,
                    help="UBS PSN customer / SFTP login ID (e.g. CH123456).")
-    p.add_argument("--dest", required=True, type=Path,
-                   help="Local destination directory; a UTC-timestamped "
-                        "subdirectory is created per run.")
+    p.add_argument("--dest", type=Path,
+                   default=Path.home() / "wealthdb" / "ubs-psn",
+                   help="Local destination directory (default: %(default)s); "
+                        "a UTC-timestamped subdirectory is created per run.")
     p.add_argument("--key", type=Path,
                    default=Path.home() / ".secrets" / "ubs_psn_key",
                    help="SSH private key path "

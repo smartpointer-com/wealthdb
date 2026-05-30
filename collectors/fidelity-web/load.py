@@ -97,10 +97,16 @@ MANAGEMENT_STYLE_BY_KIND = {
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--silver-db", required=True, type=Path,
-                   help="Path to the silver SQLite database. Created if missing.")
-    p.add_argument("--bronze-dir", required=True, type=Path,
-                   help="Directory containing UTC-timestamped bronze dump dirs.")
+    # load.py runs HOST-SIDE for fidelity-web (the wrapper's PYTHONPATH
+    # shortcut), so the defaults are host paths — not /data.
+    p.add_argument("--silver-db", type=Path,
+                   default=Path.home() / "wealthdb" / "fidelity-web" / "fidelity-web.db",
+                   help="Path to the silver SQLite database "
+                        "(default: %(default)s). Created if missing.")
+    p.add_argument("--bronze-dir", type=Path,
+                   default=Path.home() / "wealthdb" / "fidelity-web",
+                   help="Directory containing UTC-timestamped bronze dump dirs "
+                        "(default: %(default)s).")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     return p.parse_args(argv)

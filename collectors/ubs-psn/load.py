@@ -1173,10 +1173,14 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--silver-db", required=True, type=Path,
-                   help="Path to the silver SQLite database. Created if missing.")
-    p.add_argument("--bronze-dir", required=True, type=Path,
-                   help="Directory containing snapshot subdirectories.")
+    p.add_argument("--silver-db", type=Path,
+                   default=Path.home() / "wealthdb" / "ubs-psn" / "ubs-psn.db",
+                   help="Path to the silver SQLite database "
+                        "(default: %(default)s). Created if missing.")
+    p.add_argument("--bronze-dir", type=Path,
+                   default=Path.home() / "wealthdb" / "ubs-psn",
+                   help="Directory containing snapshot subdirectories "
+                        "(default: %(default)s).")
     p.add_argument("--relationship-id", default="SFTPCH01",
                    help="UBS Server ID for the banking relationship the "
                         "bronze dumps belong to (e.g. SFTPCH01, SFTPCH02). "

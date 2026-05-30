@@ -70,8 +70,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument("--state-path", required=True, type=Path,
                    help="Path to the Playwright storageState.json.")
-    p.add_argument("--dest", required=True, type=Path,
-                   help="Output directory; a UTC-timestamped subdir is created per run.")
+    p.add_argument("--dest", type=Path, default=Path("/data"),
+                   help="Output directory (default: %(default)s, the wrapper's "
+                        "/data mount); a UTC-timestamped subdir is created per run.")
     # Shared date-window contract: --since/--until/--lookback +
     # --documents-since/--documents-until. Swissquote enforces no
     # window cap, so an explicit older --since (or --lookback all)

@@ -82,8 +82,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--state-path", required=True, type=Path,
                    help="Path to the Playwright storageState.json.")
-    p.add_argument("--dest", required=True, type=Path,
-                   help="Output dir; a UTC-timestamped subdir is created per run.")
+    p.add_argument("--dest", type=Path, default=Path("/data"),
+                   help="Output dir (default: %(default)s, the wrapper's /data "
+                        "mount); a UTC-timestamped subdir is created per run.")
     # Shared date-window contract. UBS's UI caps the 'Maximum' preset
     # to ~3 years; for older transactions pass an explicit older
     # --since (e.g. 2015-01-01) or use --lookback all (~30y).

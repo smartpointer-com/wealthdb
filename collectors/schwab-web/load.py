@@ -94,15 +94,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "--silver-db", required=True, type=Path,
-        help=("Path to the silver SQLite DB. Created with the "
-              "current schema if absent. Conventional name: "
-              "schwab-web.db, next to the bronze tree."),
+        "--silver-db", type=Path,
+        default=Path("/data/schwab-web.db"),
+        help=("Path to the silver SQLite DB (default: %(default)s, "
+              "the wrapper's /data mount). Created with the current "
+              "schema if absent."),
     )
     p.add_argument(
-        "--bronze-dir", required=True, type=Path,
-        help=("Bronze tree root (the same path passed to "
-              "download.py --dest). The loader scans every "
+        "--bronze-dir", type=Path, default=Path("/data"),
+        help=("Bronze tree root (the same path passed to download.py "
+              "--dest). Default: %(default)s. The loader scans every "
               "<UTC-ts>/ subdir under it."),
     )
     p.add_argument(

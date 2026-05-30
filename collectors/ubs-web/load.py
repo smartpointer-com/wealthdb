@@ -82,10 +82,14 @@ TXN_HEADER_IBAN = "IBAN:"
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--silver-db", required=True, type=Path,
-                   help="Path to the silver SQLite database. Created if missing.")
-    p.add_argument("--bronze-dir", required=True, type=Path,
-                   help="Directory containing UTC-timestamped bronze dump dirs.")
+    p.add_argument("--silver-db", type=Path,
+                   default=Path("/data/ubs-web.db"),
+                   help="Path to the silver SQLite database "
+                        "(default: %(default)s, the wrapper's /data mount). "
+                        "Created if missing.")
+    p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
+                   help="Directory containing UTC-timestamped bronze dump dirs "
+                        "(default: %(default)s).")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     return p.parse_args(argv)
