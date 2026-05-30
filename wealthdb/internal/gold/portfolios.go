@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 )
@@ -199,6 +200,22 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		p.CashBalanceOutCcy = decimalPtrString(cSum)
 		p.TotalValueOutCcy = decimalPtrString(addOptional(pSum, cSum))
 	}
+
+	// Sort by (silver_source_id, portfolio_external_id) for a
+	// deterministic listing. The SQL pass loads the table in order,
+	// but the sentinel rows added above are appended from a map
+	// iteration whose order Go intentionally randomises — without
+	// this sort the output rows would shuffle run-to-run. Empty
+	// PortfolioExternalID is the sentinel marker and sorts first
+	// within each source, so the per-source summary leads the
+	// per-portfolio breakdown.
+	sort.SliceStable(portfolios, func(i, j int) bool {
+		if portfolios[i].SilverSourceID != portfolios[j].SilverSourceID {
+			return portfolios[i].SilverSourceID < portfolios[j].SilverSourceID
+		}
+		return portfolios[i].PortfolioExternalID < portfolios[j].PortfolioExternalID
+	})
+
 	return portfolios, nil
 }
 
