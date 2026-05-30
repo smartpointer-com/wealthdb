@@ -1066,6 +1066,23 @@ def _click_sidebar_link(page, text, capture_dir, label):
     return False
 
 
+# Statement row labels are heterogeneous (monthly: "January 2026 — ...",
+# quarterly: "Jan-March 2026 — ...", annual: "Annual 2026 — ..."), so we
+# anchor on the 4-digit '20YY' year token, which every label form
+# contains. Year-precision filtering keeps the per-row download path
+# index-stable; finer granularity would need per-label format-specific
+# parsing.
+_STATEMENT_LABEL_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+
+
+def _statement_label_year(label: str) -> int | None:
+    """Extract the year from a statement-row aria-label, or None if
+    no recognisable year token is present (the row is then kept; the
+    safer default is to download than to silently skip)."""
+    m = _STATEMENT_LABEL_YEAR_RE.search(label)
+    return int(m.group(1)) if m else None
+
+
 def _enumerate_statement_row_labels(page):
     """Return the aria-label of each statement-row description cell
     (e.g. ``"Jan-March 2026 — Statement (pdf)"``) in document order
@@ -1277,7 +1294,8 @@ def _download_statement_format(page, context, row_index,
     )
 
 
-def scrape_statements(page, context, docs_dir, capture_dir):
+def scrape_statements(page, context, docs_dir, capture_dir,
+                       min_year=None):
     """Walk the Statements sub-page; for each ``(pdf)`` row open
     the per-row download popover and grab both formats Fidelity
     offers ('Download as PDF' / 'Download as CSV'). The CSV path
@@ -1288,15 +1306,35 @@ def scrape_statements(page, context, docs_dir, capture_dir):
 
     Not every row offers both formats — annual investment reports
     typically only offer PDF. The CSV variant for those rows just
-    fails the menuitem lookup and is recorded as not-available."""
+    fails the menuitem lookup and is recorded as not-available.
+
+    If ``min_year`` is set, rows whose label-year is earlier than
+    that are skipped (the default scope from walk() is ``documents
+    _since.year``)."""
     results = []
     labels = _enumerate_statement_row_labels(page)
     log.info("statements: %d (pdf) rows visible", len(labels))
+    in_scope: list[tuple[int, str]] = []
     for i, label in enumerate(labels):
+        if min_year is not None:
+            yr = _statement_label_year(label)
+            if yr is not None and yr < min_year:
+                log.info(
+                    "statements: skip row %d (year %d < min_year %d): %r",
+                    i, yr, min_year, label[:60],
+                )
+                continue
+        in_scope.append((i, label))
+    if min_year is not None:
+        log.info(
+            "statements: %d of %d rows in scope (min_year=%d)",
+            len(in_scope), len(labels), min_year,
+        )
+    for n, (i, label) in enumerate(in_scope):
         # Brief inter-row settle so the SPA's popover state from the
         # prior iteration's failed click / closed popup doesn't bleed
         # into this row's icon click.
-        if i > 0:
+        if n > 0:
             time.sleep(1.5)
         for format_label in ("PDF", "CSV"):
             try:
@@ -1537,14 +1575,17 @@ def _scrape_tax_year(page, year, docs_dir, capture_dir):
     return results
 
 
-def scrape_tax_forms(page, docs_dir, capture_dir):
+def scrape_tax_forms(page, docs_dir, capture_dir, min_year=None):
     """Walk the Tax-forms sub-page across every selectable year in
     Fidelity's TimeFilter dropdown (typically 7 years going back
     to 2019). Each year's form list is enumerated independently;
     anchors are plain ``<a>`` links so we collect via
     ``page.expect_download`` (no popover indirection).
     Year-empty selections (no forms generated for that year, e.g.
-    accounts that didn't yet exist) are logged and skipped."""
+    accounts that didn't yet exist) are logged and skipped.
+
+    If ``min_year`` is set, years older than it are skipped — the
+    default scope from walk() is ``documents_since.year``."""
     years = _enumerate_tax_form_years(page)
     if not years:
         log.warning(
@@ -1552,6 +1593,20 @@ def scrape_tax_forms(page, docs_dir, capture_dir):
             "current selection"
         )
         return _scrape_tax_year(page, "current", docs_dir, capture_dir)
+    if min_year is not None:
+        def _yr(y):
+            try:
+                return int(str(y))
+            except (TypeError, ValueError):
+                return None
+        kept = [y for y in years if _yr(y) is None or _yr(y) >= min_year]
+        skipped = [y for y in years if y not in kept]
+        if skipped:
+            log.info(
+                "tax-forms: skipping %d years older than %d: %s",
+                len(skipped), min_year, skipped,
+            )
+        years = kept
     log.info("tax-forms: iterating %d years: %s", len(years), years)
     results = []
     for year in years:
@@ -1565,11 +1620,16 @@ def scrape_tax_forms(page, docs_dir, capture_dir):
     return results
 
 
-def scrape_documents(page, context, bronze_dir, capture_dir):
+def scrape_documents(page, context, bronze_dir, capture_dir,
+                      min_year=None):
     """Walk Statements + Tax forms in the document center. Each
     sub-page is exercised independently so a failure in one
     category doesn't block the other. ``context`` is needed for the
-    popup-PDF-via-context.request fallback path on statements."""
+    popup-PDF-via-context.request fallback path on statements.
+
+    ``min_year`` (forwarded to both sub-scrapers) drops rows / year
+    selections older than that — see walk()'s default-derivation
+    from ``--documents-since``."""
     docs_dir = bronze_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     results = {"status": "walked"}
@@ -1595,6 +1655,7 @@ def scrape_documents(page, context, bronze_dir, capture_dir):
         time.sleep(2.0)
         results["statements"] = scrape_statements(
             page, context, docs_dir, capture_dir,
+            min_year=min_year,
         )
     except Exception as e:
         log.exception("statements walk failed")
@@ -1608,6 +1669,7 @@ def scrape_documents(page, context, bronze_dir, capture_dir):
             capture(page, capture_dir, "tax-forms-landed")
             results["tax_forms"] = scrape_tax_forms(
                 page, docs_dir, capture_dir,
+                min_year=min_year,
             )
         else:
             log.warning(
@@ -1809,6 +1871,19 @@ def walk(context, page, config):
     if since_date is not None and until_date is None:
         until_date = datetime.now(timezone.utc).date()
 
+    # Documents scope: default to a 90-day lookback so a forgotten
+    # flag doesn't trigger a multi-year backfill of the statements
+    # archive + every available tax year. The sub-scrapers filter
+    # at year granularity (label parsing for statements; year-
+    # selector for tax forms), so the effective floor is the year
+    # of documents_since. wealthdb-refresh --lookback widens it.
+    documents_since = parse_iso_date(config.get("documents_since"))
+    if documents_since is None:
+        documents_since = (
+            datetime.now(timezone.utc).date() - timedelta(days=90)
+        )
+    docs_min_year = documents_since.year
+
     run_json = {
         "snapshot_at": bronze_dir.name,
         "cli_config": config,
@@ -1823,6 +1898,10 @@ def walk(context, page, config):
              "until": until_date.isoformat()}
             if since_date and until_date else None
         ),
+        "documents_window": {
+            "since": documents_since.isoformat(),
+            "min_year": docs_min_year,
+        },
         "phases_requested": mode,
     }
 
@@ -1842,6 +1921,7 @@ def walk(context, page, config):
         if mode in ("all", "documents"):
             run_json["documents_results"] = scrape_documents(
                 page, context, bronze_dir, capture_dir,
+                min_year=docs_min_year,
             )
         if mode in ("all", "balances"):
             run_json["balances_results"] = scrape_balances(
@@ -2503,6 +2583,8 @@ def run_oneshot(args):
                 config["since"] = args.since
             if args.until:
                 config["until"] = args.until
+            if args.documents_since:
+                config["documents_since"] = args.documents_since
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
             try:
@@ -2592,6 +2674,15 @@ def parse_args(argv):
     p.add_argument(
         "--until", default=None,
         help="Activity window end, YYYY-MM-DD. Default: today UTC.",
+    )
+    p.add_argument(
+        "--documents-since", default=None,
+        help=("Earliest document date (YYYY-MM-DD). Default: 90 "
+              "days before today. The statements + tax-forms walk "
+              "filters at YEAR granularity (row labels are mixed "
+              "monthly/quarterly/annual). For a one-off historical "
+              "backfill pass an older date (e.g. 2010-01-01); "
+              "wealthdb-refresh --lookback widens it uniformly."),
     )
     p.add_argument(
         "--exclude-accounts", default=None,
