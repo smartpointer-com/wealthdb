@@ -167,10 +167,13 @@ source ~/.secrets/schwab-api.env
 `download.py` reads no config files. All inputs are CLI flags or
 environment variables. Defaults are conservative:
 
-- Token file path: required (`--token-path`).
-- Output directory: required (`--dest`).
-- Transaction window: last 364 days, if not overridden (Schwab caps the
-  endpoint at 365 days per request; 364 keeps the call within one chunk).
+- Token file path: `~/.secrets/schwab-api-token.json` (override with
+  `--token-path`).
+- Output directory: `~/wealthdb/schwab-api` (override with `--dest`).
+- Transaction window: last 90 days (`--lookback 1w|4w|3m|6m|1y|2y|5y|all`
+  for a named shortcut, or `--since YYYY-MM-DD` for an explicit
+  lower bound; Schwab caps each API request at 1 year, so the loader
+  chunks longer windows automatically).
 - Client ID / Client Secret: passed via `--client-id` / `--client-secret`,
   or read from `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` env vars as
   fallback.
@@ -181,18 +184,21 @@ Dry run — refreshes tokens, lists linked accounts, exits without
 fetching positions, transactions, or open orders:
 
 ```sh
-.venv/bin/python download.py \
-    --token-path ~/.secrets/schwab-api-token.json \
-    --dest ./data \
-    --dry-run
+.venv/bin/python download.py --dry-run
 ```
 
-Real download:
+Real download (last 90 days, the default):
 
 ```sh
-.venv/bin/python download.py \
-    --token-path ~/.secrets/schwab-api-token.json \
-    --dest ./data
+.venv/bin/python download.py
+```
+
+Wider backfill via the shared `--lookback` shortcut, or an explicit
+date:
+
+```sh
+.venv/bin/python download.py --lookback 1y
+.venv/bin/python download.py --since 2024-01-01
 ```
 
 Files land in `./data/<UTC-timestamp>/`:
@@ -219,12 +225,13 @@ the dump layer; full order history is intentionally not captured.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--token-path` | _(required)_ | Path to the OAuth token JSON file. |
-| `--dest` | _(required)_ | Local destination directory. |
+| `--token-path` | `~/.secrets/schwab-api-token.json` | Path to the OAuth token JSON file. |
+| `--dest` | `~/wealthdb/schwab-api` | Local destination directory. |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
-| `--since` | _today - 364d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the window at 1 year per request. |
+| `--since` | _today − 90d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the API window at 1 year per request; the loader chunks longer ranges automatically. |
 | `--until` | _today (UTC)_ | Latest transaction date (YYYY-MM-DD, inclusive). |
+| `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` to `until − X`; overridden by an explicit `--since`. |
 | `--with-instruments` | off | After positions and transactions, look up metadata for every symbol seen and write a separate `instruments.json` artefact. Schwab omits `description` on equity positions/transactions; this fills the gap consistently across asset classes. Intended for reduced-schedule runs (instrument metadata changes rarely). |
 | `--dry-run` | off | Skip data fetch; only validate auth and list accounts. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
@@ -284,9 +291,7 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 ### Usage
 
 ```sh
-.venv/bin/python load.py \
-    --silver-db ~/wealthdb/schwab-api/schwab-api.db \
-    --bronze-dir ~/wealthdb/schwab
+.venv/bin/python load.py            # defaults under ~/wealthdb/schwab-api
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
@@ -297,8 +302,8 @@ not already recorded in `dump_runs`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `schwab.db`. |
-| `--bronze-dir` | _(required)_ | Directory containing bronze dump subdirectories. |
+| `--silver-db` | `~/wealthdb/schwab-api/schwab-api.db` | Path to the silver SQLite database. Created if missing. |
+| `--bronze-dir` | `~/wealthdb/schwab-api` | Directory containing bronze dump subdirectories. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Schema migrations

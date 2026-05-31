@@ -79,7 +79,7 @@ mount/wrapper conventions (`~/.secrets → /secrets`,
 ```sh
 ./swissquote login --check
 ./swissquote download --dry-run
-./swissquote load --silver-db /data/swissquote.db --bronze-dir /data
+./swissquote load                  # defaults: --silver-db /data/swissquote.db --bronze-dir /data
 ```
 
 ### Headless remote host
@@ -292,16 +292,20 @@ artefacts:
 ```sh
 ./swissquote download \
     --state-path /secrets/swissquote_state.json \
-    --dest /data \
     --dry-run
 ```
 
-Real download:
+Real download (last 90 days, the default):
 
 ```sh
-./swissquote download \
-    --state-path /secrets/swissquote_state.json \
-    --dest /data
+./swissquote download --state-path /secrets/swissquote_state.json
+```
+
+Wider backfill via the shared `--lookback` shortcut, or explicit dates:
+
+```sh
+./swissquote download --state-path /secrets/swissquote_state.json --lookback 1y
+./swissquote download --state-path /secrets/swissquote_state.json --since 2010-01-01
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
@@ -323,10 +327,11 @@ maps to `~/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--state-path` | _(required)_ | Path to the Playwright `storageState.json` file. |
-| `--dest` | _(required)_ | Local destination directory (must be writable). |
-| `--since` | _today - 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
+| `--dest` | `/data` (wrapper mount) | Local destination directory (must be writable). |
+| `--since` | _today − 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
 | `--until` | _today (UTC)_ | Latest transaction date to fetch (YYYY-MM-DD, inclusive). |
-| `--documents-since` | _25 years ago_ | Earliest document date (YYYY-MM-DD). Defaults to a wide window so every run scans the full available document history; existing PDFs are skipped by filename, so the cost is just one extra listing scrape. Pass a closer date for a deliberately narrower window. |
+| `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` (and `--documents-since` if unset) to `until − X`; overridden by explicit `--since` / `--documents-since`. |
+| `--documents-since` | _same as `--since`_ | Earliest document date (YYYY-MM-DD). Content-sha256 dedup means re-runs don't re-download already-captured PDFs. |
 | `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
 | `--dry-run` | off | Skip exports; only validate session and selectors. |
 | `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. |
@@ -426,9 +431,7 @@ snapshot/event and semi-relational JSON1 conventions.
 ### Usage
 
 ```sh
-./swissquote load \
-    --silver-db /data/swissquote.db \
-    --bronze-dir /data
+./swissquote load          # defaults under the /data mount (= ~/wealthdb/swissquote)
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
@@ -440,8 +443,8 @@ not already recorded in `dump_runs`. It also scans
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--silver-db` | _(required)_ | Path to the silver SQLite database. Created if missing. Conventional name: `swissquote.db`. |
-| `--bronze-dir` | _(required)_ | Directory containing bronze dump subdirectories and the `manual/` subdirectory. |
+| `--silver-db` | `/data/swissquote.db` (wrapper mount) | Path to the silver SQLite database. Created if missing. |
+| `--bronze-dir` | `/data` (wrapper mount) | Directory containing bronze dump subdirectories and the `manual/` subdirectory. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Schema migrations

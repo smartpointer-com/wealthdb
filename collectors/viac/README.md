@@ -96,10 +96,20 @@ CSRF metadata) at `/secrets`, and bronze artefacts + silver DB at
 ./viac login --check                       # cheap session-alive probe; no mTAN push
 ./viac login                               # mints a fresh session; SMS goes to your phone
 ./viac download --dry-run                  # walk JSON endpoints, skip PDFs
-./viac download                            # full bronze dump (default-tier PDFs only)
-./viac download --with-transaction-documents  # also pull the ~950 per-event TRANSACTION PDFs
+./viac download                            # bronze dump (default tier; last 90 days)
+./viac download --with-transaction-documents  # also pull the per-event TRANSACTION PDFs
+./viac download --lookback 1y              # wider window (also: 1w/4w/3m/6m/2y/5y/all)
 ./viac load                                # parse bronze → silver SQLite
 ```
+
+The shared `--since` / `--until` / `--documents-since` /
+`--documents-until` flags scope the run client-side: the documents
+walk only fetches PDFs whose `timestamp` falls in the window (the
+full index is still written to bronze for traceability), and the
+transactions filter is applied at silver-load time using the window
+recorded in `run.json` (the REST endpoint always returns the full
+history, so bronze stays a faithful copy). Old bronze dumps without
+the window block fall through to a no-bound load.
 
 Override the host mounts via env: `VIAC_SECRETS_DIR`, `VIAC_DATA_DIR`.
 

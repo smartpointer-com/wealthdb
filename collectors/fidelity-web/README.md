@@ -136,12 +136,15 @@ rm -rf ~/.secrets/fidelity-web-profile/
 ./fidelity-web vnc-login --mode none -v
 ```
 
-`entrypoint.sh` prints a fresh single-use VNC password at startup;
-connect with any VNC client (macOS: Finder → ⌘K →
-`vnc://localhost:5900`), click "Log in" in the Camoufox window,
-complete 2FA, tick "Trust this browser" if you want subsequent
-runs to skip MFA. The script auto-detects post-auth and exits;
-the profile dir now holds the trust cookies.
+`entrypoint.sh` prints a fresh single-use VNC password and the
+host-side port at startup. The wrapper walks `5900-6000` to find a
+free TCP port (so a prior crashed container, macOS Screen Sharing,
+or another VNC server doesn't collide); whichever port lands is
+printed in the banner. Tunnel + connect with any VNC client (macOS:
+Finder → ⌘K → `vnc://localhost:<port>`), click "Log in" in the
+Camoufox window, complete 2FA, tick "Trust this browser" if you
+want subsequent runs to skip MFA. The script auto-detects post-auth
+and exits; the profile dir now holds the trust cookies.
 
 Drop the `--mode none` to also run the walk after the VNC-driven
 login lands.
@@ -161,6 +164,8 @@ Once the profile dir is seeded, every run is one-shot:
   --since 2022-06-01 --until 2025-12-31    # Custom-range backfill (chunked
                                             # into ≤93-day windows, clamped
                                             # to Fidelity's ~4-year retention)
+./fidelity-web download --lookback 1y    # shared --lookback shortcut (1w/4w/3m/6m/1y/2y/5y/all);
+                                          # also widens --documents-since (stmts + tax-forms)
 ./fidelity-web download --dry-run      # walk + enumerate, no artefact writes
 ./fidelity-web download --check        # validate session, no walk
 ```
@@ -178,11 +183,9 @@ silver SQLite DB. Idempotent on the synthetic `activity_id` and
 the `content_sha256` document key, so re-running converges.
 
 ```sh
-./fidelity-web load                              # uses defaults
-./fidelity-web load \
-    --silver-db /path/to/fidelity.db \
-    --bronze-dir /path/to/bronze
-./fidelity-web load -v                           # DEBUG logging
+./fidelity-web load                                # defaults: bronze + silver under ~/wealthdb/fidelity-web
+./fidelity-web load --silver-db /tmp/fidelity.db  # override the silver path
+./fidelity-web load -v                             # DEBUG logging
 ```
 
 Runs host-side (pure-stdlib Python; no Docker, no Camoufox), so

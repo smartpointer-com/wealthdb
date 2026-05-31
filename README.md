@@ -68,8 +68,8 @@ cd wealthdb
 ```sh
 # Host-venv collectors (schwab-api, ubs-psn): pure-stdlib + a thin dep
 cd collectors/schwab-api
-.venv/bin/python download.py --token-path ~/.secrets/schwab-api-token.json --dest ~/wealthdb/schwab-api
-.venv/bin/python load.py --silver-db ~/wealthdb/schwab-api/schwab-api.db --bronze-dir ~/wealthdb/schwab-api
+.venv/bin/python download.py        # defaults: token + bronze under ~/.secrets / ~/wealthdb/schwab-api
+.venv/bin/python load.py            # defaults: bronze + silver under ~/wealthdb/schwab-api
 
 # Docker collectors (the six web/REST ones): a host wrapper drives docker run
 cd collectors/viac
@@ -79,9 +79,14 @@ cd collectors/viac
 ./viac load                  # bronze → silver
 ```
 
-Orchestration helpers in `~/bin` (`wealthdb-nightly` for the
-unattended sources, `wealthdb-refresh` for the interactive ones)
-run the whole fleet in sequence; see their `--help`.
+Every collector accepts the same `--since` / `--until` /
+`--documents-since` / `--documents-until` flags plus a `--lookback`
+shortcut (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`, `all`); without
+any of them, downloads default to a 90-day window. Orchestration
+helpers in `~/bin` (`wealthdb-nightly` for the unattended sources,
+`wealthdb-refresh` for the interactive ones) run the whole fleet in
+sequence and forward `--lookback` to every collector; see their
+`--help`.
 
 ## Documentation
 

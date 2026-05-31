@@ -97,6 +97,24 @@ Iteration-cheap reruns of `download` for one slice:
 ./relevate download --skip-documents                # everything except PDFs
 ```
 
+Date-window flags (the shared collector-fleet contract):
+
+```sh
+./relevate download                             # default: last 90 days; --year-from = current year
+./relevate download --lookback 1y               # 1w/4w/3m/6m/1y/2y/5y/all
+./relevate download --since 2020-01-01          # explicit --since drives both the
+                                                 # /deposits year iteration AND the docs filter
+./relevate download --year-from 2010            # explicit-year escape hatch (overrides --since.year)
+./relevate download --documents-since 2018-01-01  # narrower docs scope only
+```
+
+Documents are filtered AT FETCH: `download.py` reads
+`/middlelayer/v2/documents` (always full index), skips PDF binaries
+whose `createDate` falls outside `[--documents-since,
+--documents-until]`, and writes the full index to bronze for
+traceability. The `--year-from` / `--year-to` escape hatches remain
+for one-off year-explicit backfills.
+
 ## Layout
 
 ```

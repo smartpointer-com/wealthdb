@@ -195,7 +195,8 @@ out of the bronze/silver tree.
 ./ubs-web login --check
 ./ubs-web login --qr-png /debug/qr.png
 ./ubs-web download --dry-run --screenshot-dir /debug/download
-./ubs-web load --silver-db /data/ubs-web.db --bronze-dir /data
+./ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
+./ubs-web load                          # defaults under the /data mount
 ```
 
 Override any of the host paths via env vars:

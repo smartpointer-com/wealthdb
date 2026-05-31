@@ -17,6 +17,14 @@ Pillow>=10.0,<12
 # extraction API. Used by load.py to reconstruct historical position
 # snapshots from UBS's semi-annual "Statement of assets" PDFs and
 # month-end "Account Statement" PDFs in the documents archive.
+#
+# schwab-web migrated its archive to pypdfium2 (order-of-magnitude
+# faster) but ubs-web stays on pdfplumber: PDFium's text rects are
+# either cell-level (a single row splits into many "lines") or
+# baseline-shared across columns (rows that pdfplumber kept apart
+# get glued together), and round-tripping the existing line-anchored
+# regex layer would need substantial parser surgery. See
+# pdf_parsers.py's module docstring for the empirical findings.
 pdfplumber>=0.11,<1
 
 # pytest is bundled in the image so tests can be run inside the

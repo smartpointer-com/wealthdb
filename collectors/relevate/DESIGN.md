@@ -350,10 +350,16 @@ browser-class consumer to Airlock:
    - Resolve the deposits-iteration policy:
      - If `--year-from` is set: iterate that explicit range
        (`--year-to` defaults to current year), saving
-       `deposits-YYYY.json` per year.
+       `deposits-YYYY.json` per year. `--year-from` is the
+       explicit-year escape hatch; the shared `--since` /
+       `--lookback` contract drives the default via
+       `year_from = since.year` (current year by default,
+       since `--since` defaults to today − 90 days).
      - Else if `firstInvestmentDate` is plausible (parses to
        a year ≥ 1900, not the `0001-01-01` sentinel Relevate
-       uses for "unknown"): iterate from that year to current.
+       uses for "unknown"): iterate from `--since.year` to
+       `--until.year` (current year by default), saving
+       `deposits-YYYY.json` per year.
      - Else: single call to `/deposits` with no `?year=` param,
        saved as `deposits.json`. The first real run revealed
        that for the FZ products observed so far, the endpoint
@@ -424,11 +430,22 @@ download.py [--state-path PATH] [--dest DIR]
             [--dry-run]
             [--mode {all, accounts, portfolios, documents}]
             [--skip-documents]
+            [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+            [--lookback {1w,4w,3m,6m,1y,2y,5y,all}]
+            [--documents-since YYYY-MM-DD]
+            [--documents-until YYYY-MM-DD]
             [--year-from YYYY] [--year-to YYYY]
             [--limit-portfolios N]
             [--limit-documents N]
             [--verbose]
 ```
+
+Date-window contract: `--since` / `--until` / `--lookback` drive
+the default `/deposits` year iteration (`year_from = since.year`,
+`year_to = until.year`); `--year-from` / `--year-to` remain as
+explicit-year escape hatches. `--documents-since` /
+`--documents-until` filter the per-PDF fetch by `createDate` (the
+full index is still written for traceability).
 
 Iteration discipline: the
 `--mode`, `--skip-documents`, and `--limit-*` flags let an operator

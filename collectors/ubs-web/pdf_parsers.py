@@ -24,6 +24,17 @@ it line-by-line, anchoring on identifiable markers:
   - IBAN-shaped line → cash position anchor
   - "Account Statement / DD.MM.YYYY - DD.MM.YYYY" → period range
   - "Opening balance / Closing balance" lines → cash deltas
+
+Performance note: schwab-web migrated this archive type to pypdfium2
+for a 10× speedup. ubs-web stays on pdfplumber for now because the
+visual-line reconstruction PDFium needs (count_rects() returns
+either cell-level granularity that splits a row across many lines,
+or column-shared-baseline rects that merge columns that
+pdfplumber kept apart) can't be made to round-trip the existing
+parser without a substantial regex layer rewrite. parse_account_
+statement's squish-and-match approach DOES round-trip
+byte-identical under pypdfium2; if perf becomes acute, that one
+parser is a candidate for an isolated migration.
 """
 from __future__ import annotations
 

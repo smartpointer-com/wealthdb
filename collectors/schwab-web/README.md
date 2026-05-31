@@ -114,7 +114,9 @@ The CLI is intentionally minimal:
   `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-submits, prompts
   on stdin for the 2FA code, runs the statements + tx-history
   download in the same Firefox session, exits. Defaults to a
-  3-month range; pass `--range Last10Years` for a full backfill.
+  3-month range; the shared `--lookback {1w,4w,3m,6m,1y,2y,5y,all}`
+  shortcut maps to the closest Schwab preset, or pass `--range
+  Last10Years` for an explicit preset.
 * `load` — parse the bronze tree into the silver SQLite DB.
 * `vnc-login` — fallback to a VNC-driven login + scrape when the
   CLI-MFA selectors drift or a non-code challenge is required.
@@ -129,8 +131,9 @@ The CLI is intentionally minimal:
 ./schwab-web download \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 
-# Full backfill (10 years of statements):
-./schwab-web download --range Last10Years --with-more-detail
+# Full backfill (10 years of statements). Either of:
+./schwab-web download --lookback all --with-more-detail
+./schwab-web download --range Last10Years --with-more-detail  # explicit preset (escape hatch)
 
 # Fallback path: VNC. Start the container with VNC enabled, then
 # tunnel + open the display from your laptop. Use this if the
@@ -186,11 +189,12 @@ cd collectors/schwab-web
 ### Run
 
 ```sh
-./schwab-web download                                   # CLI-MFA login + scrape
-./schwab-web download --range Last10Years --with-more-detail   # full backfill
+./schwab-web download                                  # CLI-MFA login + scrape (default: 3 months)
+./schwab-web download --lookback all --with-more-detail  # full backfill via shared shortcut
+./schwab-web download --range Last10Years              # explicit preset (escape hatch)
 ./schwab-web download --dry-run --screenshot-dir /debug/download
-./schwab-web vnc-login                                  # VNC fallback
-./schwab-web load --silver-db /data/schwab-web.db --bronze-dir /data
+./schwab-web vnc-login                                 # VNC fallback
+./schwab-web load                                      # defaults under the /data mount
 ```
 
 ### Credentials
