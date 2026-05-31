@@ -24,16 +24,27 @@ Bronze layout (mirrors the sibling toolkits):
     │   └── <docid>.pdf                   PDF binaries (see gating below)
     └── (manual/ ... user-uploaded artefacts, ingested by load.py)
 
-PDF gating:
-  - Always download non-TRANSACTION docs (statements,
-    Bescheinigungen, contracts, investment profile, …).
-  - Always download SECURITY_FUSION PDFs — the JSON transaction
-    record carries `amountInChf: 0`; the old→new ISIN mapping is
-    ONLY in the PDF.
-  - Other TRANSACTION docs (TRADE_REPORT, FEE_CHARGE, INTEREST,
-    DIVIDEND, DIVIDEND_CANCELLATION) gated by
-    `--with-transaction-documents`. Default is off (skip the ~950
-    per-event PDFs; load only when needed).
+PDF gating (in order):
+  - DATE gate: doc `timestamp` must fall in [documents-since,
+    documents-until]. The shared --since/--until/--lookback contract
+    defaults to a 90-day window; --lookback all lifts it to ~30y.
+    Docs with a missing/unparseable timestamp are kept (better to
+    over-fetch than silently lose data the source didn't time-stamp).
+  - TYPE gate, applied to in-window docs:
+    * Non-TRANSACTION docs (statements, Bescheinigungen, contracts,
+      investment profile, …) always download.
+    * SECURITY_FUSION PDFs always download — the JSON transaction
+      record carries `amountInChf: 0`; the old→new ISIN mapping is
+      ONLY in the PDF.
+    * Other TRANSACTION docs (TRADE_REPORT, FEE_CHARGE, INTEREST,
+      DIVIDEND, DIVIDEND_CANCELLATION) gated by
+      `--with-transaction-documents`. Default is off (skip the ~950
+      per-event PDFs; load only when needed).
+
+Transactions are written FULL to bronze (the REST envelope is one
+small JSON; keeping it complete preserves bronze faithfulness). The
+window is recorded in run.json's `windows` block so the silver
+loader can re-apply it without taking its own CLI args.
 
 `--dry-run` walks every URL and writes the JSON artefacts but
 skips PDF binaries — useful for checking that selectors/endpoints
@@ -55,7 +66,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -152,14 +163,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "DIVIDEND_CANCELLATION). ~950 PDFs at present. "
               "SECURITY_FUSION is downloaded regardless of this flag."),
     )
-    # Shared date-window contract — accepted for argv-level symmetry
-    # with the rest of the collector fleet. Currently a NO-OP for
-    # viac: the REST API exposes the full transaction + document
-    # history with no date-filter knob, and the bronze + silver
-    # pipelines content-hash dedup keeps re-runs cheap. Setting any
-    # of the flags logs a "not implemented" warning. TODO: add a
-    # post-fetch client-side filter in the silver loader and/or
-    # short-circuit untouched-since-last-run by document id.
+    # Shared date-window contract. VIAC's REST endpoints don't take
+    # a date filter (the transactions and documents-index calls
+    # always return the full history), so we apply the windows
+    # client-side: documents are filtered AT FETCH (skip the PDF
+    # binaries whose `timestamp` falls outside [documents-since,
+    # documents-until]) and transactions are written full to bronze
+    # then filtered AT SILVER-LOAD (the JSON envelope is small;
+    # keeping it complete preserves bronze faithfulness and lets the
+    # loader re-derive any window without a re-download). Both
+    # windows are persisted into run.json's `windows` block so the
+    # loader doesn't need its own CLI args.
     cli.add_lookback_args(p)
     p.add_argument(
         "--dry-run", action="store_true",
@@ -189,8 +203,34 @@ def fetch_json(client: ViacClient, path: str, dest_file: Path) -> dict | list:
     return resp.json()
 
 
-def should_download_pdf(doc: dict, with_tx: bool) -> bool:
+def _doc_date(doc: dict) -> date | None:
+    """Extract a YYYY-MM-DD date from a doc-index entry's `timestamp`.
+    Returns None if the field is missing or unparseable — callers
+    treat "unknown date" as "in window" so we never silently drop a
+    document the source didn't time-stamp.
+
+    VIAC's timestamps come back as `YYYY-MM-DDTHH:MM:SS.ffffff` with
+    no timezone suffix; we only need the date portion so the first
+    10 chars are enough."""
+    ts = doc.get("timestamp")
+    if not isinstance(ts, str) or len(ts) < 10:
+        return None
+    try:
+        return date.fromisoformat(ts[:10])
+    except ValueError:
+        return None
+
+
+def should_download_pdf(doc: dict, with_tx: bool,
+                        docs_since: date, docs_until: date) -> bool:
     """True if this document should be downloaded under the gate."""
+    # Date gate first: drop anything outside [docs_since, docs_until]
+    # regardless of type. Docs with no/unparseable timestamp are kept
+    # — we'd rather over-fetch than silently lose a document the
+    # source didn't time-stamp.
+    d = _doc_date(doc)
+    if d is not None and (d < docs_since or d > docs_until):
+        return False
     if doc.get("type") != "TRANSACTION":
         return True  # non-tx: statements, Bescheinigungen, etc.
     if doc.get("subType") in ALWAYS_DOWNLOAD_TX_SUBTYPES:
@@ -248,8 +288,18 @@ def fetch_pdf(client: ViacClient, docid: str, target: Path,
 
 
 def walk(client: ViacClient, dest_root: Path, *,
-         with_tx_docs: bool, dry_run: bool) -> dict:
-    """Run the full bronze fetch. Returns the manifest."""
+         with_tx_docs: bool, dry_run: bool,
+         since: date, until: date,
+         documents_since: date, documents_until: date) -> dict:
+    """Run the full bronze fetch. Returns the manifest.
+
+    The four window bounds are recorded into run.json's `windows`
+    block so the silver loader can re-apply them at insert time
+    without taking its own CLI args. Per the fetch/load split:
+    document PDFs are filtered AT FETCH (PDF binaries are big; don't
+    download what we won't insert), but transactions are written
+    full and filtered AT LOAD (the REST envelope is one small JSON;
+    keeping it complete preserves bronze faithfulness)."""
     ts = utc_ts()
     bronze_dir = dest_root / ts
     bronze_dir.mkdir(parents=True)
@@ -259,6 +309,12 @@ def walk(client: ViacClient, dest_root: Path, *,
         "timestamp": ts,
         "dry_run": dry_run,
         "with_transaction_documents": with_tx_docs,
+        "windows": {
+            "since": since.isoformat(),
+            "until": until.isoformat(),
+            "documents_since": documents_since.isoformat(),
+            "documents_until": documents_until.isoformat(),
+        },
         "endpoints": [],
         "portfolios": [],
         "documents": {"total": 0, "fetched": 0, "linked": 0, "skipped": 0},
@@ -314,7 +370,8 @@ def walk(client: ViacClient, dest_root: Path, *,
         docid = doc.get("documentNumber")
         if not docid:
             continue
-        if not should_download_pdf(doc, with_tx_docs):
+        if not should_download_pdf(doc, with_tx_docs,
+                                   documents_since, documents_until):
             manifest["documents"]["skipped"] += 1
             continue
         if dry_run:
@@ -333,32 +390,18 @@ def walk(client: ViacClient, dest_root: Path, *,
     return manifest
 
 
-def _warn_lookback_noop(args: argparse.Namespace) -> None:
-    """Log a TODO warning if any date-window flag was passed.
-
-    viac's REST endpoints have no date filter, so the flags are
-    accepted (for argv parity with other collectors) but ignored.
-    The full snapshot is pulled every run; bronze + silver dedup
-    keeps it cheap."""
-    if any(getattr(args, k, None) is not None for k in
-           ("since", "until", "lookback",
-            "documents_since", "documents_until")):
-        log.warning(
-            "viac: --since / --until / --lookback / --documents-* "
-            "are accepted for argv parity but not yet implemented "
-            "(TODO). The full REST snapshot is pulled every run; "
-            "bronze + silver content-hash dedup means re-runs are "
-            "cheap."
-        )
-
-
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    _warn_lookback_noop(args)
+    # Resolve the shared --since/--until/--lookback/--documents-*
+    # contract once; pass concrete dates into walk(). Documents are
+    # filtered AT FETCH (avoid wasted PDF binaries); transactions
+    # carry the window through bronze run.json so the silver loader
+    # can re-apply it without taking its own CLI args.
+    since, until, docs_since, docs_until = cli.resolve_lookback(args)
 
     if not args.state_path.is_file():
         log.error(
@@ -385,6 +428,9 @@ def main(argv: list[str]) -> int:
                 client, args.dest,
                 with_tx_docs=args.with_transaction_documents,
                 dry_run=args.dry_run,
+                since=since, until=until,
+                documents_since=docs_since,
+                documents_until=docs_until,
             )
     except httpx.HTTPError as e:
         log.error("HTTP error during walk: %s", e)

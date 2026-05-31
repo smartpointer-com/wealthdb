@@ -24,7 +24,7 @@ import logging
 import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -425,14 +425,36 @@ def load_positions_phase(
     )
 
 
+def _parse_window_bound(s: str | None) -> date | None:
+    """Parse a YYYY-MM-DD ISO date from a run.json `windows` field.
+    Returns None if the field is missing or unparseable — callers
+    treat None as "no bound" (load every transaction)."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
 def load_transactions_phase(
     conn: sqlite3.Connection,
     snapshot_at: int,
     run_dir: Path,
+    *,
+    since: date | None = None,
+    until: date | None = None,
 ) -> None:
     """Parse transactions/all.json — keyed by portfolio number,
     each value a list of {type, amountInChf, valueDate,
-    balanceAfterBooking, documentNumber}."""
+    balanceAfterBooking, documentNumber}.
+
+    ``since`` / ``until`` come from the bronze run's `windows` block
+    (populated by download.py). Items whose ``valueDate`` falls
+    outside [since, until] are dropped client-side — the REST
+    endpoint has no date filter so we always receive the full
+    history in bronze. Either bound can be None ("no bound", load
+    every transaction)."""
     tx_path = run_dir / "transactions" / "all.json"
     if not tx_path.is_file():
         logger.info("  transactions phase: no transactions/all.json — skipping")
@@ -441,13 +463,31 @@ def load_transactions_phase(
     per_portfolio = tx_root.get("transactions") or {}
     n_total = 0
     n_skipped = 0
+    n_outside = 0
     for number, items in per_portfolio.items():
         for t in (items or []):
             tx_type = t.get("type")
-            value_date = iso_date_to_epoch(t.get("valueDate"))
+            vd_str = t.get("valueDate")
+            value_date = iso_date_to_epoch(vd_str)
             if not tx_type or value_date is None:
                 n_skipped += 1
                 continue
+            # Date-window filter (download-time windows from run.json).
+            # Apply on the raw YYYY-MM-DD slice rather than re-deriving
+            # from the epoch we just computed — keeps the window check
+            # in calendar-date terms and avoids a timezone round-trip.
+            if since is not None or until is not None:
+                try:
+                    vd = date.fromisoformat(vd_str[:10])
+                except (TypeError, ValueError):
+                    vd = None
+                if vd is not None:
+                    if since is not None and vd < since:
+                        n_outside += 1
+                        continue
+                    if until is not None and vd > until:
+                        n_outside += 1
+                        continue
             amount_chf = t.get("amountInChf")
             doc_num = t.get("documentNumber")
             tx_id = synthesize_transaction_id(
@@ -483,10 +523,12 @@ def load_transactions_phase(
                 ),
             )
             n_total += 1
-    logger.info(
-        "  transactions phase: %d loaded, %d skipped (missing fields)",
-        n_total, n_skipped,
-    )
+    msg = "  transactions phase: %d loaded, %d skipped (missing fields)"
+    args: tuple = (n_total, n_skipped)
+    if n_outside:
+        msg += ", %d outside window"
+        args += (n_outside,)
+    logger.info(msg, *args)
 
 
 def load_wealth_history_phase(
@@ -630,12 +672,20 @@ def load_one_dump(
         raise RuntimeError(f"no run.json in {run_dir} — refusing to load")
     run_manifest = json.loads(run_json_path.read_text(encoding="utf-8"))
     docs_counts = run_manifest.get("documents") or {}
+    # Transactions window comes from the bronze run's windows block
+    # (set by download.py's resolve_lookback). Older bronze dumps
+    # predate the block — they get None/None and load everything,
+    # which matches the old behaviour.
+    windows = run_manifest.get("windows") or {}
+    tx_since = _parse_window_bound(windows.get("since"))
+    tx_until = _parse_window_bound(windows.get("until"))
 
     conn.execute("BEGIN")
     try:
         portfolios = load_accounts_phase(conn, snapshot_at, run_dir)
         load_positions_phase(conn, snapshot_at, run_dir, portfolios)
-        load_transactions_phase(conn, snapshot_at, run_dir)
+        load_transactions_phase(conn, snapshot_at, run_dir,
+                                since=tx_since, until=tx_until)
         load_wealth_history_phase(conn, snapshot_at, run_dir)
         load_documents_phase(conn, snapshot_at, run_dir)
 
