@@ -45,7 +45,7 @@ import hashlib
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -220,9 +220,12 @@ class Manifest:
             "mode": mode,
             "dry_run": dry_run,
             "state_minted_at": None,
+            "windows": None,
             "accounts": [],
             "documents": {
                 "count_in_index": 0,
+                "count_in_window": 0,
+                "count_outside_window": 0,
                 "fetched": 0,
                 "skipped": 0,
                 "unexpected_content_type": [],
@@ -234,6 +237,18 @@ class Manifest:
 
     def set_state_minted_at(self, ts: str | None) -> None:
         self.data["state_minted_at"] = ts
+        self.flush()
+
+    def set_windows(self, *, since: date, until: date,
+                    documents_since: date, documents_until: date) -> None:
+        """Record the resolved date windows for this run. Mirrors the
+        viac/run.json shape so any future shared loader can read either."""
+        self.data["windows"] = {
+            "since": since.isoformat(),
+            "until": until.isoformat(),
+            "documents_since": documents_since.isoformat(),
+            "documents_until": documents_until.isoformat(),
+        }
         self.flush()
 
     def add_file(self, rel_path: str) -> None:
@@ -561,12 +576,31 @@ def fetch_portfolio(
         )
 
 
+def _doc_create_date(entry: dict) -> date | None:
+    """Extract a YYYY-MM-DD date from a /middlelayer/v2/documents index
+    entry's `createDate`. Returns None on missing / unparseable —
+    callers treat None as "in window" so we never silently drop an
+    entry the source didn't time-stamp.
+
+    Relevate's createDate format is `YYYY-MM-DDTHH:MM:SS` with no
+    timezone suffix; the first 10 chars are the date portion."""
+    s = entry.get("createDate")
+    if not isinstance(s, str) or len(s) < 10:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
 def fetch_documents(
     session: requests.Session,
     run_dir: Path,
     manifest: Manifest,
     *,
     limit: int | None,
+    documents_since: date,
+    documents_until: date,
 ) -> None:
     docs_dir = run_dir / "documents"
     index = get_and_save_json(
@@ -580,6 +614,28 @@ def fetch_documents(
     manifest.documents()["count_in_index"] = len(docs)
     manifest.flush()
     logger.info("documents index: %d entries", len(docs))
+
+    # Window filter on createDate. Entries with no/unparseable date
+    # are kept (better to over-fetch than silently lose an undated
+    # entry). The full index.json is written above regardless so
+    # bronze stays a faithful inventory of what was visible.
+    in_window: list[dict] = []
+    n_outside = 0
+    for entry in docs:
+        d = _doc_create_date(entry)
+        if d is not None and (d < documents_since or d > documents_until):
+            n_outside += 1
+            continue
+        in_window.append(entry)
+    manifest.documents()["count_in_window"] = len(in_window)
+    manifest.documents()["count_outside_window"] = n_outside
+    manifest.flush()
+    if n_outside:
+        logger.info(
+            "documents window %s..%s: %d in scope, %d outside",
+            documents_since, documents_until, len(in_window), n_outside,
+        )
+    docs = in_window
 
     if limit is not None:
         docs = docs[:limit]
@@ -618,10 +674,15 @@ def do_dry_run(
     session: requests.Session,
     run_dir: Path,
     manifest: Manifest,
+    *,
+    documents_since: date,
+    documents_until: date,
 ) -> int:
     """
     --dry-run: hit the master listing endpoints (cheap),
     enumerate work, exit. No per-portfolio or per-document fetches.
+    Also reports how many of the indexed docs survive the window
+    filter, so the operator can sanity-check --lookback values.
     """
     logger.info("dry-run: hitting master listing endpoints only")
     overview = get_and_save_json(
@@ -635,13 +696,23 @@ def do_dry_run(
         manifest, relative_to=run_dir,
     )
     n_portfolios = len(((overview or {}).get("portfolios")) or [])
-    n_docs = len(((docs or {}).get("documents")) or [])
+    doc_entries = ((docs or {}).get("documents")) or []
+    n_docs_total = len(doc_entries)
+    n_in_window = 0
+    for entry in doc_entries:
+        d = _doc_create_date(entry)
+        if d is None or (documents_since <= d <= documents_until):
+            n_in_window += 1
     logger.info(
-        "dry-run: would fetch %d portfolios + %d documents",
-        n_portfolios, n_docs,
+        "dry-run: would fetch %d portfolios + %d of %d documents "
+        "(window %s..%s)",
+        n_portfolios, n_in_window, n_docs_total,
+        documents_since, documents_until,
     )
     if docs is not None:
-        manifest.documents()["count_in_index"] = n_docs
+        manifest.documents()["count_in_index"] = n_docs_total
+        manifest.documents()["count_in_window"] = n_in_window
+        manifest.documents()["count_outside_window"] = n_docs_total - n_in_window
         manifest.flush()
     return 0 if (overview is not None and docs is not None) else 1
 
@@ -656,13 +727,10 @@ def do_download(args: argparse.Namespace) -> int:
         args.year_from = since.year
     if args.year_to is None:
         args.year_to = until.year
-    if args.documents_since is not None or args.documents_until is not None:
-        logger.warning(
-            "--documents-since / --documents-until are not yet "
-            "implemented for relevate (TODO); the documents listing "
-            "endpoint has no date filter. Full index is fetched on "
-            "each run. Use --skip-documents to suppress the doc walk."
-        )
+    # --documents-since / --documents-until are honoured client-side:
+    # the /middlelayer/v2/documents endpoint returns the full index
+    # on every call, so we apply the window in fetch_documents() to
+    # avoid the PDF-binary fetches for docs outside it.
 
     try:
         sess, state_minted_at = new_session_from_state(args.state_path)
@@ -685,9 +753,14 @@ def do_download(args: argparse.Namespace) -> int:
 
     manifest = Manifest(run_dir, mode=args.mode, dry_run=args.dry_run)
     manifest.set_state_minted_at(state_minted_at)
+    manifest.set_windows(since=since, until=until,
+                         documents_since=docs_since,
+                         documents_until=docs_until)
 
     if args.dry_run:
-        rc = do_dry_run(session, run_dir, manifest)
+        rc = do_dry_run(session, run_dir, manifest,
+                        documents_since=docs_since,
+                        documents_until=docs_until)
         manifest.finish()
         return rc
 
@@ -717,6 +790,8 @@ def do_download(args: argparse.Namespace) -> int:
         fetch_documents(
             session, run_dir, manifest,
             limit=args.limit_documents,
+            documents_since=docs_since,
+            documents_until=docs_until,
         )
 
     manifest.finish()
