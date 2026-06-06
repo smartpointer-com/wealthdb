@@ -1,0 +1,90 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments (this collector runs entirely inside Docker, but
+# editors sometimes create these for LSP convenience)
+.venv/
+venv/
+env/
+.python-version
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Playwright debugging artefacts — may contain logged-in screenshots
+# or session state. Never commit.
+trace*.zip
+trace-chunks/
+screenshots/
+playwright-report/
+network.har
+network.jsonl
+clicks.jsonl
+
+# Never commit credentials, browser profiles, session cookies, or
+# downloaded portfolio data. The default mount layout puts these on
+# the host under ~/.secrets/ and ~/wealthdb/cointracking/ respectively,
+# but a stray in-tree drop must still be blocked.
+*.pem
+*.key
+storageState*.json
+cointracking-session*.json
+cointracking-profile/
+token.json
+tokens.json
+.env
+.envrc
+data/
+downloads/
+
+# Bronze / silver default in-tree paths in case someone overrides the
+# mount layout to put the data tree under the repo.
+bronze/
+silver/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.duckdb
+*.duckdb.wal
+
+# Bootstrap material the user drops in for landmarking (sample HTML,
+# screenshots, MHTML saves of the cointracking.info UI). These contain
+# real portfolio data and must never be committed. Move them into a
+# tracked location only after redaction.
+samples/
+fixtures/raw/
+*.mhtml
+*.har
+
+# Local-only CSV / HTML fixtures for the smoke-test suite. Real
+# cointracking exports contain PII; only synthetic data goes into
+# version control.
+tests/fixtures/*.csv
+tests/fixtures/*.html

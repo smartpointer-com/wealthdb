@@ -10,8 +10,8 @@ The suite is a **monorepo** of two parts:
 - **`wealthdb/`** — the **gold** engine: a Go CLI that reads the
   per-source silver databases and projects them into a canonical
   cross-bank DuckDB schema. This is the query surface.
-- **`collectors/`** — eight **bronze + silver** collectors, one
-  per source. Each logs in, downloads raw artefacts (bronze), and
+- **`collectors/`** — **bronze + silver** collectors, one per
+  source. Each logs in, downloads raw artefacts (bronze), and
   parses them into a source-shaped silver SQLite (silver).
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
@@ -30,6 +30,7 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
 | [`collectors/fidelity-web/`](collectors/fidelity-web/) | Fidelity holdings/tx | Docker (Camoufox) | web scrape |
 | [`collectors/relevate/`](collectors/relevate/) | Relevate / Pensexpert (Pillar 2) | Docker | middlelayer REST |
 | [`collectors/viac/`](collectors/viac/) | VIAC (Pillar 3a / vested benefits) | Docker | web REST |
+| [`collectors/cointracking/`](collectors/cointracking/) | Crypto aggregator (all exchanges + wallets) | Docker (headless Firefox + Camoufox for re-discovery) | web scrape |
 
 Each component has its own `README.md` (usage), `DESIGN.md`
 (internals), and `CLAUDE.md` (agent guidance) at its root.

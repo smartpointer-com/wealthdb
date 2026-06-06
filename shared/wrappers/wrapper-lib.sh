@@ -188,10 +188,19 @@ wrapper_main() {
     wrapper_tty_args
 
     local -a extra_args=()
-    if [[ "${HAS_VNC:-0}" == "1" && "${1:-}" == "vnc-login" ]]; then
-        wrapper_vnc_port
-        extra_args+=(-p "127.0.0.1:${vnc_host_port}:5900"
-                     -e "VNC_HOST_PORT=${vnc_host_port}")
+    if [[ "${HAS_VNC:-0}" == "1" ]]; then
+        local sub="${1:-}" need_vnc=0 v
+        # Caller may declare extra subcommands that need VNC by setting
+        # VNC_SUBCOMMANDS=(vnc-login explore …). 'vnc-login' is always
+        # in the set so existing wrappers keep working without the var.
+        for v in vnc-login ${VNC_SUBCOMMANDS[@]+"${VNC_SUBCOMMANDS[@]}"}; do
+            [[ "$sub" == "$v" ]] && { need_vnc=1; break; }
+        done
+        if [[ $need_vnc == 1 ]]; then
+            wrapper_vnc_port
+            extra_args+=(-p "127.0.0.1:${vnc_host_port}:5900"
+                         -e "VNC_HOST_PORT=${vnc_host_port}")
+        fi
     fi
 
     if [[ "${HAS_SAFETY:-0}" == "1" ]]; then

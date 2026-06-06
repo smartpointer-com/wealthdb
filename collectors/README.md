@@ -30,7 +30,7 @@ form and the **input contract** to gold. One silver DB per source.
 | Runtime | Collectors | How you run it |
 | --- | --- | --- |
 | **Host venv** | `schwab-api`, `ubs-psn` | `.venv/bin/python {download,load}.py …` — pure-stdlib plus one thin dependency; no container. |
-| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
+| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
 ## Conventions shared across collectors
 
@@ -92,6 +92,7 @@ the adapter for the gold interpretation rather than restating it.
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | Docker (Camoufox) |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
+| [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |
 
 Agent ground rules shared by every collector are in the repo-root
 [CLAUDE.md](../CLAUDE.md); each subdirectory's `CLAUDE.md` adds

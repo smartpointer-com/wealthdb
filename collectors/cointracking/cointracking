@@ -1,0 +1,88 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the cointracking container.
+# Mounts ~/.secrets/ (RW; persistent Firefox profile + env file), the
+# bronze tree (RW), and a /debug dir for explore-phase artefacts.
+# Lives in single-writer mode because cointracking's session cookie
+# + 2FA prompts can't tolerate concurrent invocations.
+#
+# `explore` forwards a free 5900-6000 host port so the operator can
+# drive the live Camoufox session over VNC; login + download + load
+# all run headlessly (vanilla Playwright Firefox).
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+
+set -euo pipefail
+
+NAME=cointracking
+ENV_PREFIX=COINTRACKING
+ENV_VARS=(COINTRACKING_USERNAME COINTRACKING_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
+HAS_SAFETY=1        # refuse to evict a live VNC handoff
+HAS_VNC=1           # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore)   # extends the default {vnc-login}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
+
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+    cat <<EOF
+cointracking — host wrapper
+
+Subcommands:
+  build               Build the Docker image (\`docker build\`).
+  login [args...]     Mint a long-lived session via headless Playwright
+                      Firefox. Prompts for the 6-digit TOTP code on
+                      stdin and ticks "Don't ask again" so subsequent
+                      runs skip the 2FA push for years. --check
+                      probes the existing session without firing 2FA.
+  download [args...]  Fetch fresh bronze for every linked portfolio:
+                      19-column trade history CSV + per-wallet balance
+                      CSV via the SPA Export blob. Writes a UTC-
+                      timestamped subdir + run.json manifest under
+                      ~/wealthdb/cointracking/. --dry-run skips the
+                      export-button clicks for a navigation-only smoke
+                      test.
+  load [args...]      Ingest bronze snapshots into the DuckDB silver:
+                      replaces \`transactions\`, runs the aggregate-
+                      then-window holdings replay, incrementally
+                      upserts \`positions_daily\` from the first
+                      deviation day onwards, reconciles final balances
+                      vs the balance CSV. Pass --replay-only / --force
+                      for diagnostics.
+  explore [args...]   Re-discovery harness for when cointracking
+                      changes a selector. Launches Camoufox in the
+                      container's Xvfb display and exposes a VNC port
+                      so the operator can drive the live browser;
+                      records HAR + trace + click log + saved blobs
+                      under /debug for analysis. --fresh wipes the
+                      profile so the next login forces 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+$(wrapper_mounts_help)
+
+Override mounts via env:
+  COINTRACKING_SECRETS_DIR=/path/to/secrets
+  COINTRACKING_DATA_DIR=/path/to/data
+  COINTRACKING_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  COINTRACKING_USERNAME / COINTRACKING_PASSWORD are read from
+  /secrets/cointracking.env inside the container
+  (= \$HOME/.secrets/cointracking.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during \`login\`; the device-trust
+  cookie that lands in /secrets/cointracking-profile/ keeps future
+  logins from firing a 2FA push.
+EOF
+    exit 0
+fi
+
+wrapper_main "$@"

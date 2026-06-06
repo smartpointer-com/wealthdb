@@ -1,0 +1,24 @@
+# camoufox + playwright pins live in shared/images/base-camoufox.Dockerfile
+# (camoufox[geoip]>=0.4.11,<0.5 + playwright==1.49.0). Bump them there;
+# this collector picks them up via FROM wealthdb/base-camoufox. The pin
+# matters: camoufox-py 0.4.11 downloads Firefox 135.0.1-beta.24 whose
+# juggler patches target Playwright 1.49.x — a newer Playwright crashes
+# the camoufox-launched Firefox.
+
+# pytest is bundled in the image so tests can be run inside the
+# container with `./cointracking sh -c "cd /app && pytest"`,
+# no host-side Python toolchain required.
+pytest>=8,<9
+
+# DuckDB drives the silver layer for this collector — the exception
+# in the otherwise-SQLite silver layer; see DESIGN.md. Used for both
+# the DECIMAL(38,18) amount storage and the window-function holdings
+# replay at load time. ~30 MB Python wheel; negligible against the
+# Camoufox base image.
+duckdb>=1.0,<2
+
+# login.py + download.py use vanilla Playwright Firefox (headless)
+# rather than Camoufox. The Playwright Python package is already
+# installed in the base-camoufox image; the Firefox browser binary
+# is installed via `playwright install firefox` in the Dockerfile.
+# No extra Python deps needed here.
