@@ -5,8 +5,8 @@
 # Lives in single-writer mode because cointracking's session cookie
 # + 2FA prompts can't tolerate concurrent invocations.
 #
-# `explore` forwards a free 5900-6000 host port so the operator can
-# drive the live Camoufox session over VNC; login + download + load
+# `explore` forwards a free 5900-6000 host port so the live
+# Camoufox session can be driven over VNC; login + download + load
 # all run headlessly (vanilla Playwright Firefox).
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
@@ -53,13 +53,27 @@ Subcommands:
                       replaces \`transactions\`, runs the aggregate-
                       then-window holdings replay, incrementally
                       upserts \`positions_daily\` from the first
-                      deviation day onwards, reconciles final balances
-                      vs the balance CSV. Pass --replay-only / --force
-                      for diagnostics.
+                      deviation day onwards, populates
+                      \`portfolio_prices\` from overview.csv,
+                      reconciles final balances vs the balance CSV.
+                      Pass --replay-only / --force for diagnostics;
+                      --fetch-prices to also pull missing USDT-
+                      denominated prices from Binance at the end.
+  fetch-prices [args] USDT-denominated price backfill from Binance
+                      public spot into \`coin_prices\`. --missing
+                      fills (held, unpriced) gaps (same as
+                      \`load --fetch-prices\`); no flag re-fetches
+                      the full held range (corruption recovery).
+                      The latest priced day is always re-fetched to
+                      upgrade the previous run's intraday snapshot
+                      to a close price. Stablecoins (USDT, USDC,
+                      DAI, …) emit synthetic 1.0 USD prices.
+                      Optional BINANCE_API_KEY env raises the
+                      rate-limit ceiling.
   explore [args...]   Re-discovery harness for when cointracking
                       changes a selector. Launches Camoufox in the
                       container's Xvfb display and exposes a VNC port
-                      so the operator can drive the live browser;
+                      for driving the live browser interactively;
                       records HAR + trace + click log + saved blobs
                       under /debug for analysis. --fresh wipes the
                       profile so the next login forces 2FA.

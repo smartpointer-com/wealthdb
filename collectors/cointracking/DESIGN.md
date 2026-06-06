@@ -7,8 +7,8 @@ the suite.
 
 ## Why a separate collector
 
-cointracking.info is the user's aggregator-of-record for all
-crypto (centralised exchange accounts + on-chain wallets). Mirroring
+cointracking.info is the aggregator-of-record for all crypto
+(centralised exchange accounts + on-chain wallets). Mirroring
 the per-bank collector model — one collector per source — gives us:
 
 - A clean silver schema isolated to crypto, so the gold-layer
@@ -20,12 +20,12 @@ the per-bank collector model — one collector per source — gives us:
 
 The alternative — directly integrating each exchange API + every
 on-chain wallet — was rejected: cointracking already does that
-heavy lifting, and the user uses it as the canonical view.
+heavy lifting and serves as the canonical view.
 
 ## Phase 1: discovery via `explore`
 
 `explore.py` launches Camoufox in the container's Xvfb display,
-opens cointracking.info, and records the operator's session via
+opens cointracking.info, and records the live session via
 three channels:
 
 1. **HAR** — full network capture via Playwright's `record_har_path`.
@@ -42,7 +42,7 @@ three channels:
    mouse clicks bypass Playwright's API and don't show up in the
    trace as actions.
 
-Stopping: the operator closes the last browser window (Camoufox's
+Stopping: when the last browser window is closed (Camoufox's
 persistent context fires `close`) or hits Ctrl-C. A `--max-duration`
 safety net (default 1h) prevents a forgotten session from
 recording forever.
@@ -103,7 +103,7 @@ push — safe for cron healthchecks.
 Renewal short-circuit (step 2) covers the cron use case: every
 nightly run hits /login.php, sees the redirect to /dashboard, and
 exits — no 2FA push. The `ctfa<user_id>` cookie is multi-year
-per the operator's note, so this path stays live until the next
+a multi-year value, so this path stays live until the next
 genuine session-cookie rotation.
 
 The Camoufox base image is still used because `explore.py` needs
@@ -205,6 +205,7 @@ the table.
 
 - **Page surfaces:** /dashboard, /enter_coins.php (trade history),
   /balance_by_exchange.php (current per-wallet holdings),
+  /overview.php (Balance By Day — wide-form daily history),
   /export/trades_csv.php (simple CSV endpoint),
   /export/export_html.php (HTML export — strictly inferior, skip).
 - **change_user mechanics:** `?change_user=N` query param toggles
@@ -213,6 +214,117 @@ the table.
 - **Internal REST endpoints:** /ajax/all_current_balance.php
   returns JSON, but with HTML strings embedded — it's the SPA
   render envelope, not clean data. Not worth using.
+
+### Phase 3: prices (portfolio_prices + coin_prices)
+
+Two price tables, populated from different sources:
+
+**`portfolio_prices`** — what CoinTracking reports per portfolio,
+scraped from `/overview.php` via the SPA Export →
+CSV → Comma separated submenu (a `DataTables buttons-collection`
+pattern — the first "CSV" click expands a sub-menu of variants;
+we pick comma). One row per (day, portfolio, coin, quote_currency).
+Price = `value_in_fiat / amount`; rows where `amount = 0` are
+filtered out (the division-by-zero gate). Quote currency is the
+portfolio's "main fiat" CT setting and **varies between
+portfolios** (e.g. some EUR, some USD); the column
+header `<SYM> Value in <FIAT>` carries it.
+
+The master-account view is filtered to a top-N subset of coins
+by CT, while linked portfolios show the full per-portfolio set.
+The download loop ingests every portfolio's overview; gold-layer
+queries against `portfolio_prices` see the union.
+
+**`coin_prices`** — canonical USDT-denominated daily closes per
+coin per day, fetched from Binance public spot's `/api/v3/klines`
+endpoint. Covers every coin held on any day in any portfolio (the
+"held set" from `positions_daily.amount > 0`). The CT-ticker →
+Binance-symbol mapping lives in `coin_mapping` and is built lazily
+from `/api/v3/exchangeInfo`: filter for pairs with
+`quoteAsset=USDT`, key by `baseAsset`. Stored values are
+USDT-denominated; the tiny USDT/USD basis is absorbed into the
+`price_usd` column (~few bps drift, well within tolerance for
+portfolio valuation; the gold layer can apply a precise USDT/USD
+FX correction later).
+
+Stablecoins (USDT, USDC, DAI, BUSD, TUSD, …) emit synthetic 1.0
+prices because they can't be self-quoted on Binance. Tracked via
+a `STABLECOIN_SENTINEL` value in coin_mapping; the kline loop
+short-circuits on it.
+
+The `provider` column in `coin_mapping` + `coin_prices.source`
+keeps the door open to swapping market-data providers without a
+schema migration — `binance.py` is the current implementation;
+slotting in a Yahoo Finance secondary source (for delisted-from-
+CEX coins) would only need a new client module that exposes the
+same `build_mapping` / `ohlcv_historical` interface.
+
+**Three invocation patterns** (`binance.py` is the polite
+client; `fetch_prices.py` is the standalone CLI; `load.py` embeds
+the same engine):
+
+| Trigger | Mode | Behaviour |
+|---|---|---|
+| `load --fetch-prices` | missing | Fill (held, unpriced) gaps + always re-fetch the latest priced day per coin |
+| `fetch-prices --missing` | missing | Same as above; for use after a `load` without `--fetch-prices` |
+| `fetch-prices` (no flag) | full | Drop every coin_prices row sourced from Binance, re-fetch the full held range. Corruption recovery. |
+
+The "always re-fetch the latest priced day" rule exists because
+that row was an intraday snapshot when first written (Binance's
+klines include a partial-day kline for the current UTC day; the
+next run upgrades it to the daily close once the day closes).
+
+Rate-limit posture: `RATE_LIMIT_DELAY_S = 0.1s` (~600 calls/min)
+sits comfortably below Binance's ~1,200/min IP weight ceiling. A
+new portfolio's first backfill (~25 coins, 8 years each in
+1,000-day chunks = ~80 API calls) completes in well under a
+minute. Optional `BINANCE_API_KEY` enables authenticated tiers
+for higher rate limits — unused on the public endpoint.
+
+**Why coin_prices exists alongside portfolio_prices.** They serve
+different roles. `portfolio_prices` is the CT-derived per-portfolio
+view — every coin × day in each portfolio's "main fiat" CT
+setting, which can be EUR for some portfolios and USD for others.
+`coin_prices`
+is the cross-source canonical USD reference. For a portfolio
+whose CT main-fiat is USD, the gold layer can answer "value of
+this position on day X in USD" directly from `portfolio_prices`
+— `coin_prices` is not on the read path. For a non-USD portfolio,
+`coin_prices` provides the USD reference used to convert
+`portfolio_prices` (or equivalently to value `positions_daily`
+amounts directly).
+
+### FX rates: Frankfurter / ECB
+
+Non-USD fiat held as cash (EUR, CHF, GBP, …) needs a USD price
+too. We get that from `api.frankfurter.app` — a thin wrapper
+around the ECB's daily reference rates. Free, no key, no signup.
+Inserted into the same `coin_prices` table the crypto path uses,
+under `source='frankfurter'`. ECB publishes weekday-only rates;
+the client forward-fills across weekends and ECB holidays
+(standard FX convention — Friday's close applies through the
+weekend until Monday's publish).
+
+### Backfill: first-day-held edge cases
+
+For coins where a portfolio's first purchase pre-dates Binance's
+USDT-pair listing date, no kline exists for the gap day.
+`backfill_first_day_gaps()` runs after every fetch-prices and
+fills each (instrument, gap_date) where a same-instrument
+`coin_prices` row exists within 365 days into the future, using
+that next-available price. The source tag is the same as the
+upstream (`'binance'`) — from the gold layer's POV it's
+indistinguishable from a real kline.
+
+### Coverage gap
+
+After fetching + FX + backfill, the remaining USD-derivability
+gap is entirely coins with no Binance kline history at all —
+niche staked-ETH derivatives, brand-new pre-listing windows,
+regulatory-purged delistings (XMR, DASH, NANO, …). A Yahoo
+Finance secondary-source fallback would close that tail; left as
+a follow-up — the gold-layer's forward-fill or "unpriced"
+sentinel can handle the residual.
 
 ## Data model — locked-in facts
 

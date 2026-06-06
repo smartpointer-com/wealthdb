@@ -35,12 +35,21 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import duckdb
 
 from collectorkit import cli
+
+from binance import (
+    BinanceClient, build_mapping, get_api_key, PROVIDER as PRICE_PROVIDER,
+)
+from frankfurter import (
+    FrankfurterClient, SUPPORTED_FIATS,
+    PROVIDER as FX_PROVIDER,
+)
 
 log = logging.getLogger("cointracking.load")
 
@@ -51,15 +60,23 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 # imprecision rather than a real balance mismatch.
 RECONCILE_ABS_TOL = "0.00000001"
 
+# overview.csv coin column pair pattern. CoinTracking's wide-form
+# header has "<SYM> Value in <FIAT>" + "<SYM> Amount" per coin held;
+# aggregate columns are "Currencies Total Value in <FIAT>",
+# "Coins Total Value in <FIAT>", "Account Total Value in <FIAT>" —
+# the multi-word "Total" form is naturally excluded by [A-Z0-9_]+
+# (no spaces).
+COIN_VALUE_HEADER_RE = re.compile(r'^([A-Z0-9_]+) Value in ([A-Z]+)$')
+
 
 # Aggregate-then-window replay against the `transactions` table.
 # Bound parameter at the end is the snapshot_at for newly-written
 # rows.
 #
 # Type handler lists. CoinTracking has accumulated a ~16-type
-# vocabulary over time; the set below is the union observed across
-# the linked portfolios after running the reconciliation against
-# captured balance.csv data. Several types are direction-ambiguous
+# vocabulary over time; the set below covers the full vocabulary
+# observed across loaded portfolios after running the
+# reconciliation against balance.csv. Several types are direction-ambiguous
 # (Gift / Tip, Gift) — they appear on both lists, with the
 # `buy_amount IS NOT NULL` / `sell_amount IS NOT NULL` filter
 # routing each row to exactly one branch based on which column is
@@ -146,7 +163,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--bronze-dir", type=Path, default=Path("/data"),
         help=("Bronze tree root. Snapshots are UTC-timestamped "
-              "subdirs containing run.json + cu_<id>/{trades,balance}.csv. "
+              "subdirs containing run.json + cu_<id>/{trades,balance,overview}.csv. "
               "Default: %(default)s."),
     )
     p.add_argument(
@@ -160,6 +177,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Re-load snapshots already present in `dump_runs`. "
               "Without --force, previously-loaded snapshots are "
               "skipped."),
+    )
+    p.add_argument(
+        "--fetch-prices", action="store_true",
+        help=("After ingest, fetch missing USD prices from the "
+              "active price provider (Binance, USDT-denominated) "
+              "for every coin held in any portfolio on every day. "
+              "Inserts into "
+              "coin_prices with ON CONFLICT DO NOTHING, so already-"
+              "fetched dates are left untouched. The previous run's "
+              "latest priced day is always re-fetched (it was an "
+              "intraday snapshot at that time; this upgrades it to "
+              "the close). Equivalent to running "
+              "`fetch-prices --missing` immediately after load."),
     )
     cli.add_common_args(p)
     return p.parse_args(argv)
@@ -408,6 +438,126 @@ def upsert_positions_daily(
     return str(cutoff), rewritten
 
 
+def ingest_portfolio_prices(
+    conn: duckdb.DuckDBPyConnection,
+    manifest: dict, run_dir: Path, snapshot_at: int,
+) -> None:
+    """Parse each portfolio's overview.csv (one row per day, wide-form
+    pairs of `<SYM> Value in <FIAT>` + `<SYM> Amount` per held coin)
+    into portfolio_prices. Price = value / amount; rows where amount
+    is 0/empty are dropped (the "beware of divisions by zero" gate).
+
+    The quote currency varies between portfolios (CT's per-portfolio
+    "main fiat" setting — EUR for some users/portfolios, USD for
+    others) and is extracted from each column header at parse time.
+
+    ON CONFLICT DO NOTHING is the right semantics here: market prices
+    don't change retroactively, so re-running load.py against a
+    fresh bronze snapshot adds new dates without touching the old
+    rows' snapshot_at — gold doesn't reprocess unchanged history.
+    Corruption-recovery re-fetch goes through fetch-prices, not load."""
+    for portfolio in manifest["portfolios"]:
+        cu_id = portfolio["id"]
+        portfolio_id = f"cu_{cu_id}"
+        overview_csv = run_dir / f"cu_{cu_id}" / "overview.csv"
+        if not overview_csv.is_file():
+            log.warning("cu_%s: no overview.csv to ingest", cu_id)
+            continue
+
+        # Stage the CSV (all_varchar=true so empty cells parse cleanly
+        # and we control numeric promotion).
+        conn.execute("""
+            CREATE OR REPLACE TEMP TABLE raw_overview AS
+            SELECT * FROM read_csv_auto(?, header=true, all_varchar=true)
+        """, [str(overview_csv)])
+
+        # Header → coin-column-pair list. The regex filter
+        # (uppercase symbol + uppercase fiat, no spaces) keeps
+        # only the coin column pairs and naturally excludes the
+        # multi-word aggregate columns ("Currencies Total Value
+        # in <fiat>", etc.) plus the Date column.
+        cols = [c[0] for c in conn.execute("DESCRIBE raw_overview").fetchall()]
+        pairs: list[tuple[str, str]] = []  # [(sym, fiat)]
+        for c in cols:
+            m = COIN_VALUE_HEADER_RE.match(c)
+            if m:
+                sym, fiat = m.group(1), m.group(2)
+                amount_col = f"{sym} Amount"
+                if amount_col in cols:
+                    pairs.append((sym, fiat))
+
+        if not pairs:
+            log.warning("cu_%s: overview.csv has no recognisable coin "
+                        "column pairs (%d cols total)", cu_id, len(cols))
+            continue
+
+        n_inserted_total = 0
+        for sym, fiat in pairs:
+            value_col = f"{sym} Value in {fiat}"
+            amount_col = f"{sym} Amount"
+            # The Date column has one special value: "now" — a
+            # current-moment snapshot above the close-of-day rows;
+            # skip it. Real dates are YYYY/MM/DD.
+            #
+            # The TRY_CAST + > 0 filter is the division-by-zero
+            # guard: the row only contributes a price when the
+            # holding was non-zero on that day.
+            # CoinTracking's overview.csv emits the Date column in
+            # a per-portfolio locale: some portfolios come out as
+            # `YYYY/MM/DD`, others as `DD.MM.YYYY`. The COALESCE
+            # over TRY_STRPTIME handles both without needing to
+            # know which a given portfolio uses.
+            result = conn.execute(f"""
+                INSERT INTO portfolio_prices (
+                    as_of_date, portfolio_external_id,
+                    instrument_external_id, quote_currency,
+                    price, snapshot_at
+                )
+                SELECT
+                    COALESCE(
+                        TRY_STRPTIME("Date", '%Y/%m/%d')::DATE,
+                        TRY_STRPTIME("Date", '%d.%m.%Y')::DATE
+                    ) AS as_of_date,
+                    $portfolio AS portfolio_external_id,
+                    $sym       AS instrument_external_id,
+                    $fiat      AS quote_currency,
+                    TRY_CAST("{value_col}" AS DECIMAL(38, 18))
+                        / TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) AS price,
+                    $snap      AS snapshot_at
+                FROM raw_overview
+                WHERE "Date" != 'now'
+                  AND TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) IS NOT NULL
+                  AND TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) > 0
+                  AND TRY_CAST("{value_col}"  AS DECIMAL(38, 18)) IS NOT NULL
+                ON CONFLICT DO NOTHING
+            """, {
+                "portfolio": portfolio_id,
+                "sym": sym,
+                "fiat": fiat,
+                "snap": snapshot_at,
+            })
+            # DuckDB INSERT returns affected rows in result.df()['Count'][0]
+            # but the API is awkward; cheaper to count net new rows
+            # in portfolio_prices at the end if we ever need it.
+        # Diagnostic: log the (coin, fiat) pair count + total
+        # portfolio_prices for this portfolio.
+        n_rows_for_portfolio = conn.execute(
+            "SELECT COUNT(*) FROM portfolio_prices "
+            "WHERE portfolio_external_id = ?",
+            [portfolio_id]
+        ).fetchone()[0]
+        # Distinct fiats observed — if more than 1, the CT
+        # main-fiat preference was likely changed at some point
+        # and we'd want to flag it (the gold layer needs to know).
+        fiats = sorted({fiat for _, fiat in pairs})
+        log.info("cu_%s: portfolio_prices %d row(s) total; %d coin "
+                 "pair(s) ingested; quote=%s",
+                 cu_id, n_rows_for_portfolio, len(pairs),
+                 fiats[0] if len(fiats) == 1 else fiats)
+
+    conn.execute("DROP TABLE IF EXISTS raw_overview")
+
+
 def reconcile_balances(
     conn: duckdb.DuckDBPyConnection,
     manifest: dict, run_dir: Path,
@@ -512,10 +662,10 @@ def reconcile_balances(
                      cu_id, n_match, n_only_mine_zero)
             continue
 
-        # Issues exist — log each one so the operator has actionable
-        # info (wallet, instrument, amounts). These values are
-        # operator-private; never copy a log line into a tracked
-        # file or shared dump.
+        # Issues exist — log each one with wallet + instrument +
+        # amounts so a human reviewer can act on them. These values
+        # are private to the deployment; never copy a log line into
+        # a tracked file or shared dump.
         log.warning(
             "cu_%s: reconciliation issues — %d match, %d zero-"
             "only-mine, %d mismatch beyond ±%s, %d CT-has-I-don't, "
@@ -537,6 +687,380 @@ def reconcile_balances(
                         "instrument=%s replay_amount=%s "
                         "(CT balance.csv has no entry)",
                         wallet, instrument, mine_v)
+
+
+def ensure_coin_mapping(
+    conn: duckdb.DuckDBPyConnection,
+    client: BinanceClient,
+) -> dict[str, str]:
+    """Make sure coin_mapping covers every instrument that appears
+    in positions_daily with a non-zero amount. Returns the
+    {ticker: provider_coin_id} dict for the held coin set; entries
+    without a provider match are omitted (logged in build_mapping).
+
+    The mapping is cached in silver.coin_mapping so we don't hit
+    the provider's master-list endpoint on every fetch-prices run.
+    Updated lazily — only when a new ticker shows up that isn't
+    already cached for the active provider."""
+    held = [r[0] for r in conn.execute(
+        "SELECT DISTINCT instrument_external_id FROM positions_daily "
+        "WHERE amount > 0 ORDER BY 1"
+    ).fetchall()]
+
+    cached: dict[str, str | None] = {}
+    for sym, cid in conn.execute(
+        "SELECT instrument_external_id, provider_coin_id "
+        "FROM coin_mapping WHERE provider = ?",
+        [PRICE_PROVIDER],
+    ).fetchall():
+        cached[sym] = cid
+
+    missing = [s for s in held if s not in cached]
+    if missing:
+        log.info("looking up %s ids for %d new ticker(s)",
+                 PRICE_PROVIDER, len(missing))
+        fresh = build_mapping(client, missing)
+        now_ts = int(time.time())
+        for sym in missing:
+            cid = fresh.get(sym)  # None if no match (or fiat)
+            conn.execute(
+                """INSERT INTO coin_mapping
+                   (instrument_external_id, provider, provider_coin_id,
+                    payload, mapped_at)
+                   VALUES (?, ?, ?, NULL, ?)""",
+                [sym, PRICE_PROVIDER, cid, now_ts],
+            )
+            cached[sym] = cid
+
+    return {s: cid for s, cid in cached.items() if cid and s in held}
+
+
+def coin_date_range(
+    conn: duckdb.DuckDBPyConnection, sym: str,
+) -> tuple[date, date] | None:
+    """Return (min, max) as_of_date in positions_daily where the
+    user held `sym` (amount > 0). None if the coin was never held."""
+    row = conn.execute(
+        "SELECT MIN(as_of_date), MAX(as_of_date) FROM positions_daily "
+        "WHERE instrument_external_id = ? AND amount > 0",
+        [sym],
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return row[0], row[1]
+
+
+def fetch_coin_prices(
+    conn: duckdb.DuckDBPyConnection,
+    client: BinanceClient,
+    mode: str,
+) -> tuple[int, int]:
+    """Drive the price-provider fetch loop. `mode` is one of:
+
+      - 'missing': fetch (held, unpriced) gaps per coin. Always
+        re-fetches the latest priced day too — the price stored
+        for "today" on any previous run was an INTRADAY snapshot,
+        not a close, so the next run upgrades it to the close
+        price. Used by `load --fetch-prices` and
+        `fetch-prices --missing`.
+      - 'full':    drop every coin_prices row sourced from the
+        active provider, then re-fetch the full held range per
+        coin. Used by `fetch-prices` (no flag) for corruption
+        recovery (the provider occasionally returns bad values
+        for individual days).
+
+    Returns (coins_fetched, prices_written)."""
+    if mode not in ("missing", "full"):
+        raise ValueError(f"unknown fetch mode: {mode!r}")
+
+    mapping = ensure_coin_mapping(conn, client)
+    if not mapping:
+        log.info("no held coins have a %s mapping; nothing to fetch",
+                 PRICE_PROVIDER)
+        return 0, 0
+
+    if mode == "full":
+        log.warning("fetch-prices full re-fetch: TRUNCATE coin_prices "
+                    "for provider=%s (corruption-recovery mode)",
+                    PRICE_PROVIDER)
+        conn.execute(
+            "DELETE FROM coin_prices WHERE source = ?",
+            [PRICE_PROVIDER])
+
+    coins_fetched = 0
+    prices_written = 0
+    for sym in sorted(mapping.keys()):
+        coin_id = mapping[sym]
+        held_range = coin_date_range(conn, sym)
+        if not held_range:
+            continue
+        min_held, max_held = held_range
+
+        if mode == "missing":
+            # Earliest day in the held range with no price row yet.
+            first_unpriced = conn.execute("""
+                SELECT MIN(pd.as_of_date)
+                FROM positions_daily pd
+                LEFT JOIN coin_prices cp
+                  ON cp.instrument_external_id = pd.instrument_external_id
+                 AND cp.as_of_date = pd.as_of_date
+                 AND cp.source = ?
+                WHERE pd.instrument_external_id = ?
+                  AND pd.amount > 0
+                  AND cp.as_of_date IS NULL
+            """, [PRICE_PROVIDER, sym]).fetchone()[0]
+            # Latest priced day — this row was an intraday/live
+            # snapshot when first written; it needs to be re-fetched
+            # so the next run upgrades it to the close.
+            latest_priced = conn.execute("""
+                SELECT MAX(as_of_date) FROM coin_prices
+                WHERE instrument_external_id = ?
+                  AND source = ?
+            """, [sym, PRICE_PROVIDER]).fetchone()[0]
+            # If neither exists, this coin isn't in the held set;
+            # skip (defensive — coin_date_range already caught it).
+            candidates = [d for d in (first_unpriced, latest_priced)
+                          if d is not None]
+            if not candidates:
+                continue
+            fetch_from = min(candidates)
+            # Drop the latest priced day so the INSERT below
+            # actually writes the close price (ON CONFLICT DO
+            # NOTHING would otherwise preserve the stale-live row).
+            if latest_priced is not None:
+                conn.execute(
+                    """DELETE FROM coin_prices
+                       WHERE instrument_external_id = ?
+                         AND source = ?
+                         AND as_of_date = ?""",
+                    [sym, PRICE_PROVIDER, latest_priced],
+                )
+            fetch_to = max_held
+        else:  # full
+            fetch_from = min_held
+            fetch_to = max_held
+
+        # Convert to unix seconds, 00:00 UTC. Pad by 1 day on each
+        # side so day-boundary rounding doesn't lose anything.
+        from_ts = int(datetime.combine(
+            fetch_from, datetime.min.time(), tzinfo=timezone.utc
+        ).timestamp()) - 86400
+        to_ts = int(datetime.combine(
+            fetch_to, datetime.min.time(), tzinfo=timezone.utc
+        ).timestamp()) + 86400
+
+        log.info("%s (%s): fetching %s..%s",
+                 sym, coin_id, fetch_from, fetch_to)
+        try:
+            rows = client.ohlcv_historical(coin_id, from_ts, to_ts)
+        except Exception as exc:
+            log.error("%s (%s): fetch failed: %s — skipping coin",
+                      sym, coin_id, exc)
+            continue
+
+        coins_fetched += 1
+        fetched_at = int(time.time())
+        # ON CONFLICT DO NOTHING for 'missing' — preserves existing
+        # rows. For 'full' we already truncated above, so conflict
+        # shouldn't fire, but DO NOTHING is the safer fallback.
+        n = 0
+        for day, price in rows:
+            if not (min_held <= day <= max_held):
+                continue  # only days the position was actually held
+            conn.execute(
+                """INSERT INTO coin_prices
+                   (as_of_date, instrument_external_id, price_usd,
+                    source, fetched_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                [day, sym, price, PRICE_PROVIDER, fetched_at],
+            )
+            n += 1
+        prices_written += n
+        log.info("  %s: wrote %d daily price(s)", sym, n)
+
+    return coins_fetched, prices_written
+
+
+def backfill_first_day_gaps(
+    conn: duckdb.DuckDBPyConnection,
+    max_gap_days: int = 365,
+) -> int:
+    """For (instrument, day) pairs where positions_daily has amount
+    > 0 but coin_prices has no row, AND coin_prices has a later
+    row for the same instrument within `max_gap_days`, insert a
+    backfilled row using the earliest-later price.
+
+    Use case: first-day-held edge cases where Binance's USDT pair
+    was listed AFTER a portfolio's first purchase of that coin.
+    The price won't be exact for the gap day but is a sound
+    approximation when the listing gap is short relative to the
+    coin's price stability.
+
+    Source tag stays the same as the data we're extending
+    ('binance'); from the gold layer's POV the row is
+    indistinguishable from a real Binance kline.
+
+    Returns number of rows backfilled."""
+    fetched_at = int(time.time())
+    result = conn.execute(f"""
+        WITH gaps AS (
+            SELECT DISTINCT
+                pd.instrument_external_id AS instr,
+                pd.as_of_date AS gap_date
+            FROM positions_daily pd
+            LEFT JOIN coin_prices cp
+              ON cp.instrument_external_id = pd.instrument_external_id
+             AND cp.as_of_date = pd.as_of_date
+            WHERE pd.amount > 0
+              AND cp.as_of_date IS NULL
+        ),
+        first_later AS (
+            SELECT g.instr, g.gap_date,
+                   MIN(cp.as_of_date) AS next_priced
+            FROM gaps g
+            JOIN coin_prices cp
+              ON cp.instrument_external_id = g.instr
+             AND cp.as_of_date > g.gap_date
+            GROUP BY 1, 2
+        )
+        INSERT INTO coin_prices (
+            as_of_date, instrument_external_id, price_usd,
+            source, fetched_at
+        )
+        SELECT
+            fl.gap_date AS as_of_date,
+            fl.instr    AS instrument_external_id,
+            cp.price_usd,
+            cp.source,
+            {fetched_at} AS fetched_at
+        FROM first_later fl
+        JOIN coin_prices cp
+          ON cp.instrument_external_id = fl.instr
+         AND cp.as_of_date = fl.next_priced
+        WHERE DATEDIFF('day', fl.gap_date, fl.next_priced) <= {max_gap_days}
+        ON CONFLICT DO NOTHING
+    """).fetchall()
+    # DuckDB's INSERT doesn't return rowcount via fetchall but we
+    # can probe by counting BEFORE/AFTER, or trust the next coverage
+    # check. For now just log via a follow-up query.
+    n = conn.execute("""
+        SELECT COUNT(*)
+        FROM coin_prices
+        WHERE fetched_at = ?
+    """, [fetched_at]).fetchone()[0]
+    if n:
+        log.info("backfill: %d first-day gap(s) filled within %d-day "
+                 "window", n, max_gap_days)
+    return n
+
+
+def fetch_fx_rates(
+    conn: duckdb.DuckDBPyConnection,
+    client: FrankfurterClient,
+    mode: str,
+) -> tuple[int, int]:
+    """Fill USD-equivalent prices for any FIAT cash balance held in
+    positions_daily — EUR, CHF, etc. Inserted into coin_prices with
+    source='frankfurter'; same conflict-resolution semantics as
+    the crypto fetcher (missing = ON CONFLICT DO NOTHING +
+    re-fetch latest; full = TRUNCATE + re-insert).
+
+    ECB doesn't publish weekend rates. Gaps for Saturday/Sunday
+    and ECB holidays are LEFT — the gold layer is expected to
+    forward-fill (standard FX-rate convention).
+
+    Returns (fiats_fetched, prices_written)."""
+    if mode not in ("missing", "full"):
+        raise ValueError(f"unknown fetch mode: {mode!r}")
+
+    # Which fiat tickers actually appear in positions_daily?
+    held_fiats = [
+        r[0] for r in conn.execute("""
+            SELECT DISTINCT instrument_external_id
+            FROM positions_daily
+            WHERE amount > 0
+              AND instrument_external_id IN (
+                  SELECT UNNEST(?::VARCHAR[])
+              )
+            ORDER BY 1
+        """, [sorted(SUPPORTED_FIATS)]).fetchall()
+    ]
+    if not held_fiats:
+        return 0, 0
+
+    if mode == "full":
+        log.warning("fetch FX full re-fetch: TRUNCATE coin_prices "
+                    "for provider=%s", FX_PROVIDER)
+        conn.execute(
+            "DELETE FROM coin_prices WHERE source = ?", [FX_PROVIDER])
+
+    fiats_fetched = 0
+    prices_written = 0
+    for fiat in held_fiats:
+        held_range = coin_date_range(conn, fiat)
+        if not held_range:
+            continue
+        min_held, max_held = held_range
+
+        if mode == "missing":
+            first_unpriced = conn.execute("""
+                SELECT MIN(pd.as_of_date)
+                FROM positions_daily pd
+                LEFT JOIN coin_prices cp
+                  ON cp.instrument_external_id = pd.instrument_external_id
+                 AND cp.as_of_date = pd.as_of_date
+                 AND cp.source = ?
+                WHERE pd.instrument_external_id = ?
+                  AND pd.amount > 0
+                  AND cp.as_of_date IS NULL
+            """, [FX_PROVIDER, fiat]).fetchone()[0]
+            latest_priced = conn.execute("""
+                SELECT MAX(as_of_date) FROM coin_prices
+                WHERE instrument_external_id = ? AND source = ?
+            """, [fiat, FX_PROVIDER]).fetchone()[0]
+            candidates = [d for d in (first_unpriced, latest_priced)
+                          if d is not None]
+            if not candidates:
+                continue
+            fetch_from = min(candidates)
+            if latest_priced is not None:
+                conn.execute(
+                    """DELETE FROM coin_prices
+                       WHERE instrument_external_id = ?
+                         AND source = ?
+                         AND as_of_date = ?""",
+                    [fiat, FX_PROVIDER, latest_priced])
+            fetch_to = max_held
+        else:
+            fetch_from = min_held
+            fetch_to = max_held
+
+        log.info("FX %s: fetching %s..%s", fiat, fetch_from, fetch_to)
+        try:
+            rows = client.fetch_fiat_to_usd(fiat, fetch_from, fetch_to)
+        except Exception as exc:
+            log.error("FX %s fetch failed: %s — skipping", fiat, exc)
+            continue
+
+        fiats_fetched += 1
+        fetched_at = int(time.time())
+        n = 0
+        for day, rate in rows:
+            if not (min_held <= day <= max_held):
+                continue
+            conn.execute(
+                """INSERT INTO coin_prices
+                   (as_of_date, instrument_external_id, price_usd,
+                    source, fetched_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                [day, fiat, rate, FX_PROVIDER, fetched_at])
+            n += 1
+        prices_written += n
+        log.info("  %s: wrote %d daily rate(s)", fiat, n)
+
+    return fiats_fetched, prices_written
 
 
 def process_snapshot(
@@ -562,6 +1086,8 @@ def process_snapshot(
     ingest_portfolios_and_wallets(conn, manifest, snapshot_at)
 
     cutoff, n_rewritten = upsert_positions_daily(conn, snapshot_at)
+
+    ingest_portfolio_prices(conn, manifest, run_dir, snapshot_at)
 
     reconcile_balances(conn, manifest, run_dir)
 
@@ -617,6 +1143,20 @@ def main(argv: list[str]) -> int:
                 # Continue with the next snapshot — partial progress
                 # is better than a full rollback.
                 continue
+
+        if args.fetch_prices:
+            log.info("--fetch-prices: filling missing USD prices "
+                     "from %s + FX rates from %s",
+                     PRICE_PROVIDER, FX_PROVIDER)
+            client = BinanceClient(api_key=get_api_key())
+            coins, prices = fetch_coin_prices(conn, client, mode="missing")
+            log.info("--fetch-prices: %d coin(s) fetched, %d price "
+                     "row(s) written", coins, prices)
+            fx_client = FrankfurterClient()
+            fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode="missing")
+            log.info("--fetch-prices: %d fiat(s) fetched, %d FX "
+                     "rate row(s) written", fiats, fx_rows)
+            backfill_first_day_gaps(conn)
 
         log.info("done")
     finally:

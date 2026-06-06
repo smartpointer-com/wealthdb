@@ -2,7 +2,7 @@
 """cointracking discovery harness.
 
 Launches Camoufox in the container's Xvfb display, navigates to
-cointracking.info, and records everything the operator does via VNC
+cointracking.info, and records every action taken in the VNC session
 so login.py + download.py can be written from real traces:
 
   - **HAR** (`network.har`)        — every request + response with
@@ -14,9 +14,9 @@ so login.py + download.py can be written from real traces:
                                      network events at every action.
                                      Open with `playwright show-trace`.
   - **Click log**
-    (`clicks.jsonl`)               — one JSON object per click the
-                                     operator makes (timestamp, URL,
-                                     tag, id, text, xpath). Captured
+    (`clicks.jsonl`)               — one JSON object per click on
+                                     the page (timestamp, URL, tag,
+                                     id, text, xpath). Captured
                                      via a `document.addEventListener
                                      ('click', …)` init script
                                      because user-driven VNC clicks
@@ -31,7 +31,7 @@ so login.py + download.py can be written from real traces:
                                      inside the container). Operator
                                      still clicks Login + handles 2FA.
 
-Recording stops when the operator closes the last browser window
+Recording stops when the last browser window is closed
 (Camoufox's persistent context fires `close`) or after
 `--max-duration` (default 1h) as a safety net. Artefacts land under
 `/debug/<UTC-ts>/` so the bronze + silver tree under `/data` stays
@@ -192,7 +192,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--max-duration", type=int, default=3600,
         help=("Safety net: auto-close the recording after N seconds "
-              "even if the operator leaves the browser open. "
+              "even if the browser is left open. "
               "Default: %(default)s (1 hour)."),
     )
     p.add_argument(
@@ -233,10 +233,10 @@ def _now_iso() -> str:
 
 def _maybe_prefill_login(page, username: str, password: str) -> bool:
     """If the current page is on cointracking.info AND a login form
-    is present + visible AND the operator hasn't typed there yet,
-    fill the credentials. Returns True iff the fill actually
-    happened. Never submits — the operator clicks Login + handles
-    2FA in VNC."""
+    is present + visible AND nothing has been typed into the
+    fields yet, fill the credentials. Returns True iff the fill
+    actually happened. Never submits — Login + 2FA are driven
+    manually in the VNC session."""
     try:
         host = urlparse(page.url).hostname or ""
     except Exception:
@@ -296,8 +296,9 @@ def main(argv: list[str]) -> int:
     log.info("initial URL: %s", args.url)
 
     # Source the env file (no-op if absent). setdefault semantics
-    # mean a host-set value wins, so the operator can override via
-    # an explicit `export COINTRACKING_PASSWORD=…` before invocation.
+    # mean a host-set value wins, so the env file can be overridden
+    # by an explicit `export COINTRACKING_PASSWORD=…` ahead of the
+    # invocation.
     if envfile.source_env_file(args.env_file):
         log.info("env file:    %s (sourced)", args.env_file)
     username = os.environ.get(USER_ENV, "")

@@ -55,7 +55,7 @@ it appears in the allow-list above.
 
 ## 2. Long-lived session — protect it
 
-Per the user's note, the cointracking session cookie is multi-year.
+The cointracking session cookie is multi-year.
 That means a single MFA challenge bootstraps the collector for the
 foreseeable future. **Do not** invalidate it without cause:
 

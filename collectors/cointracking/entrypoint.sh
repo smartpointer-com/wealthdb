@@ -58,7 +58,7 @@ start_x11vnc() {
         -o /tmp/x11vnc.log >/dev/null 2>&1
     # The wrapper picks the host-side port (it knows which ones are
     # free); we publish it through this env var so the messages below
-    # print the actual port the operator needs to tunnel. Defaults
+    # print the actual port to tunnel through. Defaults
     # to 5900 for direct `docker run` invocations that skip the
     # wrapper.
     local label="$1"
@@ -74,7 +74,7 @@ start_x11vnc() {
 case "${1:-help}" in
     explore)
         # Discovery harness. Drives Camoufox over VNC, records the
-        # operator's clicks + every network fetch into /debug/<ts>/
+        # all clicks + every network fetch into /debug/<ts>/
         # so login.py + download.py can be written from real traces.
         start_xvfb
         start_x11vnc explore
@@ -98,11 +98,24 @@ case "${1:-help}" in
         exec python3 /app/download.py "$@"
         ;;
     load)
-        # The loader is a pure-stdlib stub for now. It applies the
-        # placeholder schema migration and exits — keeps the bronze
-        # tree + dump_runs gate honest until real artefacts exist.
+        # DuckDB silver loader. Ingests bronze CSVs (trades, balance,
+        # overview), recomputes positions_daily via the aggregate-
+        # then-window replay (incremental upsert from first deviation
+        # day), populates portfolio_prices from overview.csv, and
+        # reconciles vs balance.csv per portfolio. With --fetch-prices,
+        # also pulls missing USDT-denominated prices from Binance at
+        # the end.
         shift
         exec python3 /app/load.py "$@"
+        ;;
+    fetch-prices)
+        # USDT-denominated price backfill from Binance public spot
+        # API. --missing for gap-fill (same set as `load --fetch-
+        # prices`), no-flag for full re-fetch (corruption recovery).
+        # Always re-fetches the latest priced day because that row
+        # was an intraday snapshot when first written.
+        shift
+        exec python3 /app/fetch_prices.py "$@"
         ;;
     sh|bash)
         shift
@@ -117,7 +130,7 @@ Usage:
 
 Subcommands:
   explore     Launch Camoufox in the container's Xvfb display and
-              record everything the operator does via VNC (HAR +
+              record every action taken in the VNC session (HAR +
               Playwright trace + click log under /debug). Use during
               the discovery phase. Starts x11vnc on the first free
               host port in 127.0.0.1:5900-6000 (printed at handoff).
@@ -136,11 +149,21 @@ Subcommands:
   load        Ingest bronze snapshots into DuckDB silver: refresh
               transactions table, incremental upsert of
               positions_daily (replays from genesis; rewrites
-              only from the first deviation day), reconcile final
+              only from the first deviation day), populate
+              portfolio_prices from overview.csv, reconcile final
               balances vs the balance.csv. Pass --replay-only to
               re-run the holdings replay without re-ingesting
               bronze; --force to re-load already-processed
-              snapshots.
+              snapshots; --fetch-prices to also pull missing USDT-
+              denominated prices from Binance after ingest.
+  fetch-prices Fetch USDT-denominated prices for every held coin
+              from Binance public spot. --missing fills gaps (same
+              as `load --fetch-prices`); no flag re-fetches the
+              full held range (corruption recovery). Either mode
+              always re-fetches the latest priced day so an intraday
+              snapshot from a previous run gets upgraded to the
+              close price. Stablecoins (USDT, USDC, DAI, …) emit
+              synthetic 1.0 USD prices.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

@@ -46,6 +46,7 @@ log = logging.getLogger("cointracking.download")
 BASE = "https://cointracking.info"
 ENTER_COINS_URL = f"{BASE}/enter_coins.php"
 BALANCE_URL = f"{BASE}/balance_by_exchange.php"
+OVERVIEW_URL = f"{BASE}/overview.php"
 
 DEFAULT_PROFILE_DIR = Path("/secrets/cointracking-profile")
 DEFAULT_BRONZE_DIR = Path("/data")
@@ -70,6 +71,13 @@ TRADES_CSV_ITEM = ':text("CSV (Full Export)")'
 # variant). Need an exact text match so it doesn't grab
 # "CSV (Full Export)" if that ever shows up there too.
 BALANCE_CSV_ITEM = 'a:text-is("CSV"), button:text-is("CSV"), :text-is("CSV")'
+# /overview.php's Export menu has a different shape: the "CSV"
+# button is a DataTables `buttons-collection` (sub-menu trigger),
+# not a direct download. Click it to expand, then pick the
+# comma-separated variant from the .dt-button-collection that
+# appears.
+OVERVIEW_CSV_BUTTON = 'button.buttons-collection:has-text("CSV"), button:has-text("CSV")'
+OVERVIEW_CSV_ITEM = '.dt-button-collection button:has-text("Comma separated")'
 
 
 def is_authenticated(page) -> bool:
@@ -191,6 +199,31 @@ def trigger_export(page, item_selector: str, out_path: Path,
     return out_path
 
 
+def trigger_overview_csv_export(page, out_path: Path,
+                                dry_run: bool) -> Path | None:
+    """/overview.php's Export menu has a sub-menu pattern: Export →
+    CSV → Comma separated. The first CSV click opens the submenu;
+    we then pick the comma-separated variant."""
+    if dry_run:
+        log.info("(dry-run) would click Export → CSV → Comma separated "
+                 "→ save to %s", out_path)
+        return None
+
+    page.locator(EXPORT_BUTTON).first.click(timeout=10_000)
+    csv_btn = page.locator(OVERVIEW_CSV_BUTTON).first
+    csv_btn.wait_for(state="visible", timeout=10_000)
+    csv_btn.click(timeout=10_000)
+    item = page.locator(OVERVIEW_CSV_ITEM).first
+    item.wait_for(state="visible", timeout=10_000)
+    with page.expect_download(timeout=120_000) as dl_info:
+        item.click()
+    download = dl_info.value
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    download.save_as(str(out_path))
+    log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
+    return out_path
+
+
 def download_portfolio(page, portfolio: dict, run_dir: Path,
                        dry_run: bool) -> None:
     """Run the per-portfolio scrape: trade CSV + balance CSV."""
@@ -218,6 +251,17 @@ def download_portfolio(page, portfolio: dict, run_dir: Path,
               wait_until="domcontentloaded", timeout=30_000)
     trigger_export(page, BALANCE_CSV_ITEM, portfolio_dir / "balance.csv",
                    dry_run)
+
+    # Daily Balance overview — wide-form table with one row per day
+    # and a pair of (Value-in-fiat, Amount) columns per coin held.
+    # Used by load.py to derive portfolio_prices. Quote currency is
+    # the portfolio's "main fiat" setting in CT and varies between
+    # portfolios.
+    log.info("%s GET /overview.php?change_user=…", log_prefix)
+    page.goto(f"{OVERVIEW_URL}?change_user={cu_id}",
+              wait_until="networkidle", timeout=45_000)
+    trigger_overview_csv_export(page, portfolio_dir / "overview.csv",
+                                dry_run)
 
 
 def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,

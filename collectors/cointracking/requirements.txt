@@ -21,4 +21,9 @@ duckdb>=1.0,<2
 # rather than Camoufox. The Playwright Python package is already
 # installed in the base-camoufox image; the Firefox browser binary
 # is installed via `playwright install firefox` in the Dockerfile.
-# No extra Python deps needed here.
+
+# fetch_prices.py / binance.py drive the Binance public-spot REST
+# API for USDT-denominated price backfill. No key, no signup.
+# Optional BINANCE_API_KEY env var raises the rate-limit ceiling
+# for authenticated tiers (unused on the public endpoint).
+requests>=2.32,<3

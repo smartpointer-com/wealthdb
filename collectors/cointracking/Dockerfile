@@ -28,7 +28,7 @@ RUN playwright install firefox && playwright install-deps firefox
 # artefacts (.venv, real-credential JSONs, recorded Playwright
 # traces) never make it into the image even if .dockerignore is
 # incomplete.
-COPY explore.py login.py download.py load.py /app/
+COPY explore.py login.py download.py load.py fetch_prices.py binance.py frankfurter.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
