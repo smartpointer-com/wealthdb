@@ -49,7 +49,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides)
+			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides)
 			if err != nil {
 				return err
 			}
@@ -64,7 +64,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		spec, err := buildSourceSpec(*s, cfg.AccountOverrides)
+		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides)
 		if err != nil {
 			return err
 		}
@@ -118,9 +118,14 @@ load semantics.`)
 // buildSourceSpec assembles a loader.SourceSpec for one configured
 // silver source: translates `path` / `subsources` / `relationships`
 // to their silver-package counterparts and folds in the per-source
-// account_overrides slice. Returns an error when the config can't
-// be translated (e.g. invalid psn_start_override date).
-func buildSourceSpec(s config.SilverSource, overrides map[string]map[string]config.AccountOverride) (loader.SourceSpec, error) {
+// account_overrides + portfolio_overrides slices. Returns an error
+// when the config can't be translated (e.g. invalid
+// psn_start_override date).
+func buildSourceSpec(
+	s config.SilverSource,
+	accountOverrides map[string]map[string]config.AccountOverride,
+	portfolioOverrides map[string]map[string]config.PortfolioOverride,
+) (loader.SourceSpec, error) {
 	openSpec, err := s.ToSilverOpenSpec()
 	if err != nil {
 		return loader.SourceSpec{}, err
@@ -132,7 +137,7 @@ func buildSourceSpec(s config.SilverSource, overrides map[string]map[string]conf
 		Subsources:    openSpec.Subsources,
 		Relationships: openSpec.Relationships,
 	}
-	if cfgOvr := overrides[s.ID]; len(cfgOvr) > 0 {
+	if cfgOvr := accountOverrides[s.ID]; len(cfgOvr) > 0 {
 		spec.Overrides = make(map[string]loader.AccountOverride, len(cfgOvr))
 		for acctID, ov := range cfgOvr {
 			spec.Overrides[acctID] = loader.AccountOverride{
@@ -140,6 +145,14 @@ func buildSourceSpec(s config.SilverSource, overrides map[string]map[string]conf
 				Category:        ov.Category,
 				TaxWrapper:      ov.TaxWrapper,
 				ManagementStyle: ov.ManagementStyle,
+			}
+		}
+	}
+	if cfgOvr := portfolioOverrides[s.ID]; len(cfgOvr) > 0 {
+		spec.PortfolioOverrides = make(map[string]loader.PortfolioOverride, len(cfgOvr))
+		for portfolioID, ov := range cfgOvr {
+			spec.PortfolioOverrides[portfolioID] = loader.PortfolioOverride{
+				TaxWrapper: ov.TaxWrapper,
 			}
 		}
 	}

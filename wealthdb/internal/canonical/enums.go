@@ -22,6 +22,7 @@ const (
 	AssetClassMoneyMarket   AssetClass = "money_market"
 	AssetClassOTCDerivative AssetClass = "otc_derivative"
 	AssetClassMetal         AssetClass = "metal"
+	AssetClassCrypto        AssetClass = "crypto"
 	AssetClassOther         AssetClass = "other"
 )
 
@@ -30,7 +31,7 @@ var assetClassValues = map[AssetClass]struct{}{
 	AssetClassBond: {}, AssetClassOption: {}, AssetClassFuture: {},
 	AssetClassFxForward: {}, AssetClassFxOption: {},
 	AssetClassMoneyMarket: {}, AssetClassOTCDerivative: {},
-	AssetClassMetal: {}, AssetClassOther: {},
+	AssetClassMetal: {}, AssetClassCrypto: {}, AssetClassOther: {},
 }
 
 // Valid reports whether the receiver is one of the recognised
@@ -58,10 +59,16 @@ const (
 	// overlay account per portfolio, lazily emitted when the
 	// portfolio has at least one such position.
 	AccountKindOverlay AccountKind = "overlay"
-	// Crypto kinds split custodial-exchange holdings from self-
-	// custody wallets. Risk profile and reporting needs differ
-	// enough that one bucket would conflate them.
-	AccountKindCryptoExchange   AccountKind = "crypto_exchange"
+	// Crypto kinds. The cointracking adapter uses the single
+	// `crypto` bucket — CT's wallet-display-name vocabulary
+	// (an exchange, a hardware wallet, a staking provider, …) doesn't carry a
+	// reliable exchange-vs-self-custody signal, and the rest of
+	// the stack values the holding the same way either way. The
+	// finer-grained `crypto_exchange` / `crypto_self_custody`
+	// values stay reserved for any future adapter that does
+	// surface the distinction at source.
+	AccountKindCrypto            AccountKind = "crypto"
+	AccountKindCryptoExchange    AccountKind = "crypto_exchange"
 	AccountKindCryptoSelfCustody AccountKind = "crypto_self_custody"
 	AccountKindOther             AccountKind = "other"
 )
@@ -70,6 +77,7 @@ var accountKindValues = map[AccountKind]struct{}{
 	AccountKindBrokerage: {}, AccountKindCash: {},
 	AccountKindSafekeeping: {}, AccountKindCustody: {},
 	AccountKindOverlay: {},
+	AccountKindCrypto:         {},
 	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
 	AccountKindOther: {},
 }

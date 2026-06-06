@@ -116,6 +116,26 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// portfolio_overrides: same shape rules as account_overrides
+	// but keyed by portfolio_external_id. tax_wrapper is the only
+	// dimension wired through today.
+	for sourceID, perPortfolio := range c.PortfolioOverrides {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: portfolio_overrides[%q]: no silver_sources[].id matches", sourceID)
+		}
+		for portfolioID, ov := range perPortfolio {
+			if portfolioID == "" {
+				return fmt.Errorf("config: portfolio_overrides[%q]: empty portfolio_external_id key", sourceID)
+			}
+			if ov.TaxWrapper == "" {
+				return fmt.Errorf("config: portfolio_overrides[%q][%q]: tax_wrapper must be set", sourceID, portfolioID)
+			}
+			if !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
+				return fmt.Errorf("config: portfolio_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, portfolioID, ov.TaxWrapper)
+			}
+		}
+	}
+
 	// account_overrides: every outer key must name a declared
 	// silver source (catches typos early); every inner key must be
 	// non-empty (an empty account_external_id can't match anything

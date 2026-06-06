@@ -29,6 +29,15 @@ type Config struct {
 	// adapter has stamped its own values, so config wins on
 	// overlap. See docs/DESIGN.md §13.9.
 	AccountOverrides map[string]map[string]AccountOverride `json:"account_overrides,omitempty"`
+	// PortfolioOverrides is the portfolio-grain counterpart of
+	// AccountOverrides. Keyed by silver_source_id (outer) and then
+	// portfolio_external_id (inner). The override applies to every
+	// account whose `portfolio_external_id` matches — useful when
+	// a whole CT portfolio sits inside an IRA / trust / Stiftung
+	// wrapper and stamping the tax_wrapper on every wallet
+	// individually would be churn. Per-account overrides still win
+	// over portfolio overrides on the same column.
+	PortfolioOverrides map[string]map[string]PortfolioOverride `json:"portfolio_overrides,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -135,6 +144,21 @@ type AccountOverride struct {
 	Category        string `json:"category,omitempty"`
 	TaxWrapper      string `json:"tax_wrapper,omitempty"`
 	ManagementStyle string `json:"management_style,omitempty"`
+}
+
+// PortfolioOverride is one per-portfolio override entry. Applies
+// to every account in gold whose `portfolio_external_id` matches.
+// All fields are optional; the canonical-enum-typed ones are
+// validated at config-load time.
+//
+// Today only the `taxable_personal` → portfolio-specific wrapper
+// override is wired through (the main use case: a CT portfolio
+// held inside an IRA / 401k / trust / Stiftung wrapper where the
+// adapter's `taxable_personal` default is wrong for every wallet
+// in the portfolio). Other dimensions (nickname, management_style)
+// can be added here if a use case emerges.
+type PortfolioOverride struct {
+	TaxWrapper string `json:"tax_wrapper,omitempty"`
 }
 
 // Load reads and parses the JSON config at the given path,

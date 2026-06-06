@@ -107,7 +107,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 			}
 			continue
 		}
-		spec, err := buildSourceSpec(s, cfg.AccountOverrides)
+		spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides)
 		if err != nil {
 			fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
 			if firstErr == nil {

@@ -37,6 +37,12 @@ type SourceSpec struct {
 	// after adapters have stamped their own values; config wins on
 	// overlap. nil or empty entries are no-ops.
 	Overrides map[string]AccountOverride
+	// PortfolioOverrides is the per-portfolio_external_id override
+	// map for this source. Applied to every account whose
+	// PortfolioExternalID matches, BEFORE the per-account
+	// Overrides — so an account-level override always wins over
+	// a portfolio-level one on the same column.
+	PortfolioOverrides map[string]PortfolioOverride
 }
 
 // AccountOverride is the loader's view of one config-file
@@ -49,6 +55,13 @@ type AccountOverride struct {
 	Category        string
 	TaxWrapper      string
 	ManagementStyle string
+}
+
+// PortfolioOverride is the loader's view of one config-file
+// portfolio_overrides entry. TaxWrapper is the only dimension
+// wired through today; empty = no override.
+type PortfolioOverride struct {
+	TaxWrapper string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -160,7 +173,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): delete window: %w", spec.ID, err)
 		}
 
-		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides)
+		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply snapshots: %w", spec.ID, err)
 		}
@@ -253,9 +266,11 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 
 // applySnapshots drains conn.Snapshots into the gold writer.
 // Returns the total count of snapshot-grain rows written. The
-// overrides map (may be nil) is applied to AccountChange records
-// after stamping; see applyAccountOverrides.
-func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride) (int, error) {
+// override maps (either may be nil) are applied to AccountChange
+// records after stamping; portfolio_overrides go first so per-
+// account overrides win on overlap. See applyAccountOverrides
+// and applyPortfolioOverrides.
+func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
 		return 0, err
@@ -273,7 +288,10 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		// Stamp the silver_source_id on every record before write.
 		stampSnapshotBatch(&batch, sourceID)
 		// Config-file overrides go on top of whatever the adapter
-		// emitted; see DESIGN.md §13.9.
+		// emitted; see DESIGN.md §13.9. Portfolio overrides apply
+		// first (broader scope); per-account overrides override on
+		// the same column (narrower scope wins).
+		applyPortfolioOverrides(batch.Accounts, portfolioOverrides)
 		applyAccountOverrides(batch.Accounts, overrides)
 
 		// Portfolios first so the FK semantics on
@@ -392,6 +410,34 @@ func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
 func stampTransactionBatch(b *canonical.TransactionBatch, sourceID string) {
 	for i := range b.Transactions {
 		b.Transactions[i].SilverSourceID = sourceID
+	}
+}
+
+// applyPortfolioOverrides patches each AccountChange whose
+// PortfolioExternalID appears in the overrides map. Today only
+// tax_wrapper is wired through. Accounts without a
+// PortfolioExternalID (the orphan / standalone-account form most
+// non-portfolio-shaped adapters use) are skipped — no key to
+// match against.
+//
+// Called BEFORE applyAccountOverrides so per-account overrides on
+// the same column win.
+func applyPortfolioOverrides(accounts []canonical.AccountChange, overrides map[string]PortfolioOverride) {
+	if len(overrides) == 0 {
+		return
+	}
+	for i := range accounts {
+		if accounts[i].PortfolioExternalID == nil {
+			continue
+		}
+		ov, ok := overrides[*accounts[i].PortfolioExternalID]
+		if !ok {
+			continue
+		}
+		if ov.TaxWrapper != "" {
+			w := canonical.TaxWrapper(ov.TaxWrapper)
+			accounts[i].TaxWrapper = &w
+		}
 	}
 }
 
