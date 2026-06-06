@@ -240,13 +240,26 @@ SELECT
 
 // appendPositions emits one PositionChange per (account, coin)
 // where the running balance from transactions is positive.
+//
 // Quantity = SUM(buy_amount) − SUM(sell_amount) for the wallet's
-// trades. MarketValue = quantity × the latest portfolio_prices
-// entry for (portfolio, coin) in the portfolio's quote_currency;
-// NULL when no price is available (long-tail or pre-listing coins,
-// or portfolios whose overview.csv didn't make it into a bronze
-// snapshot yet). Currency = portfolio's quote_currency, defaulting
-// to USD when the portfolio has no portfolio_prices entries yet.
+// trades. Currency = portfolio's quote_currency (USD or EUR for
+// the typical CT setup), defaulting to USD when the portfolio
+// has no portfolio_prices entries yet (e.g. a portfolio whose
+// overview.csv hasn't been ingested).
+//
+// MarketValue is resolved in priority order:
+//
+//   1. The latest portfolio_prices entry for (portfolio, coin) in
+//      the position's currency — CT's own per-portfolio valuation,
+//      preferred because it reproduces CT's totals exactly.
+//   2. For USD-currency positions only, the latest coin_prices
+//      entry — the cross-source canonical USD reference. Kicks in
+//      for portfolios with no portfolio_prices yet, or for coins
+//      CT didn't include in that portfolio's overview.csv.
+//   3. For a USD-instrument USD-currency position, the trivial
+//      1.0 (USD is its own price; coin_prices doesn't carry it).
+//   4. NULL otherwise — most commonly a non-USD-quoted portfolio
+//      with a long-tail coin its overview.csv didn't price.
 func (c *Connection) appendPositions(ctx context.Context, batch *canonical.SnapshotBatch, snap int64) error {
 	// HAVING > 1e-10 drops floating-point dust (positions whose
 	// running balance rounds to zero from successive deposits +
@@ -290,6 +303,20 @@ latest_price AS (
         ON lpd.portfolio_external_id  = pp.portfolio_external_id
        AND lpd.instrument_external_id = pp.instrument_external_id
      WHERE pp.as_of_date = lpd.latest_date
+),
+latest_coin_price AS (
+    -- Cross-source canonical USD reference, latest per instrument.
+    -- QUALIFY-style window pick to avoid a self-join.
+    SELECT instrument_external_id, price_usd
+      FROM (
+        SELECT instrument_external_id, price_usd, as_of_date,
+               ROW_NUMBER() OVER (
+                   PARTITION BY instrument_external_id
+                   ORDER BY as_of_date DESC
+               ) AS rn
+          FROM coin_prices
+      )
+     WHERE rn = 1
 )
 SELECT
     b.portfolio_external_id,
@@ -297,7 +324,19 @@ SELECT
     b.instrument_external_id,
     CAST(b.qty AS VARCHAR) AS qty_str,
     COALESCE(q.quote_currency, 'USD') AS currency,
-    CAST(lp.price AS VARCHAR) AS price_str
+    CAST(
+        COALESCE(
+            lp.price,
+            -- coin_prices fallback for USD-currency positions.
+            CASE WHEN COALESCE(q.quote_currency, 'USD') = 'USD'
+                 THEN lcp.price_usd END,
+            -- USD-instrument USD-currency trivial price (coin_prices
+            -- doesn't carry USD itself; it's excluded as a fiat).
+            CASE WHEN b.instrument_external_id = 'USD'
+                  AND COALESCE(q.quote_currency, 'USD') = 'USD'
+                 THEN 1.0 END
+        )
+    AS VARCHAR) AS price_str
   FROM balances b
   LEFT JOIN quote_by_portfolio q
     ON q.portfolio_external_id = b.portfolio_external_id
@@ -305,6 +344,8 @@ SELECT
     ON lp.portfolio_external_id  = b.portfolio_external_id
    AND lp.instrument_external_id = b.instrument_external_id
    AND lp.quote_currency         = q.quote_currency
+  LEFT JOIN latest_coin_price lcp
+    ON lcp.instrument_external_id = b.instrument_external_id
  ORDER BY 1, 2, 3`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {

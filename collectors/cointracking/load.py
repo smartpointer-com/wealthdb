@@ -278,11 +278,21 @@ def ingest_transactions(
     conn: duckdb.DuckDBPyConnection,
     manifest: dict, run_dir: Path, snapshot_at: int,
 ) -> int:
-    """Truncate `transactions` and re-populate from every portfolio's
-    trades.csv. Returns the row count written. Each snapshot is a
-    complete dump; we don't keep per-snapshot history in
-    transactions. (positions_daily is the time-series store.)"""
-    conn.execute("DELETE FROM transactions")
+    """Replace `transactions` for the portfolios present in this
+    snapshot and re-populate from each one's trades.csv. Returns
+    the row count written. Each portfolio's trades.csv is a
+    complete dump (CT replays the full trade history on every
+    export), so per-portfolio truncate-and-reinsert is safe.
+    Portfolios missing from this snapshot keep whatever they were
+    last loaded with — relevant when CT's flaky linked-user
+    discovery drops one off a refresh."""
+    portfolio_ids = [f"cu_{p['id']}" for p in manifest["portfolios"]]
+    if portfolio_ids:
+        placeholders = ", ".join(["?"] * len(portfolio_ids))
+        conn.execute(
+            f"DELETE FROM transactions WHERE portfolio_external_id IN ({placeholders})",
+            portfolio_ids,
+        )
 
     total = 0
     for portfolio in manifest["portfolios"]:

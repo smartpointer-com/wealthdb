@@ -13,16 +13,19 @@ import (
 // Each row aggregates the positions and cash of every account
 // whose portfolio_external_id matches the row's portfolio.
 //
-// For each silver_source there is additionally a sentinel row
-// with PortfolioExternalID == "" that aggregates every account
-// in that source whose portfolio_external_id is NULL. This is
-// where Schwab, Swissquote, and any portfolio-less UBS accounts
-// land — the invariant
+// For each silver_source that has at least one orphan account
+// (portfolio_external_id IS NULL) there is additionally a
+// sentinel row with PortfolioExternalID == "" that aggregates
+// those accounts. This is where Schwab, Swissquote, and any
+// portfolio-less UBS accounts land — the invariant
 //
 //   sum(portfolios.total_value_<CCY>) == sum(accounts.total_value_<CCY>)
 //                                     == positions --with-cash total
 //
-// holds precisely because of the sentinel.
+// holds precisely because of the sentinel. Sources whose every
+// account belongs to a portfolio (cointracking, UBS in its pure
+// portfolio shape, …) skip the sentinel — there'd be nothing for
+// it to aggregate.
 type PortfolioRow struct {
 	SilverSourceID      string
 	PortfolioExternalID string // empty string for the sentinel row
@@ -101,10 +104,23 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 	if err != nil {
 		return nil, err
 	}
-	// Every silver source gets a sentinel portfolio row, even
-	// sources whose only accounts happen to all be inside a
-	// portfolio (the sentinel will report zero). Caller can filter.
+	// Silver sources that have at least one orphan account
+	// (account_external_id with no portfolio_external_id) get a
+	// sentinel portfolio row to aggregate those orphans into.
+	// Sources whose every account belongs to a portfolio (e.g.
+	// cointracking, UBS in the pure-portfolio-shape, …) skip the
+	// sentinel — a perpetually-empty "(no portfolio)" line is
+	// noise, not information.
+	hasOrphanAccount := make(map[string]bool)
+	for k, portID := range accountPortfolio {
+		if portID == "" {
+			hasOrphanAccount[k[0]] = true
+		}
+	}
 	for src := range sourcesSeen {
+		if !hasOrphanAccount[src] {
+			continue
+		}
 		portfolios = append(portfolios, PortfolioRow{SilverSourceID: src})
 	}
 
