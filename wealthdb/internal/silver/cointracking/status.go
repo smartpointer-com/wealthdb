@@ -52,30 +52,50 @@ SELECT
 	return s, nil
 }
 
-// ChangeWindow triggers on any new dump_run past `since`. We pin
-// the new change number to MAX(dump_runs.snapshot_at) — the silver
-// loader stamps that on every fresh download → load cycle, and an
-// idle reload that surfaces no new dump_run is a no-op.
+// ChangeWindow triggers on any new dump_run past `since`. NewChange
+// Number pins to MAX(dump_runs.snapshot_at) — the silver loader
+// stamps that on every fresh download → load cycle, so an idle
+// reload (no new dump_run) is a no-op.
 //
-// Unlike VIAC, we don't union transactions.occurred_at: every CT
-// transaction is replayed from the full trade history on each
-// silver load, so a new trade observation surfaces as a new
-// dump_run regardless. Tracking occurred_at separately would
-// re-trigger on every backfilled trade.
+// When triggered, the window spans EVERY transaction in silver and
+// every dump_run snapshot. Reason: silver's transactions table is
+// rebuilt on each load by replaying the full per-portfolio trade
+// history, so a "new" CT transaction at occurred_at=2017-09-02
+// can appear without the watermark side knowing — the only
+// reliable signal is a new dump_run. Once triggered, gold's
+// deleteWindow + applyTransactions effectively rebuild gold's
+// transactions for this source, which matches silver's replay
+// semantics.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 	const q = `
 SELECT
-    COALESCE((SELECT MIN(snapshot_at) FROM dump_runs WHERE snapshot_at > ?), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?)
+    -- trigger: any new dump_run past the caller's watermark?
+    (SELECT MIN(snapshot_at) FROM dump_runs WHERE snapshot_at > ?) AS trigger_dump,
+    -- window start: earliest of any transaction or any dump_run.
+    COALESCE(
+        LEAST(
+            COALESCE((SELECT CAST(EXTRACT(epoch FROM MIN(occurred_at)) AS BIGINT) FROM transactions), 9223372036854775807),
+            COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), 9223372036854775807)
+        ),
+        -1
+    ) AS window_start,
+    -- window end: latest of any transaction or any dump_run.
+    COALESCE(
+        GREATEST(
+            COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
+            COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
+        ),
+        -1
+    ) AS window_end,
+    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?) AS new_cn
 `
-	var start, end, newCN sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since, since).
-		Scan(&start, &end, &newCN); err != nil {
+	var trigger, start, end, newCN sql.NullInt64
+	if err := c.db.QueryRowContext(ctx, q, since, since).
+		Scan(&trigger, &start, &end, &newCN); err != nil {
 		return w, fmt.Errorf("cointracking ChangeWindow: %w", err)
 	}
-	if start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
+	if trigger.Valid && start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
 		w.Start = start.Int64
 		w.End = end.Int64
 		w.HasChanges = true

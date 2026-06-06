@@ -204,6 +204,14 @@ const (
 	TxKindCoupon          TxKind = "coupon"
 	TxKindCapitalGain     TxKind = "capital_gain"
 	TxKindInterest        TxKind = "interest"
+	// TxKindStaking is for proof-of-stake reward distributions
+	// (and the equivalents from delegated-staking / liquid-staking
+	// platforms). Distinct from TxKindInterest because most tax
+	// jurisdictions treat the two differently — staking rewards
+	// are taxed at receipt as ordinary income in some, as capital
+	// gains in others; the gold layer keeps them separate so
+	// downstream tax tooling can apply the right rule.
+	TxKindStaking         TxKind = "staking"
 	TxKindFee             TxKind = "fee"
 	TxKindTax             TxKind = "tax"
 	TxKindDeposit         TxKind = "deposit"
@@ -219,7 +227,8 @@ const (
 
 var txKindValues = map[TxKind]struct{}{
 	TxKindBuy: {}, TxKindSell: {}, TxKindDividend: {}, TxKindCoupon: {},
-	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindFee: {}, TxKindTax: {},
+	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindStaking: {},
+	TxKindFee: {}, TxKindTax: {},
 	TxKindDeposit: {}, TxKindWithdrawal: {}, TxKindFxSpot: {},
 	TxKindFxForward: {}, TxKindCorporateAction: {}, TxKindTransferIn: {},
 	TxKindTransferOut: {}, TxKindJournal: {}, TxKindOther: {},

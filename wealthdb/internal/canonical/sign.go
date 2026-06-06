@@ -28,9 +28,12 @@ func canonicalSign(k TxKind) int {
 	case TxKindSell, TxKindDeposit, TxKindDividend, TxKindCoupon, TxKindTransferIn:
 		return +1
 	}
-	// TxKindInterest, TxKindCapitalGain, TxKindFxSpot,
-	// TxKindFxForward, TxKindCorporateAction, TxKindJournal,
-	// TxKindOther: source-dependent.
+	// TxKindInterest, TxKindStaking, TxKindCapitalGain,
+	// TxKindFxSpot, TxKindFxForward, TxKindCorporateAction,
+	// TxKindJournal, TxKindOther: source-dependent. Staking is
+	// almost always inbound (+) but slashing penalties on
+	// proof-of-stake chains can yield a negative, so the canonical
+	// sign isn't pinned.
 	return 0
 }
 
