@@ -86,25 +86,58 @@ def is_authenticated(page) -> bool:
     return page.locator(UNAUTH_MARKER).count() == 0
 
 
+CHANGE_USER_ANCHOR_SELECTOR = "a[href*='change_user=']"
+
+
+def _wait_for_anchor_stability(page, max_wait_s: float = 15.0) -> int:
+    """Poll the change_user anchor count until it stays the same
+    across two consecutive 500 ms checks (or until max_wait_s
+    elapses). cointracking injects the linked-user dropdown
+    anchors via JS that doesn't reliably complete by networkidle —
+    this is the root of the flaky-portfolio-discovery issue. The
+    poll loop catches the late-injection case. Returns the final
+    observed count; the caller decides whether to fall back to
+    the cache when the count is suspicious."""
+    prev_count = -1
+    stable_polls = 0
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        count = page.locator(CHANGE_USER_ANCHOR_SELECTOR).count()
+        if count > 0 and count == prev_count:
+            stable_polls += 1
+            if stable_polls >= 2:
+                return count
+        else:
+            stable_polls = 0
+        prev_count = count
+        page.wait_for_timeout(500)
+    return max(0, prev_count)
+
+
 def discover_portfolios(page) -> list[dict]:
     """Return a list of dicts [{id, name, is_master}, ...] covering
-    every portfolio reachable from the logged-in session. The
-    "current" portfolio (master account) is read from the
-    `ctfa<id>` cookie name; the linked accounts come from in-page
-    anchor hrefs. Raises if no portfolios are discovered.
+    every portfolio reachable from the logged-in session in the
+    live scrape. The "current" portfolio (master account) is read
+    from the `ctfa<id>` cookie name; the linked accounts come from
+    in-page anchor hrefs. Raises if no portfolios are discovered.
 
-    Uses networkidle (not just domcontentloaded) for this initial
-    load because cointracking injects the portfolio-switcher
-    anchors via JS after the initial render — domcontentloaded is
-    too early and yields an incomplete list."""
+    Uses networkidle plus a follow-up stability poll because
+    cointracking injects the portfolio-switcher anchors via JS that
+    doesn't always complete by networkidle. The caller normally
+    merges this live scrape with the persistent known-portfolios
+    cache so a transient miss doesn't drop a portfolio from the
+    download set."""
     page.goto(ENTER_COINS_URL, wait_until="networkidle", timeout=45_000)
     if not is_authenticated(page):
         raise RuntimeError(
             "session unauthenticated; run `./cointracking login` first"
         )
 
+    # Wait for late-JS anchor injection to settle before scraping.
+    _wait_for_anchor_stability(page)
+
     # Linked accounts from <a href="?...change_user=N">
-    anchors = page.locator("a[href*='change_user=']").all()
+    anchors = page.locator(CHANGE_USER_ANCHOR_SELECTOR).all()
     seen: set[str] = set()
     portfolios: list[dict] = []
     for a in anchors:
@@ -148,6 +181,59 @@ def discover_portfolios(page) -> list[dict]:
 
     log.info("discovered %d portfolios", len(portfolios))
     return portfolios
+
+
+KNOWN_PORTFOLIOS_FILENAME = "known_portfolios.json"
+
+
+def load_known_portfolios(bronze_dir: Path) -> list[dict]:
+    """Read the persistent set of portfolios this collector has
+    ever observed across all prior runs. Returns [] when the file
+    doesn't exist yet (first-ever run) or when it can't be parsed
+    (one-off corruption shouldn't lock the collector out — the
+    live scrape still drives the run). The cache lives next to the
+    snapshot subdirs at `<bronze_dir>/known_portfolios.json`, not
+    inside any one snapshot, so it survives across runs."""
+    path = bronze_dir / KNOWN_PORTFOLIOS_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        portfolios = data.get("portfolios") or []
+        return [p for p in portfolios
+                if isinstance(p, dict) and "id" in p]
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("known_portfolios.json unreadable (%s); ignoring",
+                    exc)
+        return []
+
+
+def save_known_portfolios(bronze_dir: Path, portfolios: list[dict]) -> None:
+    """Persist the union of all portfolios ever observed. Caller
+    passes the post-merge list (scrape ∪ prior cache). Written
+    atomically via a temp + rename so a partial write can't
+    corrupt the cache."""
+    bronze_dir.mkdir(parents=True, exist_ok=True)
+    path = bronze_dir / KNOWN_PORTFOLIOS_FILENAME
+    tmp = path.with_suffix(".tmp")
+    payload = {"schema": 1, "portfolios": portfolios}
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def merge_portfolios(scraped: list[dict], cached: list[dict]) -> list[dict]:
+    """Union scraped + cached, keyed on portfolio id. Live-scrape
+    metadata (name, is_master) overrides whatever's cached on
+    overlap — CT can rename a portfolio between runs and the
+    refresh shouldn't be sticky. Cached-only entries are
+    preserved at the tail so a transient discovery miss doesn't
+    drop a portfolio from the download set."""
+    by_id: dict[str, dict] = {}
+    for p in cached:
+        by_id[str(p["id"])] = dict(p)
+    for p in scraped:
+        by_id[str(p["id"])] = dict(p)
+    return list(by_id.values())
 
 
 def set_table_mode_extended_plus(page) -> None:
@@ -265,9 +351,14 @@ def download_portfolio(page, portfolio: dict, run_dir: Path,
 
 
 def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
-                   snapshot_at: int) -> None:
+                   snapshot_at: int,
+                   failures: list[dict] | None = None) -> None:
     """Write run.json — the manifest the silver loader reads to
-    enumerate portfolios + their bronze paths."""
+    enumerate portfolios + their bronze paths. `portfolios` is the
+    list of successfully-downloaded portfolios; only these appear
+    in the `files` block. `failures`, when non-empty, records the
+    portfolios that were attempted but didn't complete (for
+    visibility; the silver loader ignores this block)."""
     manifest = {
         "snapshot_at": snapshot_at,
         "utc": ts,
@@ -281,9 +372,13 @@ def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
             for p in portfolios
         },
     }
+    if failures:
+        manifest["failures"] = failures
     (run_dir / "run.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8")
-    log.info("wrote run.json (%d portfolios)", len(portfolios))
+    log.info("wrote run.json (%d portfolios)%s",
+             len(portfolios),
+             f"; {len(failures)} failure(s)" if failures else "")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -334,19 +429,60 @@ def main(argv: list[str]) -> int:
         )
         try:
             page = context.new_page()
-            portfolios = discover_portfolios(page)
+            scraped = discover_portfolios(page)
+            cached = load_known_portfolios(args.bronze_dir)
+            portfolios = merge_portfolios(scraped, cached)
+
+            scraped_ids = {str(p["id"]) for p in scraped}
+            cache_only = [p for p in portfolios
+                          if str(p["id"]) not in scraped_ids]
+            if cache_only:
+                names = [p.get("name", p["id"]) for p in cache_only]
+                log.warning(
+                    "%d portfolio(s) in cache but missing from this "
+                    "discovery (likely flaky CT linked-user list): %s "
+                    "— attempting downloads anyway",
+                    len(cache_only), names,
+                )
+            # Save the union (scraped ∪ cache) so the next run
+            # already knows about any newly discovered portfolios
+            # even if the current run later fails.
+            if not args.dry_run:
+                save_known_portfolios(args.bronze_dir, portfolios)
+
+            successes: list[dict] = []
+            failures: list[dict] = []
             for portfolio in portfolios:
                 log.info(
                     "→ portfolio cu=%s name=%r%s",
                     portfolio["id"], portfolio["name"],
-                    " [master]" if portfolio["is_master"] else "",
+                    " [master]" if portfolio.get("is_master") else "",
                 )
-                download_portfolio(page, portfolio, run_dir, args.dry_run)
+                try:
+                    download_portfolio(page, portfolio, run_dir,
+                                       args.dry_run)
+                    successes.append(portfolio)
+                except Exception as exc:  # noqa: BLE001 — isolate per-portfolio
+                    log.error("cu=%s download failed: %s — continuing "
+                              "with next portfolio", portfolio["id"], exc)
+                    failures.append({
+                        "id": str(portfolio["id"]),
+                        "name": portfolio.get("name"),
+                        "error": str(exc),
+                    })
 
             if not args.dry_run:
-                write_manifest(run_dir, portfolios, ts, snapshot_at)
-                log.info("done: %d portfolios → %s",
-                         len(portfolios), run_dir)
+                write_manifest(run_dir, successes, ts, snapshot_at,
+                               failures=failures)
+                log.info(
+                    "done: %d/%d portfolios → %s%s",
+                    len(successes), len(portfolios), run_dir,
+                    f"; {len(failures)} failed" if failures else "",
+                )
+                # Non-zero exit only when EVERY portfolio failed —
+                # partial success still progresses the silver state
+                # for the portfolios that did download.
+                return 1 if successes == [] and failures else 0
             else:
                 log.info("dry-run done: %d portfolios visited",
                          len(portfolios))
