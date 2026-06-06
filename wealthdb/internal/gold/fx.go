@@ -90,18 +90,27 @@ func LookupRate(ctx context.Context, db *sql.DB, asOf int64, base, quote string,
 	}
 }
 
-// triangulationVehicle is the pivot currency used when a direct
-// or reciprocal rate isn't available. CHF reflects what UBS and
-// Swissquote actually publish — both feeds emit only CHF→X pairs,
-// so non-CHF cross conversions (EUR→USD, USD→EUR, ...) need to
-// route through CHF. Schwab publishes no FX at all, so the pivot
-// choice is moot for USD-only positions.
-const triangulationVehicle = "CHF"
+// triangulationVehicles are the pivot currencies tried in order
+// when a direct or reciprocal rate isn't available.
+//
+//   - CHF first because UBS, Swissquote, VIAC, and Relevate all
+//     emit CHF-pivoted rates, so non-CHF cross conversions among
+//     the Swiss-source data (EUR→USD, USD→EUR, ...) resolve here.
+//   - USD second because cointracking emits USD-pivoted rates
+//     (crypto→USD via Binance prices, fiat→USD via Frankfurter),
+//     which lets ETH→EUR resolve as ETH→USD→EUR for the EUR-base
+//     portfolios.
+//
+// Resolution order matters only when a pair could be resolved
+// through more than one vehicle — in which case the earliest
+// vehicle with both legs wins. Order independent for any pair
+// where exactly one vehicle has both legs (the typical case).
+var triangulationVehicles = []string{"CHF", "USD"}
 
 // ConvertValue converts an amount from one currency to another at
 // the given time + mode. Tries direct, then reciprocal, then
-// triangulation through CHF (when neither end of the pair is CHF
-// already). Returns ErrNoRate when no path is available.
+// triangulation through each pivot in triangulationVehicles.
+// Returns ErrNoRate when no path is available.
 func ConvertValue(ctx context.Context, db *sql.DB, asOf int64, value canonical.Decimal, from, to string, mode canonical.FxMode) (canonical.Decimal, error) {
 	if from == to {
 		return value, nil
@@ -112,29 +121,31 @@ func ConvertValue(ctx context.Context, db *sql.DB, asOf int64, value canonical.D
 		return canonical.Decimal{}, err
 	}
 
-	// Triangulation via CHF. Pointless if either end is already
-	// CHF — the direct/reciprocal pass would have found the rate
-	// (or definitively concluded it doesn't exist).
-	if from == triangulationVehicle || to == triangulationVehicle {
-		return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d", ErrNoRate, from, to, asOf)
-	}
-	mid, err := tryDirectOrReciprocal(ctx, db, asOf, value, from, triangulationVehicle, mode)
-	if err != nil {
-		// Includes ErrNoRate — bubble up unchanged so the caller
-		// sees the same not-available semantics.
-		if errors.Is(err, ErrNoRate) {
-			return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d (no %s leg)", ErrNoRate, from, to, asOf, triangulationVehicle)
+	for _, vehicle := range triangulationVehicles {
+		// Either end already being this vehicle means the direct
+		// or reciprocal pass would have found the rate (or
+		// concluded it doesn't exist); skip to the next vehicle.
+		if from == vehicle || to == vehicle {
+			continue
 		}
-		return canonical.Decimal{}, err
-	}
-	out, err := tryDirectOrReciprocal(ctx, db, asOf, mid, triangulationVehicle, to, mode)
-	if err != nil {
-		if errors.Is(err, ErrNoRate) {
-			return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d (no %s→%s leg)", ErrNoRate, from, to, asOf, triangulationVehicle, to)
+		mid, err := tryDirectOrReciprocal(ctx, db, asOf, value, from, vehicle, mode)
+		if err != nil {
+			if errors.Is(err, ErrNoRate) {
+				continue
+			}
+			return canonical.Decimal{}, err
 		}
-		return canonical.Decimal{}, err
+		out, err := tryDirectOrReciprocal(ctx, db, asOf, mid, vehicle, to, mode)
+		if err != nil {
+			if errors.Is(err, ErrNoRate) {
+				continue
+			}
+			return canonical.Decimal{}, err
+		}
+		return out, nil
 	}
-	return out, nil
+
+	return canonical.Decimal{}, fmt.Errorf("%w: %s→%s at %d (no triangulation path through %v)", ErrNoRate, from, to, asOf, triangulationVehicles)
 }
 
 // tryDirectOrReciprocal is the non-triangulating half of

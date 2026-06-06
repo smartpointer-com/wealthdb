@@ -41,6 +41,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPositions(ctx, &batch, snap); err != nil {
 		return nil, err
 	}
+	if err := c.appendFxRates(ctx, &batch); err != nil {
+		return nil, err
+	}
 
 	return &snapshotStream{batches: []canonical.SnapshotBatch{batch}}, nil
 }
@@ -378,6 +381,63 @@ SELECT
 			}
 		}
 		batch.Positions = append(batch.Positions, change)
+	}
+	return rows.Err()
+}
+
+// appendFxRates emits one FxRateChange per row in silver.coin_prices:
+// the (instrument → USD) pair the price fetcher populated. Drives
+// gold's `value_USD` / `wealthdb transactions -x USD` for any row
+// whose Currency is a non-base asset — staking rewards, crypto
+// transfers, Other Fees paid in non-base coins, etc. — by giving
+// gold's ConvertValue a direct base→quote rate.
+//
+// Each rate's snapshot_at is the price's `as_of_date` at UTC
+// midnight, so gold's historic-mode bracket interpolation picks
+// up the right day. Fiat-to-USD rates (EUR→USD, CHF→USD,
+// frankfurter-sourced) get the same treatment, which means an
+// EUR-base portfolio's USD valuation works through the direct
+// pair as well.
+func (c *Connection) appendFxRates(ctx context.Context, batch *canonical.SnapshotBatch) error {
+	const q = `
+SELECT
+    instrument_external_id,
+    CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT) AS snapshot_at,
+    CAST(price_usd AS VARCHAR)
+  FROM coin_prices
+ ORDER BY as_of_date, instrument_external_id`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return fmt.Errorf("appendFxRates: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			base       string
+			snap       int64
+			priceStr   sql.NullString
+		)
+		if err := rows.Scan(&base, &snap, &priceStr); err != nil {
+			return err
+		}
+		if !priceStr.Valid || priceStr.String == "" {
+			continue
+		}
+		rate, err := canonical.NewDecimalFromString(priceStr.String)
+		if err != nil {
+			continue
+		}
+		// Gold's mid_rate convention is "1 unit of QUOTE = MidRate
+		// units of BASE" (matches Swissquote / UBS rate emission).
+		// `coin_prices.price_usd` carries "1 unit of instrument =
+		// price_usd USD", so the instrument is the QUOTE and USD
+		// is the BASE.
+		batch.FxRates = append(batch.FxRates, canonical.FxRateChange{
+			SnapshotAt:    snap,
+			BaseCurrency:  "USD",
+			QuoteCurrency: base,
+			MidRate:       rate,
+		})
 	}
 	return rows.Err()
 }

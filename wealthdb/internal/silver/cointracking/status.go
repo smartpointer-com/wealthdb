@@ -72,19 +72,25 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 SELECT
     -- trigger: any new dump_run past the caller's watermark?
     (SELECT MIN(snapshot_at) FROM dump_runs WHERE snapshot_at > ?) AS trigger_dump,
-    -- window start: earliest of any transaction or any dump_run.
+    -- window start: earliest of any transaction, any dump_run,
+    -- or any coin_price (so the fx_rates the adapter emits from
+    -- coin_prices fall inside the window gold uses for
+    -- delete-and-reinsert).
     COALESCE(
         LEAST(
             COALESCE((SELECT CAST(EXTRACT(epoch FROM MIN(occurred_at)) AS BIGINT) FROM transactions), 9223372036854775807),
-            COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), 9223372036854775807)
+            COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), 9223372036854775807),
+            COALESCE((SELECT CAST(EXTRACT(epoch FROM CAST(MIN(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices), 9223372036854775807)
         ),
         -1
     ) AS window_start,
-    -- window end: latest of any transaction or any dump_run.
+    -- window end: latest of any transaction, any dump_run, or any
+    -- coin_price (same reason as the start clause).
     COALESCE(
         GREATEST(
             COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
-            COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
+            COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1),
+            COALESCE((SELECT CAST(EXTRACT(epoch FROM CAST(MAX(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices), -1)
         ),
         -1
     ) AS window_end,

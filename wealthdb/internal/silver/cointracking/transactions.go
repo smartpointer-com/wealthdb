@@ -31,10 +31,20 @@ import (
 //   Reward / Bonus, Income, Income/Expense (non taxable),
 //   Airdrop, Gift / Tip, Gift, Donation, Spend, Lost, Stolen)
 //     → 1 row per the CT-type-to-canonical-TxKind mapping in
-//       kindmap.go. Base-currency events emit Instrument=NULL,
-//       Quantity=NULL, NetAmount=±amount (cash event). Non-base
-//       events emit Instrument=ticker, Quantity=±amount,
-//       NetAmount=NULL (position event).
+//       kindmap.go. Currency = the asset that actually moved
+//       (not the portfolio's base ccy), NetAmount = ±amount in
+//       that currency, signed by direction. For non-base assets
+//       the row also carries Instrument=ticker + Quantity=
+//       ±amount so position-side rollups keyed on Instrument
+//       work too; base-currency cash events leave Instrument /
+//       Quantity NULL (cash-flow-only).
+//
+//       Setting Currency to the asset (e.g. ETH for a staking
+//       row) lets the gold layer compute value_USD by joining
+//       NetAmount against the asset's USD price on the event
+//       date. The Instrument==Currency overlap is excluded from
+//       the standard balance-derivation formula (see invariant
+//       below) so this doesn't double-count.
 //
 // Closing-balance invariant — for any asset C held in a portfolio:
 //
@@ -438,47 +448,52 @@ func projectNonTrade(
 		}
 	}
 
-	// Quantity = signed amount (positive inbound, negative outbound).
-	// Only attached when the row tracks a non-base asset.
-	signedQty := amount
+	// Signed amount (positive inbound, negative outbound) used for
+	// both Quantity (non-base position events) and NetAmount (the
+	// row's cash-flow in its Currency). ApplyCanonicalSign enforces
+	// the kind's sign for fixed-sign kinds (deposit/withdrawal/
+	// transfer_in/transfer_out/fee), agreeing with direction; for
+	// source-dependent kinds (interest, staking, other) it passes
+	// the value through unchanged, so the pre-signing per
+	// direction wins.
+	signed := amount
 	if cls.dir == dirOutbound {
-		signedQty = amount.Neg()
+		signed = amount.Neg()
 	}
+	netAmount := canonical.ApplyCanonicalSign(cls.kind, &signed)
 
+	// Currency is always the asset that moved — not the portfolio's
+	// base currency. Combined with NetAmount=signed-amount-in-
+	// Currency this lets the gold layer compute a USD valuation for
+	// any non-Trade event by joining on the asset's price-on-day
+	// (e.g. a staking row of 0.001 ETH has Currency=ETH and
+	// NetAmount=+0.001; value_USD = NetAmount * ETH-USD-on-day).
+	//
+	// The closing-holdings invariant still holds: gold readers
+	// excluding the Instrument==Currency overlap from the
+	// NetAmount sum (the standard form) avoid double-counting the
+	// non-base asset events, and the Trade rows (Currency=base,
+	// Instrument=non-base) continue to contribute their cash-flow
+	// to the base balance unaffected.
 	out := canonical.TransactionChange{
 		TransactionExternalID: txID,
 		OccurredAt:            occurredAt,
 		AccountExternalID:     walletID,
 		Kind:                  cls.kind,
-		Currency:              base,
+		Currency:              currency,
+		GrossAmount:           netAmount,
+		NetAmount:             netAmount,
 		Payload:               jsonOrNull(payload),
 	}
 
-	if isBase {
-		// Cash event in the base currency: NetAmount signed per
-		// kind. Fixed-sign kinds go through ApplyCanonicalSign;
-		// source-dependent kinds (interest, staking, other) get
-		// signed manually by direction.
-		var netAmount *canonical.Decimal
-		switch cls.kind {
-		case canonical.TxKindInterest,
-			canonical.TxKindStaking,
-			canonical.TxKindOther:
-			signed := amount
-			if cls.dir == dirOutbound {
-				signed = amount.Neg()
-			}
-			netAmount = &signed
-		default:
-			netAmount = canonical.ApplyCanonicalSign(cls.kind, &amount)
-		}
-		out.GrossAmount = netAmount
-		out.NetAmount = netAmount
-	} else {
-		// Non-base asset event: tracked via Quantity + Instrument.
+	// Instrument / Quantity are tracked only for non-base assets;
+	// base-currency cash events are cash-flow-only and stay
+	// Instrument=NULL / Quantity=NULL so a position-side rollup
+	// keyed on Instrument doesn't accidentally include them.
+	if !isBase {
 		instrumentKey := currency
 		out.InstrumentExternalID = &instrumentKey
-		out.Quantity = &signedQty
+		out.Quantity = &signed
 	}
 
 	if cls.preserveRaw {
