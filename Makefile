@@ -42,7 +42,8 @@ PYTHON := $(or \
         build-wealthdb test-wealthdb \
         build-collectors test-collectors \
         clean cleanall clean-wealthdb cleanall-wealthdb \
-        clean-collectors cleanall-collectors base-images
+        clean-collectors cleanall-collectors base-images \
+        update update-venvs update-wealthdb update-bases
 
 # ---- aggregates --------------------------------------------------------
 
@@ -154,6 +155,62 @@ endef
 
 $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 
+# ---- update: refresh all tooling --------------------------------------
+#
+# `make update` brings every layer of the toolchain forward in one shot:
+#
+#   - pip + project deps in every host venv (schwab-api, ubs-psn, …)
+#   - Go modules in wealthdb/ (go get -u all + go mod tidy)
+#   - Shared Docker base images, rebuilt with --pull so the underlying
+#     OS layers also refresh
+#
+# After this, run `make all` if you want the collector Docker images
+# rebuilt on top of the refreshed bases (the host venvs and the gold
+# engine pick up their updates immediately).
+#
+# Host venvs are auto-discovered as any collectors/<name>/.venv that
+# already exists — the venv has to have been created by `make build-<name>`
+# at least once. Docker collectors have no .venv on the host; their pip
+# is inside the image and refreshes when the image rebuilds.
+HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
+
+update: update-venvs update-wealthdb update-bases
+	@echo ""
+	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
+
+update-venvs:
+	@if [ -z "$(HOST_VENV_COLLECTORS)" ]; then \
+		echo "==> no host venvs to update (collectors/*/.venv)"; \
+	fi
+	@for c in $(HOST_VENV_COLLECTORS); do \
+		venv=collectors/$$c/.venv; \
+		echo "==> update collectors/$$c/.venv"; \
+		"$$venv/bin/python" -m pip install --upgrade pip setuptools wheel; \
+		if [ -f "collectors/$$c/requirements.txt" ]; then \
+			"$$venv/bin/python" -m pip install --upgrade -r "collectors/$$c/requirements.txt"; \
+		fi; \
+		"$$venv/bin/python" -m pip install --upgrade -e shared/collectorkit; \
+	done
+
+update-wealthdb:
+	@echo "==> update wealthdb/ go modules"
+	@cd wealthdb && go get -u ./... && go mod tidy
+	@echo "==> rebuild wealthdb image so the refreshed modules land in the build cache"
+	$(WEALTHDB) build
+
+update-bases:
+	@for img in $(BASE_IMAGES); do \
+		f="shared/images/$$img.Dockerfile"; \
+		[ -e "$$f" ] || continue; \
+		if grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then \
+			echo "==> rebuild base wealthdb/$$img:latest (FROM is local, no --pull)"; \
+			docker build -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+		else \
+			echo "==> rebuild base wealthdb/$$img:latest (--pull)"; \
+			docker build --pull -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+		fi; \
+	done
+
 # ---- help --------------------------------------------------------------
 
 help:
@@ -171,5 +228,9 @@ help:
 	@echo "  make clean              remove build artefacts (pycache, caches)"
 	@echo "  make cleanall           also remove docker images + venvs"
 	@echo "  make clean-<name> / cleanall-<name>   (incl. -wealthdb, -collectors)"
+	@echo ""
+	@echo "  make update             refresh all tooling: pip in every host venv,"
+	@echo "                          go modules in wealthdb/, shared Docker bases"
+	@echo "  make update-venvs / update-wealthdb / update-bases     (one layer at a time)"
 	@echo ""
 	@echo "  collectors: $(COLLECTORS)"
