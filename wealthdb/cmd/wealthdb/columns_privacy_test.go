@@ -35,16 +35,50 @@ func TestRedactAccountID(t *testing.T) {
 		{"Portfolio overlay", "Portfolio overlay"},
 		{"(no portfolio)", "(no portfolio)"},
 		{"Brokerage (other)", "Brokerage (other)"},
-		// Purely-alphabetic tokens (taxonomy labels) → pass through.
+		// Purely-alphabetic tokens (taxonomy labels) → pass through
+		// under the default PrivacyAccountID heuristic.
 		{"Savings", "Savings"},
 		{"Brokerage", "Brokerage"},
 		// Empty input passes through unchanged.
 		{"", ""},
 	}
 	for _, c := range cases {
-		got := redactAccountID(c.in)
+		got := redactAccountID(c.in, false)
 		if got != c.want {
-			t.Errorf("redactAccountID(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("redactAccountID(%q, false) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRedactAccountIDForceAlpha covers the PrivacyCustomerLabel
+// path — where purely-alphabetic strings ARE customer-identifying
+// (cointracking portfolio names) and must redact too. Same length-
+// sliding suffix rules; the only behavioural change vs the default
+// path is that the "has digit" exemption is dropped.
+func TestRedactAccountIDForceAlpha(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Purely-alphabetic CT-portfolio-shaped tokens. Synthetic.
+		{"abc", "***"},
+		{"abcd", "**cd"},
+		{"abcde", "***de"},
+		{"abcdef", "***def"},
+		{"abcdefg", "****efg"},
+		{"abcdefgh", "****efgh"},
+		{"abcdefghij", "******ghij"},
+		// Mixed-case + digit, same length-sliding redaction.
+		{"Abc2", "**c2"},
+		// Non-alphanumeric still passes through (cash sentinels,
+		// "(no portfolio)" etc., even under PrivacyCustomerLabel).
+		{"(no portfolio)", "(no portfolio)"},
+		// Empty input passes through unchanged.
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := redactAccountID(c.in, true)
+		if got != c.want {
+			t.Errorf("redactAccountID(%q, true) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

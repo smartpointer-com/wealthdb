@@ -21,6 +21,14 @@ type columnSpec[T any] struct {
 	// readout subcommands). PrivacyNone leaves the cell
 	// unchanged.
 	Privacy PrivacyClass
+	// PrivacyFunc, when non-nil, replaces Privacy for per-row
+	// decisions. Used where the right class depends on row
+	// context — typically silver_source: e.g. UBS portfolio
+	// labels ("Savings") are bank-assigned categories and stay
+	// legible, while cointracking portfolio names are user-chosen
+	// account identifiers and must be redacted regardless of
+	// their character class.
+	PrivacyFunc func(T) PrivacyClass
 }
 
 // PrivacyClass tags a column with the redaction shape applied
@@ -37,7 +45,16 @@ const (
 	// stars in the middle, last 2-4 chars exposed (length-
 	// dependent so very short IDs don't reveal too much), IBAN-
 	// style 2-letter country code preserved at the front.
+	// Purely-alphabetic strings pass through unredacted, since
+	// at this layer they're typically bank-assigned taxonomic
+	// labels (UBS "Savings" / "Brokerage").
 	PrivacyAccountID
+	// PrivacyCustomerLabel: user-chosen customer-identifying
+	// strings — cointracking portfolio names, for example.
+	// Redacted by the same shape as PrivacyAccountID but WITHOUT
+	// the purely-alphabetic exemption: every alphanumeric string
+	// of length ≥ 3 is treated as an identifier.
+	PrivacyCustomerLabel
 	// PrivacyQuantity: share counts. Rendered as "***" verbatim.
 	PrivacyQuantity
 	// PrivacyMoney: any monetary amount (prices, balances,
@@ -161,7 +178,11 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		for i, c := range cols {
 			cell := c.Extract(r)
 			if privacy {
-				cell = applyPrivacy(cell, c.Privacy, format)
+				class := c.Privacy
+				if c.PrivacyFunc != nil {
+					class = c.PrivacyFunc(r)
+				}
+				cell = applyPrivacy(cell, class, format)
 			}
 			cells[i] = cell
 		}
@@ -189,7 +210,9 @@ func applyPrivacy(value string, class PrivacyClass, format output.Format) string
 	}
 	switch class {
 	case PrivacyAccountID:
-		return redactAccountID(value)
+		return redactAccountID(value, false)
+	case PrivacyCustomerLabel:
+		return redactAccountID(value, true)
 	case PrivacyQuantity:
 		if format == output.FormatCSV || format == output.FormatCSVPlain {
 			return ""
@@ -234,15 +257,15 @@ func applyPrivacy(value string, class PrivacyClass, format output.Format) string
 //     the real IBAN length range and excludes long alphanumeric
 //     tokens (Schwab hashValues happen to be 64 hex chars and
 //     can start with letters; those don't qualify as IBANs).
-func redactAccountID(s string) string {
+func redactAccountID(s string, forceAlpha bool) string {
 	// Synthetic-suffix IDs (currently only the UBS-adapter
 	// "<portfolio_id>:overlay" form): redact the ID portion,
 	// preserve the suffix verbatim — it's a structural marker,
 	// not an identifier component.
 	if i := strings.IndexByte(s, ':'); i > 0 {
-		return redactAccountID(s[:i]) + s[i:]
+		return redactAccountID(s[:i], forceAlpha) + s[i:]
 	}
-	if !isLikelyAccountID(s) {
+	if !isLikelyAccountID(s, forceAlpha) {
 		return s
 	}
 	n := len(s)
@@ -264,10 +287,17 @@ func redactAccountID(s string) string {
 }
 
 // isLikelyAccountID matches the redactor's contract: at least 3
-// chars, alphanumeric-only, contains at least one digit. Excludes
-// synthetic display strings (spaces, parens, etc.) and
-// purely-alphabetic taxonomy labels.
-func isLikelyAccountID(s string) bool {
+// chars, alphanumeric-only. With `forceAlpha=false` (the default
+// PrivacyAccountID behaviour), additionally requires at least one
+// digit — purely-alphabetic strings are bank-assigned taxonomic
+// labels at this layer (UBS "Education" / "Authorized") and pass
+// through. With `forceAlpha=true` (PrivacyCustomerLabel) the
+// digit requirement is dropped — every alphanumeric token is
+// treated as an identifier. Strings with any non-alphanumeric
+// character (spaces, parens, slashes) pass through unchanged in
+// both modes; synthetic display strings like "Portfolio overlay"
+// / "(no portfolio)" stay legible.
+func isLikelyAccountID(s string, forceAlpha bool) bool {
 	if len(s) < 3 {
 		return false
 	}
@@ -283,7 +313,7 @@ func isLikelyAccountID(s string) bool {
 			return false
 		}
 	}
-	return hasDigit
+	return forceAlpha || hasDigit
 }
 
 func isASCIILetter(c byte) bool {

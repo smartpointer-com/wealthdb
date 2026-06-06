@@ -21,6 +21,25 @@ func init() {
 	register("portfolios", cmdPortfolios)
 }
 
+// portfolioNamePrivacy picks the right redaction class for the
+// portfolio column's display value, which mixes different
+// conventions across sources:
+//
+//   - cointracking emits the user-chosen CT account name as
+//     display_name. These are globally-unique customer-identifying
+//     strings on cointracking.info, so they always redact
+//     regardless of character class.
+//   - UBS / other Swiss-source adapters emit bank-assigned
+//     portfolio category labels (Savings / Brokerage / …).
+//     These pass through under the PrivacyAccountID heuristic
+//     because their info content is taxonomy, not identifier.
+func portfolioNamePrivacy(r gold.PortfolioRow) PrivacyClass {
+	if r.SilverSourceID == "cointracking" {
+		return PrivacyCustomerLabel
+	}
+	return PrivacyAccountID
+}
+
 // cmdPortfolios is the portfolio-grain rollup. One row per
 // registered portfolio plus one sentinel row per silver_source
 // that aggregates orphan accounts (no portfolio). The invariant
@@ -128,18 +147,21 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 			}
 			return formatDate(r.SnapshotAt)
 		}},
-		{Name: "portfolio", Align: output.AlignLeft, Privacy: PrivacyAccountID, Extract: func(r gold.PortfolioRow) string {
-			// Sentinel rows render as "(no portfolio)" so the user
-			// can spot them at a glance; real portfolios show their
-			// display_name if present, else their external_id.
-			if r.PortfolioExternalID == "" {
-				return "(no portfolio)"
-			}
-			if r.DisplayName != nil && *r.DisplayName != "" {
-				return *r.DisplayName
-			}
-			return r.PortfolioExternalID
-		}},
+		{Name: "portfolio", Align: output.AlignLeft,
+			Privacy:     PrivacyAccountID,
+			PrivacyFunc: portfolioNamePrivacy,
+			Extract: func(r gold.PortfolioRow) string {
+				// Sentinel rows render as "(no portfolio)" so the user
+				// can spot them at a glance; real portfolios show their
+				// display_name if present, else their external_id.
+				if r.PortfolioExternalID == "" {
+					return "(no portfolio)"
+				}
+				if r.DisplayName != nil && *r.DisplayName != "" {
+					return *r.DisplayName
+				}
+				return r.PortfolioExternalID
+			}},
 		{Name: "portfolio_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return r.PortfolioExternalID }},
 		{Name: "base_currency", Align: output.AlignLeft,
