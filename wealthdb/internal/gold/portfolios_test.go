@@ -92,10 +92,11 @@ func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
 		t.Errorf("PORT1 total_value = %v, want 1500", v)
 	}
 
-	// Sentinel: orphan account's positions=200 USD. base columns
-	// nil (no base_currency on the sentinel); out_ccy (CHF) gets
-	// 200/0.8 = 250 if rate exists. Without an FX rate seeded, the
-	// out_ccy column is nil too.
+	// Sentinel: one orphan account with BaseCurrency=USD and one
+	// $200 USD position. Per the agree-or-NULL rollup, the
+	// sentinel inherits BaseCurrency=USD (single qualifying
+	// account, no disagreement). Positions / cash get summed in
+	// that base — 200 / 0 / 200.
 	sentinel, ok := byID[""]
 	if !ok {
 		t.Fatal("sentinel row missing")
@@ -103,8 +104,14 @@ func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
 	if sentinel.SilverSourceID != "test-src" {
 		t.Errorf("sentinel src = %q, want test-src", sentinel.SilverSourceID)
 	}
-	if sentinel.BaseCurrency != nil {
-		t.Errorf("sentinel base_currency = %v, want nil", sentinel.BaseCurrency)
+	if sentinel.BaseCurrency == nil || *sentinel.BaseCurrency != "USD" {
+		t.Errorf("sentinel base_currency = %v, want USD", sentinel.BaseCurrency)
+	}
+	if v := sentinel.PositionsValueBase; v == nil || *v != "200" {
+		t.Errorf("sentinel positions_value = %v, want 200", v)
+	}
+	if v := sentinel.TotalValueBase; v == nil || *v != "200" {
+		t.Errorf("sentinel total_value = %v, want 200", v)
 	}
 
 	// Invariant in this fixture (USD output ccy with FX seeded
