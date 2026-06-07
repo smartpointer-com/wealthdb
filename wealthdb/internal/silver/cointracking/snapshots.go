@@ -443,6 +443,26 @@ SELECT
 			// as_of_date list, but skip defensively.
 			continue
 		}
+		qty := decimalPtrOrNil(qtyStr)
+		if qty == nil {
+			continue
+		}
+		// Fiat held inside a crypto wallet (USD/EUR/CHF/etc.) is
+		// the wallet's CASH leg, not a position — gold's
+		// `cash_balance` rollup is where it belongs. Splitting
+		// here keeps `positions_value` strictly the crypto
+		// market value and `cash_balance` strictly the fiat,
+		// matching how the brokerage adapters draw the line.
+		if isFiat(ticker) {
+			batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
+				SnapshotAt:        snap,
+				AccountExternalID: walletID,
+				Currency:          ticker,
+				BalanceKind:       canonical.BalanceKindClosing,
+				Amount:            *qty,
+			})
+			continue
+		}
 		instrumentKey := ticker
 		change := canonical.PositionChange{
 			SnapshotAt:           snap,
@@ -451,9 +471,9 @@ SELECT
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           canonical.AssetClassCrypto,
 			Currency:             currency,
-			Quantity:             decimalPtrOrNil(qtyStr),
+			Quantity:             qty,
 		}
-		if change.Quantity != nil && priceStr.Valid && priceStr.String != "" {
+		if priceStr.Valid && priceStr.String != "" {
 			price, err := canonical.NewDecimalFromString(priceStr.String)
 			if err == nil {
 				mv := change.Quantity.Mul(price)
