@@ -26,26 +26,94 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return &snapshotStream{}, nil
 	}
-	snap := w.End
-	batch := canonical.SnapshotBatch{}
 
-	if err := c.appendPortfolios(ctx, &batch, snap); err != nil {
+	// One batch per distinct positions_daily.as_of_date so gold's
+	// `PositionsAsOf` can answer historical "what did I hold on
+	// 2024-12-31" queries. Each batch's positions reflect the
+	// complete portfolio state on that day (forward-filled from
+	// the latest per-(portfolio,wallet,instrument) entry whose
+	// as_of_date <= the batch's snapshot_at). Dimensions
+	// (portfolios, accounts, instruments, fx_rates) only ride
+	// the latest batch — they're not snapshot-grain and a single
+	// upsert is enough.
+	snapDates, err := c.snapshotTimestamps(ctx)
+	if err != nil {
 		return nil, err
 	}
-	if err := c.appendAccounts(ctx, &batch, snap); err != nil {
-		return nil, err
+	if len(snapDates) == 0 {
+		// No positions_daily rows yet → fall back to a single
+		// dimensions-only batch at w.End so portfolios / accounts
+		// still get upserted on a fresh load with no trade history.
+		batch := canonical.SnapshotBatch{}
+		if err := c.appendPortfolios(ctx, &batch, w.End); err != nil {
+			return nil, err
+		}
+		if err := c.appendAccounts(ctx, &batch, w.End); err != nil {
+			return nil, err
+		}
+		if err := c.appendInstruments(ctx, &batch, w.End); err != nil {
+			return nil, err
+		}
+		if err := c.appendFxRates(ctx, &batch); err != nil {
+			return nil, err
+		}
+		return &snapshotStream{batches: []canonical.SnapshotBatch{batch}}, nil
 	}
-	if err := c.appendInstruments(ctx, &batch, snap); err != nil {
-		return nil, err
+
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(snapDates))
+	for _, t := range snapDates {
+		byTime[t] = &canonical.SnapshotBatch{}
 	}
-	if err := c.appendPositions(ctx, &batch, snap); err != nil {
-		return nil, err
-	}
-	if err := c.appendFxRates(ctx, &batch); err != nil {
+	if err := c.appendPositionsAcrossSnapshots(ctx, byTime); err != nil {
 		return nil, err
 	}
 
-	return &snapshotStream{batches: []canonical.SnapshotBatch{batch}}, nil
+	latest := snapDates[len(snapDates)-1]
+	latestBatch := byTime[latest]
+	if err := c.appendPortfolios(ctx, latestBatch, latest); err != nil {
+		return nil, err
+	}
+	if err := c.appendAccounts(ctx, latestBatch, latest); err != nil {
+		return nil, err
+	}
+	if err := c.appendInstruments(ctx, latestBatch, latest); err != nil {
+		return nil, err
+	}
+	if err := c.appendFxRates(ctx, latestBatch); err != nil {
+		return nil, err
+	}
+
+	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(snapDates))}
+	for _, t := range snapDates {
+		out.batches = append(out.batches, *byTime[t])
+	}
+	return out, nil
+}
+
+// snapshotTimestamps returns the sorted list of distinct
+// positions_daily.as_of_date values, converted to Unix epoch
+// seconds at UTC midnight. Each value becomes one snapshot in
+// gold; for asOf queries that land between change-days, gold's
+// "latest snapshot ≤ asOf" picks the right one automatically.
+func (c *Connection) snapshotTimestamps(ctx context.Context) ([]int64, error) {
+	const q = `
+SELECT DISTINCT CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT) AS snap_at
+  FROM positions_daily
+ ORDER BY snap_at`
+	rows, err := c.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("snapshotTimestamps: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var t int64
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
@@ -241,127 +309,139 @@ SELECT
 	return rows.Err()
 }
 
-// appendPositions emits one PositionChange per (account, coin)
-// where the running balance from transactions is positive.
+// appendPositionsAcrossSnapshots populates one PositionChange per
+// (snap_date, portfolio, wallet, instrument) with the
+// forward-filled holdings reconstructed from positions_daily.
+// Drives gold's historical asOf queries: each snapshot_at is a
+// distinct positions_daily.as_of_date (= a day on which any
+// holdings actually changed), and the row emitted for that
+// snapshot is the latest pre-snap entry per (portfolio, wallet,
+// instrument) — so even a position that hasn't traded in a year
+// reappears in every snapshot until its next change.
 //
-// Quantity = SUM(buy_amount) − SUM(sell_amount) for the wallet's
-// trades. Currency = portfolio's quote_currency (USD or EUR for
-// the typical CT setup), defaulting to USD when the portfolio
-// has no portfolio_prices entries yet (e.g. a portfolio whose
-// overview.csv hasn't been ingested).
+// Currency = portfolio's quote_currency (USD or EUR for the
+// typical CT setup), defaulting to USD when the portfolio has no
+// portfolio_prices entries yet.
 //
-// MarketValue is resolved in priority order:
+// MarketValue is resolved in priority order, as-of the snapshot's
+// date (not the latest available):
 //
-//   1. The latest portfolio_prices entry for (portfolio, coin) in
-//      the position's currency — CT's own per-portfolio valuation,
-//      preferred because it reproduces CT's totals exactly.
-//   2. For USD-currency positions only, the latest coin_prices
-//      entry — the cross-source canonical USD reference. Kicks in
-//      for portfolios with no portfolio_prices yet, or for coins
-//      CT didn't include in that portfolio's overview.csv.
+//   1. portfolio_prices for (portfolio, coin, currency) — CT's
+//      own per-portfolio valuation, preferred because it
+//      reproduces CT's totals exactly.
+//   2. For USD-currency positions, coin_prices.price_usd — the
+//      cross-source canonical USD reference, kicks in for
+//      portfolios with no portfolio_prices yet, or for coins CT
+//      didn't include in that portfolio's overview.csv.
 //   3. For a USD-instrument USD-currency position, the trivial
-//      1.0 (USD is its own price; coin_prices doesn't carry it).
+//      1.0.
 //   4. NULL otherwise — most commonly a non-USD-quoted portfolio
-//      with a long-tail coin its overview.csv didn't price.
-func (c *Connection) appendPositions(ctx context.Context, batch *canonical.SnapshotBatch, snap int64) error {
-	// HAVING > 1e-10 drops floating-point dust (positions whose
-	// running balance rounds to zero from successive deposits +
-	// withdrawals at full DECIMAL precision but lands at a sub-
-	// satoshi residual from CT's per-trade decimal scaling). The
-	// underlying amounts are DECIMAL(38,18) so this is a safety
-	// rail rather than a precision-loss guard.
+//      with a long-tail coin its overview.csv didn't price on
+//      that day.
+//
+// All three price tables are joined via the same LEAD-based
+// interval trick used for positions_daily, so each row resolves
+// in O(active intervals overlapping the snap date) rather than
+// O(snap_days × full table).
+func (c *Connection) appendPositionsAcrossSnapshots(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch) error {
 	const q = `
-WITH balances AS (
-    SELECT portfolio_external_id, wallet_external_id, instrument_external_id,
-           SUM(amount) AS qty
-      FROM (
-        SELECT portfolio_external_id, wallet_external_id,
-               buy_currency  AS instrument_external_id,
-               buy_amount    AS amount
-          FROM transactions
-         WHERE buy_amount IS NOT NULL AND buy_currency IS NOT NULL
-        UNION ALL
-        SELECT portfolio_external_id, wallet_external_id,
-               sell_currency,
-              -sell_amount
-          FROM transactions
-         WHERE sell_amount IS NOT NULL AND sell_currency IS NOT NULL
-      )
-     GROUP BY 1, 2, 3
-    HAVING SUM(amount) > 1e-10
+WITH distinct_days AS (
+    SELECT DISTINCT as_of_date FROM positions_daily
+),
+pos_intervals AS (
+    SELECT
+        portfolio_external_id, wallet_external_id, instrument_external_id,
+        as_of_date, amount,
+        LEAD(as_of_date) OVER (
+            PARTITION BY portfolio_external_id, wallet_external_id, instrument_external_id
+            ORDER BY as_of_date
+        ) AS next_d
+      FROM positions_daily
+),
+position_states AS (
+    SELECT
+        d.as_of_date AS snap_date,
+        i.portfolio_external_id, i.wallet_external_id, i.instrument_external_id,
+        i.amount
+      FROM distinct_days d
+      JOIN pos_intervals i
+        ON i.as_of_date <= d.as_of_date
+       AND (i.next_d IS NULL OR i.next_d > d.as_of_date)
+     WHERE i.amount > 1e-10
 ),
 quote_by_portfolio AS (
     SELECT portfolio_external_id, MIN(quote_currency) AS quote_currency
       FROM portfolio_prices GROUP BY 1
 ),
-latest_pp_date AS (
-    SELECT portfolio_external_id, instrument_external_id, MAX(as_of_date) AS latest_date
-      FROM portfolio_prices GROUP BY 1, 2
+pp_intervals AS (
+    SELECT
+        portfolio_external_id, instrument_external_id, quote_currency,
+        as_of_date, price,
+        LEAD(as_of_date) OVER (
+            PARTITION BY portfolio_external_id, instrument_external_id, quote_currency
+            ORDER BY as_of_date
+        ) AS next_d
+      FROM portfolio_prices
 ),
-latest_price AS (
-    SELECT pp.portfolio_external_id, pp.instrument_external_id,
-           pp.quote_currency, pp.price
-      FROM portfolio_prices pp
-      JOIN latest_pp_date lpd
-        ON lpd.portfolio_external_id  = pp.portfolio_external_id
-       AND lpd.instrument_external_id = pp.instrument_external_id
-     WHERE pp.as_of_date = lpd.latest_date
-),
-latest_coin_price AS (
-    -- Cross-source canonical USD reference, latest per instrument.
-    -- QUALIFY-style window pick to avoid a self-join.
-    SELECT instrument_external_id, price_usd
-      FROM (
-        SELECT instrument_external_id, price_usd, as_of_date,
-               ROW_NUMBER() OVER (
-                   PARTITION BY instrument_external_id
-                   ORDER BY as_of_date DESC
-               ) AS rn
-          FROM coin_prices
-      )
-     WHERE rn = 1
+cp_intervals AS (
+    SELECT
+        instrument_external_id, as_of_date, price_usd,
+        LEAD(as_of_date) OVER (
+            PARTITION BY instrument_external_id ORDER BY as_of_date
+        ) AS next_d
+      FROM coin_prices
 )
 SELECT
-    b.portfolio_external_id,
-    b.wallet_external_id,
-    b.instrument_external_id,
-    CAST(b.qty AS VARCHAR) AS qty_str,
+    CAST(EXTRACT(epoch FROM CAST(s.snap_date AS TIMESTAMP)) AS BIGINT) AS snap_at,
+    s.portfolio_external_id,
+    s.wallet_external_id,
+    s.instrument_external_id,
+    CAST(s.amount AS VARCHAR) AS qty_str,
     COALESCE(q.quote_currency, 'USD') AS currency,
     CAST(
         COALESCE(
-            lp.price,
-            -- coin_prices fallback for USD-currency positions.
+            pp.price,
             CASE WHEN COALESCE(q.quote_currency, 'USD') = 'USD'
-                 THEN lcp.price_usd END,
-            -- USD-instrument USD-currency trivial price (coin_prices
-            -- doesn't carry USD itself; it's excluded as a fiat).
-            CASE WHEN b.instrument_external_id = 'USD'
+                 THEN cp.price_usd END,
+            CASE WHEN s.instrument_external_id = 'USD'
                   AND COALESCE(q.quote_currency, 'USD') = 'USD'
                  THEN 1.0 END
         )
     AS VARCHAR) AS price_str
-  FROM balances b
-  LEFT JOIN quote_by_portfolio q
-    ON q.portfolio_external_id = b.portfolio_external_id
-  LEFT JOIN latest_price lp
-    ON lp.portfolio_external_id  = b.portfolio_external_id
-   AND lp.instrument_external_id = b.instrument_external_id
-   AND lp.quote_currency         = q.quote_currency
-  LEFT JOIN latest_coin_price lcp
-    ON lcp.instrument_external_id = b.instrument_external_id
- ORDER BY 1, 2, 3`
+  FROM position_states s
+  LEFT JOIN quote_by_portfolio q USING (portfolio_external_id)
+  LEFT JOIN pp_intervals pp
+    ON pp.portfolio_external_id  = s.portfolio_external_id
+   AND pp.instrument_external_id = s.instrument_external_id
+   AND pp.quote_currency         = COALESCE(q.quote_currency, 'USD')
+   AND pp.as_of_date <= s.snap_date
+   AND (pp.next_d IS NULL OR pp.next_d > s.snap_date)
+  LEFT JOIN cp_intervals cp
+    ON cp.instrument_external_id = s.instrument_external_id
+   AND cp.as_of_date <= s.snap_date
+   AND (cp.next_d IS NULL OR cp.next_d > s.snap_date)
+ ORDER BY snap_at, s.portfolio_external_id, s.wallet_external_id, s.instrument_external_id`
 	rows, err := c.db.QueryContext(ctx, q)
 	if err != nil {
-		return fmt.Errorf("appendPositions: %w", err)
+		return fmt.Errorf("appendPositionsAcrossSnapshots: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var (
+			snap                                    int64
 			portfolioID, walletID, ticker, currency string
 			qtyStr, priceStr                        sql.NullString
 		)
-		if err := rows.Scan(&portfolioID, &walletID, &ticker, &qtyStr, &currency, &priceStr); err != nil {
+		if err := rows.Scan(&snap, &portfolioID, &walletID, &ticker,
+			&qtyStr, &currency, &priceStr); err != nil {
 			return err
+		}
+		batch, ok := byTime[snap]
+		if !ok {
+			// Snapshot date not in our planned set — shouldn't
+			// happen since byTime was built from the same DISTINCT
+			// as_of_date list, but skip defensively.
+			continue
 		}
 		instrumentKey := ticker
 		change := canonical.PositionChange{
@@ -384,6 +464,7 @@ SELECT
 	}
 	return rows.Err()
 }
+
 
 // appendFxRates emits one FxRateChange per row in silver.coin_prices:
 // the (instrument → USD) pair the price fetcher populated. Drives
