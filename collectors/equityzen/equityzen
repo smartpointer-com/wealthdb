@@ -1,0 +1,88 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the equityzen container.
+# Mounts ~/.secrets/ (RW; persistent Camoufox profile + env file), the
+# bronze tree (RW), and a /debug dir for explore-phase artefacts.
+# Single-writer: the investor session cookie + 2FA prompts can't
+# tolerate concurrent invocations.
+#
+# `explore` forwards a free 5900-6000 host port so the live Camoufox
+# session can be driven over VNC; login + download + load run headlessly.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+
+set -euo pipefail
+
+NAME=equityzen
+ENV_PREFIX=EQUITYZEN
+ENV_VARS=(EQUITYZEN_USERNAME EQUITYZEN_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
+HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
+HAS_VNC=1           # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore)   # extends the default {vnc-login}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
+
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+    cat <<EOF
+equityzen — host wrapper
+
+\`explore\` + \`login\` + \`download\` + \`load\` are implemented (not yet
+wired into the suite). See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (\`docker build\`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live investor portal interactively;
+                      record HAR + Playwright trace + click log + saved
+                      blobs under /debug for analysis. --fresh wipes the
+                      profile so the next login forces TOTP.
+  login [args...]     Mint an EquityZen session via the SPA login form
+                      (headed Camoufox under Xvfb, no VNC). Prompts for the
+                      6-digit TOTP code on stdin; the profile in
+                      /secrets/equityzen-profile keeps future runs from
+                      re-prompting (EquityZen keeps the session alive until
+                      an explicit logout) and renews silently if still
+                      valid. --check probes the existing session without
+                      firing a 2FA push. Pass --totp CODE to supply the
+                      code non-interactively.
+  download [args...]  Capture bronze for every holding: offerings +
+                      positions + cash flows (getBuyerInvestments per
+                      stage + getMyInvestmentDetails per offering). Writes
+                      a UTC-timestamped subdir + run.json manifest under
+                      ~/wealthdb/equityzen/. --dry-run is a read-only smoke
+                      test (writes nothing); --documents also records
+                      doc/tax-centre metadata.
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      offerings, positions, cash_flows, tax_documents.
+                      --force re-loads snapshots already in dump_runs.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+$(wrapper_mounts_help)
+
+Override mounts via env:
+  EQUITYZEN_SECRETS_DIR=/path/to/secrets
+  EQUITYZEN_DATA_DIR=/path/to/data
+  EQUITYZEN_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  EQUITYZEN_USERNAME / EQUITYZEN_PASSWORD are read from
+  /secrets/equityzen.env inside the container (= \$HOME/.secrets/equityzen.env
+  on the host). chmod 0600. The TOTP code is prompted on stdin during
+  \`login\`; the session that lands in /secrets/equityzen-profile/ keeps
+  future logins from firing a 2FA push.
+EOF
+    exit 0
+fi
+
+wrapper_main "$@"
