@@ -1,11 +1,6 @@
 // Package carta projects the carta silver SQLite (private-market
 // holdings on carta.com) into canonical change records.
 //
-// Single-source, snapshot-only adapter (no transactions surfaced —
-// the carta silver has no transaction table; exercises ride inside
-// the securities payload and fund cash-flows are captured as
-// documents, not structured events).
-//
 // This source is one Carta "individual portfolio" holding one or more
 // ENTITIES, each either:
 //
@@ -21,24 +16,26 @@
 //
 // Gold projection:
 //
-//   - One ACCOUNT per entity. account_external_id = the Carta
-//     entity (corporation_id). AccountKind 'custody' (Carta
-//     safekeeps/administers private securities — it is not a
-//     trading brokerage). TaxWrapper 'taxable_personal'.
-//     ManagementStyle 'discretionary' for fund entities (GP-managed),
-//     'self_directed' for cap-table entities (the holder controls
-//     exercise/sale). All overridable via config account_overrides.
+//   - ONE custody ACCOUNT for the whole portfolio (account_external_id
+//     = the Carta individual_id; AccountKind 'custody', TaxWrapper
+//     'taxable_personal', ManagementStyle 'self_directed' — the
+//     fund-vs-equity split rides on each position's asset_class), plus
+//     a sentinel 'carta-funding' cash account carrying the transaction
+//     pairs (transactions.go). All overridable via account_overrides.
 //
-//   - One INSTRUMENT per entity (the issuer company / the fund),
-//     keyed by the entity id. Carta private securities have no
+//   - One INSTRUMENT per held company (the issuer / the fund), keyed
+//     by the entity id. Carta private securities have no
 //     ISIN/CUSIP/symbol, so the instrument is adapter-scoped.
 //
-//   - POSITIONS: one per cap-table security row (share lot / option
-//     grant / …) with Quantity + BookValue=cost and a NULL
-//     MarketValue (no current private valuation is exposed by the
-//     captured endpoints — including an exited holding's realization
-//     value); plus one position per fund entity with
-//     MarketValue=NAV and BookValue=capital_contributed.
+//   - One POSITION per held company: the cap-table share / option lots
+//     aggregated (Quantity = the share count, MarketValue the per-date
+//     valuation, BookValue = cost; the per-lot detail in the payload),
+//     or the fund's capital account (MarketValue = NAV, BookValue =
+//     contributed). Forward-filled per event date (snapshots.go).
+//
+//   - TRANSACTIONS: the cash-flow ledger (silver migration 0003)
+//     projected as balanced double-entry pairs on the funding sentinel
+//     (transactions.go), so its derived balance is always 0.
 //
 // Vesting schedules, documents, and cap-call rows stay silver-only —
 // gold has no canonical home for them today.

@@ -487,10 +487,10 @@ the **forward-filled** state — every position's latest delta
 per-source snapshot reaches gold's as-of query and an exited holding drops out
 exactly at its disposition date.
 
-### 6.1 Transactions — the sentinel funding account (planned)
+### 6.1 Transactions — the sentinel funding account
 
-Following equityzen, the gold adapter will project the `cash_flows` ledger
-(§5.2) as balanced double-entry transaction PAIRS on a sentinel funding account
+Following equityzen, the gold adapter projects the `cash_flows` ledger (§5.2) as
+balanced double-entry transaction PAIRS on a sentinel funding account
 (`carta-funding`, analogous to `equityzen-funding`) — distinct from the custody
 account that holds the positions. Carta exposes no real funding balance, so
 every event is a self-cancelling pair and the sentinel's derived balance is
@@ -504,13 +504,14 @@ magnitude; the adapter signs + splits it:
 | `exit`         | `sell` (+, with shares) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |
 
-The deposit / withdrawal legs are the external-bank boundary (no position); the
-buy / sell / contribution / distribution legs link to the company's instrument.
-The funding account emits one `CashBalanceChange` of 0; `Status` /
-`ChangeWindow` extend to span the `cash_flows` dates. `TxKindContribution`
-already exists in `internal/canonical/enums.go` (added for angellist /
-equityzen), so no enum change is needed. **Not yet implemented — the gold layer
-is locked by concurrent equityzen work; build when the lock lifts.**
+Every leg links to the company's instrument (mirroring equityzen); the buy /
+sell legs additionally carry the share lot + price. The funding account is an
+`accounts` row of kind `cash` with **no** `cash_balance` row — the 0 is implicit
+in the paired ledger (no real external balance is observed). `Status` reports
+the `cash_flows` date range as the transaction extrema; the load window already
+covers them (they coincide with the securities / fund_metrics deltas).
+`TxKindContribution` already exists in `internal/canonical/enums.go` (added for
+angellist / equityzen), so no enum change was needed.
 
 ## 7. Scope (as built)
 

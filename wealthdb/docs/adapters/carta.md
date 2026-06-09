@@ -12,9 +12,10 @@ the adapter introduces two private asset classes and values the fund at its
 NAV and cap-table equity at the holder's per-date fair-market-value (from the
 collector's valuation series), rather than inventing prices.
 
-Single-source, no transactions (§7). The silver is a per-position **change
-delta** series (collector `DESIGN.md` §5.1); the adapter forward-fills it into
-a complete portfolio at every event date (§5).
+Single-source. The silver is a per-position **change delta** series (collector
+`DESIGN.md` §5.1) that the adapter forward-fills into a complete portfolio at
+every event date (§5), plus a `cash_flows` ledger projected as double-entry
+transaction pairs on a sentinel funding account (§7).
 
 ## 1. Silver source
 
@@ -55,11 +56,11 @@ One SQLite DB (`~/wealthdb/carta/carta.db`). The relevant tables:
 
 | Gold table   | Carta silver source                              | Notes |
 |--------------|--------------------------------------------------|-------|
-| accounts     | `dump_runs` (`individual_id`)                    | one — the whole portfolio |
+| accounts     | `dump_runs` (`individual_id`)                    | the custody account (positions) + the `carta-funding` sentinel (transactions) |
 | instruments  | `entities`                                       | one per held company |
 | positions    | `securities` (cap-table, lots aggregated) + `fund_metrics` (fund) | one per company, forward-filled — see §5 |
-| transactions | —                                                | none (§7) |
-| cash_balances| —                                                | Carta holds no cash |
+| transactions | `cash_flows`                                     | double-entry pairs on the funding sentinel — see §7 |
+| cash_balances| —                                                | none; the funding sentinel's 0 is implicit in the paired ledger |
 | portfolios   | —                                                | not grouped at source (the engine rolls the accounts up under "(no portfolio)") |
 | fx_rates     | —                                                | adapter emits none (holdings are USD) |
 
@@ -146,9 +147,25 @@ was needed for the enum — only migration `0013` widening the
 
 ## 7. Transactions
 
-None. The carta silver has no transaction table: option exercises and fund
-cash-flows are reconstructed into the per-position deltas / NAV series above,
-not exposed as discrete events. `Status` reports the −1 transaction sentinel.
+The silver `cash_flows` ledger (collector DESIGN.md §5.2) is projected as
+**balanced double-entry pairs** on a sentinel funding account
+(`carta-funding`) — Carta exposes no real cash balance (a capital call is wired
+from an external bank straight into the SPV/fund, an exercise is paid
+externally, proceeds leave to an external account), so each event splits into an
+external-bank leg and a holding leg that net to zero. The funding account is a
+pure pass-through clearing account whose derived balance is always exactly 0
+(`AccountKind = cash`, no `cash_balance` row). Every leg links to the company's
+instrument; the buy / sell legs carry the share lot + price.
+
+| `cash_flows.kind` | gold pair (signed via `ApplyCanonicalSign`) |
+|---|---|
+| `exercise`     | `deposit` (+) + `buy` (−, with lot) |
+| `capital_call` | `deposit` (+) + `contribution` (−) |
+| `exit`         | `sell` (+, with lot) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
+| `distribution` | `distribution` (+) + `withdrawal` (−) |
+
+`Status` reports the `cash_flows` date range as the transaction extrema; the
+load window (the content-table span) already covers them.
 
 **Vesting schedules** (`vesting_schedules` / `vesting_events`),
 **documents**, **cap_calls**, and the `capital_events` audit timeline stay

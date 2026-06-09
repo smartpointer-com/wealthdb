@@ -70,6 +70,12 @@ func (s *snapshotStream) Close() error { return nil }
 // brokerage account holds one position per security with tax lots underneath.
 const accountKeyFallback = "carta"
 
+// fundingAccountKey is the sentinel cash account carrying the double-entry
+// transaction pairs (transactions.go). Carta exposes no real funding balance,
+// so every event is a balanced pair and this account's derived balance is
+// always exactly 0 — a pure pass-through clearing account.
+const fundingAccountKey = "carta-funding"
+
 // instrumentID / positionKey key the per-company instrument + position on the
 // Carta entity (corporation / fund) id, prefixed so it reads unambiguously.
 // One instrument and one position per company; the position keys on its
@@ -212,6 +218,21 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		ManagementStyle:   &style,
 		BaseCurrency:      &usd,
 		DisplayName:       &name,
+		FirstSeenAt:       t,
+		LastSeenAt:        t,
+	})
+
+	// The sentinel funding account carrying the double-entry transaction pairs
+	// (transactions.go): a synthetic cash conduit whose derived balance is
+	// always 0 (Carta's real external funding account is unobserved). No
+	// positions and no cash_balance row — the 0 is implicit in the paired
+	// ledger.
+	fundingName := "Carta (funding)"
+	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+		AccountExternalID: fundingAccountKey,
+		AccountKind:       canonical.AccountKindCash,
+		BaseCurrency:      &usd,
+		DisplayName:       &fundingName,
 		FirstSeenAt:       t,
 		LastSeenAt:        t,
 	})

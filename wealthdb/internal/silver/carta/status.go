@@ -21,11 +21,11 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
     UNION ALL SELECT snapshot_at FROM fund_metrics
 )`
 
-// Status reports the observable snapshot range. carta is snapshot-only — no
-// transactions — so the transaction-extrema fields stay at the -1 sentinel.
-// The range spans the event-dated content; LatestChangeNumber is the newest
-// dump (the live-time signal, one row per ingested bronze run, so an idle
-// reload is a no-op).
+// Status reports the observable snapshot + transaction ranges. The snapshot
+// range spans the event-dated content; the transaction range is the cash-flow
+// ledger (transactions.go). LatestChangeNumber is the newest dump (the
+// live-time signal, one row per ingested bronze run, so an idle reload is a
+// no-op).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
@@ -51,7 +51,45 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
+	if oldestTx, latestTx, ok, err := c.transactionExtrema(ctx); err != nil {
+		return s, err
+	} else if ok {
+		s.OldestTransactionAt = oldestTx
+		s.LatestTransactionAt = latestTx
+	}
 	return s, nil
+}
+
+// transactionExtrema is the MIN/MAX cash-flow date — the transaction ledger
+// (transactions.go). flow_date is mixed-format TEXT, so it is parsed in Go
+// (flowDateUnix) rather than via strftime. These dates are a subset of the
+// content span (each cash event coincides with a securities / fund_metrics
+// delta), so the load window already covers them.
+func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("carta transactionExtrema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return 0, 0, false, err
+		}
+		ts, parsed := flowDateUnix(d)
+		if !parsed {
+			continue
+		}
+		if !ok || ts < oldest {
+			oldest = ts
+		}
+		if !ok || ts > latest {
+			latest = ts
+		}
+		ok = true
+	}
+	return oldest, latest, ok, rows.Err()
 }
 
 // ChangeWindow triggers on any dump_run past `since` (a new download), but the

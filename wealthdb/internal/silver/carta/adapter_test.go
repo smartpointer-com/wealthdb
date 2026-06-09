@@ -1,0 +1,237 @@
+package carta
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu/wealthdb/internal/silver"
+)
+
+//go:embed testdata/silver_schema.sql
+var silverSchemaSQL string
+
+func newFixtureSilver(t *testing.T) (string, *sql.DB) {
+	t.Helper()
+	path := t.TempDir() + "/carta.db"
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(silverSchemaSQL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	return path, db
+}
+
+func openAdapter(t *testing.T, path string) silver.Connection {
+	t.Helper()
+	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func unixDate(t *testing.T, s string) int64 {
+	t.Helper()
+	tm, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("unixDate(%q): %v", s, err)
+	}
+	return tm.Unix()
+}
+
+// seed builds a one-portfolio book with both entity families and every
+// cash-flow kind:
+//   - entity 100 (cap-table): a held share lot + its exit, plus an `exercise`
+//     and a $0 `exit` cash flow.
+//   - entity 200 (fund): a capital-account NAV, plus a `capital_call` and a
+//     `distribution` cash flow.
+//
+// The entities / securities / fund_metrics snapshot dates span the cash-flow
+// dates, so the load window covers them.
+func seed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	d0101 := unixDate(t, "2023-01-01")
+	d0630 := unixDate(t, "2023-06-30")
+	dExit := unixDate(t, "2026-02-02")
+	stmts := fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload) VALUES
+    (%d, 100, 'IND1', 0, 'ACME Inc',  '{}'),
+    (%d, 200, 'IND1', 1, 'ACME Fund', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload) VALUES
+    (%d, 100, 'share', 1, 1000, 500, 5000, 'held',   '$', '{}'),
+    (%d, 100, 'share', 1, 1000, 500,    0, 'exited', '$', '{}');
+INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_value,
+    capital_contributed, payload) VALUES
+    (%d, 200, 'USD', '100000', '100000', '{}');
+INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
+    flow_date, amount, shares, price_per_share, currency, payload) VALUES
+    ('exercise:100:1', '100', 1700000000, 'exercise',     '01/01/2023',    500, 1000, 0.5,  'USD', '{}'),
+    ('exit:100',       '100', 1700000000, 'exit',         '2026-02-02',      0, 1000, 0,    'USD', '{}'),
+    ('call:200:s1',    '200', 1700000000, 'capital_call', '06/30/2023', 100000, NULL, NULL, 'USD', '{}'),
+    ('dist:200:s2',    '200', 1700000000, 'distribution', '03/31/2025',   2500, NULL, NULL, 'USD', '{}');`,
+		d0101, d0630, d0101, dExit, d0630)
+	if _, err := db.Exec(stmts); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKindIsCarta(t *testing.T) {
+	if got := (&Adapter{}).Kind(); got != "carta" {
+		t.Errorf("Kind() = %q, want carta", got)
+	}
+}
+
+func TestStatusTransactionExtrema(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	conn := openAdapter(t, path)
+
+	s, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Transaction extrema track the cash-flow dates: 2023-01-01 (first
+	// exercise) .. 2026-02-02 (the exit).
+	if s.OldestTransactionAt != unixDate(t, "2023-01-01") || s.LatestTransactionAt != unixDate(t, "2026-02-02") {
+		t.Errorf("tx extrema = [%d,%d], want [%d,%d]", s.OldestTransactionAt,
+			s.LatestTransactionAt, unixDate(t, "2023-01-01"), unixDate(t, "2026-02-02"))
+	}
+	if s.LatestChangeNumber != 1700000000 {
+		t.Errorf("LatestChangeNumber = %d, want 1700000000", s.LatestChangeNumber)
+	}
+}
+
+func TestSnapshotsEmitsFundingSentinel(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	accts := map[string]canonical.AccountChange{}
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range b.Accounts {
+			accts[a.AccountExternalID] = a
+		}
+		if !more {
+			break
+		}
+	}
+	// Two accounts: the custody account (positions) and the sentinel funding
+	// cash account (the transaction pairs).
+	if a, ok := accts["IND1"]; !ok || a.AccountKind != canonical.AccountKindCustody {
+		t.Errorf("custody account = %+v (ok=%v), want kind custody", a, ok)
+	}
+	if a, ok := accts[fundingAccountKey]; !ok || a.AccountKind != canonical.AccountKindCash {
+		t.Errorf("funding account = %+v (ok=%v), want kind cash", a, ok)
+	}
+}
+
+// TestTransactions verifies the double-entry funding-account model: each cash
+// flow becomes a balanced pair, every leg sits on the sentinel funding account
+// and links to its instrument, a $0 exit omits the $0 withdrawal, and the whole
+// ledger nets to exactly 0.
+func TestTransactions(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// exercise: deposit+buy. exit: sell ($0, withdrawal omitted). capital_call:
+	// deposit+contribution. distribution: distribution+withdrawal. 2+1+2+2 = 7.
+	if len(batch.Transactions) != 7 {
+		t.Fatalf("transactions = %d, want 7", len(batch.Transactions))
+	}
+
+	byID := map[string]canonical.TransactionChange{}
+	sum := canonical.NewDecimalFromInt(0)
+	for _, tx := range batch.Transactions {
+		byID[tx.TransactionExternalID] = tx
+		if tx.AccountExternalID != fundingAccountKey {
+			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		}
+		if tx.InstrumentExternalID == nil || *tx.InstrumentExternalID == "" {
+			t.Errorf("%s has no instrument link", tx.TransactionExternalID)
+		}
+		if tx.NetAmount != nil {
+			sum = sum.Add(*tx.NetAmount)
+		}
+	}
+	// The sentinel invariant: the funding account's derived balance is 0.
+	if !sum.IsZero() {
+		t.Errorf("funding ledger nets to %s, want 0.00", sum.StringFixed(2))
+	}
+
+	want := func(id, inst string, kind canonical.TxKind, net string) canonical.TransactionChange {
+		tx, ok := byID[id]
+		if !ok {
+			t.Fatalf("missing transaction %q", id)
+		}
+		if tx.Kind != kind {
+			t.Errorf("%s kind = %q, want %q", id, tx.Kind, kind)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.StringFixed(2) != net {
+			t.Errorf("%s net = %v, want %s", id, tx.NetAmount, net)
+		}
+		if tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != inst {
+			t.Errorf("%s instrument = %v, want %s", id, tx.InstrumentExternalID, inst)
+		}
+		return tx
+	}
+
+	// exercise → deposit (+) + buy (−, with lot).
+	want("exercise:100:1:deposit", "entity:100", canonical.TxKindDeposit, "500.00")
+	buy := want("exercise:100:1:buy", "entity:100", canonical.TxKindBuy, "-500.00")
+	if buy.Quantity == nil || buy.Quantity.StringFixed(2) != "1000.00" || buy.Price == nil || buy.Price.StringFixed(2) != "0.50" {
+		t.Errorf("buy lot = %v @ %v, want 1000.00 @ 0.50", buy.Quantity, buy.Price)
+	}
+	// capital_call → deposit (+) + contribution (−, no lot).
+	want("call:200:s1:deposit", "entity:200", canonical.TxKindDeposit, "100000.00")
+	contrib := want("call:200:s1:contribution", "entity:200", canonical.TxKindContribution, "-100000.00")
+	if contrib.Quantity != nil || contrib.Price != nil {
+		t.Errorf("contribution lot = %v/%v, want nil/nil", contrib.Quantity, contrib.Price)
+	}
+	// distribution → distribution (+) + withdrawal (−).
+	want("dist:200:s2:distribution", "entity:200", canonical.TxKindDistribution, "2500.00")
+	want("dist:200:s2:withdrawal", "entity:200", canonical.TxKindWithdrawal, "-2500.00")
+
+	// $0 exit: the $0 sell is kept (with the share lot), the $0 withdrawal omitted.
+	sell := want("exit:100:sell", "entity:100", canonical.TxKindSell, "0.00")
+	if sell.Quantity == nil || sell.Quantity.StringFixed(2) != "1000.00" {
+		t.Errorf("exit sell quantity = %v, want 1000.00", sell.Quantity)
+	}
+	if _, ok := byID["exit:100:withdrawal"]; ok {
+		t.Error("a $0 withdrawal was emitted for the $0 exit; it must be omitted")
+	}
+}
