@@ -1,0 +1,96 @@
+#!/bin/bash
+# SCAFFOLD — host-side wrapper around `docker run` for the angellist
+# container. Mounts ~/.secrets/ (RW; persistent Camoufox profile + env
+# file), the bronze tree (RW), and a /debug dir for explore-phase
+# artefacts. Single-writer: the Investor Portal session cookie + 2FA
+# prompts can't tolerate concurrent invocations.
+#
+# `explore` forwards a free 5900-6000 host port so the live Camoufox
+# session can be driven over VNC; login + download + load run headlessly.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+
+set -euo pipefail
+
+NAME=angellist
+ENV_PREFIX=ANGELLIST
+ENV_VARS=(ANGELLIST_USERNAME ANGELLIST_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
+HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
+HAS_VNC=1           # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore byo-login)   # extends the default {vnc-login}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
+
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+    cat <<EOF
+angellist — host wrapper (SCAFFOLD)
+
+This collector is scaffolded but not implemented. login / download / load
+are stubs that exit without contacting angellist.com; \`explore\` is the
+discovery harness to run first. See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (\`docker build\`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live Investor Portal interactively;
+                      record HAR + Playwright trace + click log + saved
+                      blobs under /debug for analysis. --fresh wipes the
+                      profile so the next login forces 2FA.
+  byo-login [args...] BYO-session bootstrap. Launch a genuine, stock
+                      Mozilla Firefox under VNC so you can clear
+                      AngelList's invisible anti-bot login by hand (the
+                      Camoufox/Playwright stack gets flagged). On a clean
+                      Firefox close, lifts the session from its plaintext
+                      cookies.sqlite into /secrets/angellist-cookies.json
+                      for download.py to inject. The tool types no
+                      credentials — you log in yourself.
+  login [args...]     Mint an Investor Portal session via the SPA login
+                      form. Prompts for the 2FA code on stdin; the
+                      Camoufox profile in /secrets/angellist-profile keeps
+                      future runs from re-prompting (lifetime TBD by
+                      explore). --check probes the existing session
+                      without firing a 2FA push.
+  download [args...]  Capture bronze for every LP investment: portfolio
+                      summary, per-vehicle detail (commitment / called /
+                      FMV / distributions / fees), and activity (cash-flow)
+                      history. (Tax-document / K-1 archive is a deferred
+                      increment.) Writes a UTC-timestamped
+                      subdir + run.json manifest under
+                      ~/wealthdb/angellist/. --dry-run walks the
+                      navigation without firing exports/downloads.
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      vehicles, positions, cash_flows, tax_documents.
+                      --force re-loads snapshots already in dump_runs.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+$(wrapper_mounts_help)
+
+Override mounts via env:
+  ANGELLIST_SECRETS_DIR=/path/to/secrets
+  ANGELLIST_DATA_DIR=/path/to/data
+  ANGELLIST_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  ANGELLIST_USERNAME / ANGELLIST_PASSWORD are read from
+  /secrets/angellist.env inside the container
+  (= \$HOME/.secrets/angellist.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during \`login\`; the session that
+  lands in /secrets/angellist-profile/ keeps future logins from firing a
+  2FA push (persistence lifetime to be confirmed during explore).
+EOF
+    exit 0
+fi
+
+wrapper_main "$@"

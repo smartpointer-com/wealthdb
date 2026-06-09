@@ -1,0 +1,28 @@
+# camoufox + playwright pins live in shared/images/base-camoufox.Dockerfile
+# (camoufox[geoip] + the matching Playwright pin). Bump them there; this
+# collector picks them up via FROM wealthdb/base-camoufox. The pin
+# matters: a camoufox-py release downloads a specific Firefox build whose
+# juggler patches target one Playwright minor — a mismatched Playwright
+# crashes the camoufox-launched Firefox.
+#
+# collectorkit (the shared cli/envfile/bronze/silver helpers) is also
+# installed in the base image as an editable package; login.py /
+# download.py / load.py import it directly.
+
+# pytest is bundled in the image so tests can be run inside the container
+# with `./angellist sh -c "cd /app && pytest"`, no host-side Python
+# toolchain required.
+pytest>=8,<9
+
+# Silver is plain SQLite + JSON1 (the repo default — DuckDB is the
+# cointracking-only exception). SQLite ships with CPython, so no driver
+# dependency is needed here. See DESIGN.md §"Why SQLite, not DuckDB".
+
+# login.py + download.py drive a browser (Camoufox for stealth, with
+# vanilla Playwright Firefox as a possible fallback). Both browser
+# stacks are pre-installed in the base-camoufox image; nothing to add
+# here until explore tells us which engine the Investor Portal needs.
+
+# Document downloads (K-1 / capital-account-statement PDFs) are fetched
+# through Playwright's authenticated request API using the live session
+# cookie — no separate HTTP client dependency required.
