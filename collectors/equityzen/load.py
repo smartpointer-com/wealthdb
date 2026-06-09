@@ -26,10 +26,11 @@ Schema (see migrations/0001_initial.sql):
   cash_flows     purchase + distributions (CLOSED transactions), id-keyed.
   tax_documents  per-offering document metadata, id-keyed.
 
-Valuation uses CLOSED-deal prices only (purchase + tenders); order-book
-asks and deal-era implied valuations are excluded. K-1 / fund-statement
-NAVs (which would enrich fund / un-tendered valuations) are a deferred
-parsing increment. See DESIGN.md §4/§5/§6.
+Valuation uses CLOSED-deal prices (purchase + tenders); order-book asks
+and deal-era implied valuations are excluded. Multi-company funds, which
+have no per-share tender price, instead revalue to the parsed capital-
+account-statement NAV, injected as `statement` events (see statements.py).
+See DESIGN.md §4/§5/§6.
 """
 from __future__ import annotations
 
@@ -231,6 +232,7 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
             pt.get("transactionDate"), node.get("investmentSize"),
             pt.get("executionFee"), _transfer_method(pt), "USD",
             "EquityZen purchase", canonical_json(pt_payload),
+            pt.get("sharesPostSplit"), pt.get("pricePostSplit"),
         ))
     for dt in (pt.get("distributedTransactions") or []):
         if not dt.get("id"):
@@ -240,6 +242,7 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
             dt.get("transactionDate"), dt.get("value"),
             dt.get("executionFee"), _transfer_method(dt), "USD",
             "EquityZen distribution", canonical_json(dt),
+            dt.get("sharesPostSplit"), dt.get("pricePostSplit"),
         ))
     return rows
 
@@ -387,8 +390,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
                 conn.execute(
                     "INSERT OR REPLACE INTO cash_flows(cash_flow_external_id, "
                     "deal_external_id, snapshot_at, kind, flow_date, amount, "
-                    "execution_fee, method, currency, description, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)", row)
+                    "execution_fee, method, currency, description, payload, "
+                    "shares, price_per_share) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
                 stats["cash_flows"] += 1
 
         manifest_path = run_dir / "run.json"

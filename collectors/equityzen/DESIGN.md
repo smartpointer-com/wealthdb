@@ -318,54 +318,108 @@ interests with a handful of cash flows each, shape transformation only).
 that to stay on the documented default** — same call `angellist` and
 `carta` made. Revisit if a DuckDB silver is in fact wanted.
 
-## 6. Phase 4: gold mapping — open questions
+## 6. Phase 4: gold adapter — implementation plan
 
-Gold (`wealthdb/internal/silver/equityzen/`, **not built in this pass** —
-the gold-side enum/adapter changes land) projects this silver
-into canonical `accounts` / `instruments` / `positions` / `transactions`.
-The decisions below are **signed off by the user** (2026-06); the rest are
-mechanical.
+The gold adapter (`wealthdb/internal/silver/equityzen/`) is **not built**:
+the gold layer is locked while the concurrent `angellist` adapter lands.
+This section is the plan to execute once the lock is released. It is
+**carta-shaped** — `carta` (`wealthdb/internal/silver/carta/`) is the
+finished sibling for private, no-ticker holdings, and equityzen mirrors it
+with one addition: equityzen surfaces **transactions** (carta does not).
 
-**1. Account modelling — DECIDED: one account, no portfolio, one position
-per investment.** A single canonical `account` ("EquityZen", the buyer
-relationship); `account_kind = brokerage`; one `instruments` + one
-`positions` row per investment per snapshot. No per-SPV accounts, no
-portfolio grouping. Matches `viac` / `relevate` / the `angellist`
-recommendation.
+### Enums — no gold change needed
 
-**2. basis vs FMV vs share-count.** `book_value = basis` (cost, from
-`primaryTransaction`), `market_value = FMV` (EquityZen's last mark — note
-it is **stale**, refreshed only on a new primary/secondary round, not
-daily), `quantity = share_count` (underlying shares attributable; NULL for
-a multi-company fund, where a unit/share count is ill-defined).
+The `asset_class` enum **already carries `spv` and `private_fund`** (added
+for carta/angellist; see `internal/canonical/enums.go`). So
+`ASSET_COMPANY → spv`, `ASSET_MULTI_COMPANY_FUND → private_fund` map onto
+existing values — no enum addition. `account_kind` / `tax_wrapper` /
+`management_style` values below all already exist.
 
-**3. asset_class — DECIDED: `spv` / `private_fund`.** EquityZen vehicles
-are all partnerships with the user as an LP holding a membership interest;
-the only distinction kept is single- vs multi-company, taken from the
-native `assetClass` field: `ASSET_COMPANY → spv`,
-`ASSET_MULTI_COMPANY_FUND → private_fund`. Both are **new gold
-`asset_class` enum values** the user will add gold-side (today's enum has
-neither; pre-IPO holdings currently have no correct value). *Cross-source
-note (not this collector's concern):* the user also intends to retag
-`ubs`'s private-equity fund positions — currently `other` — to
-`private_fund` for consistency.
+### Account / instrument / position model (resolved)
 
-**4. No capital calls — funded upfront.** EquityZen vehicles are funded in
-full at purchase (single `primaryTransaction`), so there is no
-committed/uncalled-capital problem `angellist` has to model. Cash flows
-are: one purchase, occasional fees, and distributions.
+- **One account** (the buyer relationship), `account_external_id` = the
+  `buyerId`, one position per investment — no per-SPV accounts, no portfolio
+  grouping. `account_kind = custody` (EquityZen administers the SPV/fund
+  interests; the buyer places no trades — **not** a trading `brokerage`;
+  this matches carta and **revises the earlier `brokerage` note**).
+  `tax_wrapper = taxable_personal`, `management_style = discretionary`
+  (passive LP). All overridable via gold `account_overrides`.
+- **One instrument per offering**, keyed `deal:<dealId>`,
+  `asset_class = spv | private_fund` (from `offerings.kind`), `name` = the
+  company (spv) / fund (private_fund). No ISIN/CUSIP — adapter-scoped, like
+  carta's per-entity instruments.
+- **Positions** map straight off the silver `positions` event rows:
+  `quantity = shares_held` (NULL for funds — units are not a share count),
+  `market_value = market_value` (already the chosen mark — tender price for
+  SPVs, statement NAV for funds, cost otherwise), `book_value =
+  cost_basis_remaining`.
 
-**5. transaction kinds for purchase / distribution / fee.** `TxKind` has
-no `distribution`. Map purchase → `buy`/`transfer_in`, distribution →
-`withdrawal`/`capital_gain` (carry the source `type`, e.g. `ACH`, in
-`payload`/`description`), fee → `fee`; or motivate new `TxKind` values
-gold-side. Positive-`net_amount` = inflow convention applies.
+### Adapter shape (mirror carta's five files)
 
-**6. management_style + tax_wrapper.** GP/manager-administered, the buyer
-places no trades → `management_style = discretionary` (cf. `angellist`).
-`tax_wrapper = taxable_personal` by default, unless the EquityZen
-relationship is held inside a trust/entity (`trust_*` / `foundation`
-exist). Both nullable; settable via `account_overrides`.
+- `adapter.go` — `silver.Register`, `Open` (read-only SQLite), `Connection`.
+- `status.go` — `Status` + `ChangeWindow`, driven by `dump_runs`
+  (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op);
+  observable span = MIN/MAX over `positions.as_of_date` (snapshots) **and**
+  `cash_flows.flow_date` (transactions). Unlike carta, the transaction
+  extrema are populated.
+- `snapshots.go` — **forward-fill**, exactly like carta: for each distinct
+  `positions.as_of_date` in the window, emit a COMPLETE portfolio snapshot =
+  each deal's latest `positions` event `≤ t` **where `is_open = 1`** (so an
+  exited deal drops out at its exit date), one `PositionChange` per deal.
+  Note: silver `as_of_date` is **source ISO TEXT** → the adapter converts to
+  the canonical BIGINT unix `snapshot_at`.
+- `transactions.go` — the addition over carta: `cash_flows` →
+  `TransactionChange`. `purchase` → `buy` (negative `net_amount`, `quantity`
+  = shares, `price` = purchase price). A `distribution` cash flow maps **by
+  the offering's asset class** — the source bucket can't distinguish a
+  membership-sale from a true distribution (verified: an SPV sale and a fund
+  distribution share the identical `distributedTransactions` shape, and
+  neither deal exposes completed `sellOrders`):
+  - **`spv` → `sell`** (positive `net_amount`; `quantity` =
+    `cash_flows.shares`, `price` = `cash_flows.price_per_share` — promoted
+    to columns in silver migration 0002). An SPV is a tax-transparent
+    single-stock vehicle, so the tax
+    authority treats each distribution as a realization of the underlying.
+    (An SPV *could* retain/reinvest/lever, but that doesn't happen for
+    individual-stock vehicles — the simplification holds; note the
+    assumption in the adapter doc.)
+  - **`private_fund` → `distribution`** — funds routinely reinvest proceeds
+    with no fixed event↔payout link, so a fund distribution is **not** a
+    sale. This is why the `distribution` `TxKind` is needed.
+- `classmap.go` — `offerings.kind` → `asset_class`.
+
+The parsed `capital_account_statements` / `k1_documents` stay silver-only:
+the statement **NAV already reaches gold via the `positions` `statement`
+events**, and K-1 tax figures have no canonical home (as carta's documents /
+cap-calls stay silver-only).
+
+### Transaction-kind rule (resolved) + coordination
+
+The `distribution` / `sell` split is driven by `offerings.kind` (above):
+SPV distribution → `sell`, fund distribution → `distribution`,
+`purchase` → `buy`. EquityZen is funded upfront, so there are **no capital
+calls**.
+
+`TxKind` has no `distribution` value today, so one must be added gold-side.
+`angellist` (in flight, holds the gold lock) also surfaces distributions
+(and capital calls), so **coordinate the `distribution` `TxKind` addition
+with the angellist adapter** to land one shared value — and let angellist
+own any `capital_call` value it needs (equityzen does not).
+
+**Resolved — exit representation.** Forward-fill drops an exited deal from
+snapshots at its exit date (its latest event is the `is_open=0` exit), so
+exited positions disappear from the as-of holdings — matching carta and the
+public-equity convention (no tombstone row).
+
+### File checklist (when the gold lock is released)
+
+- `wealthdb/internal/silver/equityzen/{adapter,status,snapshots,transactions,classmap}.go`
+- `wealthdb/internal/gold/migrations/00NN_silver_sources_equityzen.sql` —
+  widen the `silver_sources.silver_kind` CHECK to admit `'equityzen'`
+  (next free number after the angellist migration; + the `distribution`
+  `TxKind` enum addition, coordinated with angellist).
+- `wealthdb/cmd/wealthdb/main.go` — blank-import the adapter package.
+- `wealthdb/docs/adapters/equityzen.md` — mirror `docs/adapters/carta.md`.
 
 ## 7. Scope for the first implementation pass
 

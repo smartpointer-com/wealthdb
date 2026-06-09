@@ -87,13 +87,13 @@ CREATE TABLE offerings (
 -- (event_seq increases with as_of_date, so MAX(event_seq) ≤ D is the latest
 -- event on/before D.) Omit the date filter for the current holdings.
 --
--- Valuation uses CLOSED-deal prices only: `price_per_share` is the entry
--- price at the investment event and the tender price at each disposition;
--- `market_value = shares_held * price_per_share`. So the mark steps only on
--- a real closed transaction. Names that have never tendered (and funds, with
--- a nominal $1 unit price) therefore carry cost until a price-bearing event;
--- richer interim marks require parsing K-1 / fund-statement NAVs (a deferred
--- increment — the statement DATES are already in tax_documents). No capital
+-- Valuation uses CLOSED-deal prices: `price_per_share` is the entry price at
+-- the investment event and the tender price at each disposition;
+-- `market_value = shares_held * price_per_share`. So an SPV's mark steps only
+-- on a real closed transaction — a name that has never tendered carries cost
+-- until one. Multi-company funds, which have no per-share tender price,
+-- instead revalue to the parsed capital-account-statement NAV via injected
+-- `statement` events (see capital_account_statements below). No capital
 -- calls: EquityZen vehicles are funded upfront.
 -- ============================================================
 CREATE TABLE positions (
