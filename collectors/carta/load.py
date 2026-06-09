@@ -20,8 +20,11 @@ Bronze → silver mapping (schema in migrations/):
   entities/<e>/<sectype>.json  -> securities ({rows} of each security-type file)
   entities/<e>/vesting/grant_*.json
                                -> vesting_schedules + vesting_events
+  <account_external_id>.csv    -> valuation override (bronze root, optional):
+                                  per-date FMV, the single source of truth for
+                                  held-share value when present (DESIGN.md §5.1)
   entities/<e>/exercises/grant_*_er_*.xlsx
-                               -> FMV at last exercise (held-share valuation)
+                               -> FMV at last exercise (fallback held-share value)
   entities/<e>/fund-admin/partner-metrics.json
                                -> fund_metrics (latest LP capital account)
   entities/<e>/fund-cap-calls.json
@@ -235,6 +238,41 @@ def _last_exercise_fmv(edir: Path) -> float | None:
     return best_fmv
 
 
+def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
+    """Read a side-loaded valuation-override CSV (named `<account_id>.csv` in
+    the bronze root): rows of `YYYY-MM-DD,fmv_per_share_usd`, '#' / blank lines
+    ignored. Returns [(snapshot_ts, fmv)] sorted ascending — the single source
+    of truth for the position's per-share fair-market-value, each value carried
+    forward until the next. Empty list if the file is absent."""
+    if not path.is_file():
+        return []
+    out: list[tuple[int, float]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        ts, fmv = _date_ts(parts[0].strip()), _f(parts[1].strip())
+        if ts is not None and fmv is not None:
+            out.append((ts, fmv))
+    out.sort()
+    return out
+
+
+def _fmv_as_of(timeline: list[tuple[int, float]], ts: int) -> float | None:
+    """The FMV in effect at `ts` — the latest row on/before it (carry-forward);
+    None if `ts` precedes the first row. `timeline` must be sorted ascending."""
+    val = None
+    for t, fmv in timeline:
+        if t <= ts:
+            val = fmv
+        else:
+            break
+    return val
+
+
 # ---- per-table loaders ------------------------------------------------------
 
 def load_entity(conn, snap: int, ind_id: str, firm_id: str | None,
@@ -262,14 +300,40 @@ def load_entity(conn, snap: int, ind_id: str, firm_id: str | None,
     return meta
 
 
+def _insert_security(conn, snap: int, entity_id, sectype: str, row: dict, *,
+                     canceled, market_value: float, position_status: str) -> int:
+    """Write one `securities` delta row (one position at one snapshot)."""
+    conn.execute(
+        "INSERT OR REPLACE INTO securities "
+        "(snapshot_at, entity_external_id, security_type, "
+        " security_external_id, label, issuable_type, stock_type, "
+        " status, issue_date, currency, quantity, exercise_price, "
+        " cost, exercised, vested, exercisable, has_vesting, "
+        " is_canceled, is_expired, is_terminated, is_fully_exercised, "
+        " market_value, position_status, fund_name, payload) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (snap, entity_id, sectype, row.get("id"),
+         _s(row.get("label")), _s(row.get("issuable_type")),
+         _s(row.get("stock_type")), _s(row.get("status")),
+         _s(row.get("issue_date")), _s(row.get("currency")),
+         _f(row.get("quantity")), _f(row.get("exercise_price")),
+         _f(row.get("cost")), _f(row.get("exercised")),
+         _f(row.get("vested")), _f(row.get("exercisable")),
+         _b(row.get("has_vesting")), canceled,
+         _b(row.get("is_expired")), _b(row.get("is_terminated")),
+         _b(row.get("is_fully_exercised")), market_value, position_status,
+         _s(row.get("fund_name")), _cj(row)),
+    )
+    return 1
+
+
 def load_securities(conn, snap: int, entity_id, edir: Path, *,
                     held: bool, val_price: float | None) -> int:
-    """Write the cap-table securities at snapshot `snap`, reconstructing the
-    state for that date. `held=True` is the live state: is_canceled forced 0
-    and the holder's valuation applied — held shares at quantity x val_price
-    (the FMV at the last exercise), unexercised options (and other non-share
-    lines) at 0. `held=False` is the exited / cancelled state: is_canceled
-    from the source, market_value 0."""
+    """Carta-derived fallback (no valuation override): write the cap-table
+    securities at one snapshot. `held=True` is the live state — is_canceled
+    forced 0, held shares valued at quantity x val_price (the FMV at the last
+    exercise), options / other lines at 0. `held=False` is the exited state:
+    is_canceled from the source, market_value 0."""
     n = 0
     for fname, sectype in SECURITY_FILES.items():
         body = _read_json(edir / f"{fname}.json")
@@ -285,28 +349,52 @@ def load_securities(conn, snap: int, entity_id, edir: Path, *,
             else:
                 canceled, pstatus = _b(row.get("is_canceled")), "exited"
                 mv = 0.0
-            conn.execute(
-                "INSERT OR REPLACE INTO securities "
-                "(snapshot_at, entity_external_id, security_type, "
-                " security_external_id, label, issuable_type, stock_type, "
-                " status, issue_date, currency, quantity, exercise_price, "
-                " cost, exercised, vested, exercisable, has_vesting, "
-                " is_canceled, is_expired, is_terminated, is_fully_exercised, "
-                " market_value, position_status, fund_name, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (snap, entity_id, sectype, row.get("id"),
-                 _s(row.get("label")), _s(row.get("issuable_type")),
-                 _s(row.get("stock_type")), _s(row.get("status")),
-                 _s(row.get("issue_date")), _s(row.get("currency")),
-                 qty, _f(row.get("exercise_price")),
-                 _f(row.get("cost")), _f(row.get("exercised")),
-                 _f(row.get("vested")), _f(row.get("exercisable")),
-                 _b(row.get("has_vesting")), canceled,
-                 _b(row.get("is_expired")), _b(row.get("is_terminated")),
-                 _b(row.get("is_fully_exercised")), mv, pstatus,
-                 _s(row.get("fund_name")), _cj(row)),
-            )
-            n += 1
+            n += _insert_security(conn, snap, entity_id, sectype, row,
+                                  canceled=canceled, market_value=mv,
+                                  position_status=pstatus)
+    return n
+
+
+def load_securities_valued(conn, entity_id, edir: Path, *,
+                           fmv_timeline: list[tuple[int, float]],
+                           cancel_ts: int | None) -> int:
+    """Side-loaded valuation override: each share certificate is held from its
+    issue date and re-valued at every FMV step in the timeline
+    (quantity x FMV-as-of), so the share count *and* the per-share price both
+    move correctly over time. Options / other lines carry value 0. A cancelled
+    entity exits every line at cancel_ts (dropped from gold positions).
+    Returns the number of delta rows written."""
+    fmv_dates = [t for t, _ in fmv_timeline]
+    n = 0
+    for fname, sectype in SECURITY_FILES.items():
+        body = _read_json(edir / f"{fname}.json")
+        rows = body.get("rows") if isinstance(body, dict) else None
+        for row in rows or []:
+            if not isinstance(row, dict) or row.get("id") is None:
+                continue
+            qty = _f(row.get("quantity"))
+            issue_ts = _date_ts(row.get("issue_date"))
+            if issue_ts is None:
+                issue_ts = fmv_dates[0] if fmv_dates else cancel_ts
+            # Re-value at issue + every FMV step strictly after it and before
+            # any exit; the gold layer forward-fills between these.
+            dates = {issue_ts}
+            dates.update(t for t in fmv_dates
+                         if issue_ts is not None and t > issue_ts
+                         and (cancel_ts is None or t < cancel_ts))
+            for t in sorted(d for d in dates if d is not None):
+                if sectype == "share" and qty is not None:
+                    fmv = _fmv_as_of(fmv_timeline, t)
+                    mv = qty * fmv if fmv is not None else 0.0
+                else:
+                    mv = 0.0
+                n += _insert_security(conn, t, entity_id, sectype, row,
+                                      canceled=0, market_value=mv,
+                                      position_status="held")
+            if cancel_ts is not None:
+                _insert_security(conn, cancel_ts, entity_id, sectype, row,
+                                 canceled=_b(row.get("is_canceled")),
+                                 market_value=0.0, position_status="exited")
     return n
 
 
@@ -585,25 +673,49 @@ def load_run(conn, run_dir: Path) -> bool:
                          "capital-account statement / NAV")])
                 else:
                     # Cap-table: reconstruct the held -> cancelled lifecycle.
-                    # Held shares are valued at the fair-market-value at the
-                    # last exercise (the after-exercise basis: shares exercised at a strike below FMV are worth FMV), falling back to the last exercise-price strike when
-                    # no exercise detail was captured.
-                    val_price = _last_exercise_fmv(edir) or _last_exercise_price(edir)
-                    held_ts = _date_ts(hd.get("held_since")) or dump_snap
                     cancel_s = _entity_canceled_date(edir)
                     cancel_ts = _date_ts(cancel_s)
-                    load_entity(conn, held_ts, ind_id, firm_id, edir)
-                    n_sec += load_securities(conn, held_ts, eid, edir,
-                                             held=True, val_price=val_price)
-                    events = [(held_ts, eid, "acquired",
-                               _s(hd.get("held_since")), "shares first held")]
-                    if cancel_ts is not None and cancel_ts > held_ts:
-                        load_entity(conn, cancel_ts, ind_id, firm_id, edir)
-                        load_securities(conn, cancel_ts, eid, edir,
-                                        held=False, val_price=val_price)
-                        events.append((cancel_ts, eid, "disposition", cancel_s,
-                                       "acquisition: securities cancelled"))
-                    n_evt += load_capital_events(conn, events)
+                    override = _read_valuation_csv(run_dir.parent / f"{eid}.csv")
+                    if override:
+                        # Side-loaded `<account_id>.csv` is the single source
+                        # of truth: each cert held from its issue date and
+                        # re-valued at every FMV step, so the share count and
+                        # per-share price both move over time (DESIGN.md §5.1).
+                        first_ts = override[0][0]
+                        load_entity(conn, first_ts, ind_id, firm_id, edir)
+                        n_sec += load_securities_valued(
+                            conn, eid, edir, fmv_timeline=override,
+                            cancel_ts=cancel_ts)
+                        events = [(first_ts, eid, "acquired", None,
+                                   "first held (valuation override applies)")]
+                        events += [(t, eid, "price_change", None,
+                                    "fair-market-value step")
+                                   for t, _ in override[1:]]
+                        if cancel_ts is not None and cancel_ts > first_ts:
+                            events.append((cancel_ts, eid, "disposition",
+                                           cancel_s,
+                                           "acquisition: securities cancelled"))
+                        n_evt += load_capital_events(conn, events)
+                    else:
+                        # No override: value held shares at the FMV at the last
+                        # exercise (after-exercise basis), falling back to the
+                        # last strike when no exercise detail was captured.
+                        val_price = (_last_exercise_fmv(edir)
+                                     or _last_exercise_price(edir))
+                        held_ts = _date_ts(hd.get("held_since")) or dump_snap
+                        load_entity(conn, held_ts, ind_id, firm_id, edir)
+                        n_sec += load_securities(conn, held_ts, eid, edir,
+                                                 held=True, val_price=val_price)
+                        events = [(held_ts, eid, "acquired",
+                                   _s(hd.get("held_since")), "shares first held")]
+                        if cancel_ts is not None and cancel_ts > held_ts:
+                            load_entity(conn, cancel_ts, ind_id, firm_id, edir)
+                            load_securities(conn, cancel_ts, eid, edir,
+                                            held=False, val_price=val_price)
+                            events.append((cancel_ts, eid, "disposition",
+                                           cancel_s,
+                                           "acquisition: securities cancelled"))
+                        n_evt += load_capital_events(conn, events)
                     n_vest += load_vesting(conn, dump_snap, eid, edir)
 
         n_doc = load_documents(conn, dump_snap, run_dir.name,

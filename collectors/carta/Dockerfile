@@ -34,6 +34,7 @@ RUN playwright install firefox && playwright install-deps firefox
 # incomplete.
 COPY explore.py login.py download.py load.py /app/
 COPY migrations /app/migrations
+COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

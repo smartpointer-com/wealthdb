@@ -9,9 +9,11 @@
 -- download therefore can't answer "what did I hold on 2026-01-01?".
 --
 -- New model (collector reconstructs the timeline from one dump): the silver
--- stores per-position CHANGES (deltas), NOT a full-portfolio snapshot per
--- day. A position (a cap-table security line, or a fund interest) gets a row
--- only on a day its state changes — acquisition, option exercise,
+-- stores per-lot CHANGES (deltas), NOT a full-portfolio snapshot per day. A
+-- tracked unit — a cap-table security lot (a share certificate / option
+-- grant), or a fund interest — gets a row only on a day its state changes;
+-- the gold adapter aggregates a company's lots into one position. Events:
+-- acquisition, option exercise,
 -- exercise-price change, share disposition, acquisition / cancellation, or a
 -- new K-1 / capital-account statement (NAV). Same-day changes for a position
 -- coalesce to its end-of-day state. `snapshot_at` is the EVENT date (UTC

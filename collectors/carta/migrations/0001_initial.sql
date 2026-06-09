@@ -33,14 +33,14 @@
 -- ------------------------------------------------------------
 -- Gold mapping (informational — implemented in wealthdb, NOT here)
 -- ------------------------------------------------------------
---   The gold "account" grain for a Carta individual portfolio is an OPEN
---   question (one account for the relationship, or one per entity) — see
---   DESIGN.md §6. Silver therefore does NOT presume: `entities` carries both
---   individual_id and firm_id so the adapter can group either way. Other
---   open gold questions backed by this schema: vesting (no canonical home —
---   `vesting_schedules`/`vesting_events` are silver-only until decided);
---   asset_class for options/SAFEs/RSUs; valuation basis (exercise_price vs
---   409A FMV vs fund NAV). None blocks this collector.
+--   The gold adapter maps the whole Carta individual portfolio to ONE account
+--   (keyed on individual_id), with one position per held company — each
+--   company's `securities` rows are that position's lots, aggregated (see
+--   DESIGN.md §6 / wealthdb/docs/adapters/carta.md). `entities` carries both
+--   individual_id and firm_id so the account can key on either. Vesting has
+--   no canonical gold home — `vesting_schedules`/`vesting_events` stay
+--   silver-only; every cap-table security_type folds into the private_equity
+--   asset_class.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;

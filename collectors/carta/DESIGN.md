@@ -368,32 +368,45 @@ full-portfolio snapshot is required.
 
 The collector reconstructs, per dump:
 
-- **Cap-table** — a `held` delta at `held_since`, and (for an exited holding)
-  an `exited` delta at the acquisition date (`canceled_date`, from the
-  option-grant vesting-data).
+- **Cap-table** — with a side-loaded valuation override present (below), each
+  certificate gets a `held` delta at its issue date and a re-valuation delta at
+  every FMV step (so the share count *and* per-share price move over time);
+  otherwise a single `held` delta at `held_since`. Either way, an exited
+  holding gets an `exited` delta at the acquisition date (`canceled_date`, from
+  the option-grant vesting-data).
 - **Fund** — a NAV `held` delta per capital-account statement: the quarterly
   ending-capital-balance parsed from each statement PDF (the structured
   partner-metrics supplies only the latest quarter, at its sharing date).
 
-**Valuation — holder's rule, in `securities.market_value`:** held shares →
-`quantity × the fair-market-value at the last exercise`; unexercised options →
-0; exited → 0. The FMV is parsed from the exercise-detail xlsx — shares exercised at a strike below FMV are worth FMV, not the strike (the spread is the taxable gain) — and falls back to the highest exercised strike
-when no exercise detail was captured. Funds value off
-`fund_metrics.net_asset_value`.
+**Valuation — in `securities.market_value`:** held shares →
+`quantity × FMV-as-of(snapshot)`; unexercised options → 0; exited → 0. The FMV
+comes from a **side-loaded valuation override** when present (below); otherwise
+the Carta-derived fallback — the fair-market-value at the last exercise (parsed
+from the exercise-detail xlsx; shares exercised at a strike below FMV are
+worth FMV, not the strike — the spread is the taxable gain),
+falling back to the highest exercised strike when no exercise detail was
+captured. Funds value off `fund_metrics.net_asset_value`.
 
 Sources (parsed at load): the per-grant exercise-detail **xlsx** (date /
 shares / strike / FMV-on-exercise, captured via the option modal's `edr`
 attachments; stdlib `zipfile`), and the capital-account statement **PDFs**
 (quarterly NAV via `pdftotext -layout`, `poppler-utils` in the image).
 
-**Simplification (cap-table held value).** The `held` delta carries the
-*final* captured holding (share count + lines) dated at `held_since`, valued
-at the single FMV-at-last-exercise. It is therefore exact from the last
-exercise onward (e.g. the post-acquisition-cutoff "what was held the day before an exit" query), but over-states the count/value for earlier dates —
-the count grew through the intervening exercises, at then-lower FMVs.
-Per-date-exact history would need a full common-stock 409A timeline, which
-Carta purges for an exited company (only the FMV-at-each-exercise survives, in
-the xlsx). The fund side, by contrast, *is* a true per-quarter NAV series.
+**Valuation override (single source of truth).** When a company exits, Carta
+purges its historical 409A timeline, so the Carta-derived fallback can only
+value held shares flat at the FMV-at-last-exercise — exact from the last
+exercise onward, but over-stating the count/value for earlier dates (the count
+grew through intervening exercises, at then-lower FMVs). To value the position
+*per date* a user may side-load a CSV named `<account_external_id>.csv` in the
+bronze root (e.g. `1234567.csv`) — rows of `YYYY-MM-DD,fmv_per_share_usd`, each
+carried forward to the next (`#` / blank lines ignored), built from 409A
+valuation reports and stock-price notification letters, which do not parse
+reliably. When
+found it **overrides** the Carta-derived value: each certificate is held from
+its issue date and re-valued at every FMV step, so the share count (from the
+certificate issue dates) and the per-share price both move correctly over time.
+The fund side, by contrast, *is* already a true per-quarter NAV series, so it
+needs no override.
 
 ### Why SQLite, not DuckDB
 
@@ -419,32 +432,30 @@ It projects this silver into canonical `accounts` / `instruments` /
   ESO isn't lumped with exchange-traded `option`, nor a private share with
   public `equity`). `asset_class` carries no SQL CHECK (Go-validated), so the
   only gold migration was `0013`, widening the `silver_kind` whitelist.
-- **Account grain + taxonomy** — one gold account + instrument per entity;
-  `account_kind = custody`, `tax_wrapper = taxable_personal`,
-  `management_style` = `discretionary` (fund) / `self_directed` (cap-table).
+- **Account grain + taxonomy** — ONE gold account for the whole portfolio
+  (`individual_id`); each held company is one position under it, its share
+  certs / option grants aggregated as lots (brokerage-style), one instrument
+  per company. `account_kind = custody`, `tax_wrapper = taxable_personal`,
+  `management_style = self_directed` (the fund-vs-equity split rides on each
+  position's `asset_class`, since management_style is account-level).
 - **Valuation** — fund position: `market_value` = NAV, `book_value` =
   contributed capital. Cap-table position: `quantity` + `book_value` = cost,
-  `market_value` **NULL** (the captured endpoints expose no current private
-  valuation, including an exited holding's realization value).
+  `market_value` = the silver `market_value` (the valuation override's
+  count-as-of × FMV-as-of, else the Carta-derived fallback — §5.1).
 - **Vesting / documents / cap_calls** — kept silver-only; gold has no
   canonical home for a vesting timeline or a document archive.
 
 Non-blocking follow-ups (in the adapter doc's "Open questions"): capturing
 409A FMV to value cap-table equity, and per-lot vs aggregate positions.
 
-**Deferred — gold adapter update for the event-driven silver (§5.1).** The
-adapter bounds its change window by `dump_runs` and values cap-table
-`market_value` NULL, so it does **not** yet surface the deltas (it would see
-only an empty download-time window). To consume them it needs: (a)
-`ChangeWindow.Start` / `Status.OldestSnapshotAt` widened to the content
-tables' minimum `snapshot_at` (not just `dump_runs`), so the event-dated rows
-fall in-window; (b) read `securities.market_value` for the cap-table value;
-(c) at each event date, emit the **forward-filled** state — for every position
-its latest delta `snapshot_at <= that date`, dropping
-`position_status='exited'` — so a complete per-source snapshot reaches gold's
-existing as-of query and an exited holding drops out exactly at its
-disposition date. Held back pending concurrent gold-layer work — until then
-the silver carries the full series but gold continues to read it as before.
+**Gold consumption of the event-driven silver (§5.1) — done.** The adapter
+widens its change window to the content tables' `snapshot_at` span (not just
+`dump_runs`) so the event-dated rows fall in-window, reads
+`securities.market_value` for the cap-table value, and at each event date emits
+the **forward-filled** state — every position's latest delta
+`snapshot_at <= that date`, dropping `position_status='exited'` — so a complete
+per-source snapshot reaches gold's as-of query and an exited holding drops out
+exactly at its disposition date.
 
 ## 7. Scope (as built)
 
