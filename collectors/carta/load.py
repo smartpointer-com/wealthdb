@@ -576,6 +576,64 @@ def _parse_statement_nav(pdf: Path) -> str | None:
     return m.group(1).replace(",", "") if m else None
 
 
+def _statement_flows_from_text(text: str) -> tuple[float | None, float | None]:
+    """The partner's INCEPTION-TO-DATE capital contributions + distributions
+    (USD) from a capital-account statement's pdftotext output. Each line
+    carries three columns (statement-period / year-to-date / inception-to-
+    date); we take the inception-to-date (LAST) figure — it reads cleanly as
+    the line's final amount and is monotonic, whereas the period columns
+    mis-align under pdftotext when '—' placeholders are present.
+    load_cash_flows differences consecutive statements into per-period flows.
+    Returns (contributions_itd, distributions_itd); a component is None if its
+    line is absent. Balance-sheet lines (contributions receivable / received in
+    advance) are skipped. Split from the PDF call for testability."""
+    def inception_to_date(label: str) -> float | None:
+        for line in text.splitlines():
+            if not re.match(rf"\s*{label}\s", line):
+                continue
+            if "receivable" in line or "advance" in line:
+                continue
+            amts = re.findall(r"\(?[\d,]+\)?", line[line.find(label) + len(label):])
+            if amts:
+                return float(amts[-1].strip("()").replace(",", ""))
+        return None
+
+    return (inception_to_date("Capital contributions"),
+            inception_to_date("Capital distributions"))
+
+
+def _parse_statement_flows(pdf: Path) -> tuple[float | None, float | None]:
+    """Inception-to-date contributions + distributions from a capital-account
+    statement PDF (via pdftotext -layout); see _statement_flows_from_text."""
+    try:
+        out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
+        return None, None
+    return _statement_flows_from_text(out)
+
+
+def _period_deltas(statements) -> list[tuple]:
+    """Difference inception-to-date statement figures into per-period flows.
+    `statements` is an iterable of (date 'MM/DD/YYYY', doc_id, contributions_itd,
+    distributions_itd). Sorted by date; each positive jump in the cumulative
+    becomes a per-period flow. The first statement's value lumps anything before
+    the earliest available statement, so the running total reconciles to the
+    fund's contributed-capital basis. Yields (doc_id, date, kind, amount)."""
+    out: list[tuple] = []
+    prev_c = prev_d = 0.0
+    for date, docid, contrib, dist in sorted(
+            statements, key=lambda s: (s[0][6:10], s[0][0:2], s[0][3:5])):
+        if contrib is not None and contrib > prev_c:
+            out.append((docid, date, "capital_call", contrib - prev_c))
+            prev_c = contrib
+        if dist is not None and dist > prev_d:
+            out.append((docid, date, "distribution", dist - prev_d))
+            prev_d = dist
+    return out
+
+
 def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
     """Parse the fund's capital-account-statement PDFs into a quarterly NAV
     time series — the history the structured partner-metrics doesn't carry.
@@ -602,6 +660,106 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
              _cj({"source": "capital_account_statement",
                   "document_id": row.get("id"), "net_asset_value": nav})))
         n += 1
+    return n
+
+
+def _insert_cash_flow(conn, cfid: str, eid, snap: int, kind: str,
+                      flow_date: str | None, amount: float,
+                      shares: float | None, price: float | None,
+                      description: str) -> int:
+    """Write one cash_flows ledger row (a positive-magnitude event)."""
+    conn.execute(
+        "INSERT OR REPLACE INTO cash_flows "
+        "(cash_flow_external_id, entity_external_id, snapshot_at, kind, "
+        " flow_date, amount, shares, price_per_share, currency, description, "
+        " payload) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (cfid, eid, snap, kind, flow_date, amount, shares, price, "USD",
+         description, _cj({"kind": kind, "flow_date": flow_date,
+                           "amount": amount, "shares": shares,
+                           "price_per_share": price})))
+    return 1
+
+
+def _captable_cash_flows(conn, eid, edir: Path, snap: int) -> int:
+    """Cap-table cash flows: one `exercise` (deposit+buy in gold) per share
+    certificate — amount = quantity x strike (the cert cost), price the strike
+    — and, if the company exited, one `exit` (sell+withdrawal) at the
+    cancellation date. Carta purges the exit payout, so the exit's recorded
+    proceeds are $0 (the gold then omits the $0 withdrawal leg)."""
+    n = 0
+    held_shares = 0.0
+    body = _read_json(edir / "shares.json")
+    rows = body.get("rows") if isinstance(body, dict) else None
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        qty, cost, issue = (_f(row.get("quantity")), _f(row.get("cost")),
+                            _s(row.get("issue_date")))
+        if qty is None or cost is None or issue is None:
+            continue
+        price = (cost / qty) if qty else None
+        n += _insert_cash_flow(conn, f"exercise:{eid}:{row.get('id')}", eid,
+                               snap, "exercise", issue, cost, qty, price,
+                               "share exercise / acquisition")
+        held_shares += qty
+    cancel = _entity_canceled_date(edir)
+    if cancel and held_shares:
+        n += _insert_cash_flow(conn, f"exit:{eid}", eid, snap, "exit", cancel,
+                               0.0, held_shares, 0.0, "acquisition / exit")
+    return n
+
+
+def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
+    """Fund cash flows from the capital-account statements: `capital_call`
+    (deposit+contribution in gold) and `distribution` (distribution+withdrawal).
+    Each statement reports inception-to-date figures; sorting by date and
+    differencing consecutive statements yields the per-period flow. The first
+    statement's value lumps any contributions made before the earliest
+    available statement, so the running total reconciles to the fund's
+    contributed-capital basis."""
+    idx = _read_json(docs_dir / "index.json")
+    rows = idx.get("results") if isinstance(idx, dict) else None
+    stmts = []
+    for row in rows or []:
+        if "apital account" not in (row.get("document_type") or ""):
+            continue
+        pdf = docs_dir / f"doc_{row.get('id')}.pdf"
+        date = _s(row.get("document_date"))
+        if not pdf.is_file() or not date:
+            continue
+        contrib, dist = _parse_statement_flows(pdf)
+        stmts.append((date, row.get("id"), contrib, dist))
+    n = 0
+    for docid, date, kind, amount in _period_deltas(stmts):
+        prefix = "call" if kind == "capital_call" else "dist"
+        desc = "fund capital call" if kind == "capital_call" else "fund distribution"
+        n += _insert_cash_flow(conn, f"{prefix}:{eid}:{docid}", eid, snap,
+                               kind, date, amount, None, None, desc)
+    return n
+
+
+def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
+    """Build the dated cash-flow ledger (migration 0003): a row per cash event
+    — stock exercises / exit from the cap-table certs + cancellation, and fund
+    capital calls / distributions from the capital-account statements. Amounts
+    are positive magnitudes; the gold adapter projects each as a balanced
+    double-entry pair on the sentinel funding account (DESIGN.md §6)."""
+    entities_dir = run_dir / "entities"
+    if not entities_dir.is_dir():
+        return 0
+    docs_dir = run_dir / "documents"
+    n = 0
+    for edir in sorted(entities_dir.iterdir()):
+        if not edir.is_dir():
+            continue
+        meta = _read_json(edir / "meta.json")
+        if not isinstance(meta, dict):
+            continue
+        eid = meta.get("corporation_id")
+        if meta.get("is_fund_investment"):
+            n += _fund_cash_flows(conn, eid, docs_dir, snap)
+        else:
+            n += _captable_cash_flows(conn, eid, edir, snap)
     return n
 
 
@@ -641,7 +799,7 @@ def load_run(conn, run_dir: Path) -> bool:
              len(manifest.get("errors") or []), _cj(manifest)),
         )
 
-        n_sec = n_vest = n_fund = n_call = n_evt = n_navh = 0
+        n_sec = n_vest = n_fund = n_call = n_evt = n_navh = n_cf = 0
         fund_eid = None
         entities_dir = run_dir / "entities"
         if entities_dir.is_dir():
@@ -722,14 +880,17 @@ def load_run(conn, run_dir: Path) -> bool:
                                run_dir / "documents")
         if fund_eid is not None:
             n_navh = load_statement_nav(conn, run_dir / "documents", fund_eid)
+        n_cf = load_cash_flows(conn, run_dir, dump_snap)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
 
     log.info("loaded %s: %d securities, %d event(s), %d grant vesting, "
-             "%d fund-metric (+%d NAV-history), %d cap-call, %d new doc(s)",
-             run_dir.name, n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_doc)
+             "%d fund-metric (+%d NAV-history), %d cap-call, %d cash-flow(s), "
+             "%d new doc(s)",
+             run_dir.name, n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_cf,
+             n_doc)
     return True
 
 

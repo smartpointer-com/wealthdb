@@ -336,6 +336,7 @@ the tables follow the observed responses.
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
+| `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`) and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on a sentinel funding account (§6). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
 
 Identity: `entity_external_id` = Carta's `corporation_id`;
@@ -408,6 +409,34 @@ certificate issue dates) and the per-share price both move correctly over time.
 The fund side, by contrast, *is* already a true per-quarter NAV series, so it
 needs no override.
 
+### 5.2 Cash-flow ledger + the sentinel funding account (migration 0003)
+
+Carta exposes holdings but not the cash mechanics — an exercise is paid from an
+external bank, a fund capital call is wired straight into the SPV/fund, and
+exit / distribution proceeds leave to an external account. The Carta "account"
+is therefore a **sentinel** for the opaque managed accounts (Carta custody +
+the fund managers' books); we never observe a real cash balance.
+
+`cash_flows` records the dated cash EVENTS as positive magnitudes (`kind`
+carries the nature + direction), reconstructed from data we *do* have:
+
+- **`exercise`** — one per share certificate: `amount` = quantity × strike (the
+  cert cost), with `shares` + `price_per_share` carried. Fully derivable from
+  the cap-table certs.
+- **`exit`** — at the acquisition / cancellation date: Carta purges the payout,
+  so recorded proceeds are **$0** (`shares` = the held total).
+- **`capital_call`** / **`distribution`** — from the capital-account statements.
+  Each statement reports inception-to-date figures; differencing consecutive
+  statements (by date) yields the per-period flow, so the running total
+  reconciles to the fund's contributed-capital basis (the first statement lumps
+  anything before the earliest available one). The per-period statement columns
+  mis-align under pdftotext when `—` placeholders are present, so the
+  inception-to-date column — which reads cleanly as the line's last amount — is
+  differenced instead.
+
+The gold adapter (planned, §6.1) pairs each event into a balanced double-entry
+on a sentinel funding account, so its derived balance is always exactly 0.
+
 ### Why SQLite, not DuckDB
 
 The repo default is SQLite + JSON1; the single DuckDB exception
@@ -423,8 +452,9 @@ revisit if a DuckDB silver is in fact wanted (same call as
 The gold adapter is **built** — `wealthdb/internal/silver/carta/`, documented
 in [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md).
 It projects this silver into canonical `accounts` / `instruments` /
-`positions` (no `transactions` — there are none in silver). What the earlier
-"open questions" posed, as resolved with the user:
+`positions`, plus a **planned** `transactions` projection from the cash-flow
+ledger (§6.1 — not yet built; the gold layer is locked by concurrent work).
+What the earlier "open questions" posed, as resolved:
 
 - **Asset classes** — two new canonical values in
   `internal/canonical/enums.go`: `private_fund` (the fund LP interest) and
@@ -457,6 +487,31 @@ the **forward-filled** state — every position's latest delta
 per-source snapshot reaches gold's as-of query and an exited holding drops out
 exactly at its disposition date.
 
+### 6.1 Transactions — the sentinel funding account (planned)
+
+Following equityzen, the gold adapter will project the `cash_flows` ledger
+(§5.2) as balanced double-entry transaction PAIRS on a sentinel funding account
+(`carta-funding`, analogous to `equityzen-funding`) — distinct from the custody
+account that holds the positions. Carta exposes no real funding balance, so
+every event is a self-cancelling pair and the sentinel's derived balance is
+always exactly 0 (a pass-through clearing account). `amount` is the positive
+magnitude; the adapter signs + splits it:
+
+| cash_flow `kind` | gold pair (signed) |
+|---|---|
+| `exercise`     | `deposit` (+) + `buy` (−, with shares + price) |
+| `capital_call` | `deposit` (+) + `contribution` (−) |
+| `exit`         | `sell` (+, with shares) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
+| `distribution` | `distribution` (+) + `withdrawal` (−) |
+
+The deposit / withdrawal legs are the external-bank boundary (no position); the
+buy / sell / contribution / distribution legs link to the company's instrument.
+The funding account emits one `CashBalanceChange` of 0; `Status` /
+`ChangeWindow` extend to span the `cash_flows` dates. `TxKindContribution`
+already exists in `internal/canonical/enums.go` (added for angellist /
+equityzen), so no enum change is needed. **Not yet implemented — the gold layer
+is locked by concurrent equityzen work; build when the lock lifts.**
+
 ## 7. Scope (as built)
 
 The scope is **everything**; all of it is captured:
@@ -468,8 +523,11 @@ The scope is **everything**; all of it is captured:
 - the document archive — K-1 / 1042-S / capital-account statements /
   quarterly financials.
 
-No `securityTransactions` ledger is captured — the internal API doesn't
-expose one (exercises live inside the grant payloads). See §6.
+Carta's internal API exposes no transaction ledger (exercises live inside the
+grant payloads), so the dated cash flows are **reconstructed** into the
+`cash_flows` table (§5.2) — exercises from the certs, the exit at cancellation,
+fund calls / distributions from the statements — for projection to gold
+transactions per §6.1.
 
 ## 8. Read-only & PII
 
