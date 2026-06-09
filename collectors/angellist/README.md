@@ -26,8 +26,8 @@ queryable silver).
 | Verb | Status | Notes |
 | --- | --- | --- |
 | `byo-login` | implemented | Stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). Any K-1 / financial docs you download in the session save to `~/wealthdb/angellist/angellist-documents/`. |
-| `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions paginated). Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. |
-| `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `vehicles` / `positions` (delta history) / `portfolio_summary` / `portfolio_timeseries` / `commitments`; and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
+| `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. |
+| `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
 | `login`     | superseded | The Camoufox SPA-login stub is replaced by `byo-login` (the SPA login is bot-walled). |
 

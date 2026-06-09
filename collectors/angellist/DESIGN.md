@@ -99,16 +99,23 @@ columns carry the full node. Schema in
   `investableGuid`; `name`, `avatar_url`, first/last seen, and `kind`
   (`spv` | `fund`) derived from the guid suffix (`-f` → fund, else → spv;
   the `-f` set matches `portfolio_summary.totalFundsCount`).
-- **`positions`** — a **change-based valuation history**: the loader writes
-  a new row for a position only when a value-affecting field changed vs.
-  its latest prior snapshot (not a full re-dump each run), so the table
-  accumulates each investment's history. Columns: `commitment_minor`,
-  `contributed_minor` (capital called), `investment_minor`,
-  `realized_minor` (cumulative distributions), `recycled_minor`,
-  `unrealized_minor` / `total_value_minor` / `tvpi` (nullable when no
-  current value is reported), `investment_date`, `status`. **Holdings
+- **`offerings`** — IMMUTABLE per investment (migration 0005), one row per
+  position / SPV stake (keyed by the AngelList position id; SPVs are never
+  merged). Identity + entry terms factored out of the time series:
+  `vehicle_external_id` (the company), `kind`, `company_name`, the SPV legal
+  name + EIN (`fund_name`/`fund_tax_id`, from the linked K-1), and
+  `investment_date`. Upserted each load.
+- **`position_snapshots`** — the per-position valuation TIME SERIES: one row
+  per CAPITAL EVENT, stamped at the EVENT date (`as_of_date`), with a
+  collector-computed `market_value_minor` + its `valuation_basis`. Events:
+  `investment` (original capital at the investment date — cost), `statement`
+  (each annual Schedule K-1 capital-account statement at its tax year-end —
+  the tax-basis NAV, with cumulative contributed / distributions),
+  `valuation` (the current portal FMV at the portfolio **data date**, not
+  the download time). `is_open` flips to 0 at a final K-1 (exit). **Holdings
   as-of a date** = each position's latest snapshot ≤ date, dropping the
-  EXITED ones. ~67 positions / 63 vehicles in the test account.
+  is_open=0 ones. This mirrors the equityzen collector. ~67 positions / 227
+  events in the test account.
 - **`portfolio_summary`** — per snapshot: totals (committed/contributed/
   invested/realized/unrealized/value) + `irr`/`tvpi`/`dpi` + counts. (The
   full summary, including insights, also rides in `payload`.)
@@ -122,17 +129,31 @@ columns carry the full node. Schema in
 - **`commitments`** — per snapshot, the open (unfunded) commitments:
   amount, payment, remaining-to-fund, opportunity/syndicate, deadlines.
   Bank/wire details are deliberately **not** promoted to columns.
+- **`funding_accounts`** + **`funding_transactions`** (migration 0006) — the
+  funding account's dated cash ledger from `InvestmentEntityQuery`: one row
+  per cash movement with a SIGNED `amount_minor`, `occurred_at`, and raw
+  `type` (deposit / withdrawal / investment / disbursement / refund /
+  transfer), plus the current `balance_minor`. Keyed by the AngelList
+  transaction id (idempotent); reconciles exactly to the balance. (Bank /
+  wire account details from the source are deliberately **not** stored.)
 
-### The cash-flow nuance (important for gold)
+### Cash flows
 
-The venture portal exposes **cumulative** contributed (capital called) and
-realized (distributions) *per position*, plus a portfolio-level value time
-series — **not a dated per-event capital-call / distribution ledger**. The
-"activity" feed is unstructured `VenturePost` updates, not transactions.
-So a clean dated cash-flow ledger is not available from this surface;
-`positions` carries the cumulative call/distribution state, and the
-`portfolio_timeseries` table carries portfolio value / invested / realized
-/ unrealized over time.
+The **funding-accounts page** (`InvestmentEntityQuery.investmentEntity`) is
+the dated cash ledger: every deposit / withdrawal (external bank ↔ funding
+account), investment / refund (capital ↔ an SPV), and disbursement (a deal
+pays out), each with a SIGNED `amount` and a real date, plus the current cash
+`balance`. The signed amounts reconcile **exactly** to the balance, so
+`download` captures it (the GraphQL carries the full ledger — the page's CSV
+export is redundant) into `funding_transactions` + `funding_accounts`.
+
+By contrast the venture positions GraphQL exposes only **cumulative**
+contributed/realized per position (no dated events), the "activity" feed is
+unstructured `VenturePost`s, and `portfolio_timeseries` is portfolio-level
+monthly NAV. The Schedule K-1 **Line 19(a)** annual distribution is now
+redundant with the dated disbursements and is **no longer emitted as a
+transaction** (`k1_capital_accounts` is kept only for the position tax-basis
+statement valuations).
 
 ### Historical valuations & K-1s
 
@@ -155,52 +176,75 @@ completeness), idempotent by content sha. K-1 rows link to a vehicle by
 company name (exact for single-SPV companies). Note `Ending Capital` is
 **tax basis**, not FMV; distributions appear under Line 19(a).
 
-**Download.** The file endpoints (`/k1_packets/<id>/{download,csv}`,
-`/financial_reports/<id>/download`) accept a cookie GET but need a
-**fresher session than GraphQL does** — a stale cookie 404s to the login
-wall. `byo-login` saves downloads to `angellist-documents/`.
+**Download (built).** The file endpoints (`/k1_packets/<id>/{download,csv}`,
+`/financial_reports/<id>/download`) accept a cookie GET but need a fresher
+session than GraphQL — a stale cookie 404s to the login wall. `download.py`
+auto-fetches them after the GraphQL capture, re-fetching incomplete tax
+years (`estimate_provided`, or `k1Count < totalK1Count`) until `complete`
+(which runs through ~Aug of the following year); `byo-login` saves the same
+way.
 
-**Remaining:** (1) an automated cookie-GET in `download.py` that re-fetches
-incomplete tax years (`estimate_provided`, or `k1Count < totalK1Count`)
-until `complete` (which runs through ~Aug of the following year); (2)
-feeding dated (Dec-31) tax-basis valuation snapshots into the `positions`
-history via `tax_basis_capital_minor` (FMV untouched), pairing the 3
-multi-SPV companies by contribution amount + date.
+**Fed into the timeline (built).** Each K-1 becomes a `statement` event in
+`position_snapshots` (tax-basis ending capital as the mark, dated Dec-31,
+with cumulative contributed / distributions), paired to its position by
+company name and — for the few multi-SPV companies — by investment year +
+cumulative contribution amount. The mark basis (`fmv` / `tax_basis` /
+`cost`) is recorded per event, never blended.
 
 ## Gold mapping (implemented)
 
 The gold adapter lives in `wealthdb/internal/silver/angellist/`
 (registered in `cmd/wealthdb/main.go`; `silver_kind` whitelisted by gold
-migration 0014). It projects this silver into canonical `accounts` /
-`instruments` / `positions` (no `transactions`):
+migration 0014). The collector does the valuation + lifecycle work; the adapter is a thin
+forward-fill:
 
-- **Account.** One canonical `account` per AngelList invest account
-  (`invest_account_slug`): `account_kind=brokerage`,
-  `tax_wrapper=taxable_personal`, `management_style=discretionary`
-  (GP-managed). Config `account_overrides` win on overlap.
-- **Instruments.** One per vehicle, keyed by `investableGuid`.
-  `asset_class` from silver `vehicles.kind`: single-company SPVs/RUVs →
-  `spv` (a canonical enum value added for this), multi-company venture/PE
-  funds → `private_fund`; `isin`/`symbol` NULL (non-quotable).
-- **Positions.** One per vehicle per snapshot. `book_value=contributed`
-  (capital called = cost basis); `market_value=total_value`, **falling
-  back to `contributed` (cost)** when AngelList reports no current value
-  (~half — pending / non-standard reporting); `quantity=NULL` (LP
-  interests have no unit qty); `acquisition_date=investmentDate`.
-  Commitment / uncalled / realized ride in the position `payload` (the
-  chosen payload-only option — no first-class gold column).
-- **No transactions.** AngelList exposes only cumulative contributed/
-  realized per position (no dated capital-call/distribution ledger), so
-  `Transactions()` returns an empty stream. Revisit if a per-position
-  statements/transactions query surfaces (`/taxes-and-documents`,
-  deferred).
+- **Account.** One canonical `account` for the whole LP book
+  (`invest_account_slug`): `account_kind=custody` (LP interests held in
+  custody, not a brokerage), `tax_wrapper=taxable_personal`,
+  `management_style=self_directed` (the holder picks which deals to back;
+  the GP's management inside each vehicle isn't modeled) — same as carta /
+  equityzen. Config `account_overrides` win on overlap.
+- **Instruments + positions — one per SPV stake** (the SPV, not the company;
+  keyed by the AngelList position id). `asset_class` from `offerings.kind`:
+  single-company SPVs/RUVs → `spv` (a canonical enum value added for this),
+  multi-company funds → `private_fund`; `isin`/`symbol` NULL. Instrument
+  name = the underlying company.
+- **Positions are forward-filled** from `position_snapshots`: for each event
+  date the adapter emits each position's latest snapshot ≤ it, dropping the
+  is_open=0 (exited) ones — a complete portfolio per date, which is what
+  gold's as-of query reads. `market_value` = the collector's
+  `market_value_minor` (current FMV → annual tax-basis NAV → cost, never
+  blended within a snapshot); `book_value=contributed`; `quantity=NULL`;
+  `acquisition_date=investment_date`.
+- **Transactions = the funding ledger** (`funding_transactions`). Each cash
+  movement maps to a canonical kind by its source type:
+  deposit→`deposit`, withdrawal/transfer→`withdrawal` (external bank ↔
+  account), investment→`contribution` and refund→`contribution` (a positive
+  reversal — returned un-deployed capital, kept out of `distribution` so DPI
+  stays clean), disbursement→`distribution`. `contribution` is a canonical
+  TxKind added for this; AngelList's amounts are authoritatively signed and
+  reconcile to the balance, so they're used directly (the source sign wins).
+  Each contribution / distribution / refund carries `instrument_external_id`
+  = the SPV / fund it concerns, resolved in the collector (recorded as
+  `funding_transactions.position_external_id`): the company named in the
+  description matches a current `offerings` row when still held; a multi-SPV
+  company (the description names only the company) is disambiguated by picking
+  the position whose invest date is closest to the transaction date; and an
+  EXITED investment (no current position) gets a thin instrument DERIVED FROM
+  THE FUNDING LEDGER (emitted even though it holds nothing). Only external-bank
+  deposits / withdrawals stay account-level. The full ledger thus links — 0
+  contributions/distributions/refunds left unlinked.
+- **Cash.** The funding account's current uninvested cash is one
+  `BalanceKind=current` CashBalanceChange, so account value = positions + cash.
 
 Consequence: `positions.market_value` summed in gold won't equal
-`portfolio_summary.totalValue` (the authoritative total) — AngelList
-reports no FMV for ~half the positions, so those carry cost as a proxy.
+`portfolio_summary.totalValue` for the current date — AngelList reports no
+FMV for ~half the positions, so those carry cost as a proxy.
 
-Verified end-to-end against the real account: **1 account, 63 instruments,
-67 positions** (62 `spv` + 5 `private_fund`, USD), 0 transactions;
+Verified end-to-end (isolated gold load): **1 account / 1 portfolio, 67
+positions** today (reconstructing correctly for past dates, 4 → 67 across
+2021–2026), **246 funding transactions** (deposit / withdrawal / contribution
+/ distribution, summing to the funding balance) + the current cash balance;
 `go build` + `go test ./...` green.
 
 ## Re-discovery

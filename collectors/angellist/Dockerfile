@@ -1,4 +1,4 @@
-# SCAFFOLD — Headed-browser (Camoufox) collector for the AngelList
+# Headed-browser (Camoufox) collector for the AngelList
 # Investor Portal. Builds on the shared base-camoufox image, which
 # provides Firefox/Xvfb/x11vnc OS deps, camoufox + the matching
 # Playwright pin, the pre-fetched Firefox bundle at /opt/camoufox-cache,

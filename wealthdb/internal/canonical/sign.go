@@ -23,9 +23,9 @@ package canonical
 // sign should be preserved.
 func canonicalSign(k TxKind) int {
 	switch k {
-	case TxKindBuy, TxKindWithdrawal, TxKindFee, TxKindTax, TxKindTransferOut:
+	case TxKindBuy, TxKindWithdrawal, TxKindFee, TxKindTax, TxKindTransferOut, TxKindContribution:
 		return -1
-	case TxKindSell, TxKindDeposit, TxKindDividend, TxKindCoupon, TxKindTransferIn:
+	case TxKindSell, TxKindDeposit, TxKindDividend, TxKindCoupon, TxKindTransferIn, TxKindDistribution:
 		return +1
 	}
 	// TxKindInterest, TxKindStaking, TxKindCapitalGain,

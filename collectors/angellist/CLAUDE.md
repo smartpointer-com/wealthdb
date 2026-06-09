@@ -5,9 +5,11 @@ source, git/commit conventions) live in the repo-root
 [CLAUDE.md](../../CLAUDE.md). The angellist-specific surface below
 applies on top of those shared rules.
 
-This collector is a **scaffold** — `explore` / `login` / `download` /
-`load` are stubs. The allow/forbid surface below is binding from now,
-including while the concrete URLs are still being mapped by `explore`.
+This collector is **implemented and working end-to-end** (2026-06-09):
+`byo-login` (real-Firefox cookie lift) → `download` (Camoufox + injected
+cookie, passive GraphQL capture + tax-doc fetch) → `load` (event-sourced
+silver) → gold adapter (`wealthdb/internal/silver/angellist/`). The
+allow/forbid surface below is binding.
 
 ## 1. Read-only AngelList Investor Portal access — never trigger writes
 
@@ -17,7 +19,8 @@ concrete surface for angellist:
 Allowed — once mapped, only these surfaces may be navigated or clicked:
 
 - The Investor Portal login form and the 2FA challenge page that
-  follows it (factor TBD by `explore` — TOTP / email OTP / SMS).
+  follows it (handled by the human in `byo-login`; the tooling types no
+  credentials — see §3).
 - Read-only LP reporting surfaces: portfolio / holdings summary,
   per-investment (SPV / fund) detail and capital-account statement,
   activity / transaction history (capital calls, distributions, fee
@@ -30,7 +33,8 @@ Allowed — once mapped, only these surfaces may be navigated or clicked:
   the session cookie (fetched through Playwright's request API).
 - The venture LP read routes
   `venture.angellist.com/v/<user>/i/<investAccount>/{portfolio,commitments,
-  taxes-and-documents}` and the investor portal `portal.angellist.com`,
+  taxes-and-documents,funding-accounts}` (the last is the dated cash ledger +
+  balance, read-only) and the investor portal `portal.angellist.com`,
   plus the read-only GraphQL the SPA fetches from
   `venture.angellist.com/venture/graphql` (captured passively by
   `download` — we only navigate; the SPA issues the queries).

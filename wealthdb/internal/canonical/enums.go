@@ -226,7 +226,22 @@ const (
 	// are taxed at receipt as ordinary income in some, as capital
 	// gains in others; the gold layer keeps them separate so
 	// downstream tax tooling can apply the right rule.
-	TxKindStaking         TxKind = "staking"
+	TxKindStaking TxKind = "staking"
+	// TxKindContribution is capital the holder commits INTO a private
+	// fund / SPV / LP interest (a capital call / funding a deal) — cash
+	// out of the funding account. Negative by canonical convention; a
+	// reversal (an over-subscribed commitment refunded back to the
+	// funding account) is the same kind with a positive, source-signed
+	// amount (adapters bypass ApplyCanonicalSign for those — see sign.go).
+	TxKindContribution TxKind = "contribution"
+	// TxKindDistribution is a cash distribution from a private fund /
+	// SPV / LP interest to the holder (return of capital + realized
+	// gains) — cash into the funding account. Distinct from TxKindDividend
+	// (public-equity income): an LP distribution blends basis return and
+	// gain. Positive (cash in) by canonical convention. The pair
+	// contribution/distribution is the private-market analogue of buy/sell
+	// and is reused across AngelList / EquityZen / Carta.
+	TxKindDistribution    TxKind = "distribution"
 	TxKindFee             TxKind = "fee"
 	TxKindTax             TxKind = "tax"
 	TxKindDeposit         TxKind = "deposit"
@@ -243,7 +258,7 @@ const (
 var txKindValues = map[TxKind]struct{}{
 	TxKindBuy: {}, TxKindSell: {}, TxKindDividend: {}, TxKindCoupon: {},
 	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindStaking: {},
-	TxKindFee: {}, TxKindTax: {},
+	TxKindContribution: {}, TxKindDistribution: {}, TxKindFee: {}, TxKindTax: {},
 	TxKindDeposit: {}, TxKindWithdrawal: {}, TxKindFxSpot: {},
 	TxKindFxForward: {}, TxKindCorporateAction: {}, TxKindTransferIn: {},
 	TxKindTransferOut: {}, TxKindJournal: {}, TxKindOther: {},

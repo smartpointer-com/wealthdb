@@ -51,6 +51,8 @@ func TestTxKindValid(t *testing.T) {
 	}{
 		{TxKindBuy, true},
 		{TxKindCorporateAction, true},
+		{TxKindContribution, true},
+		{TxKindDistribution, true},
 		{TxKindOther, true},
 		{"", false},
 		{"buy_or_sell", false},

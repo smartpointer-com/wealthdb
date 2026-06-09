@@ -1,5 +1,5 @@
 #!/bin/bash
-# SCAFFOLD — container entrypoint. Dispatches a single positional
+# Container entrypoint. Dispatches a single positional
 # subcommand to the corresponding Python script under /app/.
 #
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb +
@@ -160,35 +160,35 @@ PREFS
         ;;
     help|--help|-h)
         cat <<'EOF'
-angellist container (SCAFFOLD)
+angellist container
 
 Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  explore     Launch Camoufox in the container's Xvfb display and record
-              every action taken in the VNC session (HAR + Playwright
-              trace + click log under /debug). Use during the discovery
-              phase. Starts x11vnc on the first free host port in
-              127.0.0.1:5900-6000 (printed at handoff).
-  login       Mint an AngelList Investor Portal session. Prompts for the
-              2FA code on stdin; persists to the Camoufox profile dir at
-              /secrets/angellist-profile. Pass --check to probe the
-              existing session without firing a 2FA push.
-  download    Browse the LP-portfolio surfaces and capture bronze:
-              portfolio summary, per-investment detail, and activity
-              (cash-flow) history. (Tax-document / K-1 archive is a
-              deferred increment.) Pass --dry-run to walk the navigation
-              without firing exports/downloads.
-  load        Ingest bronze snapshots into the SQLite silver: vehicles,
-              positions, cash_flows, tax_documents. Pass --force to
-              re-load snapshots already recorded in dump_runs.
+  byo-login   The auth path. Launch a genuine, stock Mozilla Firefox under
+              VNC so you can clear AngelList's invisible anti-bot login by
+              hand (+2FA); on a clean Firefox close, lifts the session
+              cookie to /secrets/angellist-cookies.json. Optionally grab
+              K-1 / financial docs while logged in (they save to the
+              mounted documents dir).
+  download    Headless Camoufox + injected cookie: navigate the LP-portfolio
+              routes and capture the venture GraphQL (positions / summary /
+              commitments) the SPA signs itself, and download tax documents
+              (K-1 CSV/PDF, financial statements), re-fetching incomplete
+              tax years. Pass --dry-run to walk without writing bronze.
+  load        Ingest bronze + tax docs into the SQLite silver: offerings +
+              event-sourced position_snapshots, vehicles, k1_capital_accounts,
+              tax_documents, portfolio_summary / timeseries, commitments.
+              Pass --force to re-load snapshots already in dump_runs.
+  explore     Discovery harness: Camoufox under VNC with HAR + Playwright
+              trace + click log under /debug (route mapping; --cookies loads
+              the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
+              port (printed at handoff).
+  login       No automated login (the SPA is bot-walled) — prints the
+              byo-login instructions and exits.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
-
-NOTE: this collector is a SCAFFOLD. login / download / load are stubs
-that exit without touching angellist.com until the explore phase has run
-and the implementation lands. See DESIGN.md.
 
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF

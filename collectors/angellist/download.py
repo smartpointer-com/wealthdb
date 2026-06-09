@@ -66,6 +66,7 @@ PORTFOLIO_OPS = {
 }
 COMMITMENT_OPS = {"OpenInvestmentsQuery"}
 DOCS_OPS = {"AccountDocumentsQuery"}
+FUNDING_OPS = {"InvestmentEntityQuery"}
 
 # The positions table is infinite-scroll paginated (~20/page). Scroll
 # every scrollable element to the bottom to trigger the next page until
@@ -374,6 +375,18 @@ def main(argv: list[str]) -> int:
                 except Exception as exc:
                     log.warning("taxes goto failed for %s: %s", aslug, exc)
                 wait_for_ops(page, DOCS_OPS, args.settle + 8)
+
+                log.info("account %s: capturing funding ledger", aslug)
+                try:
+                    page.goto(f"{base}/funding-accounts",
+                              wait_until="domcontentloaded", timeout=45_000)
+                except Exception as exc:
+                    log.warning("funding goto failed for %s: %s", aslug, exc)
+                # The funding-accounts route loads the funding account detail
+                # (InvestmentEntityQuery), whose `transactions` is the full
+                # dated cash ledger (deposits / withdrawals / investments /
+                # disbursements / refunds) — the source of dated cash flows.
+                wait_for_ops(page, FUNDING_OPS, args.settle + 10)
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 

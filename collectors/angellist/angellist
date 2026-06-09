@@ -1,12 +1,12 @@
 #!/bin/bash
-# SCAFFOLD — host-side wrapper around `docker run` for the angellist
-# container. Mounts ~/.secrets/ (RW; persistent Camoufox profile + env
+# Host-side wrapper around `docker run` for the angellist
+# container. Mounts ~/.secrets/ (RW; persistent browser profile + env
 # file), the bronze tree (RW), and a /debug dir for explore-phase
 # artefacts. Single-writer: the Investor Portal session cookie + 2FA
 # prompts can't tolerate concurrent invocations.
 #
-# `explore` forwards a free 5900-6000 host port so the live Camoufox
-# session can be driven over VNC; login + download + load run headlessly.
+# `explore` and `byo-login` forward a free 5900-6000 host port so the live
+# browser can be driven over VNC; download + load run headlessly.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -32,11 +32,11 @@ fi
 
 if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
-angellist — host wrapper (SCAFFOLD)
+angellist — host wrapper
 
-This collector is scaffolded but not implemented. login / download / load
-are stubs that exit without contacting angellist.com; \`explore\` is the
-discovery harness to run first. See DESIGN.md and README.md.
+Implemented end-to-end: \`byo-login\` (real-Firefox cookie lift) ->
+\`download\` (Camoufox + injected cookie, GraphQL capture + tax-doc fetch)
+-> \`load\` (event-sourced silver). See DESIGN.md and README.md.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
