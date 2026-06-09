@@ -15,7 +15,8 @@ import (
 // 'YYYY-MM-DD' for the cancellation), so it is parsed in Go, not via strftime.
 const cashFlowQuery = `
 SELECT cash_flow_external_id, entity_external_id, flow_date, kind,
-       amount, shares, price_per_share, COALESCE(currency, 'USD')
+       amount, shares, price_per_share, COALESCE(currency, 'USD'),
+       COALESCE(description, '')
   FROM cash_flows
  WHERE flow_date IS NOT NULL
  ORDER BY flow_date, cash_flow_external_id`
@@ -83,11 +84,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		var (
 			entityID              int64
 			cfID, flowDate, kind  string
-			ccy                   string
+			ccy, desc             string
 			amount, shares, price sql.NullFloat64
 		)
 		if err := rows.Scan(&cfID, &entityID, &flowDate, &kind, &amount,
-			&shares, &price, &ccy); err != nil {
+			&shares, &price, &ccy, &desc); err != nil {
 			return nil, err
 		}
 		occurred, ok := flowDateUnix(flowDate)
@@ -98,7 +99,9 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		inst := instrumentID(entityID)
 
 		// emit appends one leg of the pair — both sit on the sentinel funding
-		// account and link to the company's instrument.
+		// account and link to the company's instrument; the silver cash-flow
+		// description (e.g. a withdrawal's destination bank) rides on
+		// each leg.
 		emit := func(txKind canonical.TxKind, withLot bool) {
 			signed := canonical.ApplyCanonicalSign(txKind, realPtr(amount))
 			i := inst
@@ -112,6 +115,10 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 				GrossAmount:           signed,
 				NetAmount:             signed,
 			}
+			if desc != "" {
+				d := desc
+				tx.Description = &d
+			}
 			if withLot {
 				tx.Quantity = realPtr(shares)
 				tx.Price = realPtr(price)
@@ -120,6 +127,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 
 		switch kind {
+		// Auto-derived event kinds → a balanced double-entry pair.
 		case "exercise":
 			emit(canonical.TxKindDeposit, false) // cash in to fund the exercise
 			emit(canonical.TxKindBuy, true)      // cash out to acquire the shares
@@ -136,6 +144,20 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			if !isZero {
 				emit(canonical.TxKindWithdrawal, false)
 			}
+		// Side-loaded explicit legs (collector `<account_id>-transactions.csv`)
+		// → one canonical transaction each; the CSV provides both halves (e.g.
+		// a sale plus the withdrawals it splits into), so they net
+		// to 0 on the funding account without auto-pairing.
+		case "sell":
+			emit(canonical.TxKindSell, true)
+		case "withdrawal":
+			emit(canonical.TxKindWithdrawal, false)
+		case "deposit":
+			emit(canonical.TxKindDeposit, false)
+		case "buy":
+			emit(canonical.TxKindBuy, true)
+		case "contribution":
+			emit(canonical.TxKindContribution, false)
 		}
 	}
 	if err := rows.Err(); err != nil {

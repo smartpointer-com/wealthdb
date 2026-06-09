@@ -164,6 +164,12 @@ instrument; the buy / sell legs carry the share lot + price.
 | `exit`         | `sell` (+, with lot) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |
 
+A side-loaded `<account_id>-transactions.csv` (collector DESIGN.md §5.2) instead
+names canonical kinds directly (`sell` / `withdrawal` / `deposit` / `buy` /
+`contribution`), which the adapter emits **1:1** — the CSV supplies both halves
+of the exit (a sale plus the withdrawals it splits into), so they
+net to 0 without auto-pairing and override the synthesized $0 exit.
+
 `Status` reports the `cash_flows` date range as the transaction extrema; the
 load window (the content-table span) already covers them.
 
@@ -190,7 +196,7 @@ gold. `Status` reports the same content span as the observable range, with
   the certificate issue dates × the FMV in effect at each snapshot. When a
   company exits, Carta purges its historical 409A timeline, so an exact
   per-date FMV comes from a side-loaded valuation override
-  (`<account_id>.csv` in the bronze root); absent one, the collector falls
+  (`<account_id>-valuations.csv` in the bronze root); absent one, the collector falls
   back to the FMV-at-last-exercise — exact from the last exercise onward, but
   over-stating earlier dates (collector `DESIGN.md` §5.1).
 - **Per-company aggregation (done).** Each company is one gold position; its

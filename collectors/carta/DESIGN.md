@@ -398,8 +398,9 @@ purges its historical 409A timeline, so the Carta-derived fallback can only
 value held shares flat at the FMV-at-last-exercise — exact from the last
 exercise onward, but over-stating the count/value for earlier dates (the count
 grew through intervening exercises, at then-lower FMVs). To value the position
-*per date* a user may side-load a CSV named `<account_external_id>.csv` in the
-bronze root (e.g. `1234567.csv`) — rows of `YYYY-MM-DD,fmv_per_share_usd`, each
+*per date* a user may side-load a CSV named `<account_external_id>-valuations.csv`
+in the bronze root (e.g. `1234567-valuations.csv`) — rows of
+`YYYY-MM-DD,fmv_per_share_usd`, each
 carried forward to the next (`#` / blank lines ignored), built from 409A
 valuation reports and stock-price notification letters, which do not parse
 reliably. When
@@ -424,7 +425,9 @@ carries the nature + direction), reconstructed from data we *do* have:
   cert cost), with `shares` + `price_per_share` carried. Fully derivable from
   the cap-table certs.
 - **`exit`** — at the acquisition / cancellation date: Carta purges the payout,
-  so recorded proceeds are **$0** (`shares` = the held total).
+  so recorded proceeds are **$0** (`shares` = the held total) — unless a
+  side-loaded `<account_external_id>-transactions.csv` supplies the exit (a sale plus the withdrawals it splits into, as canonical kinds the gold
+  emits 1:1), which then replaces the $0 exit.
 - **`capital_call`** / **`distribution`** — from the capital-account statements.
   Each statement reports inception-to-date figures; differencing consecutive
   statements (by date) yields the per-period flow, so the running total
@@ -434,8 +437,10 @@ carries the nature + direction), reconstructed from data we *do* have:
   inception-to-date column — which reads cleanly as the line's last amount — is
   differenced instead.
 
-The gold adapter (planned, §6.1) pairs each event into a balanced double-entry
-on a sentinel funding account, so its derived balance is always exactly 0.
+The gold adapter (§6.1) pairs each auto-derived event into a balanced
+double-entry on a sentinel funding account, so its derived balance is always
+exactly 0; side-loaded explicit legs are emitted 1:1 (the CSV supplies both
+halves, so they too net to 0).
 
 ### Why SQLite, not DuckDB
 
@@ -503,6 +508,11 @@ magnitude; the adapter signs + splits it:
 | `capital_call` | `deposit` (+) + `contribution` (−) |
 | `exit`         | `sell` (+, with shares) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |
+
+A **side-loaded** `<account_external_id>-transactions.csv` (§5.2) instead names
+canonical kinds directly — `sell` / `withdrawal` / `deposit` / `buy` /
+`contribution` — which the adapter emits **1:1** (no auto-pairing): the CSV
+supplies both halves of the exit (a sale plus the withdrawals it splits into), so they net to 0 without synthesis.
 
 Every leg links to the company's instrument (mirroring equityzen); the buy /
 sell legs additionally carry the share lot + price. The funding account is an

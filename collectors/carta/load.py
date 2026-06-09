@@ -20,9 +20,14 @@ Bronze → silver mapping (schema in migrations/):
   entities/<e>/<sectype>.json  -> securities ({rows} of each security-type file)
   entities/<e>/vesting/grant_*.json
                                -> vesting_schedules + vesting_events
-  <account_external_id>.csv    -> valuation override (bronze root, optional):
+  <account_external_id>-valuations.csv
+                               -> valuation override (bronze root, optional):
                                   per-date FMV, the single source of truth for
                                   held-share value when present (DESIGN.md §5.1)
+  <account_external_id>-transactions.csv
+                               -> explicit exit transactions (bronze root,
+                                  optional): the final sale + bank/escrow
+                                  withdrawals, overriding the $0 exit (§5.2)
   entities/<e>/exercises/grant_*_er_*.xlsx
                                -> FMV at last exercise (fallback held-share value)
   entities/<e>/fund-admin/partner-metrics.json
@@ -239,11 +244,12 @@ def _last_exercise_fmv(edir: Path) -> float | None:
 
 
 def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
-    """Read a side-loaded valuation-override CSV (named `<account_id>.csv` in
-    the bronze root): rows of `YYYY-MM-DD,fmv_per_share_usd`, '#' / blank lines
-    ignored. Returns [(snapshot_ts, fmv)] sorted ascending — the single source
-    of truth for the position's per-share fair-market-value, each value carried
-    forward until the next. Empty list if the file is absent."""
+    """Read a side-loaded valuation-override CSV (named
+    `<account_id>-valuations.csv` in the bronze root): rows of
+    `YYYY-MM-DD,fmv_per_share_usd`, '#' / blank lines ignored. Returns
+    [(snapshot_ts, fmv)] sorted ascending — the single source of truth for the
+    position's per-share fair-market-value, each value carried forward until the
+    next. Empty list if the file is absent."""
     if not path.is_file():
         return []
     out: list[tuple[int, float]] = []
@@ -258,6 +264,33 @@ def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
         if ts is not None and fmv is not None:
             out.append((ts, fmv))
     out.sort()
+    return out
+
+
+def _read_transactions_csv(path: Path) -> list[dict]:
+    """Read a side-loaded transactions CSV (named `<account_id>-transactions.csv`
+    in the bronze root): rows of `date,kind,amount,shares,description`, '#' /
+    blank lines ignored. `kind` is a canonical transaction kind the gold emits
+    1:1 (sell | withdrawal | deposit | buy | contribution); `amount` is a
+    positive magnitude (USD). These explicit legs override the auto-derived $0
+    exit for the entity (e.g. a sale plus the withdrawals it splits into). Returns the parsed rows in file order; empty if absent."""
+    if not path.is_file():
+        return []
+    out: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",", 4)]
+        if len(parts) < 3 or not parts[0] or not parts[1]:
+            continue
+        out.append({
+            "flow_date": parts[0],
+            "kind": parts[1],
+            "amount": _f(parts[2]),
+            "shares": _f(parts[3]) if len(parts) > 3 and parts[3] else None,
+            "description": parts[4] if len(parts) > 4 else None,
+        })
     return out
 
 
@@ -680,12 +713,14 @@ def _insert_cash_flow(conn, cfid: str, eid, snap: int, kind: str,
     return 1
 
 
-def _captable_cash_flows(conn, eid, edir: Path, snap: int) -> int:
+def _captable_cash_flows(conn, eid, edir: Path, snap: int,
+                         bronze_root: Path) -> int:
     """Cap-table cash flows: one `exercise` (deposit+buy in gold) per share
-    certificate — amount = quantity x strike (the cert cost), price the strike
-    — and, if the company exited, one `exit` (sell+withdrawal) at the
-    cancellation date. Carta purges the exit payout, so the exit's recorded
-    proceeds are $0 (the gold then omits the $0 withdrawal leg)."""
+    certificate — amount = quantity x strike (the cert cost), price the strike.
+    The exit is either a side-loaded `<account_id>-transactions.csv` (explicit
+    sale + withdrawals — canonical kinds the gold emits 1:1) or,
+    absent that file, the auto-derived $0 exit at the cancellation date (Carta
+    purges the payout, so the gold then omits the $0 withdrawal leg)."""
     n = 0
     held_shares = 0.0
     body = _read_json(edir / "shares.json")
@@ -702,8 +737,24 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int) -> int:
                                snap, "exercise", issue, cost, qty, price,
                                "share exercise / acquisition")
         held_shares += qty
-    cancel = _entity_canceled_date(edir)
-    if cancel and held_shares:
+    # Exit: a side-loaded transactions CSV (explicit legs) overrides the
+    # auto-derived $0 exit. Clear the superseded rows from any prior load
+    # (INSERT OR REPLACE only overwrites rows the current path re-emits, so a
+    # toggled-off exit / side-load would otherwise linger).
+    side = _read_transactions_csv(bronze_root / f"{eid}-transactions.csv")
+    if side:
+        conn.execute("DELETE FROM cash_flows WHERE cash_flow_external_id = ?",
+                     (f"exit:{eid}",))
+        for i, tx in enumerate(side):
+            sh, amt = tx["shares"], tx["amount"]
+            px = (amt / sh) if (sh and amt is not None) else None
+            n += _insert_cash_flow(conn, f"tx:{eid}:{i}", eid, snap, tx["kind"],
+                                   tx["flow_date"], amt, sh, px,
+                                   tx["description"] or "side-loaded transaction")
+        return n
+    conn.execute("DELETE FROM cash_flows WHERE cash_flow_external_id LIKE ?",
+                 (f"tx:{eid}:%",))
+    if (cancel := _entity_canceled_date(edir)) and held_shares:
         n += _insert_cash_flow(conn, f"exit:{eid}", eid, snap, "exit", cancel,
                                0.0, held_shares, 0.0, "acquisition / exit")
     return n
@@ -748,6 +799,7 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
     if not entities_dir.is_dir():
         return 0
     docs_dir = run_dir / "documents"
+    bronze_root = run_dir.parent  # side-loaded `<account_id>-*.csv` live here
     n = 0
     for edir in sorted(entities_dir.iterdir()):
         if not edir.is_dir():
@@ -759,7 +811,7 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
         if meta.get("is_fund_investment"):
             n += _fund_cash_flows(conn, eid, docs_dir, snap)
         else:
-            n += _captable_cash_flows(conn, eid, edir, snap)
+            n += _captable_cash_flows(conn, eid, edir, snap, bronze_root)
     return n
 
 
@@ -833,10 +885,11 @@ def load_run(conn, run_dir: Path) -> bool:
                     # Cap-table: reconstruct the held -> cancelled lifecycle.
                     cancel_s = _entity_canceled_date(edir)
                     cancel_ts = _date_ts(cancel_s)
-                    override = _read_valuation_csv(run_dir.parent / f"{eid}.csv")
+                    override = _read_valuation_csv(
+                        run_dir.parent / f"{eid}-valuations.csv")
                     if override:
-                        # Side-loaded `<account_id>.csv` is the single source
-                        # of truth: each cert held from its issue date and
+                        # Side-loaded `<account_id>-valuations.csv` is the single
+                        # source of truth: each cert held from its issue date and
                         # re-valued at every FMV step, so the share count and
                         # per-share price both move over time (DESIGN.md §5.1).
                         first_ts = override[0][0]

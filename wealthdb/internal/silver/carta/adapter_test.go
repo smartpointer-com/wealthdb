@@ -235,3 +235,80 @@ func TestTransactions(t *testing.T) {
 		t.Error("a $0 withdrawal was emitted for the $0 exit; it must be omitted")
 	}
 }
+
+// TestSideLoadedLegsEmit1to1 verifies that side-loaded canonical kinds
+// (sell / withdrawal / …, from `<account_id>-transactions.csv`) are emitted as
+// single transactions (NOT auto-paired) — the CSV supplies both halves, so the
+// sale + its withdrawals net to 0 on the funding account.
+func TestSideLoadedLegsEmit1to1(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	d := unixDate(t, "2026-02-02")
+	if _, err := db.Exec(fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload)
+    VALUES (%d, 100, 'IND1', 0, 'ACME Inc', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    position_status, currency, payload) VALUES (%d, 100, 'share', 1, 'exited', '$', '{}');
+INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
+    flow_date, amount, shares, price_per_share, currency, description, payload) VALUES
+    ('tx:100:0', '100', 1700000000, 'sell',       '2026-02-02', 7000, 1500, 4.6667, 'USD', 'sale of all shares', '{}'),
+    ('tx:100:1', '100', 1700000000, 'withdrawal', '2026-02-02', 6500, NULL, NULL,   'USD', 'to bank',            '{}'),
+    ('tx:100:2', '100', 1700000000, 'withdrawal', '2026-02-02',  500, NULL, NULL,   'USD', 'to escrow',          '{}');`,
+		d, d)); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1:1 — exactly 3 transactions (no auto-pairing), net 0.
+	if len(batch.Transactions) != 3 {
+		t.Fatalf("transactions = %d, want 3 (sell + 2 withdrawals, 1:1)", len(batch.Transactions))
+	}
+	byID := map[string]canonical.TransactionChange{}
+	sum := canonical.NewDecimalFromInt(0)
+	for _, tx := range batch.Transactions {
+		byID[tx.TransactionExternalID] = tx
+		if tx.AccountExternalID != fundingAccountKey {
+			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		}
+		if tx.NetAmount != nil {
+			sum = sum.Add(*tx.NetAmount)
+		}
+	}
+	if !sum.IsZero() {
+		t.Errorf("side-loaded legs net to %s, want 0.00", sum.StringFixed(2))
+	}
+	if sell, ok := byID["tx:100:0:sell"]; !ok || sell.Kind != canonical.TxKindSell ||
+		sell.NetAmount == nil || sell.NetAmount.StringFixed(2) != "7000.00" ||
+		sell.Quantity == nil || sell.Quantity.StringFixed(2) != "1500.00" {
+		t.Errorf("sell leg = %+v, want sell +7000.00 qty 1500.00", sell)
+	}
+	if wd, ok := byID["tx:100:1:withdrawal"]; !ok || wd.Kind != canonical.TxKindWithdrawal ||
+		wd.NetAmount == nil || wd.NetAmount.StringFixed(2) != "-6000.00" {
+		t.Errorf("withdrawal leg = %+v, want withdrawal -6000.00", wd)
+	}
+	// Regression: the silver cash-flow description must reach the gold
+	// transaction (e.g. a withdrawal's destination), not be dropped by the
+	// projection query.
+	for id, wantDesc := range map[string]string{
+		"tx:100:0:sell":       "sale of all shares",
+		"tx:100:1:withdrawal": "to bank",
+		"tx:100:2:withdrawal": "to second bank",
+	} {
+		tx := byID[id]
+		if tx.Description == nil || *tx.Description != wantDesc {
+			t.Errorf("%s description = %v, want %q", id, tx.Description, wantDesc)
+		}
+	}
+}

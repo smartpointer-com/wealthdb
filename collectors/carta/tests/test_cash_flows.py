@@ -91,7 +91,8 @@ def _captable_edir(tmp_path: Path, canceled: str | None = None) -> Path:
 
 
 def test_captable_exercises_one_per_cert(migrated, tmp_path):
-    n = load._captable_cash_flows(migrated, 7, _captable_edir(tmp_path), 1_700_000_000)
+    n = load._captable_cash_flows(migrated, 7, _captable_edir(tmp_path),
+                                  1_700_000_000, tmp_path)
     assert n == 2  # one exercise per share cert; no exit (live holding)
     rows = migrated.execute(
         "SELECT kind, flow_date, amount, shares, price_per_share "
@@ -104,9 +105,53 @@ def test_captable_exercises_one_per_cert(migrated, tmp_path):
 
 def test_captable_exit_zero_proceeds(migrated, tmp_path):
     load._captable_cash_flows(
-        migrated, 7, _captable_edir(tmp_path, canceled="02/02/2026"), 1_700_000_000)
+        migrated, 7, _captable_edir(tmp_path, canceled="03/03/2099"),
+        1_700_000_000, tmp_path)
     # $0 recorded proceeds (Carta purges the payout); total held shares; the
     # gold adapter then omits the $0 withdrawal leg.
     assert migrated.execute(
         "SELECT kind, flow_date, amount, shares FROM cash_flows WHERE kind='exit'"
     ).fetchone() == ("exit", "03/03/2099", 0.0, 1500.0)
+
+
+# ---- side-loaded transactions (the final sale + withdrawals) ----------------
+
+def test_read_transactions_csv(tmp_path):
+    p = tmp_path / "7-transactions.csv"
+    p.write_text("# date,kind,amount,shares,description\n"
+                 "2099-03-03,sell,7000.00,1500,sale of all shares\n"
+                 "2099-03-03,withdrawal,6000.00,,to bank\n"
+                 "2099-03-03,withdrawal,1000.00,,to second bank\n")
+    rows = load._read_transactions_csv(p)
+    assert rows == [
+        {"flow_date": "2099-03-03", "kind": "sell", "amount": 7000.0,
+         "shares": 1500.0, "description": "sale of all shares"},
+        {"flow_date": "2099-03-03", "kind": "withdrawal", "amount": 6000.0,
+         "shares": None, "description": "to bank"},
+        {"flow_date": "2099-03-03", "kind": "withdrawal", "amount": 1000.0,
+         "shares": None, "description": "to second bank"},
+    ]
+
+
+def test_captable_side_loaded_exit_replaces_auto_exit(migrated, tmp_path):
+    # A pre-existing auto $0 exit from an earlier load must be cleared when the
+    # side-loaded legs now apply (INSERT OR REPLACE alone would leave it).
+    migrated.execute(
+        "INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, "
+        "snapshot_at, kind, currency, payload) VALUES "
+        "('exit:7', 7, 1, 'exit', 'USD', '{}')")
+    edir = _captable_edir(tmp_path, canceled="03/03/2099")
+    (tmp_path / "7-transactions.csv").write_text(
+        "2099-03-03,sell,7000.00,1500,sale\n"
+        "2099-03-03,withdrawal,6000.00,,bank\n"
+        "2099-03-03,withdrawal,1000.00,,second bank\n")
+    load._captable_cash_flows(migrated, 7, edir, 1_700_000_000, tmp_path)
+
+    # No 'exit' row survives; the explicit legs are present and net to 0.
+    assert migrated.execute("SELECT COUNT(*) FROM cash_flows WHERE kind='exit'").fetchone()[0] == 0
+    legs = migrated.execute(
+        "SELECT kind, amount, shares FROM cash_flows "
+        "WHERE kind IN ('sell','withdrawal') ORDER BY amount DESC").fetchall()
+    assert legs == [("sell", 7000.0, 1500.0),
+                    ("withdrawal", 6000.0, None),
+                    ("withdrawal", 1000.0, None)]
