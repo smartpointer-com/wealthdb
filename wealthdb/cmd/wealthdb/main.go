@@ -12,6 +12,7 @@ import (
 	_ "github.com/ptu/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu/wealthdb/internal/silver/carta"
 	_ "github.com/ptu/wealthdb/internal/silver/cointracking"
+	_ "github.com/ptu/wealthdb/internal/silver/equityzen"
 	_ "github.com/ptu/wealthdb/internal/silver/fidelity"
 	_ "github.com/ptu/wealthdb/internal/silver/relevate"
 	_ "github.com/ptu/wealthdb/internal/silver/schwab"

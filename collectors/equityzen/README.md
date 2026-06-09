@@ -31,8 +31,10 @@ conventions.
 ## Status
 
 **Implemented.** All four verbs work end-to-end against the live portal /
-real bronze; the collector is not yet wired into the broader suite (no
-Makefile target, no `wealthdb.cfg` entry, no gold adapter).
+real bronze, and the **gold adapter** is in place
+(`wealthdb/internal/silver/equityzen/` + gold migration `0015`). What
+remains to fully wire it into the suite is operator config: a Makefile
+target and a `wealthdb.cfg` `silver_sources` entry.
 
 | Verb | Status | Notes |
 | --- | --- | --- |
@@ -41,10 +43,10 @@ Makefile target, no `wealthdb.cfg` entry, no gold adapter).
 | `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; `--documents` fetches each offering's document PDF blobs (capital-account statements, K-1s) via the session. |
 | `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` re-loads). |
 
-Not wired into the suite: no Makefile target, no `wealthdb.cfg` entry, no
-gold-side adapter under `wealthdb/internal/silver/equityzen/`, no
-migrations. Those land after the gold-schema questions in DESIGN.md §6 are
-signed off.
+The gold adapter projects this silver into the canonical
+`accounts` / `instruments` / `positions` / `transactions` tables; see
+DESIGN.md §6. Operator wiring (a Makefile target and a `wealthdb.cfg`
+`silver_sources` entry) is the only remaining step.
 
 ## Intended quick start (once implemented)
 

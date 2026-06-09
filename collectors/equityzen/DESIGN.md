@@ -318,74 +318,87 @@ interests with a handful of cash flows each, shape transformation only).
 that to stay on the documented default** — same call `angellist` and
 `carta` made. Revisit if a DuckDB silver is in fact wanted.
 
-## 6. Phase 4: gold adapter — implementation plan
+## 6. Phase 4: gold adapter — implemented
 
-The gold adapter (`wealthdb/internal/silver/equityzen/`) is **not built**:
-the gold layer is locked while the concurrent `angellist` adapter lands.
-This section is the plan to execute once the lock is released. It is
-**carta-shaped** — `carta` (`wealthdb/internal/silver/carta/`) is the
-finished sibling for private, no-ticker holdings, and equityzen mirrors it
-with one addition: equityzen surfaces **transactions** (carta does not).
+The gold adapter lives at `wealthdb/internal/silver/equityzen/`
+(adapter / status / snapshots / transactions / classmap `.go` +
+`adapter_test.go`). It is the closest sibling of `angellist` (an
+event-sourced LP book with distributions) and a cousin of `carta`. The
+package doc comment in `adapter.go` is the canonical spec — like
+`angellist`, there is no separate `docs/adapters/*.md` (the latest
+convention is the package comment).
 
 ### Enums — no gold change needed
 
-The `asset_class` enum **already carries `spv` and `private_fund`** (added
-for carta/angellist; see `internal/canonical/enums.go`). So
-`ASSET_COMPANY → spv`, `ASSET_MULTI_COMPANY_FUND → private_fund` map onto
-existing values — no enum addition. `account_kind` / `tax_wrapper` /
-`management_style` values below all already exist.
+The `asset_class` enum already carries `spv` and `private_fund` (added for
+carta/angellist) and `TxKind` carries `distribution` (added for angellist).
+`ASSET_COMPANY → spv`, `ASSET_MULTI_COMPANY_FUND → private_fund`, and the
+`buy` / `sell` / `distribution` transaction kinds all map onto existing
+values. The only gold-schema change is migration `0015`, which widens the
+`silver_sources.silver_kind` whitelist to admit `'equityzen'`.
 
-### Account / instrument / position model (resolved)
+### Account / instrument / position model
 
-- **One account** (the buyer relationship), `account_external_id` = the
-  `buyerId`, one position per investment — no per-SPV accounts, no portfolio
-  grouping. `account_kind = custody` (EquityZen administers the SPV/fund
-  interests; the buyer places no trades — **not** a trading `brokerage`;
-  this matches carta and **revises the earlier `brokerage` note**).
-  `tax_wrapper = taxable_personal`, `management_style = discretionary`
-  (passive LP). All overridable via gold `account_overrides`.
-- **One instrument per offering**, keyed `deal:<dealId>`,
-  `asset_class = spv | private_fund` (from `offerings.kind`), `name` = the
-  company (spv) / fund (private_fund). No ISIN/CUSIP — adapter-scoped, like
-  carta's per-entity instruments.
+- **Two accounts** (the silver has no buyer-id column and the holder has one
+  relationship, so both ids are constants):
+  - `equityzen` — the **custody** account holding the positions (one per
+    offering; no per-SPV accounts, no portfolio grouping). `account_kind =
+    custody` (EquityZen administers the interests; the buyer places no trades
+    — not a trading `brokerage`). `tax_wrapper = taxable_personal`,
+    `management_style = self_directed` — the holder chooses *which* interests
+    to hold; the GP management *inside* each vehicle is not modelled (the
+    carta/angellist consensus). Overridable via gold `account_overrides`.
+  - `equityzen-funding` — a **sentinel cash account** carrying the
+    double-entry transaction pairs (see `transactions.go`). EquityZen does
+    not expose the real external funding account (unlike angellist, whose
+    source carries a true funding ledger), so each event is a *balanced* pair
+    and this account's derived balance is always **exactly 0** — a pure
+    pass-through clearing account. No positions, no `cash_balance` row.
+- **One instrument per offering**, keyed by the raw `deal_external_id`
+  (matching angellist's use of `position_external_id`), `asset_class = spv |
+  private_fund` (from `offerings.kind`), `name` = the company / fund label.
+  No ISIN/CUSIP — adapter-scoped.
 - **Positions** map straight off the silver `positions` event rows:
-  `quantity = shares_held` (NULL for funds — units are not a share count),
-  `market_value = market_value` (already the chosen mark — tender price for
-  SPVs, statement NAV for funds, cost otherwise), `book_value =
-  cost_basis_remaining`.
+  `market_value = market_value` (the collector's chosen mark — tender price
+  for SPVs, statement NAV for funds, cost otherwise), `book_value =
+  cost_basis_remaining`, `quantity = shares_held` for SPVs (NULL for funds —
+  units are not a share count). `acquisition_date` = the deal's first event.
 
-### Adapter shape (mirror carta's five files)
+### Adapter shape (five files, mirroring angellist)
 
 - `adapter.go` — `silver.Register`, `Open` (read-only SQLite), `Connection`.
 - `status.go` — `Status` + `ChangeWindow`, driven by `dump_runs`
-  (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op);
-  observable span = MIN/MAX over `positions.as_of_date` (snapshots) **and**
-  `cash_flows.flow_date` (transactions). Unlike carta, the transaction
-  extrema are populated.
-- `snapshots.go` — **forward-fill**, exactly like carta: for each distinct
-  `positions.as_of_date` in the window, emit a COMPLETE portfolio snapshot =
-  each deal's latest `positions` event `≤ t` **where `is_open = 1`** (so an
-  exited deal drops out at its exit date), one `PositionChange` per deal.
-  Note: silver `as_of_date` is **source ISO TEXT** → the adapter converts to
-  the canonical BIGINT unix `snapshot_at`.
-- `transactions.go` — the addition over carta: `cash_flows` →
-  `TransactionChange`. `purchase` → `buy` (negative `net_amount`, `quantity`
-  = shares, `price` = purchase price). A `distribution` cash flow maps **by
-  the offering's asset class** — the source bucket can't distinguish a
-  membership-sale from a true distribution (verified: an SPV sale and a fund
-  distribution share the identical `distributedTransactions` shape, and
-  neither deal exposes completed `sellOrders`):
-  - **`spv` → `sell`** (positive `net_amount`; `quantity` =
-    `cash_flows.shares`, `price` = `cash_flows.price_per_share` — promoted
-    to columns in silver migration 0002). An SPV is a tax-transparent
-    single-stock vehicle, so the tax
-    authority treats each distribution as a realization of the underlying.
-    (An SPV *could* retain/reinvest/lever, but that doesn't happen for
-    individual-stock vehicles — the simplification holds; note the
-    assumption in the adapter doc.)
-  - **`private_fund` → `distribution`** — funds routinely reinvest proceeds
-    with no fixed event↔payout link, so a fund distribution is **not** a
-    sale. This is why the `distribution` `TxKind` is needed.
+  (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op).
+  Snapshot extrema = MIN/MAX `positions.as_of_date`; transaction extrema =
+  MIN/MAX `cash_flows.flow_date`; the change window spans both. Silver dates
+  are source ISO TEXT → converted with `strftime('%s', …)` to the canonical
+  unix seconds.
+- `snapshots.go` — **forward-fill**: for each distinct position event date
+  in the window, emit a COMPLETE portfolio snapshot = each deal's latest
+  event `≤ t` (by `event_seq`) **where `is_open = 1`** (so an exited deal
+  drops out at its exit date), one `PositionChange` + one `InstrumentChange`
+  per held deal, plus the single account.
+- `transactions.go` — `cash_flows` → **double-entry pairs** on the sentinel
+  funding account, each event netting to 0 so the account's derived balance
+  is always exactly 0. The investment leg's kind splits by `offerings.kind`
+  (the source bucket can't distinguish a membership-sale from a true
+  distribution — an SPV sale and a fund distribution share the identical
+  `distributedTransactions` shape, no `sellOrders`):
+  - **purchase, `spv`** → `deposit` (+) + `buy` (−, with
+    `quantity`/`price` from the lot). An SPV is a tax-transparent
+    single-stock vehicle, so a purchase is a stock buy.
+  - **purchase, `private_fund`** → `deposit` (+) + `contribution` (−, no
+    lot). A fund interest is an LP capital contribution, not a share buy.
+  - **distribution, `spv`** → `sell` (+, with lot) + `withdrawal` (−). The
+    tax authority treats an SPV distribution as a realization of the
+    underlying. (An SPV *could* retain/reinvest/lever, but that doesn't
+    happen for individual-stock vehicles — the simplification holds.)
+  - **distribution, `private_fund`** → `distribution` (+, no lot) +
+    `withdrawal` (−). Funds routinely reinvest, so a payout is not a sale.
+  - A **$0 distribution** (an exit with no proceeds, e.g. a defunct SPV) keeps the
+    $0 `sell`/`distribution` leg and omits the meaningless $0 `withdrawal`.
+    Every leg links to the offering's instrument. EquityZen is funded
+    upfront, so there are no capital calls beyond the initial purchase.
 - `classmap.go` — `offerings.kind` → `asset_class`.
 
 The parsed `capital_account_statements` / `k1_documents` stay silver-only:
@@ -393,33 +406,23 @@ the statement **NAV already reaches gold via the `positions` `statement`
 events**, and K-1 tax figures have no canonical home (as carta's documents /
 cap-calls stay silver-only).
 
-### Transaction-kind rule (resolved) + coordination
+**Exit representation.** Forward-fill drops an exited deal from snapshots at
+its exit date (its latest event is the `is_open=0` exit), so exited
+positions disappear from the as-of holdings — matching carta/angellist and
+the public-equity convention (no tombstone row).
 
-The `distribution` / `sell` split is driven by `offerings.kind` (above):
-SPV distribution → `sell`, fund distribution → `distribution`,
-`purchase` → `buy`. EquityZen is funded upfront, so there are **no capital
-calls**.
+### Verification
 
-`TxKind` has no `distribution` value today, so one must be added gold-side.
-`angellist` (in flight, holds the gold lock) also surfaces distributions
-(and capital calls), so **coordinate the `distribution` `TxKind` addition
-with the angellist adapter** to land one shared value — and let angellist
-own any `capital_call` value it needs (equityzen does not).
-
-**Resolved — exit representation.** Forward-fill drops an exited deal from
-snapshots at its exit date (its latest event is the `is_open=0` exit), so
-exited positions disappear from the as-of holdings — matching carta and the
-public-equity convention (no tombstone row).
-
-### File checklist (when the gold lock is released)
-
-- `wealthdb/internal/silver/equityzen/{adapter,status,snapshots,transactions,classmap}.go`
-- `wealthdb/internal/gold/migrations/00NN_silver_sources_equityzen.sql` —
-  widen the `silver_sources.silver_kind` CHECK to admit `'equityzen'`
-  (next free number after the angellist migration; + the `distribution`
-  `TxKind` enum addition, coordinated with angellist).
-- `wealthdb/cmd/wealthdb/main.go` — blank-import the adapter package.
-- `wealthdb/docs/adapters/equityzen.md` — mirror `docs/adapters/carta.md`.
+`go test ./internal/silver/equityzen/` covers Kind / empty Status / Status +
+ChangeWindow / forward-fill per event date (cost → tender → statement NAV,
+exited drop-out, spv-quantity vs fund-NULL) / the double-entry transaction
+pairs (deposit+buy, deposit+contribution, sell+withdrawal,
+distribution+withdrawal, the $0-exit withdrawal omission) including the
+**funding ledger nets to exactly 0** invariant. An end-to-end gold load of
+the real silver reproduced the expected as-of history (0 holdings
+pre-investment, the book growing then an exited SPV dropping out, fund marks
+tracking statement NAVs, current total matching the silver-level figure) and
+the funding account's transactions sum to 0.
 
 ## 7. Scope for the first implementation pass
 

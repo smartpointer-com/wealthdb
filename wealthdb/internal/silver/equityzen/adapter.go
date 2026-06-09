@@ -1,0 +1,93 @@
+// Package equityzen projects the equityzen silver SQLite (EquityZen
+// pre-IPO secondary marketplace — a buyer's own holdings) into canonical
+// change records.
+//
+// Single-source, USD adapter for a buyer's book of membership interests in
+// single-company SPVs and multi-company funds. The collector does the
+// valuation + lifecycle work and stores an event-sourced position history
+// plus a purchase/distribution cash ledger; this adapter forward-fills the
+// positions and maps the ledger to transactions. Notable shapes:
+//
+//   - Two accounts, both constants (the silver has no buyer-id column and the
+//     holder has one relationship). "equityzen" is the custody account holding
+//     the positions: account_kind = custody (EquityZen administers the
+//     interests; the buyer places no trades — cf. carta / angellist),
+//     tax_wrapper = taxable_personal, management_style = self_directed (the
+//     holder chooses which interests to hold; the GP management inside each
+//     vehicle is not modelled; config overrides win). "equityzen-funding" is a
+//     sentinel cash account carrying the double-entry transaction pairs (see
+//     transactions.go): EquityZen does not expose the real external funding
+//     account, so each event is a balanced pair and this account's derived
+//     balance is always exactly 0 (a pure pass-through clearing account).
+//
+//   - One instrument + position per offering (silver `offerings`, keyed by
+//     deal_external_id — the SPV/fund interest, never merged). asset_class
+//     from offerings.kind: single-company -> spv, multi-company fund ->
+//     private_fund. Instrument name = the underlying company / fund label.
+//     No ISIN / symbol (private, non-quotable).
+//
+//   - Positions forward-filled from the event-sourced `positions` table
+//     (silver migrations 0001/0002): for each event date the adapter emits
+//     each deal's latest event on/before it (by event_seq), dropping the
+//     is_open=0 (exited) ones — a COMPLETE portfolio per date, which is what
+//     gold's as-of query reads. market_value / book_value are the
+//     collector's marks (CLOSED-deal prices for SPVs; parsed capital-
+//     account-statement NAVs for funds). quantity = shares_held for SPVs,
+//     NULL for funds (units are not a share count). Silver dates are source
+//     ISO TEXT; the adapter converts to unix seconds (strftime).
+//
+//   - Transactions from the `cash_flows` ledger, as balanced double-entry
+//     pairs on the funding account: a purchase -> deposit + buy (spv) or
+//     deposit + contribution (fund); a distribution -> sell + withdrawal for
+//     an SPV (a tax-transparent single-stock vehicle realizes the
+//     underlying), or distribution + withdrawal for a multi-company fund
+//     (which reinvests, so a payout is not a sale). A $0 distribution (an
+//     exit with no proceeds) omits the $0 withdrawal. See transactions.go.
+package equityzen
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/ptu/wealthdb/internal/silver"
+)
+
+const kindName = "equityzen"
+
+func init() {
+	silver.Register(&Adapter{})
+}
+
+type Adapter struct{}
+
+func (*Adapter) Kind() string { return kindName }
+
+func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", spec.Path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open equityzen silver %q: %w", spec.Path, err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping equityzen silver %q: %w", spec.Path, err)
+	}
+	return &Connection{db: db, path: spec.Path}, nil
+}
+
+type Connection struct {
+	db   *sql.DB
+	path string
+}
+
+func (c *Connection) Close() error {
+	if c == nil || c.db == nil {
+		return nil
+	}
+	err := c.db.Close()
+	c.db = nil
+	return err
+}
