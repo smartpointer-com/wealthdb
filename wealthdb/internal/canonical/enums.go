@@ -23,6 +23,19 @@ const (
 	AssetClassOTCDerivative AssetClass = "otc_derivative"
 	AssetClassMetal         AssetClass = "metal"
 	AssetClassCrypto        AssetClass = "crypto"
+	// Private-market classes. Distinct from the public-market
+	// AssetClassEquity / AssetClassFund so portfolio queries can
+	// separate illiquid, non-quotable private holdings (Carta
+	// cap-table stakes, AngelList SPV / fund LP interests) from
+	// listed securities. AssetClassPrivateEquity covers direct
+	// private-company equity and equity-comp (shares, options,
+	// RSUs/RSAs, SAFEs/notes, warrants); AssetClassSPV covers an LP
+	// interest in a single-company special-purpose vehicle;
+	// AssetClassPrivateFund covers an LP interest in a multi-company
+	// venture/PE fund.
+	AssetClassPrivateEquity AssetClass = "private_equity"
+	AssetClassSPV           AssetClass = "spv"
+	AssetClassPrivateFund   AssetClass = "private_fund"
 	AssetClassOther         AssetClass = "other"
 )
 
@@ -31,7 +44,9 @@ var assetClassValues = map[AssetClass]struct{}{
 	AssetClassBond: {}, AssetClassOption: {}, AssetClassFuture: {},
 	AssetClassFxForward: {}, AssetClassFxOption: {},
 	AssetClassMoneyMarket: {}, AssetClassOTCDerivative: {},
-	AssetClassMetal: {}, AssetClassCrypto: {}, AssetClassOther: {},
+	AssetClassMetal: {}, AssetClassCrypto: {},
+	AssetClassPrivateEquity: {}, AssetClassSPV: {}, AssetClassPrivateFund: {},
+	AssetClassOther: {},
 }
 
 // Valid reports whether the receiver is one of the recognised
@@ -76,7 +91,7 @@ const (
 var accountKindValues = map[AccountKind]struct{}{
 	AccountKindBrokerage: {}, AccountKindCash: {},
 	AccountKindSafekeeping: {}, AccountKindCustody: {},
-	AccountKindOverlay: {},
+	AccountKindOverlay:        {},
 	AccountKindCrypto:         {},
 	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
 	AccountKindOther: {},
@@ -148,7 +163,7 @@ var taxWrapperValues = map[TaxWrapper]struct{}{
 	TaxWrapperSEPIRA: {}, TaxWrapperSIMPLEIRA: {},
 	TaxWrapper401k: {}, TaxWrapper403b: {}, TaxWrapper457b: {},
 	TaxWrapper529: {}, TaxWrapperCoverdellESA: {}, TaxWrapperHSA: {},
-	TaxWrapperDAF: {},
+	TaxWrapperDAF:           {},
 	TaxWrapperCustodialUTMA: {}, TaxWrapperCustodialUGMA: {},
 	TaxWrapperTrustGrantor: {}, TaxWrapperTrustNonGrantor: {}, TaxWrapperTrustCharitable: {},
 	TaxWrapperPillar2: {}, TaxWrapperVestedBenefits: {}, TaxWrapperPillar3a: {},
@@ -198,12 +213,12 @@ func (m ManagementStyle) Valid() bool {
 type TxKind string
 
 const (
-	TxKindBuy             TxKind = "buy"
-	TxKindSell            TxKind = "sell"
-	TxKindDividend        TxKind = "dividend"
-	TxKindCoupon          TxKind = "coupon"
-	TxKindCapitalGain     TxKind = "capital_gain"
-	TxKindInterest        TxKind = "interest"
+	TxKindBuy         TxKind = "buy"
+	TxKindSell        TxKind = "sell"
+	TxKindDividend    TxKind = "dividend"
+	TxKindCoupon      TxKind = "coupon"
+	TxKindCapitalGain TxKind = "capital_gain"
+	TxKindInterest    TxKind = "interest"
 	// TxKindStaking is for proof-of-stake reward distributions
 	// (and the equivalents from delegated-staking / liquid-staking
 	// platforms). Distinct from TxKindInterest because most tax
