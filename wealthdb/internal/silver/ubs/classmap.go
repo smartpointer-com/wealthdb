@@ -7,6 +7,24 @@ import (
 	"github.com/ptu/wealthdb/internal/canonical"
 )
 
+// assetClassForInstrument classifies a PSN instrument using its
+// CFI code first (ISO 10962 — the primary signal UBS surfaces for
+// listed securities) and falling back to UBS's internal
+// `UacAsstClsCd` when CFI is empty. CFI is empty for the
+// non-listed instruments UBS holds in custody (e.g. metal-deposit receipts, private-market fund interests),
+// and those rows still carry a populated UacAsstClsCd because the
+// bank uses it for internal asset-allocation reporting.
+//
+// CFI takes precedence even when its first character is one we
+// don't recognise — a known CFI is the strongest classification
+// signal we have. Only fully-empty CFI falls through to UAC.
+func assetClassForInstrument(cfi, uacAsstClsCd string) canonical.AssetClass {
+	if cfi != "" {
+		return assetClassForCFI(cfi)
+	}
+	return assetClassForUacAsstCls(uacAsstClsCd)
+}
+
 // assetClassForCFI maps an ISO 10962 CFI code's first character
 // to a canonical AssetClass. The first character of the CFI code
 // designates the asset category:
@@ -20,8 +38,9 @@ import (
 //	T - Structured / cash collateral → other
 //	R - Entitlements (rights)   → other
 //
-// Empty CFI codes (UBS does ship some instruments with no CFI
-// populated — typically money-market funds) fall through to other.
+// Empty CFI is *not* this function's concern — callers should go
+// through assetClassForInstrument, which routes empty CFI to the
+// UAC fallback.
 func assetClassForCFI(cfi string) canonical.AssetClass {
 	if cfi == "" {
 		return canonical.AssetClassOther
@@ -44,6 +63,36 @@ func assetClassForCFI(cfi string) canonical.AssetClass {
 		// instruments), anything new.
 		return canonical.AssetClassOther
 	}
+}
+
+// assetClassForUacAsstCls maps UBS's internal `UacAsstClsCd`
+// asset-class code to canonical AssetClass. Used as the fallback
+// when CFI is empty.
+//
+// The UAC taxonomy is coarser than CFI:
+//
+//	0100 - Liquidity                       → money_market
+//	0300 - Equities                        → equity
+//	0400 - Hedge funds & private markets   → private_fund
+//	0600 - Precious metals & commodities   → metal
+//	0700 - Others                          → other
+//
+// The HF&PM bucket conflates hedge funds and private-market LP
+// interests. The canonical taxonomy currently has no dedicated
+// `hedge_fund` value, so both land in `private_fund` until the
+// taxonomy grows a separate one.
+func assetClassForUacAsstCls(code string) canonical.AssetClass {
+	switch code {
+	case "0100":
+		return canonical.AssetClassMoneyMarket
+	case "0300":
+		return canonical.AssetClassEquity
+	case "0400":
+		return canonical.AssetClassPrivateFund
+	case "0600":
+		return canonical.AssetClassMetal
+	}
+	return canonical.AssetClassOther
 }
 
 // taxWrapperForCashAcctTp / taxWrapperForSafekeepingAcctTp map a

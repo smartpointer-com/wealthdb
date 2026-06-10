@@ -77,7 +77,13 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
             (1000, 'SFTPCHxx', 'XX0000000002',
              '{"InstrCtgyCFI":"CECIMX","InstrNm":"Euro Fund","GacInstrRskCcyIsoCd":"EUR"}'),
             (1000, 'SFTPCHxx', 'XX0000000003',
-             '{"InstrCtgyCFI":"","InstrNm":"No CFI","GacInstrRskCcyIsoCd":"USD"}');
+             '{"InstrCtgyCFI":"","InstrNm":"No CFI","GacInstrRskCcyIsoCd":"USD"}'),
+            (1000, 'SFTPCHxx', 'XX0000000004',
+             '{"InstrCtgyCFI":"","UacAsstClsCd":"0400","InstrNm":"PE Fund LP","GacInstrRskCcyIsoCd":"USD"}'),
+            (1000, 'SFTPCHxx', 'XX0000000005',
+             '{"InstrCtgyCFI":"","UacAsstClsCd":"0600","InstrNm":"Gold Deposit","GacInstrRskCcyIsoCd":"USD"}'),
+            (1000, 'SFTPCHxx', 'XX0000000006',
+             '{"InstrCtgyCFI":"","UacAsstClsCd":"0700","InstrNm":"UAC Others","GacInstrRskCcyIsoCd":"USD"}');
     `); err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +120,8 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 		t.Errorf("portfolios = %+v, want one entry with PortfolioExternalID 'P1'", batch.Portfolios)
 	}
 
-	if len(batch.Instruments) != 3 {
-		t.Fatalf("instruments = %d, want 3", len(batch.Instruments))
+	if len(batch.Instruments) != 6 {
+		t.Fatalf("instruments = %d, want 6", len(batch.Instruments))
 	}
 	classes := map[string]canonical.AssetClass{}
 	for _, i := range batch.Instruments {
@@ -128,7 +134,16 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 		t.Errorf("CECIMX → %q, want fund", classes["XX0000000002"])
 	}
 	if classes["XX0000000003"] != canonical.AssetClassOther {
-		t.Errorf("empty CFI → %q, want other", classes["XX0000000003"])
+		t.Errorf("empty CFI + empty UAC → %q, want other", classes["XX0000000003"])
+	}
+	if classes["XX0000000004"] != canonical.AssetClassPrivateFund {
+		t.Errorf("empty CFI + UAC 0400 (HF&PM) → %q, want private_fund", classes["XX0000000004"])
+	}
+	if classes["XX0000000005"] != canonical.AssetClassMetal {
+		t.Errorf("empty CFI + UAC 0600 (PMC) → %q, want metal", classes["XX0000000005"])
+	}
+	if classes["XX0000000006"] != canonical.AssetClassOther {
+		t.Errorf("empty CFI + UAC 0700 (Others) → %q, want other", classes["XX0000000006"])
 	}
 }
 

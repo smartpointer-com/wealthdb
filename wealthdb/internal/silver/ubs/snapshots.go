@@ -345,10 +345,15 @@ type instrumentMeta struct {
 }
 
 type instrumentPayload struct {
-	InstrCtgyCFI        string             `json:"InstrCtgyCFI"`
-	InstrCtgyCFIDesc    string             `json:"InstrCtgyCFIDesc"`
-	InstrNm             instrumentNames    `json:"InstrNm"`
-	GacInstrRskCcyIsoCd string             `json:"GacInstrRskCcyIsoCd"`
+	InstrCtgyCFI        string          `json:"InstrCtgyCFI"`
+	InstrCtgyCFIDesc    string          `json:"InstrCtgyCFIDesc"`
+	InstrNm             instrumentNames `json:"InstrNm"`
+	GacInstrRskCcyIsoCd string          `json:"GacInstrRskCcyIsoCd"`
+	// UacAsstClsCd is UBS's internal asset-class code, used as a
+	// classification fallback when InstrCtgyCFI is empty — that
+	// happens for non-listed custody items like gold-deposit
+	// receipts and private-market vehicles. See classmap.go.
+	UacAsstClsCd string `json:"UacAsstClsCd"`
 }
 
 // instrumentNames is the UBS InstrNm object — a multi-language
@@ -402,7 +407,7 @@ SELECT snapshot_at, isin, payload
 		}
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
-		ac := assetClassForCFI(p.InstrCtgyCFI)
+		ac := assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd)
 		lookup[isin] = instrumentMeta{
 			AssetClass: ac,
 			Currency:   p.GacInstrRskCcyIsoCd,
