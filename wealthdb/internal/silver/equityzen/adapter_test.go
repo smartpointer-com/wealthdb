@@ -60,10 +60,10 @@ func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`
         INSERT INTO dump_runs(snapshot_at) VALUES (1700000000);
-        INSERT INTO offerings(deal_external_id, kind, company_name, currency, payload) VALUES
-            ('d1', 'spv',          'Acme SPV',  'USD', '{"deal":"d1"}'),
-            ('d2', 'private_fund', 'Beta Fund', 'USD', '{"deal":"d2"}'),
-            ('d3', 'spv',          'Gamma SPV', 'USD', '{"deal":"d3"}');
+        INSERT INTO offerings(deal_external_id, kind, company_name, ticker_symbol, currency, payload) VALUES
+            ('d1', 'spv',          'Acme SPV',  'ACME', 'USD', '{"deal":"d1"}'),
+            ('d2', 'private_fund', 'Beta Fund', NULL,   'USD', '{"deal":"d2"}'),
+            ('d3', 'spv',          'Gamma SPV', 'GAMA', 'USD', '{"deal":"d3"}');
         INSERT INTO positions(deal_external_id, event_seq, as_of_date, event_type,
             is_open, shares_held, cost_basis_remaining, market_value) VALUES
             ('d1', 0, '2022-01-01', 'investment',  1, 100, 1000, 1000),
@@ -187,6 +187,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 
 	posByT := map[int64]map[string]canonical.PositionChange{}
 	accts := map[string]canonical.AccountChange{}
+	instByID := map[string]canonical.InstrumentChange{}
 	for i := range batches {
 		for _, p := range batches[i].Positions {
 			if posByT[p.SnapshotAt] == nil {
@@ -198,9 +199,20 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 		if n := len(batches[i].Instruments); n != len(batches[i].Positions) {
 			t.Errorf("batch %d: %d instruments for %d positions", i, n, len(batches[i].Positions))
 		}
+		for _, in := range batches[i].Instruments {
+			instByID[in.InstrumentExternalID] = in
+		}
 		for _, a := range batches[i].Accounts {
 			accts[a.AccountExternalID] = a
 		}
+	}
+
+	// SPVs carry EquityZen's per-company symbol; a fund has none.
+	if s := instByID["d1"].Symbol; s == nil || *s != "ACME" {
+		t.Errorf("d1 (spv) symbol = %v, want ACME", instByID["d1"].Symbol)
+	}
+	if s := instByID["d2"].Symbol; s != nil {
+		t.Errorf("d2 (fund) symbol = %v, want nil", s)
 	}
 
 	mv := func(date, deal string) string {

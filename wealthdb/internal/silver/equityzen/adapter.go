@@ -23,8 +23,10 @@
 //   - One instrument + position per offering (silver `offerings`, keyed by
 //     deal_external_id — the SPV/fund interest, never merged). asset_class
 //     from offerings.kind: single-company -> spv, multi-company fund ->
-//     private_fund. Instrument name = the underlying company / fund label.
-//     No ISIN / symbol (private, non-quotable).
+//     private_fund. Instrument name = the underlying company / fund label;
+//     a single-company SPV also carries EquityZen's per-company symbol (an
+//     EZ-internal ticker, surfaced so positions show a symbol like public
+//     equities) — funds have none. No ISIN/CUSIP (private, non-quotable).
 //
 //   - Positions forward-filled from the event-sourced `positions` table
 //     (silver migrations 0001/0002): for each event date the adapter emits

@@ -101,7 +101,7 @@ func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.Snapsho
 SELECT p.deal_external_id,
        COALESCE(o.currency, 'USD'),
        p.shares_held, p.cost_basis_remaining, p.market_value,
-       COALESCE(o.kind, ''), COALESCE(o.company_name, ''),
+       COALESCE(o.kind, ''), COALESCE(o.company_name, ''), COALESCE(o.ticker_symbol, ''),
        (SELECT MIN(CAST(strftime('%s', p2.as_of_date) AS INTEGER))
           FROM positions p2
          WHERE p2.deal_external_id = p.deal_external_id AND p2.as_of_date IS NOT NULL),
@@ -124,12 +124,12 @@ SELECT p.deal_external_id,
 	any := false
 	for rows.Next() {
 		var (
-			deal, currency, kind, company, payl string
-			shares, cost, market                sql.NullFloat64
-			acqUnix                             sql.NullInt64
+			deal, currency, kind, company, symbol, payl string
+			shares, cost, market                        sql.NullFloat64
+			acqUnix                                     sql.NullInt64
 		)
 		if err := rows.Scan(&deal, &currency, &shares, &cost, &market,
-			&kind, &company, &acqUnix, &payl); err != nil {
+			&kind, &company, &symbol, &acqUnix, &payl); err != nil {
 			return batch, err
 		}
 		any = true
@@ -162,6 +162,12 @@ SELECT p.deal_external_id,
 		}
 		if company != "" {
 			inst.Name = &company
+		}
+		// EquityZen assigns single-company SPVs a per-company symbol (an
+		// EZ-internal ticker, not a public listing); funds have none. Surfacing
+		// it lets `wealthdb positions` show a symbol like public equities.
+		if symbol != "" {
+			inst.Symbol = &symbol
 		}
 		if payl != "" {
 			inst.Payload = json.RawMessage(payl)

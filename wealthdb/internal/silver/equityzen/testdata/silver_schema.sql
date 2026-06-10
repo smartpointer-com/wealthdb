@@ -11,6 +11,7 @@ CREATE TABLE offerings (
     deal_external_id TEXT NOT NULL PRIMARY KEY,
     kind             TEXT,                      -- 'spv' | 'private_fund'
     company_name     TEXT,
+    ticker_symbol    TEXT,                      -- EZ per-company symbol (SPVs; null for funds)
     currency         TEXT NOT NULL DEFAULT 'USD',
     payload          TEXT
 );

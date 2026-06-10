@@ -55,7 +55,7 @@ CREATE TABLE offerings (
     fund_external_id    TEXT,               -- deal.fund.id (the LLC)
     fund_name           TEXT,               -- deal.fund.name
     parent_deal_name    TEXT,               -- deal.parentDeal.name (series parent), if any
-    ticker_symbol       TEXT,               -- deal.company.tickerSymbol (usually null, pre-IPO)
+    ticker_symbol       TEXT,               -- deal.company.tickerSymbol: EquityZen's per-company symbol (EZ-internal ticker; set for single-company SPVs, null for funds)
     flavor              TEXT,               -- deal.flavor (e.g. REGULAR)
     date_start          TEXT,               -- deal.dateStart (source ISO)
     deal_share_price    REAL,               -- deal.sharePrice (the deal's offering price)
