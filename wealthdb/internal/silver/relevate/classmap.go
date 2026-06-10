@@ -4,15 +4,29 @@ import "github.com/ptu/wealthdb/internal/canonical"
 
 // assetClassFor maps Relevate's `positions.asset_class` string
 // (silver mirrors security.assetClass.name verbatim) to the
-// canonical AssetClass. Every Relevate position is technically
-// a Swisscanto index-fund holding, but the silver-side label
-// names the UNDERLYING exposure class, which is what wealthdb
-// asset-class queries actually want.
+// canonical AssetClass.
 //
-// Observed values in the current silver: "Stocks" / "Bonds" /
-// "Liquidity " (trailing space is literal in Relevate's API) /
-// "Real Estate" / "Alternatives". Unknown values fall through
-// to AssetClassOther with the raw label preserved in payload.
+// Every Relevate position is structurally a Swisscanto index-
+// fund holding — the holder can't buy individual securities,
+// only pick from a small menu of pre-built strategies whose
+// constituents are funds. So the canonical default for any
+// Relevate position is AssetClassFund. We override to a more
+// specific underlying-exposure class only when the silver-side
+// label maps cleanly to one wealthdb already has a dedicated
+// enum for ("Stocks" -> Equity, "Bonds" -> Bond, "Liquidity"
+// -> MoneyMarket). Other observed labels — "Real Estate",
+// "Alternatives" — have no dedicated canonical value, and
+// neither does anything Relevate may introduce in the future;
+// for those, Fund is both correct and more informative than
+// Other.
+//
+// Trade-off: an unrecognised label no longer surfaces as
+// "other" in wealthdb positions, so it can't act as a tripwire
+// for "Relevate added a new strategy class we should re-check
+// the mapping for". The canonical case is held by Stocks /
+// Bonds / Liquidity; if those ever start losing rows in silver
+// while the position count stays steady, that's the signal a
+// label renamed and the explicit case needs updating.
 func assetClassFor(raw string) canonical.AssetClass {
 	switch raw {
 	case "Stocks":
@@ -22,7 +36,5 @@ func assetClassFor(raw string) canonical.AssetClass {
 	case "Liquidity", "Liquidity ":
 		return canonical.AssetClassMoneyMarket
 	}
-	// "Real Estate", "Alternatives", and anything new the
-	// Relevate API introduces.
-	return canonical.AssetClassOther
+	return canonical.AssetClassFund
 }
