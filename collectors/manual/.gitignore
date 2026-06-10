@@ -1,0 +1,56 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+.python-version
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE / editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Silver DB (SQLite) — lives under the host data tree, never in the repo.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.duckdb
+
+# The REAL hand-maintained CSVs are the most sensitive artefact this
+# collector touches — they name real properties, private companies, CLA
+# counterparties, ownership stakes, and exact valuations/amounts. They live
+# OUTSIDE the repo under ~/wealthdb/manual/. Block any stray in-tree drop:
+# ignore CSVs anywhere EXCEPT the committed synthetic examples/ and any
+# test fixtures (which must be synthetic placeholders only).
+*.csv
+!examples/*.csv
+!tests/**/*.csv
+
+# In case someone overrides the data path to sit under the repo.
+bronze/
+data/
+manual.db

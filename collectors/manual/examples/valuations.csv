@@ -1,0 +1,14 @@
+position_id,as_of_date,value,currency,notes,payload
+re-001,2019-05-01,800000,CHF,Purchase price,"{""appraisal_source"": ""independent valuer""}"
+re-001,2022-12-31,950000,CHF,Appraisal,"{""appraisal_source"": ""independent valuer""}"
+re-001,2024-12-31,1010000,CHF,Appraisal,"{""appraisal_source"": ""independent valuer""}"
+re-002,2021-09-15,400000,EUR,Purchase price (50% share),"{""appraisal_source"": ""independent valuer""}"
+re-002,2024-12-31,430000,EUR,Appraisal,"{""appraisal_source"": ""independent valuer""}"
+cla-001,2022-01-10,100000,CHF,Held at cost,{}
+cla-001,2024-12-31,120000,CHF,Marked up at Series A,"{""mark_source"": ""latest round price""}"
+cla-002,2023-02-01,50000,CHF,Held at cost,{}
+cla-002,2024-06-30,50000,CHF,Held at cost (pre-conversion),{}
+gmbh-001,2020-11-20,60000,EUR,Cost basis,{}
+gmbh-001,2024-12-31,75000,EUR,Latest fair value,{}
+gmbh-002,2024-07-01,50000,CHF,Converted basis,{}
+gmbh-002,2024-12-31,60000,CHF,Latest fair value,{}

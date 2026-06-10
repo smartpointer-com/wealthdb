@@ -1,0 +1,12 @@
+id,position_id,occurred_at,kind,amount,currency,notes,payload
+tx-001,re-001,2019-05-01,acquisition,800000,CHF,Purchase,"{""counterparty"": ""private seller""}"
+tx-002,re-001,2020-04-15,distribution,24000,CHF,Annual net rent,{}
+tx-003,re-001,2021-03-20,fee,3500,CHF,Property tax,{}
+tx-004,re-002,2021-09-15,acquisition,400000,EUR,Purchase (50% share),{}
+tx-005,re-002,2023-08-01,disposal,60000,EUR,Partial sale of co-ownership share,{}
+tx-006,cla-001,2022-01-10,acquisition,100000,CHF,Note subscribed,"{""counterparty"": ""Swiss Startup AG #1""}"
+tx-007,cla-002,2023-02-01,acquisition,50000,CHF,Note subscribed,{}
+tx-008,cla-002,2024-07-01,conversion,50000,CHF,Note converts to equity,"{""converts_to_position_id"": ""gmbh-002""}"
+tx-009,gmbh-001,2020-11-20,acquisition,60000,EUR,Initial investment,{}
+tx-010,gmbh-001,2023-06-30,contribution,15000,EUR,Capital increase,{}
+tx-011,gmbh-001,2024-05-15,distribution,4000,EUR,Dividend,{}
