@@ -8,21 +8,21 @@ A catch-all collector for **private holdings that have no bank or portal
 behind them** — directly-held real estate, convertible loan agreements
 (CLAs) into private companies, and direct equity in a private LLC (a German
 GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
-has **no source**. The user is the source of truth and maintains three CSVs
+has **no source**. There is no source to fetch; two hand-maintained CSVs are the input
 by hand; `load` validates them and projects them into a SQLite silver.
 
-> **Status:** scaffold — `load` is implemented and verified against the
-> synthetic [examples/](examples/). The bronze/silver design and the gold
-> **mapping** are signed off (see [DESIGN.md](DESIGN.md) §6/§7); the gold
-> **adapter** is not built yet, blocked only by the gold code freeze. No
-> `wealthdb.cfg` entry / `silver_sources` whitelist row / new `asset_class`
-> enum values exist yet.
+> **Status:** implemented end-to-end. `load` is verified against the synthetic
+> [examples/](examples/), and the gold adapter
+> ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
+> is built + registered — the manual source loads into gold and appears in
+> `wealthdb positions`. The collector tracks **positions + valuations only**
+> (no transactions; see [DESIGN.md](DESIGN.md) §6).
 
 ## Tools
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`load.py`](load.py) | implemented | Validate `positions.csv` / `valuations.csv` / `transactions.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
+| [`load.py`](load.py) | implemented | Validate `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
 | `login.py` | — | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
 | `download.py` | — | **N/A.** No source to fetch. You maintain the CSVs by hand. `./manual download` is a no-op. |
 
@@ -35,7 +35,6 @@ to authenticate to.
 ~/wealthdb/manual/            <- you own this directory (outside the repo)
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
-├── transactions.csv         dated cash flows / events
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
 ```
 
@@ -46,11 +45,11 @@ cd collectors/manual
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt -e ../../shared/collectorkit
 
-# 1. ~/wealthdb/manual/ already holds three fictional starter CSVs
-#    (positions.csv / valuations.csv / transactions.csv). Edit them in place,
-#    replacing the placeholder holdings with your real ones. (examples/ in
-#    this repo is a second synthetic sample covering every asset + txn kind,
-#    incl. a note→equity conversion — for reference, not for editing.)
+# 1. ~/wealthdb/manual/ already holds two fictional starter CSVs
+#    (positions.csv / valuations.csv). Edit them in place, replacing the
+#    placeholder holdings with your real ones. (examples/ in this repo is a
+#    second synthetic sample covering every asset kind, incl. a note→equity
+#    conversion — for reference, not for editing.)
 
 # 2. Load — validates the CSVs and (re)builds ~/wealthdb/manual/manual.db
 ./manual load
@@ -97,44 +96,44 @@ CSV column. Full details + the gold mapping are in [DESIGN.md](DESIGN.md).
 **valuations.csv** — the periodic mark-to-market series (one row per asset
 per as-of date). Columns: `position_id`, `as_of_date`, `value`, `currency`,
 `notes`, `payload`. The asset's value as of a date is the latest row on or
-before it.
+before it; the valuation dated at the position's `acquired_at` is its cost
+basis (gold's book value).
 
-**transactions.csv** — dated cash flows / events. Columns: `id`,
-`position_id`, `occurred_at`, `kind`, `amount`, `currency`, `notes`,
-`payload`. `kind` ∈ `acquisition` / `disposal` / `contribution` /
-`distribution` / `fee` / `conversion`. `amount` is always a **positive
-magnitude** — direction is implied by the kind.
+> **No transactions.** The collector tracks positions + valuations only. The
+> wires that fund a purchase, pay a fee, or return a distribution are real
+> movements in your bank accounts — already captured by the bank collectors —
+> so a transactions ledger here would only duplicate them. The acquisition
+> date lives on the position (`acquired_at`). See [DESIGN.md](DESIGN.md) §6. A
+> note→equity **conversion** is recorded position-side: close the note
+> (`closed_at`) and open the equity with `payload.converted_from_position_id`.
 
 ### `payload` cheat-sheet
 
 ```jsonc
 // real_estate
 {"property_type": "residential", "ownership_pct": 100, "city": "...", "country": "CH"}
-// convertible_note  (0% venture note; principal is the acquisition txn amount)
+// convertible_note  (0% venture note)
 {"principal": 25000, "interest_rate": 0, "cap": 5000000,
  "maturity_date": "YYYY-MM-DD", "conversion_terms": "...", "counterparty": "..."}
 // private_equity
 {"ownership_pct": 10, "share_cnt": 1000, "fiduciary": "...",
  "converted_from_position_id": "..."}   // last key present only if it came from a note
-// private_fund  (LP interest; capital calls are `contribution` txns, distributions are `distribution`)
+// private_fund  (LP interest)
 {"role": "limited_partner", "commitment": 500000}
-// spv  (single-deal vehicle; the buy-in is one `acquisition` txn)
+// spv  (single-deal vehicle)
 {"spv_name": "...", "company": "...", "round": "Series X", "post_money_valuation": 250000000,
  "carry": 0.20, "deal_lead": "...", "platform": "...", "funding_account": "..."}
-// transactions: conversion
-{"converts_to_position_id": "..."}
 ```
 
 ## Validation
 
 `load` rejects (with a `file:row:column` message and non-zero exit) any:
-duplicate id; unknown `kind`; bad date / currency / number; negative
-`amount` (use a positive magnitude); `value`/`amount` currency that
-disagrees with the position's currency; `valuations`/`transactions`
-`position_id` not present in `positions.csv`; malformed JSON `payload`; a
-`conversion` whose `payload.converts_to_position_id` is missing or dangling;
-an unexpected/typo'd column. It warns (but loads) when a valuation or
-transaction predates the position's `acquired_at`.
+duplicate id; unknown `kind`; bad date / currency / number; a `value`
+currency that disagrees with the position's currency; a `valuations`
+`position_id` not present in `positions.csv`; a `converted_from_position_id`
+that references a position not in `positions.csv`; malformed JSON `payload`;
+an unexpected/typo'd column. It warns (but loads) when a valuation
+predates the position's `acquired_at`.
 
 ## Tests
 

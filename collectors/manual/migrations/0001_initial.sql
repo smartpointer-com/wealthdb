@@ -1,16 +1,25 @@
 -- ============================================================
 -- manual silver schema, migration 0001 — initial schema (SQLite + JSON1).
 --
--- The "manual" collector has NO source to fetch from — the user is the
--- source of truth. Bronze is three hand-maintained CSVs kept in
--- ~/wealthdb/manual/ (positions.csv, valuations.csv, transactions.csv);
--- there is no login / download step. load.py validates those CSVs and
--- rebuilds this silver from them, which the gold adapter reads.
+-- The "manual" collector has NO source to fetch from — the input is
+-- hand-maintained. Bronze is two hand-maintained CSVs in
+-- ~/wealthdb/manual/ (positions.csv, valuations.csv); there is no login /
+-- download step. load.py validates those CSVs and rebuilds this silver from
+-- them, which the gold adapter reads.
+--
+-- Scope: the collector tracks only the illiquid POSITIONS and their
+-- VALUATIONS — the data nothing else holds. It deliberately records NO
+-- cash-flow transactions: the wires that fund a purchase, pay a fee, or
+-- return a distribution are real movements in the bank accounts,
+-- already captured by the bank collectors; the acquisition date lives on the
+-- position. A transactions ledger would only duplicate the banks (DESIGN §6).
 --
 -- Migration discipline (shared across wealthdb collectors): every change
 -- lands as a new numbered file here; collectorkit's loader applies any file
 -- whose number exceeds the max applied silver_schema_version, and each
--- migration ends by inserting its own version into schema_meta.
+-- migration ends by inserting its own version into schema_meta. (This silver
+-- is rebuilt from the CSVs on every load — there is no persistent state to
+-- migrate — so schema changes can also land by deleting + reloading.)
 --
 -- Storage conventions (shared across wealthdb collectors):
 --   * SQLite + JSON1 — the repo default (not DuckDB: this is a tiny shape
@@ -18,18 +27,18 @@
 --     store). Stable filter/join fields are promoted to columns; everything
 --     kind-specific rides in a `payload` TEXT (JSON) column, so a new asset
 --     kind or per-kind field never needs a schema migration.
---   * Money (value, amount) is stored as a decimal STRING (TEXT), verbatim
---     from the CSV, to avoid float rounding — the gold adapter parses it to
---     a canonical Decimal (same approach as carta's fund-LP money). Rates /
---     ownership_pct / other ratios live inside `payload`, not money columns.
---   * Dates (acquired_at, closed_at, as_of_date, occurred_at) are ISO-8601
---     'YYYY-MM-DD' TEXT; the gold adapter parses them. Ingest timestamps
---     (load_at) are Unix-seconds-UTC INTEGER.
---   * Referential integrity (a valuation/transaction's position_id, a
---     conversion's target position) is enforced in load.py with row+column
---     context, NOT by SQLite FK constraints — the loader truncates and
---     fully rebuilds these tables from the current CSVs on every run.
---   * Allowed `kind` vocabularies live in load.py (single source of truth,
+--   * Money (value) is stored as a decimal STRING (TEXT), verbatim from the
+--     CSV, to avoid float rounding — the gold adapter parses it to a canonical
+--     Decimal (same approach as carta's fund-LP money). Rates / ownership_pct
+--     / other ratios live inside `payload`, not money columns.
+--   * Dates (acquired_at, closed_at, as_of_date) are ISO-8601 'YYYY-MM-DD'
+--     TEXT; the gold adapter parses them. Ingest timestamps (load_at) are
+--     Unix-seconds-UTC INTEGER.
+--   * Referential integrity (a valuation's position_id; a conversion's
+--     converted_from_position_id back-reference) is enforced in load.py with
+--     row+column context, NOT by SQLite FK constraints — the loader truncates
+--     and fully rebuilds these tables from the current CSVs on every run.
+--   * Allowed `kind` vocabulary lives in load.py (single source of truth,
 --     easy to extend), documented inline below.
 -- ============================================================
 
@@ -54,7 +63,6 @@ CREATE TABLE load_runs (
     bronze_dir            TEXT    NOT NULL,                 -- where the CSVs were read from
     positions_total       INTEGER NOT NULL DEFAULT 0,
     valuations_total      INTEGER NOT NULL DEFAULT 0,
-    transactions_total    INTEGER NOT NULL DEFAULT 0,
     payload               TEXT    NOT NULL
 );
 
@@ -77,9 +85,10 @@ CREATE TABLE load_runs (
 --                      "converted_from_position_id":"..."}  (if from a note)
 --   private_fund:     {"role":"limited_partner", "commitment":...}
 --   spv:              {"spv_name":"...", "company":"...", "post_money_valuation":...}
--- `closed_at` is set when the position stops existing — a full disposal, or
--- a convertible note that converted to equity — so gold drops it from as-of
--- queries after that date.
+-- `closed_at` is set when the position stops existing — a full disposal, or a
+-- convertible note that converted to equity (the new equity position
+-- back-references the note via payload.converted_from_position_id) — so gold
+-- drops it from as-of queries after that date.
 CREATE TABLE positions (
     id            TEXT NOT NULL PRIMARY KEY,   -- user-assigned stable id (synthetic)
     kind          TEXT NOT NULL,               -- canonical asset_class; see POSITION_KINDS in load.py
@@ -98,9 +107,10 @@ CREATE INDEX ix_positions_kind ON positions(kind);
 -- One row per (position, as-of date). The position's market value as of a
 -- date D is the latest row with as_of_date <= D (gold forward-fills) — so an
 -- illiquid asset's value moves correctly over time (a property re-appraised
--- every few years, a convertible note re-marked at a funding round).
--- `currency` must match the position's. `payload` carries kind-specific
--- provenance, e.g. {"appraisal_source":"..."}.
+-- every few years, a convertible note re-marked at a funding round). The
+-- valuation dated at the position's acquired_at is the cost basis (gold's
+-- book_value). `currency` must match the position's. `payload` carries
+-- kind-specific provenance, e.g. {"appraisal_source":"..."}.
 CREATE TABLE valuations (
     position_id  TEXT NOT NULL,
     as_of_date   TEXT NOT NULL,                -- ISO 'YYYY-MM-DD'
@@ -111,38 +121,6 @@ CREATE TABLE valuations (
     PRIMARY KEY (position_id, as_of_date)
 );
 CREATE INDEX ix_valuations_position ON valuations(position_id);
-
--- ============================================================
--- TRANSACTIONS — dated cash flows / position-level events
--- ============================================================
--- One row per REAL event the user records (a single magnitude + a kind —
--- the user never hand-enters double-entry). `kind` accepted values (load.py)
--- and the canonical projection (see DESIGN.md §6 — done by the GOLD adapter,
--- which pairs each into a balanced double-entry on a `manual-funding`
--- sentinel, exactly like carta/equityzen):
---   'acquisition'  -> deposit (+) + buy          (-)   initial purchase
---   'disposal'     -> sell    (+) + withdrawal   (-)   full / partial sale
---   'contribution' -> deposit (+) + contribution (-)   additional capital
---   'distribution' -> distribution (+) + withdrawal (-) rent / dividend
---   'fee'          -> deposit (+) + fee          (-)   property tax / mgmt fee
---   'conversion'   -> (non-cash; note -> equity) deferred — see DESIGN.md §6/§7
--- `amount` is a POSITIVE MAGNITUDE; canonical direction comes from `kind`.
--- A fund LP capital call is a 'contribution'; a single-deal SPV buy-in is an
--- 'acquisition'. `currency` must match the position's currency. A 'conversion'
--- row links the closing note to the opening equity position via
--- payload.converts_to_position_id.
--- `payload` carries counterparty / transfer-reference / etc.
-CREATE TABLE transactions (
-    id           TEXT NOT NULL PRIMARY KEY,    -- user-assigned stable id (synthetic)
-    position_id  TEXT NOT NULL,
-    occurred_at  TEXT NOT NULL,                -- ISO 'YYYY-MM-DD'
-    kind         TEXT NOT NULL,
-    amount       TEXT NOT NULL,                -- positive-magnitude decimal string in `currency`
-    currency     TEXT NOT NULL,
-    notes        TEXT,
-    payload      TEXT NOT NULL                 -- JSON object
-);
-CREATE INDEX ix_transactions_position ON transactions(position_id);
 
 -- Migration-complete marker (COMMIT closes the txn).
 INSERT INTO schema_meta (silver_schema_version, applied_at)

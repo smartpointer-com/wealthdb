@@ -1,11 +1,9 @@
 # manual — design notes
 
-**Scaffold stage (2026-06-10).** `load.py` is implemented and verified
-against the synthetic [examples/](examples/) (`tests/`). The bronze/silver
-design and the gold **mapping** are signed off (§6); the **gold adapter
-itself is not built yet**, blocked only by the gold code freeze (don't touch
-`wealthdb/` adapters/enums/migrations while the concurrent AngelList/Carta
-work is in flight) — not by any open design question.
+**Implemented end-to-end (2026-06-10).** `load.py` is verified against the
+synthetic [examples/](examples/) (`tests/`), and the **gold adapter is built**
+([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
+§6) — the manual source loads into gold and shows up in `wealthdb positions`.
 
 A catch-all collector for **private holdings with no source UI at all** —
 the bank/portal sources are all covered by the other twelve collectors;
@@ -22,7 +20,7 @@ what's left is illiquid private holdings tracked by hand:
 - **Other illiquid positions** — anything without a cleaner home, e.g. a
   receivable or a private loan.
 
-Volume is a few transactions per year, valuations updated occasionally.
+Volume is a few new holdings per year, valuations updated occasionally.
 The design goal is to be the **simplest collector in the repo**.
 
 Sections:
@@ -32,14 +30,14 @@ Sections:
 3. [Silver schema](#3-silver-schema)
 4. [Why SQLite](#4-why-sqlite)
 5. [Validation](#5-validation)
-6. [Gold mapping (signed off — adapter pending the freeze)](#6-gold-mapping-signed-off--adapter-pending-the-freeze)
+6. [Gold mapping (built)](#6-gold-mapping-built)
 7. [Status of the decisions](#7-status-of-the-decisions)
 
 ## 1. The unique shape — no source
 
 Every other collector has the lifecycle `login → download → load`, driving
 a privileged read-only session against a source. **`manual` has no source.**
-Three CSVs are maintained in `~/wealthdb/manual/`; there is no auth, no
+Two CSVs are maintained in `~/wealthdb/manual/`; there is no auth, no
 MFA, no Docker, no browser, no `~/.secrets/manual.env`. Only `load` exists
 (the `manual` wrapper accepts `download`/`login` as friendly no-ops). The
 runtime is **host-venv** (like `schwab-api` / `ubs-psn`) minus the network
@@ -57,7 +55,7 @@ hand-edited spreadsheet.
 
 ## 2. Bronze: the CSV schema
 
-Three CSVs, one row per thing. The **stable columns are the same across all
+Two CSVs, one row per thing. The **stable columns are the same across all
 asset kinds**; everything kind-specific lives in a JSON `payload` column —
 not sparse per-kind columns. This is the repo's silver convention (promote
 stable filter/join fields, absorb drift in `payload`) applied one layer
@@ -73,14 +71,13 @@ needs no new file and no schema change.
   The kind is **deliberately identical to the canonical gold `asset_class`**
   (so the gold classmap is an identity and the CSV self-documents the class).
 - `closed_at` (nullable) — set when the asset stops existing (full disposal,
-  or a convertible note that converted). Explicit rather than inferred from
-  transactions, so position-liveness doesn't depend on transaction parsing;
-  gold drops the position from as-of queries after this date.
+  or a convertible note that converted). Gold drops the position from as-of
+  queries after this date.
 - `payload` — e.g. real_estate `{property_type, ownership_pct, city,
   country}`; convertible_note `{principal, interest_rate, cap, maturity_date,
   conversion_terms, counterparty}` (`interest_rate` is 0 for these venture
-  notes; the principal is also captured as the `acquisition` transaction +
-  the cost-basis valuation); private_equity `{ownership_pct, share_cnt,
+  notes; the principal is the cost-basis valuation at `acquired_at`);
+  private_equity `{ownership_pct, share_cnt,
   fiduciary, converted_from_position_id?}`; private_fund `{role, commitment}`
   (an LP interest — capital calls are `contribution` txns, distributions are
   `distribution` txns).
@@ -97,29 +94,22 @@ needs no new file and no schema change.
   `{appraisal_source}`, convertible_note `{mark_source}`, spv/private_fund
   `{post_money_valuation}` / NAV provenance.
 
-**transactions.csv** — dated cash flows / position-level events.
-`id, position_id, occurred_at, kind, amount, currency, notes, payload`
-- `kind` ∈ `acquisition | disposal | contribution | distribution | fee |
-  conversion`.
-- `amount` is a **positive magnitude**; canonical direction comes from
-  `kind` (gold applies the sign — mirrors how carta stores its cash-flow
-  ledger as positive magnitudes and lets `ApplyCanonicalSign` pin direction).
-- `payload` — counterparty / transfer-reference / funding-account / etc.
-  For `conversion`: `{converts_to_position_id}`.
+**No transactions file.** An earlier draft had a `transactions.csv` (cash
+flows projected to a funding-sentinel). It was **dropped** (§6): every such
+event is a real wire in the bank accounts, already captured by the
+bank collectors, so it added only duplication. The one datum it carried that
+positions/valuations didn't — the acquisition date — already lives on the
+position (`acquired_at`). The collector is positions + valuations only.
 
-**Conversion (convertible_note → equity)** is modelled as a **position close
-+ position open, linked both ways**:
-- the convertible_note position gets `closed_at` = the conversion date;
+**Conversion (convertible_note → equity)** is therefore modelled **purely
+position-side**, no transaction:
+- the convertible_note position gets `closed_at` = the conversion date (it
+  drops out of as-of queries after that date);
 - a new `private_equity` position is opened with `acquired_at` = that date and
-  `payload.converted_from_position_id` = the note's id;
-- a single `conversion` transaction on the note carries the converted basis
-  (the principal — these notes are 0%, so there's no accrued interest) as
-  `amount` and `payload.converts_to_position_id` = the new equity position.
-  It exists for provenance — **no external cash moves** at conversion. `load`
-  enforces the link (a `conversion` with no / dangling target fails). The
-  exact gold treatment is **deferred** (no real conversion has happened yet —
-  §6/§7); the provisional plan is a sign-neutral `TxKindOther`, not a cash
-  leg.
+  `payload.converted_from_position_id` = the note's id (the whole record of
+  the conversion). `load` enforces the back-reference (a dangling
+  `converted_from_position_id` fails). No cash moves at conversion, so there
+  is nothing to record beyond the close + open.
 
 ## 3. Silver schema
 
@@ -129,21 +119,20 @@ SQLite + JSON1, mirroring the bronze CSV shape one-to-one. Realized in
 | Table | Grain | Notes |
 |---|---|---|
 | `positions` | `id` | `kind`, `display_name`, `currency`, `acquired_at`, `closed_at` (NULL = held), `notes`, `payload`. |
-| `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series. |
-| `transactions` | `id` | `position_id`, `occurred_at`, `kind`, `amount` (positive magnitude), `currency`, `notes`, `payload`. |
+| `valuations` | (`position_id`, `as_of_date`) | `value`, `currency`, `notes`, `payload`. The per-date mark series; the row dated at the position's `acquired_at` is the cost basis. |
 | `load_runs` | — (append-only) | Audit log: `load_at`, schema version, `bronze_dir`, row counts, `payload`. No idempotency gate (full rebuild each run). |
 | `schema_meta` | `silver_schema_version` | collectorkit migration bookkeeping. |
 
-Storage (carta conventions): money (`value`, `amount`) is a decimal STRING
-(TEXT) verbatim — exact, no float rounding; dates are ISO `'YYYY-MM-DD'`
-TEXT; `payload` is TEXT JSON; `load_at` is Unix-seconds INTEGER. Rates /
+Storage (carta conventions): money (`value`) is a decimal STRING (TEXT)
+verbatim — exact, no float rounding; dates are ISO `'YYYY-MM-DD'` TEXT;
+`payload` is TEXT JSON; `load_at` is Unix-seconds INTEGER. Rates /
 ownership_pct / other ratios stay inside `payload`, not money columns.
-Referential integrity (a valuation/transaction's `position_id`, a
-conversion's target) is enforced in `load.py` (precise errors), **not** by
-SQLite FK constraints — the loader truncates and rebuilds all three tables
-each run, so hard FKs would only complicate delete/insert ordering. The
-accepted `kind` vocabularies live in `load.py` so adding a kind needs no
-migration.
+Referential integrity (a valuation's `position_id`; a conversion's
+`converted_from_position_id` back-reference) is enforced in `load.py`
+(precise errors), **not** by SQLite FK constraints — the loader truncates and
+rebuilds both tables each run, so hard FKs would only complicate
+delete/insert ordering. The accepted `kind` vocabulary lives in `load.py` so
+adding a kind needs no migration.
 
 ## 4. Why SQLite
 
@@ -163,43 +152,47 @@ other SQLite-silver adapter uses.
 
 The collector's whole value is that hand-entered data is **checked**, since
 there's no source system enforcing anything. `load` fails the entire load
-(one transaction → rollback; non-zero exit; `file:row:column` message) on:
+(one DB transaction → rollback; non-zero exit; `file:row:column` message) on:
 duplicate id; unknown `kind`; unparseable date / non-3-letter currency /
-non-numeric or negative `amount`; a `value`/`amount` currency that disagrees
-with the position's; a `valuations`/`transactions` `position_id` absent from
-`positions.csv`; malformed or non-object JSON `payload`; a `conversion` with
-a missing/dangling target; an unexpected (typo'd) column. It **warns** but
-loads when a valuation/transaction predates the position's `acquired_at`.
+non-numeric or negative `value`; a `value` currency that disagrees with the
+position's; a `valuations` `position_id` absent from `positions.csv`; a
+`converted_from_position_id` that references a position absent from
+`positions.csv`; malformed or non-object JSON `payload`; an unexpected
+(typo'd) column. It **warns** but loads when a valuation predates the
+position's `acquired_at`.
 
-## 6. Gold mapping (signed off — adapter pending the freeze)
+## 6. Gold mapping (built)
 
-The mapping below is **signed off by the user (2026-06-10)**; the gold
-adapter (`wealthdb/internal/silver/manual/`) is not built yet only because of
-the gold code freeze. It follows the carta adapter's structure.
+The gold adapter is in [`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
+registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
+structure, minus the transaction half.
 
-**Account grain + taxonomy — DECIDED.** ONE gold account for the whole
-`manual` source, every position under it (carta's one-account-per-portfolio
-shape):
-- `account_kind = other` — these are directly-held assets with **no
-  institutional container** (not brokerage/cash/custody/crypto); `other` is
-  the honest technical-container value. (Carta uses `custody` because Carta
-  administers the holdings; here nobody does.)
+**Account — ONE gold account** for the whole `manual` source, every position
+under it:
+- `account_kind = other` — directly-held assets with **no institutional
+  container** (not brokerage/cash/custody/crypto); the honest value. (Carta
+  uses `custody` because Carta administers the holdings; here nobody does.)
 - `tax_wrapper = taxable_personal`, `management_style = self_directed`
-  (overridable via `account_overrides`). The asset-family split rides on each
-  position's `asset_class`, not on the account.
-- A sentinel `manual-funding` cash account carries the transaction pairs
-  (below), distinct from this holding account.
+  (overridable via `account_overrides`). No `base_currency` — the book spans
+  CHF / EUR / USD. The asset-family split rides on each position's
+  `asset_class`, not the account.
+- There is **no funding sentinel** — the adapter projects no transactions
+  (below), so there is nothing to balance.
 
-**Instruments + positions — DECIDED.** One instrument per position (private
-assets have no ISIN/CUSIP/symbol → adapter-scoped, like carta). One position
-per asset:
-- `market_value` = latest `valuations.value` with `as_of_date ≤` the query
-  date (forward-filled); position drops out after `closed_at`.
-- `book_value` = net cost basis from the position's `acquisition` +
-  `contribution` − `disposal` transactions.
-- `quantity` = NULL — real estate / a convertible note / a whole-company
-  stake aren't unit-denominated; they're valued by amount, the way carta
-  values a fund LP interest by NAV rather than units.
+**Instruments + positions.** One instrument per position (private assets have
+no ISIN/CUSIP/symbol → adapter-scoped). One position per asset, emitted as a
+COMPLETE forward-filled snapshot at **every event date** (any date a position
+is acquired, re-valued, or closed) so gold's as-of query — which reads the
+latest `snapshot_at ≤` the query date per source, then all its positions — is
+correct at any historical date:
+- `market_value` = latest `valuations.value` with `as_of_date ≤` the snapshot
+  date (forward-filled); the position drops out after `closed_at`.
+- `book_value` = the valuation dated at the position's `acquired_at` (the cost
+  basis). Constant while market moves — real estate shows purchase price vs.
+  current appraisal; a note / loan / escrow held at par shows book == market.
+- `quantity` = NULL — none of these are unit-denominated; they're valued by
+  amount (the way carta values a fund LP interest by NAV, not units).
+- `acquisition_date` = `acquired_at`.
 
 **Asset class — DECIDED.** Bronze `kind` **is** the canonical `asset_class`
 (identity classmap), so the CSV self-documents the class:
@@ -219,44 +212,23 @@ angellist / equityzen). `asset_class` carries **no SQL CHECK** (Go-validated
 only), so the two new values touch just `internal/canonical/enums.go` + its
 `assetClassValues` map — no gold migration for the enum itself.
 
-**Transactions — funding sentinel (carta/equityzen pattern).** The user
-records ONE real event per row (a positive magnitude + a kind); the user
-**never** hand-enters double-entry. The gold adapter projects each into a
-**balanced double-entry pair on the `manual-funding` sentinel**, exactly like
-carta/equityzen, so the sentinel is a pass-through clearing account whose
-derived balance is always 0:
+**No transactions — DECIDED (2026-06-10).** The adapter's `Transactions()`
+returns an empty stream; there is no `manual-funding` sentinel. Every cash
+flow a manual holding could record — a purchase wire, rent, a fee, sale
+proceeds — is a real movement in the bank accounts, already captured by
+the bank collectors; re-representing it on a sentinel only duplicates them.
+The one datum the acquisition transaction carried that positions/valuations
+don't (the acquisition date) already rides on the position. carta/equityzen
+*need* their funding sentinel because those sources' cash is invisible to
+everything else; manual's is not. (This **reverses** an interim decision to
+mirror the sentinel — §7.)
 
-| bronze `kind` | gold pair (signed) |
-|---|---|
-| `acquisition` | `deposit` (+) + `buy` (−, lot if known) |
-| `disposal` | `sell` (+, lot if known) + `withdrawal` (−) |
-| `contribution` | `deposit` (+) + `contribution` (−) |
-| `distribution` | `distribution` (+) + `withdrawal` (−) — rent / dividend |
-| `fee` | `deposit` (+) + `fee` (−) — property tax / mgmt fee |
-| `conversion` | non-cash — **deferred** (see below) |
-
-The external bank leg (`deposit`/`withdrawal`) and the holding leg net to
-zero on the sentinel; the user's *real* bank movement still lives in the
-UBS/Schwab/etc. collectors, but that's fine — the sentinel is a synthetic
-clearing account, not a claim about a real balance (no `cash_balance` row),
-identical to how carta's `carta-funding` works. All TxKinds used already
-exist (`TxKindContribution`/`TxKindDistribution` joined the fixed-sign set
-with the private-market work — `internal/canonical/sign.go`); the adapter
-calls `ApplyCanonicalSign` per leg.
-
-**Conversion — deferred.** No real conversion has happened yet, so the exact
-treatment is left open (§7). Provisional plan: close the note + open the
-linked equity position (handled by the positions projection via `closed_at` /
-`converted_from_position_id`), and emit the `conversion` row as a sign-neutral
-`TxKindOther` for provenance rather than a sentinel cash pair (it moves no
-external cash). Revisit when the first conversion lands.
-
-**Gold registration (later, not now — blocked by the freeze).** When the
-freeze lifts: add a `0016_silver_sources_manual.sql` widening the
-`silver_sources` `silver_kind` whitelist (the 0007–0015 rename-recreate
-pattern); add `real_estate` + `convertible_note` to `enums.go`; add the
-`wealthdb.cfg` source entry; build `wealthdb/internal/silver/manual/`. **None
-of that is done in this scaffold.**
+**Gold registration — DONE.** `internal/gold/migrations/0016_silver_sources_manual.sql`
+widens the `silver_sources` `silver_kind` whitelist (the 0007–0015
+rename-recreate pattern); `real_estate` + `convertible_note` are added to
+`internal/canonical/enums.go`; the adapter is built + registered in
+`cmd/wealthdb`. The `wealthdb.cfg` entry is
+`{"id":"manual","kind":"manual","path":"…/manual.db"}`.
 
 ## 7. Status of the decisions
 
@@ -268,18 +240,17 @@ Decided (2026-06-10):
 2. **New enum values**: `real_estate` + `convertible_note` (the latter not
    `private_debt`/`bond` — these are 0% venture notes; calling them debt would
    mislead). `private_equity` / `private_fund` / `spv` already exist. ✔
-3. **Transactions** → carta-style `manual-funding` double-entry sentinel; the
-   collector synthesizes both legs, the user enters only the single real
-   event. (Asset-kind nuance: a fund LP capital call is a `contribution`; a
-   single-deal SPV buy-in is an `acquisition`.) ✔
+3. **No transactions** → the collector is positions + valuations only; the
+   gold adapter projects no transactions and uses no funding sentinel. This
+   **supersedes** an interim decision (2026-06-10, same day) to mirror
+   carta/equityzen's `manual-funding` double-entry sentinel — reversed once it
+   was clear every manual cash flow is already a wire in the bank
+   collectors, so the sentinel only duplicated them. The acquisition date
+   lives on the position; a conversion is recorded position-side
+   (`closed_at` + `converted_from_position_id`). ✔
 4. **Account** → one `manual` account, `account_kind = other`. ✔
 5. **Silver engine** → SQLite (the repo default; DuckDB is for
    high-volume / complex-query stores, neither of which this is). ✔
 
-Still open (non-blocking; safe to defer):
-
-- **Conversion (note → equity) gold treatment** — provisional plan in §6;
-  finalize when the first real conversion occurs. There are none yet.
-
-The only thing between this design and a working gold adapter is the gold
-code freeze.
+The gold adapter is **built** (`wealthdb/internal/silver/manual/`); there are
+no open design questions.

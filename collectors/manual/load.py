@@ -2,16 +2,24 @@
 """manual — load hand-maintained private-holding CSVs into a SQLite silver.
 
 The "manual" collector is the odd one out in wealthdb: there is **no source
-to fetch from**. The user is the source of truth. Bronze is three CSV files
-maintained by hand in ~/wealthdb/manual/ for private holdings that
-have no bank or portal behind them — real estate, direct private-company
-equity, convertible notes, fund LP interests, single-deal SPVs, and other
-illiquid positions (e.g. a receivable). The position `kind` is
-the canonical asset class, so the set is open-ended (see POSITION_KINDS).
+to fetch from**. The user is the source of truth. Bronze is two CSV files the
+user maintains by hand in ~/wealthdb/manual/ for private holdings that have no
+bank or portal behind them — real estate, direct private-company equity,
+convertible notes, fund LP interests, single-deal SPVs, and other illiquid
+positions (e.g. a receivable). The position `kind` is the
+canonical asset class, so the set is open-ended (see POSITION_KINDS).
+
+The collector tracks only what nothing else does: the illiquid POSITIONS and
+their VALUATIONS. It deliberately does NOT record cash-flow transactions — the
+wires that fund a purchase, pay a fee, or return a distribution are real
+movements in the bank accounts, already captured by the bank collectors
+(UBS / Schwab / …). The acquisition date lives on the position
+(`acquired_at`), so a separate transactions ledger would only duplicate the
+banks. See DESIGN.md §6.
 
 There is therefore no `login` and no `download` step — only `load`:
 
-  1. Read positions.csv / valuations.csv / transactions.csv.
+  1. Read positions.csv / valuations.csv.
   2. Validate aggressively (bad rows fail loudly with file:row:column
      context — never silently dropped).
   3. Rebuild the SQLite silver from the current CSVs (full truncate-reload,
@@ -71,17 +79,13 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     return Path(bronze), Path(silver_db)
 
 
-# --- Accepted vocabularies (the single source of truth; the silver schema
-# keeps these columns as plain TEXT so adding a kind needs no migration).
-# Position `kind` is deliberately identical to the canonical gold
-# `asset_class` (the gold classmap is then an identity), so the bronze CSV
-# self-documents the asset class.
+# --- Accepted position kinds (the single source of truth; the silver schema
+# keeps `kind` as plain TEXT so adding a kind needs no migration). Position
+# `kind` is deliberately identical to the canonical gold `asset_class` (the
+# gold classmap is then an identity), so the bronze CSV self-documents the
+# asset class.
 POSITION_KINDS = {"real_estate", "private_equity", "convertible_note",
                   "private_fund", "spv", "other"}
-TRANSACTION_KINDS = {
-    "acquisition", "disposal", "contribution", "distribution", "fee",
-    "conversion",
-}
 
 # --- CSV column contracts. Required columns must be present in the header;
 # optional columns default to empty when a file omits them; any unexpected
@@ -90,9 +94,6 @@ POSITIONS_REQUIRED = ["id", "kind", "display_name", "currency", "acquired_at"]
 POSITIONS_OPTIONAL = ["closed_at", "notes", "payload"]
 VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
 VALUATIONS_OPTIONAL = ["notes", "payload"]
-TRANSACTIONS_REQUIRED = ["id", "position_id", "occurred_at", "kind",
-                         "amount", "currency"]
-TRANSACTIONS_OPTIONAL = ["notes", "payload"]
 
 
 class LoadError(SystemExit):
@@ -195,6 +196,7 @@ def _read_csv(path: Path, required: list[str], optional: list[str],
 def validate_positions(rows: list[dict]) -> dict[str, dict]:
     fname = "positions.csv"
     out: dict[str, dict] = {}
+    row_of: dict[str, int] = {}
     for r in rows:
         n = r["_row"]
         pid = _req(fname, n, "id", r["id"])
@@ -220,6 +222,18 @@ def validate_positions(rows: list[dict]) -> dict[str, dict]:
             "notes": r["notes"].strip() or None,
             "payload": _json_obj(fname, n, "payload", r["payload"]),
         }
+        row_of[pid] = n
+    # Conversion-link integrity (post-pass, so forward references resolve): a
+    # position opened by a converting note back-references its source via
+    # payload.converted_from_position_id; that source must be a known position.
+    # With no transactions ledger, this back-reference + the note's closed_at
+    # are the whole record of a conversion.
+    for pid, p in out.items():
+        src = p["payload"].get("converted_from_position_id")
+        if src and src not in out:
+            _fail(fname, row_of[pid], "payload",
+                  "converted_from_position_id references a position not in "
+                  "positions.csv", src)
     return out
 
 
@@ -260,60 +274,6 @@ def validate_valuations(rows: list[dict], positions: dict[str, dict],
     return out
 
 
-def validate_transactions(rows: list[dict], positions: dict[str, dict],
-                          ) -> list[dict]:
-    fname = "transactions.csv"
-    out: list[dict] = []
-    ids: set[str] = set()
-    for r in rows:
-        n = r["_row"]
-        tid = _req(fname, n, "id", r["id"])
-        if tid in ids:
-            _fail(fname, n, "id", "duplicate transaction id", tid)
-        ids.add(tid)
-        pid = _req(fname, n, "position_id", r["position_id"])
-        pos = positions.get(pid)
-        if pos is None:
-            _fail(fname, n, "position_id",
-                  "references a position not in positions.csv", pid)
-        kind = _req(fname, n, "kind", r["kind"])
-        if kind not in TRANSACTION_KINDS:
-            _fail(fname, n, "kind",
-                  f"unknown kind; expected one of "
-                  f"{sorted(TRANSACTION_KINDS)}", kind)
-        occurred = _date(fname, n, "occurred_at", r["occurred_at"])
-        ccy = _currency(fname, n, "currency", r["currency"])
-        if ccy != pos["currency"]:
-            _fail(fname, n, "currency",
-                  f"currency {ccy} != position {pid} currency "
-                  f"{pos['currency']}")
-        payload = _json_obj(fname, n, "payload", r["payload"])
-        if kind == "conversion":
-            target = payload.get("converts_to_position_id")
-            if not target:
-                _fail(fname, n, "payload",
-                      "conversion requires payload.converts_to_position_id")
-            if target not in positions:
-                _fail(fname, n, "payload",
-                      "converts_to_position_id references a position not "
-                      "in positions.csv", target)
-        if occurred < pos["acquired_at"]:
-            log.warning("%s:row %d: transaction date %s precedes %s "
-                        "acquisition %s", fname, n, occurred, pid,
-                        pos["acquired_at"])
-        out.append({
-            "id": tid,
-            "position_id": pid,
-            "occurred_at": occurred,
-            "kind": kind,
-            "amount": _decimal(fname, n, "amount", r["amount"]),
-            "currency": ccy,
-            "notes": r["notes"].strip() or None,
-            "payload": payload,
-        })
-    return out
-
-
 # ----------------------------------------------------------------------
 # SQLite silver.
 # ----------------------------------------------------------------------
@@ -335,23 +295,19 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
                                POSITIONS_REQUIRED, POSITIONS_OPTIONAL)
     valuations_rows = _read_csv(bronze_dir / "valuations.csv",
                                 VALUATIONS_REQUIRED, VALUATIONS_OPTIONAL)
-    transactions_rows = _read_csv(bronze_dir / "transactions.csv",
-                                  TRANSACTIONS_REQUIRED, TRANSACTIONS_OPTIONAL)
 
     if not positions_rows:
         log.warning("no positions.csv (or it is empty) in %s — nothing to "
                     "load", bronze_dir)
-        return {"positions": 0, "valuations": 0, "transactions": 0}
+        return {"positions": 0, "valuations": 0}
 
     # Validate everything BEFORE touching silver, so a bad row never leaves
     # a half-rebuilt DB.
     positions = validate_positions(positions_rows)
     valuations = validate_valuations(valuations_rows, positions)
-    transactions = validate_transactions(transactions_rows, positions)
 
     conn.execute("BEGIN")
     try:
-        conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM valuations")
         conn.execute("DELETE FROM positions")
         conn.executemany(
@@ -371,25 +327,15 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
               v["currency"], v["notes"], json.dumps(v["payload"]))
              for v in valuations],
         )
-        conn.executemany(
-            "INSERT INTO transactions (id, position_id, occurred_at, kind, "
-            "amount, currency, notes, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(t["id"], t["position_id"], t["occurred_at"].isoformat(),
-              t["kind"], str(t["amount"]), t["currency"], t["notes"],
-              json.dumps(t["payload"]))
-             for t in transactions],
-        )
         counts = {"positions": len(positions),
-                  "valuations": len(valuations),
-                  "transactions": len(transactions)}
+                  "valuations": len(valuations)}
         conn.execute(
             "INSERT INTO load_runs (load_at, silver_schema_version, "
-            "bronze_dir, positions_total, valuations_total, "
-            "transactions_total, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "bronze_dir, positions_total, valuations_total, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (int(datetime.now(timezone.utc).timestamp()),
              silver.current_schema_version(conn), str(bronze_dir),
-             counts["positions"], counts["valuations"],
-             counts["transactions"], json.dumps(counts)),
+             counts["positions"], counts["valuations"], json.dumps(counts)),
         )
         conn.execute("COMMIT")
     except Exception:
@@ -424,9 +370,8 @@ def main(argv: list[str]) -> int:
         version = apply_migrations(conn)
         log.info("silver schema at version %d (%s)", version, silver_db)
         counts = load(conn, bronze_dir)
-        log.info("loaded %d position(s), %d valuation(s), %d transaction(s)",
-                 counts["positions"], counts["valuations"],
-                 counts["transactions"])
+        log.info("loaded %d position(s), %d valuation(s)",
+                 counts["positions"], counts["valuations"])
     finally:
         conn.close()
     return 0

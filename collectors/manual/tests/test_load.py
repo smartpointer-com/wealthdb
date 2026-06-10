@@ -36,14 +36,16 @@ def _write(d: Path, name: str, text: str) -> None:
 def test_load_examples(tmp_path):
     conn = _fresh_db(tmp_path)
     counts = loader.load(conn, EXAMPLES)
-    assert counts == {"positions": 6, "valuations": 13, "transactions": 11}
+    assert counts == {"positions": 6, "valuations": 13}
 
-    # Every transaction kind is exercised by the examples.
+    # Every position kind in the examples is an accepted kind.
     kinds = {r[0] for r in conn.execute(
-        "SELECT DISTINCT kind FROM transactions").fetchall()}
-    assert kinds == loader.TRANSACTION_KINDS
+        "SELECT DISTINCT kind FROM positions").fetchall()}
+    assert kinds <= loader.POSITION_KINDS
+    assert {"real_estate", "convertible_note", "private_equity"} <= kinds
 
-    # The converted CLA is closed; the equity it became is open and linked.
+    # The converted note is closed; the equity it became is open and links back
+    # (a conversion is recorded purely position-side — closed_at + back-ref).
     cla = conn.execute(
         "SELECT closed_at FROM positions WHERE id='cla-002'").fetchone()
     assert cla[0] is not None
@@ -65,8 +67,8 @@ def test_load_is_idempotent(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM load_runs").fetchone()[0] == 2
 
 
-def test_as_of_query_drops_converted_cla(tmp_path):
-    """As of the conversion date the CLA has dropped out and the new equity
+def test_as_of_query_drops_converted_note(tmp_path):
+    """As of the conversion date the note has dropped out and the new equity
     position is present — the property gold relies on for as-of correctness."""
     conn = _fresh_db(tmp_path)
     loader.load(conn, EXAMPLES)
@@ -112,25 +114,25 @@ def test_bad_json_payload(tmp_path):
         loader.load(conn, tmp_path)
 
 
-def test_conversion_requires_target(tmp_path):
+def test_converted_from_dangling_reference(tmp_path):
+    """A position that back-references a converted_from_position_id which
+    isn't in positions.csv fails loudly (the conversion-link integrity check
+    that replaces the old conversion transaction)."""
     _write(tmp_path, "positions.csv",
-           "id,kind,display_name,currency,acquired_at\n"
-           "p-1,convertible_note,X,CHF,2020-01-01\n")
-    _write(tmp_path, "transactions.csv",
-           "id,position_id,occurred_at,kind,amount,currency,payload\n"
-           "c-1,p-1,2024-01-01,conversion,1000,CHF,{}\n")
+           "id,kind,display_name,currency,acquired_at,payload\n"
+           'p-1,private_equity,X,CHF,2022-01-01,"{""converted_from_position_id"": ""nope-9""}"\n')
     conn = _fresh_db(tmp_path)
-    with pytest.raises(loader.LoadError, match=r"converts_to_position_id"):
+    with pytest.raises(loader.LoadError, match=r"converted_from_position_id"):
         loader.load(conn, tmp_path)
 
 
-def test_currency_must_match_position(tmp_path):
+def test_valuation_currency_must_match_position(tmp_path):
     _write(tmp_path, "positions.csv",
            "id,kind,display_name,currency,acquired_at\n"
-           "p-1,convertible_note,X,CHF,2020-01-01\n")
-    _write(tmp_path, "transactions.csv",
-           "id,position_id,occurred_at,kind,amount,currency\n"
-           "t-1,p-1,2024-01-01,fee,100,USD\n")
+           "p-1,real_estate,X,CHF,2020-01-01\n")
+    _write(tmp_path, "valuations.csv",
+           "position_id,as_of_date,value,currency\n"
+           "p-1,2020-01-01,100,USD\n")
     conn = _fresh_db(tmp_path)
     with pytest.raises(loader.LoadError, match=r"currency USD != position"):
         loader.load(conn, tmp_path)

@@ -14,7 +14,7 @@ the other collectors live by. Most of root [CLAUDE.md](../../CLAUDE.md) §1–§
 (read-only sessions, never weaken auth, protect the cookie jar) simply does
 not apply here: there is no session and no credential.
 
-The only step is `load`: it reads three hand-maintained CSVs from
+The only step is `load`: it reads two hand-maintained CSVs from
 `~/wealthdb/manual/`, validates them, and rebuilds a SQLite silver. See
 [DESIGN.md](DESIGN.md).
 
@@ -60,8 +60,9 @@ no credential of any kind.
 
 The whole value of this collector is that the hand-entered CSVs are
 **checked**. A bad row (unknown kind, dangling `position_id`, currency
-mismatch, malformed JSON payload, a `conversion` with no target) must fail
-the load with `file:row:column` context and a non-zero exit — never be
+mismatch, malformed JSON payload, a dangling `converted_from_position_id`)
+must fail the load with `file:row:column` context and a non-zero exit —
+never be
 skipped, coerced, or partially loaded. The load is one transaction: a
 single bad row rolls the whole rebuild back, so silver is never left in a
 half-updated state. Don't add a "lenient" / "skip-bad-rows" mode.
