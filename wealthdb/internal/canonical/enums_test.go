@@ -14,6 +14,8 @@ func TestAssetClassValid(t *testing.T) {
 		{AssetClassPrivateEquity, true},
 		{AssetClassSPV, true},
 		{AssetClassPrivateFund, true},
+		{AssetClassRealEstate, true},
+		{AssetClassConvertibleNote, true},
 		{"", false},
 		{"unknown", false},
 		{AssetClass("EQUITY"), false}, // case-sensitive
