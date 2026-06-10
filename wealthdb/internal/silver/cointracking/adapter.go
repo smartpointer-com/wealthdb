@@ -60,7 +60,7 @@ import (
 	"fmt"
 	"net/url"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 
 	"github.com/ptu/wealthdb/internal/silver"
 )
