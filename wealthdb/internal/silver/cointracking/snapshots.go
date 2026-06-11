@@ -3,17 +3,11 @@ package cointracking
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
 )
-
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
 
 // Snapshots emits one batch per ChangeWindow, stamped at the
 // window's End (= latest dump_run snapshot_at in the window). The
@@ -24,7 +18,7 @@ type snapshotStream struct {
 // latest balances computed live from `transactions`.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 
 	// One batch per distinct positions_daily.as_of_date so gold's
@@ -57,7 +51,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err := c.appendFxRates(ctx, &batch); err != nil {
 			return nil, err
 		}
-		return &snapshotStream{batches: []canonical.SnapshotBatch{batch}}, nil
+		return silver.NewSnapshotStream([]canonical.SnapshotBatch{batch}), nil
 	}
 
 	byTime := make(map[int64]*canonical.SnapshotBatch, len(snapDates))
@@ -83,11 +77,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(snapDates))}
+	batches := make([]canonical.SnapshotBatch, 0, len(snapDates))
 	for _, t := range snapDates {
-		out.batches = append(out.batches, *byTime[t])
+		batches = append(batches, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // snapshotTimestamps returns the sorted list of distinct
@@ -115,17 +109,6 @@ SELECT DISTINCT CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT
 	}
 	return out, rows.Err()
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // appendPortfolios emits one PortfolioChange per row in
 // silver.portfolios. The base_currency is the portfolio's
@@ -173,7 +156,7 @@ SELECT
 			PortfolioExternalID: extID,
 			FirstSeenAt:         firstSeen,
 			LastSeenAt:          snap,
-			Payload:             jsonOrNull(payload),
+			Payload:             silver.JSONOrNil(payload),
 		}
 		if name != "" {
 			n := name
@@ -245,7 +228,7 @@ SELECT
 			PortfolioExternalID: &portfolio,
 			FirstSeenAt:         firstSeen,
 			LastSeenAt:          snap,
-			Payload:             jsonOrNull(payload),
+			Payload:             silver.JSONOrNil(payload),
 		}
 		if name != "" {
 			n := name
@@ -443,7 +426,7 @@ SELECT
 			// as_of_date list, but skip defensively.
 			continue
 		}
-		qty := decimalPtrOrNil(qtyStr)
+		qty := silver.DecimalPtrOrNil(qtyStr)
 		if qty == nil {
 			continue
 		}
@@ -543,22 +526,3 @@ SELECT
 	return rows.Err()
 }
 
-// ---- helpers ------------------------------------------------------
-
-func decimalPtrOrNil(s sql.NullString) *canonical.Decimal {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	d, err := canonical.NewDecimalFromString(s.String)
-	if err != nil {
-		return nil
-	}
-	return &d
-}
-
-func jsonOrNull(s sql.NullString) json.RawMessage {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	return json.RawMessage(s.String)
-}

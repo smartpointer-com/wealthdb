@@ -12,6 +12,7 @@ RUN pip install -r requirements.txt
 # incomplete.
 COPY login.py download.py load.py /app/
 COPY migrations /app/migrations
+COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

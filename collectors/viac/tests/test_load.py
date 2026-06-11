@@ -1,0 +1,128 @@
+"""Bronze→silver tests for the viac collector's load.py.
+
+Seeds a minimal synthetic VIAC bronze dump (portfolio-inventory.json
++ per-portfolio assets.json + run.json) and runs the real loader,
+asserting the projected silver rows. No real data — synthetic
+portfolio numbers / ISINs / amounts only.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+COLLECTOR = HERE.parent
+sys.path.insert(0, str(COLLECTOR))
+
+import load as loader  # noqa: E402
+from collectorkit import silver  # noqa: E402
+
+RUN_SLUG = "20240101T000000Z"
+PORT = "3.111.222.333.01"  # product_code '3' (p3a), portfolio_index '01'
+
+
+def _write_json(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj), encoding="utf-8")
+
+
+def _seed_bronze(root: Path) -> Path:
+    run_dir = root / RUN_SLUG
+    _write_json(run_dir / "run.json", {"utc": RUN_SLUG})
+    _write_json(run_dir / "wealth" / "portfolio-inventory.json", {
+        "p3a": [{
+            "number": PORT,
+            "name": "Portfolio 2024",
+            "state": "ACTIVE",
+            "index": 0,
+            "sortIndex": 0,
+        }],
+        "pvb": [],
+        "inv": [],
+    })
+    _write_json(run_dir / "positions" / PORT / "assets.json", {
+        "cashAmount": 250.50,
+        "interestRate": 0.5,
+        "assetsByClasses": {
+            "EQUITIES": [{
+                "isin": "CH0000000001",
+                "name": "Fund A",
+                "currencyCode": "CHF",
+                "subAssetClassType": "SHARES_SWITZERLAND",
+                "amount": 10,          # → quantity (units)
+                "ratio": 0.8,
+                "ratioInChf": 1500.0,  # → market_value_chf
+                "acquisitionPrice": 120.0,
+                "assetPrice": 150.0,
+                "rateOfReturn": 0.25,
+            }],
+        },
+    })
+    return run_dir
+
+
+def _fresh_db(tmp_path: Path):
+    conn = loader.open_db(tmp_path / "viac.db")
+    version = silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
+    return conn, version
+
+
+def test_load_accounts_positions_cash(tmp_path):
+    run_dir = _seed_bronze(tmp_path / "bronze")
+    conn, version = _fresh_db(tmp_path)
+    loader.load_one_dump(conn, run_dir, version)
+
+    # Account: product_code '3' (p3a), automated, CHF.
+    acct = conn.execute(
+        "SELECT account_external_id, product_code, portfolio_index, "
+        "management_style, currency_code FROM accounts").fetchall()
+    assert len(acct) == 1
+    assert acct[0]["account_external_id"] == PORT
+    assert acct[0]["product_code"] == "3"
+    assert acct[0]["portfolio_index"] == "01"
+    assert acct[0]["management_style"] == "automated"
+    assert acct[0]["currency_code"] == "CHF"
+
+    # Position: quantity = units (10), market_value_chf = ratioInChf.
+    pos = conn.execute(
+        "SELECT instrument_external_id, asset_class, quantity, "
+        "market_value_chf, acquisition_price FROM positions").fetchall()
+    assert len(pos) == 1
+    assert pos[0]["instrument_external_id"] == "CH0000000001"
+    assert pos[0]["asset_class"] == loader.asset_class_for("EQUITIES")
+    assert float(pos[0]["quantity"]) == 10.0
+    assert float(pos[0]["market_value_chf"]) == 1500.0
+    assert float(pos[0]["acquisition_price"]) == 120.0
+
+    # Instrument catalog row.
+    instr = conn.execute(
+        "SELECT isin, asset_class FROM instruments").fetchall()
+    assert len(instr) == 1
+    assert instr[0]["isin"] == "CH0000000001"
+
+    # Cash balance from assets.cashAmount.
+    cash = conn.execute(
+        "SELECT currency, balance_kind, amount FROM cash_balances").fetchall()
+    assert len(cash) == 1
+    assert cash[0]["currency"] == "CHF"
+    assert cash[0]["balance_kind"] == "cash"
+    assert float(cash[0]["amount"]) == 250.50
+
+    # dump_runs recorded last.
+    assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+
+
+def test_asset_class_mapping(tmp_path):
+    # The bronze→silver asset-class normalisation the loader applies.
+    assert loader.asset_class_for("EQUITIES") == "equity"
+    assert loader.asset_class_for("BONDS") == "bond"
+    assert loader.asset_class_for(None) == "other"
+
+
+def test_parse_account_id_product_split(tmp_path):
+    # Portfolio number's first dotted segment → product_code.
+    code, index = loader.parse_account_id(PORT)
+    assert code == "3"
+    assert index == "01"

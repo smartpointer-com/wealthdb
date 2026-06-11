@@ -33,7 +33,7 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-from collectorkit import session
+from collectorkit import envfile, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -134,37 +134,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Env-file loader
 # ============================================================
 
-def load_env_file(path: Path) -> None:
-    """Source KEY=VALUE pairs from `path` into os.environ.
-
-    Existing env vars are NOT overwritten — the env file is a
-    fallback, not an override. Quotes around values are stripped.
-    Lines beginning with `#` and blank lines are ignored. Anything
-    that doesn't look like a KEY=VALUE pair raises.
-    """
-    log.debug("loading env file: %s", path)
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
-                    f"{raw.rstrip()!r}"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("'\"")
-            if not key:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: empty key"
-                )
-            os.environ.setdefault(key, value)
-
-
 def resolve_contract_number(args: argparse.Namespace) -> str:
     """CLI flag → env var → error. Honours --env-file.
 
@@ -181,7 +150,7 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
     for env_file in env_files:
         if not env_file.exists():
             raise SystemExit(f"--env-file does not exist: {env_file}")
-        load_env_file(env_file)
+        envfile.source_env_file(env_file)
 
     if args.contract_number:
         return args.contract_number.strip()

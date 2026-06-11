@@ -12,17 +12,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// snapshotStream buffers the whole window upfront and emits one
-// batch per dump_runs.snapshot_at. Same shape as the Schwab
-// adapter; see docs/adapters/ubs.md §3 for the coverage matrix.
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 
 	times, err := c.snapshotTimesInWindow(ctx, w)
@@ -76,23 +68,12 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		batches = append(batches, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
 // values across dump_runs and every PSN content table whose
@@ -194,10 +175,10 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		change := canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindCash,
-			BaseCurrency:        strPtrIfNonEmpty(p.AcctCcyIsoCd),
-			RelationshipID:      strPtrIfNonEmpty(relID),
-			AccountCategory:     strPtrIfNonEmpty(p.AcctTpDesc),
-			PortfolioExternalID: nullStringPtr(portfolioID),
+			BaseCurrency:        silver.StrPtrIfNonEmpty(p.AcctCcyIsoCd),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID),
+			AccountCategory:     silver.StrPtrIfNonEmpty(p.AcctTpDesc),
+			PortfolioExternalID: silver.StrPtrIfNonEmpty(portfolioID.String),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -268,10 +249,10 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			// sub-type sharpens "Custody" / "Cust Strap." into
 			// "Custody / Cash-Custody", "Custody / Personal
 			// Cust.", etc.) goes into AccountCategory.
-			BaseCurrency:        strPtrIfNonEmpty(p.InvstmtCcyIsoCd),
-			RelationshipID:      strPtrIfNonEmpty(relID),
-			AccountCategory:     strPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
-			PortfolioExternalID: nullStringPtr(portfolioID),
+			BaseCurrency:        silver.StrPtrIfNonEmpty(p.InvstmtCcyIsoCd),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID),
+			AccountCategory:     silver.StrPtrIfNonEmpty(joinSafekeepingCategory(p.AcctTpDesc, p.AcctSubTypeDesc)),
+			PortfolioExternalID: silver.StrPtrIfNonEmpty(portfolioID.String),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -324,8 +305,8 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
 		}
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
-			BaseCurrency:        nullStringPtr(baseCcy),
-			RelationshipID:      strPtrIfNonEmpty(relID),
+			BaseCurrency:        silver.StrPtrIfNonEmpty(baseCcy.String),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -427,8 +408,8 @@ SELECT snapshot_at, isin, payload
 			InstrumentExternalID: isin,
 			AssetClass:           ac,
 			ISIN:                 &isin,
-			Name:                 strPtrIfNonEmpty(p.InstrNm.Best()),
-			Currency:             strPtrIfNonEmpty(p.GacInstrRskCcyIsoCd),
+			Name:                 silver.StrPtrIfNonEmpty(p.InstrNm.Best()),
+			Currency:             silver.StrPtrIfNonEmpty(p.GacInstrRskCcyIsoCd),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 			Payload:              json.RawMessage(payload),
@@ -767,7 +748,7 @@ SELECT snapshot_at, contract_external_id, payload
 			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 				AccountExternalID:   overlayID,
 				AccountKind:         canonical.AccountKindOverlay,
-				DisplayName:         strPtrIfNonEmpty("Portfolio overlay"),
+				DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay"),
 				PortfolioExternalID: &pid,
 				FirstSeenAt:         snap,
 				LastSeenAt:          snap,
@@ -794,13 +775,6 @@ func overlayAccountID(portfolioID string) string {
 }
 
 // ---- helpers --------------------------------------------------------------
-
-func strPtrIfNonEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
 
 // joinSafekeepingCategory combines the safekeeping AcctTpDesc and
 // AcctSubTypeDesc into a single category string for gold's

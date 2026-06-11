@@ -133,59 +133,30 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		return nil, err
 	}
 
-	type portKey struct{ src, id string } // id "" = sentinel
-	type lines struct {
-		positions []lineItem
-		cash      []lineItem
-		maxSnap   int64
-	}
-	byKey := make(map[portKey]*lines)
+	// id "" = the per-source sentinel (orphan accounts).
+	byKey := make(map[srcKey]*lines)
 	// Per-silver_source latest observation, mirroring AccountsAsOf.
 	// Used as the snapshot_at fallback for portfolios (and the
 	// sentinel row) that have no contributing lines — honestly
 	// zero at the source's known snapshot, not "unknown".
 	sourceMaxSnap := make(map[string]int64)
-	addLine := func(src, acctID, ccy string, valueStr *string, snap int64, isCash bool) {
-		if snap > sourceMaxSnap[src] {
-			sourceMaxSnap[src] = snap
-		}
-		if valueStr == nil {
-			return
-		}
-		v, err := canonical.NewDecimalFromString(*valueStr)
-		if err != nil {
-			return
-		}
-		// Route the line to the portfolio its account belongs to
-		// (or to the sentinel if the account has no portfolio).
-		portID := accountPortfolio[[2]string{src, acctID}]
-		k := portKey{src, portID}
-		l, ok := byKey[k]
-		if !ok {
-			l = &lines{}
-			byKey[k] = l
-		}
-		item := lineItem{currency: ccy, amount: v, snapshotAt: snap}
-		if isCash {
-			l.cash = append(l.cash, item)
-		} else {
-			l.positions = append(l.positions, item)
-		}
-		if snap > l.maxSnap {
-			l.maxSnap = snap
-		}
-	}
+	// Route each line to the portfolio its account belongs to (or
+	// to the sentinel if the account has no portfolio), then bucket
+	// by that portfolio. The shared addLine keys by the id passed
+	// in, so the portfolio resolution happens here at the call site.
 	for _, p := range positions {
-		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, p.SnapshotAt, false)
+		portID := accountPortfolio[[2]string{p.SilverSourceID, p.AccountExternalID}]
+		addLine(byKey, sourceMaxSnap, p.SilverSourceID, portID, p.Currency, p.MarketValue, p.SnapshotAt, false)
 	}
 	for _, c := range cash {
-		addLine(c.SilverSourceID, c.AccountExternalID, c.Currency, c.MarketValue, c.SnapshotAt, true)
+		portID := accountPortfolio[[2]string{c.SilverSourceID, c.AccountExternalID}]
+		addLine(byKey, sourceMaxSnap, c.SilverSourceID, portID, c.Currency, c.MarketValue, c.SnapshotAt, true)
 	}
 
 	for i := range portfolios {
 		p := &portfolios[i]
 		var pos, ca []lineItem
-		if l, ok := byKey[portKey{p.SilverSourceID, p.PortfolioExternalID}]; ok {
+		if l, ok := byKey[srcKey{p.SilverSourceID, p.PortfolioExternalID}]; ok {
 			pos, ca = l.positions, l.cash
 			p.SnapshotAt = l.maxSnap
 		} else {
@@ -211,19 +182,9 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 			}
 		}
 
-		if p.BaseCurrency != nil && *p.BaseCurrency != "" {
-			base := *p.BaseCurrency
-			pSum := sumConverted(ctx, db, pos, base, mode)
-			cSum := sumConverted(ctx, db, ca, base, mode)
-			p.PositionsValueBase = decimalPtrString(pSum)
-			p.CashBalanceBase = decimalPtrString(cSum)
-			p.TotalValueBase = decimalPtrString(addOptional(pSum, cSum))
-		}
-		pSum := sumConverted(ctx, db, pos, outCcy, mode)
-		cSum := sumConverted(ctx, db, ca, outCcy, mode)
-		p.PositionsValueOutCcy = decimalPtrString(pSum)
-		p.CashBalanceOutCcy = decimalPtrString(cSum)
-		p.TotalValueOutCcy = decimalPtrString(addOptional(pSum, cSum))
+		vc := computeValueColumns(ctx, db, pos, ca, p.BaseCurrency, outCcy, mode)
+		p.PositionsValueBase, p.CashBalanceBase, p.TotalValueBase = vc.positionsBase, vc.cashBase, vc.totalBase
+		p.PositionsValueOutCcy, p.CashBalanceOutCcy, p.TotalValueOutCcy = vc.positionsOut, vc.cashOut, vc.totalOut
 	}
 
 	// Sort by (silver_source_id, portfolio_external_id) for a

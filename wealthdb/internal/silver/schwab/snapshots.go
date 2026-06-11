@@ -10,15 +10,6 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// snapshotStream yields one canonical.SnapshotBatch per
-// silver snapshot_at in the change window. Loads the whole window
-// up front; at personal-portfolio scale (≲50 positions × ≲10
-// new snapshots per load), this stays trivially in memory.
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 // Snapshots collects every snapshot-grain row in the change window
 // from accounts, account_balances, and positions, splits each
 // silver row into the right canonical record type, and groups
@@ -26,7 +17,7 @@ type snapshotStream struct {
 // snapshot.
 func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 
 	// Collect distinct snapshot_at values in the window so we can
@@ -65,23 +56,12 @@ func (c *apiReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(snapshotTimes))}
+	batches := make([]canonical.SnapshotBatch, 0, len(snapshotTimes))
 	for _, t := range snapshotTimes {
-		out.batches = append(out.batches, *byTime[t])
+		batches = append(batches, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the distinct dump_runs.snapshot_at
 // values in [w.Start, w.End], in chronological order.
@@ -126,7 +106,7 @@ type schwabAccountPayload struct {
 // management wrapper category, so the user fills it in via the
 // config-side override.
 func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	hasNickname, err := c.hasColumn(ctx, "accounts", "nickname")
+	hasNickname, err := silver.HasColumn(ctx, c.db, "accounts", "nickname")
 	if err != nil {
 		return err
 	}
@@ -161,9 +141,9 @@ func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTi
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
-			DisplayName:       strPtrIfNonEmpty(p.AccountNumber),
-			BaseCurrency:      strPtrIfNonEmpty("USD"),
-			Nickname:          nullStringPtr(nickname),
+			DisplayName:       silver.StrPtrIfNonEmpty(p.AccountNumber),
+			BaseCurrency:      silver.StrPtrIfNonEmpty("USD"),
+			Nickname:          silver.StrPtrIfNonEmpty(nickname.String),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
@@ -337,10 +317,10 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,
 			AssetClass:           ac,
-			CUSIP:                strPtrIfNonEmpty(pp.Instrument.CUSIP),
-			Symbol:               strPtrIfNonEmpty(pp.Instrument.Symbol),
-			Name:                 strPtrIfNonEmpty(name),
-			Currency:             strPtrIfNonEmpty("USD"),
+			CUSIP:                silver.StrPtrIfNonEmpty(pp.Instrument.CUSIP),
+			Symbol:               silver.StrPtrIfNonEmpty(pp.Instrument.Symbol),
+			Name:                 silver.StrPtrIfNonEmpty(name),
+			Currency:             silver.StrPtrIfNonEmpty("USD"),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 		})
@@ -360,56 +340,6 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		})
 	}
 	return rows.Err()
-}
-
-// strPtrIfNonEmpty returns a *string to s, or nil when s is empty.
-// Convenient for converting JSON-decoded strings (which default to
-// "") into the nullable shape canonical types use.
-func strPtrIfNonEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-// nullStringPtr converts a sql.NullString to *string, returning
-// nil for both SQL NULL and the empty string (the latter is
-// indistinguishable from "unset" for free-text label columns).
-func nullStringPtr(n sql.NullString) *string {
-	if !n.Valid || n.String == "" {
-		return nil
-	}
-	s := n.String
-	return &s
-}
-
-// hasColumn reports whether table contains a column with the given
-// name. SQLite-only; uses PRAGMA table_info via a query rather
-// than a Pragma helper so it works through database/sql.
-func (c *apiReader) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	// PRAGMA table_info doesn't accept parameter binding, so the
-	// caller must pass a trusted table name. Both call sites here
-	// pass string literals.
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid                                      int
-			name, ctype                              string
-			notnull, pk                              int
-			dfltValue                                sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			return false, fmt.Errorf("hasColumn scan: %w", err)
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // hasTable reports whether the silver SQLite contains a table of

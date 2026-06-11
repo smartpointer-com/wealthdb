@@ -9,14 +9,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *psnReader) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
 	const q = `
@@ -48,18 +43,8 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }
 
 // --- per-kind payload structs ---------------------------------------------
 

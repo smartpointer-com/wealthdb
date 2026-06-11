@@ -45,7 +45,7 @@ func (r *webReader) snapshotsHistorical(
 	w canonical.Window,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 
 	byTime := make(map[int64]*canonical.SnapshotBatch)
@@ -71,11 +71,11 @@ func (r *webReader) snapshotsHistorical(
 	}
 	sortInt64Asc(times)
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		batches = append(batches, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // appendHistoricalSecurities emits security positions from
@@ -136,7 +136,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			portfolioEmitted[portKey] = true
 			batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 				PortfolioExternalID: portID,
-				BaseCurrency:        strPtrIfNonEmpty(mvCcy),
+				BaseCurrency:        silver.StrPtrIfNonEmpty(mvCcy),
 				FirstSeenAt:         asOf,
 				LastSeenAt:          asOf,
 			})
@@ -149,7 +149,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 				AccountExternalID:   overlayID,
 				AccountKind:         canonical.AccountKindOverlay,
-				DisplayName:         strPtrIfNonEmpty("Portfolio overlay (historical)"),
+				DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay (historical)"),
 				PortfolioExternalID: &pid,
 				FirstSeenAt:         asOf,
 				LastSeenAt:          asOf,
@@ -161,8 +161,8 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			InstrumentExternalID: isin,
 			AssetClass:           canonical.AssetClassOther,
 			ISIN:                 &isinCopy,
-			Name:                 nullStringPtr(descr),
-			Currency:             strPtrIfNonEmpty(ccy),
+			Name:                 silver.StrPtrIfNonEmpty(descr.String),
+			Currency:             silver.StrPtrIfNonEmpty(ccy),
 			FirstSeenAt:          asOf,
 			LastSeenAt:           asOf,
 		})

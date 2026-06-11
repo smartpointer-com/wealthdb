@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from collectorkit import bronze  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -47,7 +48,7 @@ def _write_pdf(path: Path, content: bytes) -> str:
     """Write a stub PDF, return its sha256."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-    sha, _ = load.sha256_file(path)
+    sha, _ = bronze.sha256_file(path)
     return sha
 
 
@@ -406,7 +407,7 @@ def _make_tx_history_bronze(root: Path, run_ts: str, suffix: str,
         "BrokerageTransactions": transactions,
     }
     json_path.write_text(_json.dumps(payload), encoding="utf-8")
-    sha, _size = load.sha256_file(json_path)
+    sha, _size = bronze.sha256_file(json_path)
     if more_details is not None:
         (tx_dir / "more-details.json").write_text(
             _json.dumps(more_details), encoding="utf-8",
@@ -645,9 +646,9 @@ class TestPositionsAndCashLoad:
         ])
         # Tweak the PDF bytes so its sha256 differs.
         p = run1 / "statements" / "NNN" / "Brokerage-Statement_2026-02-28_NNN.PDF"
-        original_sha = load.sha256_file(p)[0]
+        original_sha = bronze.sha256_file(p)[0]
         p.write_bytes(p.read_bytes() + b"%CHURNED-BYTES%")
-        new_sha = load.sha256_file(p)[0]
+        new_sha = bronze.sha256_file(p)[0]
         assert original_sha != new_sha
         # Update manifest to record the new sha256.
         manifest = json.loads((run1 / "run.json").read_text())

@@ -182,7 +182,7 @@ func (r *webReader) snapshotsDimensions(
 	// "Contributory IRA" / "Schwab One® Custodial Account
 	// (UTMA)" / "Education Savings" / etc.). Older silvers
 	// don't have the column; degrade gracefully.
-	hasRegistration, err := r.hasColumn(ctx, "accounts", "account_registration")
+	hasRegistration, err := silver.HasColumn(ctx, r.db, "accounts", "account_registration")
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 		change := canonical.AccountChange{
 			AccountExternalID: hash,
 			AccountKind:       canonical.AccountKindBrokerage,
-			Nickname:          nullStringPtrSchwabWeb(nickname),
+			Nickname:          silver.StrPtrIfNonEmpty(nickname.String),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
@@ -240,31 +240,6 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
-}
-
-// hasColumn reports whether the given table contains the given
-// column. SQLite-only; same shape as apiReader.hasColumn.
-func (r *webReader) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	rows, err := r.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid           int
-			name, ctype   string
-			notnull, pk   int
-			dflt          sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // transactionsBeforeAPIStart emits web transactions that are
@@ -294,7 +269,7 @@ func (r *webReader) transactionsBeforeAPIStart(
 	symbolToCUSIP map[string]string,
 ) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	const q = `
 SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload
@@ -359,17 +334,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			Payload:   json.RawMessage(payload),
 		})
 	}
-	return &txStream{batch: out}, rows.Err()
-}
-
-// nullStringPtrSchwabWeb mirrors helpers in other adapter packages;
-// kept local to avoid a cross-package helper-collision dance.
-func nullStringPtrSchwabWeb(n sql.NullString) *string {
-	if !n.Valid || n.String == "" {
-		return nil
-	}
-	s := n.String
-	return &s
+	return silver.NewTransactionStream(out), rows.Err()
 }
 
 // webKind maps the web silver's `kind` discriminator (the

@@ -10,14 +10,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -38,23 +33,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	out := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		out = append(out, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(out), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
 // values across dump_runs and the snapshot-typed content tables.
@@ -153,7 +137,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 // no classification or no portfolio at all; the gold COALESCE
 // upsert preserves whatever a later writer / override supplies.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	hasMgmt, err := c.hasColumn(ctx, "accounts", "management_style")
+	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
 	}
@@ -193,8 +177,8 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindBrokerage,
 			BaseCurrency:        &usd,
-			Nickname:            nullStringPtr(nickname),
-			PortfolioExternalID: nullStringPtr(portfolioID),
+			Nickname:            silver.NullStringPtr(nickname),
+			PortfolioExternalID: silver.NullStringPtr(portfolioID),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -238,32 +222,6 @@ func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 		change.TaxWrapper = &w
 		change.ManagementStyle = &s
 	}
-}
-
-// hasColumn reports whether the given table contains the given
-// column. SQLite-only; shape mirrored from the schwab + ubs
-// adapters.
-func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid           int
-			name, ctype   string
-			notnull, pk   int
-			dflt          sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // appendPositionsAndCash walks `positions` once and splits each
@@ -334,7 +292,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 		}
 
 		if isCore != 0 {
-			amt, err := decimalOrZero(valueStr)
+			amt, err := silver.DecimalOrZero(valueStr)
 			if err != nil {
 				return fmt.Errorf("money-market amount parse (acct=%s instr=%s): %w", acct, key, err)
 			}
@@ -356,7 +314,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			InstrumentExternalID: key,
 			AssetClass:           assetClass,
 			Symbol:               &symbol,
-			Name:                 strPtrIfNonEmpty(desc),
+			Name:                 silver.StrPtrIfNonEmpty(desc),
 			Currency:             &ccy,
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
@@ -371,45 +329,10 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClass,
 			Currency:             currency,
-			Quantity:             decimalPtrOrNil(qtyStr),
-			MarketValue:          decimalPtrOrNil(valueStr),
+			Quantity:             silver.DecimalPtrOrNil(qtyStr),
+			MarketValue:          silver.DecimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
-}
-
-// ---- helpers -------------------------------------------------------------
-
-func nullStringPtr(s sql.NullString) *string {
-	if !s.Valid {
-		return nil
-	}
-	v := s.String
-	return &v
-}
-
-func strPtrIfNonEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func decimalPtrOrNil(s sql.NullString) *canonical.Decimal {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	d, err := canonical.NewDecimalFromString(s.String)
-	if err != nil {
-		return nil
-	}
-	return &d
-}
-
-func decimalOrZero(s sql.NullString) (canonical.Decimal, error) {
-	if !s.Valid || s.String == "" {
-		return canonical.Decimal{}, nil
-	}
-	return canonical.NewDecimalFromString(s.String)
 }

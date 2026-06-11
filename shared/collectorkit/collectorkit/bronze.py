@@ -6,6 +6,7 @@ canonical-JSON form used for content-based dedup.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -73,6 +74,28 @@ def atomic_write_json(path: Path, obj) -> None:
 
 
 def canonical_json(obj) -> str:
-    """Stable, compact JSON for content-based dedup (sorted keys, no spaces)."""
+    """Stable, compact JSON for content-based dedup (sorted keys, no
+    spaces). `default=str` lets non-JSON-native scalars a silver
+    payload may carry — Decimal, date/datetime — serialise as their
+    string form rather than raising, matching the local copies the
+    collectors used before adopting this helper.
+    """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
+                      ensure_ascii=False, default=str)
+
+
+def sha256_file(path: Path, chunk_size: int = 1 << 20) -> tuple[str, int]:
+    """Return (hex sha256, byte size) for a file, read in chunks so
+    large bronze blobs don't load into memory. Callers that only
+    want the digest take ``[0]``.
+    """
+    h = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+            size += len(chunk)
+    return h.hexdigest(), size

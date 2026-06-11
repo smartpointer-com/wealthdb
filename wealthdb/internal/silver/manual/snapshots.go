@@ -15,11 +15,6 @@ import (
 // source is one logical holder, so it is a constant.
 const accountKey = "manual"
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 // Snapshots reconstructs the per-date portfolio from the silver's positions +
 // valuations. The silver stores a position once (with acquired_at / closed_at)
 // and a valuation per (position, as_of_date); gold's as-of query, by contrast,
@@ -31,33 +26,22 @@ type snapshotStream struct {
 // a complete portfolio exists at every date so historical as-of queries work.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t)
 		if err != nil {
 			return nil, err
 		}
-		out.batches = append(out.batches, batch)
+		batches = append(batches, batch)
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow are the distinct event dates in the window: the union
 // of every position's acquired_at + closed_at and every valuation's as_of_date

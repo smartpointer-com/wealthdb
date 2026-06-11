@@ -48,14 +48,9 @@ func kindForFundingType(t string) canonical.TxKind {
 // reversal — so ApplyCanonicalSign is intentionally bypassed). The K-1
 // annual Line 19(a) distribution is NOT emitted here: it was redundant with
 // these dated disbursements.
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	account, err := c.accountSlug(ctx)
 	if err != nil {
@@ -113,7 +108,7 @@ SELECT transaction_external_id, occurred_at, COALESCE(type, ''),
 			return nil, err
 		}
 	}
-	return &txStream{batch: canonical.TransactionBatch{Transactions: txs}}, nil
+	return silver.NewTransactionStream(canonical.TransactionBatch{Transactions: txs}), nil
 }
 
 // fundingPayload records the raw AngelList type (and the syndicate, for
@@ -127,13 +122,3 @@ func fundingPayload(ftype, synd string) json.RawMessage {
 	b, _ := json.Marshal(m)
 	return b
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }

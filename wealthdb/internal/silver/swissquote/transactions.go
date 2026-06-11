@@ -10,14 +10,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
 	// CAST(net_amount AS VARCHAR) preserves precision on the way
@@ -84,18 +79,8 @@ SELECT account_external_id, occurred_at, transaction_type,
 
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }
 
 // extractTradeFields pulls quantity and unit_price from the
 // transaction payload if present. Returns ok=false if neither is

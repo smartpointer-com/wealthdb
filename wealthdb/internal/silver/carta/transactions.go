@@ -64,14 +64,9 @@ func realPtr(n sql.NullFloat64) *canonical.Decimal {
 // and omits the meaningless $0 withdrawal, still a net-0 event. Amounts are
 // positive magnitudes in silver; ApplyCanonicalSign pins the canonical
 // direction (gross == net; Carta surfaces no separate fee).
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	rows, err := c.db.QueryContext(ctx, cashFlowQuery)
 	if err != nil {
@@ -163,15 +158,5 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return &txStream{batch: canonical.TransactionBatch{Transactions: txs}}, nil
+	return silver.NewTransactionStream(canonical.TransactionBatch{Transactions: txs}), nil
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }

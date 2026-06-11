@@ -136,20 +136,6 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def sha256_file(path: Path) -> tuple[str, int]:
-    """Return (hex sha256, byte size) for a file."""
-    h = hashlib.sha256()
-    size = 0
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1 << 20)
-            if not chunk:
-                break
-            h.update(chunk)
-            size += len(chunk)
-    return h.hexdigest(), size
-
-
 def parse_account_id(account_external_id: str) -> tuple[str, str]:
     """Split a VIAC portfolio number into (product_code, portfolio_index).
 
@@ -611,7 +597,7 @@ def load_documents_phase(
             # The next dump that does download it will catch up.
             missing += 1
             continue
-        sha, size = sha256_file(pdf_path)
+        sha, size = bronze.sha256_file(pdf_path)
         bronze_path = pdf_path.relative_to(run_dir.parent).as_posix()
         ts = iso_datetime_to_epoch(d.get("timestamp"))
         row = conn.execute(

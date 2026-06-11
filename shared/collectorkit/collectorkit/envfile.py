@@ -20,11 +20,17 @@ BASH_VAR_BLOCKLIST = frozenset({
 })
 
 
-def source_env_file(path: Path) -> bool:
+def source_env_file(path: Path, prefer_file: bool = False) -> bool:
     """Syntax-check then source `path` as bash and merge its KEY=VALUE
-    bindings into ``os.environ`` via ``setdefault`` (anything already in the
-    environment wins). Returns False if the file is absent; raises
-    ValueError on a bash syntax error.
+    bindings into ``os.environ``. By default an existing environment
+    value wins (``setdefault`` semantics, for the cron/nightly case
+    where the parent shell already exported credentials). Pass
+    ``prefer_file=True`` to let the file's value win instead — the
+    Playwright login collectors do this so a password with shell
+    metacharacters reaches the browser exactly as written in the
+    env file rather than as a possibly-mangled inherited value.
+    Returns False if the file is absent; raises ValueError on a bash
+    syntax error.
     """
     path = Path(path)
     if not path.is_file():
@@ -53,7 +59,10 @@ def source_env_file(path: Path) -> bool:
             continue
         if key in BASH_VAR_BLOCKLIST:
             continue
-        os.environ.setdefault(key, val)
+        if prefer_file:
+            os.environ[key] = val
+        else:
+            os.environ.setdefault(key, val)
     return True
 
 

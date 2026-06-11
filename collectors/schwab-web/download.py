@@ -39,6 +39,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import landmarks as schwab
+from collectorkit import bronze
 
 log = logging.getLogger("schwab-web.download")
 
@@ -53,9 +54,6 @@ RUN_DIR_FMT = "%Y%m%dT%H%M%SZ"
 # Helpers
 # ============================================================
 
-def ts_slug() -> str:
-    return datetime.now(timezone.utc).strftime(RUN_DIR_FMT)
-
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """HTML + best-effort screenshot. See login.maybe_screenshot
     for the Firefox "fonts never load" rationale."""
@@ -66,7 +64,7 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     except Exception as e:
         log.warning("could not create screenshot dir %s: %s", screenshot_dir, e)
         return
-    ts = ts_slug()
+    ts = bronze.ts_slug()
     try:
         html_path = screenshot_dir / f"{ts}-{label}.html"
         try:
@@ -1301,7 +1299,7 @@ def walk(page, dest_root: Path, *, mode: str = "both",
     incrementally so a crash mid-walk preserves whatever was
     downloaded.
     """
-    run_ts = ts_slug()
+    run_ts = bronze.ts_slug()
     run_dir = dest_root / run_ts
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info("bronze run dir: %s", run_dir)

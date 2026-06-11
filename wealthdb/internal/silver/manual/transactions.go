@@ -16,13 +16,5 @@ import (
 // collectors/manual/DESIGN.md §6. The interface still requires the method, so
 // it returns an empty stream.
 func (c *Connection) Transactions(_ context.Context, _ canonical.Window) (silver.TransactionStream, error) {
-	return &emptyTxStream{}, nil
+	return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 }
-
-type emptyTxStream struct{}
-
-func (*emptyTxStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	return canonical.TransactionBatch{}, false, nil
-}
-
-func (*emptyTxStream) Close() error { return nil }

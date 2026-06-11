@@ -107,14 +107,6 @@ def _find_blob(run_dir: Path, deal_id: str, doc_id: str):
     return matches[0] if matches else None
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _nodes_from_buyerdeals(body) -> list[dict]:
     edges = _g(body, "data", "buyer", "buyerDeals", "edges", default=[]) or []
     return [e["node"] for e in edges if isinstance(e, dict) and e.get("node")]
@@ -261,7 +253,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
             continue
         dtype = doc.get("documentType")
         blob = _find_blob(run_dir, deal_id, did)
-        chash = _sha256_file(blob) if blob else None
+        chash = bronze.sha256_file(blob)[0] if blob else None
         lpath = str(blob.relative_to(run_dir)) if blob else None
         retrieved = snapshot_at if blob else None
         tax_rows.append((

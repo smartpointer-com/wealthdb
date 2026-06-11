@@ -10,14 +10,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-
@@ -51,7 +46,7 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		}
 
 		kind := kindFor(rawKind)
-		netDec := decimalPtrOrNil(amtStr)
+		netDec := silver.DecimalPtrOrNil(amtStr)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            occurredAt,
@@ -59,8 +54,8 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			Kind:                  kind,
 			Currency:              currency,
 			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
-			Quantity:              decimalPtrOrNil(qtyStr),
-			Price:                 decimalPtrOrNil(priceStr),
+			Quantity:              silver.DecimalPtrOrNil(qtyStr),
+			Price:                 silver.DecimalPtrOrNil(priceStr),
 			Payload:               json.RawMessage(payload),
 		}
 		if instr != "" {
@@ -69,15 +64,5 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }

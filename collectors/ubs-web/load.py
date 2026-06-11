@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import logging
 import os
@@ -233,14 +232,6 @@ def portfolio_external_id_from_full(full: str | None) -> str | None:
         return None
     parts = full.split()
     return parts[-1] if parts else None
-
-
-def sha256_of(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def normalize_payload(data: dict) -> str:
@@ -633,7 +624,7 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
         token = item.get("token") or pdf.stem  # fallback to stem
         label = item.get("label") or ""
         doc_type, doc_date = _parse_doc_label(label)
-        sha = sha256_of(pdf)
+        sha = bronze.sha256_file(pdf)[0]
         try:
             conn.execute(
                 "INSERT INTO documents ("

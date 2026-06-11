@@ -44,6 +44,8 @@ from pathlib import Path
 
 import httpx
 
+from collectorkit import envfile
+
 from viac_client import ViacClient
 
 log = logging.getLogger("viac.login")
@@ -125,40 +127,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="DEBUG-level logging.",
     )
     return p.parse_args(argv)
-
-
-def source_env_file(path: Path) -> bool:
-    """Source `path` as bash and merge KEY=VALUE bindings into
-    os.environ (setdefault). See feedback_bash_source_env_files
-    memory for why we shell out to bash instead of handrolling."""
-    if not path.is_file():
-        return False
-    syntax_check = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-n", str(path)],
-        capture_output=True,
-    )
-    if syntax_check.returncode != 0:
-        stderr = (syntax_check.stderr or b"").decode("utf-8", errors="replace").rstrip()
-        raise ValueError(f"env file {path} has bash syntax errors:\n{stderr}")
-    quoted = shlex.quote(str(path))
-    result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-c",
-         f"set -a; source {quoted}; set +a; env -0"],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-        capture_output=True, check=True,
-    )
-    for entry in result.stdout.split(b"\x00"):
-        if not entry:
-            continue
-        k, _sep, v = entry.partition(b"=")
-        try:
-            key, val = k.decode("utf-8"), v.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        if key in _BASH_VAR_BLOCKLIST:
-            continue
-        os.environ.setdefault(key, val)
-    return True
 
 
 def resolve_env_file(arg_path: Path | None) -> Path | None:
@@ -335,7 +303,7 @@ def main(argv: list[str]) -> int:
         log.info("no env file path resolved; relying on process env vars.")
     else:
         try:
-            if source_env_file(env_path):
+            if envfile.source_env_file(env_path):
                 log.info("env sourced from %s", env_path)
         except (subprocess.CalledProcessError, ValueError) as e:
             log.error("env file %s failed to source: %s", env_path, e)

@@ -93,56 +93,23 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		return nil, err
 	}
 
-	type acctKey struct{ src, id string }
-	type lines struct {
-		positions []lineItem
-		cash      []lineItem
-		maxSnap   int64
-	}
-	byKey := make(map[acctKey]*lines, len(accounts))
+	byKey := make(map[srcKey]*lines, len(accounts))
 	// Per-silver_source latest observation across positions AND
 	// cash. Used as the snapshot_at fallback for accounts that
 	// happen to have no contributing lines (legitimately zero at
 	// the known snapshot, not "unknown").
 	sourceMaxSnap := make(map[string]int64)
-	addLine := func(src, id, ccy string, valueStr *string, snap int64, isCash bool) {
-		if snap > sourceMaxSnap[src] {
-			sourceMaxSnap[src] = snap
-		}
-		if valueStr == nil {
-			return
-		}
-		v, err := canonical.NewDecimalFromString(*valueStr)
-		if err != nil {
-			return
-		}
-		k := acctKey{src, id}
-		l, ok := byKey[k]
-		if !ok {
-			l = &lines{}
-			byKey[k] = l
-		}
-		item := lineItem{currency: ccy, amount: v, snapshotAt: snap}
-		if isCash {
-			l.cash = append(l.cash, item)
-		} else {
-			l.positions = append(l.positions, item)
-		}
-		if snap > l.maxSnap {
-			l.maxSnap = snap
-		}
-	}
 	for _, p := range positions {
-		addLine(p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, p.SnapshotAt, false)
+		addLine(byKey, sourceMaxSnap, p.SilverSourceID, p.AccountExternalID, p.Currency, p.MarketValue, p.SnapshotAt, false)
 	}
 	for _, c := range cash {
-		addLine(c.SilverSourceID, c.AccountExternalID, c.Currency, c.MarketValue, c.SnapshotAt, true)
+		addLine(byKey, sourceMaxSnap, c.SilverSourceID, c.AccountExternalID, c.Currency, c.MarketValue, c.SnapshotAt, true)
 	}
 
 	for i := range accounts {
 		a := &accounts[i]
 		var pos, ca []lineItem
-		if l, ok := byKey[acctKey{a.SilverSourceID, a.AccountExternalID}]; ok {
+		if l, ok := byKey[srcKey{a.SilverSourceID, a.AccountExternalID}]; ok {
 			pos, ca = l.positions, l.cash
 			a.SnapshotAt = l.maxSnap
 		} else {
@@ -151,22 +118,9 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 			a.SnapshotAt = sourceMaxSnap[a.SilverSourceID]
 		}
 
-		// (positions, cash) × (base, outCcy). Each sumConverted
-		// returns nil when no line converted (so a "no FX path"
-		// account keeps a blank cell rather than a misleading 0).
-		if a.BaseCurrency != nil && *a.BaseCurrency != "" {
-			base := *a.BaseCurrency
-			pSum := sumConverted(ctx, db, pos, base, mode)
-			cSum := sumConverted(ctx, db, ca, base, mode)
-			a.PositionsValueBase = decimalPtrString(pSum)
-			a.CashBalanceBase = decimalPtrString(cSum)
-			a.TotalValueBase = decimalPtrString(addOptional(pSum, cSum))
-		}
-		pSum := sumConverted(ctx, db, pos, outCcy, mode)
-		cSum := sumConverted(ctx, db, ca, outCcy, mode)
-		a.PositionsValueOutCcy = decimalPtrString(pSum)
-		a.CashBalanceOutCcy = decimalPtrString(cSum)
-		a.TotalValueOutCcy = decimalPtrString(addOptional(pSum, cSum))
+		vc := computeValueColumns(ctx, db, pos, ca, a.BaseCurrency, outCcy, mode)
+		a.PositionsValueBase, a.CashBalanceBase, a.TotalValueBase = vc.positionsBase, vc.cashBase, vc.totalBase
+		a.PositionsValueOutCcy, a.CashBalanceOutCcy, a.TotalValueOutCcy = vc.positionsOut, vc.cashOut, vc.totalOut
 	}
 	return accounts, nil
 }

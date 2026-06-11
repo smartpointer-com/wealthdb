@@ -33,14 +33,14 @@ func (r *webReader) snapshotsHistorical(
 	bridge map[string]string,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	ok, err := r.hasHistoricalTables(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 
 	byTime := make(map[int64]*canonical.SnapshotBatch)
@@ -66,11 +66,11 @@ func (r *webReader) snapshotsHistorical(
 	}
 	sortInt64Asc(times)
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		batches = append(batches, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // appendHistoricalPositions emits one PositionChange per row in

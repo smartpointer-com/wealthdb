@@ -10,14 +10,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	// silver.transactions.kind is already canonical
 	// (buy/sell/fee/interest/dividend/corporate_action/deposit);
@@ -57,7 +52,7 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 			return nil, fmt.Errorf("viac Transactions scan: %w", err)
 		}
 		kind := txKindFor(rawKind)
-		netDec := decimalPtrOrNil(amtStr)
+		netDec := silver.DecimalPtrOrNil(amtStr)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: txID,
 			OccurredAt:            occurredAt,
@@ -73,15 +68,5 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }

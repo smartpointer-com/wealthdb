@@ -5,10 +5,7 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/ptu/wealthdb/internal/silver"
 )
@@ -40,7 +37,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 
 	// Single-path form (legacy + tests).
 	if spec.Path != "" {
-		db, err := openRO(spec.Path, "ubs (single path)")
+		db, err := silver.OpenReadOnlySQLite(spec.Path, "ubs (single path)")
 		if err != nil {
 			return nil, err
 		}
@@ -49,7 +46,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 	}
 
 	for _, s := range spec.Subsources {
-		db, err := openRO(s.Path, fmt.Sprintf("ubs subsource %q", s.Kind))
+		db, err := silver.OpenReadOnlySQLite(s.Path, fmt.Sprintf("ubs subsource %q", s.Kind))
 		if err != nil {
 			_ = c.Close()
 			return nil, err
@@ -69,19 +66,6 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 		return nil, fmt.Errorf("ubs: at least one of subsources[ubs-web], subsources[ubs-psn] must be configured")
 	}
 	return c, nil
-}
-
-func openRO(path, label string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", path)
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open %s %q: %w", label, path, err)
-	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping %s %q: %w", label, path, err)
-	}
-	return db, nil
 }
 
 // Connection orchestrates one or both UBS subsources. Each

@@ -2,7 +2,6 @@ package swissquote
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -10,14 +9,9 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -38,23 +32,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	out := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		out = append(out, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(out), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow returns the union of distinct snapshot_at
 // values across dump_runs, positions, and currency_balances —
@@ -112,11 +95,11 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	// whichever exists so older silvers (pre-v5) still load until
 	// the user re-runs the silver loader.
 	productCol := ""
-	if has, err := c.hasColumn(ctx, "accounts", "account_product"); err != nil {
+	if has, err := silver.HasColumn(ctx, c.db, "accounts", "account_product"); err != nil {
 		return err
 	} else if has {
 		productCol = "account_product"
-	} else if has, err := c.hasColumn(ctx, "accounts", "account_type"); err != nil {
+	} else if has, err := silver.HasColumn(ctx, c.db, "accounts", "account_type"); err != nil {
 		return err
 	} else if has {
 		productCol = "account_type"
@@ -148,7 +131,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 		change := canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
-			AccountCategory:   strPtrIfNonEmpty(product),
+			AccountCategory:   silver.StrPtrIfNonEmpty(product),
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
 			Payload:           json.RawMessage(payload),
@@ -159,33 +142,6 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 		batch.Accounts = append(batch.Accounts, change)
 	}
 	return rows.Err()
-}
-
-// hasColumn reports whether table contains the named column. Used
-// to keep the adapter tolerant of older silver schemas that haven't
-// yet been re-dumped with the v2 promoted columns. The table name
-// is interpolated; pass only trusted literals.
-func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid           int
-			name, ctype   string
-			notnull, pk   int
-			dflt          sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, fmt.Errorf("hasColumn scan: %w", err)
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // ---- positions -----------------------------------------------------------
@@ -260,11 +216,11 @@ func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
 //     per-bank identifier and gold's ix_instruments_isin is just
 //     unused for that row.
 func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	hasName, err := c.hasColumn(ctx, "positions", "name")
+	hasName, err := silver.HasColumn(ctx, c.db, "positions", "name")
 	if err != nil {
 		return err
 	}
-	hasISIN, err := c.hasColumn(ctx, "positions", "isin")
+	hasISIN, err := silver.HasColumn(ctx, c.db, "positions", "isin")
 	if err != nil {
 		return err
 	}
@@ -321,10 +277,10 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: positionKey,
 			AssetClass:           ac,
-			ISIN:                 strPtrIfNonEmpty(effectiveISIN),
-			Symbol:               strPtrIfNonEmpty(symbol),
-			Name:                 strPtrIfNonEmpty(name),
-			Currency:             strPtrIfNonEmpty(currency),
+			ISIN:                 silver.StrPtrIfNonEmpty(effectiveISIN),
+			Symbol:               silver.StrPtrIfNonEmpty(symbol),
+			Name:                 silver.StrPtrIfNonEmpty(name),
+			Currency:             silver.StrPtrIfNonEmpty(currency),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 			Payload:              json.RawMessage(payload),
@@ -445,13 +401,4 @@ SELECT snapshot_at, account_external_id, currency, payload
 		}
 	}
 	return rows.Err()
-}
-
-// ---- helpers -------------------------------------------------------------
-
-func strPtrIfNonEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }

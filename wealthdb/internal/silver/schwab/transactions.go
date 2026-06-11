@@ -182,18 +182,9 @@ func normalizeSchwabDescription(s string) string {
 	return norm
 }
 
-// txStream yields a single batch covering every transaction in
-// the window. Personal-portfolio scale (≲a few thousand events
-// per source) makes splitting unnecessary; we can revisit if a
-// future window blows up memory.
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
 func (c *apiReader) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
 	// Build a (normalized description → instrument key) lookup
@@ -245,18 +236,8 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return &txStream{batch: out}, nil
+	return silver.NewTransactionStream(out), nil
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }
 
 // schwabTransferItem is one leg of a transaction's transferItems
 // array.
@@ -296,7 +277,7 @@ func buildTransaction(activityID string, occurredAt int64, extID, silverKind, pa
 		Kind:                  kind,
 		Currency:              "USD", // Schwab retail is USD-only.
 		NetAmount:             canonical.ApplyCanonicalSign(kind, tp.NetAmount),
-		Description:           strPtrIfNonEmpty(tp.Description),
+		Description:           silver.StrPtrIfNonEmpty(tp.Description),
 		Payload:               json.RawMessage(payload),
 	}
 

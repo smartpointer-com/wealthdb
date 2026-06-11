@@ -39,9 +39,6 @@ package manual
 import (
 	"context"
 	"database/sql"
-	"fmt"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/ptu/wealthdb/internal/silver"
 )
@@ -57,14 +54,9 @@ type Adapter struct{}
 func (*Adapter) Kind() string { return kindName }
 
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(true)", spec.Path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := silver.OpenReadOnlySQLite(spec.Path, "manual silver")
 	if err != nil {
-		return nil, fmt.Errorf("open manual silver %q: %w", spec.Path, err)
-	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping manual silver %q: %w", spec.Path, err)
+		return nil, err
 	}
 	return &Connection{db: db, path: spec.Path}, nil
 }

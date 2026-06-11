@@ -1,3 +1,8 @@
+# pytest is bundled so the collector test suite can run inside the
+# container (`./<tool> sh -c "cd /app && pytest"`) / host venv with
+# no extra toolchain.
+pytest>=8,<9
+
 # Pure-HTTP client for the VIAC REST API. The http2 extra brings
 # in `h2` — VIAC's app is served over HTTP/2 (capture showed
 # :authority / :method pseudo-headers); requests still work over

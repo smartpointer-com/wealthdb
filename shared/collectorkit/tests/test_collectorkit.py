@@ -99,6 +99,27 @@ class BronzeTest(unittest.TestCase):
         self.assertEqual(bronze.canonical_json({"b": 1, "a": 2}),
                          '{"a":2,"b":1}')
 
+    def test_canonical_json_default_str(self):
+        # Decimal / date serialise via default=str rather than raising.
+        from decimal import Decimal
+        from datetime import date
+        self.assertEqual(
+            bronze.canonical_json({"amt": Decimal("1.50"),
+                                   "d": date(2026, 1, 2)}),
+            '{"amt":"1.50","d":"2026-01-02"}')
+
+    def test_sha256_file_digest_and_size(self):
+        import hashlib as _h
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "blob"
+            data = b"wealthdb" * 1000
+            p.write_bytes(data)
+            digest, size = bronze.sha256_file(p)
+            self.assertEqual(digest, _h.sha256(data).hexdigest())
+            self.assertEqual(size, len(data))
+            # small chunk size yields the same digest
+            self.assertEqual(bronze.sha256_file(p, chunk_size=7)[0], digest)
+
     def test_parse_run_ts_roundtrips_ts_slug(self):
         from datetime import datetime as _dt, timezone as _tz
         for slug in ("20260101T000000Z", "20260529T071530Z",
@@ -134,6 +155,22 @@ class EnvFileTest(unittest.TestCase):
             self.assertEqual(os.environ["CK_DOLLAR"], "literal$notexpanded")
         for k in ("CK_FOO", "CK_BAZ", "CK_DOLLAR"):
             os.environ.pop(k, None)
+
+    def test_prefer_file_overrides_environment(self):
+        os.environ["CK_PREF"] = "from-env"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                envf = Path(d) / "test.env"
+                envf.write_text("CK_PREF=from-file\n")
+                # Default: environment wins.
+                self.assertTrue(envfile.source_env_file(envf))
+                self.assertEqual(os.environ["CK_PREF"], "from-env")
+                # prefer_file=True: file wins.
+                self.assertTrue(
+                    envfile.source_env_file(envf, prefer_file=True))
+                self.assertEqual(os.environ["CK_PREF"], "from-file")
+        finally:
+            os.environ.pop("CK_PREF", None)
 
     def test_resolve_credential_precedence(self):
         os.environ.pop("CK_CRED", None)

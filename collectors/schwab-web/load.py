@@ -206,25 +206,6 @@ def parse_iso_date(s: str | None) -> int | None:
         return None
 
 
-def sha256_file(path: Path) -> tuple[str, int]:
-    """Return (hex sha256, size in bytes) of `path`."""
-    h = hashlib.sha256()
-    size = 0
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(64 * 1024), b""):
-            h.update(chunk)
-            size += len(chunk)
-    return h.hexdigest(), size
-
-
-# ============================================================
-# Schema migration
-# ============================================================
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic).
-
-
 def _resolve_migrations_dir(arg: Path | None) -> Path:
     if arg is not None:
         if not arg.is_dir():

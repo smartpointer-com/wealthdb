@@ -30,7 +30,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 import landmarks as ubs  # local module
 
@@ -114,15 +114,11 @@ def resolve_windows(args: argparse.Namespace) -> tuple[date, date, date, date]:
 # Screenshot / trace helpers
 # ============================================================
 
-def ts_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     if screenshot_dir is None:
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
-    path = screenshot_dir / f"{ts_slug()}-{label}.png"
+    path = screenshot_dir / f"{bronze.ts_slug()}-{label}.png"
     page.screenshot(path=str(path), full_page=True)
     log.debug("wrote screenshot %s", path)
 
@@ -1010,7 +1006,7 @@ def write_run_json(run_dir: Path, since: date, until: date,
                    positions: list[dict],
                    dry_run: bool) -> None:
     payload = {
-        "dump_started_at": ts_slug(),
+        "dump_started_at": bronze.ts_slug(),
         "dry_run": dry_run,
         "transactions": {
             "since": since.isoformat(),
@@ -1024,7 +1020,7 @@ def write_run_json(run_dir: Path, since: date, until: date,
             "items": documents,
         },
         "positions": {
-            "captured_at": ts_slug(),
+            "captured_at": bronze.ts_slug(),
             "count": len(positions),
             "items": positions,
         },
@@ -1178,7 +1174,7 @@ def _download_positions_csv(page, hash_route: str, out_dir: Path,
     return {
         "filename": out_path.name,
         "size_bytes": out_path.stat().st_size,
-        "captured_at": ts_slug(),
+        "captured_at": bronze.ts_slug(),
     }
 
 
@@ -1201,7 +1197,7 @@ def main(argv: list[str]) -> int:
              since, until, docs_since, docs_until)
 
     args.dest.mkdir(parents=True, exist_ok=True)
-    run_dir = args.dest / ts_slug()
+    run_dir = args.dest / bronze.ts_slug()
     run_dir.mkdir(parents=True, exist_ok=False)
     log.info("bronze dir: %s", run_dir)
 
@@ -1252,7 +1248,7 @@ def main(argv: list[str]) -> int:
             finally:
                 if args.trace:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = args.screenshot_dir / f"{ts_slug()}-download-trace.zip"
+                    trace_path = args.screenshot_dir / f"{bronze.ts_slug()}-download-trace.zip"
                     context.tracing.stop(path=str(trace_path))
                     log.info("trace saved to %s", trace_path)
                 context.close()

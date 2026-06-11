@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import logging
 import re
@@ -730,14 +729,6 @@ def load_list_of_assets(
 # Documents indexer
 # ============================================================
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def index_documents(
     conn: sqlite3.Connection,
     snapshot_at: int,
@@ -758,7 +749,7 @@ def index_documents(
     }
     n = 0
     for pdf in sorted(docs_dir.glob("*.pdf")):
-        digest = _sha256_file(pdf)
+        digest = bronze.sha256_file(pdf)[0]
         already = conn.execute(
             "SELECT 1 FROM documents WHERE content_sha256 = ?;",
             (digest,),
@@ -803,7 +794,7 @@ def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
         for f in sorted(manual.rglob("*")):
             if not f.is_file():
                 continue
-            digest = _sha256_file(f)
+            digest = bronze.sha256_file(f)[0]
             already = conn.execute(
                 "SELECT 1 FROM documents WHERE content_sha256 = ?;",
                 (digest,),

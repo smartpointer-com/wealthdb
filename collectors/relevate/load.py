@@ -88,23 +88,6 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def sha256_file(path: Path) -> tuple[str, int]:
-    """Return (hex sha256, byte size) for a file."""
-    h = hashlib.sha256()
-    size = 0
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1 << 20)
-            if not chunk:
-                break
-            h.update(chunk)
-            size += len(chunk)
-    return h.hexdigest(), size
-
-
-# Heuristic: derive a stable doc_kind label from the fileName the
-# index reports. Order matters — keep more-specific matches before
-# more-general ones (e.g. 'Fee statement' before 'statement').
 DOC_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Fee statement", "quarterly_fee"),
     ("Quarterly Report", "quarterly_report"),
@@ -366,7 +349,7 @@ def load_documents_phase(
             # phase only catalogs PDFs that landed correctly.
             missing += 1
             continue
-        sha, size = sha256_file(pdf_path)
+        sha, size = bronze.sha256_file(pdf_path)
         # Store the path relative to the bronze ROOT (not the
         # run dir): the run-ts dirname is the first segment.
         # Consumers join with their own bronze root, so the same

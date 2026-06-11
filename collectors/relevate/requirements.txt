@@ -1,3 +1,8 @@
+# pytest is bundled so the collector test suite can run inside the
+# container (`./<tool> sh -c "cd /app && pytest"`) / host venv with
+# no extra toolchain.
+pytest>=8,<9
+
 # requests drives the REST flow (login.py, download.py, load.py).
 # Tracking the latest stable 2.x line; the API is decade-stable so
 # a floor pin is enough.

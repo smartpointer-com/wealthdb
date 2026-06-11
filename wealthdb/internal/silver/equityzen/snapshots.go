@@ -20,11 +20,6 @@ const (
 	fundingAccountKey = "equityzen-funding"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 // Snapshots forward-fills the per-day portfolio from the silver's
 // event-sourced `positions` table. The collector already replays each deal's
 // timeline and computes its mark (silver migrations 0001/0002); this adapter
@@ -35,33 +30,22 @@ type snapshotStream struct {
 // date.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t)
 		if err != nil {
 			return nil, err
 		}
-		out.batches = append(out.batches, batch)
+		batches = append(batches, batch)
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow are the distinct position event dates in the window
 // (positions.as_of_date as unix seconds; the download time in dump_runs is

@@ -14,20 +14,6 @@ import (
 // schema is plumbed so a future Relevate API change (or PDF
 // credit-note parsing) can land transactions without touching
 // gold.
-type txStream struct {
-	consumed bool
-}
-
 func (c *Connection) Transactions(_ context.Context, w canonical.Window) (silver.TransactionStream, error) {
-	return &txStream{consumed: !w.HasChanges}, nil
+	return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 }
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return canonical.TransactionBatch{}, false, nil
-}
-
-func (s *txStream) Close() error { return nil }

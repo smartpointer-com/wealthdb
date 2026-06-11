@@ -13,11 +13,6 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 // Snapshots forward-fills the per-day portfolio from the silver's
 // event-sourced position_snapshots. The collector already replays each
 // position's timeline and computes its mark (silver migration 0005); this
@@ -28,7 +23,7 @@ type snapshotStream struct {
 // exactly at its exit date.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -38,19 +33,19 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t, account)
 		if err != nil {
 			return nil, err
 		}
-		out.batches = append(out.batches, batch)
+		batches = append(batches, batch)
 	}
 	// The funding account's current uninvested cash (so account value =
 	// positions + cash). Emitted as one CashBalanceChange dated at the last
 	// funding movement.
 	if cb, ok := c.fundingCashBalance(ctx, account); ok {
-		out.batches = append(out.batches, canonical.SnapshotBatch{
+		batches = append(batches, canonical.SnapshotBatch{
 			CashBalances: []canonical.CashBalanceChange{cb},
 		})
 	}
@@ -62,9 +57,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	if len(insts) > 0 {
-		out.batches = append(out.batches, canonical.SnapshotBatch{Instruments: insts})
+		batches = append(batches, canonical.SnapshotBatch{Instruments: insts})
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // exitedInstruments emits an InstrumentChange for every offering with no
@@ -144,17 +139,6 @@ SELECT fa.balance_minor, fa.currency,
 		Amount:            canonical.Decimal(decimal.New(balMinor.Int64, -2)),
 	}, true
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow are the position event dates in the window — the
 // distinct as_of_date of position_snapshots (the download time in dump_runs

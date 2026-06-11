@@ -62,7 +62,7 @@ import (
 // produces a fee row.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
 	baseByPortfolio, err := c.portfolioBaseCurrencies(ctx)
@@ -124,23 +124,8 @@ SELECT
 		}
 		out.Transactions = append(out.Transactions, emitted...)
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
-
-type txStream struct {
-	batch    canonical.TransactionBatch
-	consumed bool
-}
-
-func (s *txStream) Next(context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.consumed {
-		return canonical.TransactionBatch{}, false, nil
-	}
-	s.consumed = true
-	return s.batch, false, nil
-}
-
-func (s *txStream) Close() error { return nil }
 
 // portfolioBaseCurrencies maps every portfolio_external_id seen
 // in portfolio_prices to its quote_currency. Portfolios that
@@ -188,7 +173,7 @@ func (c *Connection) projectTrade(
 		// Malformed Trade row (one side missing) — skip with no emit.
 		return nil, nil
 	}
-	pl := jsonOrNull(payload)
+	pl := silver.JSONOrNil(payload)
 
 	base = strings.ToUpper(base)
 	buyCcy = strings.ToUpper(buyCcy)
@@ -483,7 +468,7 @@ func projectNonTrade(
 		Currency:              currency,
 		GrossAmount:           netAmount,
 		NetAmount:             netAmount,
-		Payload:               jsonOrNull(payload),
+		Payload:               silver.JSONOrNil(payload),
 	}
 
 	// Instrument / Quantity are tracked only for non-base assets;

@@ -232,14 +232,6 @@ def parse_decimal(s):
     return v / 100.0 if is_pct else v
 
 
-def sha256_of(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def normalize_payload(data):
     # csv.DictReader bundles extra columns (trailing commas) under
     # a None key. Drop those — they're not safely sortable in JSON.
@@ -553,7 +545,7 @@ def _load_transactions(conn, snapshot_at, dump_dir):
 
 
 def _ingest_activity_csv(conn, snapshot_at, csv_path):
-    src_sha = sha256_of(csv_path)
+    src_sha = bronze.sha256_file(csv_path)[0]
     inserted = 0
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         text = f.read()
@@ -740,7 +732,7 @@ def _classify_documents_pdf(filename):
 
 
 def _ingest_document(conn, snapshot_at, path, classification):
-    sha = sha256_of(path)
+    sha = bronze.sha256_file(path)[0]
     info = dict(classification)
     info.setdefault("file_format", path.suffix.lstrip(".").lower() or "bin")
     info.setdefault("doc_kind", "statement")

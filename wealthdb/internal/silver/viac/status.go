@@ -88,30 +88,3 @@ SELECT
 	}
 	return w, nil
 }
-
-// hasColumn reports whether the given table contains the given
-// column. SQLite-only; shape mirrored from the sibling adapters.
-// Used so the adapter can read newer promoted columns from silver
-// when present without breaking on older silvers.
-func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid           int
-			name, ctype   string
-			notnull, pk   int
-			dflt          sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}

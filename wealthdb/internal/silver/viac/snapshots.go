@@ -8,17 +8,11 @@ import (
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
-	"github.com/shopspring/decimal"
 )
-
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
 
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -42,23 +36,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	out := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		out = append(out, *byTime[t])
 	}
-	return out, nil
+	return silver.NewSnapshotStream(out), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // snapshotTimesInWindow unions dump_runs with the snapshot-typed
 // content tables. Defensive against the (currently hypothetical)
@@ -97,7 +80,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	// update). When present, the silver value wins; otherwise
 	// the default is `automated` — every observed VIAC product
 	// is robo-managed.
-	hasMgmt, err := c.hasColumn(ctx, "accounts", "management_style")
+	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
 	}
@@ -281,13 +264,13 @@ SELECT snapshot_at, account_external_id, instrument_external_id,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClassFor(rawClass),
 			Currency:             "CHF",
-			Quantity:             decimalPtrOrNil(qtyStr),
-			MarketValue:          decimalPtrOrNil(marketValueStr),
+			Quantity:             silver.DecimalPtrOrNil(qtyStr),
+			MarketValue:          silver.DecimalPtrOrNil(marketValueStr),
 			Payload:              json.RawMessage(payload),
 		}
 		// BookValue (cost basis in CHF) = quantity * acquisition_price.
 		if change.Quantity != nil {
-			if acq := decimalPtrOrNil(acquisitionPxStr); acq != nil {
+			if acq := silver.DecimalPtrOrNil(acquisitionPxStr); acq != nil {
 				bv := change.Quantity.Mul(*acq)
 				change.BookValue = &bv
 			}
@@ -322,7 +305,7 @@ SELECT snapshot_at, account_external_id, currency,
 		if !ok {
 			continue
 		}
-		amt, err := decimalOrZero(amountStr)
+		amt, err := silver.DecimalOrZero(amountStr)
 		if err != nil {
 			return fmt.Errorf("appendCashBalances amount parse (acct=%s): %w", acct, err)
 		}
@@ -335,24 +318,4 @@ SELECT snapshot_at, account_external_id, currency,
 		})
 	}
 	return rows.Err()
-}
-
-// ---- helpers ------------------------------------------------------
-
-func decimalPtrOrNil(s sql.NullString) *canonical.Decimal {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	d, err := canonical.NewDecimalFromString(s.String)
-	if err != nil {
-		return nil
-	}
-	return &d
-}
-
-func decimalOrZero(s sql.NullString) (canonical.Decimal, error) {
-	if !s.Valid || s.String == "" {
-		return canonical.Decimal(decimal.Zero), nil
-	}
-	return canonical.NewDecimalFromString(s.String)
 }

@@ -85,7 +85,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 
 log = logging.getLogger("fidelity-web.download")
@@ -203,10 +203,6 @@ SEL_LOGOUT_CANDIDATES = (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def ts_slug():
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
 
 def account_key(account_external_id):
     """First 16 hex chars of sha256(id) — the on-disk filename
@@ -359,7 +355,7 @@ def capture(page, capture_dir, label):
     except Exception as e:
         log.warning("mkdir %s: %s", capture_dir, e)
         return
-    ts = ts_slug()
+    ts = bronze.ts_slug()
     try:
         try:
             html = page.content()
@@ -1827,7 +1823,7 @@ def walk(context, page, config):
     try/except inside its dispatcher; a failure in one phase does
     not block the others."""
     dest_root = Path(config.get("dest") or "/data")
-    bronze_dir = dest_root / ts_slug()
+    bronze_dir = dest_root / bronze.ts_slug()
     bronze_dir.mkdir(parents=True, exist_ok=True)
     capture_dir = bronze_dir / "screenshots"
     log.info("walk: bronze dir %s", bronze_dir)
@@ -2106,7 +2102,7 @@ def maybe_capture(page, screenshot_dir, label):
     except Exception as e:
         log.warning("create screenshot dir %s: %s", screenshot_dir, e)
         return
-    ts = ts_slug()
+    ts = bronze.ts_slug()
     try:
         html_path = screenshot_dir / f"{ts}-{label}.html"
         try:
@@ -2137,7 +2133,7 @@ def stop_trace_if_active(context, trace, screenshot_dir, label):
         log.warning("--trace without --screenshot-dir; trace discarded")
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{ts_slug()}-{label}-trace.zip"
+    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{label}-trace.zip"
     try:
         context.tracing.stop(path=str(trace_path))
         log.info("trace saved to %s", trace_path)

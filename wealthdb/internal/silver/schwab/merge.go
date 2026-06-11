@@ -245,7 +245,7 @@ func (c *Connection) snapshotsWebDimensions(
 	bridge map[string]string,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges || c.web == nil {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
 	rows, err := c.web.db.QueryContext(ctx, q, w.Start, w.End)
@@ -269,15 +269,15 @@ func (c *Connection) snapshotsWebDimensions(
 	if err := c.web.snapshotsDimensions(ctx, w, byTime, bridge); err != nil {
 		return nil, err
 	}
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		b := byTime[t]
 		if len(b.Accounts) == 0 {
 			continue
 		}
-		out.batches = append(out.batches, *b)
+		batches = append(batches, *b)
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // Transactions emits api transactions unfiltered and (when web

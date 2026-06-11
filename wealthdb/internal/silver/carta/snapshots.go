@@ -13,11 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 // Snapshots reconstructs the per-day portfolio from the silver's per-lot change
 // deltas (DESIGN.md §5.1 in the collector). The silver stores a row for a
 // security lot only on a day its state changes; gold's as-of query, by
@@ -28,7 +23,7 @@ type snapshotStream struct {
 // out exactly at its disposition date; a full portfolio exists at every date.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -42,27 +37,16 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t, meta, acct)
 		if err != nil {
 			return nil, err
 		}
-		out.batches = append(out.batches, batch)
+		batches = append(batches, batch)
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
 
 // The whole Carta individual portfolio is ONE gold account; each held company
 // is one position under it, and that company's share certificates / option

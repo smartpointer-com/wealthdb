@@ -190,7 +190,7 @@ func (r *webReader) snapshotsForOverlap(
 	psnAssetClass map[string]canonical.AssetClass,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := r.dumpRunTimesInWindow(ctx, w)
 	if err != nil {
@@ -218,15 +218,15 @@ func (r *webReader) snapshotsForOverlap(
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		b := byTime[t]
 		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments) == 0 {
 			continue
 		}
-		out.batches = append(out.batches, *b)
+		batches = append(batches, *b)
 	}
-	return out, nil
+	return silver.NewSnapshotStream(batches), nil
 }
 
 // appendWebInstruments emits one InstrumentChange per (snapshot,
@@ -288,8 +288,8 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 			AssetClass:           ac,
 			ISIN:                 &isinCopy,
 			Symbol:               symbol,
-			Name:                 nullStringPtr(description),
-			Currency:             strPtrIfNonEmpty(ccy),
+			Name:                 silver.StrPtrIfNonEmpty(description.String),
+			Currency:             silver.StrPtrIfNonEmpty(ccy),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 		})
@@ -306,7 +306,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // identity match would be heuristic and risk double-counting.
 func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, error) {
 	if !w.HasChanges {
-		return &txStream{consumed: true}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	cutoff, err := buildPSNStartByWebRel(ctx, psn, rels)
 	if err != nil {
@@ -399,7 +399,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			Payload:               json.RawMessage(payload),
 		})
 	}
-	return &txStream{batch: out}, rows.Err()
+	return silver.NewTransactionStream(out), rows.Err()
 }
 
 // dumpRunTimesInWindow returns the chronologically-sorted set of
@@ -455,8 +455,8 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
 		}
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
-			DisplayName:         nullStringPtr(description),
-			RelationshipID:      nullStringPtr(relID),
+			DisplayName:         silver.StrPtrIfNonEmpty(description.String),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID.String),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -510,10 +510,10 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         ak,
-			DisplayName:         nullStringPtr(description),
-			BaseCurrency:        nullStringPtr(ccy),
-			RelationshipID:      nullStringPtr(relID),
-			PortfolioExternalID: nullStringPtr(portfolioID),
+			DisplayName:         silver.StrPtrIfNonEmpty(description.String),
+			BaseCurrency:        silver.StrPtrIfNonEmpty(ccy.String),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID.String),
+			PortfolioExternalID: silver.StrPtrIfNonEmpty(portfolioID.String),
 			FirstSeenAt:         snap,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
@@ -672,10 +672,10 @@ func extractInstrumentFromDescription1(payload string) (instrumentID, descriptio
 		if looksLikeISIN(tail) {
 			id := tail
 			desc := head
-			return &id, strPtrIfNonEmpty(desc)
+			return &id, silver.StrPtrIfNonEmpty(desc)
 		}
 	}
-	return nil, strPtrIfNonEmpty(caption)
+	return nil, silver.StrPtrIfNonEmpty(caption)
 }
 
 // tickerFromDescription pulls the trailing `(TICKER)` segment

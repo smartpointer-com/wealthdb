@@ -11,14 +11,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type snapshotStream struct {
-	batches []canonical.SnapshotBatch
-	idx     int
-}
-
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
-		return &snapshotStream{}, nil
+		return silver.NewSnapshotStream(nil), nil
 	}
 	times, err := c.snapshotTimesInWindow(ctx, w)
 	if err != nil {
@@ -42,50 +37,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 
-	out := &snapshotStream{batches: make([]canonical.SnapshotBatch, 0, len(times))}
+	out := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
-		out.batches = append(out.batches, *byTime[t])
+		out = append(out, *byTime[t])
 	}
-	return out, nil
-}
-
-func (s *snapshotStream) Next(context.Context) (canonical.SnapshotBatch, bool, error) {
-	if s.idx >= len(s.batches) {
-		return canonical.SnapshotBatch{}, false, nil
-	}
-	b := s.batches[s.idx]
-	s.idx++
-	return b, s.idx < len(s.batches), nil
-}
-
-func (s *snapshotStream) Close() error { return nil }
-
-// hasColumn reports whether the given table contains the given
-// column. SQLite-only; shape mirrored from the fidelity / schwab
-// / ubs adapters. Used to keep the adapter tolerant of older
-// silver schemas that haven't yet been re-dumped with newer
-// promoted columns.
-func (c *Connection) hasColumn(ctx context.Context, table, column string) (bool, error) {
-	rows, err := c.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("hasColumn(%s.%s): %w", table, column, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid           int
-			name, ctype   string
-			notnull, pk   int
-			dflt          sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
+	return silver.NewSnapshotStream(out), nil
 }
 
 // snapshotTimesInWindow unions dump_runs with the content
@@ -130,7 +86,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	// strategy menu maps to canonical 'automated': the holder
 	// picks a strategy from a fixed list, then an algorithm
 	// allocates and rebalances with no human in the loop.
-	hasMgmt, err := c.hasColumn(ctx, "accounts", "management_style")
+	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
 	if err != nil {
 		return err
 	}
