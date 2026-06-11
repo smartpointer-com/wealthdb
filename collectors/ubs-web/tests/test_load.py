@@ -76,3 +76,97 @@ def test_positions_base_currency_footer(tmp_path):
     dump = _seed_bronze(tmp_path / "bronze")
     csv_path = dump / "positions" / "positions_test.csv"
     assert loader._read_positions_base_currency(csv_path) == "CHF"
+
+
+# ---- mortgage rows ('Pro memoria - Mortgages') --------------------
+
+# A synthetic mortgage row: Group of products = 'Pro memoria -
+# Mortgages', the IBAN column carries a 'dd.mm.yyyy - dd.mm.yyyy'
+# term, Number/Amt. is the negative principal.
+# Obviously-synthetic placeholder term + principal. NOT the real
+# user's mortgage dates / balance.
+SYN_TERM = "01.01.2020 - 31.12.2024"
+SYN_PRINCIPAL = "-1234567.89"
+
+
+def _mortgage_row(rate_descriptor: str = "UBS Fixed-Rate Mortgage",
+                  term: str = SYN_TERM) -> str:
+    cells = {
+        "Banking relationship": REL,
+        "Portfolio": "1234 00000001 R001",
+        "Group of products": "Pro memoria - Mortgages",
+        "Product": "1234 00000001.MMM 0000",
+        "Ccy.": "CHF",
+        "Number/Amt.": SYN_PRINCIPAL,
+        "Description": f"{rate_descriptor}, EXAMPLE ROAD 1, 0000 EXAMPLECITY",
+        "Description 1": rate_descriptor,
+        "Description 2": "Properties",
+        "Description 3": "EXAMPLE ROAD 1, 0000 EXAMPLECITY",
+        "IBAN": term,
+    }
+    return ";".join(cells.get(col, "") for col in loader.POSITIONS_COLS)
+
+
+def test_load_mortgage_row(tmp_path):
+    """A 'Pro memoria - Mortgages' row should be inserted into the
+    `mortgages` table (not `accounts` / `positions`), with the
+    fixed-rate term parsed out of the IBAN column."""
+    dump = tmp_path / "bronze" / "20240101T000000Z"
+    (dump / "positions").mkdir(parents=True)
+    (dump / "positions" / "positions_test.csv").write_text(
+        ";".join(loader.POSITIONS_COLS) + "\r\n"
+        + _mortgage_row() + "\r\n"
+        + "Valued in: CHF\r\n",
+        encoding="utf-8",
+    )
+    conn = _fresh_db(tmp_path)
+    with conn:
+        loader._load_positions(conn, 1700000000, dump)
+
+    mort = conn.execute(
+        "SELECT account_external_id, currency_iso, outstanding_balance, "
+        "       start_date, end_date, rate_type "
+        "  FROM mortgages"
+    ).fetchall()
+    assert len(mort) == 1
+    row = mort[0]
+    assert row["account_external_id"] == "1234 00000001.MMM 0000"
+    assert row["currency_iso"] == "CHF"
+    assert row["outstanding_balance"] == float(SYN_PRINCIPAL)
+    # Round-trip via datetime to assert calendar parsing rather than
+    # hard-coding a Unix epoch (silently mis-asserting on leap-year
+    # arithmetic).
+    from datetime import datetime, timezone
+    assert datetime.fromtimestamp(row["start_date"], timezone.utc).date() \
+        == datetime(2020, 1, 1).date()
+    assert datetime.fromtimestamp(row["end_date"], timezone.utc).date() \
+        == datetime(2024, 12, 31).date()
+    assert row["rate_type"] == "fixed"
+
+    # And the row must not have leaked into accounts / positions.
+    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+
+
+def test_load_mortgage_variable_rate(tmp_path):
+    """The variable-rate variant detected via Description 1."""
+    dump = tmp_path / "bronze" / "20240101T000000Z"
+    (dump / "positions").mkdir(parents=True)
+    (dump / "positions" / "positions_test.csv").write_text(
+        ";".join(loader.POSITIONS_COLS) + "\r\n"
+        + _mortgage_row(
+            rate_descriptor="UBS Variable-Rate Mortgage",
+            term="",  # variable-rate has no fixed term
+        ) + "\r\n"
+        + "Valued in: CHF\r\n",
+        encoding="utf-8",
+    )
+    conn = _fresh_db(tmp_path)
+    with conn:
+        loader._load_positions(conn, 1700000000, dump)
+    row = conn.execute(
+        "SELECT rate_type, start_date, end_date FROM mortgages"
+    ).fetchone()
+    assert row["rate_type"] == "variable"
+    assert row["start_date"] is None
+    assert row["end_date"] is None

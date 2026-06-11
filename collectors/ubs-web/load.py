@@ -313,6 +313,7 @@ def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
     seen_portfolios: set[str] = set()
     seen_relationships: set[str] = set()
     seen_positions: set[tuple[str, str | None]] = set()
+    seen_mortgages: set[str] = set()
     # Process per-portfolio CSVs first (`positions_<sha>.csv`), then
     # the consolidated default view (`positions.csv`). The default
     # view files unassigned accounts under a synthetic catch-all
@@ -332,7 +333,7 @@ def _load_positions(conn: sqlite3.Connection, snapshot_at: int,
             inserted += _ingest_positions_row(
                 conn, snapshot_at, row, base_ccy,
                 seen_accounts, seen_portfolios, seen_relationships,
-                seen_positions,
+                seen_positions, seen_mortgages,
             )
     return inserted
 
@@ -401,10 +402,25 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
                           seen_accounts: set[str],
                           seen_portfolios: set[str],
                           seen_relationships: set[str],
-                          seen_positions: set[tuple[str, str | None]]) -> int:
+                          seen_positions: set[tuple[str, str | None]],
+                          seen_mortgages: set[str]) -> int:
     relationship_prefix = row["Banking relationship"] or None
     portfolio_full = row["Portfolio"] or None
     portfolio_ext_id = portfolio_external_id_from_full(portfolio_full)
+
+    # Mortgage rows ('Pro memoria - Mortgages' group) have the
+    # IBAN column re-used for the fixed-rate term and the Product
+    # column holds the UBS-internal mortgage account number — so
+    # they need their own ingest path before the IBAN-based
+    # account/position inserts below.
+    if (row.get("Group of products") or "").strip() == \
+            "Pro memoria - Mortgages":
+        return _ingest_mortgage_row(
+            conn, snapshot_at, row,
+            relationship_prefix, portfolio_ext_id,
+            seen_mortgages,
+        )
+
     iban_raw = row["IBAN"] or None
     iban_c = iban_canonical(iban_raw)
     isin = row["ISIN"] or None
@@ -488,6 +504,92 @@ def _ingest_positions_row(conn: sqlite3.Connection, snapshot_at: int,
             parse_decimal(row["Lending value"]),
             parse_decimal(row["Lending value ratio"]),
             row["Description"] or None,
+            normalize_payload({k: row[k] for k in POSITIONS_COLS}),
+        ),
+    )
+    return 1
+
+
+MORTGAGE_TERM_RE = re.compile(
+    r"^\s*(\d{2})\.(\d{2})\.(\d{4})\s*-\s*(\d{2})\.(\d{2})\.(\d{4})\s*$"
+)
+
+
+def _parse_mortgage_term(s: str | None) -> tuple[int | None, int | None]:
+    """Extract (start_ts, end_ts) from the 'IBAN' column when it
+    actually carries a 'dd.mm.yyyy - dd.mm.yyyy' fixed-rate term.
+    Returns (None, None) on anything that doesn't match exactly.
+    """
+    if not s:
+        return None, None
+    m = MORTGAGE_TERM_RE.match(s)
+    if not m:
+        return None, None
+    sd, sm, sy, ed, em, ey = m.groups()
+    try:
+        start = datetime(int(sy), int(sm), int(sd), tzinfo=timezone.utc)
+        end = datetime(int(ey), int(em), int(ed), tzinfo=timezone.utc)
+    except ValueError:
+        return None, None
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def _mortgage_rate_type(description_1: str | None) -> str | None:
+    """Map the Description 1 product name to 'fixed' / 'variable'.
+    Returns None when neither cue is present so the row stays
+    honest about an unknown rate basis."""
+    if not description_1:
+        return None
+    low = description_1.lower()
+    if "fixed-rate" in low or "fixed rate" in low or "festhypothek" in low:
+        return "fixed"
+    if "variable" in low or "variabel" in low or "variabler" in low:
+        return "variable"
+    return None
+
+
+def _ingest_mortgage_row(conn: sqlite3.Connection, snapshot_at: int,
+                         row: dict,
+                         relationship_prefix: str | None,
+                         portfolio_ext_id: str | None,
+                         seen_mortgages: set[str]) -> int:
+    """Insert a single 'Pro memoria - Mortgages' row into the
+    `mortgages` silver table. The CSV uses the IBAN / Category /
+    Date columns as overflow slots for mortgage-specific data —
+    we promote the parts we know about and stash the rest in
+    `payload` for forensics. See migration 0004."""
+    account_ext = (row.get("Product") or "").strip()
+    if not account_ext:
+        return 0
+    if account_ext in seen_mortgages:
+        return 0
+    seen_mortgages.add(account_ext)
+
+    start_ts, end_ts = _parse_mortgage_term(row.get("IBAN"))
+    rate_type = _mortgage_rate_type(row.get("Description 1"))
+    collateral = row.get("Description 3") or row.get("Sector") or None
+    description = row.get("Description") or row.get("Description 1") or None
+    currency = (row.get("Ccy.") or "").strip() or None
+    if currency is None:
+        # `Ccy.` should always be set on UBS mortgages; if it
+        # isn't, we'd rather drop than insert a NULL into a NOT
+        # NULL column.
+        log.warning("mortgage row %r has no currency; skipping",
+                    account_ext)
+        return 0
+
+    conn.execute(
+        "INSERT OR REPLACE INTO mortgages ("
+        "snapshot_at, account_external_id, banking_relationship_id, "
+        "portfolio_external_id, currency_iso, outstanding_balance, "
+        "start_date, end_date, rate_type, collateral_description, "
+        "description, payload"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            snapshot_at, account_ext, relationship_prefix,
+            portfolio_ext_id, currency,
+            parse_decimal(row.get("Number/Amt.")),
+            start_ts, end_ts, rate_type, collateral, description,
             normalize_payload({k: row[k] for k in POSITIONS_COLS}),
         ),
     )
