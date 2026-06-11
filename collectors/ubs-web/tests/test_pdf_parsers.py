@@ -12,6 +12,7 @@ import pytest
 from pdf_parsers import (
     parse_account_statement_text,
     parse_label_statement_of_assets,
+    parse_maturity_notice_text,
 )
 
 
@@ -214,3 +215,91 @@ class TestAccountStatementBalances:
         assert len(rows) == 1
         assert rows[0]["opening_balance"] == pytest.approx(-1111.11)
         assert rows[0]["closing_balance"] == pytest.approx(-4444.44)
+
+
+# ---- Maturity Notice (mortgage interest-roll) PDFs ----------------
+
+class TestMaturityNotice:
+    """Parses the per-mortgage quarterly maturity-notice PDFs.
+    Fixture text mirrors the line structure pdfplumber produces; the
+    bold-rendered headers ('AAss aatt …') are the actual on-page
+    artefact pdfplumber's character-level extraction emits."""
+
+    # Synthetic placeholder mortgage account number — NOT real.
+    ACCT_LINE = "Account no. 999-12345678.MMM 0001"
+    # Synthetic placeholder address.
+    COLLATERAL_LINE = "Category EXAMPLE ROAD 1, 0000 EXAMPLECITY"
+
+    def test_fixed_rate_quarter_end(self):
+        text = (
+            "UBS Fixed-Rate Mortgage CHF\n"
+            f"{self.ACCT_LINE}\n"
+            f"{self.COLLATERAL_LINE}\n"
+            "MMaattuurriittyy nnoottiiccee\n"
+            "AAss aatt 3300..0099..22002233\n"
+            "General information Amount in CHF\n"
+            "Current debt capital 1 234 567.89\n"
+        )
+        rows = parse_maturity_notice_text(text, "<doc-token>")
+        assert len(rows) == 1
+        row = rows[0]
+        # Branch zfill 3 → 4, base zfill 8 → 8, hyphen → space.
+        assert row["account_external_id"] == "0999 12345678.MMM 0001"
+        assert row["currency_iso"] == "CHF"
+        # Outstanding goes in as a liability (negative sign).
+        assert row["outstanding_balance"] == pytest.approx(-1234567.89)
+        assert row["product_name"] == "UBS Fixed-Rate Mortgage"
+        assert row["rate_type"] == "fixed"
+        assert row["collateral_description"] == \
+            "EXAMPLE ROAD 1, 0000 EXAMPLECITY"
+        # 2023-09-30 UTC midnight.
+        from datetime import datetime, timezone
+        assert datetime.fromtimestamp(
+            row["as_of_date"], timezone.utc).date() \
+            == datetime(2023, 9, 30).date()
+
+    def test_saron_classified_as_variable(self):
+        """SARON Mortgage is UBS's variable-rate product; rate_type
+        should map to 'variable', not 'saron', so the canonical
+        taxonomy stays rate-basis."""
+        text = (
+            "UBS SARON Mortgage CHF\n"
+            f"{self.ACCT_LINE}\n"
+            f"{self.COLLATERAL_LINE}\n"
+            "MMaattuurriittyy nnoottiiccee\n"
+            "AAss aatt 3311..1122..22002233\n"
+            "Current debt capital 500 000.00\n"
+        )
+        rows = parse_maturity_notice_text(text, "<doc-token>")
+        assert len(rows) == 1
+        assert rows[0]["product_name"] == "UBS SARON Mortgage"
+        assert rows[0]["rate_type"] == "variable"
+
+    def test_non_mortgage_maturity_notice_returns_empty(self):
+        """The doc_type 'Maturity notice' is also UBS-side used for
+        bond / time-deposit notices that aren't mortgages. Without a
+        recognised product line + Account no. + debt-capital line
+        the parser must return [], not invent a row."""
+        text = (
+            "Some Other Notice\n"
+            "Account no. unrelated\n"
+            "As at 30.09.2023\n"
+            "Total amount due 100.00\n"
+        )
+        assert parse_maturity_notice_text(text, "<doc-token>") == []
+
+    def test_undouble_passthrough_when_not_bold(self):
+        """Normal (non-doubled) header lines must still match."""
+        text = (
+            "UBS Fixed-Rate Mortgage CHF\n"
+            f"{self.ACCT_LINE}\n"
+            f"{self.COLLATERAL_LINE}\n"
+            "As at 30.09.2023\n"
+            "Current debt capital 100 000.00\n"
+        )
+        rows = parse_maturity_notice_text(text, "<doc-token>")
+        assert len(rows) == 1
+        from datetime import datetime, timezone
+        assert datetime.fromtimestamp(
+            rows[0]["as_of_date"], timezone.utc).date() \
+            == datetime(2023, 9, 30).date()

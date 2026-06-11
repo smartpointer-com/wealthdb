@@ -256,12 +256,14 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
-    hist_pos, hist_cash = _load_historical_from_pdfs(conn, dump_dir)
+    hist_pos, hist_cash, hist_mort = _load_historical_from_pdfs(
+        conn, dump_dir)
 
     log.info("loaded %s: positions=%d transactions=%d documents=%d "
-             "hist_positions=%d hist_cash_balances=%d",
+             "hist_positions=%d hist_cash_balances=%d "
+             "hist_mortgages=%d",
              dump_dir.name, pos_count, txn_count, doc_count,
-             hist_pos, hist_cash)
+             hist_pos, hist_cash, hist_mort)
 
 
 def _read_run_json(dump_dir: Path) -> dict:
@@ -759,8 +761,9 @@ def _parse_one_pdf(args: tuple[str, str, str]
     `rows` or `error_message` is set on every non-skipped call."""
     from pdf_parsers import (
         parse_statement_of_assets, parse_account_statement,
+        parse_maturity_notice,
     )
-    token, fp, label = args
+    token, fp, label, doc_type = args
     path = Path(fp)
     if not path.is_file():
         return token, "skip", path.name, None, None
@@ -768,6 +771,9 @@ def _parse_one_pdf(args: tuple[str, str, str]
         if "Statement of assets" in (label or ""):
             rows = parse_statement_of_assets(path, token, label)
             return token, "positions", path.name, rows, None
+        if doc_type == "Maturity notice":
+            rows = parse_maturity_notice(path, token, label)
+            return token, "mortgage", path.name, rows, None
         rows = parse_account_statement(path, token, label)
         return token, "cash", path.name, rows, None
     except Exception as e:  # noqa: BLE001
@@ -775,33 +781,35 @@ def _parse_one_pdf(args: tuple[str, str, str]
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection,
-                               dump_dir: Path) -> tuple[int, int]:
+                               dump_dir: Path) -> tuple[int, int, int]:
     """Walk every PDF tracked in the documents table whose label
-    indicates a Statement of assets or an Account Statement, parse
-    it in a worker-pool of subprocesses, and upsert into the
-    historical_* tables on the main thread. Returns
-    (position_rows, cash_rows).
+    indicates a Statement of assets, an Account Statement, or a
+    Maturity notice; parse it in a worker-pool of subprocesses,
+    and upsert into the historical_* tables on the main thread.
+    Returns (position_rows, cash_rows, mortgage_rows).
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
     threads. SQLite writes stay on the main connection."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
-        return 0, 0
+        return 0, 0, 0
 
-    # Pull (doc_token, file_path, label) for relevant docs from the
-    # documents table — that's where bronze metadata lives.
+    # Pull (doc_token, file_path, label, doc_type) for relevant docs
+    # from the documents table — that's where bronze metadata lives.
     cur = conn.execute(
-        "SELECT doc_token, file_path, label FROM documents "
+        "SELECT doc_token, file_path, label, doc_type FROM documents "
         "WHERE label LIKE '%Statement of assets%' "
-        "   OR doc_type = 'Account Statement'"
+        "   OR doc_type = 'Account Statement' "
+        "   OR doc_type = 'Maturity notice'"
     )
     work = cur.fetchall()
     if not work:
-        return 0, 0
+        return 0, 0, 0
 
     pos_rows = 0
     cash_rows = 0
+    mortgage_rows = 0
     n_workers = max(1, os.cpu_count() or 1)
     log.info("parsing %d PDFs across %d workers", len(work), n_workers)
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
@@ -815,7 +823,9 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection,
                 pos_rows += _insert_hist_positions(conn, rows or [])
             elif kind == "cash":
                 cash_rows += _insert_hist_cash_balances(conn, rows or [])
-    return pos_rows, cash_rows
+            elif kind == "mortgage":
+                mortgage_rows += _insert_hist_mortgages(conn, rows or [])
+    return pos_rows, cash_rows, mortgage_rows
 
 
 def _insert_hist_positions(conn: sqlite3.Connection,
@@ -869,6 +879,31 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
             n += 1
         except sqlite3.IntegrityError as e:
             log.debug("hist cash insert failed: %s", e)
+    return n
+
+
+def _insert_hist_mortgages(conn: sqlite3.Connection,
+                           rows: list[dict]) -> int:
+    n = 0
+    for r in rows:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO historical_mortgages ("
+                "as_of_date, account_external_id, currency_iso, "
+                "outstanding_balance, product_name, rate_type, "
+                "collateral_description, source_doc_token, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    r["as_of_date"], r["account_external_id"],
+                    r["currency_iso"], r["outstanding_balance"],
+                    r["product_name"], r["rate_type"],
+                    r["collateral_description"], r["source_doc_token"],
+                    r["payload"],
+                ),
+            )
+            n += 1
+        except sqlite3.IntegrityError as e:
+            log.debug("hist mortgage insert failed: %s", e)
     return n
 
 

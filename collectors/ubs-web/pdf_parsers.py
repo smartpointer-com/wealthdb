@@ -371,6 +371,200 @@ def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
 
 
 # ============================================================
+# Maturity Notice parser (mortgage interest-roll PDFs)
+# ============================================================
+#
+# UBS issues one "Maturity notice" PDF per mortgage per fixed-rate
+# / SARON interest-roll period (typically quarterly). The PDF lays
+# the salient fields out as labelled lines:
+#
+#     UBS SARON Mortgage CHF
+#     Account no. <branch>-<base>.<MMM> <suffix>
+#     Category <collateral address>
+#     ...
+#     As at DD.MM.YYYY
+#     ...
+#     Current debt capital N NNN NNN.NN
+#
+# We extract the outstanding principal as the historical balance at
+# the "As at" date and surface the product / currency for the gold
+# adapter to roll up into a mortgage Position.
+#
+# The "Account no." in the maturity notice is the compact zero-
+# stripped form (`BBB-AAAAAA.MMM NNNN`); the live positions.csv
+# table normalises the same account to the padded 4-digit branch /
+# 8-digit base form (`BBBB AAAAAAAA.MMM NNNN`).
+# We re-pad on parse so the resulting account_external_id matches
+# `mortgages.account_external_id` exactly — gold's instruments/
+# accounts upsert is keyed by ID, so cross-snapshot identity has
+# to be byte-equal.
+
+# Product line of the form "UBS SARON Mortgage CHF" or
+# "UBS Fixed-Rate Mortgage CHF". `name` swallows everything between
+# 'UBS ' and the trailing ' CCY'; the trailing 3-letter token is
+# the currency.
+_PRODUCT_LINE_RE = re.compile(
+    r"^UBS\s+(?P<name>.+?)\s+Mortgage\s+(?P<ccy>[A-Z]{3})\s*$"
+)
+
+# Account no. line. Branch may be 3 or 4 digits, base 6-8 digits.
+# `mmm` is the mortgage-type code; `suffix` is the trailing sub-
+# account number.
+_ACCT_NO_LINE_RE = re.compile(
+    r"^Account\s+no\.\s+"
+    r"(?P<branch>\d{3,4})-(?P<base>\d{6,8})"
+    r"\.(?P<mmm>[A-Z0-9]{2,4})\s+(?P<suffix>\d+)\s*$"
+)
+
+# Collateral line. UBS prefixes the property address with the
+# literal label `Category` in the side-column of the PDF.
+_COLLATERAL_LINE_RE = re.compile(r"^Category\s+(?P<addr>.+\S)\s*$")
+
+# Balance date. The maturity notice's primary date marker is
+# `As at DD.MM.YYYY`.
+_AS_AT_LINE_RE = re.compile(
+    r"^As\s+at\s+(?P<d>\d{2})\.(?P<m>\d{2})\.(?P<y>\d{4})\s*$"
+)
+
+# Outstanding principal. A loose pattern because pdfplumber
+# occasionally collapses multiple spaces between label and value.
+_CURRENT_DEBT_RE = re.compile(
+    r"^Current\s+debt\s+capital\s+(?P<v>[\d\s']+\.\d{2})\s*$"
+)
+
+
+def parse_maturity_notice(pdf_path: Path, doc_token: str,
+                          label: str) -> list[dict]:
+    """Walk a 'Maturity notice' PDF and emit ONE row capturing the
+    mortgage's outstanding principal at the notice's `As at` date."""
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(
+            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2]
+        )
+    return parse_maturity_notice_text(text, doc_token)
+
+
+def parse_maturity_notice_text(text: str, doc_token: str) -> list[dict]:
+    """Pure-text variant of parse_maturity_notice for fixture-based
+    tests. Returns [] when the PDF doesn't actually look like a
+    mortgage maturity notice (so non-mortgage 'Maturity notice'
+    doc_types — bonds, time deposits, etc. — are skipped gracefully).
+    """
+    product_name = None
+    currency = None
+    account_external_id = None
+    collateral = None
+    as_of = None
+    outstanding = None
+
+    for raw_line in text.splitlines():
+        ln = _undouble_bold(raw_line.strip())
+        if not ln:
+            continue
+        if product_name is None:
+            m = _PRODUCT_LINE_RE.match(ln)
+            if m:
+                product_name = m["name"].strip()
+                currency = m["ccy"]
+                continue
+        if account_external_id is None:
+            m = _ACCT_NO_LINE_RE.match(ln)
+            if m:
+                branch = m["branch"].zfill(4)
+                base = m["base"].zfill(8)
+                account_external_id = (
+                    f"{branch} {base}.{m['mmm']} {m['suffix']}"
+                )
+                continue
+        if collateral is None:
+            m = _COLLATERAL_LINE_RE.match(ln)
+            if m:
+                collateral = m["addr"]
+                continue
+        if as_of is None:
+            m = _AS_AT_LINE_RE.match(ln)
+            if m:
+                as_of = date(int(m["y"]), int(m["m"]), int(m["d"]))
+                continue
+        if outstanding is None:
+            m = _CURRENT_DEBT_RE.match(ln)
+            if m:
+                outstanding = _to_float(m["v"])
+                continue
+
+    if (product_name is None or account_external_id is None or
+            as_of is None or outstanding is None or currency is None):
+        return []
+
+    rate_type = _mortgage_rate_type_from_product(product_name)
+    return [{
+        "as_of_date": _to_unix(as_of),
+        "account_external_id": account_external_id,
+        "currency_iso": currency,
+        # Liability sign: source PDF prints the principal as a
+        # positive amount; gold expects negative market_value.
+        "outstanding_balance": -abs(outstanding),
+        "product_name": f"UBS {product_name} Mortgage",
+        "rate_type": rate_type,
+        "collateral_description": collateral,
+        "source_doc_token": doc_token,
+        "payload": json.dumps({
+            "as_of": as_of.isoformat(),
+            "product_name": product_name,
+            "rate_type": rate_type,
+        }),
+    }]
+
+
+def _undouble_bold(line: str) -> str:
+    """pdfplumber renders some bold headers as every-character-
+    doubled ('MMaattuurriittyy nnoottiiccee',
+    'AAss aatt 3311..0033..22002233'). Collapse the line — but only
+    when the WHOLE line passes the doubled test. A line that mixes
+    doubled and non-doubled tokens isn't bold-rendered, and a
+    legitimate all-same-digit field ('0000') would otherwise be
+    silently shortened to '00'."""
+    if not line:
+        return line
+    flat = line.replace(" ", "")
+    if len(flat) < 2 or len(flat) % 2 != 0:
+        return line
+    for i in range(0, len(flat), 2):
+        if flat[i] != flat[i + 1]:
+            return line
+    parts = []
+    for token in line.split(" "):
+        if not token:
+            parts.append(token)
+            continue
+        if len(token) % 2 != 0:
+            return line
+        parts.append("".join(token[i] for i in range(0, len(token), 2)))
+    return " ".join(parts)
+
+
+def _mortgage_rate_type_from_product(product_name: str) -> str | None:
+    """Map a UBS mortgage product-line caption to a canonical
+    rate_type tag. Mirrors the live mortgage classifier in load.py
+    but takes the post-'UBS ' middle slice so both kinds of caption
+    (positions.csv 'Description 1' and maturity-notice product line)
+    converge."""
+    low = product_name.lower()
+    if "saron" in low:
+        # SARON-indexed mortgages are UBS's current variable-rate
+        # product; classify with the user-facing 'variable' tag
+        # rather than 'saron' so the canonical taxonomy stays
+        # rate-basis (fixed vs. variable), not product-name (SARON
+        # vs. older flavours).
+        return "variable"
+    if "fixed-rate" in low or "fixed rate" in low or "festhypothek" in low:
+        return "fixed"
+    if "variable" in low or "variabel" in low or "variabler" in low:
+        return "variable"
+    return None
+
+
+# ============================================================
 # Helpers
 # ============================================================
 
