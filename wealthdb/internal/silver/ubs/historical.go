@@ -64,6 +64,9 @@ func (r *webReader) snapshotsHistorical(
 	if err := r.appendHistoricalCashBalances(ctx, w, getBatch); err != nil {
 		return nil, err
 	}
+	if err := r.appendHistoricalMortgages(ctx, w, getBatch); err != nil {
+		return nil, err
+	}
 
 	times := make([]int64, 0, len(byTime))
 	for t := range byTime {
@@ -276,6 +279,113 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 	return rows.Err()
 }
 
+// appendHistoricalMortgages emits one PositionChange per row in
+// `historical_mortgages` (PDF-derived per-mortgage balance points
+// at each Maturity Notice's "As at" date). Same triple shape as
+// the live web_reader.appendWebMortgages — Account + Instrument
+// + Position keyed by the UBS-internal mortgage account number,
+// AccountKind / AssetClass = mortgage, MarketValue already
+// negative from silver.
+//
+// Account / Instrument rows carry FirstSeenAt = LastSeenAt =
+// as_of_date so gold's last_seen_at upsert guard keeps the latest
+// snapshot's product / collateral description without throwing
+// away older first-seen times.
+func (r *webReader) appendHistoricalMortgages(
+	ctx context.Context,
+	w canonical.Window,
+	getBatch func(int64) *canonical.SnapshotBatch,
+) error {
+	ok, err := r.hasHistoricalMortgagesTable(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	const q = `
+SELECT as_of_date, account_external_id, currency_iso,
+       outstanding_balance, product_name, rate_type,
+       collateral_description, payload
+  FROM historical_mortgages
+ WHERE as_of_date BETWEEN ? AND ?`
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	if err != nil {
+		return fmt.Errorf("appendHistoricalMortgages: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			asOf                                 int64
+			extID, currency, payload             string
+			outstanding                          sql.NullFloat64
+			productName, rateType, collateral    sql.NullString
+		)
+		if err := rows.Scan(&asOf, &extID, &currency, &outstanding,
+			&productName, &rateType, &collateral, &payload); err != nil {
+			return err
+		}
+		_ = rateType // surfaced via payload
+		batch := getBatch(asOf)
+		extIDCopy := extID
+		display := sql.NullString{
+			Valid: productName.Valid && collateral.Valid,
+			String: productName.String + ", " + collateral.String,
+		}
+		if !display.Valid {
+			display = productName
+		}
+		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+			AccountExternalID: extID,
+			AccountKind:       canonical.AccountKindMortgage,
+			DisplayName:       silver.StrPtrIfNonEmpty(display.String),
+			BaseCurrency:      silver.StrPtrIfNonEmpty(currency),
+			FirstSeenAt:       asOf,
+			LastSeenAt:        asOf,
+			Payload:           json.RawMessage(payload),
+		})
+		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
+			InstrumentExternalID: extID,
+			AssetClass:           canonical.AssetClassMortgage,
+			Name:                 silver.StrPtrIfNonEmpty(display.String),
+			Currency:             silver.StrPtrIfNonEmpty(currency),
+			FirstSeenAt:          asOf,
+			LastSeenAt:           asOf,
+		})
+		var mv *canonical.Decimal
+		if outstanding.Valid {
+			d := canonical.NewDecimalFromFloat(outstanding.Float64)
+			mv = &d
+		}
+		batch.Positions = append(batch.Positions, canonical.PositionChange{
+			SnapshotAt:           asOf,
+			AccountExternalID:    extID,
+			PositionKey:          extID,
+			InstrumentExternalID: &extIDCopy,
+			AssetClass:           canonical.AssetClassMortgage,
+			Currency:             currency,
+			MarketValue:          mv,
+			Payload:              json.RawMessage(payload),
+		})
+	}
+	return rows.Err()
+}
+
+// hasHistoricalMortgagesTable returns true if the silver carries
+// the migration-0005 historical_mortgages table. Older silvers
+// loaded before that migration just return false; the projection
+// is skipped silently.
+func (r *webReader) hasHistoricalMortgagesTable(ctx context.Context) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name = 'historical_mortgages'`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("hasHistoricalMortgagesTable: %w", err)
+	}
+	return n > 0, nil
+}
+
 // historicalRange returns MIN/MAX as_of_date across the historical
 // tables. Both values are -1 when the silver carries no historical
 // rows. Used by ChangeWindow to extend Start backwards so the
@@ -283,8 +393,9 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 // the re-INSERT.
 func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	var (
-		posMin, posMax     sql.NullInt64
-		cashMin, cashMax   sql.NullInt64
+		posMin, posMax   sql.NullInt64
+		cashMin, cashMax sql.NullInt64
+		mortMin, mortMax sql.NullInt64
 	)
 	if err := r.db.QueryRowContext(ctx,
 		`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`,
@@ -295,6 +406,17 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 		`SELECT MIN(period_start), MAX(period_end) FROM historical_cash_balances`,
 	).Scan(&cashMin, &cashMax); err != nil {
 		return -1, -1, fmt.Errorf("historicalRange cash: %w", err)
+	}
+	ok, err := r.hasHistoricalMortgagesTable(ctx)
+	if err != nil {
+		return -1, -1, err
+	}
+	if ok {
+		if err := r.db.QueryRowContext(ctx,
+			`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`,
+		).Scan(&mortMin, &mortMax); err != nil {
+			return -1, -1, fmt.Errorf("historicalRange mortgages: %w", err)
+		}
 	}
 	lo, hi := int64(-1), int64(-1)
 	merge := func(n sql.NullInt64) {
@@ -312,6 +434,8 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	merge(posMax)
 	merge(cashMin)
 	merge(cashMax)
+	merge(mortMin)
+	merge(mortMax)
 	return lo, hi, nil
 }
 
