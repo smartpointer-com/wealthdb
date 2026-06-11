@@ -218,10 +218,20 @@ func (r *webReader) snapshotsForOverlap(
 		return nil, err
 	}
 
+	// Mortgages: unique to the web side — PSN doesn't carry them
+	// at all. They flow through regardless of the PSN cutoff;
+	// emitted as a triple per row (account + instrument +
+	// position) so they show up as a single negative-value
+	// liability holding in gold positions.
+	if err := r.appendWebMortgages(ctx, w, byTime); err != nil {
+		return nil, err
+	}
+
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
 		b := byTime[t]
-		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments) == 0 {
+		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments)+
+			len(b.Positions) == 0 {
 			continue
 		}
 		batches = append(batches, *b)
@@ -712,6 +722,184 @@ func tickerFromDescription(desc string) *string {
 		}
 	}
 	return &t
+}
+
+// appendWebMortgages projects ubs-web silver `mortgages` rows
+// into three canonical changes per row:
+//
+//   - AccountChange{Kind: mortgage}           — one liability account
+//   - InstrumentChange{AssetClass: mortgage}  — synthetic instrument
+//     keyed by the same external ID (UBS doesn't expose a separate
+//     instrument-level identity for mortgages)
+//   - PositionChange{AssetClass: mortgage,
+//     MarketValue: outstanding_balance}       — already negative in
+//     the silver row; flows through to net-worth roll-ups as a
+//     negative contribution
+//
+// No PSN cutoff: PSN doesn't surface mortgages at all, so every web
+// snapshot's mortgage rows pass through. Migration 0004 of the
+// ubs-web silver created the table; if it's absent on an older
+// silver, the COUNT-zero path skips cleanly.
+func (r *webReader) appendWebMortgages(ctx context.Context,
+	w canonical.Window,
+	byTime map[int64]*canonical.SnapshotBatch) error {
+	ok, err := r.hasMortgagesTable(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	const q = `
+SELECT snapshot_at, account_external_id, banking_relationship_id,
+       portfolio_external_id, currency_iso, outstanding_balance,
+       start_date, end_date, rate_type, collateral_description,
+       description, payload
+  FROM mortgages
+ WHERE snapshot_at BETWEEN ? AND ?`
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	if err != nil {
+		return fmt.Errorf("appendWebMortgages: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			snap                                          int64
+			extID, currency, payload                      string
+			relID, portfolioID, rateType, collateral, descr sql.NullString
+			outstanding                                   sql.NullFloat64
+			startDate, endDate                            sql.NullInt64
+		)
+		if err := rows.Scan(&snap, &extID, &relID, &portfolioID,
+			&currency, &outstanding, &startDate, &endDate, &rateType,
+			&collateral, &descr, &payload); err != nil {
+			return err
+		}
+		batch, ok := byTime[snap]
+		if !ok {
+			continue
+		}
+		_ = startDate // promoted into payload via the JSON below
+		_ = endDate
+		_ = rateType
+		_ = collateral
+
+		extIDCopy := extID
+		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+			AccountExternalID:   extID,
+			AccountKind:         canonical.AccountKindMortgage,
+			DisplayName:         silver.StrPtrIfNonEmpty(descr.String),
+			BaseCurrency:        silver.StrPtrIfNonEmpty(currency),
+			RelationshipID:      silver.StrPtrIfNonEmpty(relID.String),
+			PortfolioExternalID: silver.StrPtrIfNonEmpty(portfolioID.String),
+			FirstSeenAt:         snap,
+			LastSeenAt:          snap,
+			Payload:             json.RawMessage(payload),
+		})
+		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
+			InstrumentExternalID: extID,
+			AssetClass:           canonical.AssetClassMortgage,
+			Name:                 silver.StrPtrIfNonEmpty(descr.String),
+			Currency:             silver.StrPtrIfNonEmpty(currency),
+			FirstSeenAt:          snap,
+			LastSeenAt:           snap,
+		})
+		var mv *canonical.Decimal
+		if outstanding.Valid {
+			d := canonical.NewDecimalFromFloat(outstanding.Float64)
+			mv = &d
+		}
+		batch.Positions = append(batch.Positions, canonical.PositionChange{
+			SnapshotAt:           snap,
+			AccountExternalID:    extID,
+			PositionKey:          extID,
+			InstrumentExternalID: &extIDCopy,
+			AssetClass:           canonical.AssetClassMortgage,
+			Currency:             currency,
+			MarketValue:          mv,
+			Payload:              json.RawMessage(payload),
+		})
+	}
+	return rows.Err()
+}
+
+// latestMortgagePositions returns one PositionChange per mortgage
+// account in web silver, populated from the row with the largest
+// snapshot_at ≤ asOf for that account. Used by the fold stream to
+// carry web-only mortgage data forward into each PSN snapshot:
+// web dumps fire when the user logs in, PSN snapshots fire
+// nightly, so without carry-forward the gold "latest snapshot per
+// source" query falls onto a PSN-only time where the mortgage
+// isn't refreshed and disappears from the position table.
+//
+// The returned templates have SnapshotAt = 0; the caller stamps
+// the right time per batch.
+func (r *webReader) latestMortgagePositions(ctx context.Context, asOf int64) ([]canonical.PositionChange, error) {
+	ok, err := r.hasMortgagesTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	const q = `
+SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
+  FROM mortgages m
+  JOIN (
+        SELECT account_external_id, MAX(snapshot_at) AS s
+          FROM mortgages
+         WHERE snapshot_at <= ?
+         GROUP BY account_external_id
+       ) latest
+    ON latest.account_external_id = m.account_external_id
+   AND latest.s                    = m.snapshot_at`
+	rows, err := r.db.QueryContext(ctx, q, asOf)
+	if err != nil {
+		return nil, fmt.Errorf("latestMortgagePositions: %w", err)
+	}
+	defer rows.Close()
+	var out []canonical.PositionChange
+	for rows.Next() {
+		var (
+			extID, currency, payload string
+			outstanding              sql.NullFloat64
+		)
+		if err := rows.Scan(&extID, &currency, &outstanding, &payload); err != nil {
+			return nil, err
+		}
+		idCopy := extID
+		var mv *canonical.Decimal
+		if outstanding.Valid {
+			d := canonical.NewDecimalFromFloat(outstanding.Float64)
+			mv = &d
+		}
+		out = append(out, canonical.PositionChange{
+			AccountExternalID:    extID,
+			PositionKey:          extID,
+			InstrumentExternalID: &idCopy,
+			AssetClass:           canonical.AssetClassMortgage,
+			Currency:             currency,
+			MarketValue:          mv,
+			Payload:              json.RawMessage(payload),
+		})
+	}
+	return out, rows.Err()
+}
+
+// hasMortgagesTable returns true if the connected silver carries
+// the `mortgages` table (added by migration 0004). Older silvers
+// loaded before that migration just return false and the caller
+// skips the projection.
+func (r *webReader) hasMortgagesTable(ctx context.Context) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+        SELECT COUNT(*)
+          FROM sqlite_master
+         WHERE type = 'table' AND name = 'mortgages'`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("hasMortgagesTable: %w", err)
+	}
+	return n > 0, nil
 }
 
 // looksLikeISIN: 12 chars, first two ASCII letters (country

@@ -155,6 +155,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	var (
 		webPosPayloads  map[webPosKey]string
 		webCashPayloads map[webCashKey]string
+		webMortgages    []canonical.PositionChange
 		cutoff          map[string]int64
 		psnAssetClass   map[string]canonical.AssetClass
 	)
@@ -170,6 +171,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, err
 		}
 		psnAssetClass, err = c.psn.assetClassByISIN(ctx)
+		if err != nil {
+			return nil, err
+		}
+		webMortgages, err = c.web.latestMortgagePositions(ctx, w.End)
 		if err != nil {
 			return nil, err
 		}
@@ -200,11 +205,12 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Snapshots: %w", err)
 		}
-		if len(webPosPayloads)+len(webCashPayloads) > 0 {
+		if len(webPosPayloads)+len(webCashPayloads)+len(webMortgages) > 0 {
 			s = &psnWebFoldStream{
-				inner:   s,
-				webPos:  webPosPayloads,
-				webCash: webCashPayloads,
+				inner:     s,
+				webPos:    webPosPayloads,
+				webCash:   webCashPayloads,
+				mortgages: webMortgages,
 			}
 		}
 		streams = append(streams, s)
@@ -245,10 +251,18 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 //
 // Position match key is (utc_day(snapshot_at), ISIN). Cash match
 // key is (utc_day(snapshot_at), account, currency).
+//
+// The stream also carries forward web-only positions that PSN
+// doesn't surface — currently just mortgages. For each PSN batch
+// in the window, it injects one PositionChange per known mortgage
+// at the batch's snapshot_at, so the gold-side
+// "latest snapshot per silver source" query still surfaces them
+// when PSN snapshots have progressed past the last web dump.
 type psnWebFoldStream struct {
-	inner   silver.SnapshotStream
-	webPos  map[webPosKey]string
-	webCash map[webCashKey]string
+	inner     silver.SnapshotStream
+	webPos    map[webPosKey]string
+	webCash   map[webCashKey]string
+	mortgages []canonical.PositionChange // template rows, snapshot_at set per batch
 }
 
 func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
@@ -268,6 +282,20 @@ func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, b
 		key := webCashKey{utcDate: utcDay(cb.SnapshotAt), account: cb.AccountExternalID, currency: cb.Currency}
 		if webPayload, ok := s.webCash[key]; ok {
 			cb.Payload = foldWebPayloadAsWebKey(cb.Payload, webPayload)
+		}
+	}
+	// Only inject mortgages into batches that already carry
+	// Positions. Otherwise gold's "latest snapshot per silver
+	// source" query (which is MAX over positions.snapshot_at)
+	// would land on a snapshot whose only row is the injected
+	// mortgage — every other position would disappear from the
+	// "today" view. Cash-only / fx-only PSN batches are skipped
+	// for the same reason.
+	if len(s.mortgages) > 0 && len(batch.Positions) > 0 {
+		snap := batch.Positions[0].SnapshotAt
+		for _, m := range s.mortgages {
+			m.SnapshotAt = snap
+			batch.Positions = append(batch.Positions, m)
 		}
 	}
 	return batch, more, nil

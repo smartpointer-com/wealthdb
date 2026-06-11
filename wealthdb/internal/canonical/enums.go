@@ -46,7 +46,13 @@ const (
 	// (private_equity / private_fund / spv) or fall through to `other`.
 	AssetClassRealEstate      AssetClass = "real_estate"
 	AssetClassConvertibleNote AssetClass = "convertible_note"
-	AssetClassOther           AssetClass = "other"
+	// AssetClassMortgage is a real-property-backed liability:
+	// the outstanding principal sits as a negative MarketValue on
+	// a synthetic per-mortgage Position. Paired 1:1 with
+	// AccountKindMortgage because UBS (and most banks) expose
+	// each mortgage as its own account.
+	AssetClassMortgage AssetClass = "mortgage"
+	AssetClassOther    AssetClass = "other"
 )
 
 var assetClassValues = map[AssetClass]struct{}{
@@ -57,7 +63,8 @@ var assetClassValues = map[AssetClass]struct{}{
 	AssetClassMetal: {}, AssetClassCrypto: {},
 	AssetClassPrivateEquity: {}, AssetClassSPV: {}, AssetClassPrivateFund: {},
 	AssetClassRealEstate: {}, AssetClassConvertibleNote: {},
-	AssetClassOther: {},
+	AssetClassMortgage: {},
+	AssetClassOther:    {},
 }
 
 // Valid reports whether the receiver is one of the recognised
@@ -96,7 +103,13 @@ const (
 	AccountKindCrypto            AccountKind = "crypto"
 	AccountKindCryptoExchange    AccountKind = "crypto_exchange"
 	AccountKindCryptoSelfCustody AccountKind = "crypto_self_custody"
-	AccountKindOther             AccountKind = "other"
+	// AccountKindMortgage is a real-property-backed liability
+	// account. Outstanding principal lives as a negative-value
+	// position (AssetClassMortgage) on this account; interest /
+	// principal payments flow in as transactions debited from a
+	// regular cash account with counterparty "Maturity".
+	AccountKindMortgage AccountKind = "mortgage"
+	AccountKindOther    AccountKind = "other"
 )
 
 var accountKindValues = map[AccountKind]struct{}{
@@ -105,7 +118,8 @@ var accountKindValues = map[AccountKind]struct{}{
 	AccountKindOverlay:        {},
 	AccountKindCrypto:         {},
 	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
-	AccountKindOther: {},
+	AccountKindMortgage: {},
+	AccountKindOther:    {},
 }
 
 func (a AccountKind) Valid() bool {
