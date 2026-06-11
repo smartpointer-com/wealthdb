@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/ptu/wealthdb/internal/output"
@@ -183,6 +184,12 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 					class = c.PrivacyFunc(r)
 				}
 				cell = applyPrivacy(cell, class, format)
+				// Defence-in-depth: mask structured bank
+				// identifiers wherever they appear, including in
+				// PrivacyNone columns the per-column pass skips
+				// (e.g. a UBS account number surfacing in
+				// position_key / instrument).
+				cell = scrubSensitiveIDs(cell)
 			}
 			cells[i] = cell
 		}
@@ -318,4 +325,50 @@ func isLikelyAccountID(s string, forceAlpha bool) bool {
 
 func isASCIILetter(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// sensitiveIDPatterns are bank-identifier shapes that scrubSensitiveIDs
+// masks wherever they appear in a rendered cell, independent of the
+// column's PrivacyClass. Each entry pairs a tight shape regex with a
+// masker that preserves the match's length + separators so column
+// widths and scan-shape survive (matching redactAccountID's contract).
+//
+// This is a content-based defence-in-depth layer over the per-column
+// privacy machinery. The per-column pass only redacts columns whose
+// whole value IS an identifier (account_id, relationship_id, …); it
+// can't reach an identifier that leaks inside a column that's
+// PrivacyNone by design — notably position_key / symbol, which stay
+// legible under -p because they normally hold public ISIN/ticker
+// instrument ids. A UBS mortgage uses its (private) account number as
+// the instrument identity, so it surfaces there raw; this pass catches
+// it by shape regardless of which column carries it.
+var sensitiveIDPatterns = []struct {
+	re   *regexp.Regexp
+	mask func(string) string
+}{
+	{
+		// UBS banking relationship / account base: a 4-digit branch,
+		// a space, then the 8-digit account base (e.g. the
+		// relationship_id "<branch> <base>"). It also prefixes the
+		// UBS mortgage account number ("<branch> <base>.MMM <n>").
+		// The digits-space-digits shape is distinctive in holdings
+		// data — ISINs/CUSIPs carry no internal space, monetary
+		// amounts have decimal separators, valor numbers are shorter
+		// — so matching by shape rarely false-positives. Keeps the
+		// last 4 digits for cross-referencing; masks the rest.
+		re:   regexp.MustCompile(`\b\d{4} \d{8}\b`),
+		mask: func(m string) string { return "**** ****" + m[len(m)-4:] },
+	},
+}
+
+// scrubSensitiveIDs masks structured bank identifiers wherever they
+// appear in s. It runs on every cell under -p/--privacy as a final
+// pass after applyPrivacy, so an identifier that leaks inside an
+// otherwise-non-private column is caught even when that column's
+// PrivacyClass is None.
+func scrubSensitiveIDs(s string) string {
+	for _, p := range sensitiveIDPatterns {
+		s = p.re.ReplaceAllStringFunc(s, p.mask)
+	}
+	return s
 }

@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ptu/wealthdb/internal/output"
+)
 
 func TestRedactAccountID(t *testing.T) {
 	cases := []struct {
@@ -80,5 +84,66 @@ func TestRedactAccountIDForceAlpha(t *testing.T) {
 		if got != c.want {
 			t.Errorf("redactAccountID(%q, true) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestScrubSensitiveIDs covers the content-based defence-in-depth
+// pass that masks structured bank identifiers wherever they appear,
+// independent of a column's PrivacyClass. Synthetic ids only.
+func TestScrubSensitiveIDs(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// UBS relationship_id "<4-digit branch> <8-digit base>":
+		// masked, last 4 digits kept. Synthetic.
+		{"1234 00000001", "**** ****0001"},
+		// UBS mortgage account number embeds the relationship prefix;
+		// the ".MMM <n>" product suffix is not sensitive and stays.
+		{"1234 00000001.MMM 0000", "**** ****0001.MMM 0000"},
+		// Portfolio form "<rel> R001": the trailing portfolio marker
+		// is preserved, only the relationship core is masked.
+		{"1234 00000001 R001", "**** ****0001 R001"},
+		// Embedded inside a longer free-text cell.
+		{"Mortgage 1234 00000001 (fixed)", "Mortgage **** ****0001 (fixed)"},
+		// Non-matches pass through untouched:
+		//   ISIN-shaped (no internal space). Synthetic placeholder.
+		{"CH0000000009", "CH0000000009"},
+		//   a 5-then-8 digit run is not the 4+8 shape
+		{"12345 00000001", "12345 00000001"},
+		//   4+7 and 4+9 digit runs don't match the exact 4+8 shape
+		{"1234 0000001", "1234 0000001"},
+		{"1234 000000012", "1234 000000012"},
+		//   display labels / taxonomy
+		{"Brokerage (other)", "Brokerage (other)"},
+		{"iShares Core MSCI World", "iShares Core MSCI World"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := scrubSensitiveIDs(c.in); got != c.want {
+			t.Errorf("scrubSensitiveIDs(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestScrubReachesPrivacyNoneColumn proves the scrub fires on a
+// PrivacyNone column (e.g. position_key) under privacy mode — the
+// case the per-column applyPrivacy pass alone misses.
+func TestScrubReachesPrivacyNoneColumn(t *testing.T) {
+	type row struct{ key string }
+	cols := []columnSpec[row]{
+		// PrivacyNone, mirroring position_key / symbol.
+		{Name: "position_key", Extract: func(r row) string { return r.key }},
+	}
+	rows := []row{{key: "1234 00000001.MMM 0000"}}
+
+	// privacy off: legible.
+	off := rowsToTable(rows, cols, false, output.FormatTable)
+	if off.Rows[0][0] != "1234 00000001.MMM 0000" {
+		t.Errorf("privacy off = %q, want it legible", off.Rows[0][0])
+	}
+	// privacy on: scrubbed even though the column is PrivacyNone.
+	on := rowsToTable(rows, cols, true, output.FormatTable)
+	if on.Rows[0][0] != "**** ****0001.MMM 0000" {
+		t.Errorf("privacy on = %q, want the account number masked", on.Rows[0][0])
 	}
 }
