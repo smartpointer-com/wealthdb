@@ -182,26 +182,46 @@ def cmd_login(args: argparse.Namespace) -> int:
     # schwab-py's parameter names (api_key, app_secret) are a historical
     # quirk; they accept the OAuth Client ID / Client Secret that Schwab
     # issues in its developer portal.
-    if args.manual:
-        client = schwab_auth.client_from_manual_flow(
-            api_key=client_id,
-            app_secret=client_secret,
-            callback_url=args.callback_url,
-            token_path=str(args.token_path),
-        )
-    else:
-        # interactive=False skips schwab-py's "Press ENTER to open the
-        # browser" prompt. In VSCode remote terminals the browser handoff
-        # can fail noisily via a stale IPC socket; the ENTER prompt only
-        # adds a chance for the auth code to expire before the browser
-        # finishes loading.
-        client = schwab_auth.client_from_login_flow(
-            api_key=client_id,
-            app_secret=client_secret,
-            callback_url=args.callback_url,
-            token_path=str(args.token_path),
-            interactive=False,
-        )
+    # Both flows can fail outside a friendly interactive context: the
+    # automated flow spins up a local HTTPS callback server and opens a
+    # browser (neither available in a non-interactive / batch run such as
+    # `wealthdb-refresh all`, where it currently times out on the callback);
+    # the manual flow drives a paste. Until the automated flow is made fully
+    # CLI-driven, fail with a clear, actionable message + a non-zero exit so
+    # a batch caller logs a clean FAIL and moves on, rather than dumping a
+    # raw traceback. KeyboardInterrupt / SystemExit deliberately propagate.
+    try:
+        if args.manual:
+            client = schwab_auth.client_from_manual_flow(
+                api_key=client_id,
+                app_secret=client_secret,
+                callback_url=args.callback_url,
+                token_path=str(args.token_path),
+            )
+        else:
+            # interactive=False skips schwab-py's "Press ENTER to open the
+            # browser" prompt. In VSCode remote terminals the browser handoff
+            # can fail noisily via a stale IPC socket; the ENTER prompt only
+            # adds a chance for the auth code to expire before the browser
+            # finishes loading.
+            client = schwab_auth.client_from_login_flow(
+                api_key=client_id,
+                app_secret=client_secret,
+                callback_url=args.callback_url,
+                token_path=str(args.token_path),
+                interactive=False,
+            )
+    except Exception as exc:
+        log.error("OAuth %s flow failed: %s: %s",
+                  "manual" if args.manual else "automated",
+                  type(exc).__name__, exc)
+        if not args.manual:
+            log.error("The automated flow needs a reachable callback server "
+                      "at %s plus a browser, which a non-interactive / batch "
+                      "run does not provide. Re-mint the token by hand:",
+                      args.callback_url)
+            log.error("    wealthdb-collect schwab-api login --manual")
+        return 5
 
     # We don't actually use the client here; constructing it has already
     # written the token file as a side effect. Discard.
