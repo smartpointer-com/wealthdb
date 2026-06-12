@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# wealthdb-collect — collect your account data from one bank or broker
+#
+# usage:
+#   wealthdb-collect <source> <login|download|load> [flags]
+#   wealthdb-collect list
+#
+# subcommands:
+#   login      sign in to the source (prompts for 2FA)
+#   download   download the latest accounts + holdings
+#   load       load that download into the database
+#   list       list the sources you can collect from
+#
+# flags:
+#   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
+#   --data-dir <dir>      where downloaded data is written (default ~/wealthdb/<source>)
+#   --silver-db <path>    the database file to build (default <data-dir>/<source>.db)
+#
+# Flags are accepted on any subcommand (or set the matching env var — see
+# the README). Run login -> download -> load in order the first time, then
+# download + load to refresh. Narrow a download with --since / --until or
+# --lookback (1w 4w 3m 6m 1y 2y 5y all; default ~90 days); for a source's
+# own options, run `wealthdb-collect <source> --help`.
+set -euo pipefail
+
+# Find the repo this script lives in, following symlinks (macOS has no
+# `readlink -f`) so `make install` can symlink it into ~/bin. Each source's
+# steps live in collectors/<name>/<name>, which this dispatches to. Set
+# WEALTHDB_REPO to override the auto-detected location.
+_src="${BASH_SOURCE[0]}"
+while [[ -h "$_src" ]]; do
+    _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+    _src="$(readlink "$_src")"
+    [[ "$_src" != /* ]] && _src="$_dir/$_src"
+done
+_here="$(cd -P "$(dirname "$_src")" && pwd)"
+REPO="${WEALTHDB_REPO:-$(cd "$_here/.." && pwd)}"
+COLLECTORS_DIR="$REPO/collectors"
+
+# Print the leading comment block (everything between the shebang and the
+# first line of code) as the help text.
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; }
+
+list_collectors() {
+    local d name
+    for d in "$COLLECTORS_DIR"/*/; do
+        name="$(basename "$d")"
+        [[ -x "$d/$name" ]] && echo "$name"
+    done
+}
+
+case "${1:-}" in
+    ""|-h|--help|help)
+        usage
+        echo
+        echo "sources:"
+        list_collectors | sed 's/^/  /'
+        exit 0
+        ;;
+    list)
+        list_collectors
+        exit 0
+        ;;
+esac
+
+name="$1"; shift
+wrapper="$COLLECTORS_DIR/$name/$name"
+if [[ ! -x "$wrapper" ]]; then
+    echo "wealthdb-collect: unknown source '$name'." >&2
+    echo "Available:" >&2
+    list_collectors | sed 's/^/  /' >&2
+    exit 2
+fi
+exec "$wrapper" "$@"

@@ -2,47 +2,49 @@
 # manual — host wrapper for the wealthdb "manual" collector.
 #
 # Unlike every other collector, `manual` has NO source to fetch from: the
-# user maintains the bronze CSVs (positions.csv / valuations.csv /
-# transactions.csv) by hand in ~/wealthdb/manual/. So there is no `login`
-# and no `download` — only `load`, which validates those CSVs and rebuilds
-# the SQLite silver from them.
+# user maintains the bronze CSVs (positions.csv / valuations.csv) by hand
+# in the data dir (default ~/wealthdb/manual/). So there is no `login` and
+# no `download` — only `load`, which validates those CSVs and rebuilds the
+# SQLite silver from them. Host-venv collector (no Docker).
 #
-# This wrapper just runs load.py under the collector's own .venv (host venv,
-# like schwab-api / ubs-psn — no Docker). `download` / `login` are accepted
-# as friendly no-ops so habitual `./manual download` doesn't error.
+# Subcommands:
+#   load [args...]      Validate the CSVs and rebuild the silver DB.
+#   download | login    No-op (explains the manual model).
 #
-# Usage:
-#   ./manual load [--bronze-dir DIR] [--silver-db PATH] [-v]
-#   ./manual download   # no-op (explains the manual model)
-#   ./manual login      # no-op (explains the manual model)
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on `load`:
+#   --data-dir  DIR     bronze CSVs dir  (default ~/wealthdb/manual)
+#   --silver-db PATH    silver DB path   (default <data-dir>/manual.db)
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -x "$here/.venv/bin/python" ]]; then
-    py="$here/.venv/bin/python"
-else
-    py="$(command -v python3 || command -v python)"
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=manual
+ENV_PREFIX=MANUAL
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
 
 cmd="${1:-load}"
 [[ $# -gt 0 ]] && shift || true
 
 case "$cmd" in
-    load)
-        exec "$py" "$here/load.py" "$@"
+    -h|--help|help)
+        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
         ;;
     download|login)
         cat >&2 <<'EOF'
 manual: no-op. This collector has no source to fetch from — you are the
-source of truth. Maintain the CSVs by hand in ~/wealthdb/manual/:
-  positions.csv, valuations.csv, transactions.csv
-then run `./manual load` to validate them and rebuild the silver.
+source of truth. Maintain the CSVs by hand in the data dir (default
+~/wealthdb/manual/): positions.csv, valuations.csv — then run
+`./manual load` to validate them and rebuild the silver.
 EOF
         exit 0
         ;;
-    -h|--help|help)
-        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-        exit 0
+    load)
+        host_resolve_dirs "$@"
+        py="$(host_python)"
+        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     *)
         echo "manual: unknown command '$cmd' (expected: load)" >&2

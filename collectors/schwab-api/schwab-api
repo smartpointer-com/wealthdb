@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# schwab-api — host wrapper for the wealthdb "schwab-api" collector.
+#
+# Host-venv collector (no Docker): runs the collector's own .py under its
+# .venv, like ubs-psn. Subcommands:
+#   login [args...]     Mint/refresh the OAuth token (7-day refresh token).
+#                       Pass --manual to print the auth URL, --check to
+#                       report the stored token's age without re-minting.
+#   download [args...]  Fetch accounts / positions / transactions to bronze.
+#   load [args...]      Parse bronze into the silver SQLite DB.
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on any subcommand:
+#   --secrets-dir DIR   credentials + OAuth token (default ~/.secrets)
+#   --data-dir    DIR   bronze dumps root        (default ~/wealthdb/schwab-api)
+#   --silver-db   PATH  silver DB path           (default <data-dir>/schwab-api.db)
+# Credentials (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) are read from the
+# environment, auto-sourced from <secrets-dir>/schwab-api.env if present.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=schwab-api
+ENV_PREFIX=SCHWAB_API
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+
+host_resolve_dirs "$@"
+host_source_env_file
+py="$(host_python)"
+token="$SECRETS_DIR/schwab-api-token.json"
+
+case "$cmd" in
+    login)
+        exec "$py" "$HERE/login.py" --token-path "$token" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    download)
+        exec "$py" "$HERE/download.py" --token-path "$token" --dest "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    *)
+        echo "schwab-api: unknown command '$cmd' (expected: login|download|load)" >&2
+        exit 2
+        ;;
+esac

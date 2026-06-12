@@ -64,30 +64,50 @@ cd wealthdb
 ./wealthdb positions        # query
 ```
 
-**Collectors** — two shapes:
+**Collectors** — every collector ships a wrapper exposing the same
+`login` / `download` / `load` verbs, whether it's a Docker collector
+(the web/REST ones) or a host-venv collector (`schwab-api`, `ubs-psn`,
+`manual`). Drive the whole fleet through the `wealthdb-collect`
+dispatcher:
 
 ```sh
-# Host-venv collectors (schwab-api, ubs-psn): pure-stdlib + a thin dep
-cd collectors/schwab-api
-.venv/bin/python download.py        # defaults: token + bronze under ~/.secrets / ~/wealthdb/schwab-api
-.venv/bin/python load.py            # defaults: bronze + silver under ~/wealthdb/schwab-api
+make install                          # symlink wealthdb + wealthdb-collect into ~/bin (BINDIR)
 
-# Docker collectors (the six web/REST ones): a host wrapper drives docker run
-cd collectors/viac
-./viac build                 # build the image
-./viac login                 # mint/refresh session (prompts for MFA)
-./viac download              # bronze dump
-./viac load                  # bronze → silver
+wealthdb-collect list                 # the available collectors
+wealthdb-collect viac login           # mint/refresh session (prompts for MFA)
+wealthdb-collect viac download        # bronze dump
+wealthdb-collect viac load            # bronze → silver
+wealthdb-collect schwab-api download  # host-venv collectors look identical
+# without installing, the per-collector wrapper works too:
+collectors/viac/viac download
 ```
 
-Every collector accepts the same `--since` / `--until` /
+Docker collectors need their image built first (`make build-<name>`);
+host-venv collectors need their `.venv` (`make build-<name>`).
+
+The secrets / bronze / silver directories are never hard-coded —
+override them per command or fleet-wide (precedence: **CLI flag >
+`${PREFIX}_*` env > `WEALTHDB_*` env > default**):
+
+| location | flag | env var(s) | default |
+|---|---|---|---|
+| secrets | `--secrets-dir` | `${PREFIX}_SECRETS_DIR`, `WEALTHDB_SECRETS_DIR` | `~/.secrets` |
+| bronze  | `--data-dir`    | `${PREFIX}_DATA_DIR`, `WEALTHDB_DATA_ROOT/<name>` | `~/wealthdb/<name>` |
+| silver  | `--silver-db`   | `${PREFIX}_SILVER_DB` | `<data-dir>/<name>.db` |
+
+```sh
+wealthdb-collect viac load --data-dir /mnt/bronze/viac --silver-db /mnt/silver/viac.db
+WEALTHDB_DATA_ROOT=/mnt/bronze wealthdb-collect schwab-api download
+```
+
+Every collector also accepts the same `--since` / `--until` /
 `--documents-since` / `--documents-until` flags plus a `--lookback`
 shortcut (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`, `all`); without
 any of them, downloads default to a 90-day window. Orchestration
 helpers in `~/bin` (`wealthdb-nightly` for the unattended sources,
-`wealthdb-refresh` for the interactive ones) run the whole fleet in
-sequence and forward `--lookback` to every collector; see their
-`--help`.
+`wealthdb-refresh` for the interactive ones) drive the fleet through
+`wealthdb-collect` and forward `--lookback` to every collector; see
+their `--help`.
 
 ## Documentation
 

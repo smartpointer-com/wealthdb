@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# ubs-psn — host wrapper for the wealthdb "ubs-psn" collector.
+#
+# Host-venv collector (no Docker): runs the collector's own .py under its
+# .venv, like schwab-api. UBS PSN is an SFTP file delivery authenticated by
+# an SSH key — there is no interactive MFA login. Subcommands:
+#   login               No-op (key-based; no session to mint). Verify
+#                       connectivity with `download --dry-run` instead.
+#   download [args...]  Pull the nightly PSN files over SFTP into bronze.
+#                       (UBS deletes each file server-side on success.)
+#   load [args...]      Parse bronze into the silver SQLite DB.
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on any subcommand:
+#   --secrets-dir DIR   SSH key (ubs_psn_key) + env  (default ~/.secrets)
+#   --data-dir    DIR   bronze dumps root            (default ~/wealthdb/ubs-psn)
+#   --silver-db   PATH  silver DB path               (default <data-dir>/ubs-psn.db)
+# The SFTP login id is read from $UBS_PSN_CLIENT_ID, auto-sourced from
+# <secrets-dir>/ubs-psn.env if present (or pass --client-id through).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=ubs-psn
+ENV_PREFIX=UBS_PSN
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    login)
+        cat >&2 <<'EOF'
+ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
+no interactive login / MFA session to mint. Verify connectivity (connect +
+host-key check, no files consumed) with:
+  ./ubs-psn download --dry-run
+EOF
+        exit 0
+        ;;
+esac
+
+host_resolve_dirs "$@"
+host_source_env_file
+py="$(host_python)"
+
+case "$cmd" in
+    download)
+        client_args=()
+        [[ -n "${UBS_PSN_CLIENT_ID:-}" ]] && client_args=(--client-id "$UBS_PSN_CLIENT_ID")
+        exec "$py" "$HERE/download.py" --dest "$DATA_DIR" \
+            --key "$SECRETS_DIR/ubs_psn_key" \
+            ${client_args[@]+"${client_args[@]}"} \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    *)
+        echo "ubs-psn: unknown command '$cmd' (expected: download|load)" >&2
+        exit 2
+        ;;
+esac

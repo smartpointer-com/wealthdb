@@ -12,6 +12,7 @@
 #   make test-collectors  test every collector
 #   make build-<name>     build one collector   (e.g. make build-schwab-web)
 #   make test-<name>      test one collector    (e.g. make test-schwab-web)
+#   make install          symlink wealthdb + wealthdb-collect into ~/bin
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
@@ -38,7 +39,7 @@ PYTHON := $(or \
   python3)
 
 .DEFAULT_GOAL := help
-.PHONY: all build test help \
+.PHONY: all build test help install uninstall \
         build-wealthdb test-wealthdb \
         build-collectors test-collectors \
         clean cleanall clean-wealthdb cleanall-wealthdb \
@@ -50,6 +51,31 @@ PYTHON := $(or \
 all: build-wealthdb build-collectors
 build: all
 test: test-wealthdb test-collectors
+
+# ---- install -----------------------------------------------------------
+# Symlink the two top-level entry points onto PATH so they work from any
+# directory (and the repo dir no longer needs to be on PATH):
+#   wealthdb         the gold-engine wrapper (wealthdb/wealthdb)
+#   wealthdb-collect the collector dispatcher (bin/wealthdb-collect)
+# BINDIR defaults to ~/bin; override e.g. `make install BINDIR=/usr/local/bin`.
+# Per-collector wrappers stay in the repo (the dispatcher resolves them);
+# personal orchestration (wealthdb-nightly / wealthdb-refresh) is not
+# installed here.
+BINDIR    ?= $(HOME)/bin
+REPO_ROOT := $(abspath .)
+
+install:
+	@mkdir -p "$(BINDIR)"
+	@ln -sf "$(REPO_ROOT)/wealthdb/wealthdb"     "$(BINDIR)/wealthdb"
+	@ln -sf "$(REPO_ROOT)/bin/wealthdb-collect"  "$(BINDIR)/wealthdb-collect"
+	@echo "  linked $(BINDIR)/wealthdb         -> $(REPO_ROOT)/wealthdb/wealthdb"
+	@echo "  linked $(BINDIR)/wealthdb-collect -> $(REPO_ROOT)/bin/wealthdb-collect"
+	@case ":$$PATH:" in *":$(BINDIR):"*) ;; \
+	  *) echo "  note: $(BINDIR) is not on your PATH — add it to run these bare";; esac
+
+uninstall:
+	@rm -f "$(BINDIR)/wealthdb" "$(BINDIR)/wealthdb-collect"
+	@echo "  removed $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
 
 build-collectors: base-images $(addprefix build-,$(COLLECTORS))
 test-collectors:  $(addprefix test-,$(COLLECTORS))
@@ -224,6 +250,9 @@ help:
 	@echo "  make test-collectors    test every collector"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
+	@echo ""
+	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/bin)"
+	@echo "  make uninstall          remove those symlinks"
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches)"
 	@echo "  make cleanall           also remove docker images + venvs"

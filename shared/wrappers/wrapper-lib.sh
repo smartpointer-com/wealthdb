@@ -61,13 +61,63 @@ _envvar() {
 # Initialisation + help-text helpers
 # ----------------------------------------------------------------------
 
+# Directory resolution precedence (highest first):
+#   1. a --secrets-dir / --data-dir / --silver-db CLI flag (parsed later,
+#      in wrapper_resolve_dir_args, so it overrides everything here)
+#   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR env var
+#   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT env var
+#      (lets wealthdb-nightly / wealthdb-refresh set one knob for all)
+#   4. the ~/.secrets and ~/wealthdb/<name> defaults
 wrapper_init() {
     IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:latest")"
     CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
-    HOST_SECRETS="$(_envvar SECRETS_DIR "$HOME/.secrets")"
-    HOST_DATA="$(_envvar DATA_DIR "$HOME/wealthdb/$NAME")"
+
+    local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
+    HOST_SECRETS="$(_envvar SECRETS_DIR "$secrets_default")"
+
+    local data_default="$HOME/wealthdb/$NAME"
+    [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
+    HOST_DATA="$(_envvar DATA_DIR "$data_default")"
+
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         HOST_DEBUG="$(_envvar DEBUG_DIR "$HOME/.cache/${NAME}-debug")"
+    fi
+}
+
+# Parse the uniform directory-override flags out of the forwarded args:
+#   --secrets-dir DIR   override HOST_SECRETS (the /secrets mount source)
+#   --data-dir    DIR   override HOST_DATA    (the /data mount source —
+#                       holds both the bronze dumps and the silver DB)
+#   --silver-db   PATH  put the silver DB at an explicit HOST path outside
+#                       the data dir: bind-mounts its parent to /silver and
+#                       rewrites the flag to the in-container path (the inner
+#                       load.py accepts --silver-db, default /data/<name>.db)
+# Both `--flag VALUE` and `--flag=VALUE` forms are accepted. Recognised
+# flags are CONSUMED; everything else is collected into FORWARD_ARGS for the
+# container. SILVER_MOUNT holds the extra `-v` args (empty unless --silver-db
+# was given). bash 3.2 safe (no namerefs / associative arrays).
+wrapper_resolve_dir_args() {
+    FORWARD_ARGS=()
+    SILVER_MOUNT=()
+    local silver=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --secrets-dir)   HOST_SECRETS="$2"; shift 2 ;;
+            --secrets-dir=*) HOST_SECRETS="${1#*=}"; shift ;;
+            --data-dir)      HOST_DATA="$2"; shift 2 ;;
+            --data-dir=*)    HOST_DATA="${1#*=}"; shift ;;
+            --silver-db)     silver="$2"; shift 2 ;;
+            --silver-db=*)   silver="${1#*=}"; shift ;;
+            *)               FORWARD_ARGS+=("$1"); shift ;;
+        esac
+    done
+    if [[ -n "$silver" ]]; then
+        local d b
+        d="$(cd "$(dirname "$silver")" 2>/dev/null && pwd)" || d="$(dirname "$silver")"
+        b="$(basename "$silver")"
+        mkdir -p "$d"
+        SILVER_MOUNT=(-v "$d:/silver")
+        FORWARD_ARGS+=(--silver-db "/silver/$b")
     fi
 }
 
@@ -184,6 +234,12 @@ wrapper_safety_guard() {
 # falling through here. Composes the docker argv from the active
 # features and execs it.
 wrapper_main() {
+    # Pull the --secrets-dir/--data-dir/--silver-db flags out of the args
+    # (they may override HOST_SECRETS/HOST_DATA + add the /silver mount),
+    # then continue with the remaining args as the positional parameters.
+    wrapper_resolve_dir_args "$@"
+    set -- ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+
     wrapper_check_mounts
     wrapper_tty_args
 
@@ -221,6 +277,7 @@ wrapper_main() {
     docker_args+=(
         -v "$HOST_SECRETS:/secrets"
         -v "$HOST_DATA:/data"
+        ${SILVER_MOUNT[@]+"${SILVER_MOUNT[@]}"}
     )
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         docker_args+=(-v "$HOST_DEBUG:/debug")
