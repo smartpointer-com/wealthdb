@@ -15,6 +15,8 @@ never be clicked.
 
 from __future__ import annotations
 
+import re
+
 # ============================================================
 # Hosts and entry-point URLs
 # ============================================================
@@ -113,6 +115,38 @@ MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 
 # Per-push countdown text — informational, not used as a landmark.
 # The Swissquote UI says "This request is valid for 60 seconds".
+
+# SmartL3 approval feedback long-poll. The MFA wait page (an
+# sq-thirdlevel-plugin React SPA) issues a GET to this endpoint that the
+# server holds open until the phone responds to the push or the `timeout`
+# query param elapses. Polling it is how we detect approval the instant it
+# happens WITHOUT re-issuing the push — only the SmartL3 *challenge*
+# endpoint fires a new push. (Discovered by reading the public
+# sq-thirdlevel-plugin JS bundle: `${contextPath}/api/${path}`, where the
+# context root is the MFA page URL up to the '#'.)
+SMARTL3_FEEDBACK_LISTEN_PATH = "/api/thirdlevel/smartL3/feedback/listen/"
+_MFA_URL_ID_RE = re.compile(r"urlId=([0-9a-fA-F]+)")
+
+
+def smartl3_listen_url(mfa_page_url: str, *, timeout_ms: int) -> str | None:
+    """Build the SmartL3 feedback long-poll URL from the live MFA page URL.
+
+    `mfa_page_url` looks like
+        https://<host>/sq-thirdlevel-plugin/#thirdlevel/urlId=<hex>
+    The API base is the part before the '#'; the urlId comes from the
+    fragment. Returns None if no urlId is present (i.e. we're not on the
+    SmartL3 wait page), so the caller can fall back to another detector.
+    """
+    base, _, fragment = mfa_page_url.partition("#")
+    match = _MFA_URL_ID_RE.search(fragment)
+    if not match:
+        return None
+    url_id = match.group(1)
+    return (
+        f"{base.rstrip('/')}{SMARTL3_FEEDBACK_LISTEN_PATH}{url_id}"
+        f"?queryRedirectBaseUrl=true&cache=false&timeout={timeout_ms}"
+    )
+
 
 # ============================================================
 # Transactions page (Trading Platform #transactions)

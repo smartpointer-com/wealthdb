@@ -10,9 +10,9 @@ set -euo pipefail
 NAME=swissquote
 ENV_PREFIX=SWISSQUOTE
 ENV_VARS=(SWISSQUOTE_USERNAME SWISSQUOTE_PASSWORD)
-# No optional features: swissquote has no /debug mount, no live-code
-# /app mount, no safety guard (no long-running interactive container),
-# and no VNC subcommand.
+HAS_DEBUG=1         # /debug mount for login.py --screenshot-dir / --trace
+# No live-code /app mount, no safety guard (no long-running interactive
+# container), and no VNC subcommand.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091

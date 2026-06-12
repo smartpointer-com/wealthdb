@@ -23,6 +23,7 @@ import getpass
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +129,101 @@ def _screenshot(page, screenshot_dir: Path | None, name: str) -> None:
         log.info("Screenshot: %s", path)
     except Exception as e:  # noqa: BLE001 - best-effort debug aid
         log.warning("Screenshot %s failed: %s", path, e)
+
+
+def _dump_html(page, screenshot_dir: Path | None, name: str) -> None:
+    """Save the page's rendered HTML next to the screenshot. Useful for
+    pinning a selector against the live DOM (a screenshot can't be
+    grepped). Best-effort; only when a screenshot dir is configured."""
+    if not screenshot_dir:
+        return
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    path = screenshot_dir / f"{name}.html"
+    try:
+        path.write_text(page.content(), encoding="utf-8")
+        log.info("Page HTML: %s", path)
+    except Exception as e:  # noqa: BLE001 - best-effort debug aid
+        log.warning("HTML dump %s failed: %s", path, e)
+
+
+def _log_feedback_poll(
+    screenshot_dir: Path | None, name: str, *,
+    status: int | str, ok: bool, elapsed: float, body: str,
+) -> None:
+    """Append one SmartL3 feedback long-poll result to a debug file.
+
+    Records status, how early it returned, and the response body so we can
+    confirm the approved-vs-keep-alive response shape against the timing
+    heuristic the wait loop uses. Best-effort; only when a debug dir is set.
+    The body is auth-status only and lands in the user-provided debug dir,
+    never in the repo."""
+    if not screenshot_dir:
+        return
+    try:
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        path = screenshot_dir / f"{name}_smartl3_feedback.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"+{elapsed:7.1f}s  status={status} ok={ok}  "
+                f"{len(body)}B  {body[:400]!r}\n"
+            )
+    except Exception:  # noqa: BLE001 - logging must never break login
+        pass
+
+
+# Primary approval detector: long-poll the SmartL3 feedback endpoint (see
+# landmarks.smartl3_listen_url). Observed behaviour (from live logins):
+#   - Before approval, the server HOLDS each poll open ~to the timeout we ask
+#     for, then returns a keep-alive (~18-20s for a 20s request).
+#   - The instant the phone approves, the server returns immediately, and
+#     every subsequent poll then also returns immediately (the approval state
+#     is sticky).
+#   - The response BODY is identical in both cases (just a constant redirect
+#     target), so timing is the only client-side signal: a poll that returns
+#     well before the hold means approval landed. We then settle the F5
+#     session with one trigger nav — no push, since approval is already
+#     recorded (only the challenge endpoint fires a push).
+#   LISTEN_SERVER_HOLD_MS  — the `timeout` we ask the server to hold each poll.
+#   LISTEN_CLIENT_TIMEOUT_MS — our ceiling on one poll; must exceed the hold so
+#                              a normal keep-alive return isn't treated as error.
+#   LISTEN_EARLY_RETURN_SECONDS — returns faster than this count as approval.
+#       Set to half the hold: comfortably below the ~18-20s keep-alive band
+#       (so a keep-alive is never misread as approval, which would fire a stray
+#       push), yet detection stays snappy because an approval landing in the
+#       upper half is re-caught on the very next poll via the sticky state.
+LISTEN_SERVER_HOLD_MS = 20000
+LISTEN_CLIENT_TIMEOUT_MS = 28000
+LISTEN_EARLY_RETURN_SECONDS = LISTEN_SERVER_HOLD_MS / 1000 / 2
+
+# Fallback detector: if the feedback poll proves unusable here (repeated
+# errors, or an "early return" that turns out NOT to be an approval), we
+# revert to re-navigating to the trigger URL on this interval. That detects
+# approval too, but re-fires the push when approval hasn't landed yet — so the
+# interval must comfortably exceed the time to verify the code and approve, so
+# the common case still fires exactly one push.
+MFA_APPROVAL_PROBE_SECONDS = 30
+
+
+def _announce_operation_code(page, *, waiting_note: str = "") -> None:
+    """Scrape the on-screen Mobile Level 3 operation code and ask the
+    operator to verify it against their phone before approving. Called when
+    the MFA page first appears and again whenever the push is re-triggered,
+    so the printed code never goes stale relative to the phone."""
+    tan = None
+    try:
+        tan = page.locator(
+            sq.MFA_OPERATION_CODE_SELECTOR
+        ).inner_text(timeout=5000).strip()
+    except Exception as e:  # noqa: BLE001 - non-fatal
+        log.warning("Could not scrape Operation No.: %s", e)
+    if tan:
+        msg = (f"Operation No. on screen: {tan}\n"
+               "Verify this matches your phone, then approve.")
+    else:
+        msg = "Approve the Mobile Level 3 push on your phone."
+    if waiting_note:
+        msg = f"{msg} {waiting_note}"
+    print(msg, flush=True)
 
 
 def _new_context(p, *, storage_state: Path | None):
@@ -301,44 +397,40 @@ def login(args: argparse.Namespace) -> int:
                     timeout=5000,
                 )
                 _screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
-                tan = None
-                try:
-                    tan = page.locator(
-                        sq.MFA_OPERATION_CODE_SELECTOR
-                    ).inner_text(timeout=5000).strip()
-                except Exception as e:  # noqa: BLE001 - non-fatal
-                    log.warning("Could not scrape Operation No.: %s", e)
-                if tan:
-                    print(
-                        f"Operation No. on screen: {tan}\n"
-                        f"Verify this matches your phone, then approve. "
-                        f"Waiting up to {args.mfa_timeout}s ...",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        "Approve the Mobile Level 3 push on your phone. "
-                        f"Waiting up to {args.mfa_timeout}s ...",
-                        flush=True,
-                    )
+                _dump_html(page, args.screenshot_dir, f"login_{ts}_03_mfa")
+                _announce_operation_code(
+                    page,
+                    waiting_note=f"Waiting up to {args.mfa_timeout}s ...",
+                )
             except Exception:
                 log.info(
                     "No MFA page detected — device fingerprint likely "
                     "trusted; waiting for post-auth landing URL."
                 )
 
-            # Poll for either the success URL or a known interstitial.
-            # We also re-navigate to the trigger URL every 10s as a
-            # liveness probe: the MFA wait page is a polling SPA that
-            # silently fails when its XHRs are anti-bot-blocked, but
-            # F5 itself will route us correctly on a fresh navigation
-            # if the backend has recorded our approval. So we let the
-            # SPA try for 10s, then bypass it.
-            import time
+            # Wait for approval, then for the post-auth landing URL.
+            #
+            # PRIMARY detector — long-poll the SmartL3 feedback endpoint
+            # (sq.smartl3_listen_url). The server holds each poll open until
+            # the phone responds, so a poll returning materially earlier than
+            # the hold we asked for means approval landed: detected the instant
+            # it happens, and WITHOUT re-firing the push. On such an early
+            # return we navigate to the trigger URL once to settle the F5
+            # session — which does not fire a push, because approval is already
+            # recorded.
+            #
+            # SELF-CORRECTING fallback — if the poll errors repeatedly, or an
+            # "early return" lands us back on the MFA page (i.e. it was a
+            # keep-alive, not an approval, so the timing heuristic is unsafe
+            # here), we stop trusting it and revert to re-navigating to the
+            # trigger URL every MFA_APPROVAL_PROBE_SECONDS. That is slower and
+            # may fire a second push, but always completes.
             deadline = time.monotonic() + args.mfa_timeout
             last_logged_url = None
             last_heartbeat = 0.0
             last_repoke = time.monotonic()
+            use_feedback_poll = True
+            feedback_errors = 0
             while time.monotonic() < deadline:
                 url = page.url
                 if url != last_logged_url:
@@ -364,19 +456,98 @@ def login(args: argparse.Namespace) -> int:
                         "answer the question, then re-run login.py.\n"
                         f"Stuck at: {url}"
                     )
-                # Re-poke F5 every 10s while we're stuck on the MFA
-                # wait page. If the user has already tapped approve,
-                # this fresh navigation will see the now-valid session
-                # cookie and F5 will route to the post-auth URL.
+                if "sq-thirdlevel-plugin" not in url:
+                    # A transient F5 redirect between the MFA page and the
+                    # post-auth URL; keep watching.
+                    time.sleep(0.25)
+                    continue
+
+                # Fast path: SmartL3 feedback long-poll. Detects approval the
+                # instant it lands, without firing a push. A keep-alive return
+                # or an error simply falls through to the re-navigation
+                # backstop below.
+                if use_feedback_poll:
+                    listen_url = sq.smartl3_listen_url(
+                        url, timeout_ms=LISTEN_SERVER_HOLD_MS,
+                    )
+                    if listen_url is None:
+                        use_feedback_poll = False
+                    else:
+                        log.info("listening for approval (SmartL3 long-poll, "
+                                 "up to %ds)", LISTEN_SERVER_HOLD_MS // 1000)
+                        t0 = time.monotonic()
+                        resp = None
+                        try:
+                            resp = page.request.get(
+                                listen_url, timeout=LISTEN_CLIENT_TIMEOUT_MS,
+                            )
+                        except Exception as e:  # noqa: BLE001 - best-effort
+                            feedback_errors += 1
+                            log.warning("SmartL3 feedback poll failed (%d): %s",
+                                        feedback_errors, e)
+                            if feedback_errors >= 3:
+                                log.warning("disabling feedback fast-path; "
+                                            "re-navigation backstop only")
+                                use_feedback_poll = False
+                        if resp is not None:
+                            elapsed = time.monotonic() - t0
+                            feedback_errors = 0
+                            body = ""
+                            try:
+                                body = resp.text()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            _log_feedback_poll(
+                                args.screenshot_dir, f"login_{ts}",
+                                status=resp.status, ok=resp.ok,
+                                elapsed=elapsed, body=body,
+                            )
+                            if resp.ok and elapsed < LISTEN_EARLY_RETURN_SECONDS:
+                                # Early return == phone responded. Settle the
+                                # F5 session via the trigger URL (no push,
+                                # since approval is already recorded).
+                                log.info("approval signalled via SmartL3 "
+                                         "feedback after %.1fs; finalizing",
+                                         elapsed)
+                                try:
+                                    page.goto(sq.LOGIN_TRIGGER_URL,
+                                              wait_until="domcontentloaded")
+                                except Exception as e:  # noqa: BLE001
+                                    log.warning("finalize navigation "
+                                                "failed: %s", e)
+                                if "sq-thirdlevel-plugin" in page.url:
+                                    # That early return was NOT an approval, so
+                                    # the timing heuristic is unreliable here
+                                    # (and this nav re-fired the push). Drop the
+                                    # fast-path; the backstop takes over.
+                                    log.warning("SmartL3 early return was not "
+                                                "an approval; disabling "
+                                                "feedback fast-path")
+                                    use_feedback_poll = False
+                                    _announce_operation_code(page)
+                                    last_repoke = time.monotonic()
+                                # Re-check from the top (post-auth -> break).
+                                continue
+                            # else keep-alive: fall through to the backstop.
+
+                # Backstop: re-navigate to the trigger URL on a fixed interval.
+                # This runs whether or not the fast-path is active, so approval
+                # is never missed even if the long-poll never observes it. If
+                # approval has landed this routes to the post-auth URL;
+                # otherwise F5 re-issues the push, so we re-print the fresh
+                # code to keep the terminal in sync with the phone.
                 if (
-                    time.monotonic() - last_repoke > 10
+                    time.monotonic() - last_repoke > MFA_APPROVAL_PROBE_SECONDS
                     and "sq-thirdlevel-plugin" in url
                 ):
-                    log.info("re-poking F5 by re-navigating to trigger URL")
+                    log.info("probing for approval (re-navigating to the "
+                             "trigger URL)")
                     try:
                         page.goto(
                             sq.LOGIN_TRIGGER_URL, wait_until="domcontentloaded",
                         )
+                        if "sq-thirdlevel-plugin" in page.url:
+                            _announce_operation_code(page)
                     except Exception as e:  # noqa: BLE001 - best effort
                         log.warning("re-poke navigation failed: %s", e)
                     last_repoke = time.monotonic()
