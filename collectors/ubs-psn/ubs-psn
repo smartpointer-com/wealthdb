@@ -16,7 +16,7 @@
 #   --data-dir    DIR   bronze dumps root            (default ~/wealthdb/ubs-psn)
 #   --silver-db   PATH  silver DB path               (default <data-dir>/ubs-psn.db)
 # The SFTP login id is read from $UBS_PSN_CLIENT_ID, auto-sourced from
-# <secrets-dir>/ubs-psn.env if present (or pass --client-id through).
+# <secrets-dir>/ubs-psn.env (override via $UBS_PSN_ENV_FILE); or pass --client-id.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +30,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     login)
