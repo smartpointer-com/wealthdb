@@ -1529,7 +1529,7 @@ Entry point is the production binary. The `./wealthdb-test`
 wrapper overrides with `--entrypoint go` to run tests in the same
 image. See §12.5.
 
-DuckDB's Go driver (`github.com/marcboeker/go-duckdb`) requires CGO
+DuckDB's Go driver (`github.com/duckdb/duckdb-go/v2`) requires CGO
 and glibc — the `bookworm` base satisfies both. Alpine / musl was
 rejected for this reason.
 

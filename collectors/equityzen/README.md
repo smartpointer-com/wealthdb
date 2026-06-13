@@ -45,10 +45,11 @@ target and a `wealthdb.cfg` `silver_sources` entry.
 
 The gold adapter projects this silver into the canonical
 `accounts` / `instruments` / `positions` / `transactions` tables; see
-DESIGN.md §6. Operator wiring (a Makefile target and a `wealthdb.cfg`
-`silver_sources` entry) is the only remaining step.
+DESIGN.md §6, and is registered with the gold engine. Enabling the
+source in a run is then a `wealthdb.cfg` `silver_sources` entry
+(operator config).
 
-## Intended quick start (once implemented)
+## Quick start
 
 ```sh
 # 1. Build the image (builds on the shared base-camoufox image).

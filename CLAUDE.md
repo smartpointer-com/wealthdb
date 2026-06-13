@@ -1,7 +1,7 @@
 # Notes for Claude / coding agents — repo-wide
 
 This is the **wealthdb** monorepo: a Go gold engine under
-`wealthdb/` plus eight bronze+silver collectors under
+`wealthdb/` plus thirteen bronze+silver collectors under
 `collectors/<source>/`. See [ARCHITECTURE.md](ARCHITECTURE.md)
 for the bronze → silver → gold model.
 

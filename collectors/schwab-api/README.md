@@ -72,23 +72,27 @@ between Schwab's redirect and your localhost.
 
 ### Usage
 
+Run via the host-venv wrapper (`./schwab-api`, or `wealthdb-collect
+schwab-api`), which supplies `--token-path` from the shared directory
+contract — see [collectors/README.md](../README.md#anatomy-of-a-collector).
+
 Initial mint (and weekly re-mint):
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json
+./schwab-api login
 ```
 
 Headless / SSH environments — paste the redirect URL by hand:
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json --manual
+./schwab-api login --manual
 ```
 
 Check whether the current token still has refresh-window life left
 (no browser, no network):
 
 ```sh
-.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json --check
+./schwab-api login --check
 ```
 
 #### Flags
@@ -145,31 +149,21 @@ placement, replacement, cancellation, or transfers). See
 
 ### Setup
 
-```sh
-git clone <this repo>
-cd collectors/schwab-api
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-Credentials go in `~/.secrets/schwab-api.env` (`SCHWAB_CLIENT_ID`,
-`SCHWAB_CLIENT_SECRET`); see
-[collectors/README.md](../README.md#conventions-shared-across-collectors)
-for the shared env-file rules.
-
-```sh
-source ~/.secrets/schwab-api.env
-.venv/bin/python login.py --token-path ~/.secrets/schwab-api-token.json
-```
+Build the `.venv` with `make build-schwab-api` (the host-venv pattern —
+see [collectors/README.md](../README.md#build-scaffolding)). Credentials
+go in `~/.secrets/schwab-api.env` (`SCHWAB_CLIENT_ID`,
+`SCHWAB_CLIENT_SECRET`), which the wrapper sources automatically. Mint
+the first token with `./schwab-api login` (see above).
 
 ### Configuration
 
-`download.py` reads no config files. All inputs are CLI flags or
-environment variables. Defaults are conservative:
+`download.py` reads no config files — all inputs are CLI flags or env
+vars. The secrets / data / silver locations follow the shared directory
+contract (`--secrets-dir` / `--data-dir` / `--silver-db` and the
+`${PREFIX}_*` / `WEALTHDB_*` env vars) — see
+[collectors/README.md](../README.md#anatomy-of-a-collector).
+Source-specific defaults:
 
-- Token file path: `~/.secrets/schwab-api-token.json` (override with
-  `--token-path`).
-- Output directory: `~/wealthdb/schwab-api` (override with `--dest`).
 - Transaction window: last 90 days (`--lookback 1w|4w|3m|6m|1y|2y|5y|all`
   for a named shortcut, or `--since YYYY-MM-DD` for an explicit
   lower bound; Schwab caps each API request at 1 year, so the loader
@@ -184,21 +178,21 @@ Dry run — refreshes tokens, lists linked accounts, exits without
 fetching positions, transactions, or open orders:
 
 ```sh
-.venv/bin/python download.py --dry-run
+./schwab-api download --dry-run
 ```
 
 Real download (last 90 days, the default):
 
 ```sh
-.venv/bin/python download.py
+./schwab-api download
 ```
 
 Wider backfill via the shared `--lookback` shortcut, or an explicit
 date:
 
 ```sh
-.venv/bin/python download.py --lookback 1y
-.venv/bin/python download.py --since 2024-01-01
+./schwab-api download --lookback 1y
+./schwab-api download --since 2024-01-01
 ```
 
 Files land in `./data/<UTC-timestamp>/`:
@@ -291,7 +285,7 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 ### Usage
 
 ```sh
-.venv/bin/python load.py            # defaults under ~/wealthdb/schwab-api
+./schwab-api load                   # defaults under ~/wealthdb/schwab-api
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match

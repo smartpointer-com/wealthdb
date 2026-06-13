@@ -56,12 +56,10 @@ SFTP factsheet.
 
 ### Setup
 
-```sh
-git clone <this repo>
-cd collectors/ubs-psn
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
+Build the `.venv` with `make build-ubs-psn` (the host-venv pattern — see
+[collectors/README.md](../README.md#build-scaffolding)). The SFTP login
+id is read from `UBS_PSN_CLIENT_ID` in `~/.secrets/ubs-psn.env`, sourced
+automatically by the wrapper (`--client-id` overrides it).
 
 ### Configuration
 
@@ -78,14 +76,17 @@ Dry run — connects, verifies host key, authenticates, exits without
 touching files:
 
 ```sh
-.venv/bin/python download.py --client-id CHxxxxxx --dry-run
+./ubs-psn download --dry-run
 ```
 
 Real download:
 
 ```sh
-.venv/bin/python download.py --client-id CHxxxxxx
+./ubs-psn download
 ```
+
+(Both read `UBS_PSN_CLIENT_ID` from `~/.secrets/ubs-psn.env`; append
+`--client-id CHxxxxxx` to override.)
 
 Files land in `./data/<UTC-timestamp>/<ORDERTYPE>.zip`. If the run
 downloaded nothing, the timestamped directory is removed.
@@ -192,7 +193,7 @@ Identifier canonicalisation (since migration 0002):
 ### Usage
 
 ```sh
-.venv/bin/python load.py            # defaults under ~/wealthdb/ubs-psn
+./ubs-psn load                      # defaults under ~/wealthdb/ubs-psn
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match

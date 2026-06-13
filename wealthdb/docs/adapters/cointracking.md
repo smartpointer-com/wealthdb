@@ -20,7 +20,7 @@ own per-portfolio valuations in each portfolio's quote currency.
 The silver is **DuckDB**, not SQLite (one-off exception driven by
 DECIMAL(38,18) for crypto amounts + JSON1-style window functions
 for the holdings replay). The adapter opens it read-only via the
-same `marcboeker/go-duckdb/v2` driver the gold engine uses.
+same `duckdb/duckdb-go/v2` driver the gold engine uses.
 
 ## 2. Identifier conventions
 

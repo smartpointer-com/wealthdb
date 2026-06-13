@@ -40,11 +40,10 @@ to authenticate to.
 
 ## Quick start
 
-```bash
-cd collectors/manual
-python3 -m venv .venv
-./.venv/bin/python -m pip install -r requirements.txt -e ../../shared/collectorkit
+Build the `.venv` with `make build-manual` (the host-venv pattern — see
+[collectors/README.md](../README.md#build-scaffolding)). Then:
 
+```bash
 # 1. ~/wealthdb/manual/ already holds two fictional starter CSVs
 #    (positions.csv / valuations.csv). Edit them in place, replacing the
 #    placeholder holdings with your real ones. (examples/ in this repo is a
@@ -138,7 +137,7 @@ predates the position's `acquired_at`.
 ## Tests
 
 ```bash
-./.venv/bin/python -m pytest tests/ -q
+make test-manual
 ```
 
 Runs the loader against the synthetic examples and exercises the validation

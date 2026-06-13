@@ -194,8 +194,8 @@ register/deregister via registry test hooks.
   DuckDB already pulls in CGO, so this doesn't simplify the build
   — but it avoids a second SQLite shared library. Happy to swap
   to `mattn/go-sqlite3` if maturity matters more.
-- **DuckDB (read/write gold)**: `github.com/marcboeker/go-duckdb`
-  (CGO; the only mature Go DuckDB driver).
+- **DuckDB (read/write gold)**: `github.com/duckdb/duckdb-go/v2`
+  (CGO; the official Go DuckDB driver, formerly `marcboeker/go-duckdb`).
 
 ### 3.9 No public API
 

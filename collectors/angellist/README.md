@@ -30,9 +30,10 @@ queryable silver).
 | `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
 
-Gold side is **not** wired yet: no `wealthdb/internal/silver/angellist/`
-adapter, no Makefile target, no `wealthdb.cfg` entry — see
-[DESIGN.md §"Gold mapping"](DESIGN.md).
+Gold side is wired: the `wealthdb/internal/silver/angellist/` adapter
+projects this silver into the canonical model and is registered with the
+gold engine — see [DESIGN.md §"Gold mapping"](DESIGN.md). Enabling the
+source in a run is then a `wealthdb.cfg` `silver_sources` entry.
 
 ## Quick start
 

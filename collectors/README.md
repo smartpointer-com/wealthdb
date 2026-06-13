@@ -27,10 +27,10 @@ form and the **input contract** to gold. One silver DB per source.
 
 ## Two runtimes
 
-| Runtime | Collectors | How you run it |
+| Runtime | Collectors | Invocation |
 | --- | --- | --- |
-| **Host venv** | `schwab-api`, `ubs-psn` | `.venv/bin/python {download,load}.py …` — pure-stdlib plus one thin dependency; no container. |
-| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
+| **Host venv** | `schwab-api`, `ubs-psn`, `manual` | A wrapper runs the collector's `.py` under its `.venv` — pure-stdlib plus one thin dependency; no container. |
+| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking`, `angellist`, `carta`, `equityzen` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
 ## Conventions shared across collectors
 
@@ -80,6 +80,175 @@ design doc exists. A collector's docs describe its **silver
 columns** (what they contain, where scraped from); they point to
 the adapter for the gold interpretation rather than restating it.
 
+## Anatomy of a collector
+
+A collector lives in `collectors/<name>/`. Its one hard requirement is
+an **executable `collectors/<name>/<name>`** — the wrapper that
+`wealthdb-collect` dispatches to; everything else (Python scripts,
+migrations, Dockerfile, tests) is convention. The closest existing
+collector is usually the best starting point — a REST one
+([`viac`](viac/)), a browser one ([`schwab-web`](schwab-web/)), or a
+host-venv one ([`schwab-api`](schwab-api/)).
+
+Each collector is identified by a kebab-case `<name>` (e.g. `acme-bank`)
+and an upper-snake `ENV_PREFIX` (e.g. `ACME_BANK`); both thread through
+the wrapper, the env file, and the image name.
+
+```
+collectors/<name>/
+├── <name>                 the wrapper — what wealthdb-collect dispatches to (executable)
+├── login.py               mints/refreshes the session  (may be a no-op or absent)
+├── download.py            fetches bronze
+├── load.py                parses bronze → silver
+├── migrations/            0001_initial.sql, 0002_*.sql … (silver schema)
+├── requirements.txt       Python deps (host venv) OR pip layer (Docker)
+├── Dockerfile             Docker collectors only
+├── entrypoint.sh          Docker collectors only — maps subcommand → script
+├── tests/                 pytest / unittest (bronze→silver at minimum)
+├── README.md              what this source produces + its silver columns
+├── DESIGN.md              source-specific reverse-engineering notes (optional)
+└── CLAUDE.md              source-specific agent rules (allowed UI surface, etc.)
+```
+
+### The wrapper — the `wealthdb-collect` contract
+
+`wealthdb-collect <name> <verb> [flags]` resolves the repo and execs
+`collectors/<name>/<name> <verb> [flags]` unchanged; a source appears in
+`wealthdb-collect list` when `collectors/<name>/<name>` is executable.
+The wrapper therefore:
+
+- accepts the verbs **`login`**, **`download`**, **`load`** (plus
+  `build` and `help`; Docker wrappers also `sh`). `login` may be a no-op
+  ([`ubs-psn`](ubs-psn/), key-based) or fold into `download` (one-shot
+  scrapers), but the verb is still accepted so an orchestrator's
+  `login → download → load` never trips.
+- honours the **uniform directory-override flags** on every verb, with
+  this precedence (highest first):
+
+  | | flag | per-collector env | fleet env | default |
+  | --- | --- | --- | --- | --- |
+  | secrets | `--secrets-dir` | `${PREFIX}_SECRETS_DIR` | `WEALTHDB_SECRETS_DIR` | `~/.secrets` |
+  | data (bronze) | `--data-dir` | `${PREFIX}_DATA_DIR` | `WEALTHDB_DATA_ROOT/<name>` | `~/wealthdb/<name>` |
+  | silver DB | `--silver-db` | `${PREFIX}_SILVER_DB` | — | `<data-dir>/<name>.db` |
+
+- forwards the `download` date-window flags (`--since`, `--until`,
+  `--lookback`, `--documents-*`) to the inner `download.py`.
+
+That precedence is not hand-written; it comes from sourcing the matching
+shared library and setting a small config block.
+
+A **Docker** wrapper sources
+[`shared/wrappers/wrapper-lib.sh`](../shared/wrappers/wrapper-lib.sh),
+sets `NAME`, `ENV_PREFIX`, and `ENV_VARS` (env vars forwarded into the
+container with `-e`), optionally opts into feature flags — `HAS_DEBUG`
+(a `/debug` mount for `--screenshot-dir`/`--trace`), `HAS_APP_MOUNT`
+(live-mounted source during iteration), `HAS_SAFETY` (refuse to clobber
+a live container mid-MFA), `HAS_VNC` (`vnc-login` port forwarding) —
+calls `wrapper_init`, handles `build`/`help` inline, and ends with
+`wrapper_main "$@"`. The library bind-mounts `~/.secrets → /secrets` and
+`<data> → /data` (plus `/silver`, `/debug`, `/app` when applicable) and
+runs as `--user $(id -u):$(id -g)`.
+
+A **host-venv** wrapper (for pure-stdlib-plus-one-dep tools that need no
+browser) sources
+[`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
+`host_resolve_dirs "$@"` (which populates `SECRETS_DIR` / `DATA_DIR` /
+`SILVER_DB` / `FORWARD_ARGS`), `host_source_env_file` (which sources
+`<secrets>/<name>.env`), and `host_python` (the collector's `.venv`),
+then execs the right `.py` with the resolved paths and `FORWARD_ARGS`.
+
+### login.py — the session
+
+`login.py` authenticates and persists session state to
+`<secrets>/<name>-state.json` (cookies/CSRF) or `<name>-token.json`
+(OAuth) at chmod `0600`, via
+[`collectorkit.session`](../shared/collectorkit/collectorkit/session.py)
+(`save_state`, `secure_file`, `load_state`). Credentials come **only**
+from env vars (sourced from `<secrets>/<name>.env`), never a
+`--password` flag;
+[`collectorkit.envfile`](../shared/collectorkit/collectorkit/envfile.py)
+(`load_env`, `resolve_credential`) resolves a `--client-id` with an
+env-var fallback. A `--check` mode probes the stored session without a
+new MFA push. The full authentication policy is in root
+[CLAUDE.md](../CLAUDE.md) §3.
+
+### download.py — bronze
+
+`download.py` writes raw artefacts, exactly as the source returns them,
+into a fresh UTC-stamped run dir under `--dest` (the resolved data dir),
+via [`collectorkit.bronze`](../shared/collectorkit/collectorkit/bronze.py)
+(`ts_slug` / `run_dir` for the directory; `atomic_write_bytes` /
+`atomic_write_json` so an interrupted run leaves no half-written file).
+The shared date-window flags come from
+[`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
+(`add_lookback_args` + `resolve_lookback`). A `--dry-run` mode walks the
+source but exports nothing.
+
+### load.py — silver
+
+`load.py` opens the DB with
+[`collectorkit.silver`](../shared/collectorkit/collectorkit/silver.py)
+`open_db(--silver-db)`, runs `apply_migrations(conn, migrations/)`, and
+parses each bronze run into source-shaped tables. The load is
+**idempotent** — already-loaded dumps are skipped (`loaded_snapshots`,
+backed by a `dump_runs` table keyed by the run timestamp from
+`bronze.parse_run_ts`). Migrations are `NNNN_*.sql` applied in order,
+each ending by inserting its own version into `schema_meta`
+(`silver_schema_version`). Silver is the **input contract to gold**: its
+columns follow the source's shape, not gold's, and are documented in the
+collector README.
+
+### Build scaffolding
+
+The [Makefile](../Makefile) auto-discovers collectors (immediate subdirs
+of `collectors/`); **the presence of a Dockerfile decides the runtime.**
+
+- A **Docker** collector has a `Dockerfile` + `entrypoint.sh`. The
+  Dockerfile `FROM`s a shared base
+  ([`shared/images/`](../shared/images/)): `wealthdb/base-python`
+  (REST/no-browser, ships `collectorkit`), `wealthdb/base-playwright`,
+  or `wealthdb/base-camoufox` (headed browser + Xvfb/VNC).
+  `requirements.txt` is copied and `pip install`ed first (a cache
+  layer), then the scripts + `migrations` + `entrypoint.sh` are copied
+  **by name** so stray host artefacts never enter the image;
+  `entrypoint.sh` maps the subcommand to the right script.
+  `make build-<name>` runs `<wrapper> build`, and the bases come from
+  `make base-images`.
+- A **host-venv** collector has only `requirements.txt` (no Dockerfile).
+  `make build-<name>` creates `.venv` and installs `requirements.txt`
+  plus `-e shared/collectorkit`.
+
+`make build-collectors` / `make all` builds everything.
+
+### Unit tests
+
+Tests live in `tests/` (or `test_*.py`); `make test-<name>` rebuilds the
+collector and runs **pytest** — in-container for Docker collectors, in
+the `.venv` for host ones. At minimum they cover **bronze → silver**: a
+*synthetic* bronze dump (no real IDs/balances — see root
+[CLAUDE.md](../CLAUDE.md) §4) and assertions that `load.py` projects the
+expected silver rows; pure-stdlib `unittest` works too. `make test` /
+`make test-collectors` runs the whole suite, and tests must pass before
+any commit.
+
+### The gold adapter
+
+A collector stops at silver. A source reaches the canonical store
+through a Go **adapter** under
+[`../wealthdb/internal/silver/`](../wealthdb/internal/silver/) that reads
+the silver DB and emits canonical snapshot/transaction batches, mapping
+into the canonical enums (`account_kind`, `tax_wrapper`,
+`management_style`, `asset_class`, `tx_kind`) and the transaction
+sign convention. The adapter registers itself from `init()` via
+`silver.Register` and is imported in `cmd/wealthdb`; several adapters
+also carry a design doc under
+[`../wealthdb/docs/adapters/`](../wealthdb/docs/adapters/). The
+interface, canonical vocabulary, and fixture-test pattern live on the
+gold side — see [`../wealthdb/docs/DESIGN.md`](../wealthdb/docs/DESIGN.md)
+and an existing adapter doc (e.g.
+[`schwab.md`](../wealthdb/docs/adapters/schwab.md)) — rather than being
+restated here.
+
 ## The collectors
 
 | Collector | Source | Auth | Runtime |
@@ -93,6 +262,10 @@ the adapter for the gold interpretation rather than restating it.
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |
+| [`angellist`](angellist/) | AngelList LP portal (SPVs / fund deals) | scraped session | Docker (Camoufox) |
+| [`carta`](carta/) | Carta (private holdings / cap table) | scraped session | Docker (Camoufox) |
+| [`equityzen`](equityzen/) | EquityZen (pre-IPO secondary SPVs) | scraped session | Docker (Camoufox) |
+| [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
 
 Agent ground rules shared by every collector are in the repo-root
 [CLAUDE.md](../CLAUDE.md); each subdirectory's `CLAUDE.md` adds
