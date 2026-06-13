@@ -6,7 +6,7 @@ source, git/commit conventions) live in the repo-root
 applies on top of those shared rules.
 
 This collector is **implemented and working end-to-end** (2026-06-09):
-`byo-login` (real-Firefox cookie lift) → `download` (Camoufox + injected
+`login` (real-Firefox cookie lift) → `download` (Camoufox + injected
 cookie, passive GraphQL capture + tax-doc fetch) → `load` (event-sourced
 silver) → gold adapter (`wealthdb/internal/silver/angellist/`). The
 allow/forbid surface below is binding.
@@ -19,7 +19,7 @@ concrete surface for angellist:
 Allowed — once mapped, only these surfaces may be navigated or clicked:
 
 - The Investor Portal login form and the 2FA challenge page that
-  follows it (handled by the human in `byo-login`; the tooling types no
+  follows it (handled by the human in `login`; the tooling types no
   credentials — see §3).
 - Read-only LP reporting surfaces: portfolio / holdings summary,
   per-investment (SPV / fund) detail and capital-account statement,
@@ -74,24 +74,25 @@ appears in the allow-list above.
 
 The session cookie (`_angellist_v2`, domain-wide `.angellist.com`,
 ~27-day lifetime) is the keys to the kingdom — it can move money via the
-investing/funding flows above. `byo-login` lifts it from a real Firefox
+investing/funding flows above. `login` lifts it from a real Firefox
 into these `~/.secrets/` artefacts; treat each as a credential (0600/0700):
 
 - `angellist-cookies.json` — the extracted session cookie jar that
   `download` injects.
-- `angellist-fxprofile/` — the stock-Firefox profile `byo-login` logs into
+- `angellist-fxprofile/` — the stock-Firefox profile `login` logs into
   (holds the live plaintext `cookies.sqlite`).
 - `angellist-profile/` — the Camoufox profile used by `explore`.
 
-Don't invalidate without cause: re-run `byo-login` only when the cookie
+Don't invalidate without cause: re-run `login` only when the cookie
 genuinely expires (each one is a real human login + 2FA on the user's
 device). Don't log out programmatically; don't add a routine "fresh login
 per N runs".
 
-## 3. Authentication is byo-login — never weaken it
+## 3. Authentication is a by-hand login — never weaken it
 
-The auth path is `byo-login`: the user logs into a genuine Firefox **by
-hand** (that is what clears AngelList's invisible anti-bot challenge). The
+The auth path is `login` (a bring-your-own-cookie bootstrap): the user logs
+into a genuine Firefox **by hand** (that is what clears AngelList's invisible
+anti-bot challenge). The
 tooling **types no credentials and runs no automated login** — it only
 lifts the resulting cookie. Per root [CLAUDE.md](../../CLAUDE.md) §3: never
 bypass, downgrade, or "temporarily disable" 2FA; never add a `--password`

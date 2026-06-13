@@ -20,16 +20,15 @@ Part of the **wealthdb** suite — see
 
 ## Status
 
-Implemented and working end-to-end (`byo-login` → `download` → `load` →
+Implemented and working end-to-end (`login` → `download` → `load` →
 queryable silver).
 
 | Verb | Status | Notes |
 | --- | --- | --- |
-| `byo-login` | implemented | Stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). Any K-1 / financial docs you download in the session save to `~/wealthdb/angellist/angellist-documents/`. |
+| `login` | implemented | The auth path (formerly `byo-login`). Stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). No unattended login (the SPA is bot-walled). Any K-1 / financial docs you download in the session save to `~/wealthdb/angellist/angellist-documents/`. |
 | `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. |
 | `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
-| `login`     | superseded | The Camoufox SPA-login stub is replaced by `byo-login` (the SPA login is bot-walled). |
 
 Gold side is **not** wired yet: no `wealthdb/internal/silver/angellist/`
 adapter, no Makefile target, no `wealthdb.cfg` entry — see
@@ -44,8 +43,8 @@ adapter, no Makefile target, no `wealthdb.cfg` entry — see
 # 2. Lift a session. Opens stock Firefox under VNC; connect, log in (+2FA),
 #    confirm you reach your portfolio, then CLOSE Firefox. The cookie is
 #    extracted automatically — no copying. Repeat ~monthly when it expires.
-./angellist byo-login
-#   byo-login: VNC ready on 127.0.0.1:<port>  (password printed at handoff)
+./angellist login
+#   login: VNC ready on 127.0.0.1:<port>  (password printed at handoff)
 #   On this host, connect directly:  open vnc://localhost:<port>
 
 # 3. Pull a fresh bronze dump (headless; ~15s; read-only GraphQL).

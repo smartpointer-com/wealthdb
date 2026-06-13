@@ -4,12 +4,10 @@
 #
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb +
 #   x11vnc started below.
-# - `login`:   drives the SPA login form + 2FA. Browser engine (Camoufox
-#   headed-under-Xvfb vs vanilla Firefox headless) is TBD pending the
-#   explore phase; if it ends up needing a display, add `start_xvfb`
-#   to the login case (VNC not required).
-# - `download` (TBD): same per-surface browse pattern as explore; needs
-#   a display if it uses Camoufox, no VNC.
+# - `login`:   the auth path (formerly `byo-login`) — a genuine stock
+#   Firefox the operator drives by hand over VNC (the SPA login is
+#   bot-walled), lifting the session cookie on close. Needs Xvfb + x11vnc.
+# - `download`: headless Camoufox + the injected cookie; needs a display.
 # - `load`:    pure SQLite + Python, no browser.
 #
 # When Xvfb IS started, it's started directly rather than via `xvfb-run`:
@@ -72,22 +70,23 @@ start_x11vnc() {
 case "${1:-help}" in
     explore)
         # Discovery harness. Drives Camoufox over VNC, records every
-        # click + every network fetch into /debug/<ts>/ so login.py +
-        # download.py can be written from real traces.
+        # click + every network fetch into /debug/<ts>/ so download.py
+        # can be written from real traces.
         start_xvfb
         start_x11vnc explore
         shift
         exec python3 /app/explore.py "$@"
         ;;
-    byo-login)
-        # BYO-session bootstrap. AngelList's venture login is gated by an
-        # invisible Turnstile/reCAPTCHA challenge that flags the Camoufox/
-        # Playwright automation stack. Launch a genuine, un-instrumented
-        # stock Firefox under Xvfb + VNC so the operator clears the login
-        # by hand; on a clean Firefox close, lift the session from its
-        # plaintext cookies.sqlite into /secrets/angellist-cookies.json.
+    login)
+        # The auth path (a BYO-session bootstrap — formerly `byo-login`).
+        # AngelList's venture login is gated by an invisible Turnstile/
+        # reCAPTCHA challenge that flags the Camoufox/Playwright automation
+        # stack, so there is no unattended login. Launch a genuine, un-
+        # instrumented stock Firefox under Xvfb + VNC so the operator clears
+        # the login by hand; on a clean Firefox close, lift the session from
+        # its plaintext cookies.sqlite into /secrets/angellist-cookies.json.
         start_xvfb
-        start_x11vnc byo-login
+        start_x11vnc login
         shift
         FXPROFILE="${ANGELLIST_FXPROFILE:-/secrets/angellist-fxprofile}"
         mkdir -p "$FXPROFILE"
@@ -121,29 +120,22 @@ PREFS
         # internal process-isolation setting, invisible to web content, so
         # it has no bearing on the anti-bot fingerprint.
         export MOZ_DISABLE_CONTENT_SANDBOX=1
-        echo "byo-login: opening Firefox -> https://venture.angellist.com/v/login" >&2
-        echo "byo-login: log in (+2FA) in the VNC window, confirm you reach your" >&2
-        echo "byo-login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
-        echo "byo-login: your K-1 CSVs/PDFs — they save to" >&2
-        echo "byo-login:   ~/wealthdb/angellist/angellist-documents/" >&2
-        echo "byo-login: Then CLOSE the Firefox window to lift the cookie." >&2
+        echo "login: opening Firefox -> https://venture.angellist.com/v/login" >&2
+        echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2
+        echo "login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
+        echo "login: your K-1 CSVs/PDFs — they save to" >&2
+        echo "login:   ~/wealthdb/angellist/angellist-documents/" >&2
+        echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
         firefox -profile "$FXPROFILE" -no-remote -new-instance \
             "https://venture.angellist.com/v/login" >/tmp/firefox.log 2>&1 || true
-        echo "byo-login: Firefox closed — extracting AngelList cookies…" >&2
+        echo "login: Firefox closed — extracting AngelList cookies…" >&2
         exec python3 /app/extract_cookies.py \
             --db "$FXPROFILE/cookies.sqlite" \
             --out "${ANGELLIST_COOKIES:-/secrets/angellist-cookies.json}"
         ;;
-    login)
-        # SPA login form + 2FA. Reads the 2FA code from stdin. If the
-        # implementation settles on headed Camoufox, prepend `start_xvfb`
-        # here (no VNC needed for an unattended login).
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
     download)
-        # Per-surface browse + export loop. Uses the same persistent
-        # profile as login.py so authentication carries over for free.
+        # Per-surface browse + capture loop. Injects the session cookie
+        # `login` lifted (/secrets/angellist-cookies.json).
         shift
         exec python3 /app/download.py "$@"
         ;;
@@ -166,10 +158,11 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  byo-login   The auth path. Launch a genuine, stock Mozilla Firefox under
-              VNC so you can clear AngelList's invisible anti-bot login by
-              hand (+2FA); on a clean Firefox close, lifts the session
-              cookie to /secrets/angellist-cookies.json. Optionally grab
+  login       The auth path (formerly byo-login). Launch a genuine, stock
+              Mozilla Firefox under VNC so you can clear AngelList's invisible
+              anti-bot login by hand (+2FA); on a clean Firefox close, lifts
+              the session cookie to /secrets/angellist-cookies.json. There is
+              no unattended login (the SPA is bot-walled). Optionally grab
               K-1 / financial docs while logged in (they save to the
               mounted documents dir).
   download    Headless Camoufox + injected cookie: navigate the LP-portfolio
@@ -185,8 +178,6 @@ Subcommands:
               trace + click log under /debug (route mapping; --cookies loads
               the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
               port (printed at handoff).
-  login       No automated login (the SPA is bot-walled) — prints the
-              byo-login instructions and exits.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

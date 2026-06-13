@@ -6,8 +6,8 @@
 # crashes the camoufox-launched Firefox.
 #
 # collectorkit (the shared cli/envfile/bronze/silver helpers) is also
-# installed in the base image as an editable package; login.py /
-# download.py / load.py import it directly.
+# installed in the base image as an editable package; download.py /
+# load.py import it directly.
 
 # pytest is bundled in the image so tests can be run inside the container
 # with `./angellist sh -c "cd /app && pytest"`, no host-side Python
@@ -18,7 +18,7 @@ pytest>=8,<9
 # cointracking-only exception). SQLite ships with CPython, so no driver
 # dependency is needed here. See DESIGN.md §"Why SQLite, not DuckDB".
 
-# login.py + download.py drive a browser (Camoufox for stealth, with
+# download.py drive a browser (Camoufox for stealth, with
 # vanilla Playwright Firefox as a possible fallback). Both browser
 # stacks are pre-installed in the base-camoufox image; nothing to add
 # here until explore tells us which engine the Investor Portal needs.

@@ -5,7 +5,7 @@
 # artefacts. Single-writer: the Investor Portal session cookie + 2FA
 # prompts can't tolerate concurrent invocations.
 #
-# `explore` and `byo-login` forward a free 5900-6000 host port so the live
+# `explore` and `login` forward a free 5900-6000 host port so the live
 # browser can be driven over VNC; download + load run headlessly.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
@@ -19,7 +19,7 @@ HAS_DEBUG=1
 HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
-VNC_SUBCOMMANDS=(explore byo-login)   # extends the default {vnc-login}
+VNC_SUBCOMMANDS=(explore login)   # extends the default {vnc-login}
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -34,7 +34,7 @@ if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
     cat <<EOF
 angellist — host wrapper
 
-Implemented end-to-end: \`byo-login\` (real-Firefox cookie lift) ->
+Implemented end-to-end: \`login\` (real-Firefox cookie lift) ->
 \`download\` (Camoufox + injected cookie, GraphQL capture + tax-doc fetch)
 -> \`load\` (event-sourced silver). See DESIGN.md and README.md.
 
@@ -46,20 +46,14 @@ Subcommands:
                       record HAR + Playwright trace + click log + saved
                       blobs under /debug for analysis. --fresh wipes the
                       profile so the next login forces 2FA.
-  byo-login [args...] BYO-session bootstrap. Launch a genuine, stock
-                      Mozilla Firefox under VNC so you can clear
-                      AngelList's invisible anti-bot login by hand (the
+  login [args...]     The auth path (formerly byo-login). Launch a genuine,
+                      stock Mozilla Firefox under VNC so you can clear
+                      AngelList's invisible anti-bot login by hand (+2FA; the
                       Camoufox/Playwright stack gets flagged). On a clean
                       Firefox close, lifts the session from its plaintext
-                      cookies.sqlite into /secrets/angellist-cookies.json
-                      for download.py to inject. The tool types no
-                      credentials — you log in yourself.
-  login [args...]     Mint an Investor Portal session via the SPA login
-                      form. Prompts for the 2FA code on stdin; the
-                      Camoufox profile in /secrets/angellist-profile keeps
-                      future runs from re-prompting (lifetime TBD by
-                      explore). --check probes the existing session
-                      without firing a 2FA push.
+                      cookies.sqlite into /secrets/angellist-cookies.json for
+                      download.py to inject. The tool types no credentials —
+                      you log in yourself; there is no unattended login.
   download [args...]  Capture bronze for every LP investment: portfolio
                       summary, per-vehicle detail (commitment / called /
                       FMV / distributions / fees), and activity (cash-flow)
@@ -83,12 +77,13 @@ Override mounts via env:
   ANGELLIST_DEBUG_DIR=/path/to/debug
 
 Credentials:
-  ANGELLIST_USERNAME / ANGELLIST_PASSWORD are read from
-  /secrets/angellist.env inside the container
-  (= \$HOME/.secrets/angellist.env on the host). chmod 0600.
-  The 2FA code is prompted on stdin during \`login\`; the session that
-  lands in /secrets/angellist-profile/ keeps future logins from firing a
-  2FA push (persistence lifetime to be confirmed during explore).
+  \`login\` opens a real Firefox you drive by hand — enter your username /
+  password / 2FA in the browser yourself; the tool types nothing. On a clean
+  close the session cookie is lifted to /secrets/angellist-cookies.json
+  (= \$HOME/.secrets/angellist-cookies.json on the host; chmod 0600), which
+  \`download\` injects (cookie lifetime ~27 days). The \`explore\` discovery
+  harness can pre-fill the SPA login from ANGELLIST_USERNAME /
+  ANGELLIST_PASSWORD in /secrets/angellist.env.
 EOF
     exit 0
 fi

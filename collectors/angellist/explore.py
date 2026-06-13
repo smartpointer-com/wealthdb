@@ -3,7 +3,7 @@
 
 Launches Camoufox in the container's Xvfb display, navigates to the
 AngelList Investor Portal, and records every action taken in the VNC
-session so login.py + download.py can be written from real traces:
+session so download.py can be written from real traces:
 
   - **HAR** (`network.har`)        — every request + response with
                                      headers and bodies. The primary

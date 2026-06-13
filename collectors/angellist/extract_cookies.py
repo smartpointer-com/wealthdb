@@ -5,7 +5,7 @@ Part of the BYO-session path: AngelList's venture login is gated by an
 invisible Turnstile / reCAPTCHA challenge that flags the Camoufox /
 Playwright automation stack (see DESIGN.md). The workaround is to log in
 once in a genuine, un-instrumented Firefox driven by a human over VNC
-(`./angellist byo-login`), then read that Firefox profile's *plaintext*
+(`./angellist login`), then read that Firefox profile's *plaintext*
 `cookies.sqlite` and hand the cookies to the collector — no manual export
 or copying.
 
@@ -20,7 +20,7 @@ to a temp dir and read the copy, which replays any pending WAL writes;
 that way a freshly-set login cookie is visible even while Firefox runs.
 Run it AFTER closing Firefox for the most reliable capture of any
 session-scoped cookies (Firefox flushes those on a clean shutdown when
-session-restore is enabled — byo-login seeds that pref).
+session-restore is enabled — login seeds that pref).
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def extract(db: Path, host_filter: str) -> list[dict]:
     if not db.exists():
         raise SystemExit(
             f"Firefox cookie DB not found: {db}\n"
-            f"Log in via `./angellist byo-login` first (it writes the "
+            f"Log in via `./angellist login` first (it writes the "
             f"profile here)."
         )
     tmp = Path(tempfile.mkdtemp(prefix="alck_"))

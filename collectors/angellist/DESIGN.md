@@ -1,7 +1,7 @@
 # angellist — design notes
 
 How the AngelList LP collector works, end to end. Implemented and proven
-against a real account (June 2026): `byo-login` → `download` → `load` →
+against a real account (June 2026): `login` → `download` → `load` →
 queryable SQLite silver.
 
 ## Why a separate collector
@@ -33,7 +33,7 @@ Two dead ends, recorded so they aren't re-litigated:
    warmup, no init-script tampering) **still failed**, confirming it's the
    browser stack, not the IP.
 
-**The solution — bring-your-own-cookie.** `byo-login` runs a *genuine,
+**The solution — bring-your-own-cookie.** `login` runs a *genuine,
 un-instrumented stock Mozilla Firefox* (Mozilla apt repo, arm64) under
 Xvfb + VNC inside the container. A real Firefox clears the invisible
 challenge; the user logs in by hand. On a clean Firefox close,
@@ -46,7 +46,7 @@ the seconds Playwright expects.
 
 Injecting those cookies (`context.add_cookies`) lands a headless browser
 on the authenticated portal with **no re-challenge and no 401/403**. So
-the only browser+human step is the infrequent `byo-login`.
+the only browser+human step is the infrequent `login`.
 
 ## Why `download` is browser-based (not a plain HTTP client)
 
@@ -181,7 +181,7 @@ company name (exact for single-SPV companies). Note `Ending Capital` is
 session than GraphQL — a stale cookie 404s to the login wall. `download.py`
 auto-fetches them after the GraphQL capture, re-fetching incomplete tax
 years (`estimate_provided`, or `k1Count < totalK1Count`) until `complete`
-(which runs through ~Aug of the following year); `byo-login` saves the same
+(which runs through ~Aug of the following year); `login` saves the same
 way.
 
 **Fed into the timeline (built).** Each K-1 becomes a `statement` event in

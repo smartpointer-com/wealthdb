@@ -3,8 +3,7 @@
 # provides Firefox/Xvfb/x11vnc OS deps, camoufox + the matching
 # Playwright pin, the pre-fetched Firefox bundle at /opt/camoufox-cache,
 # and the collectorkit shared package. Per-collector deps (pytest for
-# now) come from requirements.txt; login.py / download.py will add their
-# own as the implementation lands post-explore.
+# now) come from requirements.txt.
 FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app
@@ -14,7 +13,7 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Vanilla Playwright Firefox as a possible fallback engine for login.py /
+# Vanilla Playwright Firefox as a possible fallback engine for
 # download.py (headless, no stealth). Whether the Investor Portal's
 # bot-detection actually forces Camoufox for the authenticated flows — or
 # whether plain Firefox suffices once a session exists — is a decision
@@ -46,7 +45,7 @@ RUN apt-get update \
 # artefacts (.venv, real-credential JSONs, recorded traces, sample
 # Investor-Portal HTML) never make it into the image even if
 # .dockerignore is incomplete.
-COPY explore.py login.py download.py load.py extract_cookies.py /app/
+COPY explore.py download.py load.py extract_cookies.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

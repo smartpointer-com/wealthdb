@@ -6,7 +6,7 @@ bot-walled (invisible Turnstile/reCAPTCHA flags the automation stack) and
 its GraphQL endpoint requires a per-request `x-al-gql` signature computed
 by obfuscated venture-web JS (not a plain hash — see DESIGN.md). So we
 can neither log in headlessly nor replay queries browserlessly. Instead
-we inject the BYO session cookies that `byo-login` / extract_cookies.py
+we inject the BYO session cookies that `login` / extract_cookies.py
 lifted from a real Firefox, let the venture-web SPA fetch and *sign* its
 own GraphQL requests, and capture the responses off the wire.
 
@@ -98,7 +98,7 @@ def _is_incomplete(taxdoc):
 def download_documents(cookies, captures, docs_dir, dry_run):
     """Download the tax documents AccountDocumentsQuery lists — the K-1 PDF +
     structured CSV and the quarterly financial statements — into docs_dir,
-    saved with the server's own filename (the same names `byo-login`
+    saved with the server's own filename (the same names `login`
     produces). Incomplete tax years (documentType != 'complete', or
     k1Count < totalK1Count) are re-fetched every run until they go complete
     (which runs through ~Aug of the following tax year); complete years
@@ -166,7 +166,7 @@ def download_documents(cookies, captures, docs_dir, dry_run):
         if "html" in ct.lower():
             log.warning("tax-doc download hit the login wall — the cookie is too "
                         "stale for the file endpoints (GraphQL still worked). Re-run "
-                        "`./angellist byo-login` to refresh, then download again. "
+                        "`./angellist login` to refresh, then download again. "
                         "(%d fetched before this.)", fetched)
             return
         cd = resp.headers.get("content-disposition", "")
@@ -210,7 +210,7 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     if not args.cookies.is_file():
-        log.error("cookie jar not found: %s — run `./angellist byo-login` "
+        log.error("cookie jar not found: %s — run `./angellist login` "
                   "first to lift a session.", args.cookies)
         return 1
     cookies = json.loads(args.cookies.read_text(encoding="utf-8"))
@@ -299,7 +299,7 @@ def main(argv: list[str]) -> int:
                 if not m:
                     log.error("could not establish identity (no ViewerQuery, "
                               "no slug URL — landed on %s). The session may be "
-                              "stale; re-run `./angellist byo-login`.", page.url)
+                              "stale; re-run `./angellist login`.", page.url)
                     return 1
                 user_slug, accounts = m.group(1), [{"slugName": m.group(2)}]
             else:
@@ -400,7 +400,7 @@ def main(argv: list[str]) -> int:
                     len(errs), sorted({e["op"] for e in errs}))
     if not captures:
         log.error("nothing captured — session likely invalid. Re-run "
-                  "`./angellist byo-login`.")
+                  "`./angellist login`.")
         return 1
 
     download_documents(cookies, captures, args.documents_dir, args.dry_run)
