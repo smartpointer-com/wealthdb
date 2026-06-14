@@ -7,6 +7,22 @@ applies on top of those shared rules.
 
 - Schwab refresh tokens have a hard 7-day lifetime, renewable only via
   an interactive browser login.
+- `login` now drives that re-auth through a headed Camoufox browser
+  (VNC), reusing the `schwab-web` Schwab login credentials
+  (`SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` from `schwab-web.env`).
+  `download` / `load` remain host-venv. Never weaken auth (root
+  [CLAUDE.md](../../CLAUDE.md) §3): no `--password` flag, no bypassing
+  2FA, no persisting the password.
+
+## 0. The login browser surface — auth only, never act on the account
+
+The OAuth `login` flow may navigate only: the Schwab login form, the 2FA
+challenge, the account-selection step, and the final **"Allow" / consent
+button** that grants the API app read access. That consent click is the
+*only* permitted mutation. Do NOT navigate to, click, or script any
+account surface (positions, transfers, trade, settings) reachable from
+the logged-in session — the browser exists solely to complete the OAuth
+grant and capture the `?code=…` redirect.
 
 ## 1. Read-only Schwab access — never call write endpoints
 

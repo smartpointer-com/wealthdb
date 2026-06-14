@@ -58,38 +58,50 @@ will start reporting `invalid_client`; that's the signal to re-run
 
 ### How it works
 
-`login.py` runs the OAuth 2.0 authorization-code flow against
-`api.schwabapi.com`. In the default (automated) mode it spins up a
-local HTTPS server on the callback URL, opens the system browser to
-the Schwab consent page, captures the redirect, exchanges the code,
-and writes the resulting token bundle to the path you specify. The
-file is chmod'ed to `0600` after creation.
+`login.py` performs the OAuth 2.0 authorization-code grant against
+`api.schwabapi.com`, driven through a **headed Camoufox browser in a
+container** — the same anti-bot-resistant browser the
+[`schwab-web`](../schwab-web/) collector uses. It builds the authorize
+URL, opens it in Camoufox on an Xvfb display, **pre-fills** the Schwab
+login from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` (in
+`~/.secrets/schwab-web.env` — the same credentials `schwab-web` uses),
+auto-submits, **prompts for the 2FA code on stdin**, and drives the
+consent pages — including ticking **every** checkbox on the "Select your
+Schwab accounts to link" page, so a newly opened account is linked
+without anyone remembering to tick it. It captures the `?code=…` redirect
+straight from the browser and exchanges it for the token bundle (chmod
+`0600`). All browser activity is traced to the debug dir
+(`~/.cache/schwab-api-debug`).
 
-The browser will show a self-signed-certificate warning on the
-callback step because `schwab-py` generates a fresh cert for the
-local server. Accept it and continue — the cert only protects traffic
-between Schwab's redirect and your localhost.
+This is why schwab-api is a **hybrid** collector: `login` runs in a
+Camoufox container while `download` and `load` run on the host venv
+(plain schwab-py REST + SQLite). The OAuth app credentials
+(`SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET`) live in
+`~/.secrets/schwab-api.env`.
 
 ### Usage
 
-Run via the host-venv wrapper (`./schwab-api`, or `wealthdb-collect
-schwab-api`), which supplies `--token-path` from the shared directory
-contract — see [collectors/README.md](../README.md#anatomy-of-a-collector).
-
-Initial mint (and weekly re-mint):
+`login` runs in the container — build it once (`./schwab-api build`, or
+`make build-schwab-api`). It's automated end-to-end; just answer the 2FA
+prompt on the terminal (stdin must be a TTY):
 
 ```sh
 ./schwab-api login
+# pre-fills + submits the login, prompts for your 2FA code, ticks all
+# accounts, clicks through consent, writes the token.
 ```
 
-Headless / SSH environments — paste the redirect URL by hand:
+If Schwab changes the UI and the automated selectors drift, fall back to
+**`vnc-login`**, which drives the same flow but lets you complete login /
+2FA / consent yourself over a VNC client (it prints the tunnel + a
+single-use password); the account checkboxes are still auto-ticked:
 
 ```sh
-./schwab-api login --manual
+./schwab-api vnc-login
 ```
 
-Check whether the current token still has refresh-window life left
-(no browser, no network):
+`--manual` is the no-browser paste-the-URL flow. Check the current token's
+remaining refresh-window life (no browser):
 
 ```sh
 ./schwab-api login --check
@@ -99,12 +111,17 @@ Check whether the current token still has refresh-window life left
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--token-path` | _(required)_ | Path to read/write the OAuth token JSON file. |
+| `--token-path` | `/secrets/schwab-api-token.json` | Path to read/write the OAuth token JSON file (the wrapper maps it to your secrets dir). |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
 | `--callback-url` | `https://127.0.0.1:8182` | OAuth callback URL. Must exactly match the value registered in your Schwab app. |
-| `--manual` | off | Use the paste-the-URL flow instead of the local-HTTPS-server flow. |
-| `--check` | off | Inspect the token file and print its age and estimated expiry. No browser, no network. |
+| `--profile-dir` | `/secrets/schwab-api-oauth-profile` | Persistent Camoufox profile dir for the browser flow. |
+| `--cli-mfa` / `--no-cli-mfa` | on | Automate login + stdin 2FA + consent (default; `login` uses it) vs. drive it yourself over VNC (`--no-cli-mfa`; the `vnc-login` subcommand uses it). |
+| `--auth-timeout` | `600` | Seconds to wait for the consent redirect to the callback URL. |
+| `--screenshot-dir` / `--trace` | — | Capture page HTML/screenshots, and (with `--trace`) a Playwright trace bundle, to the dir. The container passes `--screenshot-dir /debug --trace` by default. NEVER commit these. |
+| `--explore` | off | Debug: dump each distinct page's DOM to `--screenshot-dir` (for pinning selectors). |
+| `--manual` | off | No-browser paste-the-URL flow (schwab-py). |
+| `--check` | off | Inspect the token file's age. No browser, no network. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ## download.py

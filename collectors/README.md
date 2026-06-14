@@ -32,6 +32,11 @@ form and the **input contract** to gold. One silver DB per source.
 | **Host venv** | `schwab-api`, `ubs-psn`, `manual` | A wrapper runs the collector's `.py` under its `.venv` — pure-stdlib plus one thin dependency; no container. |
 | **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking`, `angellist`, `carta`, `equityzen` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
+`schwab-api` is **hybrid**: its weekly OAuth `login` runs in a
+Camoufox/VNC container (Schwab's 7-day refresh token needs an
+interactive browser grant), while `download`/`load` run on the host
+venv. A `.host-venv` marker tells the Makefile to build/test both.
+
 ## Conventions shared across collectors
 
 **Credentials** live in `~/.secrets/<source>.env` (chmod `0600`,
@@ -253,7 +258,7 @@ restated here.
 
 | Collector | Source | Auth | Runtime |
 | --- | --- | --- | --- |
-| [`schwab-api`](schwab-api/) | Schwab Trader API | OAuth (7-day refresh) | host venv |
+| [`schwab-api`](schwab-api/) | Schwab Trader API | OAuth (7-day refresh) | host venv + Docker login |
 | [`schwab-web`](schwab-web/) | Schwab client web | scraped session + 2FA | Docker (Camoufox) |
 | [`ubs-psn`](ubs-psn/) | UBS PSN feed | SFTP key | host venv |
 | [`ubs-web`](ubs-web/) | UBS netbanking | scraped session + QR | Docker |

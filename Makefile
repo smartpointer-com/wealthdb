@@ -131,11 +131,16 @@ cleanall-wealthdb: clean-wealthdb
 define COLLECTOR_RULES
 .PHONY: build-$(1) test-$(1) clean-$(1) cleanall-$(1)
 
+# A Dockerfile makes a collector Docker-built; a requirements.txt makes
+# it host-venv-built. A HYBRID collector has both a Dockerfile AND a
+# `.host-venv` marker (e.g. schwab-api: a Camoufox/VNC `login` image plus
+# a host venv for download/load) — it builds and tests both.
 build-$(1):
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
 		collectors/$(1)/$(1) build; \
-	elif [ -f collectors/$(1)/requirements.txt ]; then \
+	fi
+	@if [ -f collectors/$(1)/requirements.txt ] && { [ ! -f collectors/$(1)/Dockerfile ] || [ -f collectors/$(1)/.host-venv ]; }; then \
 		if [ ! -x collectors/$(1)/.venv/bin/python ] || \
 		   ! collectors/$(1)/.venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
 			$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
@@ -147,7 +152,7 @@ build-$(1):
 		fi; \
 		collectors/$(1)/.venv/bin/pip install -q -r collectors/$(1)/requirements.txt; \
 		collectors/$(1)/.venv/bin/pip install -q -e shared/collectorkit; \
-	else \
+	elif [ ! -f collectors/$(1)/Dockerfile ]; then \
 		echo "    $(1): nothing to build"; \
 	fi
 
@@ -155,6 +160,8 @@ test-$(1): build-$(1)
 	@echo "==> test collector: $(1)"
 	@if [ ! -d collectors/$(1)/tests ] && ! ls collectors/$(1)/test_*.py >/dev/null 2>&1; then \
 		echo "    $(1): no tests"; \
+	elif [ -f collectors/$(1)/.host-venv ] && [ -x collectors/$(1)/.venv/bin/python ]; then \
+		collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
 	elif [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
 		collectors/$(1)/$(1) sh -c "cd /app && pytest -q -p no:cacheprovider"; \
 	elif [ -x collectors/$(1)/.venv/bin/python ]; then \

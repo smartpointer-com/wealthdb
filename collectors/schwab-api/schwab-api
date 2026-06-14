@@ -1,59 +1,93 @@
 #!/usr/bin/env bash
 # schwab-api — host wrapper for the wealthdb "schwab-api" collector.
 #
-# Host-venv collector (no Docker): runs the collector's own .py under its
-# .venv, like ubs-psn. Subcommands:
-#   login [args...]     Mint/refresh the OAuth token (7-day refresh token).
-#                       Pass --manual to print the auth URL, --check to
-#                       report the stored token's age without re-minting.
-#   download [args...]  Fetch accounts / positions / transactions to bronze.
-#   load [args...]      Parse bronze into the silver SQLite DB.
+# Hybrid collector. The OAuth `login` runs in a Camoufox/VNC container
+# (Schwab's 7-day refresh token needs an interactive browser grant);
+# `download` and `load` run on the host venv (schwab-py REST + SQLite).
+#   build              Build the login Docker image (`docker build`).
+#   login [args...]    Automated OAuth refresh in headed Camoufox: pre-fills
+#                      the Schwab login from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD
+#                      (schwab-web.env), auto-submits, prompts for the 2FA
+#                      code on stdin, drives the consent / account-link pages
+#                      (ticking every account), and writes the token to
+#                      <secrets>/schwab-api-token.json. Traces to the debug
+#                      dir. --check inspects the token; --manual is the
+#                      paste-the-URL fallback.
+#   vnc-login [args..] Manual fallback: drive login / 2FA / consent yourself
+#                      over VNC (use if `login`'s selectors drift).
+#   download [args...] Fetch accounts / positions / transactions to bronze.
+#   load [args...]     Parse bronze into the silver SQLite DB.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
-#   --secrets-dir DIR   credentials + OAuth token (default ~/.secrets)
-#   --data-dir    DIR   bronze dumps root        (default ~/wealthdb/schwab-api)
-#   --silver-db   PATH  silver DB path           (default <data-dir>/schwab-api.db)
-# Credentials (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) are read from the
-# environment, auto-sourced from <secrets-dir>/schwab-api.env if present.
+#   --secrets-dir DIR  credentials + OAuth token  (default ~/.secrets)
+#   --data-dir    DIR  bronze dumps root          (default ~/wealthdb/schwab-api)
+#   --silver-db   PATH silver DB path             (default <data-dir>/schwab-api.db)
+# OAuth app creds (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) come from
+# <secrets-dir>/schwab-api.env; the Schwab login id/password pre-filled
+# into the consent page come from <secrets-dir>/schwab-web.env.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=schwab-api
 ENV_PREFIX=SCHWAB_API
-# shellcheck disable=SC1091
-source "$HERE/../../shared/wrappers/host-lib.sh"
 
 cmd="${1:-help}"
-[[ $# -gt 0 ]] && shift || true
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
-esac
-
-host_resolve_dirs "$@"
-host_source_env_file
-py="$(host_python)"
-token="$SECRETS_DIR/schwab-api-token.json"
-
-case "$cmd" in
-    login)
-        exec "$py" "$HERE/login.py" --token-path "$token" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    build)
+        # Docker login image.
+        ENV_VARS=()
+        HAS_VNC=1
+        HAS_DEBUG=1
+        HAS_SAFETY=1
+        # shellcheck disable=SC1091
+        source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+        wrapper_init
+        wrapper_build "$@"
         ;;
-    download)
-        exec "$py" "$HERE/download.py" --token-path "$token" --dest "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    login|vnc-login)
+        # Camoufox OAuth login container. `login` is the automated default
+        # (no VNC); `vnc-login` is the manual fallback and gets a forwarded
+        # VNC port (wrapper-lib forwards it only for the 'vnc-login' sub).
+        ENV_VARS=(SCHWAB_CLIENT_ID SCHWAB_CLIENT_SECRET \
+                  SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
+        HAS_VNC=1           # vnc-login → forward a free 5900-6000 port
+        HAS_DEBUG=1         # /debug for the trace + page captures
+        HAS_SAFETY=1        # don't evict a live VNC / 2FA session
+        # shellcheck disable=SC1091
+        source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+        wrapper_init
+        wrapper_main "$@"   # the sub ($1) → entrypoint dispatches it
         ;;
-    load)
-        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    download|load)
+        # Host venv (schwab-py REST + SQLite).
+        # shellcheck disable=SC1091
+        source "$HERE/../../shared/wrappers/host-lib.sh"
+        shift
+        host_resolve_dirs "$@"
+        host_source_env_file
+        py="$(host_python)"
+        token="$SECRETS_DIR/schwab-api-token.json"
+        case "$cmd" in
+            download)
+                exec "$py" "$HERE/download.py" --token-path "$token" \
+                    --dest "$DATA_DIR" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+            load)
+                exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" \
+                    --bronze-dir "$DATA_DIR" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+        esac
         ;;
     *)
-        echo "schwab-api: unknown command '$cmd' (expected: login|download|load)" >&2
+        echo "schwab-api: unknown command '$cmd' (expected: build|login|vnc-login|download|load)" >&2
         exit 2
         ;;
 esac
