@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
@@ -18,9 +19,18 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
+	histTimes, err := c.historicalSnapshotTimes(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(times)+len(histTimes))
 	for _, t := range times {
 		byTime[t] = &canonical.SnapshotBatch{}
+	}
+	for _, t := range histTimes {
+		if _, ok := byTime[t]; !ok {
+			byTime[t] = &canonical.SnapshotBatch{}
+		}
 	}
 
 	if err := c.appendPortfolios(ctx, w, byTime); err != nil {
@@ -32,9 +42,29 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPositionsAndCash(ctx, w, byTime); err != nil {
 		return nil, err
 	}
+	if len(histTimes) > 0 {
+		// Project the master rows onto each historical date
+		// before emitting the historical positions — gold
+		// upserts run by time-batch and historical-only dates
+		// would otherwise carry positions without accounts.
+		if err := c.appendHistoricalAccounts(ctx, w, byTime); err != nil {
+			return nil, err
+		}
+		if err := c.appendHistoricalPositions(ctx, w, byTime); err != nil {
+			return nil, err
+		}
+	}
 
-	out := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
+	// Sorted union of live + historical times so batches stream
+	// in chronological order (important for gold's earlier-wins
+	// FirstSeenAt accounting on instruments + accounts).
+	allTimes := make([]int64, 0, len(byTime))
+	for t := range byTime {
+		allTimes = append(allTimes, t)
+	}
+	sort.Slice(allTimes, func(i, j int) bool { return allTimes[i] < allTimes[j] })
+	out := make([]canonical.SnapshotBatch, 0, len(allTimes))
+	for _, t := range allTimes {
 		out = append(out, *byTime[t])
 	}
 	return silver.NewSnapshotStream(out), nil

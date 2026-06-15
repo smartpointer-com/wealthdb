@@ -1081,6 +1081,143 @@ def _statement_label_year(label: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# Known Fidelity 'Time Period' options. Each (label, days_covered)
+# row is one possible option the listbox may surface. The set is
+# customer-specific (account-age-bounded), so the runtime walks
+# this ladder and picks the first option that's actually visible.
+# Days_covered is the approximate window that label covers; pairs
+# of labels that mean the same thing (``Last 24 months`` /
+# ``Last 2 years``) share the same days value.
+_FIDELITY_PERIOD_LADDER = (
+    ("Last 3 months", 92),
+    ("Last 6 months", 184),
+    ("Last 12 months", 366),
+    ("Last 18 months", 549),
+    ("Last 24 months", 731),
+    ("Last 2 years", 731),
+    ("Last 36 months", 1097),
+    ("Last 3 years", 1097),
+    ("Last 5 years", 1827),
+    ("Last 10 years", 3653),
+    ("All time", 365 * 30),
+    ("All", 365 * 30),
+)
+
+
+def _select_statements_time_period(page, capture_dir, target_days=None):
+    """Expand the Statements page's 'Time Period' dropdown and pick
+    the option that best matches ``target_days``.
+
+    Fidelity uses a PVD listbox-style dropdown labelled
+    ``Time Period`` at the top of the Statements grid. The
+    collapsed state shows only the currently-selected option; the
+    expansion exposes the full list (``Last 3 months``,
+    ``Last 6 months``, ``Last 12 months``, … through the
+    customer's account-age maximum). Selecting a new option
+    triggers a grid re-fetch.
+
+    Selection policy (mirrors schwab-web's preset mapping):
+
+    * ``target_days`` set — pick the narrowest exposed option that
+      fully covers the window. Defaults at the
+      collectorkit/shared/wealthdb-refresh layer (90 days) thus
+      map to ``Last 3 months`` here, matching schwab-web's
+      ``Last3Months`` default. ``--lookback all`` widens through
+      the ladder to ``All time``.
+    * ``target_days`` None — widest available wins. Used by the
+      historical-PDF backfill path, where the caller hasn't
+      bounded the window.
+
+    Returns the label of the option selected, or ``None`` if no
+    option could be applied (the dropdown's pre-existing selection
+    stays in effect, which still produces a working — if possibly
+    shallow — dump).
+
+    Defensive: every step degrades silently to the default rather
+    than raising, so a future PVD redesign that drifts the
+    selectors doesn't break the statements walk wholesale.
+    """
+    trigger = None
+    for sel in (
+        "button[aria-label='Time Period']",
+        "[aria-label='Time Period'][role='button']",
+        "[aria-label='Time Period']",
+    ):
+        loc = page.locator(sel).first
+        try:
+            if loc.count() > 0 and loc.is_visible(timeout=500):
+                trigger = loc
+                break
+        except Exception as e:
+            log.debug("statements: time-period probe %r: %s", sel, e)
+    if trigger is None:
+        log.info(
+            "statements: no 'Time Period' filter; default window in effect"
+        )
+        return None
+    try:
+        trigger.click(timeout=5_000)
+        time.sleep(0.8)
+    except Exception as e:
+        log.warning("statements: time-period dropdown click failed: %s", e)
+        return None
+    capture(page, capture_dir, "statements-time-period-open")
+    if target_days is None:
+        # No bound — widest first (used by the unbounded historical-
+        # PDF backfill path).
+        ordered = sorted(_FIDELITY_PERIOD_LADDER, key=lambda r: -r[1])
+    else:
+        # Narrowest that fully covers `target_days` wins; non-covering
+        # options sink to the end so they're picked only if no
+        # covering option is visible at all (Fidelity caps the set
+        # to the customer's account age).
+        def _key(row):
+            _, days = row
+            covers = days >= target_days
+            return (0 if covers else 1, days if covers else -days)
+        ordered = sorted(_FIDELITY_PERIOD_LADDER, key=_key)
+    chosen = None
+    for label, _days in ordered:
+        for sel in (
+            f"[role='option']:has-text('{label}')",
+            f"li:has-text('{label}')",
+            f"button:has-text('{label}')",
+        ):
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            try:
+                if not loc.is_visible(timeout=300):
+                    continue
+                loc.click(timeout=3_000)
+                chosen = label
+                break
+            except Exception as e:
+                log.debug(
+                    "statements: time-period option %r via %r: %s",
+                    label, sel, e,
+                )
+        if chosen:
+            break
+    if chosen is None:
+        log.info(
+            "statements: no widening Time Period option matched; "
+            "default window stays in effect"
+        )
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return None
+    log.info("statements: Time Period set to %r", chosen)
+    try:
+        page.wait_for_load_state("networkidle", timeout=15_000)
+    except Exception:
+        time.sleep(3.0)
+    capture(page, capture_dir, "statements-time-period-applied")
+    return chosen
+
+
 def _enumerate_statement_row_labels(page):
     """Return the aria-label of each statement-row description cell
     (e.g. ``"Jan-March 2026 — Statement (pdf)"``) in document order
@@ -1293,7 +1430,7 @@ def _download_statement_format(page, context, row_index,
 
 
 def scrape_statements(page, context, docs_dir, capture_dir,
-                       min_year=None):
+                       min_year=None, target_days=None):
     """Walk the Statements sub-page; for each ``(pdf)`` row open
     the per-row download popover and grab both formats Fidelity
     offers ('Download as PDF' / 'Download as CSV'). The CSV path
@@ -1306,9 +1443,17 @@ def scrape_statements(page, context, docs_dir, capture_dir,
     typically only offer PDF. The CSV variant for those rows just
     fails the menuitem lookup and is recorded as not-available.
 
+    Before enumerating rows, the Statements page's ``Time Period``
+    filter is widened to cover ``target_days`` (default 90) so
+    rows older than the dropdown's default ``Last 6 months`` are
+    visible — see ``_select_statements_time_period``.
+
     If ``min_year`` is set, rows whose label-year is earlier than
     that are skipped (the default scope from walk() is ``documents
     _since.year``)."""
+    _select_statements_time_period(
+        page, capture_dir, target_days=target_days,
+    )
     results = []
     labels = _enumerate_statement_row_labels(page)
     log.info("statements: %d (pdf) rows visible", len(labels))
@@ -1619,7 +1764,7 @@ def scrape_tax_forms(page, docs_dir, capture_dir, min_year=None):
 
 
 def scrape_documents(page, context, bronze_dir, capture_dir,
-                      min_year=None):
+                      min_year=None, target_days=None):
     """Walk Statements + Tax forms in the document center. Each
     sub-page is exercised independently so a failure in one
     category doesn't block the other. ``context`` is needed for the
@@ -1627,7 +1772,10 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
 
     ``min_year`` (forwarded to both sub-scrapers) drops rows / year
     selections older than that — see walk()'s default-derivation
-    from ``--documents-since``."""
+    from ``--documents-since``. ``target_days`` is the requested
+    documents window length, used to pick the Statements page's
+    ``Time Period`` filter (narrowest exposed option that covers
+    the window; ``None`` widens to the full archive)."""
     docs_dir = bronze_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     results = {"status": "walked"}
@@ -1654,6 +1802,7 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
         results["statements"] = scrape_statements(
             page, context, docs_dir, capture_dir,
             min_year=min_year,
+            target_days=target_days,
         )
     except Exception as e:
         log.exception("statements walk failed")
@@ -1880,7 +2029,11 @@ def walk(context, page, config):
         documents_since = (
             datetime.now(timezone.utc).date() - timedelta(days=90)
         )
+    documents_until = parse_iso_date(config.get("documents_until"))
+    if documents_until is None:
+        documents_until = datetime.now(timezone.utc).date()
     docs_min_year = documents_since.year
+    docs_target_days = max(1, (documents_until - documents_since).days)
 
     run_json = {
         "snapshot_at": bronze_dir.name,
@@ -1920,6 +2073,7 @@ def walk(context, page, config):
             run_json["documents_results"] = scrape_documents(
                 page, context, bronze_dir, capture_dir,
                 min_year=docs_min_year,
+                target_days=docs_target_days,
             )
         if mode in ("all", "balances"):
             run_json["balances_results"] = scrape_balances(

@@ -40,9 +40,11 @@ import csv
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -267,12 +269,13 @@ def load_dump(conn, dump_dir, schema_version):
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
+    hist_pos_count = _load_historical_from_pdfs(conn, dump_dir)
 
     log.info(
         "loaded %s: portfolios=%d accounts=%d positions=%d "
-        "transactions=%d documents=%d",
+        "transactions=%d documents=%d hist_positions=%d",
         dump_dir.name, portfolio_count, account_count, pos_count,
-        txn_count, doc_count,
+        txn_count, doc_count, hist_pos_count,
     )
 
 
@@ -755,6 +758,152 @@ def _ingest_document(conn, snapshot_at, path, classification):
     except sqlite3.IntegrityError:
         # Same bytes already loaded from an earlier dump.
         return 0
+
+
+# ============================================================
+# Historical position snapshots (529 statement-PDF parsing)
+# ============================================================
+#
+# Fidelity's positions UI is point-in-time; the only available
+# source for pre-toolkit-era snapshots is the quarterly/annual
+# 529-statement PDF archive (DESIGN.md §4.5).
+#
+# The text-level parsing happens in pdf_parsers.py. The wiring
+# below: collect the in-scope PDFs from `documents`, parse them
+# in a process pool (PDF text extraction is CPU-bound), insert
+# the resulting rows serially under the existing transaction.
+
+def _parse_statement_pdf_worker(path):
+    """ProcessPoolExecutor target: parse one PDF and return its
+    parsed dict (or ``{"_error": "<repr>"}`` so the parent can
+    log and continue rather than crashing the whole pool).
+    Module-level so it pickles cleanly under spawn (macOS)."""
+    try:
+        import pdf_parsers
+        return pdf_parsers.parse_statement_pdf(path)
+    except Exception as e:
+        return {"_error": repr(e), "path": str(path)}
+
+
+def _load_historical_from_pdfs(conn, dump_dir):
+    """Walk every PDF in this dump's ``documents/`` whose filename
+    follows the ``Statement<MMDDYYYY>.pdf`` shape — those are
+    Fidelity's 529 quarterly + year-end statements — parse each
+    in a worker pool, and insert the holdings rows into
+    ``historical_position_snapshots`` keyed by
+    ``(as_of_date, account_external_id, description)``.
+
+    The CSV companions (`Statement<MMDDYYYY>.csv`) are also saved
+    in `documents/` but carry only summary cash-flow lines, not
+    holdings; we skip them. Tax-form PDFs share the directory and
+    are skipped via their filename prefix (`<YYYY>-…`)."""
+    docs_dir = dump_dir / "documents"
+    if not docs_dir.is_dir():
+        return 0
+    candidates = [
+        p for p in sorted(docs_dir.glob("Statement*.pdf"))
+        if not p.name.lower().endswith(".csv")
+    ]
+    if not candidates:
+        return 0
+
+    worker_count = max(1, min(len(candidates), os.cpu_count() or 1))
+    log.info(
+        "historical: parsing %d statement PDF(s) across %d worker(s)",
+        len(candidates), worker_count,
+    )
+    if worker_count == 1:
+        parsed = [_parse_statement_pdf_worker(str(p)) for p in candidates]
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count) as pool:
+            parsed = list(pool.map(
+                _parse_statement_pdf_worker,
+                [str(p) for p in candidates],
+            ))
+    inserted = 0
+    for path, result in zip(candidates, parsed):
+        if "_error" in result:
+            log.warning(
+                "historical: PDF parse failed for %s: %s",
+                path.name, result["_error"],
+            )
+            continue
+        inserted += _insert_historical_rows(conn, path, result)
+    return inserted
+
+
+def _insert_historical_rows(conn, pdf_path, parsed):
+    """Insert one ``historical_position_snapshots`` row per
+    holding in the parsed statement. Cross-walks the human-
+    readable fund description to an `instrument_key` when a
+    matching `positions.description` exists in silver; leaves
+    `instrument_key` NULL otherwise (gold can resolve)."""
+    period_end = parsed.get("period_end")
+    if not period_end:
+        log.debug(
+            "historical: no period in %s; skipping", pdf_path.name,
+        )
+        return 0
+    as_of = ts_from_iso(period_end)
+    if as_of is None:
+        return 0
+    sha = bronze.sha256_file(pdf_path)[0]
+    inserted = 0
+    for account in parsed.get("accounts", []):
+        aid = account.get("account_external_id")
+        if not aid:
+            continue
+        for holding in account.get("holdings", []):
+            desc = (holding.get("description") or "").strip()
+            if not desc:
+                continue
+            instrument_key = _crosswalk_description_to_instrument(
+                conn, aid, desc,
+            )
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO historical_position_snapshots ("
+                    "as_of_date, account_external_id, description, "
+                    "instrument_key, quantity, price, market_value, "
+                    "percent_of_total, currency, source_sha256, payload"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        as_of, aid, desc, instrument_key,
+                        holding.get("quantity"),
+                        holding.get("price"),
+                        holding.get("market_value"),
+                        holding.get("percent_of_total"),
+                        "USD", sha,
+                        normalize_payload(holding),
+                    ),
+                )
+                inserted += 1
+            except sqlite3.IntegrityError as e:
+                log.debug(
+                    "historical: insert skipped for %s @ %s: %s",
+                    aid, period_end, e,
+                )
+    return inserted
+
+
+def _crosswalk_description_to_instrument(conn, account_external_id,
+                                          description):
+    """Look the description up against any live ``positions.description``
+    for the same account; return the matching ``instrument_key``
+    when there's exactly one. NULL when the description never
+    appears (e.g. fund was sold before any live snapshot ran) or
+    when it's ambiguous."""
+    cur = conn.execute(
+        "SELECT DISTINCT instrument_key FROM positions "
+        " WHERE account_external_id = ? AND description = ? "
+        "   AND instrument_key IS NOT NULL "
+        " LIMIT 2",
+        (account_external_id, description),
+    )
+    hits = [r[0] for r in cur.fetchall()]
+    if len(hits) == 1:
+        return hits[0]
+    return None
 
 
 # ============================================================

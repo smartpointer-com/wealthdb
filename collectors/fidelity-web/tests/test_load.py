@@ -160,7 +160,8 @@ def test_apply_migrations_creates_schema(conn):
     )
     names = [r[0] for r in cur.fetchall()]
     assert names == [
-        "accounts", "documents", "dump_runs", "portfolios",
+        "accounts", "documents", "dump_runs",
+        "historical_position_snapshots", "portfolios",
         "positions", "schema_meta", "transactions",
     ]
 

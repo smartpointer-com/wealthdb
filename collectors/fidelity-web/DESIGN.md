@@ -250,6 +250,7 @@ databases always conform to the latest schema.
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
+| `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated by `pdf_parsers.parse_statement_pdf()` from 529 quarterly + year-end statement PDFs (see §4.5). |
 
 Notes:
 - `currency` defaults to `'USD'` on both `positions` and
@@ -354,10 +355,17 @@ statement PDFs only for some account groups, such as 529 plan
 accounts; the document center shows nothing for the others. The DAF has its own
 statement type but is out of scope.
 
-Consequence: `historical_position_snapshots` and
-`historical_cash_balances` (which would normally populate from
-statement PDFs) are 529-only. For trust accounts, historical
-position reconstruction requires:
+Consequence: `historical_position_snapshots` is 529-only,
+populated by `pdf_parsers.parse_statement_pdf()` and wired into
+`load.py` via a `ProcessPoolExecutor` worker pool (PDF text
+extraction is CPU-bound; SQLite insert stays on the main
+thread). The cross-walk from the human-readable fund description
+in the PDF to an `instrument_key` queries the live `positions`
+table per (account, description); when the fund hasn't appeared
+in any live snapshot yet the row lands with `instrument_key`
+NULL and the description preserved for downstream resolution.
+
+For trust accounts, historical position reconstruction requires:
 
 - documents supplied out-of-band (PDF, via the
   `manual/` channel), OR
@@ -662,7 +670,7 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
 | `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
 | `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
-| Statement-PDF parser (529 historical reconstruction) | not started |
+| Statement-PDF parser (529 historical reconstruction) | done — `pdf_parsers.py` + migration 0004 populate `historical_position_snapshots` |
 | Per-account `account_registration` | deferred — see §11.5 |
 | `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `self_directed`, trust_managed → `discretionary`) | done — see §11.6 |
 | `wealthdb` Fidelity adapter | sibling component (`wealthdb/`) |

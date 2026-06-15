@@ -26,7 +26,8 @@ Login, bronze fetch, and silver loader are operational.
 | [`download.py`](download.py) documents — statements | implemented (per-row popover → "Download as PDF" via popup-tab + `context.request`, "Download as CSV" via canonical download event; scroll-into-view + JS-click fallback for rows below the fold). |
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
-| [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). Statement-PDF parser for 529 historical reconstruction is a follow-up. |
+| [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
+| [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Trust accounts get no statement PDFs from Fidelity (see [DESIGN.md §4.5](DESIGN.md)) so they aren't covered by this path. |
 | `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).

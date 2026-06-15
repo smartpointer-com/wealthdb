@@ -21,20 +21,30 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 		LatestTransactionAt: -1,
 		LatestChangeNumber:  -1,
 	}
-	const q = `
+	hasHist, err := c.hasHistoricalTable(ctx)
+	if err != nil {
+		return s, err
+	}
+	histClause := "SELECT NULL AS t WHERE 0"
+	if hasHist {
+		histClause = "SELECT as_of_date AS t FROM historical_position_snapshots"
+	}
+	q := fmt.Sprintf(`
 SELECT
     COALESCE((SELECT MIN(t) FROM (
         SELECT MIN(snapshot_at) AS t FROM dump_runs
         UNION ALL SELECT MIN(snapshot_at) FROM positions
+        UNION ALL %s
     )), -1),
     COALESCE((SELECT MAX(t) FROM (
         SELECT MAX(snapshot_at) AS t FROM dump_runs
         UNION ALL SELECT MAX(snapshot_at) FROM positions
+        UNION ALL %s
     )), -1),
     COALESCE((SELECT MIN(timestamp) FROM transactions), -1),
     COALESCE((SELECT MAX(timestamp) FROM transactions), -1),
     COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
-`
+`, histClause, histClause)
 	var oldS, newS, oldT, newT, latestRun sql.NullInt64
 	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT, &latestRun); err != nil {
 		return s, fmt.Errorf("fidelity Status: %w", err)
@@ -61,10 +71,15 @@ SELECT
 // the next snapshot pass needs to see. Trigger is "is there
 // anything new in dump_runs or transactions past since" (so an
 // idle reload remains a no-op); bounds widen to cover any
-// position snapshot whose snapshot_at falls outside the trigger
+// position snapshot whose snapshot_at — or any historical
+// position snapshot whose as_of_date — falls outside the trigger
 // range so the byTime dispatch in Snapshots() doesn't drop rows.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
+	hasHist, err := c.hasHistoricalTable(ctx)
+	if err != nil {
+		return w, err
+	}
 	const q = `
 SELECT
     COALESCE(
@@ -102,6 +117,20 @@ SELECT
 		}
 		if posHi.Valid && posHi.Int64 > w.End {
 			w.End = posHi.Int64
+		}
+		if hasHist {
+			var histLo, histHi sql.NullInt64
+			if err := c.db.QueryRowContext(ctx, `
+SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`).
+				Scan(&histLo, &histHi); err != nil {
+				return w, fmt.Errorf("fidelity ChangeWindow historical: %w", err)
+			}
+			if histLo.Valid && histLo.Int64 >= 0 && histLo.Int64 < w.Start {
+				w.Start = histLo.Int64
+			}
+			if histHi.Valid && histHi.Int64 > w.End {
+				w.End = histHi.Int64
+			}
 		}
 	}
 	if newCN.Valid {
