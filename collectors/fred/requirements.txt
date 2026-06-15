@@ -1,0 +1,5 @@
+# Pure-stdlib collector (urllib for the FRED REST calls, sqlite3 for
+# silver); collectorkit is installed editable by `make build-fred`.
+# pytest is bundled so the test suite runs in the venv with no extra
+# toolchain.
+pytest>=8,<9

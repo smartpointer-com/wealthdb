@@ -14,15 +14,20 @@ one owner and a stable contract with the next.
                  BRONZE                 SILVER                 GOLD
             (raw, as fetched)    (parsed, source-shaped)  (canonical, cross-bank)
 
- collectors/schwab-api/   JSON dumps  ─→  schwab-api.db ─┐
- collectors/schwab-web/   PDF + CSV   ─→  schwab-web.db ─┤
- collectors/ubs-psn/      MT5xx zips  ─→  ubs-psn.db    ─┤
- collectors/ubs-web/      PDF + CSV   ─→  ubs-web.db    ─┤   wealthdb load
- collectors/swissquote/   XLS + PDF   ─→  swissquote.db ─┼─────────────────→  wealthdb.db
- collectors/fidelity-web/ CSV + HTML  ─→  fidelity.db   ─┤   (DuckDB, canonical)
- collectors/relevate/     JSON        ─→  relevate.db   ─┤
- collectors/viac/         JSON + PDF  ─→  viac.db       ─┘   → positions / transactions
-                                                              accounts / portfolios ...
+ collectors/schwab-api/   JSON dumps  ─→  schwab-api.db   ─┐
+ collectors/schwab-web/   PDF + CSV   ─→  schwab-web.db   ─┤
+ collectors/ubs-psn/      MT5xx zips  ─→  ubs-psn.db      ─┤
+ collectors/ubs-web/      PDF + CSV   ─→  ubs-web.db      ─┤
+ collectors/swissquote/   XLS + PDF   ─→  swissquote.db   ─┤
+ collectors/fidelity-web/ CSV + HTML  ─→  fidelity.db     ─┤   wealthdb load
+ collectors/relevate/     JSON        ─→  relevate.db     ─┼─────────────────→  wealthdb.db
+ collectors/viac/         JSON + PDF  ─→  viac.db         ─┤   (DuckDB, canonical)
+ collectors/cointracking/ CSV + JSON  ─→  cointracking.db ─┤
+ collectors/angellist/    JSON        ─→  angellist.db    ─┤   → positions / transactions
+ collectors/carta/        JSON + PDF  ─→  carta.db        ─┤   accounts / portfolios ...
+ collectors/equityzen/    JSON + PDF  ─→  equityzen.db    ─┤
+ collectors/manual/       CSV         ─→  manual.db       ─┤
+ collectors/fred/         JSON        ─→  fred.db         ─┘
 ```
 
 - **Bronze** — exactly what the source returned, untouched. Owned

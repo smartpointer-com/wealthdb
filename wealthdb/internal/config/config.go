@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/ptu/wealthdb/internal/silver"
@@ -104,15 +106,54 @@ type ModelConfig struct {
 // one must be present when `subsources` is used. Path is empty
 // in the multi-source form.
 type SilverSource struct {
-	ID         string             `json:"id"`
-	Kind       string             `json:"kind"`
-	Path       string             `json:"path,omitempty"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
+	// FxPriority ranks this source when several sources publish an
+	// FX rate for the same day: lower = higher priority (so the
+	// account-level rate is used and a reference source like fred
+	// fills only the days no account source covered). Absent/null =
+	// minimum priority. Ties (equal or both-null) break by the order
+	// sources appear in the config — earlier wins. See FxSourceOrder.
+	FxPriority *int               `json:"fx_priority,omitempty"`
 	Subsources []SilverSubsource  `json:"subsources,omitempty"`
 	// Relationships pairs cross-subsource entity identities under
 	// a single user-chosen label. Used by the UBS adapter to link
 	// the web `banking_relationship_id` (opaque SPA token) to the
 	// PSN `relationship_id` (SFTPCHxx, etc.). Optional.
 	Relationships []RelationshipPair `json:"relationships,omitempty"`
+}
+
+// FxSourceOrder returns the silver_source_ids ordered by FX precedence,
+// highest priority first: ascending fx_priority with absent/null treated
+// as minimum priority (sorted last), ties broken by the order sources are
+// declared in the config. The gold FX resolver uses this to prefer one
+// source's rate over another's on days both cover.
+func (c *Config) FxSourceOrder() []string {
+	type item struct {
+		id  string
+		pri int
+		idx int
+	}
+	items := make([]item, len(c.SilverSources))
+	for i, s := range c.SilverSources {
+		pri := math.MaxInt // absent/null => minimum priority
+		if s.FxPriority != nil {
+			pri = *s.FxPriority
+		}
+		items[i] = item{id: s.ID, pri: pri, idx: i}
+	}
+	sort.SliceStable(items, func(a, b int) bool {
+		if items[a].pri != items[b].pri {
+			return items[a].pri < items[b].pri
+		}
+		return items[a].idx < items[b].idx // tie: declaration order
+	})
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.id
+	}
+	return out
 }
 
 // SilverSubsource is one entry under `silver_sources[].subsources`.

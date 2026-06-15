@@ -113,6 +113,52 @@ func TestLookupRateCurrentMode(t *testing.T) {
 	}
 }
 
+func TestLookupRateSourcePrecedence(t *testing.T) {
+	db, ctx := openMigrated(t)
+	ins := func(src string, snap int64, mid string) {
+		t.Helper()
+		if _, err := db.Exec(`
+            INSERT INTO fx_rates(silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+            VALUES (?, ?, 'CHF', 'USD', CAST(? AS DECIMAL(20,10)))`,
+			src, snap, mid); err != nil {
+			t.Fatalf("ins %s @ %d: %v", src, snap, err)
+		}
+	}
+	const day = 86400
+	// Same UTC day, but ubs is stamped EARLIER than fred — so a date-only
+	// sort would pick fred's rate. Source priority must override that.
+	ins("ubs", 100*day+10000, "0.8000")
+	ins("fred", 100*day+60000, "0.7900")
+	// A historic day only fred covers.
+	ins("fred", 90*day, "0.7000")
+	asOf := int64(100*day + 86399) // end of the shared day
+	hist := int64(90 * day)
+
+	// No precedence configured: date-only → fred's later same-day stamp wins.
+	SetFxSourceOrder(nil)
+	if r, err := LookupRate(ctx, db, asOf, "CHF", "USD", canonical.FxModeHistoric); err != nil || r.String() != "0.79" {
+		t.Fatalf("no-precedence rate = %v (err %v), want 0.79 (latest same-day)", r, err)
+	}
+
+	// ubs preferred: the within-day tiebreak picks ubs over fred...
+	SetFxSourceOrder([]string{"ubs", "fred"})
+	t.Cleanup(func() { SetFxSourceOrder(nil) })
+	if r, err := LookupRate(ctx, db, asOf, "CHF", "USD", canonical.FxModeHistoric); err != nil || r.String() != "0.8" {
+		t.Fatalf("ubs-preferred rate = %v (err %v), want 0.8", r, err)
+	}
+	// ...while fred still fills the historic day ubs never covered.
+	if r, err := LookupRate(ctx, db, hist, "CHF", "USD", canonical.FxModeHistoric); err != nil || r.String() != "0.7" {
+		t.Fatalf("historic rate = %v (err %v), want 0.7 (fred fallback)", r, err)
+	}
+
+	// Reversing the order flips the same-day winner — confirms it's
+	// config-driven, not the timestamp coincidence.
+	SetFxSourceOrder([]string{"fred", "ubs"})
+	if r, err := LookupRate(ctx, db, asOf, "CHF", "USD", canonical.FxModeHistoric); err != nil || r.String() != "0.79" {
+		t.Fatalf("fred-preferred rate = %v (err %v), want 0.79", r, err)
+	}
+}
+
 func TestConvertValueDirect(t *testing.T) {
 	db, ctx := openMigrated(t)
 	// 1 USD = 0.8 CHF

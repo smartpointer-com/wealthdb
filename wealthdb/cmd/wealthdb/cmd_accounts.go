@@ -75,6 +75,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	if err != nil {
 		return err
 	}
+	gold.SetFxSourceOrder(cfg.FxSourceOrder())
 
 	outCcy := strings.ToUpper(*currency)
 	if outCcy == "" {

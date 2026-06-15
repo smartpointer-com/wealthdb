@@ -29,7 +29,7 @@ form and the **input contract** to gold. One silver DB per source.
 
 | Runtime | Collectors | Invocation |
 | --- | --- | --- |
-| **Host venv** | `schwab-api`, `ubs-psn`, `manual` | A wrapper runs the collector's `.py` under its `.venv` — pure-stdlib plus one thin dependency; no container. |
+| **Host venv** | `schwab-api`, `ubs-psn`, `fred`, `manual` | A wrapper runs the collector's `.py` under its `.venv` — pure-stdlib plus one thin dependency; no container. |
 | **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking`, `angellist`, `carta`, `equityzen` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
 `schwab-api` is **hybrid**: its weekly OAuth `login` runs in a
@@ -60,7 +60,7 @@ also lives under `~/.secrets/` (`<source>-state.json`,
 └── <source>.db            silver SQLite
 ```
 
-**Docker mounts** (the six containerised collectors): the wrapper
+**Docker mounts** (the ten containerised collectors): the wrapper
 bind-mounts `~/.secrets → /secrets` and `~/wealthdb/<source> →
 /data`, so inside the container credentials are at
 `/secrets/<source>.env` and bronze/silver at `/data`.
@@ -271,6 +271,7 @@ restated here.
 | [`carta`](carta/) | Carta (private holdings / cap table) | scraped session | Docker (Camoufox) |
 | [`equityzen`](equityzen/) | EquityZen (pre-IPO secondary SPVs) | scraped session | Docker (Camoufox) |
 | [`manual`](manual/) | Private holdings with no portal (CSV) | none — manual entry | host venv |
+| [`fred`](fred/) | FRED / US Fed H.10 (historic FX rates) | API key | host venv |
 
 Agent ground rules shared by every collector are in the repo-root
 [CLAUDE.md](../CLAUDE.md); each subdirectory's `CLAUDE.md` adds

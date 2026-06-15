@@ -92,6 +92,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if err != nil {
 		return err
 	}
+	gold.SetFxSourceOrder(cfg.FxSourceOrder())
 
 	outCcy := strings.ToUpper(*currency)
 	if outCcy == "" {

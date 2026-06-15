@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# fred — host wrapper for the wealthdb "fred" collector.
+#
+# Host-venv collector (no Docker): runs the collector's own .py under its
+# .venv, like ubs-psn. Pulls daily USD-centric FX reference rates (US Fed
+# H.10) from the FRED API. Subcommands:
+#   login               No-op (FRED uses an API key, not a session). The
+#                       key is read from FRED_API_KEY.
+#   download [args...]  Fetch FX rates into bronze. Bound the window with
+#                       --since/--until/--lookback (default ~90 days;
+#                       `--lookback all` or `--since 1971-01-01` for a full
+#                       historic backfill).
+#   load [args...]      Parse bronze into the silver SQLite DB.
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on any subcommand:
+#   --secrets-dir DIR   API-key env file          (default ~/.secrets)
+#   --data-dir    DIR   bronze dumps root          (default ~/wealthdb/fred)
+#   --silver-db   PATH  silver DB path             (default <data-dir>/fred.db)
+# The API key is read from FRED_API_KEY, auto-sourced from
+# <secrets-dir>/fred.env (override the path with $FRED_ENV_FILE).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=fred
+ENV_PREFIX=FRED
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    login)
+        cat >&2 <<'EOF'
+fred: no-op. FRED is an API-key-authenticated REST source — there is no
+interactive login / session to mint. Put your key in ~/.secrets/fred.env
+(FRED_API_KEY=...), then run `./fred download`.
+EOF
+        exit 0
+        ;;
+esac
+
+host_resolve_dirs "$@"
+host_source_env_file
+py="$(host_python)"
+
+case "$cmd" in
+    download)
+        exec "$py" "$HERE/download.py" --dest "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    load)
+        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" \
+            --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    *)
+        echo "fred: unknown command '$cmd' (expected: login|download|load)" >&2
+        exit 2
+        ;;
+esac

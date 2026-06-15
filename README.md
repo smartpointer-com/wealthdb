@@ -31,6 +31,11 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
 | [`collectors/relevate/`](collectors/relevate/) | Relevate / Pensexpert (Pillar 2) | Docker | middlelayer REST |
 | [`collectors/viac/`](collectors/viac/) | VIAC (Pillar 3a / vested benefits) | Docker | web REST |
 | [`collectors/cointracking/`](collectors/cointracking/) | Crypto aggregator (all exchanges + wallets) | Docker (headless Firefox + Camoufox for re-discovery) | web scrape |
+| [`collectors/angellist/`](collectors/angellist/) | AngelList LP portal (SPVs / fund deals) | Docker (Camoufox) | web scrape |
+| [`collectors/carta/`](collectors/carta/) | Carta (private holdings / cap table) | Docker (Camoufox) | web scrape |
+| [`collectors/equityzen/`](collectors/equityzen/) | EquityZen (pre-IPO secondary SPVs) | Docker (Camoufox) | web scrape |
+| [`collectors/manual/`](collectors/manual/) | Private holdings, no portal (CSV) | Python venv | manual entry |
+| [`collectors/fred/`](collectors/fred/) | Historic FX rates (reference data) | Python venv | FRED API (US Fed H.10) |
 
 Each component has its own `README.md` (usage), `DESIGN.md`
 (internals), and `CLAUDE.md` (agent guidance) at its root.
@@ -67,7 +72,7 @@ cd wealthdb
 **Collectors** — every collector ships a wrapper exposing the same
 `login` / `download` / `load` verbs, whether it's a Docker collector
 (the web/REST ones) or a host-venv collector (`schwab-api`, `ubs-psn`,
-`manual`). Drive the whole fleet through the `wealthdb-collect`
+`fred`, `manual`). Drive the whole fleet through the `wealthdb-collect`
 dispatcher:
 
 ```sh

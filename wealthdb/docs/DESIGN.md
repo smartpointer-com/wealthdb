@@ -418,6 +418,7 @@ Example config file:
         {
             "id":   "ubs",
             "kind": "ubs",
+            "fx_priority": 0,
             "subsources": [
                 {"kind": "ubs-web", "path": "~/wealthdb/ubs-web/ubs-web.db"},
                 {"kind": "ubs-psn", "path": "~/wealthdb/ubs-psn/ubs-psn.db"}
@@ -435,6 +436,12 @@ Example config file:
             "id":   "swissquote-1",
             "kind": "swissquote",
             "path": "~/wealthdb/swissquote/swissquote.db"
+        },
+        {
+            "id":   "fred",
+            "kind": "fred",
+            "path": "~/wealthdb/fred/fred.db",
+            "fx_priority": 1
         }
     ],
     "account_overrides": {
@@ -457,8 +464,9 @@ Example config file:
 | `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
-| `silver_sources[].kind` | string | One of `schwab`, `ubs`, `swissquote`, `auto`. Picks the adapter. |
-| `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths resolved against the config file's directory. Used by single-file adapters (Schwab, Swissquote, single-source UBS). Mutually exclusive with `subsources`. |
+| `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
+| `silver_sources[].path` | string | Filesystem path to the silver SQLite. `~` and `$HOME` expanded. Relative paths resolved against the config file's directory. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
+| `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
 | `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
 | `silver_sources[].subsources[].kind` | string | Subsource discriminator. UBS recognises `ubs-web` and `ubs-psn`. |
 | `silver_sources[].subsources[].path` | string | Filesystem path to that subsource's silver SQLite. Expanded like `path`. |
@@ -1005,9 +1013,12 @@ CREATE TABLE cash_balances (
 -- FACTS — FX rates (snapshot grain)
 --
 -- Multiple silvers may publish overlapping rates (UBS TDFXR,
--- Swissquote List-of-Assets row's `rate_to_chf`). We keep all rows
--- and let queries pick a source. The `wealthdb networth` command
--- (future work) will define the precedence rule.
+-- Swissquote List-of-Assets row's `rate_to_chf`, the `fred` reference
+-- feed). We keep all rows and let the FX resolver pick per conversion:
+-- it prefers the rate from the highest-priority source covering the
+-- target day, falling back to the next. Priority is the per-source
+-- `silver_sources[].fx_priority` config field (lower = higher priority,
+-- absent = lowest, ties by config order). See §10.6 / §13.2.
 -- ============================================================
 
 CREATE TABLE fx_rates (
@@ -1459,11 +1470,16 @@ assumption gets weaker but degrades gracefully.
 single-row index probes.
 
 **Cross-silver precedence.** When multiple silvers publish the
-same `(base, quote)` pair at overlapping timestamps, the queries
-above implicitly aggregate across silvers (no `silver_source_id`
-filter). The first cut accepts whichever row sorts first; a
-configurable precedence rule (e.g. "prefer UBS for CHF crosses")
-is future work — see §13.2.
+same `(base, quote)` pair, the queries above don't filter by
+`silver_source_id`; instead they order by **UTC day first** (so the
+nearest day always wins — a reference source like `fred` keeps the deep
+historic tail an account source lacks), then by a **source-priority
+tiebreak**, then by exact timestamp. The priority is the per-source
+`silver_sources[].fx_priority` config field (lower = higher priority,
+absent = lowest, ties by config declaration order), surfaced to the
+resolver via `gold.SetFxSourceOrder`. So on a day two sources both
+cover, the higher-priority source wins; on days only one covers, that
+one fills in. See §13.2.
 
 ## 11. Repository layout
 
@@ -1697,22 +1713,30 @@ a mapping from `(silver_source_id, instrument_external_id)` to a
 canonical instrument ID would tidy this up. Hold until the awkwardness
 actually bites.
 
-### 13.2 FX-rate precedence among silvers
+### 13.2 FX-rate precedence among silvers — implemented
 
-When multiple silvers publish the same `(base, quote)` pair at
-overlapping timestamps, §10.6's helper currently picks whichever
-row sorts first. That's deterministic but not principled. Options
-for a real rule:
+**Resolved.** This was once an open question (§10.6 originally took
+whichever row sorted first). Of the options floated, the implemented
+rule is the **configured per-source** one, refined with a day-bucket
+tiebreak so a reference source never overrides an account source on the
+days they overlap:
 
-- Hardcoded preference order (`ubs > swissquote > schwab`).
-- Per-pair preference (UBS for CHF crosses, Schwab for USD crosses).
-- Configured per gold-config (`fx_precedence: ["ubs-main", "swissquote-1"]`).
-- "Most recent snapshot_at wins" (already implicit in `current`
-  mode; could become the universal rule).
+- The lookups order by **UTC day first**, so the snapshot nearest the
+  target day always wins — a reference source (e.g. `fred`, reaching
+  back to 1971) keeps the deep historic tail a daily account source
+  lacks, without overriding that account source on days it covers.
+- **Within a day**, a source-priority tiebreak chooses the winner: the
+  per-source `silver_sources[].fx_priority` config field — lower = higher
+  priority, absent/null = lowest, ties broken by config declaration
+  order. `config.Config.FxSourceOrder()` flattens this to an ordered
+  list of `silver_source_id`s; the read commands push it into the gold
+  FX resolver via `gold.SetFxSourceOrder`, and `internal/gold/fx.go`
+  emits it as a `CASE silver_source_id … END` ORDER BY fragment.
+- **Exact timestamp** breaks any remaining tie.
 
-Also out of scope today: non-snapshotted FX sources (e.g.,
-ECB reference rates, a manually maintained `fx_overrides` table
-for currencies no silver covers).
+Still out of scope today: non-snapshotted FX sources (e.g. ECB
+reference rates, or a manually maintained `fx_overrides` table for
+currencies no silver covers — `fred` now covers the major ones).
 
 ### 13.3 acquisition_date backfill
 

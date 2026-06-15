@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 )
@@ -179,30 +180,73 @@ type bracketRow struct {
 	Rate     canonical.Decimal
 }
 
+// Source precedence. When more than one silver source publishes a rate for
+// the SAME UTC day (e.g. ubs-psn's daily bank rates and fred's H.10
+// reference rates), the higher-priority source wins and the others fill
+// only the days they don't cover. Expressed as a within-day tiebreak: the
+// lookups order by UTC day first (so the nearest day always wins — a
+// reference source keeps the deep historic tail an account source lacks),
+// then by source priority, then by exact time. fxDayBucket is integer
+// (floor) division to the UTC day.
+const fxDayBucket = `(snapshot_at // 86400)`
+
+// fxSourceOrder lists silver_source_ids highest-priority first; set once per
+// command from the config (see config.Config.FxSourceOrder). Empty disables
+// the source tiebreak (date-only selection). Process-wide FX-resolution
+// configuration, like triangulationVehicles above.
+var fxSourceOrder []string
+
+// SetFxSourceOrder configures the per-source FX precedence (highest priority
+// first). The read commands call it after loading the config; load/init
+// don't need it (they write, not resolve). Empty/nil = no tiebreak.
+func SetFxSourceOrder(order []string) { fxSourceOrder = order }
+
+// fxPriorityOrder returns an ORDER BY tiebreak clause (a `CASE … END ASC, `
+// fragment, trailing comma included) ranking silver_source_id by the
+// configured precedence — lower = higher priority, unlisted sources rank
+// last. Empty string when no precedence is configured, so the term is
+// omitted entirely (DuckDB rejects a bare constant in ORDER BY). The ids
+// come from config (not query input) and are single-quote-escaped.
+func fxPriorityOrder() string {
+	if len(fxSourceOrder) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("CASE silver_source_id")
+	for i, id := range fxSourceOrder {
+		fmt.Fprintf(&b, " WHEN '%s' THEN %d", strings.ReplaceAll(id, "'", "''"), i)
+	}
+	fmt.Fprintf(&b, " ELSE %d END ASC, ", len(fxSourceOrder))
+	return b.String()
+}
+
 func rateAtOrBefore(ctx context.Context, db *sql.DB, asOf int64, base, quote string) (bracketRow, bool, error) {
-	const q = `
+	q := `
 SELECT snapshot_at, CAST(mid_rate AS VARCHAR)
   FROM fx_rates
  WHERE base_currency = ? AND quote_currency = ? AND snapshot_at <= ?
- ORDER BY snapshot_at DESC LIMIT 1`
+ ORDER BY ` + fxDayBucket + ` DESC, ` + fxPriorityOrder() + `snapshot_at DESC
+ LIMIT 1`
 	return scanBracketRow(ctx, db, q, base, quote, asOf)
 }
 
 func rateAtOrAfter(ctx context.Context, db *sql.DB, asOf int64, base, quote string) (bracketRow, bool, error) {
-	const q = `
+	q := `
 SELECT snapshot_at, CAST(mid_rate AS VARCHAR)
   FROM fx_rates
  WHERE base_currency = ? AND quote_currency = ? AND snapshot_at >= ?
- ORDER BY snapshot_at ASC LIMIT 1`
+ ORDER BY ` + fxDayBucket + ` ASC, ` + fxPriorityOrder() + `snapshot_at ASC
+ LIMIT 1`
 	return scanBracketRow(ctx, db, q, base, quote, asOf)
 }
 
 func latestRate(ctx context.Context, db *sql.DB, base, quote string) (canonical.Decimal, bool, error) {
-	const q = `
+	q := `
 SELECT CAST(mid_rate AS VARCHAR)
   FROM fx_rates
  WHERE base_currency = ? AND quote_currency = ?
- ORDER BY snapshot_at DESC LIMIT 1`
+ ORDER BY ` + fxDayBucket + ` DESC, ` + fxPriorityOrder() + `snapshot_at DESC
+ LIMIT 1`
 	var s string
 	err := db.QueryRowContext(ctx, q, base, quote).Scan(&s)
 	if err == sql.ErrNoRows {
