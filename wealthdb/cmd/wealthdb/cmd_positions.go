@@ -280,7 +280,7 @@ config.default_currency, historic FX mode.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
-  -f, --format FORMAT      output format (default: table; csv / csv_plain / json land in M10)
+  -f, --format FORMAT      output format (table | csv | csv_plain | json)
   -C, --columns COLS       comma-separated column names, 'default', 'all', or
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-market_value)
