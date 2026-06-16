@@ -699,7 +699,9 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
     opening: dict | None = None
     closing: dict | None = None
     available: dict | None = None
-    movements: list[tuple[dict, list[str]]] = []   # (parsed_61, [86 lines following])
+    # (parsed_61, [86 lines following]); parsed_61 is None when the :61:
+    # line did not match the SWIFT shape — see filter below.
+    movements: list[tuple[dict | None, list[str]]] = []
 
     for tag, val in fields:
         if tag == "25":
@@ -711,9 +713,23 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
         elif tag == "64":
             available = parse_mt_balance(val)
         elif tag == "61":
-            movements.append((_parse_mt940_61(val), []))
+            parsed = _parse_mt940_61(val)
+            if parsed is None:
+                log.warning(
+                    "MT940 :61: did not match expected shape; "
+                    "dropping this movement and any following :86: narrative: %r",
+                    val.split("\n", 1)[0],
+                )
+            movements.append((parsed, []))
         elif tag == "86" and movements:
+            # Narrative attaches to the most recent :61:; if that :61: was
+            # unparseable, the whole pair (with this narrative) is filtered
+            # out below.
             movements[-1][1].append(val)
+
+    # Drop unparseable movements before the insert loop so the eid-synthesis
+    # path below can rely on every parsed_61 having the expected keys.
+    movements = [(p, n) for p, n in movements if p is not None]
 
     if not account or not closing:
         log.warning("MT940 missing :25: or :62F: — skipping")
@@ -787,7 +803,11 @@ def load_mt940(conn, snapshot_at, relationship_id, mt_text):
 
 _MT940_61_RE = re.compile(
     r"^(?P<value_date>\d{6})(?P<entry_date>\d{4})?"
-    r"(?P<credit_debit>[CD]R?)(?P<funds>[A-Z])?"
+    # SWIFT debit/credit-mark grammar is `C | D | RC | RD`: an optional
+    # `R` (reversal) prefix followed by `C` or `D`. The prefix must come
+    # *before* the C/D character, not after — getting this order wrong
+    # silently drops reversal entries.
+    r"(?P<credit_debit>R?[CD])(?P<funds>[A-Z])?"
     r"(?P<amount>[0-9,]+)"
     r"(?P<txn_type>[NSFCT][A-Z0-9]{3})?"
     r"(?P<customer_ref>[^/\n]*)"
@@ -795,11 +815,18 @@ _MT940_61_RE = re.compile(
 )
 
 
-def _parse_mt940_61(line: str) -> dict:
-    """Best-effort parse of a :61: statement line."""
+def _parse_mt940_61(line: str) -> dict | None:
+    """Parse a :61: statement line into a field dict, or return None if
+    the line does not match the expected SWIFT MT940 :61: shape.
+
+    Returning None (rather than a sentinel dict) makes the caller's
+    contract explicit: a non-matching line cannot yield a usable event,
+    so it must be skipped at the call site rather than silently turned
+    into a row with missing keys.
+    """
     m = _MT940_61_RE.match(line.split("\n", 1)[0])
     if not m:
-        return {"raw": line}
+        return None
     d = m.groupdict()
     d["amount"] = d["amount"].replace(",", ".")
     return {k: (v.strip() if isinstance(v, str) else v) for k, v in d.items()}
