@@ -46,8 +46,24 @@ func expandPath(p, baseDir string) (string, error) {
 		p = filepath.Join(home, p[len("$HOME/"):])
 	}
 
-	// Step 2: generic env-var expansion for the rest.
-	p = os.ExpandEnv(p)
+	// Step 2: generic env-var expansion for the rest. Unlike
+	// os.ExpandEnv, a referenced-but-unset variable is a hard error
+	// rather than a silent "" — a config that says
+	// ${WEALTHDB_DATA_ROOT}/wealthdb.db must not quietly collapse to
+	// /wealthdb.db when the variable is missing (e.g. a launchd job
+	// that doesn't source the shell env).
+	var missing []string
+	p = os.Expand(p, func(name string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		missing = append(missing, name)
+		return ""
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("expandPath: undefined environment variable(s) %s in %q",
+			strings.Join(missing, ", "), p)
+	}
 
 	// Step 3: resolve relative against baseDir.
 	if !filepath.IsAbs(p) {
