@@ -16,12 +16,12 @@ pytest>=8,<9
 
 # Silver is plain SQLite + JSON1 (the repo default — DuckDB is the
 # cointracking-only exception). SQLite ships with CPython, so no driver
-# dependency is needed here. See DESIGN.md §"Why SQLite, not DuckDB".
+# dependency is needed here.
 
-# download.py drive a browser (Camoufox for stealth, with
-# vanilla Playwright Firefox as a possible fallback). Both browser
-# stacks are pre-installed in the base-camoufox image; nothing to add
-# here until explore tells us which engine the Investor Portal needs.
+# download.py drives a browser — Camoufox for stealth (the Investor Portal
+# flags the automation fingerprint), with vanilla Playwright Firefox kept as
+# a fallback. Both browser stacks are pre-installed in the base-camoufox
+# image; nothing to add here.
 
 # Document downloads (K-1 / capital-account-statement PDFs) are fetched
 # through Playwright's authenticated request API using the live session

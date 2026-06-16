@@ -13,12 +13,11 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Vanilla Playwright Firefox as a possible fallback engine for
-# download.py (headless, no stealth). Whether the Investor Portal's
-# bot-detection actually forces Camoufox for the authenticated flows — or
-# whether plain Firefox suffices once a session exists — is a decision
-# for the explore phase (see DESIGN.md §"Why Camoufox"). Installing it
-# now is cheap insurance and mirrors the cointracking image.
+# Vanilla Playwright Firefox, kept as a possible fallback engine (headless,
+# no stealth). `download.py` uses Camoufox (the Investor Portal flags the
+# automation fingerprint — see DESIGN.md "Why download is browser-based"),
+# so this is currently unused; installing it is cheap insurance and mirrors
+# the cointracking image.
 RUN playwright install firefox && playwright install-deps firefox
 
 # Stock Mozilla Firefox (arm64/amd64 from Mozilla's own APT repo) for the

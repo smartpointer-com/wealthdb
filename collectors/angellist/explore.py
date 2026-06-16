@@ -41,9 +41,8 @@ What this run needs to map (see DESIGN.md): the login host (possibly a
 fund-branded subdomain) + form selectors, the 2FA factor + any
 "trust this device" option, whether the authenticated surface needs
 Camoufox stealth, and the page/endpoint surfaces holding the LP
-portfolio summary, per-vehicle capital-account detail, and the activity
-(cash-flow) ledger. Tax documents / K-1s are a deferred increment, but
-note where the document centre lives for later.
+portfolio summary, per-vehicle capital-account detail, the
+funding-account cash ledger, and the tax-document / K-1 centre.
 
 Recording stops when the last browser window is closed (Camoufox's
 persistent context fires `close`) or after `--max-duration` (default

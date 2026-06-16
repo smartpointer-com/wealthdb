@@ -32,12 +32,18 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 log = logging.getLogger("angellist.extract_cookies")
 
 DEFAULT_DB = Path("/secrets/angellist-fxprofile/cookies.sqlite")
 DEFAULT_OUT = Path("/secrets/angellist-cookies.json")
+
+# AngelList's session cookie (domain-wide `.angellist.com`, ~27-day expiry).
+# A non-expired one in the saved profile means the user is still logged in,
+# so `login` can lift it without a fresh VNC sign-in.
+SESSION_COOKIE = "_angellist_v2"
 
 # Firefox moz_cookies.sameSite -> Playwright sameSite. Firefox: 0=None,
 # 1=Lax, 2=Strict. Anything unexpected falls back to "Lax".
@@ -115,6 +121,18 @@ def extract(db: Path, host_filter: str) -> list[dict]:
     return cookies
 
 
+def has_valid_session(cookies: list[dict]) -> bool:
+    """True if the jar carries a non-expired AngelList session cookie — i.e.
+    the saved profile is still logged in. A session-scoped (`expires == -1`)
+    cookie counts as present; otherwise the expiry must be in the future."""
+    now = time.time()
+    for c in cookies:
+        if c["name"] == SESSION_COOKIE:
+            exp = c["expires"]
+            return exp == -1 or exp > now + 60
+    return False
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
@@ -126,6 +144,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Output cookie JSON (0600). Default: %(default)s.")
     p.add_argument("--host-filter", default="angellist",
                    help="Substring match on cookie host. Default: %(default)s.")
+    p.add_argument("--require-valid", action="store_true",
+                   help=f"Only lift cookies if a non-expired session cookie "
+                        f"({SESSION_COOKIE}) is present; exit 3 without writing "
+                        f"otherwise. Lets `login` reuse a still-valid session.")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -136,7 +158,21 @@ def main(argv: list[str]) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # --require-valid: the `login` fast path — succeed only if the saved
+    # profile is still logged in, otherwise signal "needs a fresh login" (3)
+    # without touching the output file.
+    if args.require_valid and not args.db.exists():
+        log.info("no saved Firefox profile yet (%s) — a fresh login is needed.",
+                 args.db)
+        return 3
+
     cookies = extract(args.db, args.host_filter)
+
+    if args.require_valid and not has_valid_session(cookies):
+        log.info("saved %s session cookie missing or expired — a fresh login "
+                 "is needed.", SESSION_COOKIE)
+        return 3
+
     if not cookies:
         log.error("No cookies matching host ~ %r found in %s. Did the "
                   "login complete? (If the auth cookie is session-scoped, "

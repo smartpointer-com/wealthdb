@@ -75,8 +75,8 @@ Routes + operations captured (per invest account):
 | (same) | `PositionsTableQuery` | funded positions per vehicle — **infinite-scroll paginated**, ~20/page; download scrolls until `totalCount` |
 | (same) | `ActivityQuery` | activity feed (VenturePosts) — see note below |
 | `/v/<u>/i/<a>/commitments` | `OpenInvestmentsQuery` | unfunded commitments |
-
-`/taxes-and-documents` (K-1s) is located but out of v1 scope.
+| `/v/<u>/i/<a>/taxes-and-documents` | `AccountDocumentsQuery` | K-1 + financial-statement document list (PDF/CSV URLs) |
+| `/v/<u>/i/<a>/funding-accounts` | `InvestmentEntityQuery` | the dated funding-account cash ledger + balance |
 
 ## Bronze
 

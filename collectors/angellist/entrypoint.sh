@@ -81,14 +81,39 @@ case "${1:-help}" in
         # The auth path (a BYO-session bootstrap — formerly `byo-login`).
         # AngelList's venture login is gated by an invisible Turnstile/
         # reCAPTCHA challenge that flags the Camoufox/Playwright automation
-        # stack, so there is no unattended login. Launch a genuine, un-
-        # instrumented stock Firefox under Xvfb + VNC so the operator clears
-        # the login by hand; on a clean Firefox close, lift the session from
-        # its plaintext cookies.sqlite into /secrets/angellist-cookies.json.
-        start_xvfb
-        start_x11vnc login
+        # stack, so there is no unattended login.
+        #
+        # Fast path: if the saved Firefox profile still holds a non-expired
+        # session cookie, lift it and exit 0 — no VNC sign-in needed. Flags:
+        #   --check  probe only; report whether the saved session is valid,
+        #            never open Firefox (exit 1 if not).
+        #   --force  skip the check and always re-login.
+        # Otherwise launch a genuine, un-instrumented stock Firefox under
+        # Xvfb + VNC so the operator clears the login by hand; on a clean
+        # close, lift the session from its plaintext cookies.sqlite.
         shift
         FXPROFILE="${ANGELLIST_FXPROFILE:-/secrets/angellist-fxprofile}"
+        COOKIES="${ANGELLIST_COOKIES:-/secrets/angellist-cookies.json}"
+        login_mode=auto
+        case "${1:-}" in
+            --check) login_mode=check; shift ;;
+            --force) login_mode=force; shift ;;
+        esac
+        if [[ "$login_mode" != "force" ]]; then
+            if python3 /app/extract_cookies.py \
+                    --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES" --require-valid; then
+                echo "login: existing AngelList session still valid — cookie lifted to" >&2
+                echo "login:   $COOKIES. No VNC login needed (pass --force to re-login)." >&2
+                exit 0
+            fi
+            if [[ "$login_mode" == "check" ]]; then
+                echo "login --check: no valid saved session — run \`login\` to refresh." >&2
+                exit 1
+            fi
+            echo "login: no valid saved session — opening Firefox to log in…" >&2
+        fi
+        start_xvfb
+        start_x11vnc login
         mkdir -p "$FXPROFILE"
         # Seed prefs: persist session cookies on shutdown (restore-
         # session), and skip onboarding/default-browser/telemetry noise so
@@ -130,8 +155,7 @@ PREFS
             "https://venture.angellist.com/v/login" >/tmp/firefox.log 2>&1 || true
         echo "login: Firefox closed — extracting AngelList cookies…" >&2
         exec python3 /app/extract_cookies.py \
-            --db "$FXPROFILE/cookies.sqlite" \
-            --out "${ANGELLIST_COOKIES:-/secrets/angellist-cookies.json}"
+            --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES"
         ;;
     download)
         # Per-surface browse + capture loop. Injects the session cookie
@@ -140,9 +164,9 @@ PREFS
         exec python3 /app/download.py "$@"
         ;;
     load)
-        # SQLite silver loader. Ingests bronze (portfolio JSON/HTML +
-        # activity exports) into the source-shaped silver tables. Pure
-        # Python, no browser, no display. (Document/K-1 ingest: deferred.)
+        # SQLite silver loader. Ingests bronze `captures.jsonl` + the
+        # downloaded K-1 CSVs / tax docs into the source-shaped silver
+        # tables. Pure Python, no browser, no display.
         shift
         exec python3 /app/load.py "$@"
         ;;
@@ -158,22 +182,27 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       The auth path (formerly byo-login). Launch a genuine, stock
-              Mozilla Firefox under VNC so you can clear AngelList's invisible
-              anti-bot login by hand (+2FA); on a clean Firefox close, lifts
-              the session cookie to /secrets/angellist-cookies.json. There is
+  login       The auth path (formerly byo-login). Fast path: if the saved
+              profile still holds a valid session cookie, it's lifted to
+              /secrets/angellist-cookies.json and login exits — no VNC.
+              Otherwise launch a genuine, stock Mozilla Firefox under VNC so
+              you clear AngelList's invisible anti-bot login by hand (+2FA);
+              on a clean Firefox close, the session cookie is lifted. There is
               no unattended login (the SPA is bot-walled). Optionally grab
-              K-1 / financial docs while logged in (they save to the
-              mounted documents dir).
+              K-1 / financial docs while logged in (they save to the mounted
+              documents dir). Flags: --check (probe only, never opens Firefox,
+              exit 1 if stale), --force (always re-login).
   download    Headless Camoufox + injected cookie: navigate the LP-portfolio
               routes and capture the venture GraphQL (positions / summary /
-              commitments) the SPA signs itself, and download tax documents
-              (K-1 CSV/PDF, financial statements), re-fetching incomplete
-              tax years. Pass --dry-run to walk without writing bronze.
+              commitments / funding-account cash ledger) the SPA signs
+              itself, and download tax documents (K-1 CSV/PDF, financial
+              statements), re-fetching incomplete tax years. Pass --dry-run
+              to walk without writing bronze.
   load        Ingest bronze + tax docs into the SQLite silver: offerings +
               event-sourced position_snapshots, vehicles, k1_capital_accounts,
-              tax_documents, portfolio_summary / timeseries, commitments.
-              Pass --force to re-load snapshots already in dump_runs.
+              tax_documents, portfolio_summary / timeseries, commitments,
+              funding_accounts + funding_transactions. Pass --force to
+              re-load snapshots already in dump_runs.
   explore     Discovery harness: Camoufox under VNC with HAR + Playwright
               trace + click log under /debug (route mapping; --cookies loads
               the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000

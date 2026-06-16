@@ -17,13 +17,17 @@ venture GraphQL the SPA fires:
   ViewerQuery               currentUser: identity + invest accounts
   PortfolioDashboardQuery   portfolio summary
   PositionsTableQuery       funded holdings per SPV / fund
-  ActivityQuery             cash-flow ledger (capital calls / distributions)
+  ActivityQuery             activity feed (unstructured VenturePosts)
   OpenInvestmentsQuery      unfunded commitments
+  AccountDocumentsQuery     tax-document list (K-1 + financial-statement URLs)
+  InvestmentEntityQuery     the dated funding-account cash ledger + balance
   (+ PositionFiltersQuery, InvestAccountInvestmentEntitiesQuery as fired)
 
 URL shape (slugs derived from ViewerQuery, never hardcoded):
   /v/<userSlug>/i/<investAccountSlug>/portfolio/dashboard
   /v/<userSlug>/i/<investAccountSlug>/commitments
+  /v/<userSlug>/i/<investAccountSlug>/taxes-and-documents
+  /v/<userSlug>/i/<investAccountSlug>/funding-accounts
 where userSlug = currentUser.slug and investAccountSlug =
 currentUser.investAccounts[i].slugName.
 

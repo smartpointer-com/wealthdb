@@ -6,8 +6,10 @@ normalisation, session-cookie sentinel, and sameSite mapping.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -71,3 +73,54 @@ def test_no_match(tmp_path):
     db = tmp_path / "cookies.sqlite"
     build_cookiedb(db)
     assert ec.extract(db, "nonexistent-host") == []
+
+
+# --- the --require-valid fast path (login reuses a still-valid session) ---
+
+def _db_with(path, name, expiry_ms):
+    """A cookies.sqlite holding a single angellist cookie (Firefox stores
+    expiry in milliseconds; extract() normalises)."""
+    c = sqlite3.connect(path)
+    c.execute(
+        "CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, host TEXT, name TEXT, "
+        "value TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, "
+        "sameSite INTEGER)")
+    c.execute(
+        "INSERT INTO moz_cookies (host,name,value,path,expiry,isSecure,isHttpOnly,sameSite) "
+        "VALUES (?,?,?,?,?,?,?,?)", (".angellist.com", name, "tok", "/", expiry_ms, 1, 1, 1))
+    c.commit()
+    c.close()
+
+
+def test_has_valid_session():
+    now = int(time.time())
+    assert ec.has_valid_session([{"name": "_angellist_v2", "expires": now + 86400}])
+    assert ec.has_valid_session([{"name": "_angellist_v2", "expires": -1}])
+    assert not ec.has_valid_session([{"name": "_angellist_v2", "expires": now - 86400}])
+    assert not ec.has_valid_session([{"name": "other", "expires": now + 86400}])
+
+
+def test_require_valid_live_session(tmp_path):
+    db, out = tmp_path / "cookies.sqlite", tmp_path / "out.json"
+    _db_with(db, "_angellist_v2", (int(time.time()) + 30 * 86400) * 1000)
+    assert ec.main(["--db", str(db), "--out", str(out), "--require-valid"]) == 0
+    assert "_angellist_v2" in {c["name"] for c in json.loads(out.read_text())}
+
+
+def test_require_valid_expired(tmp_path):
+    db, out = tmp_path / "cookies.sqlite", tmp_path / "out.json"
+    _db_with(db, "_angellist_v2", (int(time.time()) - 86400) * 1000)
+    assert ec.main(["--db", str(db), "--out", str(out), "--require-valid"]) == 3
+    assert not out.exists()          # output left untouched on a stale session
+
+
+def test_require_valid_missing_session_cookie(tmp_path):
+    db, out = tmp_path / "cookies.sqlite", tmp_path / "out.json"
+    _db_with(db, "other", (int(time.time()) + 86400) * 1000)
+    assert ec.main(["--db", str(db), "--out", str(out), "--require-valid"]) == 3
+    assert not out.exists()
+
+
+def test_require_valid_no_profile(tmp_path):
+    db, out = tmp_path / "absent.sqlite", tmp_path / "out.json"
+    assert ec.main(["--db", str(db), "--out", str(out), "--require-valid"]) == 3
