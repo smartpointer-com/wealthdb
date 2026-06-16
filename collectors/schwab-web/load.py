@@ -132,6 +132,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "-v", "--verbose", action="store_true",
         help="DEBUG-level logging.",
     )
+    cli.add_force_arg(p)
     return p.parse_args(argv)
 
 
@@ -1125,6 +1126,8 @@ def _log_registration_histogram(conn: sqlite3.Connection) -> None:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    if args.force:
+        silver.reset(args.silver_db)
     return run_load(args)
 
 

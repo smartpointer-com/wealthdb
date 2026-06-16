@@ -91,6 +91,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "(default: %(default)s).")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
+    cli.add_force_arg(p)
     return p.parse_args(argv)
 
 
@@ -926,6 +927,8 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
+    if args.force:
+        silver.reset(args.silver_db)
     conn = sqlite3.connect(str(args.silver_db))
     conn.execute("PRAGMA foreign_keys = ON;")
 

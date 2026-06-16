@@ -771,12 +771,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "-v", "--verbose", action="store_true",
         help="DEBUG-level logging.",
     )
+    cli.add_force_arg(p)
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
+    if args.force:
+        silver.reset(args.silver_db)
     return do_load(args)
 
 

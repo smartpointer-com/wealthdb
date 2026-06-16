@@ -18,6 +18,24 @@ log = logging.getLogger(__name__)
 MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 
 
+def reset(path: Path) -> None:
+    """Delete the silver DB at `path` (with its SQLite ``-wal`` / ``-shm`` /
+    ``-journal`` or DuckDB ``.wal`` sidecars) so the next load rebuilds it
+    from scratch. This is the uniform implementation behind ``load --force``:
+    silver is reproducible from bronze alone, so a clean rebuild is always
+    safe and sidesteps every collector's own skip / upsert logic. No-op when
+    the DB doesn't exist yet.
+    """
+    path = Path(path)
+    for sidecar in ("", "-wal", "-shm", "-journal", ".wal"):
+        p = path.with_name(path.name + sidecar) if sidecar else path
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+    log.info("reset (force): cleared silver DB %s", path)
+
+
 def open_db(path: Path) -> sqlite3.Connection:
     """Open (creating parent dirs) the silver DB with manual transaction
     control (`isolation_level=None`): callers issue BEGIN/COMMIT per dump

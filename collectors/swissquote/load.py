@@ -1001,6 +1001,9 @@ def run(args: argparse.Namespace) -> int:
     here = Path(__file__).resolve().parent
     migrations_dir = here / "migrations"
 
+    if args.force:
+        silver.reset(args.silver_db)
+
     conn = open_db(args.silver_db)
     try:
         silver.apply_migrations(conn, migrations_dir)
@@ -1042,6 +1045,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "the manual/ subdirectory (default: %(default)s).")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
+    cli.add_force_arg(p)
     return p.parse_args(argv)
 
 

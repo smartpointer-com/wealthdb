@@ -55,6 +55,18 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_force_arg(parser: argparse.ArgumentParser) -> None:
+    """Add the standard ``--force`` flag for `load` commands: rebuild the
+    silver DB from scratch (delete it first, then re-ingest all bronze).
+    Pair with ``collectorkit.silver.reset(db_path)`` in the loader, called
+    before the DB is opened when ``args.force`` is set."""
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Rebuild the silver DB from scratch: delete it, then "
+             "re-ingest all bronze.",
+    )
+
+
 def add_lookback_args(parser: argparse.ArgumentParser, *,
                       has_documents: bool = True) -> None:
     """Add the unified date-window flags.

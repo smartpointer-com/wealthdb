@@ -356,6 +356,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help=f"SQLite silver path. Precedence: this flag > "
                         f"${ENV_SILVER_DB} env var > "
                         f"<bronze-dir>/{SILVER_DB_NAME}.")
+    cli.add_force_arg(p)
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -365,6 +366,8 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     bronze_dir, silver_db = resolve_paths(args)
+    if args.force:
+        silver.reset(silver_db)
     conn = open_db(silver_db)
     try:
         version = apply_migrations(conn)

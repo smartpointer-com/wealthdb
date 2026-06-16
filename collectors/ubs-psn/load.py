@@ -1214,6 +1214,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "Default: SFTPCH01.")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
+    cli.add_force_arg(p)
     return p.parse_args(argv)
 
 
@@ -1223,6 +1224,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
+
+    if args.force:
+        silver.reset(args.silver_db)
 
     conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
