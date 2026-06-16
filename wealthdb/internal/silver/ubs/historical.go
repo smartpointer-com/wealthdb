@@ -64,7 +64,10 @@ func (r *webReader) snapshotsHistorical(
 	if err := r.appendHistoricalCashBalances(ctx, w, getBatch); err != nil {
 		return nil, err
 	}
-	if err := r.appendHistoricalMortgages(ctx, w, getBatch); err != nil {
+	// Mortgages run LAST and peek at byTime directly (not getBatch)
+	// so they attach to existing portfolio snapshots without
+	// creating new ones — see the function comment.
+	if err := r.appendHistoricalMortgages(ctx, w, byTime); err != nil {
 		return nil, err
 	}
 
@@ -279,22 +282,31 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 	return rows.Err()
 }
 
-// appendHistoricalMortgages emits one PositionChange per row in
-// `historical_mortgages` (PDF-derived per-mortgage balance points
-// at each Maturity Notice's "As at" date). Same triple shape as
-// the live web_reader.appendWebMortgages — Account + Instrument
-// + Position keyed by the UBS-internal mortgage account number,
-// AccountKind / AssetClass = mortgage, MarketValue already
-// negative from silver.
+// appendHistoricalMortgages attaches each PDF-derived mortgage
+// balance point (one per Maturity Notice "As at" date) to the
+// portfolio snapshot at that same as_of_date, emitting the same
+// triple as the live path — Account + Instrument + Position keyed
+// by the UBS-internal mortgage account number, AccountKind /
+// AssetClass = mortgage, MarketValue already negative from silver.
 //
-// Account / Instrument rows carry FirstSeenAt = LastSeenAt =
-// as_of_date so gold's last_seen_at upsert guard keeps the latest
-// snapshot's product / collateral description without throwing
-// away older first-seen times.
+// It takes `byTime` directly (not getBatch) and PEEKS rather than
+// creates: a mortgage row is only emitted when a real portfolio
+// snapshot already exists at its as_of_date (a Statement-of-Assets
+// securities batch or an Account-Statement cash batch). Maturity
+// notices and Statement-of-Assets PDFs are both quarter-end, so in
+// the normal case they line up exactly. The one that wouldn't —
+// UBS issues the next interest-roll quarter's Maturity Notice
+// ahead of time, so there's a future-dated mortgage row with no
+// portfolio snapshot behind it — must NOT spawn a mortgage-only
+// snapshot, or gold's MAX(snapshot_at)-per-source "today" query
+// lands on that future date and every other position vanishes
+// from the view. Peeking (and skipping unanchored dates) prevents
+// that. Mortgages must therefore run AFTER securities + cash in
+// snapshotsHistorical so the batches they anchor to already exist.
 func (r *webReader) appendHistoricalMortgages(
 	ctx context.Context,
 	w canonical.Window,
-	getBatch func(int64) *canonical.SnapshotBatch,
+	byTime map[int64]*canonical.SnapshotBatch,
 ) error {
 	ok, err := r.hasHistoricalMortgagesTable(ctx)
 	if err != nil {
@@ -316,25 +328,33 @@ SELECT as_of_date, account_external_id, currency_iso,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			asOf                                 int64
-			extID, currency, payload             string
-			outstanding                          sql.NullFloat64
-			productName, rateType, collateral    sql.NullString
+			asOf                              int64
+			extID, currency, payload          string
+			outstanding                       sql.NullFloat64
+			productName, rateType, collateral sql.NullString
 		)
 		if err := rows.Scan(&asOf, &extID, &currency, &outstanding,
 			&productName, &rateType, &collateral, &payload); err != nil {
 			return err
 		}
 		_ = rateType // surfaced via payload
-		batch := getBatch(asOf)
-		extIDCopy := extID
+
+		// Peek — never create. Skip mortgage rows whose as_of_date
+		// has no real portfolio snapshot behind it (e.g. the
+		// future-dated next-quarter Maturity Notice).
+		batch, ok := byTime[asOf]
+		if !ok || (len(batch.Positions) == 0 && len(batch.CashBalances) == 0) {
+			continue
+		}
+
 		display := sql.NullString{
-			Valid: productName.Valid && collateral.Valid,
+			Valid:  productName.Valid && collateral.Valid,
 			String: productName.String + ", " + collateral.String,
 		}
 		if !display.Valid {
 			display = productName
 		}
+		extIDCopy := extID
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindMortgage,

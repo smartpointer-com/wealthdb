@@ -783,8 +783,17 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		_ = endDate
 		_ = rateType
 		_ = collateral
+		_ = outstanding // mortgage Positions are injected by the
+		// psn-web fold stream, NOT emitted here. Emitting a Position
+		// at the web dump's snapshot_at would create a "mortgage-only"
+		// gold snapshot at the web dump time — and gold's "latest
+		// snapshot per silver source" query (MAX over
+		// positions.snapshot_at) would then land on that
+		// mortgage-only time and hide every other UBS position from
+		// the "today" view. The fold stream injects mortgages only
+		// into PSN batches that already carry Positions, keeping
+		// snapshot times aligned.
 
-		extIDCopy := extID
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindMortgage,
@@ -803,21 +812,6 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 			Currency:             silver.StrPtrIfNonEmpty(currency),
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
-		})
-		var mv *canonical.Decimal
-		if outstanding.Valid {
-			d := canonical.NewDecimalFromFloat(outstanding.Float64)
-			mv = &d
-		}
-		batch.Positions = append(batch.Positions, canonical.PositionChange{
-			SnapshotAt:           snap,
-			AccountExternalID:    extID,
-			PositionKey:          extID,
-			InstrumentExternalID: &extIDCopy,
-			AssetClass:           canonical.AssetClassMortgage,
-			Currency:             currency,
-			MarketValue:          mv,
-			Payload:              json.RawMessage(payload),
 		})
 	}
 	return rows.Err()
