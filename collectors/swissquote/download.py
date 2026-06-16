@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import re
+import shutil
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -140,6 +141,45 @@ def _screenshot(page, screenshot_dir: Path | None, name: str) -> None:
         log.warning("Screenshot %s failed: %s", path, e)
 
 
+# JS run in the page to clear any active Pendo in-app guide. Tries
+# Pendo's own stopGuides() API first (the clean dismissal, which also
+# marks the guide seen so it doesn't re-fire), then strips any
+# residual overlay nodes that intercept pointer events. Returns the
+# number of overlay nodes removed so the caller can log it. Pure
+# client-side DOM cleanup — see landmarks.PENDO_OVERLAY_SELECTOR.
+_DISMISS_GUIDE_OVERLAYS_JS = """
+(selector) => {
+    try {
+        if (window.pendo && typeof window.pendo.stopGuides === 'function') {
+            window.pendo.stopGuides();
+        }
+    } catch (e) { /* best-effort */ }
+    const nodes = document.querySelectorAll(selector);
+    nodes.forEach((el) => el.remove());
+    return nodes.length;
+}
+"""
+
+
+def dismiss_guide_overlays(page) -> None:
+    """Remove any active Pendo in-app guide overlay (best-effort).
+
+    Swissquote occasionally shows a Pendo product-tour walkthrough
+    whose full-page backdrop intercepts pointer events, blocking
+    clicks on otherwise-visible export buttons. We clear it before
+    each export interaction. Never raises — if there's no overlay,
+    or the evaluate fails, the run proceeds unchanged.
+    """
+    try:
+        removed = page.evaluate(
+            _DISMISS_GUIDE_OVERLAYS_JS, sq.PENDO_OVERLAY_SELECTOR
+        )
+        if removed:
+            log.info("Dismissed in-app guide overlay (%d node(s))", removed)
+    except Exception as e:  # noqa: BLE001 - best-effort, never fatal
+        log.debug("Guide-overlay dismissal skipped: %s", e)
+
+
 def _maybe_start_trace(context, enabled: bool):
     if enabled:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
@@ -232,6 +272,7 @@ def export_transactions_window(
     """
     log.info("Transactions window %s -> %s", window_start, window_end)
 
+    dismiss_guide_overlays(page)
     _set_date_picker(page, 0, window_start)
     _set_date_picker(page, 1, window_end)
 
@@ -275,6 +316,7 @@ def export_positions(page, run_dir: Path) -> tuple[Path, str | None]:
     from the suggested filename, which Swissquote formats as
     `Positions_<customer>_<ddmmyyyy>_<hh>_<mm>.xls`.
     """
+    dismiss_guide_overlays(page)
     button = page.locator(sq.POSITIONS_EXPORT_BUTTON)
     with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as dl_info:
         button.click()
@@ -442,6 +484,7 @@ def export_account_overview(page, run_dir: Path) -> Path:
     summary as a printable report. The button uses a distinct class
     (`.srp-ControlsPanel__printInfo`) and aria-label.
     """
+    dismiss_guide_overlays(page)
     button = page.locator(sq.ACCOUNT_OVERVIEW_EXPORT_BUTTON)
     with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as dl_info:
         button.click()
@@ -458,6 +501,7 @@ def export_list_of_assets(page, run_dir: Path) -> Path:
     This button is class `.CaptionButton`, distinct from the
     Positions `.ExportButton`. Both have aria-label="Export".
     """
+    dismiss_guide_overlays(page)
     button = page.locator(sq.LIST_OF_ASSETS_EXPORT_BUTTON)
     with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as dl_info:
         button.click()
@@ -513,6 +557,7 @@ def set_documents_period(page, since: date, until: date) -> None:
     `.LoadingTable` spinner appears briefly and disappears once the
     new rows are in the DOM.
     """
+    dismiss_guide_overlays(page)
     _set_date_picker(page, 0, since)
     _set_date_picker(page, 1, until)
     page.get_by_role("button", name="Apply").click(timeout=LANDMARK_TIMEOUT_MS)
@@ -595,6 +640,24 @@ def fetch_document(context, doc: dict, target: Path) -> None:
 # ============================================================
 # Orchestration
 # ============================================================
+
+def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
+    """Remove a partial dump dir that has no run.json completion marker.
+
+    Called from the download crash-cleanup trap. Guarded on the
+    marker's absence so a completed dir is never touched, and on dir
+    existence so a failure before mkdir (or a dry run) is a no-op.
+    Uses ignore_errors so a cleanup hiccup never masks the original
+    exception. Returns True if a dir was removed.
+    """
+    if run_dir.exists() and not (run_dir / "run.json").is_file():
+        shutil.rmtree(run_dir, ignore_errors=True)
+        log.warning(
+            "Removed incomplete dump dir %s after failure", run_dir.name,
+        )
+        return True
+    return False
+
 
 def run(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
@@ -752,6 +815,14 @@ def run(args: argparse.Namespace) -> int:
                 len(txn_entries), len(doc_entries),
             )
             return 0
+        except BaseException:
+            # Cleanup trap. A crashed or interrupted download (export
+            # timeout, SystemExit guard, Ctrl-C) leaves a partial
+            # run_dir without the run.json completion marker. Remove
+            # it so orphans don't accumulate in bronze, then re-raise
+            # the original exception unchanged.
+            cleanup_incomplete_run_dir(run_dir)
+            raise
         finally:
             if args.trace:
                 _maybe_stop_trace(

@@ -165,6 +165,24 @@ TXN_EXPORT_DROPDOWN_TRIGGER = ".Dropdown__trigger--export"
 TXN_EXPORT_MENU_CSV = 'li.Menu__item--export:has-text("CSV")'
 
 # ============================================================
+# In-app guide overlays (Pendo)
+# ============================================================
+
+# Swissquote serves product-tour / walkthrough overlays via Pendo
+# (https://pendo.io). When a guide is active it injects a full-page
+# backdrop (`._pendo-backdrop` under `#pendo-base`) that intercepts
+# pointer events, so even a visible+stable export button can't be
+# clicked — Playwright reports the backdrop element as the click's
+# hit target. download.py removes these nodes (and calls Pendo's own
+# stopGuides() API) before each export interaction. Pendo prefixes
+# every element it injects with `pendo-` (ids) / `_pendo-` (classes),
+# so this selector matches the whole overlay subtree wherever it is
+# mounted. Removing it is pure client-side DOM cleanup — no POST, no
+# form submit, no navigation — and stays within the read-only
+# contract (CLAUDE.md §1).
+PENDO_OVERLAY_SELECTOR = '#pendo-base, ._pendo-backdrop, [class*="_pendo-"]'
+
+# ============================================================
 # Portfolio Overview page (Trading Platform #portfoliooverview)
 # ============================================================
 

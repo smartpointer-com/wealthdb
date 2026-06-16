@@ -28,6 +28,12 @@ navigate to or click within:
 - eBanking SPA root (`/sqc-web-client-portal/`) used by
   `login.py --check` to test session liveness via URL transition.
 
+Permitted client-side DOM cleanup (not a write action): removing
+Pendo in-app-guide overlay nodes (`#pendo-base` / `._pendo-backdrop`
+/ `_pendo-*`) that intercept pointer events and block export clicks.
+This only deletes overlay DOM and calls Pendo's own `stopGuides()`;
+it submits nothing. See `download.py::dismiss_guide_overlays`.
+
 Forbidden — do not navigate to, click, or scrape:
 - Trade entry forms (`Trade`, `Buy/Sell`, `Quote`, order-book widgets).
 - Payment / transfer forms (`Payments`, `Withdraw`, IBAN entry).

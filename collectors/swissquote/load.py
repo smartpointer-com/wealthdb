@@ -91,7 +91,16 @@ def canonical_json(obj) -> str:
 def find_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
-    """Return run-dirs in bronze that aren't yet recorded in dump_runs."""
+    """Return complete run-dirs in bronze not yet recorded in dump_runs.
+
+    `run.json` is download.py's completion marker — it is written as
+    the final step of a dump. A timestamp-named dir without it is an
+    orphaned partial dump from a crashed/interrupted download (it may
+    hold a stray accounts.json etc. but no usable metadata). Such
+    dirs are skipped with a warning rather than aborting the whole
+    load, so one bad download never blocks loading the good dumps
+    around it.
+    """
     loaded = {
         row["snapshot_at"]
         for row in conn.execute("SELECT snapshot_at FROM dump_runs;")
@@ -103,8 +112,15 @@ def find_pending_dumps(
         if not RUN_DIR_RE.match(child.name):
             continue
         ts = _run_dir_to_epoch(child.name)
-        if ts not in loaded:
-            out.append(child)
+        if ts in loaded:
+            continue
+        if not (child / "run.json").is_file():
+            log.warning(
+                "Skipping incomplete dump %s (no run.json — likely a "
+                "crashed/interrupted download)", child.name,
+            )
+            continue
+        out.append(child)
     return out
 
 
