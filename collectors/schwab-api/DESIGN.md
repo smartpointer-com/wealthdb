@@ -242,6 +242,16 @@ source-stable event ID. For Schwab: `transactions` only.
   *upstream removals*. If the bank retracts a transaction (cancelled
   trade backdated out, settlement reversal), upsert leaves a phantom
   row. Window-replace catches it.
+- One wrinkle: Schwab sometimes returns a transaction whose `time`
+  falls *outside* the request window. JOURNAL entries in particular
+  appear to be selected by posting/settlement date while the row's
+  `time` is the underlying event time, which can be days earlier. A
+  prior dump may already hold such a row at its out-of-window
+  timestamp, where the window DELETE won't reach it, so the re-fetch
+  would PK-collide on `activity_id`. The loader therefore also DELETEs
+  the exact `activity_id`s it is about to INSERT (chunked under the 999
+  host-param cap), which keeps the window-DELETE removal-detection
+  semantics for in-window rows and clears the boundary stragglers.
 - Index on `(account_external_id, timestamp)` (composite). Time-range
   queries that filter by account take the index probe; the single-
   column `timestamp` index would be redundant.

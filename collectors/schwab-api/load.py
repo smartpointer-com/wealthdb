@@ -281,7 +281,17 @@ def load_transactions(conn, dump_dir: Path) -> int:
     """Window-DELETE then INSERT for each transactions_NNN.json file.
 
     Each file declares its own (account_hash, window_start, window_end);
-    we replace exactly that range so upstream removals are caught."""
+    we replace exactly that range so upstream removals are caught.
+
+    Schwab occasionally returns transactions whose `time` field falls
+    *outside* the declared window — JOURNAL entries appear to be filtered
+    by posting/settlement date while the row's `time` is the underlying
+    event time, which can be days earlier. The window DELETE would not
+    catch a prior dump's row at such an out-of-window timestamp, so a
+    re-fetch would PK-collide on `activity_id`. We therefore also DELETE
+    the exact activity_ids we're about to INSERT, which preserves the
+    window-DELETE-as-removal-detection semantics for in-window rows and
+    avoids the boundary collision."""
     files = sorted(dump_dir.glob("transactions_*.json"))
     total = 0
     for path in files:
@@ -297,14 +307,29 @@ def load_transactions(conn, dump_dir: Path) -> int:
         )
 
         rows = []
+        ids_to_replace: list[str] = []
         for txn in data.get("transactions") or []:
+            aid = str(txn["activityId"])
+            ids_to_replace.append(aid)
             rows.append((
-                str(txn["activityId"]),
+                aid,
                 parse_schwab_timestamp(txn["time"]),
                 acct_hash,
                 txn["type"],
                 canonical_json(txn),
             ))
+
+        # Clear any stragglers the window DELETE missed because Schwab
+        # returned them with a `time` outside the declared window.
+        # Chunked to stay within SQLite's default 999 host-parameter cap.
+        for i in range(0, len(ids_to_replace), 500):
+            chunk = ids_to_replace[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"DELETE FROM transactions WHERE activity_id IN ({placeholders})",
+                chunk,
+            )
+
         if rows:
             conn.executemany(
                 "INSERT INTO transactions"
