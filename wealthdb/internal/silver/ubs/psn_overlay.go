@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -31,6 +32,79 @@ func (r *psnReader) assetClassByISIN(ctx context.Context) (map[string]canonical.
 	out := make(map[string]canonical.AssetClass, len(meta))
 	for isin, m := range meta {
 		out[isin] = m.AssetClass
+	}
+	return out, nil
+}
+
+// safekeepingByPortfolio returns a per-portfolio map to the PSN
+// safekeeping account_external_id that holds that portfolio's
+// securities. Used to re-point ubs-web's PDF-reconstructed
+// historical securities — which the Statement-of-Assets PDFs
+// can't tie to a safekeeping account, so the gold adapter parks
+// them on a synthetic per-portfolio overlay account — onto the
+// real safekeeping account, giving account-by-account continuity
+// across the web→PSN cutover.
+//
+// PSN's safekeeping_accounts payload carries PrtflId in the same
+// 16-char BBBBAAAAAAAANN form ubs-web's historical
+// portfolio_external_id uses, so they join directly. Only
+// portfolios with EXACTLY ONE safekeeping account are included:
+// the mapping has to be unambiguous to retroactively attribute a
+// PDF security (which knows only its portfolio) to a single
+// account. Portfolios with multiple safekeeping accounts are
+// omitted — the caller leaves those on the overlay account.
+//
+// Built from the latest snapshot (the portfolio↔safekeeping
+// relationship is long-lived; we apply today's structure
+// retroactively to the historical PDFs).
+func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]string, error) {
+	if r == nil {
+		return nil, nil
+	}
+	var latest sql.NullInt64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT MAX(snapshot_at) FROM safekeeping_accounts`,
+	).Scan(&latest); err != nil {
+		return nil, fmt.Errorf("psn safekeepingByPortfolio latest: %w", err)
+	}
+	if !latest.Valid {
+		return nil, nil
+	}
+	const q = `
+SELECT account_external_id, payload
+  FROM safekeeping_accounts
+ WHERE snapshot_at = ?`
+	rows, err := r.db.QueryContext(ctx, q, latest.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("psn safekeepingByPortfolio: %w", err)
+	}
+	defer rows.Close()
+	// accountsPerPortfolio counts safekeeping accounts seen per
+	// portfolio so we can drop the ambiguous (1:many) ones.
+	accountsPerPortfolio := map[string][]string{}
+	for rows.Next() {
+		var acctID, payload string
+		if err := rows.Scan(&acctID, &payload); err != nil {
+			return nil, err
+		}
+		var p struct {
+			PrtflId string `json:"PrtflId"`
+		}
+		_ = json.Unmarshal([]byte(payload), &p)
+		if p.PrtflId == "" {
+			continue
+		}
+		accountsPerPortfolio[p.PrtflId] = append(
+			accountsPerPortfolio[p.PrtflId], acctID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(accountsPerPortfolio))
+	for portfolio, accts := range accountsPerPortfolio {
+		if len(accts) == 1 {
+			out[portfolio] = accts[0]
+		}
 	}
 	return out, nil
 }

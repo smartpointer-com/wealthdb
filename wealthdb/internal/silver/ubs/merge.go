@@ -153,11 +153,12 @@ func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.
 // Snapshots emits the merged stream described in the file header.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	var (
-		webPosPayloads  map[webPosKey]string
-		webCashPayloads map[webCashKey]string
-		webMortgages    []canonical.PositionChange
-		cutoff          map[string]int64
-		psnAssetClass   map[string]canonical.AssetClass
+		webPosPayloads         map[webPosKey]string
+		webCashPayloads        map[webCashKey]string
+		webMortgages           []canonical.PositionChange
+		cutoff                 map[string]int64
+		psnAssetClass          map[string]canonical.AssetClass
+		safekeepingByPortfolio map[string]string
 	)
 
 	if c.web != nil && c.psn != nil {
@@ -178,6 +179,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err != nil {
 			return nil, err
 		}
+		// Map web historical securities onto real PSN safekeeping
+		// accounts (1:1 portfolios only) for cross-cutover account
+		// continuity. nil when PSN absent → overlay fallback.
+		safekeepingByPortfolio, err = c.psn.safekeepingByPortfolio(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if c.web != nil {
 		var err error
@@ -189,7 +197,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 
 	streams := make([]silver.SnapshotStream, 0, 3)
 	if c.web != nil {
-		hist, err := c.web.snapshotsHistorical(ctx, w)
+		hist, err := c.web.snapshotsHistorical(ctx, w, safekeepingByPortfolio)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots (historical): %w", err)
 		}

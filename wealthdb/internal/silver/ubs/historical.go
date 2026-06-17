@@ -43,6 +43,7 @@ import (
 func (r *webReader) snapshotsHistorical(
 	ctx context.Context,
 	w canonical.Window,
+	safekeepingByPortfolio map[string]string,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -58,7 +59,7 @@ func (r *webReader) snapshotsHistorical(
 		return b
 	}
 
-	if err := r.appendHistoricalSecurities(ctx, w, getBatch); err != nil {
+	if err := r.appendHistoricalSecurities(ctx, w, getBatch, safekeepingByPortfolio); err != nil {
 		return nil, err
 	}
 	if err := r.appendHistoricalCashBalances(ctx, w, getBatch); err != nil {
@@ -99,10 +100,19 @@ func (r *webReader) snapshotsHistorical(
 // would collide on the gold cash_balances PK. The monthly cash-
 // balances table is the richer source (opening + closing per
 // month vs quarter-end only), so we use it exclusively for cash.
+// safekeepingByPortfolio maps a portfolio_external_id to the PSN
+// safekeeping account that holds its securities (1:1 portfolios
+// only — see psnReader.safekeepingByPortfolio). When a portfolio
+// is present, its historical securities attach to that real
+// safekeeping account_external_id, giving account-by-account
+// continuity across the web→PSN cutover. When absent (PSN not
+// configured, or an ambiguous 1:many portfolio) the security
+// falls back to the synthetic per-portfolio overlay account.
 func (r *webReader) appendHistoricalSecurities(
 	ctx context.Context,
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
+	safekeepingByPortfolio map[string]string,
 ) error {
 	const q = `
 SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
@@ -117,19 +127,19 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 	}
 	defer rows.Close()
 
-	// Track which (snapshot, portfolio) overlay accounts and
-	// portfolios we've already emitted to avoid one
-	// PortfolioChange / AccountChange per holding.
-	overlayEmitted := map[[2]int64]bool{}
+	// Track which (snapshot, portfolio) accounts and portfolios
+	// we've already emitted to avoid one PortfolioChange /
+	// AccountChange per holding.
+	accountEmitted := map[[2]int64]bool{}
 	portfolioEmitted := map[[2]int64]bool{}
 
 	for rows.Next() {
 		var (
-			asOf                                                int64
-			portID, isin, ccy, mvCcy                            string
-			descr                                               sql.NullString
-			units, mv, cost, price, accrued                     sql.NullFloat64
-			payload                                             string
+			asOf                            int64
+			portID, isin, ccy, mvCcy        string
+			descr                           sql.NullString
+			units, mv, cost, price, accrued sql.NullFloat64
+			payload                         string
 		)
 		if err := rows.Scan(&asOf, &portID, &isin, &ccy, &units, &mv, &mvCcy,
 			&cost, &price, &accrued, &descr, &payload); err != nil {
@@ -148,18 +158,35 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			})
 		}
 
-		overlayID := overlayAccountID(portID)
-		if !overlayEmitted[portKey] {
-			overlayEmitted[portKey] = true
+		// Prefer the real PSN safekeeping account so this security's
+		// history is continuous with the PSN-era holdings on the
+		// same account. Fall back to the synthetic overlay when no
+		// unambiguous mapping exists.
+		accountID, mapped := safekeepingByPortfolio[portID]
+		if !mapped {
+			accountID = overlayAccountID(portID)
+		}
+		if !accountEmitted[portKey] {
+			accountEmitted[portKey] = true
 			pid := portID
-			batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-				AccountExternalID:   overlayID,
-				AccountKind:         canonical.AccountKindOverlay,
-				DisplayName:         silver.StrPtrIfNonEmpty("Portfolio overlay (historical)"),
+			ac := canonical.AccountChange{
+				AccountExternalID:   accountID,
 				PortfolioExternalID: &pid,
 				FirstSeenAt:         asOf,
 				LastSeenAt:          asOf,
-			})
+			}
+			if mapped {
+				// Real safekeeping account. Leave DisplayName nil so
+				// the PSN-era AccountChange (which carries the proper
+				// mandate name) wins via gold's latest-last_seen_at
+				// upsert guard; our contribution just extends
+				// first_seen_at back to the PDF era.
+				ac.AccountKind = canonical.AccountKindSafekeeping
+			} else {
+				ac.AccountKind = canonical.AccountKindOverlay
+				ac.DisplayName = silver.StrPtrIfNonEmpty("Portfolio overlay (historical)")
+			}
+			batch.Accounts = append(batch.Accounts, ac)
 		}
 
 		isinCopy := isin
@@ -179,7 +206,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		}
 		batch.Positions = append(batch.Positions, canonical.PositionChange{
 			SnapshotAt:           asOf,
-			AccountExternalID:    overlayID,
+			AccountExternalID:    accountID,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           canonical.AssetClassOther,

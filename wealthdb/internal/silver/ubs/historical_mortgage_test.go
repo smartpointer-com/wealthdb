@@ -72,7 +72,7 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w)
+	stream, err := r.snapshotsHistorical(ctx, w, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,5 +113,86 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 	if got := posBySnap[9000]; len(got) != 0 {
 		t.Errorf("t=9000 positions = %d, want 0 (unanchored mortgage must not "+
 			"create a snapshot)", len(got))
+	}
+}
+
+// TestHistoricalSecuritiesSafekeepingRepointing locks in the
+// web→PSN account-continuity fix: a historical security whose
+// portfolio has a 1:1 PSN safekeeping account attaches to that
+// real account (kind=safekeeping, no display name so PSN's wins),
+// while one whose portfolio has no mapping falls back to the
+// synthetic overlay account.
+func TestHistoricalSecuritiesSafekeepingRepointing(t *testing.T) {
+	r := newWebFixture(t)
+	ctx := context.Background()
+	if _, err := r.db.ExecContext(ctx, `
+        INSERT INTO historical_position_snapshots
+            (as_of_date, portfolio_external_id, account_external_id,
+             instrument_isin, currency_iso, units, market_value,
+             market_value_currency, source_doc_token, payload)
+        VALUES
+            (1000, '0999AAAAAAAA02', '', 'CH0000000001', 'CHF',
+             10, 1500, 'CHF', 'tok', '{}'),
+            (1000, '0999AAAAAAAA09', '', 'CH0000000002', 'CHF',
+             20, 2500, 'CHF', 'tok', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only portfolio …02 has a 1:1 safekeeping mapping; …09 does not.
+	mapping := map[string]string{"0999AAAAAAAA02": "0999 AAAAAAAA.MMM SK1"}
+
+	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
+	stream, err := r.snapshotsHistorical(ctx, w, mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var positions []canonical.PositionChange
+	var accounts []canonical.AccountChange
+	for {
+		batch, more, err := stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, batch.Positions...)
+		accounts = append(accounts, batch.Accounts...)
+		if !more {
+			break
+		}
+	}
+
+	acctByISIN := map[string]string{}
+	for _, p := range positions {
+		acctByISIN[p.PositionKey] = p.AccountExternalID
+	}
+	if got := acctByISIN["CH0000000001"]; got != "0999 AAAAAAAA.MMM SK1" {
+		t.Errorf("mapped security account = %q, want the PSN safekeeping ID", got)
+	}
+	if got := acctByISIN["CH0000000002"]; got != "0999AAAAAAAA09:overlay" {
+		t.Errorf("unmapped security account = %q, want overlay fallback", got)
+	}
+
+	// The mapped account must be emitted as kind=safekeeping with no
+	// display name (so the PSN-era name wins); the unmapped one as
+	// overlay with the historical placeholder name.
+	kindByID := map[string]canonical.AccountKind{}
+	nameByID := map[string]*string{}
+	for _, a := range accounts {
+		kindByID[a.AccountExternalID] = a.AccountKind
+		nameByID[a.AccountExternalID] = a.DisplayName
+	}
+	if kindByID["0999 AAAAAAAA.MMM SK1"] != canonical.AccountKindSafekeeping {
+		t.Errorf("mapped account kind = %q, want safekeeping",
+			kindByID["0999 AAAAAAAA.MMM SK1"])
+	}
+	if nameByID["0999 AAAAAAAA.MMM SK1"] != nil {
+		t.Errorf("mapped account should have nil DisplayName (PSN name wins), got %q",
+			*nameByID["0999 AAAAAAAA.MMM SK1"])
+	}
+	if kindByID["0999AAAAAAAA09:overlay"] != canonical.AccountKindOverlay {
+		t.Errorf("unmapped account kind = %q, want overlay",
+			kindByID["0999AAAAAAAA09:overlay"])
 	}
 }
