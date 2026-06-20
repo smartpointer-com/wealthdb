@@ -21,6 +21,7 @@ var helpText = map[string]string{
 	"reset":        "Purge a silver source's data from gold (one source, or -a for all).",
 	"positions":    "Print consolidated positions as of a date (-f table|csv|csv_plain|json, -x CCY).",
 	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
+	"global":       "Roll the whole portfolio into a single total row (-x CCY, -d date).",
 	"status":       "Report gold state vs each silver source (-v for taxonomy drift counts).",
 	"snapshots":    "List snapshots gold has loaded for a silver source (-a for all).",
 	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.symbol_resolution.model.",

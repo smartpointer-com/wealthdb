@@ -74,6 +74,7 @@ subcommands:
   transactions [flags]  print transactions over a date range (default all time, oldest first)
   accounts [flags]      print one row per account with derived value aggregates
   portfolios [flags]    print one row per portfolio (+ sentinel per source) with derived value aggregates
+  global [flags]        roll the entire portfolio into a single total row (the ultimate aggregation)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
   help [<subcommand>]   help for a subcommand

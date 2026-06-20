@@ -12,7 +12,7 @@ configured — just run the command; no setup, no paths, no flags required to
 connect.
 
 ## Hard rules (do not break)
-- Allowed, all read-only: `portfolios`, `accounts`, `positions`, `transactions` (the data queries) plus `status`, `snapshots`, `help` (harmless diagnostics — run freely).
+- Allowed, all read-only: `global`, `portfolios`, `accounts`, `positions`, `transactions` (the data queries) plus `status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
 - Every monetary amount is a decimal **string** (e.g. `"1380284.21"`). Convert to a number before doing arithmetic.
@@ -20,14 +20,15 @@ connect.
 ## Pick the right command
 | You want… | Use |
 |---|---|
+| One grand total for everything — net worth in a single row | `global` |
 | Net worth / totals, one row per portfolio (top level) | `portfolios` |
 | Balances per individual account | `accounts` |
 | Every individual holding (one row per instrument) | `positions` |
 | Trades, dividends, interest, fees, cash in/out over time | `transactions` |
 
-- `portfolios`, `accounts`, `positions` are **point-in-time**: a snapshot as of one date.
+- `global`, `portfolios`, `accounts`, `positions` are **point-in-time**: a snapshot as of one date.
 - `transactions` is a **date range** of events.
-- Totals reconcile: sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash`.
+- Totals reconcile: `global` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash` (to within rounding).
 
 ## Dates
 **portfolios / accounts / positions** — `-d YYYY-MM-DD` is the as-of date (default: today). Each source contributes its latest snapshot on or before that date.
@@ -43,14 +44,16 @@ connect.
 | `- 2026-06-30` | start of data to date |
 | `- today` | all time |
 
-## Flags (all four commands)
+## Flags (the query commands)
 - `-f json|csv|table` — output format. Default is `table` (for humans). Use `json` to parse.
 - `-x CCY` — currency for value columns. Default is the configured base (USD). E.g. `-x CHF`, `-x EUR`.
 - `--fx-mode historic|current` — `historic` (default: FX rate at the snapshot/transaction date) or `current` (latest rate).
-- `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`.
+- `-d`, `-p` (privacy/redact) work on all of them.
+- `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `global`, which is a single fixed row.)
 - `positions` only: `--with-cash` — add one cash-balance row per account+currency.
 
 ## Columns you can rely on
+- **global** (always exactly one row): `min_snapshot_date, max_snapshot_date, cash_balance_<CCY>, positions_value_<CCY>, total_value_<CCY>`. The two dates are the earliest/latest of the per-account snapshot dates, so you can see how stale any part of the total is.
 - **positions**: `silver_source, snapshot_date, account, symbol, name, asset_class, currency, quantity, market_value, value_<CCY>`
 - **accounts**: `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_<CCY>`
 - **portfolios**: like accounts but the label column is `portfolio` (plus one sentinel row per source for accounts the bank didn't group)
@@ -65,6 +68,12 @@ Slice/group using these account attributes:
 
 ## Examples
 ```sh
+# Whole-portfolio net worth in one row (USD)
+wealthdb global -f json
+
+# Net worth in CHF as of a past date
+wealthdb global -d 2025-12-31 -x CHF -f json
+
 # Current net worth by portfolio (USD), parseable
 wealthdb portfolios -f json
 
