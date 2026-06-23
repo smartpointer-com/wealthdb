@@ -34,6 +34,8 @@ from pathlib import Path
 
 import paramiko
 
+from collectorkit import cli
+
 # Trusted host-key SHA-256 fingerprints are loaded from a sibling file
 # rather than embedded in the source, so updates to UBS's published keys
 # don't require a code change.
@@ -121,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--client-id", required=True,
                    help="UBS PSN customer / SFTP login ID (e.g. CH123456).")
     p.add_argument("--dest", type=Path,
-                   default=Path.home() / "wealthdb" / "ubs-psn",
+                   default=cli.default_data_root() / "ubs-psn",
                    help="Local destination directory (default: %(default)s); "
                         "a UTC-timestamped subdirectory is created per run.")
     p.add_argument("--key", type=Path,

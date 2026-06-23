@@ -102,7 +102,7 @@ For example, a deployment whose daily rates come from `ubs-psn` would give
 ```jsonc
 "silver_sources": [
   { "id": "ubs",  "kind": "ubs",  /* … */ "fx_priority": 0 },
-  { "id": "fred", "kind": "fred", "path": "~/wealthdb/fred/fred.db", "fx_priority": 1 }
+  { "id": "fred", "kind": "fred", "path": "$XDG_DATA_HOME/wealthdb/fred/fred.db", "fx_priority": 1 }
 ]
 ```
 

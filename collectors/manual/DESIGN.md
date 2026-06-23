@@ -37,7 +37,7 @@ Sections:
 
 Every other collector has the lifecycle `login → download → load`, driving
 a privileged read-only session against a source. **`manual` has no source.**
-Two CSVs are maintained in `~/wealthdb/manual/`; there is no auth, no
+Two hand-maintained CSVs live in `$XDG_DATA_HOME/wealthdb/manual/`; there is no auth, no
 MFA, no Docker, no browser, no `~/.secrets/manual.env`. Only `load` exists
 (the `manual` wrapper accepts `download`/`login` as friendly no-ops). The
 runtime is **host-venv** (like `schwab-api` / `ubs-psn`) minus the network

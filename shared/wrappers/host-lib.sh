@@ -39,14 +39,17 @@ host_python() {
 #   1. --secrets-dir / --data-dir / --silver-db CLI flag
 #   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR / _SILVER_DB
 #   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT
-#   4. the ~/.secrets and ~/wealthdb/<name> defaults
+#   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
+#      defaults
 # SILVER_DB defaults to <data-dir>/<name>.db. Recognised flags are consumed;
 # the rest land in FORWARD_ARGS.
 host_resolve_dirs() {
     local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
     SECRETS_DIR="$(_host_envvar SECRETS_DIR "$secrets_default")"
 
-    local data_default="$HOME/wealthdb/$NAME"
+    # Default data root follows the XDG Base Directory spec
+    # ($XDG_DATA_HOME, falling back to ~/.local/share).
+    local data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
     [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
     DATA_DIR="$(_host_envvar DATA_DIR "$data_default")"
 

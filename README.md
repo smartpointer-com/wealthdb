@@ -48,7 +48,7 @@ collectors/<source>/         wealthdb/
   load.py      → silver  ─────────────┼─→ gold (DuckDB)  →  wealthdb positions
   (one SQLite per source)             │                     wealthdb transactions
                                       │                     wealthdb accounts ...
-  silver DBs live under ~/wealthdb/<source>/, read-only to gold
+  silver DBs live under $XDG_DATA_HOME/wealthdb/<source>/, read-only to gold
 ```
 
 A collector owns its bronze (raw downloads) and silver (parsed,
@@ -97,8 +97,13 @@ override them per command or fleet-wide (precedence: **CLI flag >
 | location | flag | env var(s) | default |
 |---|---|---|---|
 | secrets | `--secrets-dir` | `${PREFIX}_SECRETS_DIR`, `WEALTHDB_SECRETS_DIR` | `~/.secrets` |
-| bronze  | `--data-dir`    | `${PREFIX}_DATA_DIR`, `WEALTHDB_DATA_ROOT/<name>` | `~/wealthdb/<name>` |
+| bronze  | `--data-dir`    | `${PREFIX}_DATA_DIR`, `WEALTHDB_DATA_ROOT/<name>` | `$XDG_DATA_HOME/wealthdb/<name>` |
 | silver  | `--silver-db`   | `${PREFIX}_SILVER_DB` | `<data-dir>/<name>.db` |
+
+`$XDG_DATA_HOME` follows the XDG Base Directory spec: when unset it
+falls back to `~/.local/share`, so the out-of-the-box data root is
+`~/.local/share/wealthdb`. The gold engine's `gold_db` and silver-source
+paths default the same way.
 
 ```sh
 wealthdb-collect viac load --data-dir /mnt/bronze/viac --silver-db /mnt/silver/viac.db

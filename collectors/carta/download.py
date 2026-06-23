@@ -35,7 +35,7 @@ quarterly financials, capital-call / distribution notices):
 Output layout (collectorkit.bronze; ids appear only in the gitignored
 bronze tree, never the repo):
 
-    ~/wealthdb/carta/<UTC-ts>/
+    $XDG_DATA_HOME/wealthdb/carta/<UTC-ts>/
       run.json                          manifest (ids, entities, counts, errors)
       bootstrap/{navigation-config,account-switcher,investments}.json
       entities/<corp|fund>_<id>/

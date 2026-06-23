@@ -344,7 +344,7 @@ CREATE INDEX ix_transactions_kind
 -- the run-ts dirname: '<YYYYMMDDTHHMMSSZ>/documents/<docid>.pdf').
 -- Consumers join with their own bronze root — same row resolves
 -- correctly inside the container (root = /data) and on the host
--- (root = ~/wealthdb/viac). No absolute path stored, no
+-- (root = $XDG_DATA_HOME/wealthdb/viac). No absolute path stored, no
 -- container-vs-host translation needed.
 CREATE TABLE documents (
     content_sha256          TEXT    NOT NULL PRIMARY KEY,

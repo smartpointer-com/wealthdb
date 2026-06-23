@@ -2,7 +2,7 @@
 -- ubs-web silver schema, migration 0001 — initial schema.
 --
 -- The web-scraped silver complements the PSN-fed silver
--- (`ubs-psn`, `~/wealthdb/ubs-psn/ubs-psn.db`). Gold-layer logic
+-- (`ubs-psn`, `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db`). Gold-layer logic
 -- merges the two by splicing transactions at the date PSN's feed
 -- went live for each banking relationship and unioning snapshots
 -- modulo content-dedup. The schema below is built to make that

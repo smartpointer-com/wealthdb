@@ -227,7 +227,7 @@ Observed page routes: `/welcome/` (landing), `/portfolio/` (list, tabbed),
 dropped, §4), `/documents/` (doc + tax centre).
 
 Layout (`collectorkit.bronze`; deal-slug = `sha256(deal.id)[:16]` so no
-company name ever appears in a path): `~/wealthdb/equityzen/<UTC-ts>/` with
+company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/` with
 `investments.json` (`{stage: getBuyerInvestments body}`),
 `offerings/<deal-slug>/detail.json` (`getMyInvestmentDetails`),
 `documents.json` (metadata, with `--documents`), and a `run.json` manifest
@@ -467,5 +467,5 @@ buyer's own holdings + documents. The pre-IPO **company names** in the
 book, SPV/fund names, share counts, basis/FMV figures, and K-1 contents
 are PII — synthetic placeholders only in any tracked file (e.g. company
 "ACME-CO", `dealId 1234`, round example figures). Raw artefacts live only
-under `~/wealthdb/equityzen/`, `~/.secrets/`, and the debug dir, never in
+under `$XDG_DATA_HOME/wealthdb/equityzen/`, `~/.secrets/`, and the debug dir, never in
 the repo.

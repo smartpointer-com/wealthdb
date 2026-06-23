@@ -19,7 +19,7 @@ server-side SYSTEM_ERROR), and it never sends a write mutation. `download
 `GET` on `node.documents[].downloadUrl` (read-only); `load` parses the
 capital-account statements + K-1s locally (`statements.py` → `pdftotext`).
 Those PDFs carry names / addresses / SSN-EIN fragments and exact figures —
-they live only under `~/wealthdb/equityzen/` (bronze) and in the silver DB,
+they live only under `$XDG_DATA_HOME/wealthdb/equityzen/` (bronze) and in the silver DB,
 NEVER the repo, and the full K-1 text is deliberately not stored.
 
 ## 1. Read-only EquityZen buyer access — never trigger writes
@@ -125,7 +125,7 @@ company / SPV / fund name or id, share count, basis, FMV, or document into
 a tracked file (source, fixtures, comments, commit messages). Synthetic
 placeholders only — e.g. company "ACME-CO", `dealId 1234`,
 `equityBlockUuid "00000000-0000-0000-0000-000000000000"`, round example
-figures. Raw artefacts live only under `~/wealthdb/equityzen/`,
+figures. Raw artefacts live only under `$XDG_DATA_HOME/wealthdb/equityzen/`,
 `~/.secrets/`, and the explore debug dir (`~/.cache/equityzen-debug/`),
 never in the repo. The explore harness redacts the username + password
 from `network.jsonl`, but response bodies there carry full holdings data —

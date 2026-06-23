@@ -15,8 +15,8 @@ The companion silvers:
 
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
-| `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Multi-decade historical: statement PDFs back to 2016 (Schwab's UI cap), tax forms back to 2014, transaction-history HTML drops for the same window | `~/wealthdb/schwab-web/schwab-web.db` |
-| `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from API access activation (mid-2024 for this user) | `~/wealthdb/schwab-api/schwab-api.db` |
+| `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Multi-decade historical: statement PDFs back to 2016 (Schwab's UI cap), tax forms back to 2014, transaction-history HTML drops for the same window | `$XDG_DATA_HOME/wealthdb/schwab-web/schwab-web.db` |
+| `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from API access activation (mid-2024) | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` |
 
 This split mirrors the `ubs-web` ↔ `ubs-psn` pattern: a
 slow, lossy, multi-year web archive plus a fast, lossless, recent

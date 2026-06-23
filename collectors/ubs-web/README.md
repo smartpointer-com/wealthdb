@@ -121,8 +121,8 @@ prefix, so a naive slice would collide silently — hashing avoids it.
 
 ### Silver schema and gold-merge contract
 
-Silver lives at `~/wealthdb/ubs-web/ubs-web.db` by default;
-companion PSN silver is at `~/wealthdb/ubs-psn/ubs-psn.db` (from
+Silver lives at `$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db` by default;
+companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
 `ubs-psn`). Schemas in [migrations/](migrations/):
 
 - [`0001_initial.sql`](migrations/0001_initial.sql) — live-fetch
@@ -174,7 +174,7 @@ referenced in `Dockerfile` exist — see Status above.)
 
 The repo ships a thin `ubs-web` shell wrapper around
 `docker run`; the standard `~/.secrets → /secrets` and
-`~/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
+`$XDG_DATA_HOME/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
 described in [collectors/README.md](../README.md#conventions-shared-across-collectors).
 Credentials go in `~/.secrets/ubs.env`; see
 [collectors/README.md](../README.md#conventions-shared-across-collectors)
@@ -223,7 +223,7 @@ run scripted afterwards.
 ## Layout (planned)
 
 ```
-<bronze-dir>/                       e.g. ~/wealthdb/ubs-web/
+<bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/ubs-web/
 ├── 20260518T210504Z/               one bronze dump per run
 │   ├── transactions_<account>.csv  per-account transactions for --since..--until
 │   ├── documents/

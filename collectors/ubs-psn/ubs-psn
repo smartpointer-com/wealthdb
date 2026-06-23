@@ -13,7 +13,7 @@
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
 #   --secrets-dir DIR   SSH key (ubs_psn_key) + env  (default ~/.secrets)
-#   --data-dir    DIR   bronze dumps root            (default ~/wealthdb/ubs-psn)
+#   --data-dir    DIR   bronze dumps root            (default $XDG_DATA_HOME/wealthdb/ubs-psn)
 #   --silver-db   PATH  silver DB path               (default <data-dir>/ubs-psn.db)
 # The SFTP login id is read from $UBS_PSN_CLIENT_ID, auto-sourced from
 # <secrets-dir>/ubs-psn.env (override via $UBS_PSN_ENV_FILE); or pass --client-id.

@@ -112,4 +112,4 @@ themselves identifying. **Never** copy a real SPV / fund / manager name,
 LP name, commitment amount, or document into a tracked file (source,
 fixtures, comments, commit messages). Synthetic placeholders only — e.g.
 "SPV Alpha", "Fund I", round example figures. The raw artefacts live
-only under `~/wealthdb/angellist/` and `~/.secrets/`, never in the repo.
+only under `$XDG_DATA_HOME/wealthdb/angellist/` and `~/.secrets/`, never in the repo.

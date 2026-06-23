@@ -19,8 +19,8 @@ Every collector exposes the same three steps:
 | Step | Produces | What it does |
 | --- | --- | --- |
 | `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. (Omitted where the runtime mints the session inside `download` — see each tool.) |
-| `download` | **bronze** under `~/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
-| `load` | **silver** `~/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
+| `download` | **bronze** under `$XDG_DATA_HOME/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
+| `load` | **silver** `$XDG_DATA_HOME/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
 
 Bronze is immutable raw capture; silver is the parsed, queryable
 form and the **input contract** to gold. One silver DB per source.
@@ -54,14 +54,14 @@ also lives under `~/.secrets/` (`<source>-state.json`,
 **Data layout** is uniform:
 
 ```
-~/wealthdb/<source>/
+$XDG_DATA_HOME/wealthdb/<source>/
 ├── 20260528T104753Z/      one bronze dump per run (UTC timestamp)
 │   └── …                  raw artefacts
 └── <source>.db            silver SQLite
 ```
 
 **Docker mounts** (the ten containerised collectors): the wrapper
-bind-mounts `~/.secrets → /secrets` and `~/wealthdb/<source> →
+bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 /data`, so inside the container credentials are at
 `/secrets/<source>.env` and bronze/silver at `/data`.
 
@@ -133,8 +133,11 @@ The wrapper therefore:
   | | flag | per-collector env | fleet env | default |
   | --- | --- | --- | --- | --- |
   | secrets | `--secrets-dir` | `${PREFIX}_SECRETS_DIR` | `WEALTHDB_SECRETS_DIR` | `~/.secrets` |
-  | data (bronze) | `--data-dir` | `${PREFIX}_DATA_DIR` | `WEALTHDB_DATA_ROOT/<name>` | `~/wealthdb/<name>` |
+  | data (bronze) | `--data-dir` | `${PREFIX}_DATA_DIR` | `WEALTHDB_DATA_ROOT/<name>` | `$XDG_DATA_HOME/wealthdb/<name>` |
   | silver DB | `--silver-db` | `${PREFIX}_SILVER_DB` | — | `<data-dir>/<name>.db` |
+
+  (`$XDG_DATA_HOME` defaults to `~/.local/share` per the XDG Base
+  Directory spec, so the default data root is `~/.local/share/wealthdb`.)
 
 - forwards the `download` date-window flags (`--since`, `--until`,
   `--lookback`, `--documents-*`) to the inner `download.py`.

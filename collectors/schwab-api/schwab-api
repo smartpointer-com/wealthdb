@@ -21,7 +21,7 @@
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
 #   --secrets-dir DIR  credentials + OAuth token  (default ~/.secrets)
-#   --data-dir    DIR  bronze dumps root          (default ~/wealthdb/schwab-api)
+#   --data-dir    DIR  bronze dumps root          (default $XDG_DATA_HOME/wealthdb/schwab-api)
 #   --silver-db   PATH silver DB path             (default <data-dir>/schwab-api.db)
 # OAuth app creds (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) come from
 # <secrets-dir>/schwab-api.env; the Schwab login id/password pre-filled

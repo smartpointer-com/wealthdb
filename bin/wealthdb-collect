@@ -13,7 +13,7 @@
 #
 # flags:
 #   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
-#   --data-dir <dir>      where downloaded data is written (default ~/wealthdb/<source>)
+#   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>)
 #   --silver-db <path>    the database file to build (default <data-dir>/<source>.db)
 #
 # Flags are accepted on any subcommand (or set the matching env var — see

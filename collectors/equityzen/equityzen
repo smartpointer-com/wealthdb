@@ -58,7 +58,7 @@ Subcommands:
                       positions + cash flows (getBuyerInvestments per
                       stage + getMyInvestmentDetails per offering). Writes
                       a UTC-timestamped subdir + run.json manifest under
-                      ~/wealthdb/equityzen/. --dry-run is a read-only smoke
+                      $XDG_DATA_HOME/wealthdb/equityzen/. --dry-run is a read-only smoke
                       test (writes nothing); --documents also records
                       doc/tax-centre metadata.
   load [args...]      Ingest bronze snapshots into the SQLite silver:

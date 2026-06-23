@@ -112,5 +112,5 @@ identifying**. Never copy a real company / issuer / portfolio name or id,
 share count, strike, FMV, or document into a tracked file (source,
 fixtures, comments, commit messages). Synthetic placeholders only — e.g.
 issuer "ACME-CO", `portfolioId "pf_EXAMPLE"`, round example figures. Raw
-artefacts live only under `~/wealthdb/carta/` and `~/.secrets/`, never in
+artefacts live only under `$XDG_DATA_HOME/wealthdb/carta/` and `~/.secrets/`, never in
 the repo.

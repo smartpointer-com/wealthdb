@@ -333,7 +333,7 @@ CREATE INDEX ix_transactions_account_occurred
 -- the run-ts dirname: '20260527T142642Z/documents/NNNN.pdf').
 -- Consumers join with their own bronze root — works the same
 -- inside the container (root = /data) and on the host (root =
--- ~/wealthdb/relevate). No absolute path stored, no container-
+-- $XDG_DATA_HOME/wealthdb/relevate). No absolute path stored, no container-
 -- vs-host translation needed.
 CREATE TABLE documents (
     content_sha256          TEXT    NOT NULL PRIMARY KEY,

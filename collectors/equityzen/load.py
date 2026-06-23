@@ -5,7 +5,7 @@ Parses the bronze captured by download.py into the source-shaped SQLite
 silver DB, the input contract to the gold engine. Idempotent: bronze runs
 already recorded in `dump_runs` are skipped unless --force.
 
-Per bronze run (`~/wealthdb/equityzen/<UTC-ts>/`):
+Per bronze run (`$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/`):
 
   * investments.json             {stage: getBuyerInvestments body} — the
                                  per-stage lists (stage label + fallback node).

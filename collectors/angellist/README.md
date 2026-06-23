@@ -25,7 +25,7 @@ queryable silver).
 
 | Verb | Status | Notes |
 | --- | --- | --- |
-| `login` | implemented | The auth path (formerly `byo-login`). If the saved profile still holds a valid session, the cookie is lifted and it exits immediately — no VNC. Otherwise: stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). No unattended login (the SPA is bot-walled). `--check` probes only; `--force` re-logs in. Any K-1 / financial docs you download in the session save to `~/wealthdb/angellist/angellist-documents/`. |
+| `login` | implemented | The auth path (formerly `byo-login`). If the saved profile still holds a valid session, the cookie is lifted and it exits immediately — no VNC. Otherwise: stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). No unattended login (the SPA is bot-walled). `--check` probes only; `--force` re-logs in. Any K-1 / financial docs you download in the session save to `$XDG_DATA_HOME/wealthdb/angellist/angellist-documents/`. |
 | `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. |
 | `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
@@ -74,5 +74,5 @@ read surfaces and captures the GraphQL the SPA fetches — it never clicks
 an invest/commit/fund/e-sign/settings control and stays off any
 lead/admin surface. The data (incl. K-1-adjacent details and, on the
 commitments surface, bank/wire instructions) is highly sensitive: it
-lives only under `~/wealthdb/angellist/` and `~/.secrets/`, never the
+lives only under `$XDG_DATA_HOME/wealthdb/angellist/` and `~/.secrets/`, never the
 repo. Slugs/IDs are derived at runtime, never hardcoded.

@@ -3,7 +3,7 @@
 #
 # Unlike every other collector, `manual` has NO source to fetch from: the
 # user maintains the bronze CSVs (positions.csv / valuations.csv) by hand
-# in the data dir (default ~/wealthdb/manual/). So there is no `login` and
+# in the data dir (default $XDG_DATA_HOME/wealthdb/manual/). So there is no `login` and
 # no `download` — only `load`, which validates those CSVs and rebuilds the
 # SQLite silver from them. Host-venv collector (no Docker).
 #
@@ -13,7 +13,7 @@
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on `load`:
-#   --data-dir  DIR     bronze CSVs dir  (default ~/wealthdb/manual)
+#   --data-dir  DIR     bronze CSVs dir  (default $XDG_DATA_HOME/wealthdb/manual)
 #   --silver-db PATH    silver DB path   (default <data-dir>/manual.db)
 set -euo pipefail
 
@@ -35,7 +35,7 @@ case "$cmd" in
         cat >&2 <<'EOF'
 manual: no-op. This collector has no source to fetch from — you are the
 source of truth. Maintain the CSVs by hand in the data dir (default
-~/wealthdb/manual/): positions.csv, valuations.csv — then run
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv — then run
 `./manual load` to validate them and rebuild the silver.
 EOF
         exit 0

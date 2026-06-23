@@ -114,7 +114,7 @@ juggler-protocol revision — do NOT bump without also bumping
 ### Run
 
 The wrapper drives `docker run` with the shared
-`~/.secrets → /secrets` and `~/wealthdb/fidelity-web → /data`
+`~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/fidelity-web → /data`
 mounts (see [collectors/README.md](../README.md)). On top of
 those it adds two Fidelity-specific mounts:
 
@@ -184,7 +184,7 @@ silver SQLite DB. Idempotent on the synthetic `activity_id` and
 the `content_sha256` document key, so re-running converges.
 
 ```sh
-./fidelity-web load                                # defaults: bronze + silver under ~/wealthdb/fidelity-web
+./fidelity-web load                                # defaults: bronze + silver under $XDG_DATA_HOME/wealthdb/fidelity-web
 ./fidelity-web load --silver-db /tmp/fidelity.db  # override the silver path
 ./fidelity-web load -v                             # DEBUG logging
 ```
@@ -226,7 +226,7 @@ for the shared env-file rules.
 ## Bronze layout
 
 ```
-<bronze-dir>/                              e.g. ~/wealthdb/fidelity-web/
+<bronze-dir>/                              e.g. $XDG_DATA_HOME/wealthdb/fidelity-web/
 ├── 20260524T120000Z/                      one bronze dump per trigger
 │   ├── run.json                           manifest: accounts, per-phase results
 │   ├── positions/

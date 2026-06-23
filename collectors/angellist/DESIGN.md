@@ -80,7 +80,7 @@ Routes + operations captured (per invest account):
 
 ## Bronze
 
-`download` writes, under `~/wealthdb/angellist/<UTC-ts>/`:
+`download` writes, under `$XDG_DATA_HOME/wealthdb/angellist/<UTC-ts>/`:
 
 - `captures.jsonl` — one line per captured GraphQL exchange:
   `{op, variables, data}`. The full source payload, untouched.
@@ -258,4 +258,4 @@ AngelList changes the venture SPA's GraphQL or routes.
 See [CLAUDE.md](CLAUDE.md). Navigation + passive GraphQL capture only;
 never a mutate control, never the lead/admin surface. SPV/fund names,
 amounts, and the commitments wire details are PII — synthetic placeholders
-only in any tracked file; real data stays under `~/wealthdb` / `~/.secrets`.
+only in any tracked file; real data stays under `$XDG_DATA_HOME/wealthdb` / `~/.secrets`.

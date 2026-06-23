@@ -27,7 +27,7 @@ deal.id = base64("DealNode:<N>").
 Output layout (collectorkit.bronze; deal-slug = sha256(deal.id)[:16] so no
 company name appears in a path; doc files named sha256(doc id) so the Relay
 id is filesystem-safe):
-    ~/wealthdb/equityzen/<UTC-ts>/
+    $XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/
       investments.json                     {stage: getBuyerInvestments body}
       offerings/<deal-slug>/detail.json    getMyInvestmentDetails
       documents/<deal-slug>/<doc-slug>.pdf document blobs (with --documents)

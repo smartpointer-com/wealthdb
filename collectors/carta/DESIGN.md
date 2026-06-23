@@ -304,7 +304,7 @@ falling back to rendered HTML / export blobs:
 - **documents / tax centre** — legal docs + 3921 / 1099-B PDFs, fetched via
   Playwright's authenticated request API.
 
-Layout (`collectorkit.bronze`): `~/wealthdb/carta/<UTC-ts>/` with
+Layout (`collectorkit.bronze`): `$XDG_DATA_HOME/wealthdb/carta/<UTC-ts>/` with
 `portfolios.json`, `portfolios/<pid-slug>/issuers/<iid-slug>/{option_grants,
 restricted_stock_units,restricted_stock_awards,certificates,
 convertible_notes,security_transactions,fair_market_value}.json`,

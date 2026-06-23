@@ -126,7 +126,7 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("trailhead.firstrun.didSeeAboutWelcome", true);
 user_pref("security.sandbox.content.level", 0);
 // Save downloads (K-1 CSV/PDF, financial statements) straight to the
-// mounted /data/angellist-documents (= ~/wealthdb/angellist/angellist-
+// mounted /data/angellist-documents (= $XDG_DATA_HOME/wealthdb/angellist/angellist-
 // documents on the host) instead of the container-ephemeral ~/Downloads,
 // so documents grabbed from the Taxes & Documents page persist. (The doc
 // endpoints reject our cookie-injection, so a real-browser download here
@@ -149,7 +149,7 @@ PREFS
         echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2
         echo "login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
         echo "login: your K-1 CSVs/PDFs — they save to" >&2
-        echo "login:   ~/wealthdb/angellist/angellist-documents/" >&2
+        echo "login:   $XDG_DATA_HOME/wealthdb/angellist/angellist-documents/" >&2
         echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
         firefox -profile "$FXPROFILE" -no-remote -new-instance \
             "https://venture.angellist.com/v/login" >/tmp/firefox.log 2>&1 || true

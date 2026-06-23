@@ -15,7 +15,7 @@
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
 #   --secrets-dir DIR   API-key env file          (default ~/.secrets)
-#   --data-dir    DIR   bronze dumps root          (default ~/wealthdb/fred)
+#   --data-dir    DIR   bronze dumps root          (default $XDG_DATA_HOME/wealthdb/fred)
 #   --silver-db   PATH  silver DB path             (default <data-dir>/fred.db)
 # The API key is read from FRED_API_KEY, auto-sourced from
 # <secrets-dir>/fred.env (override the path with $FRED_ENV_FILE).

@@ -19,8 +19,8 @@ The companion silvers, by path:
 
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
-| `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: ~28-month transactions + on-demand positions + 1.5k PDF document index. Historical tables: quarterly position snapshots back to 2022 + monthly cash balances back to late 2021, both reconstructed from the bronze PDF archive | `~/wealthdb/ubs-web/ubs-web.db` |
-| `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `~/wealthdb/ubs-psn/ubs-psn.db` |
+| `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: ~28-month transactions + on-demand positions + 1.5k PDF document index. Historical tables: quarterly position snapshots back to 2022 + monthly cash balances back to late 2021, both reconstructed from the bronze PDF archive | `$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db` |
+| `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` |
 
 ## 1. The two UBS feeds
 

@@ -634,15 +634,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument(
         "--silver-db", type=Path,
-        default=Path.home() / "wealthdb" / "schwab-api" / "schwab-api.db",
+        default=cli.default_data_root() / "schwab-api" / "schwab-api.db",
         help="Path to the silver SQLite database. Created if missing. "
-             "Default: ~/wealthdb/schwab-api/schwab-api.db.",
+             "Default: $XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db.",
     )
     p.add_argument(
         "--bronze-dir", type=Path,
-        default=Path.home() / "wealthdb" / "schwab-api",
+        default=cli.default_data_root() / "schwab-api",
         help="Directory containing snapshot subdirectories. "
-             "Default: ~/wealthdb/schwab-api.",
+             "Default: $XDG_DATA_HOME/wealthdb/schwab-api.",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging.")
     cli.add_force_arg(p)

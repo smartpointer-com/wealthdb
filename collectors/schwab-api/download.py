@@ -117,7 +117,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--dest",
         type=Path,
-        default=Path.home() / "wealthdb" / "schwab-api",
+        default=cli.default_data_root() / "schwab-api",
         help="Output directory (default: %(default)s). Each run "
              "creates a <UTC-timestamp> subdirectory under this path.",
     )

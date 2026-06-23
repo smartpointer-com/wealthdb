@@ -24,7 +24,7 @@ exists).
 The toolkit assumes a directory layout like:
 
 ```
-<bronze-dir>/                       e.g. ~/wealthdb/schwab-api/
+<bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/schwab-api/
 ├── 20260512T104753Z/               one bronze dump per run
 │   ├── account_numbers.json
 │   ├── user_preference.json
@@ -237,7 +237,7 @@ the dump layer; full order history is intentionally not captured.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--token-path` | `~/.secrets/schwab-api-token.json` | Path to the OAuth token JSON file. |
-| `--dest` | `~/wealthdb/schwab-api` | Local destination directory. |
+| `--dest` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Local destination directory. |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
 | `--since` | _today − 90d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the API window at 1 year per request; the loader chunks longer ranges automatically. |
@@ -302,7 +302,7 @@ See [DESIGN.md](DESIGN.md) §4 for the full rationale.
 ### Usage
 
 ```sh
-./schwab-api load                   # defaults under ~/wealthdb/schwab-api
+./schwab-api load                   # defaults under $XDG_DATA_HOME/wealthdb/schwab-api
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
@@ -313,8 +313,8 @@ not already recorded in `dump_runs`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--silver-db` | `~/wealthdb/schwab-api/schwab-api.db` | Path to the silver SQLite database. Created if missing. |
-| `--bronze-dir` | `~/wealthdb/schwab-api` | Directory containing bronze dump subdirectories. |
+| `--silver-db` | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` | Path to the silver SQLite database. Created if missing. |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Directory containing bronze dump subdirectories. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Schema migrations

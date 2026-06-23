@@ -159,10 +159,10 @@ auth POSTs require it; the middlelayer GETs do not.
                                    │      └─ mTAN prompt on stdin
                                    │
        download.py ────────►  /middlelayer/v2/   ─► writes JSON + PDFs into
-                                                     ~/wealthdb/relevate/<UTC-ts>/
+                                                     $XDG_DATA_HOME/wealthdb/relevate/<UTC-ts>/
                                                      (gitignored bronze tree)
                                                               │
-       load.py ────────────────────────────────────────────►  ~/wealthdb/relevate/relevate.db
+       load.py ────────────────────────────────────────────►  $XDG_DATA_HOME/wealthdb/relevate/relevate.db
                                                               (SQLite silver)
                                                               │
                                                               ▼
@@ -498,7 +498,7 @@ in §7 and one good bronze run, both of which exist.
 ## 6. Bronze layout
 
 ```
-$HOME/wealthdb/relevate/                     (= /data inside container)
+$XDG_DATA_HOME/wealthdb/relevate/                     (= /data inside container)
 ├── 20260527T142500Z/                        one bronze dump per run
 │   ├── run.json                             manifest
 │   ├── accounts/
@@ -693,7 +693,7 @@ refuses to evict a running container without
 ### 9.3 Mounts
 
 The standard `/secrets` (`~/.secrets`) and `/data`
-(`~/wealthdb/relevate`) bind-mounts follow the shared collector
+(`$XDG_DATA_HOME/wealthdb/relevate`) bind-mounts follow the shared collector
 convention — see [collectors/README.md](../README.md). On top of
 those, relevate bind-mounts a third, tool-specific path:
 

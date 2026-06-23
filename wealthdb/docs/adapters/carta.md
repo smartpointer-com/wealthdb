@@ -19,7 +19,7 @@ transaction pairs on a sentinel funding account (§7).
 
 ## 1. Silver source
 
-One SQLite DB (`~/wealthdb/carta/carta.db`). The relevant tables:
+One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 
 - `entities` — one row per (event date, held entity). An entity is either a
   cap-table corporation (`is_fund_investment = 0`) or a fund investment

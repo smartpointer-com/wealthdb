@@ -67,7 +67,8 @@ _envvar() {
 #   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR env var
 #   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT env var
 #      (lets wealthdb-nightly / wealthdb-refresh set one knob for all)
-#   4. the ~/.secrets and ~/wealthdb/<name> defaults
+#   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
+#      defaults
 wrapper_init() {
     IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:latest")"
     CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
@@ -75,7 +76,9 @@ wrapper_init() {
     local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
     HOST_SECRETS="$(_envvar SECRETS_DIR "$secrets_default")"
 
-    local data_default="$HOME/wealthdb/$NAME"
+    # Default data root follows the XDG Base Directory spec
+    # ($XDG_DATA_HOME, falling back to ~/.local/share).
+    local data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
     [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
     HOST_DATA="$(_envvar DATA_DIR "$data_default")"
 

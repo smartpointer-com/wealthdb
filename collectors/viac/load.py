@@ -11,7 +11,7 @@ mid-load roll the whole dump back and re-runs retry idempotently.
 Usage:
     load.py [--silver-db PATH] [--bronze-dir PATH] [-v]
 
-By default, walks /data (= ~/wealthdb/viac on the host) and
+By default, walks /data (= $XDG_DATA_HOME/wealthdb/viac on the host) and
 loads into /data/viac.db.
 """
 

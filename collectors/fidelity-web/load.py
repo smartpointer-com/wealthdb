@@ -102,11 +102,11 @@ def parse_args(argv):
     # load.py runs HOST-SIDE for fidelity-web (the wrapper's PYTHONPATH
     # shortcut), so the defaults are host paths — not /data.
     p.add_argument("--silver-db", type=Path,
-                   default=Path.home() / "wealthdb" / "fidelity-web" / "fidelity-web.db",
+                   default=cli.default_data_root() / "fidelity-web" / "fidelity-web.db",
                    help="Path to the silver SQLite database "
                         "(default: %(default)s). Created if missing.")
     p.add_argument("--bronze-dir", type=Path,
-                   default=Path.home() / "wealthdb" / "fidelity-web",
+                   default=cli.default_data_root() / "fidelity-web",
                    help="Directory containing UTC-timestamped bronze dump dirs "
                         "(default: %(default)s).")
     p.add_argument("-v", "--verbose", action="store_true",

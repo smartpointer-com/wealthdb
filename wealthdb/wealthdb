@@ -14,14 +14,15 @@ case "${1:-}" in
         ;;
 esac
 
-# Data root (gold DB + every silver DB) defaults to ~/wealthdb but can
-# live anywhere via WEALTHDB_DATA_ROOT — e.g. a shared, ACL-gated dir
+# Data root (gold DB + every silver DB) defaults to the XDG data dir
+# ($XDG_DATA_HOME/wealthdb, falling back to ~/.local/share/wealthdb) but
+# can live anywhere via WEALTHDB_DATA_ROOT — e.g. a shared, ACL-gated dir
 # outside $HOME. It is mounted at the SAME path inside the container so
 # the config's ${WEALTHDB_DATA_ROOT}/... entries resolve identically on
 # both sides, and the variable is forwarded so that expansion (and the
 # collectors' own wrappers) agree. The host path must be one Docker can
 # see (for Colima, listed under `mounts:` in colima.yaml).
-DATA_ROOT="${WEALTHDB_DATA_ROOT:-$HOME/wealthdb}"
+DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
 
 mkdir -p "$HOME/.config" "$DATA_ROOT"
 [ -f "$HOME/.config/wealthdb.cfg" ] || : > "$HOME/.config/wealthdb.cfg"

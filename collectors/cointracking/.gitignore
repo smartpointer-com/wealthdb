@@ -49,7 +49,7 @@ clicks.jsonl
 
 # Never commit credentials, browser profiles, session cookies, or
 # downloaded portfolio data. The default mount layout puts these on
-# the host under ~/.secrets/ and ~/wealthdb/cointracking/ respectively,
+# the host under ~/.secrets/ and $XDG_DATA_HOME/wealthdb/cointracking/ respectively,
 # but a stray in-tree drop must still be blocked.
 *.pem
 *.key

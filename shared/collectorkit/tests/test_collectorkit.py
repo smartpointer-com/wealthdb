@@ -257,6 +257,28 @@ class LookbackTest(unittest.TestCase):
         self.assertEqual(until - since, timedelta(days=30))
 
 
+class DefaultDataRootTest(unittest.TestCase):
+    def _resolve(self, xdg):
+        saved = os.environ.get("XDG_DATA_HOME")
+        try:
+            if xdg is None:
+                os.environ.pop("XDG_DATA_HOME", None)
+            else:
+                os.environ["XDG_DATA_HOME"] = xdg
+            return cli.default_data_root()
+        finally:
+            if saved is None:
+                os.environ.pop("XDG_DATA_HOME", None)
+            else:
+                os.environ["XDG_DATA_HOME"] = saved
+
+    def test_falls_back_to_local_share_when_unset(self):
+        self.assertEqual(self._resolve(None), Path.home() / ".local" / "share" / "wealthdb")
+
+    def test_honours_xdg_data_home(self):
+        self.assertEqual(self._resolve("/custom/xdg"), Path("/custom/xdg") / "wealthdb")
+
+
 class ParseTest(unittest.TestCase):
     def test_iso_date_to_epoch_bare_date(self):
         from datetime import datetime as _dt, timezone as _tz

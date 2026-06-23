@@ -74,7 +74,7 @@ cd collectors/swissquote
 The `swissquote` wrapper drives `docker run`; see
 [collectors/README.md](../README.md) for the shared Docker
 mount/wrapper conventions (`~/.secrets → /secrets`,
-`~/wealthdb/swissquote → /data`).
+`$XDG_DATA_HOME/wealthdb/swissquote → /data`).
 
 ```sh
 ./swissquote login --check
@@ -103,7 +103,7 @@ port-forwarding), then run scripted afterwards.
 ## Layout
 
 ```
-<bronze-dir>/                       e.g. ~/wealthdb/swissquote/
+<bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/swissquote/
 ├── 20260514T093122Z/               one bronze dump per run
 │   ├── transactions_000.csv        single CSV covering --since..--until
 │   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
@@ -309,7 +309,7 @@ Wider backfill via the shared `--lookback` shortcut, or explicit dates:
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
-maps to `~/wealthdb/swissquote/<UTC-timestamp>/` on the host.
+maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 | File | Source |
 | --- | --- |
@@ -431,7 +431,7 @@ snapshot/event and semi-relational JSON1 conventions.
 ### Usage
 
 ```sh
-./swissquote load          # defaults under the /data mount (= ~/wealthdb/swissquote)
+./swissquote load          # defaults under the /data mount (= $XDG_DATA_HOME/wealthdb/swissquote)
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match

@@ -11,7 +11,7 @@ mid-load roll the whole dump back and re-runs retry idempotently.
 Usage:
     load.py [--silver-db PATH] [--bronze-dir PATH] [-v]
 
-By default, walks /data (= ~/wealthdb/relevate on the host) and
+By default, walks /data (= $XDG_DATA_HOME/wealthdb/relevate on the host) and
 loads into /data/relevate.db.
 """
 
@@ -354,7 +354,7 @@ def load_documents_phase(
         # run dir): the run-ts dirname is the first segment.
         # Consumers join with their own bronze root, so the same
         # silver row resolves both inside the container (root =
-        # /data) and on the host (root = ~/wealthdb/relevate).
+        # /data) and on the host (root = $XDG_DATA_HOME/wealthdb/relevate).
         bronze_path = pdf_path.relative_to(run_dir.parent).as_posix()
         file_name = d.get("fileName") or ""
         # INSERT first; on conflict, update last_seen_at and any

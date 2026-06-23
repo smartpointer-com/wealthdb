@@ -32,7 +32,7 @@ to authenticate to.
 ## Layout
 
 ```
-~/wealthdb/manual/            <- you own this directory (outside the repo)
+$XDG_DATA_HOME/wealthdb/manual/            <- you own this directory (outside the repo)
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
@@ -44,13 +44,13 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 [collectors/README.md](../README.md#build-scaffolding)). Then:
 
 ```bash
-# 1. ~/wealthdb/manual/ already holds two fictional starter CSVs
+# 1. $XDG_DATA_HOME/wealthdb/manual/ already holds two fictional starter CSVs
 #    (positions.csv / valuations.csv). Edit them in place, replacing the
 #    placeholder holdings with your real ones. (examples/ in this repo is a
 #    second synthetic sample covering every asset kind, incl. a note→equity
 #    conversion — for reference, not for editing.)
 
-# 2. Load — validates the CSVs and (re)builds ~/wealthdb/manual/manual.db
+# 2. Load — validates the CSVs and (re)builds $XDG_DATA_HOME/wealthdb/manual/manual.db
 ./manual load
 ```
 
@@ -59,7 +59,7 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 
 | path | flag | env var | default |
 | --- | --- | --- | --- |
-| CSV dir | `--bronze-dir` | `MANUAL_BRONZE_DIR` | `~/wealthdb/manual` |
+| CSV dir | `--bronze-dir` | `MANUAL_BRONZE_DIR` | `$XDG_DATA_HOME/wealthdb/manual` |
 | silver DB | `--silver-db` | `MANUAL_SILVER_DB` | `<bronze-dir>/manual.db` |
 
 (The silver DB follows the resolved CSV dir unless overridden on its own.)

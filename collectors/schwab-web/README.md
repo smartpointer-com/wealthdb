@@ -154,13 +154,13 @@ open vnc://localhost:5900                  # macOS Screen Sharing
 # Either entry point: once login completes the script takes over
 # the same Firefox page, runs statements + transactions downloads,
 # and exits. Bronze data lands on the host under
-# ~/wealthdb/schwab-web/<UTC-ts>/.
+# $XDG_DATA_HOME/wealthdb/schwab-web/<UTC-ts>/.
 ```
 
 ## Container build
 
 This is a Docker collector; the host wrapper and the standard
-`~/.secrets → /secrets` / `~/wealthdb/schwab-web → /data` mounts
+`~/.secrets → /secrets` / `$XDG_DATA_HOME/wealthdb/schwab-web → /data` mounts
 follow the shared rules in
 [collectors/README.md](../README.md#conventions-shared-across-collectors).
 Tool-specific notes only:
@@ -242,7 +242,7 @@ challenge.
 ## Layout
 
 ```
-<bronze-dir>/                              e.g. ~/wealthdb/schwab-web/
+<bronze-dir>/                              e.g. $XDG_DATA_HOME/wealthdb/schwab-web/
 ├── 20260520T120000Z/                      one bronze dump per run
 │   ├── statements/
 │   │   └── <suffix>/                      account suffix, e.g. "NNN"

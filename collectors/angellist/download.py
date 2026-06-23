@@ -32,7 +32,7 @@ where userSlug = currentUser.slug and investAccountSlug =
 currentUser.investAccounts[i].slugName.
 
 Bronze layout (collectorkit.bronze conventions):
-  ~/wealthdb/angellist/<UTC-ts>/
+  $XDG_DATA_HOME/wealthdb/angellist/<UTC-ts>/
     viewer.json        currentUser (identity; PII stays out of the repo)
     captures.jsonl     one line per captured GraphQL exchange:
                        {"op","variables","data"}

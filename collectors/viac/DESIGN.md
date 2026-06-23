@@ -178,7 +178,7 @@ code would need to change beyond the underlying HTTP client.
 ## 5. Bronze layout
 
 ```
-<bronze-dir>/                          e.g. ~/wealthdb/viac/
+<bronze-dir>/                          e.g. $XDG_DATA_HOME/wealthdb/viac/
 ├── <YYYYMMDDTHHMMSSZ>/                one bronze dump per run
 │   ├── run.json                       manifest (timestamp, flags, doc counts)
 │   ├── customer.json                  /rest/web/customer/current/<N-N>

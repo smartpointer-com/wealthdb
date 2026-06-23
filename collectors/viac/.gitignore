@@ -50,7 +50,7 @@ core.*
 
 # Never commit credentials or downloaded portfolio data. The
 # default mount layout puts these on the host under ~/.secrets/
-# and ~/wealthdb/viac/ respectively, but a stray in-tree drop
+# and $XDG_DATA_HOME/wealthdb/viac/ respectively, but a stray in-tree drop
 # must still be blocked.
 *.pem
 *.key

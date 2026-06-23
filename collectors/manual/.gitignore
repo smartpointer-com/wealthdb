@@ -43,7 +43,7 @@ Thumbs.db
 # The REAL hand-maintained CSVs are the most sensitive artefact this
 # collector touches — they name real properties, private companies, CLA
 # counterparties, ownership stakes, and exact valuations/amounts. They live
-# OUTSIDE the repo under ~/wealthdb/manual/. Block any stray in-tree drop:
+# OUTSIDE the repo under $XDG_DATA_HOME/wealthdb/manual/. Block any stray in-tree drop:
 # ignore CSVs anywhere EXCEPT the committed synthetic examples/ and any
 # test fixtures (which must be synthetic placeholders only).
 *.csv

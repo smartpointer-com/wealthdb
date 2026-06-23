@@ -15,14 +15,14 @@ the other collectors live by. Most of root [CLAUDE.md](../../CLAUDE.md) §1–§
 not apply here: there is no session and no credential.
 
 The only step is `load`: it reads two hand-maintained CSVs from
-`~/wealthdb/manual/`, validates them, and rebuilds a SQLite silver. See
+`$XDG_DATA_HOME/wealthdb/manual/`, validates them, and rebuilds a SQLite silver. See
 [DESIGN.md](DESIGN.md).
 
 ## 1. The bronze CSVs are pure PII — never copy them into the repo
 
 Root [CLAUDE.md](../../CLAUDE.md) §4 (no private information in source)
 applies in **full force** and is the single most important rule for this
-collector. The user's real CSVs in `~/wealthdb/manual/` name:
+collector. The real CSVs in `$XDG_DATA_HOME/wealthdb/manual/` name:
 
 - **Real properties** — addresses, cities, the fact of ownership.
 - **Private companies, funds & vehicles** — the names of held companies (equity and lending), the venture/PE funds
@@ -36,7 +36,7 @@ collector. The user's real CSVs in `~/wealthdb/manual/` name:
 
 None of that may ever reach a tracked file — not source, not comments, not
 commit messages, not test fixtures, not "sample" CSVs. The real CSVs live
-**only** under `~/wealthdb/manual/` (outside the repo) and the silver
+**only** under `$XDG_DATA_HOME/wealthdb/manual/` (outside the repo) and the silver
 `manual.db` SQLite derived from them stays there too; both are git-ignored as a
 backstop, but the primary rule is **don't author repo content from real
 holdings**.

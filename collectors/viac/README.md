@@ -85,7 +85,7 @@ cd collectors/viac
 ## Run
 
 The repo ships a thin `viac` shell wrapper around `docker
-run` that bind-mounts `~/.secrets` and `~/wealthdb/viac` into the
+run` that bind-mounts `~/.secrets` and `$XDG_DATA_HOME/wealthdb/viac` into the
 container per the shared collector convention — see
 [collectors/README.md](../README.md). Inside the container that
 puts `viac.env` (credentials) and `viac-state.json` (cookies +
@@ -130,7 +130,7 @@ for the shared env-file rules.
 ## Bronze layout
 
 ```
-<bronze-dir>/                            e.g. ~/wealthdb/viac/
+<bronze-dir>/                            e.g. $XDG_DATA_HOME/wealthdb/viac/
 ├── 20260527T150000Z/                    one bronze dump per run
 │   ├── run.json                         manifest: timestamp, flags, document counts
 │   ├── customer.json                    /rest/web/customer/current/<N-N>

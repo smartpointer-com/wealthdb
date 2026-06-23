@@ -12,9 +12,25 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def default_data_root() -> Path:
+    """The default wealthdb data root for host-side collectors when no
+    --data-dir / --dest / --silver-db flag is given: the XDG data dir
+    ($XDG_DATA_HOME/wealthdb, falling back to ~/.local/share/wealthdb per
+    the XDG Base Directory spec). The wrappers normally pass an explicit
+    path (which also honours WEALTHDB_DATA_ROOT); this is the bare
+    fallback for direct script invocation. Append the collector name,
+    e.g. ``cli.default_data_root() / "schwab-api"``.
+    """
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "wealthdb"
 
 # The convention for "fetch the recent N days" everywhere. 90 days is
 # narrow enough that a forgotten flag doesn't silently trigger a

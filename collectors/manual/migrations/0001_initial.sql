@@ -3,7 +3,7 @@
 --
 -- The "manual" collector has NO source to fetch from — the input is
 -- hand-maintained. Bronze is two hand-maintained CSVs in
--- ~/wealthdb/manual/ (positions.csv, valuations.csv); there is no login /
+-- $XDG_DATA_HOME/wealthdb/manual/ (positions.csv, valuations.csv); there is no login /
 -- download step. load.py validates those CSVs and rebuilds this silver from
 -- them, which the gold adapter reads.
 --

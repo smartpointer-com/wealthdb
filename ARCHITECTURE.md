@@ -32,7 +32,8 @@ one owner and a stable contract with the next.
 
 - **Bronze** — exactly what the source returned, untouched. Owned
   by each collector's `download.py`. Lands under
-  `~/wealthdb/<source>/<UTC-timestamp>/`.
+  `$XDG_DATA_HOME/wealthdb/<source>/<UTC-timestamp>/` (XDG data dir;
+  `$XDG_DATA_HOME` defaults to `~/.local/share` when unset).
 - **Silver** — bronze parsed into a source-shaped SQLite, owned by
   each collector's `load.py`. One DB per source. JSON payloads
   carry through anything not promoted to a column, so source-format

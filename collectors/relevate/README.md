@@ -82,7 +82,7 @@ conventions.
 #    per-document PDFs).
 ./relevate download
 
-# 6. Parse bronze into silver SQLite (~/wealthdb/relevate/relevate.db).
+# 6. Parse bronze into silver SQLite ($XDG_DATA_HOME/wealthdb/relevate/relevate.db).
 #    Idempotent: re-running skips dumps already loaded.
 ./relevate load
 ```
@@ -142,7 +142,7 @@ $HOME/.secrets/                       # chmod 700
 ├── relevate.env                      # chmod 600; export RELEVATE_LOGIN=...
 └── relevate-state.json               # chmod 600; Airlock cookies after login
 
-$HOME/wealthdb/relevate/              # bronze + (future) silver
+$XDG_DATA_HOME/wealthdb/relevate/              # bronze + (future) silver
 ├── <UTC-ts>/                         # one bronze dir per `download` run
 │   ├── run.json                      # manifest
 │   ├── accounts/                     # master listing + ancillaries

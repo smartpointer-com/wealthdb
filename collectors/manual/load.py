@@ -2,8 +2,7 @@
 """manual — load hand-maintained private-holding CSVs into a SQLite silver.
 
 The "manual" collector is the odd one out in wealthdb: there is **no source
-to fetch from**. The user is the source of truth. Bronze is two CSV files the
-user maintains by hand in ~/wealthdb/manual/ for private holdings that have no
+to fetch from**. There is no source to fetch. Bronze is two hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
 bank or portal behind them — real estate, direct private-company equity,
 convertible notes, fund LP interests, single-deal SPVs, and other illiquid
 positions (e.g. a receivable). The position `kind` is the
@@ -31,7 +30,7 @@ rebuild on every load is the simplest correct model: same CSVs in => same
 silver out. See DESIGN.md for the schema + the gold mapping.
 
 PII: the real CSVs name real properties, companies, and amounts and
-live OUTSIDE the repo under ~/wealthdb/manual/. Only synthetic placeholders
+live OUTSIDE the repo under $XDG_DATA_HOME/wealthdb/manual/. Only synthetic placeholders
 (see examples/) ever belong in tracked files.
 """
 from __future__ import annotations
@@ -55,12 +54,12 @@ log = logging.getLogger("manual.load")
 HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
-# Default data layout: ~/wealthdb/manual/{positions,valuations,transactions}.csv
+# Default data layout: $XDG_DATA_HOME/wealthdb/manual/{positions,valuations,transactions}.csv
 # with the silver DB (manual.db) alongside them. Both paths are overridable,
 # in precedence order: CLI flag > env var > default.
 ENV_BRONZE_DIR = "MANUAL_BRONZE_DIR"
 ENV_SILVER_DB = "MANUAL_SILVER_DB"
-DEFAULT_BRONZE_DIR = Path.home() / "wealthdb" / "manual"
+DEFAULT_BRONZE_DIR = cli.default_data_root() / "manual"
 SILVER_DB_NAME = "manual.db"
 
 

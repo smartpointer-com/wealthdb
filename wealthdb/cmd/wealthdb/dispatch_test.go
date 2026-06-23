@@ -651,7 +651,7 @@ func TestConfigWizardWritesFile(t *testing.T) {
 	sdb.Close()
 
 	// Explicit gold_db path so the validator doesn't probe the
-	// host $HOME/wealthdb/ default (which may not exist inside
+	// host $XDG_DATA_HOME/wealthdb/ default (which may not exist inside
 	// the test sandbox).
 	goldPath := filepath.Join(dir, "gold.db")
 	stdin := strings.NewReader(strings.Join([]string{

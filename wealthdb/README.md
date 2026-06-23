@@ -69,7 +69,7 @@ cd wealthdb
 
 The `config` wizard walks you through:
 
-1. Gold DB path (default `$HOME/wealthdb/wealthdb.db`).
+1. Gold DB path (default `$XDG_DATA_HOME/wealthdb/wealthdb.db`).
 2. Default output currency (default `USD`; can be overridden per
    query with `-x`).
 3. One or more silver sources — for each: a short id (used by
@@ -82,7 +82,7 @@ with `-c <path>`).
 ## Build and run
 
 All commands run inside a single Docker image; the host wrapper
-bind-mounts `$HOME/.config/wealthdb.cfg` and `$HOME/wealthdb/` at
+bind-mounts `$HOME/.config/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/` at
 identical paths inside the container so `~`/`$HOME` resolution
 matches both sides.
 

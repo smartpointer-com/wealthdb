@@ -65,7 +65,7 @@ empty configs.`)
 	}
 
 	// Ensure parent dir exists before we ask the user about
-	// gold-DB defaults that may rely on $HOME/wealthdb/ already.
+	// gold-DB defaults that may rely on the XDG data dir already.
 	configDir := filepath.Dir(g.ConfigPath)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("create config dir %q: %w", configDir, err))
@@ -93,12 +93,18 @@ empty configs.`)
 	return nil
 }
 
-// defaultGoldDBPath returns $HOME/wealthdb/wealthdb.db. Same
-// shape as the README / docs prescribe.
+// defaultGoldDBPath returns the gold DB under the XDG data dir
+// ($XDG_DATA_HOME/wealthdb/wealthdb.db, falling back to
+// ~/.local/share/wealthdb/wealthdb.db). Same shape as the README /
+// docs prescribe. Returns a resolved path so it needs no further
+// env expansion when written into the config.
 func defaultGoldDBPath() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "wealthdb", "wealthdb.db")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "$HOME/wealthdb/wealthdb.db"
+		return "$HOME/.local/share/wealthdb/wealthdb.db"
 	}
-	return filepath.Join(home, "wealthdb", "wealthdb.db")
+	return filepath.Join(home, ".local", "share", "wealthdb", "wealthdb.db")
 }

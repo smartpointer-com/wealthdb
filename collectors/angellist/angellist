@@ -66,7 +66,7 @@ Subcommands:
                       and the commitments — plus download the tax documents
                       (K-1 CSV/PDF, financial statements). Writes a
                       UTC-timestamped subdir + run.json manifest under
-                      ~/wealthdb/angellist/. --dry-run walks the
+                      $XDG_DATA_HOME/wealthdb/angellist/. --dry-run walks the
                       navigation without writing bronze or downloading docs.
   load [args...]      Ingest bronze + tax docs into the SQLite silver:
                       offerings + position_snapshots, vehicles,

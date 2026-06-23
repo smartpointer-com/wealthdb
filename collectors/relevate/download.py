@@ -821,7 +821,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=(
             "Parent dir for the per-run timestamped bronze dir "
             "(default: %(default)s, mounted from "
-            "~/wealthdb/relevate)."
+            "$XDG_DATA_HOME/wealthdb/relevate)."
         ),
     )
     p.add_argument(

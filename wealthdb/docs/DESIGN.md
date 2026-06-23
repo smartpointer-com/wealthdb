@@ -225,7 +225,7 @@ Interactive first-time setup wizard. Writes the config file at
 `-c` (default `$HOME/.config/wealthdb.cfg`) by walking the user
 through:
 
-1. **Gold DB path** — default `$HOME/wealthdb/wealthdb.db`. The wizard
+1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`. The wizard
    confirms the parent directory exists (offering to `mkdir -p`)
    but does **not** create the gold DB itself — that's `wealthdb
    init`'s job.
@@ -233,7 +233,7 @@ through:
    validated against a built-in list.
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
    `kind` (one of `schwab`, `ubs`, `swissquote`, `auto`), and
-   `path` (default `$HOME/wealthdb/<id>/<id>.db`). The wizard opens
+   `path` (default `$XDG_DATA_HOME/wealthdb/<id>/<id>.db`). The wizard opens
    the silver DB read-only, verifies it parses as SQLite and has
    a `dump_runs` table, and — for `kind != "auto"` — verifies the
    declared kind matches what auto-detection would have inferred
@@ -400,7 +400,7 @@ Conventional host layout, produced by `wealthdb config`'s defaults:
 
 ```
 $HOME/.config/wealthdb.cfg             config file (this file)
-$HOME/wealthdb/                        all wealthdb data
+$XDG_DATA_HOME/wealthdb/                        all wealthdb data
 ├── wealthdb.db                        gold DuckDB
 ├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
 ├── ubs-web/ubs-web.db                UBS web silver SQLite + bronze dirs
@@ -412,7 +412,7 @@ Example config file:
 
 ```json
 {
-    "gold_db":          "~/wealthdb/wealthdb.db",
+    "gold_db":          "$XDG_DATA_HOME/wealthdb/wealthdb.db",
     "default_currency": "USD",
     "silver_sources": [
         {
@@ -420,8 +420,8 @@ Example config file:
             "kind": "ubs",
             "fx_priority": 0,
             "subsources": [
-                {"kind": "ubs-web", "path": "~/wealthdb/ubs-web/ubs-web.db"},
-                {"kind": "ubs-psn", "path": "~/wealthdb/ubs-psn/ubs-psn.db"}
+                {"kind": "ubs-web", "path": "$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db"},
+                {"kind": "ubs-psn", "path": "$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db"}
             ],
             "relationships": [
                 {"label": "Main", "web_id": "<web banking_relationship_id>", "psn_id": "SFTPCHxx"}
@@ -430,17 +430,17 @@ Example config file:
         {
             "id":   "schwab-retail",
             "kind": "schwab",
-            "path": "~/wealthdb/schwab-api/schwab-api.db"
+            "path": "$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db"
         },
         {
             "id":   "swissquote-1",
             "kind": "swissquote",
-            "path": "~/wealthdb/swissquote/swissquote.db"
+            "path": "$XDG_DATA_HOME/wealthdb/swissquote/swissquote.db"
         },
         {
             "id":   "fred",
             "kind": "fred",
-            "path": "~/wealthdb/fred/fred.db",
+            "path": "$XDG_DATA_HOME/wealthdb/fred/fred.db",
             "fx_priority": 1
         }
     ],
@@ -1552,13 +1552,13 @@ rejected for this reason.
 ### 12.2 Volume mounts
 
 The host wrapper mounts host paths to the **same paths** inside the
-container — so `$HOME/wealthdb/wealthdb.db` resolves identically on
+container — so `$XDG_DATA_HOME/wealthdb/wealthdb.db` resolves identically on
 both sides and no path translation is needed. Two specific bind
 mounts:
 
 ```
 $HOME/.config/wealthdb.cfg → $HOME/.config/wealthdb.cfg     config file
-$HOME/wealthdb/            → $HOME/wealthdb/                gold + silver data tree
+$XDG_DATA_HOME/wealthdb/            → $XDG_DATA_HOME/wealthdb/                gold + silver data tree
 ```
 
 The container also sets `HOME` to match the host's so that `~`
@@ -1571,13 +1571,13 @@ The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 `wealthdb reset`):
 
 ```sh
-mkdir -p "$HOME/.config" "$HOME/wealthdb"
+mkdir -p "$HOME/.config" "$XDG_DATA_HOME/wealthdb"
 [ -f "$HOME/.config/wealthdb.cfg" ] || : > "$HOME/.config/wealthdb.cfg"
 docker run --rm -it \
     -e HOME="$HOME" \
     -u "$(id -u):$(id -g)" \
     -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg" \
-    -v "$HOME/wealthdb:$HOME/wealthdb" \
+    -v "$XDG_DATA_HOME/wealthdb:$XDG_DATA_HOME/wealthdb" \
     wealthdb:latest \
     "$@"
 ```
@@ -1592,12 +1592,12 @@ docker run --rm \
     -e HOME="$HOME" \
     -u "$(id -u):$(id -g)" \
     -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg:ro" \
-    -v "/mnt/shared/wealthdb:$HOME/wealthdb:ro" \
+    -v "/mnt/shared/wealthdb:$XDG_DATA_HOME/wealthdb:ro" \
     wealthdb:latest \
     "$@"
 ```
 
-The `:ro` flag on the `$HOME/wealthdb` mount makes the gold DB file
+The `:ro` flag on the `$XDG_DATA_HOME/wealthdb` mount makes the gold DB file
 unwriteable inside the container; `wealthdb`'s mode detection (§4.10)
 picks this up and refuses (RW) subcommands with a clear message.
 

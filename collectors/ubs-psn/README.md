@@ -98,7 +98,7 @@ downloaded nothing, the timestamped directory is removed.
 | `--host` | `sftp-keyport-ch.ubs.com` | UBS SFTP hostname or IP |
 | `--port` | `26701` | UBS SFTP port |
 | `--client-id` | _(required)_ | UBS customer / SFTP login ID |
-| `--dest` | `~/wealthdb/ubs-psn` | Local destination directory |
+| `--dest` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Local destination directory |
 | `--key` | `~/.secrets/ubs_psn_key` | Private RSA key path |
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
 | `--dry-run` | off | Skip downloads |
@@ -193,7 +193,7 @@ Identifier canonicalisation (since migration 0002):
 ### Usage
 
 ```sh
-./ubs-psn load                      # defaults under ~/wealthdb/ubs-psn
+./ubs-psn load                      # defaults under $XDG_DATA_HOME/wealthdb/ubs-psn
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match
@@ -204,8 +204,8 @@ not already recorded in `dump_runs`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--silver-db` | `~/wealthdb/ubs-psn/ubs-psn.db` | Path to the silver SQLite database. Created if missing. |
-| `--bronze-dir` | `~/wealthdb/ubs-psn` | Directory containing bronze dump subdirectories. |
+| `--silver-db` | `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` | Path to the silver SQLite database. Created if missing. |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Directory containing bronze dump subdirectories. |
 | `--relationship-id` | `SFTPCH01` | UBS Server ID for the banking relationship the bronze dumps belong to. Override to load a different relationship into the same DB. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
