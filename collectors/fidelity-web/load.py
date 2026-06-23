@@ -109,6 +109,30 @@ def parse_args(argv):
                    default=cli.default_data_root() / "fidelity-web",
                    help="Directory containing UTC-timestamped bronze dump dirs "
                         "(default: %(default)s).")
+    p.add_argument(
+        "--supplied-statements-dir", type=Path, default=None,
+        help=("Optional directory of user-supplied trust statement "
+              "PDFs (filenames `<trust-name> <M>.<YY> Statement.PDF`; "
+              "Fidelity's naming convention for legacy monthly "
+              "statements). When set, monthly statements are parsed "
+              "via pdf_parsers_supplied and their per-account holdings "
+              "land in `historical_position_snapshots`. Trust "
+              "accounts are outside the live web-scraper's reach, "
+              "so this is the only path to populate their pre-"
+              "toolkit-era snapshots. Year-end statements in the "
+              "same directory are skipped (redundant with the "
+              "December monthly statement)."),
+    )
+    p.add_argument(
+        "--supplied-statement-signature", type=str, default=None,
+        help=("Optional substring that must appear on a supplied "
+              "statement's page-1 text (typically the account "
+              "registration) for the file to be ingested. Defends "
+              "against PDFs that happen to match the filename "
+              "pattern but belong to an unrelated account (misfiled "
+              "or sent in error). Mismatched "
+              "files are logged + skipped."),
+    )
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     cli.add_force_arg(p)
@@ -144,6 +168,10 @@ def main(argv=None):
                 log.exception("load of %s failed; rolled back", dump.name)
         log.info("loaded=%d skipped=%d total=%d",
                  loaded, skipped, len(dumps))
+        _load_trust_statements_oneshot(
+            conn, args.supplied_statements_dir, schema_version,
+            signature=args.supplied_statement_signature,
+        )
         validate(conn)
     finally:
         conn.close()
@@ -768,13 +796,23 @@ def _ingest_document(conn, snapshot_at, path, classification):
 # ============================================================
 #
 # Fidelity's positions UI is point-in-time; the only available
-# source for pre-toolkit-era snapshots is the quarterly/annual
-# 529-statement PDF archive (DESIGN.md §4.5).
+# source for pre-toolkit-era snapshots is the statement PDF
+# archive. Two distinct PDF layouts feed two distinct loader
+# paths into the same `historical_position_snapshots` table:
 #
-# The text-level parsing happens in pdf_parsers.py. The wiring
-# below: collect the in-scope PDFs from `documents`, parse them
-# in a process pool (PDF text extraction is CPU-bound), insert
-# the resulting rows serially under the existing transaction.
+#   1. 529 statements — quarterly + year-end PDFs that download.py
+#      scrapes into `<dump>/documents/Statement<MMDDYYYY>.pdf`.
+#      Text-level parsing in `pdf_parsers.py`. Runs once per dump.
+#
+#   2. Trust statements — monthly PDFs obtained directly
+#      from Fidelity (the web scraper doesn't surface them; see
+#      DESIGN.md §4.5). The user lays them in a directory passed
+#      via `--supplied-statements-dir`; load.py reads them once per
+#      run regardless of dump cadence. Text-level parsing in
+#      `pdf_parsers_supplied.py`.
+#
+# Both paths use a `ProcessPoolExecutor` since PDF text extraction
+# is CPU-bound, then insert rows serially.
 
 def _parse_statement_pdf_worker(path):
     """ProcessPoolExecutor target: parse one PDF and return its
@@ -907,6 +945,253 @@ def _crosswalk_description_to_instrument(conn, account_external_id,
     if len(hits) == 1:
         return hits[0]
     return None
+
+
+# ------------------------------------------------------------
+# Trust statements (legacy monthly statements)
+# ------------------------------------------------------------
+
+# Monthly trust statements follow Fidelity's legacy naming
+# convention: ``<TrustName> <M>.<YY> Statement.PDF`` (e.g.
+# ``Example 1.24 Statement.PDF`` for January 2024). Year-end
+# statements in the same directory carry ``Year End`` between the
+# trust name and ``Statement.PDF`` (e.g. ``Example 2024 Year End
+# Statement.PDF``) — those use a different per-asset-class layout
+# the parser doesn't handle yet and are excluded here (the
+# December monthly statement covers the same period end).
+_TRUST_STATEMENT_FILENAME_RE = re.compile(
+    r"^[A-Za-z][A-Za-z\s]*?\s+\d{1,2}\.\d{2}\s+Statement\.pdf$",
+    re.IGNORECASE,
+)
+
+
+def _parse_supplied_statement_pdf_worker(args):
+    """ProcessPoolExecutor target: parse one trust PDF and return
+    its parsed dict, or ``{"_error": "<repr>"}`` so the parent can
+    log and continue. Module-level so it pickles under spawn.
+
+    ``args`` is a ``(path, expected_signature)`` tuple — the pool
+    only takes a single argument per call."""
+    path, expected_signature = args
+    try:
+        import pdf_parsers_supplied
+        return pdf_parsers_supplied.parse_supplied_statement_pdf(
+            path, expected_signature=expected_signature,
+        )
+    except Exception as e:
+        return {"_error": repr(e), "path": str(path)}
+
+
+def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
+                                    signature=None):
+    """Load every monthly trust statement from ``trust_dir`` into
+    ``historical_position_snapshots``. No-op when ``trust_dir`` is
+    None or empty. Idempotent — INSERT OR REPLACE keyed on
+    ``(as_of_date, account_external_id, description)`` makes
+    re-runs converge.
+
+    Wrapped in its own transaction so a parser failure on one PDF
+    doesn't half-commit and leave silver in an inconsistent state.
+    After the inserts land, synthesises a placeholder row in
+    ``accounts`` for any trust account that historical statements
+    mention but the live scraper hasn't seen; without that row, gold's
+    historical-account projection JOIN would drop those positions
+    on the floor."""
+    if trust_dir is None:
+        return
+    if not trust_dir.is_dir():
+        log.info("supplied-statements: %s not a directory; skipping", trust_dir)
+        return
+    if schema_version < 4:
+        log.info(
+            "supplied-statements: silver schema=%d < 4 (no historical "
+            "table); skipping", schema_version,
+        )
+        return
+    candidates = [
+        p for p in sorted(trust_dir.iterdir())
+        if p.is_file() and _TRUST_STATEMENT_FILENAME_RE.match(p.name)
+    ]
+    if not candidates:
+        log.info(
+            "supplied-statements: no monthly statement PDFs in %s",
+            trust_dir,
+        )
+        return
+    worker_count = max(1, min(len(candidates), os.cpu_count() or 1))
+    log.info(
+        "supplied-statements: parsing %d PDF(s) across %d worker(s)",
+        len(candidates), worker_count,
+    )
+    pool_args = [(str(p), signature) for p in candidates]
+    if worker_count == 1:
+        parsed = [_parse_supplied_statement_pdf_worker(a) for a in pool_args]
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count) as pool:
+            parsed = list(pool.map(_parse_supplied_statement_pdf_worker, pool_args))
+    try:
+        conn.execute("BEGIN")
+        inserted = skipped = 0
+        for path, result in zip(candidates, parsed):
+            err = result.get("_error")
+            if err == "signature-mismatch":
+                log.warning(
+                    "supplied-statements: signature %r not found in %s; "
+                    "skipping (likely a misfiled PDF)",
+                    result.get("expected_signature"), path.name,
+                )
+                skipped += 1
+                continue
+            if err:
+                log.warning(
+                    "supplied-statements: parse failed for %s: %s",
+                    path.name, err,
+                )
+                skipped += 1
+                continue
+            inserted += _insert_trust_historical_rows(conn, path, result)
+        synth = _synthesize_missing_account_masters(conn)
+        conn.commit()
+        log.info(
+            "supplied-statements: %d holdings rows inserted, %d PDF(s) "
+            "skipped, %d account master row(s) synthesised",
+            inserted, skipped, synth,
+        )
+    except Exception:
+        conn.rollback()
+        log.exception("supplied-statements load failed; rolled back")
+
+
+def _insert_trust_historical_rows(conn, pdf_path, parsed):
+    """Insert one ``historical_position_snapshots`` row per holding
+    in the parsed trust statement. The trust parser surfaces the
+    ticker (or CUSIP) directly as ``instrument_key`` so no
+    cross-walk against live ``positions`` is needed."""
+    period_end = parsed.get("period_end")
+    if not period_end:
+        log.debug(
+            "supplied-statements: no period in %s; skipping", pdf_path.name,
+        )
+        return 0
+    as_of = ts_from_iso(period_end)
+    if as_of is None:
+        return 0
+    sha = bronze.sha256_file(pdf_path)[0]
+    inserted = 0
+    for account in parsed.get("accounts", []):
+        aid = account.get("account_external_id")
+        if not aid:
+            continue
+        for holding in account.get("holdings", []):
+            desc = (holding.get("description") or "").strip()
+            if not desc:
+                continue
+            mv = holding.get("market_value")
+            total = parsed.get("portfolio_total")  # currently unused
+            pct = None
+            if mv is not None and total:
+                pct = mv / total
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO historical_position_snapshots ("
+                    "as_of_date, account_external_id, description, "
+                    "instrument_key, quantity, price, market_value, "
+                    "percent_of_total, currency, source_sha256, payload"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        as_of, aid, desc,
+                        holding.get("instrument_key"),
+                        holding.get("quantity"),
+                        holding.get("price"),
+                        mv, pct, "USD", sha,
+                        normalize_payload(holding),
+                    ),
+                )
+                inserted += 1
+            except sqlite3.IntegrityError as e:
+                log.debug(
+                    "supplied-statements: insert skipped for %s @ %s: %s",
+                    aid, period_end, e,
+                )
+    return inserted
+
+
+# Default portfolio + management classification for an account
+# synthesised from supplied historical statements. The defaults are
+# the `Authorized` group's: `_load_master` maps that selector label
+# to portfolios.kind = 'trust_managed', and the gold adapter
+# promotes the kind to TaxWrapperTrustNonGrantor +
+# ManagementStyleDiscretionary. The synthesised row pre-fills the
+# same shape, so an account that no live download returns still
+# rolls up under that portfolio and wrapper.
+_TRUST_SYNTHETIC_PORTFOLIO = "Authorized"
+_TRUST_SYNTHETIC_KIND = "trust_managed"
+_TRUST_SYNTHETIC_MANAGEMENT = "discretionary"
+
+
+def _synthesize_missing_account_masters(conn):
+    """For every ``account_external_id`` mentioned in
+    ``historical_position_snapshots`` but absent from
+    ``accounts``, insert one synthetic accounts row at the
+    account's latest historical ``as_of_date``. Gold's
+    `appendHistoricalAccounts` joins on account_external_id alone
+    (taking MAX(snapshot_at) per id), so a single row is enough
+    for the master projection to fire.
+
+    Returns the number of synthetic rows inserted. Idempotent —
+    INSERT OR IGNORE means a re-run after the live download
+    finally observes the account is a no-op (the live row's
+    snapshot_at outranks the synthetic one, and gold uses MAX)."""
+    cur = conn.execute("""
+SELECT h.account_external_id, MAX(h.as_of_date)
+  FROM historical_position_snapshots h
+ WHERE NOT EXISTS (
+       SELECT 1 FROM accounts a
+        WHERE a.account_external_id = h.account_external_id
+ )
+ GROUP BY h.account_external_id
+""")
+    missing = cur.fetchall()
+    if not missing:
+        return 0
+    payload = normalize_payload({"source": "trust-statement-synthetic"})
+    inserted = 0
+    portfolio_payload = normalize_payload({
+        "source": "trust-statement-synthetic",
+    })
+    for aid, latest_as_of in missing:
+        # Portfolio master too: the historical projection joins
+        # accounts → portfolios on (snapshot_at, portfolio_external_id),
+        # so the synthetic accounts row needs a same-snapshot_at
+        # portfolio companion. INSERT OR IGNORE so we don't trample
+        # a real portfolio row that the live loader already wrote.
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO portfolios ("
+                "snapshot_at, portfolio_external_id, kind, payload"
+                ") VALUES (?, ?, ?, ?)",
+                (latest_as_of, _TRUST_SYNTHETIC_PORTFOLIO,
+                 _TRUST_SYNTHETIC_KIND, portfolio_payload),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO accounts ("
+                "snapshot_at, account_external_id, portfolio_external_id, "
+                "nickname, payload, management_style"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (latest_as_of, aid, _TRUST_SYNTHETIC_PORTFOLIO,
+                 None, payload, _TRUST_SYNTHETIC_MANAGEMENT),
+            )
+            inserted += 1
+            log.info(
+                "supplied-statements: synthesised accounts master for "
+                "%s @ %s (absent from every live download)",
+                aid, latest_as_of,
+            )
+        except sqlite3.IntegrityError as e:
+            log.debug(
+                "supplied-statements: synthesise skipped for %s: %s", aid, e,
+            )
+    return inserted
 
 
 # ============================================================

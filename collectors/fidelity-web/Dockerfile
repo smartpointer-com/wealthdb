@@ -19,7 +19,7 @@ RUN pip install -r requirements.txt
 # incomplete. download.py is the one-shot CLI (login → walk →
 # logout); load.py is the silver loader (also reachable host-side
 # via the wrapper).
-COPY download.py load.py pdf_parsers.py /app/
+COPY download.py load.py pdf_parsers.py pdf_parsers_supplied.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
