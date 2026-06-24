@@ -52,6 +52,7 @@ _load_config() {
     ENABLED="${WEALTHDB_WEB_ENABLED:-0}"
     PORT="${WEALTHDB_WEB_PORT:-3000}"
     GOLD_DB="${WEALTHDB_GOLD_DB:-}"
+    DEFAULT_CCY="${WEALTHDB_DEFAULT_CURRENCY:-USD}"
 }
 
 _require_docker() {
@@ -224,9 +225,10 @@ _provision() {
         (umask 077; printf '%s\n' "$pw" > "$pwfile")
         pwhint="generated, saved to $pwfile"
     fi
-    echo "web: provisioning Metabase (admin + gold database)…" >&2
+    echo "web: provisioning Metabase (admin + gold database + report models)…" >&2
     if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
-         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold; then
+         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
+         --default-currency "${DEFAULT_CCY:-USD}"; then
         PROV_LOGIN="log in as $email (password $pwhint)"
     else
         PROV_LOGIN="auto-provision incomplete — finish setup in the browser"
@@ -243,8 +245,10 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
       ssh -L $PORT:127.0.0.1:$PORT <this-host>
       open http://127.0.0.1:$PORT/
 
-  The gold DuckDB database is pre-added as a read-only snapshot. Run
-  'wealthdb web refresh' after each 'wealthdb load' to update the data.
+  The gold DuckDB database is pre-added as a read-only snapshot, with
+  report models mirroring the global / portfolios / accounts /
+  positions / transactions commands. Run 'wealthdb web refresh' after
+  each 'wealthdb load' to update the data.
 EOF
 }
 

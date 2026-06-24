@@ -39,6 +39,10 @@ func cmdWebConfig(_ context.Context, g globalFlags, _ []string, _ io.Reader, std
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_ENABLED=%s\n", enabled)
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_PORT=%d\n", port)
 	fmt.Fprintf(stdout, "WEALTHDB_GOLD_DB=%s\n", shellSingleQuote(cfg.GoldDB))
+	// The output currency the pre-created Metabase report models bind
+	// (provision.py's report_x(..., '<CCY>')), so models default to the
+	// same currency as the CLI's default_currency.
+	fmt.Fprintf(stdout, "WEALTHDB_DEFAULT_CURRENCY=%s\n", shellSingleQuote(cfg.DefaultCurrency))
 	return nil
 }
 

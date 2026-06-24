@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--password", required=True)
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
+    ap.add_argument("--default-currency", default="USD",
+                    help="output currency the report models bind (report_x(..., CCY))")
     a = ap.parse_args()
 
     if not wait_health(a.base):
@@ -87,21 +89,81 @@ def main():
         print(f"provision: login failed: {body.get('message')}", file=sys.stderr)
         return 1
 
+    db_id = None
     _, dbs = req(a.base, "/api/database", session=sid)
     for d in (dbs.get("data") or []):
         if d.get("name") == a.db_name and d.get("engine") == "duckdb":
+            db_id = d.get("id")
             print(f"provision: database '{a.db_name}' already present")
-            return 0
+            break
 
-    st, body = req(a.base, "/api/database", "POST", {
-        "engine": "duckdb", "name": a.db_name,
-        "details": {"database_file": a.gold_path, "read_only": True},
-    }, session=sid)
-    if st in (200, 201) and body.get("id"):
-        print(f"provision: added DuckDB database '{a.db_name}' -> {a.gold_path}")
-        return 0
-    print(f"provision: failed to add database ({st}): {body.get('message')}", file=sys.stderr)
-    return 1
+    if db_id is None:
+        st, body = req(a.base, "/api/database", "POST", {
+            "engine": "duckdb", "name": a.db_name,
+            "details": {"database_file": a.gold_path, "read_only": True},
+        }, session=sid)
+        if st in (200, 201) and body.get("id"):
+            db_id = body["id"]
+            print(f"provision: added DuckDB database '{a.db_name}' -> {a.gold_path}")
+        else:
+            print(f"provision: failed to add database ({st}): {body.get('message')}", file=sys.stderr)
+            return 1
+
+    return ensure_models(a.base, sid, db_id, a.default_currency)
+
+
+# MAX_BIGINT as the as-of epoch means "latest snapshot" (the macros'
+# current mode), so the models stay current without re-provisioning;
+# report_transactions spans all of time (filter in Metabase).
+MAX_BIGINT = 9223372036854775807
+
+
+def report_queries(ccy):
+    """name -> native SQL, one per `wealthdb` report command. The
+    report_* DuckDB macros (internal/gold/migrations/0021) are the
+    single source of truth, so each model returns exactly what its CLI
+    command prints for the same output currency."""
+    return {
+        "report_global":       f"SELECT * FROM report_global({MAX_BIGINT}, '{ccy}')",
+        "report_portfolios":   f"SELECT * FROM report_portfolios({MAX_BIGINT}, '{ccy}')",
+        "report_accounts":     f"SELECT * FROM report_accounts({MAX_BIGINT}, '{ccy}')",
+        "report_positions":    f"SELECT * FROM report_positions({MAX_BIGINT}, '{ccy}')",
+        "report_transactions": f"SELECT * FROM report_transactions(0, {MAX_BIGINT}, '{ccy}')",
+    }
+
+
+def ensure_models(base, sid, db_id, ccy):
+    """Create the 5 report models as native-query Metabase models,
+    idempotently (skip any whose name already exists). Content-free
+    shims over the macros — no source data is baked in."""
+    _, cards = req(base, "/api/card", session=sid)
+    existing = {c.get("name") for c in cards} if isinstance(cards, list) else set()
+    created = 0
+    for name, query in report_queries(ccy).items():
+        if name in existing:
+            continue
+        st, body = req(base, "/api/card", "POST", {
+            "name": name,
+            "type": "model",
+            "display": "table",
+            "visualization_settings": {},
+            "dataset_query": {
+                "type": "native",
+                "database": db_id,
+                "native": {"query": query, "template-tags": {}},
+            },
+        }, session=sid)
+        if st in (200, 201) and body.get("id"):
+            created += 1
+        else:
+            print(f"provision: failed to create model '{name}' ({st}): {body.get('message')}",
+                  file=sys.stderr)
+            return 1
+    if created:
+        print(f"provision: created {created} report model(s) in {ccy}")
+    else:
+        print("provision: report models already present")
+    return 0
 
 
 if __name__ == "__main__":

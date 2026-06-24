@@ -23,10 +23,17 @@ port-forward; auth is Metabase's own login.
 
 ## 3. No baked-in content; no secrets
 
-- Do **not** bake canned dashboards, saved questions, or a pre-seeded
-  data-source connection into the image or the repo. The user builds
-  those in the UI. Keeping the image content-free also keeps source
-  data out of git.
+- Do **not** bake canned dashboards, saved questions, or source data
+  into the image or the repo. The user builds dashboards in the UI;
+  keeping the image content-free also keeps source data out of git.
+- The **one allowed exception** is the 5 report models (`report_global`,
+  `report_portfolios`, `report_accounts`, `report_positions`,
+  `report_transactions`) that `provision.py` creates at runtime over the
+  API. They are content-free shims — each is just `SELECT * FROM
+  report_x(…)` over the gold report macros (the same macros the CLI
+  commands use), so they bake in no data and track the CLI output by
+  construction. The gold DuckDB connection is likewise added at runtime
+  by `provision.py`, never baked into the image.
 - This component has **no credentials**. Don't add a `~/.secrets/*`
   mount or any secret env. Metabase manages its own admin account in
   its H2 metadata DB (under `$XDG_DATA_HOME`, outside the repo).
@@ -50,8 +57,10 @@ FROM positions` through the driver) and update the sha256.
 
 ## 5. Provisioning is API-based and idempotent
 
-`web/provision.py` skips the setup wizard by creating the admin + adding
-the gold DB over the OSS setup API. Keep it idempotent (safe on every
-start). Do **not** switch to Metabase's config-file provisioning — it's
-Pro/EE-only and a silent no-op on OSS. Never hard-code a password; take
-it from env or generate + save chmod 600.
+`web/provision.py` skips the setup wizard by creating the admin, adding
+the gold DB, and creating the 5 report models over the OSS setup API.
+Keep it idempotent (safe on every start — it skips the admin, the DB,
+and any model that already exists by name). Do **not** switch to
+Metabase's config-file provisioning — it's Pro/EE-only and a silent
+no-op on OSS. Never hard-code a password; take it from env or generate
++ save chmod 600.

@@ -40,8 +40,9 @@ the config file): `WEALTHDB_WEB_IMAGE`, `WEALTHDB_WEB_CONTAINER`,
 wealthdb web build         # or: make build-web
 
 # 2. Enable it in wealthdb.cfg (see above), then start it. This snapshots
-#    gold, runs Metabase, and AUTO-PROVISIONS it: creates the admin and
-#    pre-adds the gold database — no "tell us about your company" wizard.
+#    gold, runs Metabase, and AUTO-PROVISIONS it: creates the admin,
+#    pre-adds the gold database, and creates 5 report models mirroring
+#    the CLI commands — no "tell us about your company" wizard.
 wealthdb web start
 #    -> prints the admin login. A generated password is saved to
 #       $XDG_DATA_HOME/wealthdb/web/admin-password.txt (chmod 600);
@@ -74,7 +75,7 @@ wealthdb load -a && wealthdb web refresh
 ```
 web/
 ├── web            # host lifecycle script (start/stop/status/refresh/logs/build)
-├── provision.py   # idempotent Metabase setup: admin + pre-add gold DB (stdlib)
+├── provision.py   # idempotent Metabase setup: admin + gold DB + report models (stdlib)
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
 ├── test_web.sh    # unit tests for the lifecycle script (make test-web)
 ├── README.md      # this file
