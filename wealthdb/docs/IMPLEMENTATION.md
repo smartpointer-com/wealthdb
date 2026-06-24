@@ -56,7 +56,8 @@ wealthdb/
 │   │   │   ├── 0001_initial.sql
 │   │   │   ├── 0020_fx_views.sql       fx_norm / fx_daily currency-conversion views
 │   │   │   ├── 0021_report_macros.sql  report_* table macros (single source of truth)
-│   │   │   └── 0022_report_history_macros.sql  report_*_history (daily carry-forward)
+│   │   │   ├── 0022_report_history_macros.sql  report_*_history (daily carry-forward)
+│   │   │   └── 0023_fx_clamp_and_orphan_portfolios.sql  FX earliest-rate clamp + orphan-portfolio fix
 │   │   ├── schema.go                   //go:embed migrations/*.sql; Migrate()
 │   │   ├── open.go                     Open(path, mode); maps to DuckDB access_mode
 │   │   ├── writer.go                   inserts/upserts per canonical type, batched
@@ -305,7 +306,8 @@ Coverage:
 - FX conversion via the `fx_norm` / `fx_daily` views: flat nearest
   rate at or before the target day (no interpolation); direct and
   reciprocal both resolve from `fx_norm`; CHF-then-USD triangulation
-  for crosses; a missing rate yields NULL (empty cell, not an error).
+  for crosses; a day before a pair's history clamps to its earliest
+  rate (migration 0023 floor); only a pair with no rates yields NULL.
   Golden table-driven (target_day × pair × mode → expected rate).
 - Reset: FK delete order correct; subsequent re-load works with
   watermark reset to `-1`.

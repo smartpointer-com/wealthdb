@@ -172,7 +172,7 @@ Prints the consolidated portfolio as of a date.
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
 | `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
-| `--fx-mode` | `historic` | `historic` = convert using the flat nearest FX rate at or before each position's snapshot day (no interpolation; a day before the first known rate yields an empty value cell); `current` = convert using the latest FX rate available, regardless of snapshot time. |
+| `--fx-mode` | `historic` | `historic` = convert using the flat nearest FX rate at or before each position's snapshot day (no interpolation; a day before the first known rate clamps to the earliest available rate); `current` = convert using the latest FX rate available, regardless of snapshot time. |
 | `--include-cash` | on | Include cash balances as synthetic rows with `asset_class = 'cash'`. |
 
 Formats:
@@ -1429,10 +1429,12 @@ overriding that account source on the days they overlap.)
 **Conversion inside the report macros.** The macros convert a line by
 an **ASOF LEFT JOIN** to `fx_daily` that takes the most recent rate **at
 or before** the line's own day — flat, with no interpolation between
-rates and nothing before the first known rate. A day with no rate
-at-or-before yields `NULL` → an **empty value cell**, not an error and
-not a guess. The lookup is a `COALESCE` that tries, in order, the
-first leg that resolves winning:
+rates. A line whose day predates the pair's FX history **clamps to the
+earliest available rate** (migration 0023 adds a day-0 floor row per
+pair to `fx_daily`), so deep-history holdings still convert. Only a pair
+with no rate at all yields `NULL` → an **empty value cell**. The lookup
+is a `COALESCE` that tries, in order, the first leg that resolves
+winning:
 
 1. **identity** — when `from == to`, the amount passes through unchanged;
 2. **direct** — the `from → to` rate from `fx_daily`;
@@ -1453,8 +1455,9 @@ they differ only in the as-of passed to the macro:
 - **`current`** passes an as-of of `MAX(BIGINT)`, so the ASOF join
   always lands on each source's latest snapshot.
 
-There is **no linear interpolation** in either mode, and a missing
-rate never fails the command — it leaves the value cell empty.
+There is **no linear interpolation** in either mode. A line predating
+its pair's FX history clamps to the earliest available rate (above);
+only a pair with no rates at all leaves the value cell empty.
 
 **Cross-silver precedence.** Precedence is **data, not runtime state**.
 Migration `0019` added a `silver_sources.fx_priority` INTEGER column;
@@ -1465,6 +1468,24 @@ is still `silver_sources[].fx_priority` (lower = higher priority,
 absent = lowest, ties broken by config declaration order), flattened by
 `config.FxSourceOrder()`. `fx_norm` / `fx_daily` read the stamped
 column. See §13.2.
+
+### 10.7 History reports (time series)
+
+For charting value over time, each snapshot report has a
+`report_*_history(p_ccy)` variant (migration 0022): `report_global_history`,
+`report_accounts_history`, `report_portfolios_history`, `report_positions_history`.
+Each emits one row per entity per UTC day, from the first snapshot to today,
+with the value **carried forward** — on a day with no new snapshot the most
+recent snapshot's value is repeated. Positions and cash are carried
+independently (a source's two series can diverge), and the active snapshot is
+chosen by `snapshot_at` so multiple same-day dumps resolve to the latest. Each
+line is valued **once** at its own snapshot's FX day, then expanded onto a daily
+spine via an at-or-before ASOF join — so `history@today` equals the matching
+`report_*(MAX)` "latest" report and per-day compute stays cheap. Empty
+entity-days are omitted (they would be 0). `report_global_history` is
+`Σ report_accounts_history`. The Metabase models (`web/provision.py`) wrap these,
+casting the epoch `as_of_day` to TIMESTAMP and the VARCHAR money columns back to
+DECIMAL.
 
 ## 11. Repository layout
 

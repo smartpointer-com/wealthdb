@@ -123,10 +123,11 @@ func TestFxTriangulationMissingLeg(t *testing.T) {
 	}
 }
 
-// TestFxFlatAtOrBefore pins the no-interpolation contract: between two
-// dated rates the earlier one is carried forward flat (not blended),
-// and a date before the first rate yields nothing (no backward
-// extrapolation). Days 10 and 12 are distinct UTC-day buckets.
+// TestFxFlatAtOrBefore pins the no-interpolation + clamp contract: between
+// two dated rates the earlier is carried forward flat (not blended), and a
+// date before the first rate CLAMPS to the earliest available rate
+// (migration 0023's fx_daily floor) rather than failing — so deep-history
+// holdings still convert. Days 10 and 12 are distinct UTC-day buckets.
 func TestFxFlatAtOrBefore(t *testing.T) {
 	db, _ := openMigrated(t)
 	const day = int64(86400)
@@ -141,9 +142,9 @@ func TestFxFlatAtOrBefore(t *testing.T) {
 	if v, ok := fxConvert(t, db, 20, 100, "USD", "CHF"); !ok || v != "90.0000" {
 		t.Errorf("day 20 = %q (ok=%v), want 90.0000", v, ok)
 	}
-	// Before the first: nothing at-or-before → no result.
-	if v, ok := fxConvert(t, db, 9, 100, "USD", "CHF"); ok {
-		t.Errorf("day 9 (pre-first) = %q (ok=%v), want no result", v, ok)
+	// Before the first: clamp to the earliest rate (day-10's 0.8), not NULL.
+	if v, ok := fxConvert(t, db, 9, 100, "USD", "CHF"); !ok || v != "80.0000" {
+		t.Errorf("day 9 (pre-first, clamped) = %q (ok=%v), want 80.0000", v, ok)
 	}
 }
 
