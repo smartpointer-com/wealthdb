@@ -134,5 +134,8 @@ or below the high watermark. Reload forces a full re-projection.`)
 				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, res.ChangeNumberAfter)
 		}
 	}
+	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
+		fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
+	}
 	return firstErr
 }

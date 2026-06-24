@@ -112,6 +112,12 @@ load semantics.`)
 		}
 		printLoadResult(stdout, res)
 	}
+	// Persist the config-driven FX source precedence into gold so the
+	// SQL FX layer (fx_daily) honours it. Re-stamps all sources, so a
+	// single-source load keeps the column globally correct.
+	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
+		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
+	}
 	return firstErr
 }
 

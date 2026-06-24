@@ -4,28 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 )
 
-// PortfolioRow is one row of the `wealthdb portfolios` output.
-// Each row aggregates the positions and cash of every account
-// whose portfolio_external_id matches the row's portfolio.
+// PortfolioRow is one row of the `wealthdb portfolios` output. Each
+// row aggregates the positions and cash of every account whose
+// portfolio_external_id matches the row's portfolio.
 //
 // For each silver_source that has at least one orphan account
-// (portfolio_external_id IS NULL) there is additionally a
-// sentinel row with PortfolioExternalID == "" that aggregates
-// those accounts. This is where Schwab, Swissquote, and any
-// portfolio-less UBS accounts land — the invariant
-//
-//   sum(portfolios.total_value_<CCY>) == sum(accounts.total_value_<CCY>)
-//                                     == positions --with-cash total
-//
-// holds precisely because of the sentinel. Sources whose every
-// account belongs to a portfolio (cointracking, UBS in its pure
-// portfolio shape, …) skip the sentinel — there'd be nothing for
-// it to aggregate.
+// (portfolio_external_id IS NULL) there is additionally a sentinel
+// row with PortfolioExternalID == "" aggregating those accounts.
+// This is where Schwab, Swissquote, and any portfolio-less UBS
+// accounts land. (Accounts whose portfolio_external_id names a
+// portfolio with no row in the portfolios table are NOT bucketed —
+// they appear only in `wealthdb accounts`.)
 type PortfolioRow struct {
 	SilverSourceID      string
 	PortfolioExternalID string // empty string for the sentinel row
@@ -34,29 +27,11 @@ type PortfolioRow struct {
 	RelationshipID      *string
 	Nickname            *string
 
-	// TaxWrapper is the portfolio-level wrapper rolled up from
-	// its non-overlay component accounts. Non-nil when all
-	// component accounts agree, treating NULL tax_wrapper as
-	// 'taxable_personal' for the agreement check (same
-	// default-aware convention `wealthdb accounts` renders
-	// with). Disagreement among non-default values → nil.
-	TaxWrapper *string
-	// ManagementStyle answers "what mandate is this portfolio
-	// under?". Computed from non-overlay component accounts only
-	// (overlay accounts are synthetic per-portfolio buckets the
-	// UBS adapter emits for forward contracts and OTC positions
-	// the bank attributes directly to the portfolio with no sub-
-	// account; their per-row management_style stays self_directed
-	// even when the surrounding mandate is discretionary, so they
-	// shouldn't poison the rollup). Non-nil when all non-overlay
-	// components agree, treating NULL as 'self_directed' for the
-	// agreement check (same default-aware convention as the
-	// accounts table). The propagation pass in the UBS adapter
-	// already lifts the safekeeping-account mandate to its sibling
-	// cash accounts, so the named-mandate portfolios naturally
-	// collapse to one style; "general banking" portfolios with
-	// residual advisory securities resolve to NULL (correct — no
-	// single mandate covers everything).
+	// TaxWrapper / ManagementStyle are rolled up from the portfolio's
+	// non-overlay component accounts (NULL tax_wrapper treated as
+	// 'taxable_personal', NULL management_style as 'self_directed' for
+	// the agreement check). Non-nil only when all components agree.
+	TaxWrapper      *string
 	ManagementStyle *string
 
 	PositionsValueBase *string
@@ -67,156 +42,23 @@ type PortfolioRow struct {
 	CashBalanceOutCcy    *string
 	TotalValueOutCcy     *string
 
-	// SnapshotAt is the latest snapshot_at across all lines that
-	// rolled into this portfolio (positions + cash across every
-	// child account). When no lines rolled into the portfolio,
-	// falls back to the silver_source's latest observed snapshot
-	// — an empty portfolio at a known silver snapshot is honestly
-	// zero, not "unknown". 0 only when the silver source has
-	// produced no data at all.
+	// SnapshotAt is the latest snapshot_at across the portfolio's
+	// lines; falls back to the silver source's latest snapshot when
+	// the portfolio has no lines.
 	SnapshotAt int64
 }
 
 // PortfoliosAsOf returns one PortfolioRow per registered portfolio
-// in gold.portfolios, plus one sentinel row per silver_source that
-// aggregates accounts whose portfolio_external_id is NULL.
-// Aggregates re-use PositionsAsOf + CashAsOf and ConvertValue, in
-// the same shape as AccountsAsOf — base columns use the
-// portfolio's own base_currency (NULL when unknown, including
-// always for sentinel rows), the _outCcy columns always populate
-// when at least one underlying line resolves an FX path.
+// plus a per-source sentinel (PortfolioExternalID == "") for orphan
+// accounts. Aggregation, taxonomy rollup, sentinel generation, FX,
+// and ordering are all the report_portfolios macro (migration 0021);
+// this is the scan. Rows are ordered by (silver_source_id,
+// portfolio_external_id) — "" sorts first within each source.
 func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]PortfolioRow, error) {
-	portfolios, err := loadPortfolioBase(ctx, db)
+	rows, err := db.QueryContext(ctx,
+		`SELECT * FROM report_portfolios(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
 	if err != nil {
-		return nil, err
-	}
-	// Account → portfolio_external_id (or "") mapping per source.
-	accountPortfolio, sourcesSeen, err := loadAccountPortfolioMap(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	// Portfolio-level rolled-up taxonomy (tax_wrapper +
-	// management_style). Pulled in a single SQL pass; the per-
-	// portfolio values either agree across all qualifying
-	// component accounts (and become the rollup) or any
-	// disagreement / NULL component leaves the rollup nil.
-	taxonomy, err := loadPortfolioTaxonomy(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	// Silver sources that have at least one orphan account
-	// (account_external_id with no portfolio_external_id) get a
-	// sentinel portfolio row to aggregate those orphans into.
-	// Sources whose every account belongs to a portfolio (e.g.
-	// cointracking, UBS in the pure-portfolio-shape, …) skip the
-	// sentinel — a perpetually-empty "(no portfolio)" line is
-	// noise, not information.
-	hasOrphanAccount := make(map[string]bool)
-	for k, portID := range accountPortfolio {
-		if portID == "" {
-			hasOrphanAccount[k[0]] = true
-		}
-	}
-	for src := range sourcesSeen {
-		if !hasOrphanAccount[src] {
-			continue
-		}
-		portfolios = append(portfolios, PortfolioRow{SilverSourceID: src})
-	}
-
-	positions, err := PositionsAsOf(ctx, db, asOf)
-	if err != nil {
-		return nil, err
-	}
-	cash, err := CashAsOf(ctx, db, asOf)
-	if err != nil {
-		return nil, err
-	}
-
-	// id "" = the per-source sentinel (orphan accounts).
-	byKey := make(map[srcKey]*lines)
-	// Per-silver_source latest observation, mirroring AccountsAsOf.
-	// Used as the snapshot_at fallback for portfolios (and the
-	// sentinel row) that have no contributing lines — honestly
-	// zero at the source's known snapshot, not "unknown".
-	sourceMaxSnap := make(map[string]int64)
-	// Route each line to the portfolio its account belongs to (or
-	// to the sentinel if the account has no portfolio), then bucket
-	// by that portfolio. The shared addLine keys by the id passed
-	// in, so the portfolio resolution happens here at the call site.
-	for _, p := range positions {
-		portID := accountPortfolio[[2]string{p.SilverSourceID, p.AccountExternalID}]
-		addLine(byKey, sourceMaxSnap, p.SilverSourceID, portID, p.Currency, p.MarketValue, p.SnapshotAt, false)
-	}
-	for _, c := range cash {
-		portID := accountPortfolio[[2]string{c.SilverSourceID, c.AccountExternalID}]
-		addLine(byKey, sourceMaxSnap, c.SilverSourceID, portID, c.Currency, c.MarketValue, c.SnapshotAt, true)
-	}
-
-	for i := range portfolios {
-		p := &portfolios[i]
-		var pos, ca []lineItem
-		if l, ok := byKey[srcKey{p.SilverSourceID, p.PortfolioExternalID}]; ok {
-			pos, ca = l.positions, l.cash
-			p.SnapshotAt = l.maxSnap
-		} else {
-			p.SnapshotAt = sourceMaxSnap[p.SilverSourceID]
-		}
-		if t, ok := taxonomy[[2]string{p.SilverSourceID, p.PortfolioExternalID}]; ok {
-			if t.taxWrapper != "" {
-				v := t.taxWrapper
-				p.TaxWrapper = &v
-			}
-			if t.managementStyle != "" {
-				v := t.managementStyle
-				p.ManagementStyle = &v
-			}
-			// portfolios.base_currency wins when present (the
-			// adapter knows best); the account rollup is a
-			// fallback for sentinels (which have no portfolio
-			// row) and for named portfolios whose adapter
-			// didn't surface a base.
-			if (p.BaseCurrency == nil || *p.BaseCurrency == "") && t.baseCurrency != "" {
-				v := t.baseCurrency
-				p.BaseCurrency = &v
-			}
-		}
-
-		vc := computeValueColumns(ctx, db, pos, ca, p.BaseCurrency, outCcy, mode)
-		p.PositionsValueBase, p.CashBalanceBase, p.TotalValueBase = vc.positionsBase, vc.cashBase, vc.totalBase
-		p.PositionsValueOutCcy, p.CashBalanceOutCcy, p.TotalValueOutCcy = vc.positionsOut, vc.cashOut, vc.totalOut
-	}
-
-	// Sort by (silver_source_id, portfolio_external_id) for a
-	// deterministic listing. The SQL pass loads the table in order,
-	// but the sentinel rows added above are appended from a map
-	// iteration whose order Go intentionally randomises — without
-	// this sort the output rows would shuffle run-to-run. Empty
-	// PortfolioExternalID is the sentinel marker and sorts first
-	// within each source, so the per-source summary leads the
-	// per-portfolio breakdown.
-	sort.SliceStable(portfolios, func(i, j int) bool {
-		if portfolios[i].SilverSourceID != portfolios[j].SilverSourceID {
-			return portfolios[i].SilverSourceID < portfolios[j].SilverSourceID
-		}
-		return portfolios[i].PortfolioExternalID < portfolios[j].PortfolioExternalID
-	})
-
-	return portfolios, nil
-}
-
-// loadPortfolioBase reads the gold.portfolios table (no sentinel
-// rows — the caller adds those). Ordered by (silver_source_id,
-// portfolio_external_id) so the output is deterministic.
-func loadPortfolioBase(ctx context.Context, db *sql.DB) ([]PortfolioRow, error) {
-	const q = `
-SELECT silver_source_id, portfolio_external_id,
-       display_name, base_currency, relationship_id, nickname
-  FROM portfolios
- ORDER BY silver_source_id, portfolio_external_id`
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("loadPortfolioBase: %w", err)
+		return nil, fmt.Errorf("PortfoliosAsOf: %w", err)
 	}
 	defer rows.Close()
 
@@ -224,148 +66,31 @@ SELECT silver_source_id, portfolio_external_id,
 	for rows.Next() {
 		var (
 			r                                       PortfolioRow
-			displayName, baseCcy, relID, nickname sql.NullString
+			displayName, baseCcy, relID, nickname   sql.NullString
+			taxWrapper, mgmtStyle                   sql.NullString
+			pvb, cvb, tvb, pvo, cvo, tvo            sql.NullString
 		)
-		if err := rows.Scan(&r.SilverSourceID, &r.PortfolioExternalID,
-			&displayName, &baseCcy, &relID, &nickname); err != nil {
-			return nil, fmt.Errorf("loadPortfolioBase scan: %w", err)
+		if err := rows.Scan(
+			&r.SilverSourceID, &r.PortfolioExternalID,
+			&displayName, &baseCcy, &relID, &nickname,
+			&taxWrapper, &mgmtStyle, &r.SnapshotAt,
+			&pvb, &cvb, &tvb, &pvo, &cvo, &tvo,
+		); err != nil {
+			return nil, fmt.Errorf("PortfoliosAsOf scan: %w", err)
 		}
 		r.DisplayName = nullStringToPtr(displayName)
 		r.BaseCurrency = nullStringToPtr(baseCcy)
 		r.RelationshipID = nullStringToPtr(relID)
 		r.Nickname = nullStringToPtr(nickname)
+		r.TaxWrapper = nullStringToPtr(taxWrapper)
+		r.ManagementStyle = nullStringToPtr(mgmtStyle)
+		r.PositionsValueBase = trimmedDecimalPtr(pvb)
+		r.CashBalanceBase = trimmedDecimalPtr(cvb)
+		r.TotalValueBase = trimmedDecimalPtr(tvb)
+		r.PositionsValueOutCcy = trimmedDecimalPtr(pvo)
+		r.CashBalanceOutCcy = trimmedDecimalPtr(cvo)
+		r.TotalValueOutCcy = trimmedDecimalPtr(tvo)
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// portfolioTaxonomy carries the rolled-up tax_wrapper,
-// management_style, and base_currency per (silver_source_id,
-// portfolio_external_id). Empty string means "no rollup possible"
-// (mixed values, or any qualifying component had a NULL value);
-// the caller leaves the corresponding PortfolioRow field nil.
-type portfolioTaxonomy struct {
-	taxWrapper      string
-	managementStyle string
-	baseCurrency    string
-}
-
-// loadPortfolioTaxonomy rolls up tax_wrapper, management_style,
-// and base_currency from gold.accounts to the portfolio level
-// via a single SQL pass. Per-column independent rollup: a value
-// lands when all qualifying component accounts agree.
-//
-// All rollups exclude overlay accounts. Overlays are synthetic
-// per-portfolio buckets the UBS adapter emits for forward
-// contracts and OTC positions the bank attributes directly to
-// the portfolio with no sub-account; the user doesn't think of
-// them as separate accounts. Their per-row tax_wrapper and
-// management_style are unclassified (NULL) by construction —
-// including them would silently poison every rollup with a
-// "disagreement" that isn't real.
-//
-// NULL handling for tax_wrapper and management_style follows the
-// same default-aware semantics the accounts table renders with
-// (see internal/gold/accounts.go's PortfolioRow doc) — a NULL
-// tax_wrapper is treated as 'taxable_personal', a NULL
-// management_style as 'self_directed', for the purposes of the
-// agreement check. So a Schwab-shape source whose accounts all
-// leave management_style unset shows `self_directed` at the
-// portfolio level, matching what `wealthdb accounts` shows for
-// each individual account.
-//
-// base_currency has no documented default. NULL means "unknown"
-// and any NULL component → rollup NULL.
-//
-// Portfolios with no qualifying (non-overlay) accounts return
-// all rollups empty.
-//
-// The "(no portfolio)" sentinel bucket per source is rolled up
-// here too — accounts whose portfolio_external_id IS NULL are
-// keyed under the empty string. Schwab's "no portfolio" bag
-// shows blank tax_wrapper (its orphans span 4 wrapper variants
-// that disagree) but USD base + self_directed management_style
-// (all orphans agree, modulo defaults).
-func loadPortfolioTaxonomy(ctx context.Context, db *sql.DB) (map[[2]string]portfolioTaxonomy, error) {
-	const q = `
-SELECT
-    silver_source_id,
-    COALESCE(portfolio_external_id, '') AS portfolio_external_id,
-    CASE
-        WHEN COUNT(*) FILTER (WHERE account_kind != 'overlay') > 0
-         AND COUNT(DISTINCT CASE WHEN account_kind != 'overlay'
-                                 THEN COALESCE(tax_wrapper, 'taxable_personal') END) = 1
-        THEN MAX(CASE WHEN account_kind != 'overlay'
-                      THEN COALESCE(tax_wrapper, 'taxable_personal') END)
-        ELSE NULL
-    END AS rolled_tax_wrapper,
-    CASE
-        WHEN COUNT(*) FILTER (WHERE account_kind != 'overlay') > 0
-         AND COUNT(DISTINCT CASE WHEN account_kind != 'overlay'
-                                 THEN COALESCE(management_style, 'self_directed') END) = 1
-        THEN MAX(CASE WHEN account_kind != 'overlay'
-                      THEN COALESCE(management_style, 'self_directed') END)
-        ELSE NULL
-    END AS rolled_management_style,
-    CASE
-        WHEN COUNT(*) FILTER (WHERE account_kind != 'overlay') > 0
-         AND COUNT(*) FILTER (WHERE account_kind != 'overlay' AND base_currency IS NULL) = 0
-         AND COUNT(DISTINCT CASE WHEN account_kind != 'overlay' THEN base_currency END) = 1
-        THEN MAX(CASE WHEN account_kind != 'overlay' THEN base_currency END)
-        ELSE NULL
-    END AS rolled_base_currency
-  FROM accounts
- GROUP BY silver_source_id, COALESCE(portfolio_external_id, '')`
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("loadPortfolioTaxonomy: %w", err)
-	}
-	defer rows.Close()
-	out := make(map[[2]string]portfolioTaxonomy)
-	for rows.Next() {
-		var src, port string
-		var wrapper, style, baseCcy sql.NullString
-		if err := rows.Scan(&src, &port, &wrapper, &style, &baseCcy); err != nil {
-			return nil, fmt.Errorf("loadPortfolioTaxonomy scan: %w", err)
-		}
-		t := portfolioTaxonomy{}
-		if wrapper.Valid {
-			t.taxWrapper = wrapper.String
-		}
-		if style.Valid {
-			t.managementStyle = style.String
-		}
-		if baseCcy.Valid {
-			t.baseCurrency = baseCcy.String
-		}
-		out[[2]string{src, port}] = t
-	}
-	return out, rows.Err()
-}
-
-// loadAccountPortfolioMap returns a (silver_source_id,
-// account_external_id) → portfolio_external_id lookup (empty
-// string when the account isn't in a portfolio) plus the set of
-// distinct silver_source_id values seen.
-func loadAccountPortfolioMap(ctx context.Context, db *sql.DB) (map[[2]string]string, map[string]struct{}, error) {
-	const q = `
-SELECT silver_source_id, account_external_id, COALESCE(portfolio_external_id, '')
-  FROM accounts`
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loadAccountPortfolioMap: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[[2]string]string)
-	sources := make(map[string]struct{})
-	for rows.Next() {
-		var src, acct, port string
-		if err := rows.Scan(&src, &acct, &port); err != nil {
-			return nil, nil, err
-		}
-		out[[2]string{src, acct}] = port
-		sources[src] = struct{}{}
-	}
-	return out, sources, rows.Err()
 }

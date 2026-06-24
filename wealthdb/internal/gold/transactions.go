@@ -9,8 +9,8 @@ import (
 // TransactionRow is one row of the gold transactions readout.
 // Decimal columns come back as canonical strings (DuckDB CAST to
 // VARCHAR with trailing-zero trim, matching PositionRow). The
-// joined account / instrument fields are nullable and the
-// consumer chooses fallbacks for display.
+// joined account / instrument fields are nullable and the consumer
+// chooses fallbacks for display.
 type TransactionRow struct {
 	SilverSourceID        string
 	TransactionExternalID string
@@ -30,13 +30,16 @@ type TransactionRow struct {
 	NetAmount             *string
 	Quantity              *string
 	Price                 *string
-	Description           *string // transactions.description; free-text label, see canonical.TransactionChange.Description
+	Description           *string // transactions.description; free-text label
+	// ValueOutCcy is NetAmount converted to the requested output
+	// currency at occurred_at by the report_transactions macro (flat
+	// nearest-rate FX in SQL). Nil when no FX path resolves.
+	ValueOutCcy *string
 }
 
 // SortOrder controls the row ordering for TransactionsBetween.
-// Ascending is the default — oldest first, which matches the
-// natural chronological reading. Descending is for the
-// newest-first view (e.g. an inbox-style query).
+// Ascending is the default — oldest first; Descending is newest
+// first.
 type SortOrder int
 
 const (
@@ -45,64 +48,19 @@ const (
 )
 
 // TransactionsBetween returns every transaction whose occurred_at
-// falls in [fromEpoch, toEpoch], inclusive. Sorted by
-// occurred_at first (asc or desc, per `order`), then by
-// (silver_source_id, transaction_external_id) as a stable
-// tiebreaker so the output is deterministic across re-runs.
-//
-// Both bounds are required (the caller fills epoch / now for
-// open-ended ranges). NULLs in joined columns are surfaced as
-// nil pointers; consumer formatters fall back as needed.
-func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, order SortOrder) ([]TransactionRow, error) {
-	direction := "ASC"
+// falls in [fromEpoch, toEpoch], inclusive, with net_amount
+// converted to outCcy at occurred_at. Sorted by occurred_at (asc or
+// desc per `order`), then (silver_source_id,
+// transaction_external_id) as a stable tiebreaker. The query and FX
+// are the report_transactions table macro (migration 0021); the
+// macro emits ascending, so the descending case re-sorts here.
+func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string, order SortOrder) ([]TransactionRow, error) {
+	q := `SELECT * FROM report_transactions(?, ?, ?)`
 	if order == SortDescending {
-		direction = "DESC"
+		q += ` ORDER BY occurred_at DESC, silver_source_id, transaction_external_id`
 	}
-	// Two LEFT JOINs against symbol_resolutions cover the two
-	// lookup_kind discriminators populated by `wealthdb
-	// resolve-symbols`: ID-keyed (matches t.instrument_external_id)
-	// and name-keyed (matches t.description). COALESCE prefers the
-	// joined instruments.symbol first; the LLM-derived fallback
-	// only fires when instruments produced NULL.
-	q := `
-SELECT t.silver_source_id,
-       t.transaction_external_id,
-       t.occurred_at,
-       t.account_external_id,
-       a.display_name,
-       a.relationship_id,
-       a.nickname,
-       a.account_category,
-       t.instrument_external_id,
-       COALESCE(i.symbol, sri.symbol, srn.symbol) AS symbol,
-       i.name,
-       i.asset_class,
-       t.kind,
-       t.currency,
-       CAST(t.gross_amount AS VARCHAR) AS gross_str,
-       CAST(t.net_amount   AS VARCHAR) AS net_str,
-       CAST(t.quantity     AS VARCHAR) AS qty_str,
-       CAST(t.price        AS VARCHAR) AS price_str,
-       t.description
-  FROM transactions t
-  LEFT JOIN accounts a
-    ON t.silver_source_id    = a.silver_source_id
-   AND t.account_external_id = a.account_external_id
-  LEFT JOIN instruments i
-    ON t.silver_source_id        = i.silver_source_id
-   AND t.instrument_external_id  = i.instrument_external_id
-  LEFT JOIN symbol_resolutions sri
-    ON sri.silver_source_id = t.silver_source_id
-   AND sri.lookup_kind      = 'instrument_external_id'
-   AND sri.lookup_value     = t.instrument_external_id
-  LEFT JOIN symbol_resolutions srn
-    ON srn.silver_source_id = t.silver_source_id
-   AND srn.lookup_kind      = 'name'
-   AND srn.lookup_value     = t.description
- WHERE t.occurred_at BETWEEN ? AND ?
- ORDER BY t.occurred_at ` + direction + `, t.silver_source_id, t.transaction_external_id`
 
-	rows, err := db.QueryContext(ctx, q, fromEpoch, toEpoch)
+	rows, err := db.QueryContext(ctx, q, fromEpoch, toEpoch, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("TransactionsBetween: %w", err)
 	}
@@ -111,11 +69,11 @@ SELECT t.silver_source_id,
 	var out []TransactionRow
 	for rows.Next() {
 		var (
-			r                                              TransactionRow
-			displayName, relID, nickname, category         sql.NullString
-			instr, symbol, name, assetClass                sql.NullString
-			grossStr, netStr, qtyStr, priceStr             sql.NullString
-			description                                    sql.NullString
+			r                                      TransactionRow
+			displayName, relID, nickname, category sql.NullString
+			instr, symbol, name, assetClass        sql.NullString
+			grossStr, netStr, qtyStr, priceStr     sql.NullString
+			description, valueOut                  sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -124,7 +82,7 @@ SELECT t.silver_source_id,
 			&instr, &symbol, &name, &assetClass,
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
-			&description,
+			&description, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
@@ -141,6 +99,7 @@ SELECT t.silver_source_id,
 		r.NetAmount = trimmedDecimalPtr(netStr)
 		r.Quantity = trimmedDecimalPtr(qtyStr)
 		r.Price = trimmedDecimalPtr(priceStr)
+		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
 		out = append(out, r)
 	}
 	return out, rows.Err()

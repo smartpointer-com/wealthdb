@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,10 +21,9 @@ func init() {
 }
 
 // txValueFlags is the set of cmd_transactions flag tokens that
-// consume the next arg as their value. Used by reorderFlagsFirst
-// so the cmd accepts `transactions 2025 -f csv` and equivalents.
-// Boolean flags (`-r`, `--reverse`) are NOT listed here — they
-// don't consume a follow-on arg.
+// consume the next arg as their value. Used by reorderFlagsFirst so
+// the cmd accepts `transactions 2025 -f csv` and equivalents.
+// Boolean flags (`-r`, `--reverse`) are NOT listed.
 var txValueFlags = map[string]bool{
 	"-f": true, "--format": true,
 	"-C": true, "--columns": true,
@@ -35,10 +33,9 @@ var txValueFlags = map[string]bool{
 
 // reorderFlagsFirst shuffles `args` so that flag tokens (and any
 // value tokens they consume per `valueFlags`) precede positional
-// args. Preserves the relative order within each group. The
-// `--flag=value` form is treated as a single token with no
-// look-ahead. `-` alone is a positional (a sentinel for an
-// open-ended range bound).
+// args. Preserves relative order within each group. The
+// `--flag=value` form is one token with no look-ahead. `-` alone is
+// a positional (a sentinel for an open-ended range bound).
 func reorderFlagsFirst(args []string, valueFlags map[string]bool) []string {
 	flags := make([]string, 0, len(args))
 	positional := make([]string, 0, len(args))
@@ -49,7 +46,6 @@ func reorderFlagsFirst(args []string, valueFlags map[string]bool) []string {
 			continue
 		}
 		flags = append(flags, a)
-		// `--flag=value` is self-contained.
 		if strings.Contains(a, "=") {
 			continue
 		}
@@ -71,7 +67,7 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
 	currency := fs.String("x", "", "output currency for the value column (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at occurred_at, interpolated) or 'current' (latest available)")
+	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before occurred_at) or 'current' (latest available)")
 	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
 	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
 	privacy := fs.Bool("p", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
@@ -80,11 +76,10 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, transactionsUsage())
 	}
-	// Go's flag package stops at the first non-flag arg, which
-	// would make `transactions 2025 -f csv` interpret `-f csv` as
-	// positionals. Reorder so flag tokens float to the front; the
-	// positional date args end up at the back where fs.Args()
-	// returns them after Parse.
+	// Go's flag package stops at the first non-flag arg, which would
+	// make `transactions 2025 -f csv` treat `-f csv` as positionals.
+	// Reorder so flag tokens float to the front; the positional date
+	// args end up at the back where fs.Args() returns them.
 	reordered := reorderFlagsFirst(splitFusedColumnsFlag(subargs), txValueFlags)
 	if err := fs.Parse(reordered); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -135,121 +130,73 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	if *reverse {
 		order = gold.SortDescending
 	}
-	rows, err := gold.TransactionsBetween(ctx, db, fromEpoch, toEpoch, order)
+	rows, err := gold.TransactionsBetween(ctx, db, fromEpoch, toEpoch, outCcy, order)
 	if err != nil {
 		return err
 	}
-	rendered, err := convertTxAll(ctx, db, rows, outCcy, mode)
-	if err != nil {
-		return err
-	}
-	return writeFormatted(stdout, fmtChoice, rowsToTable(rendered, colSet, *privacy, fmtChoice))
-}
-
-// renderedTx pairs a raw transaction with its net_amount
-// converted to the user's requested output currency. Per-row
-// missing rates are tolerated and surface as ConvertedValue=nil
-// — matches the positions command's "show holes, don't abort"
-// stance.
-type renderedTx struct {
-	Row            gold.TransactionRow
-	ConvertedValue *canonical.Decimal
-}
-
-func convertTxAll(ctx context.Context, db *sql.DB, rows []gold.TransactionRow, outCcy string, mode canonical.FxMode) ([]renderedTx, error) {
-	out := make([]renderedTx, len(rows))
-	anyConverted := false
-	anyAttempted := false
-	for i, r := range rows {
-		out[i].Row = r
-		if r.NetAmount == nil {
-			continue
-		}
-		anyAttempted = true
-		v, err := canonical.NewDecimalFromString(*r.NetAmount)
-		if err != nil {
-			continue
-		}
-		conv, err := gold.ConvertValue(ctx, db, r.OccurredAt, v, r.Currency, outCcy, mode)
-		if err != nil {
-			continue
-		}
-		out[i].ConvertedValue = &conv
-		anyConverted = true
-	}
-	if anyAttempted && !anyConverted {
-		return out, fmt.Errorf("transactions: no FX rates available to convert to %q (mode=%s)", outCcy, mode)
-	}
-	return out, nil
+	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
 }
 
 // ---- column registry -----------------------------------------------------
 
-func buildTransactionColumnRegistry(outCcy string) []columnSpec[renderedTx] {
-	return []columnSpec[renderedTx]{
+func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.TransactionRow] {
+	return []columnSpec[gold.TransactionRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return r.Row.SilverSourceID }},
+			Extract: func(r gold.TransactionRow) string { return r.SilverSourceID }},
 		{Name: "date", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return formatDate(r.Row.OccurredAt) }},
+			Extract: func(r gold.TransactionRow) string { return formatDate(r.OccurredAt) }},
 		{Name: "datetime", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return formatDateTime(r.Row.OccurredAt) }},
+			Extract: func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) }},
 		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r renderedTx) string {
-				if r.Row.DisplayName != nil && *r.Row.DisplayName != "" {
-					return *r.Row.DisplayName
+			Extract: func(r gold.TransactionRow) string {
+				if r.DisplayName != nil && *r.DisplayName != "" {
+					return *r.DisplayName
 				}
-				return r.Row.AccountExternalID
+				return r.AccountExternalID
 			}},
 		{Name: "account_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r renderedTx) string { return r.Row.AccountExternalID }},
+			Extract: func(r gold.TransactionRow) string { return r.AccountExternalID }},
 		{Name: "kind", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return r.Row.Kind }},
+			Extract: func(r gold.TransactionRow) string { return r.Kind }},
 		{Name: "symbol", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Symbol) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Symbol) }},
 		{Name: "name", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string {
-				// Prefer the joined instruments.name; fall back
-				// to the adapter-supplied transactions.description
-				// (Schwab dividends, UBS web cash_movement
-				// captions) so instrument-related rows still
-				// surface a human-readable label even when no
-				// instrument_external_id link exists.
-				if r.Row.Name != nil && *r.Row.Name != "" {
-					return *r.Row.Name
+			Extract: func(r gold.TransactionRow) string {
+				// Prefer the joined instruments.name; fall back to the
+				// adapter-supplied transactions.description (Schwab
+				// dividends, UBS web cash_movement captions) so
+				// instrument-related rows still surface a label.
+				if r.Name != nil && *r.Name != "" {
+					return *r.Name
 				}
-				return strOrEmpty(r.Row.Description)
+				return strOrEmpty(r.Description)
 			}},
 		{Name: "instrument_id", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.InstrumentExternalID) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.InstrumentExternalID) }},
 		{Name: "description", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Description) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }},
 		{Name: "asset_class", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.AssetClass) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return r.Row.Currency }},
+			Extract: func(r gold.TransactionRow) string { return r.Currency }},
 		{Name: "gross_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r renderedTx) string { return formatCents(r.Row.GrossAmount) }},
+			Extract: func(r gold.TransactionRow) string { return formatCents(r.GrossAmount) }},
 		{Name: "net_amount", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r renderedTx) string { return formatCents(r.Row.NetAmount) }},
+			Extract: func(r gold.TransactionRow) string { return formatCents(r.NetAmount) }},
 		{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Quantity) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Quantity) }},
 		{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Price) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Price) }},
 		{Name: "value", Header: "value_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r renderedTx) string {
-				if r.ConvertedValue == nil {
-					return ""
-				}
-				return r.ConvertedValue.StringFixed(2)
-			}},
+			Extract: func(r gold.TransactionRow) string { return formatCents(r.ValueOutCcy) }},
 		{Name: "tx_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r renderedTx) string { return r.Row.TransactionExternalID }},
+			Extract: func(r gold.TransactionRow) string { return r.TransactionExternalID }},
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.RelationshipID) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.RelationshipID) }},
 		{Name: "account_nickname", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.Nickname) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Nickname) }},
 		{Name: "account_category", Align: output.AlignLeft,
-			Extract: func(r renderedTx) string { return strOrEmpty(r.Row.AccountCategory) }},
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AccountCategory) }},
 	}
 }
 
@@ -258,7 +205,7 @@ var defaultTransactionColumns = []string{
 	"instrument_id", "currency", "net_amount", "value",
 }
 
-func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[renderedTx], error) {
+func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.TransactionRow], error) {
 	return resolveColumns(flagValue, defaultTransactionColumns, buildTransactionColumnRegistry(outCcy))
 }
 
@@ -268,8 +215,8 @@ func transactionsUsage() string {
 
 Print transactions over a date range. Default: past 30 days,
 table format, oldest first, default column set, output currency
-from config.default_currency, historic FX mode (rate at
-occurred_at).
+from config.default_currency, historic FX mode (nearest rate
+at-or-before occurred_at).
 
 Date arguments (positional, optional; may appear before or after
 flags):
@@ -290,7 +237,7 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; rate at occurred_at) or 'current' (latest rate)
+      --fx-mode MODE       'historic' (default; nearest rate at-or-before occurred_at) or 'current' (latest rate)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

@@ -277,14 +277,28 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 		t.Errorf("expected 1500.00 in output: %s", so)
 	}
 
-	// -x with no FX rates available → an error (no silvers ship
-	// USD↔CHF in this fixture).
-	_, se, code := run(t, "-c", cfg, "positions", "-x", "CHF")
-	if code == 0 {
-		t.Errorf("expected non-zero exit when no rates; stderr=%s", se)
+	// -x CHF with no USD↔CHF rate in this fixture: the SQL FX layer
+	// leaves the value cell empty (NULL) rather than erroring. The
+	// command still succeeds and the natural-currency market_value is
+	// untouched.
+	so, se, code := run(t, "-c", cfg, "positions", "-x", "CHF", "-f", "csv",
+		"--columns", "currency,market_value,value")
+	if code != 0 {
+		t.Fatalf("positions -x CHF should succeed with empty values; exit=%d stderr=%s", code, se)
 	}
-	if !strings.Contains(se, "FX rates available") {
-		t.Errorf("missing FX-rates guidance: %s", se)
+	if !strings.Contains(so, "value_CHF") {
+		t.Errorf("CHF header should show value_CHF: %s", so)
+	}
+	var emptyCHF bool
+	for _, ln := range strings.Split(so, "\n") {
+		// Data rows start with the currency; value_CHF is the last,
+		// empty field, so the row ends with a trailing comma.
+		if strings.HasPrefix(ln, "USD,") && strings.HasSuffix(ln, ",") {
+			emptyCHF = true
+		}
+	}
+	if !emptyCHF {
+		t.Errorf("expected a USD row with an empty value_CHF cell: %s", so)
 	}
 
 	// Bad fx-mode → exit 2.

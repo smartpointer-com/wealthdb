@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
+
+	"github.com/ptu/wealthdb/internal/canonical"
 )
 
 // PositionRow is one row of the consolidated positions output.
@@ -32,90 +35,47 @@ type PositionRow struct {
 	Currency             string
 	Quantity             *string
 	MarketValue          *string
+	// ValueOutCcy is MarketValue converted to the requested output
+	// currency by the report_positions / report_cash macro (flat
+	// nearest-rate FX in SQL). Nil when no FX path resolves.
+	ValueOutCcy *string
 }
 
 // PositionsAsOf returns the consolidated portfolio as of the given
-// Unix-seconds timestamp. For each silver source, the rows of the
-// latest snapshot_at ≤ asOf are returned. Sorted by
-// (silver_source_id, account_external_id, position_key) so output
-// is deterministic.
-//
-// Implements docs/DESIGN.md §10.1 in straightforward SQL (the
-// note at the top of §10 reminds us the wire-form is a functional
-// spec; query rewriters / planner hints can replace this later
-// without changing the contract).
-func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64) ([]PositionRow, error) {
-	// LEFT JOIN against symbol_resolutions (lookup_kind =
-	// 'instrument_external_id' only — positions has no 'name'
-	// equivalent column) so LLM-derived tickers from `wealthdb
-	// resolve-symbols` fill in for instruments whose silver
-	// adapter couldn't surface a symbol. COALESCE prefers the
-	// instruments-table value when it exists.
-	const q = `
-WITH latest_per_source AS (
-    SELECT silver_source_id, MAX(snapshot_at) AS snapshot_at
-      FROM positions
-     WHERE snapshot_at <= ?
-     GROUP BY silver_source_id
-)
-SELECT p.silver_source_id,
-       p.snapshot_at,
-       p.account_external_id,
-       a.display_name,
-       a.relationship_id,
-       a.nickname,
-       a.account_category,
-       p.position_key,
-       p.instrument_external_id,
-       COALESCE(i.symbol, sri.symbol) AS symbol,
-       i.name,
-       p.asset_class,
-       p.currency,
-       CAST(p.quantity     AS VARCHAR) AS quantity_str,
-       CAST(p.market_value AS VARCHAR) AS market_value_str
-  FROM positions p
-  LEFT JOIN accounts a
-    ON p.silver_source_id    = a.silver_source_id
-   AND p.account_external_id = a.account_external_id
-  LEFT JOIN instruments i
-    ON p.silver_source_id        = i.silver_source_id
-   AND p.instrument_external_id  = i.instrument_external_id
-  LEFT JOIN symbol_resolutions sri
-    ON sri.silver_source_id = p.silver_source_id
-   AND sri.lookup_kind      = 'instrument_external_id'
-   AND sri.lookup_value     = p.instrument_external_id
-  JOIN latest_per_source l
-    ON p.silver_source_id = l.silver_source_id
-   AND p.snapshot_at      = l.snapshot_at
- ORDER BY p.silver_source_id, p.account_external_id, p.position_key`
+// Unix-seconds timestamp, with market_value converted to outCcy.
+// For each silver source, the rows of the latest snapshot_at ≤ asOf
+// are returned, sorted by (silver_source_id, account_external_id,
+// position_key). FX (and everything else) is computed in SQL by the
+// report_positions table macro (see migrations 0020/0021); this is
+// just the scan. See docs/DESIGN.md §10.1.
+func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]PositionRow, error) {
+	return scanPositionRows(ctx, db, "PositionsAsOf",
+		`SELECT * FROM report_positions(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+}
 
-	rows, err := db.QueryContext(ctx, q, asOf)
+// scanPositionRows runs a report_positions / report_cash macro query
+// (both emit the same 16-column position shape) and scans the rows.
+func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...any) ([]PositionRow, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("PositionsAsOf: %w", err)
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 	defer rows.Close()
 
 	var out []PositionRow
 	for rows.Next() {
 		var (
-			r           PositionRow
-			displayName sql.NullString
-			relID       sql.NullString
-			nickname    sql.NullString
-			category    sql.NullString
-			instr       sql.NullString
-			symbol      sql.NullString
-			name        sql.NullString
-			qty         sql.NullString
-			mvalue      sql.NullString
+			r                                                 PositionRow
+			displayName, relID, nickname, category, instr     sql.NullString
+			symbol, name, qty, mvalue, valueOut               sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.SnapshotAt, &r.AccountExternalID,
 			&displayName, &relID, &nickname, &category,
 			&r.PositionKey, &instr, &symbol, &name,
-			&r.AssetClass, &r.Currency, &qty, &mvalue,
+			&r.AssetClass, &r.Currency, &qty, &mvalue, &valueOut,
 		); err != nil {
-			return nil, fmt.Errorf("PositionsAsOf scan: %w", err)
+			return nil, fmt.Errorf("%s scan: %w", label, err)
 		}
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)
@@ -126,9 +86,24 @@ SELECT p.silver_source_id,
 		r.Name = nullStringToPtr(name)
 		r.Quantity = trimmedDecimalPtr(qty)
 		r.MarketValue = trimmedDecimalPtr(mvalue)
+		r.ValueOutCcy = trimmedDecimalPtr(valueOut)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// effectiveAsOf maps the FX mode to the as-of bound passed to the
+// report macros. Historic uses the real asOf (the macros pick the
+// nearest rate at-or-before each line's own snapshot). Current
+// ignores asOf — a max bound makes the latest snapshot win; the
+// per-line FX still resolves flat at each line's snapshot day (the
+// 1.x FX engine's literal "latest rate" semantics are not preserved,
+// which is acceptable for this rarely-used mode — see web/DESIGN.md).
+func effectiveAsOf(asOf int64, mode canonical.FxMode) int64 {
+	if mode == canonical.FxModeCurrent {
+		return math.MaxInt64
+	}
+	return asOf
 }
 
 func nullStringToPtr(n sql.NullString) *string {
