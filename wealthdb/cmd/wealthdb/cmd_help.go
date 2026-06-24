@@ -29,6 +29,14 @@ var helpText = map[string]string{
 	"help":         "Show this help, or detailed help for a subcommand.",
 }
 
+// hiddenSubcommands are registered (so they're callable) but omitted
+// from the help listing — internal plumbing, not user-facing.
+// `web-config` emits resolved web settings for the host-side
+// `wealthdb web` wrapper.
+var hiddenSubcommands = map[string]bool{
+	"web-config": true,
+}
+
 func cmdHelp(_ context.Context, _ globalFlags, subargs []string, _ io.Reader, _, stderr io.Writer) error {
 	if len(subargs) == 0 {
 		printGlobalHelp(stderr)
@@ -55,6 +63,9 @@ func printGlobalHelp(w io.Writer) {
 
 	fmt.Fprintln(w, "Registered subcommands:")
 	for _, n := range names {
+		if hiddenSubcommands[n] {
+			continue
+		}
 		desc, ok := helpText[n]
 		if !ok {
 			desc = "(no description)"

@@ -286,3 +286,42 @@ func TestValidateRejectsBadCurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadParsesWebBlock(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": [],
+        "web": {"enabled": true, "port": 4444}
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Web == nil || !c.Web.Enabled || c.Web.Port != 4444 {
+		t.Errorf("web = %+v, want {enabled:true port:4444}", c.Web)
+	}
+}
+
+func TestLoadWebOmittedIsNil(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/x", "default_currency": "USD",
+        "silver_sources": []
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Web != nil {
+		t.Errorf("web = %+v, want nil when omitted", c.Web)
+	}
+}
+
+func TestValidateRejectsBadWebPort(t *testing.T) {
+	c := &Config{
+		GoldDB: "/x", DefaultCurrency: "USD",
+		Web: &WebConfig{Enabled: true, Port: 70000},
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "web.port") {
+		t.Fatalf("err = %v, want web.port range complaint", err)
+	}
+}

@@ -161,6 +161,13 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// web: optional dockerized BI server. Only the port needs a
+	// shape check; an absent block or zero port means "use the
+	// default" (DefaultWebPort), resolved at read time.
+	if c.Web != nil && c.Web.Port != 0 && (c.Web.Port < 1 || c.Web.Port > 65535) {
+		return fmt.Errorf("config: web.port %d is out of range (1-65535)", c.Web.Port)
+	}
+
 	return nil
 }
 

@@ -1,0 +1,4 @@
+# The image only needs the Dockerfile (the driver JAR is fetched by
+# ADD from a pinned URL). Keep the build context tiny.
+*
+!Dockerfile

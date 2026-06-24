@@ -452,7 +452,8 @@ Example config file:
         "swissquote-1": {
             "1234567": {"nickname": "CHF trading", "category": "personal"}
         }
-    }
+    },
+    "web": { "enabled": true, "port": 3000 }
 }
 ```
 
@@ -462,6 +463,9 @@ Example config file:
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
 | `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
+| `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
+| `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
+| `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
 | `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …), or `auto` to auto-detect (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |

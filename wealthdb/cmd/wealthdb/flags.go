@@ -77,5 +77,6 @@ subcommands:
   global [flags]        roll the entire portfolio into a single total row (the ultimate aggregation)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
+  web {start|stop|status}  manage the optional Metabase BI server (host-side; see web/README.md)
   help [<subcommand>]   help for a subcommand
 `

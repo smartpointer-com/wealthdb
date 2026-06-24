@@ -41,6 +41,7 @@ PYTHON := $(or \
 .DEFAULT_GOAL := help
 .PHONY: all build test help install uninstall \
         build-wealthdb test-wealthdb \
+        build-web test-web clean-web cleanall-web \
         build-collectors test-collectors \
         clean cleanall clean-wealthdb cleanall-wealthdb \
         clean-collectors cleanall-collectors base-images \
@@ -48,9 +49,9 @@ PYTHON := $(or \
 
 # ---- aggregates --------------------------------------------------------
 
-all: build-wealthdb build-collectors
+all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-collectors
+test: test-wealthdb test-web test-collectors
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -99,8 +100,8 @@ base-images:
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
 # cleanall = clean + the heavy outputs (docker images, venvs)
-clean:    clean-wealthdb clean-collectors
-cleanall: cleanall-wealthdb cleanall-collectors
+clean:    clean-wealthdb clean-web clean-collectors
+cleanall: cleanall-wealthdb cleanall-web cleanall-collectors
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
@@ -125,6 +126,24 @@ cleanall-wealthdb: clean-wealthdb
 	@docker image rm -f wealthdb:latest >/dev/null 2>&1 || true
 	@chmod -R u+w $(HOME)/.cache/wealthdb-test 2>/dev/null || true
 	@rm -rf $(HOME)/.cache/wealthdb-test
+
+# ---- web (optional Metabase BI server) --------------------------------
+
+build-web:
+	@echo "==> build web (metabase image)"
+	web/web build
+
+# Pure-bash unit tests for the lifecycle script; no Docker needed.
+test-web:
+	@echo "==> test web (web/test_web.sh)"
+	@web/test_web.sh
+
+clean-web:
+	@echo "==> clean web (nothing to clean)"
+
+cleanall-web: clean-web
+	@echo "==> cleanall web (image)"
+	@docker image rm -f wealthdb/metabase:latest >/dev/null 2>&1 || true
 
 # ---- per-collector rules (generated for each discovered collector) ----
 
@@ -253,6 +272,8 @@ help:
 	@echo "  make test               test everything"
 	@echo "  make build-wealthdb     build the Go gold-engine image"
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"
+	@echo "  make build-web          build the optional Metabase BI image"
+	@echo "  make test-web           run the web lifecycle unit tests"
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"

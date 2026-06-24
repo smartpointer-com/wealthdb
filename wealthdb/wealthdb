@@ -3,14 +3,34 @@
 # See docs/DESIGN.md §12.2 for the mount geometry.
 set -eu
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
+# Resolve $0 through symlinks (macOS has no `readlink -f`) so this
+# works when run via the ~/bin/wealthdb symlink `make install` creates
+# — same idiom as bin/wealthdb-collect. Without this, `wealthdb web`
+# (which locates the repo via $REPO) would break when run bare.
+SELF="$0"
+while [ -L "$SELF" ]; do
+    link="$(readlink "$SELF")"
+    case "$link" in
+        /*) SELF="$link" ;;
+        *)  SELF="$(dirname "$SELF")/$link" ;;
+    esac
+done
+REPO="$(cd "$(dirname "$SELF")" && pwd)"
 IMAGE="wealthdb:latest"
 
-# `wealthdb build` is wrapper-handled, not a container subcommand.
+# `build` and `web` are wrapper-handled host-side, not container
+# subcommands: `build` runs `docker build`; `web` delegates to the
+# web/ component's lifecycle script. Docker isn't reachable from
+# inside the engine container, so the Metabase server is orchestrated
+# on the host. (web/ is a sibling of this inner wealthdb/ dir.)
 case "${1:-}" in
     build)
         shift
         exec docker build -t "$IMAGE" "$REPO" "$@"
+        ;;
+    web)
+        shift
+        exec "$(cd "$REPO/.." && pwd)/web/web" "$@"
         ;;
 esac
 

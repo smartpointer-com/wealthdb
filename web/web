@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#
+# web — host-side lifecycle for the optional dockerized Metabase BI
+# server. Reached as `wealthdb web <subcommand>`: the wealthdb wrapper
+# delegates the `web` verb here because Docker isn't reachable from
+# inside the engine container, so the server is orchestrated on the
+# host. See README.md / DESIGN.md.
+#
+# Metabase reads a read-only SNAPSHOT of the gold DB (never the live
+# file), so it never contends for DuckDB's single-writer lock and
+# never blocks `wealthdb load`. It is published on loopback only
+# (127.0.0.1 + [::1]); reach it over an SSH port-forward + Metabase's
+# own login.
+#
+# Functions are defined at top level; web_main runs only when this
+# file is executed (not sourced), so test_web.sh can source it and
+# unit-test the pure helpers.
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
+
+# ---- settings ---------------------------------------------------------
+
+# _resolve_knobs sets the operational knobs from env overrides +
+# defaults. Pure (no Docker, no config round-trip); unit-tested.
+_resolve_knobs() {
+    IMAGE="${WEALTHDB_WEB_IMAGE:-wealthdb/metabase:latest}"
+    CONTAINER="${WEALTHDB_WEB_CONTAINER:-wealthdb-metabase}"
+    DATA_DIR="${WEALTHDB_WEB_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/web}"
+    BIND="${WEALTHDB_WEB_BIND:-both}"   # both | v4 | v6
+    H2_DIR="$DATA_DIR/metabase"
+    SNAP="$DATA_DIR/snapshot/wealthdb.db"
+}
+
+# _load_config reads the resolved `web` settings (enabled, port) and
+# the gold DB path from wealthdb.cfg, via the engine's `web-config`
+# subcommand — the one component that parses + validates the JSON.
+_load_config() {
+    _require_docker
+    local out
+    if [ -n "${WEALTHDB_CONFIG:-}" ]; then
+        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" web-config)" || out=""
+    else
+        out="$("$WEALTHDB" web-config)" || out=""
+    fi
+    if [ -z "$out" ]; then
+        echo "web: could not read settings via 'wealthdb web-config' (is wealthdb.cfg valid?)" >&2
+        return 1
+    fi
+    eval "$out"
+    ENABLED="${WEALTHDB_WEB_ENABLED:-0}"
+    PORT="${WEALTHDB_WEB_PORT:-3000}"
+    GOLD_DB="${WEALTHDB_GOLD_DB:-}"
+}
+
+_require_docker() {
+    command -v docker >/dev/null 2>&1 || { echo "web: docker not found on PATH" >&2; return 1; }
+}
+
+# ---- pure helpers (unit-tested) ---------------------------------------
+
+# _publish_args PORT BIND → prints `docker run` -p flags (one token
+# per line) for loopback IPv4 and/or IPv6.
+_publish_args() {
+    local port="$1" bind="$2"
+    case "$bind" in
+        v4)   printf '%s\n' -p "127.0.0.1:${port}:3000" ;;
+        v6)   printf '%s\n' -p "[::1]:${port}:3000" ;;
+        both) printf '%s\n' -p "127.0.0.1:${port}:3000" -p "[::1]:${port}:3000" ;;
+        *)    echo "web: invalid WEALTHDB_WEB_BIND '$bind' (want both|v4|v6)" >&2; return 1 ;;
+    esac
+}
+
+# _docker_run_args populates the DOCKER_ARGS array from the resolved
+# globals (IMAGE, CONTAINER, PORT, BIND, H2_DIR, SNAP). Pure (no exec);
+# the unit test sets the globals and inspects the array.
+_docker_run_args() {
+    DOCKER_ARGS=(
+        run -d
+        --name "$CONTAINER"
+        -e MB_DB_FILE=/metabase-data/metabase.db
+        -e MB_ANON_TRACKING_ENABLED=false
+        -v "${H2_DIR}:/metabase-data"
+        -v "${SNAP}:/gold/wealthdb.db:ro"
+    )
+    local tok
+    while IFS= read -r tok; do
+        DOCKER_ARGS+=("$tok")
+    done < <(_publish_args "$PORT" "$BIND")
+    DOCKER_ARGS+=("$IMAGE")
+}
+
+# _snapshot SRC DST copies a DuckDB file at rest to DST atomically
+# (temp + mv). Refuses if SRC has a .wal sidecar (gold mid-write / not
+# checkpointed) so we never capture a torn copy.
+_snapshot() {
+    local src="$1" dst="$2"
+    if [ ! -f "$src" ]; then
+        echo "web: gold DB not found at '$src' (run 'wealthdb init' / 'wealthdb load' first)" >&2
+        return 1
+    fi
+    if [ -e "${src}.wal" ]; then
+        echo "web: '$src' has a .wal sidecar — gold is mid-write or not checkpointed." >&2
+        echo "     Run 'wealthdb web refresh' after 'wealthdb load' finishes (gold at rest)." >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$dst")"
+    local tmp="${dst}.tmp.$$"
+    cp "$src" "$tmp"
+    mv "$tmp" "$dst"
+}
+
+_mtime()      { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown; }
+_is_running() { [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=running 2>/dev/null)" ]; }
+_exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; }
+
+# ---- subcommands ------------------------------------------------------
+
+web_build() { exec docker build -t "$IMAGE" "$HERE" "$@"; }
+
+web_start() {
+    _load_config
+    if [ "$ENABLED" != 1 ]; then
+        echo "web: not enabled. Add a \"web\" block to wealthdb.cfg, e.g.:" >&2
+        echo '      "web": { "enabled": true, "port": 3000 }' >&2
+        return 1
+    fi
+    if _is_running; then
+        echo "web: already running (container $CONTAINER). Use 'wealthdb web restart'." >&2
+        return 1
+    fi
+    _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
+    mkdir -p "$H2_DIR" "$(dirname "$SNAP")"
+    [ -f "$SNAP" ] || { echo "web: taking initial gold snapshot…" >&2; _snapshot "$GOLD_DB" "$SNAP"; }
+
+    _docker_run_args
+    if ! docker "${DOCKER_ARGS[@]}" >/dev/null; then
+        if [ "$BIND" = both ]; then
+            echo "web: dual-stack publish failed; retrying IPv4-only (set WEALTHDB_WEB_BIND=v4 to silence)." >&2
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+            BIND=v4
+            _docker_run_args
+            docker "${DOCKER_ARGS[@]}" >/dev/null
+        else
+            return 1
+        fi
+    fi
+    _provision
+    _start_banner
+}
+
+web_stop() {
+    if _exists; then
+        docker stop "$CONTAINER" >/dev/null 2>&1 || true
+        docker rm   "$CONTAINER" >/dev/null 2>&1 || true
+        echo "web: stopped $CONTAINER (Metabase metadata kept in $H2_DIR)"
+    else
+        echo "web: no container '$CONTAINER' to stop"
+    fi
+}
+
+web_status() {
+    _load_config
+    if _is_running; then
+        echo "web: running   container=$CONTAINER   port=$PORT (bind=$BIND)"
+        echo "     url: http://127.0.0.1:$PORT/   (and http://[::1]:$PORT/ if IPv6 published)"
+    elif _exists; then
+        echo "web: stopped   (container $CONTAINER exists but is not running)"
+    else
+        echo "web: not running   (no container $CONTAINER)"
+    fi
+    if [ -f "$SNAP" ]; then
+        echo "     snapshot: $SNAP  (as of $(_mtime "$SNAP"))"
+    else
+        echo "     snapshot: none yet — created on 'wealthdb web start' / 'refresh'"
+    fi
+    echo "     live gold: ${GOLD_DB:-<unset>}"
+    [ "$ENABLED" = 1 ] || echo "     note: web.enabled is not set in wealthdb.cfg"
+}
+
+web_refresh() {
+    _load_config
+    echo "web: refreshing snapshot from $GOLD_DB …" >&2
+    _snapshot "$GOLD_DB" "$SNAP"
+    echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
+    if _is_running; then
+        docker restart "$CONTAINER" >/dev/null
+        echo "web: restarted $CONTAINER to serve the new snapshot"
+    fi
+}
+
+web_logs() { _require_docker; exec docker logs -f "$CONTAINER"; }
+
+# _gen_password makes a random password meeting Metabase's complexity
+# rule (>=1 lower/upper/digit/special).
+_gen_password() {
+    printf '%sAa1!' "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
+}
+
+# _provision creates the admin (skipping the browser setup wizard) and
+# pre-adds the gold DuckDB database via web/provision.py. Idempotent.
+# Admin email/password come from env (WEALTHDB_WEB_ADMIN_EMAIL/PASSWORD,
+# e.g. from ~/.secrets/wealthdb-web.env); an unset password is generated
+# once and saved (chmod 600). Sets PROV_LOGIN for the start banner.
+_provision() {
+    if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
+        echo "web: auto-provision disabled (WEALTHDB_WEB_NO_PROVISION=1)." >&2
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "web: python3 not found — skipping auto-provision (browser wizard will show)." >&2
+        return 0
+    fi
+    local email pwfile pw pwhint
+    email="${WEALTHDB_WEB_ADMIN_EMAIL:-admin@wealthdb.local}"
+    pwfile="$DATA_DIR/admin-password.txt"
+    if [ -n "${WEALTHDB_WEB_ADMIN_PASSWORD:-}" ]; then
+        pw="$WEALTHDB_WEB_ADMIN_PASSWORD"; pwhint="from \$WEALTHDB_WEB_ADMIN_PASSWORD"
+    elif [ -f "$pwfile" ]; then
+        pw="$(cat "$pwfile")"; pwhint="in $pwfile"
+    else
+        pw="$(_gen_password)"
+        (umask 077; printf '%s\n' "$pw" > "$pwfile")
+        pwhint="generated, saved to $pwfile"
+    fi
+    echo "web: provisioning Metabase (admin + gold database)…" >&2
+    if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
+         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold; then
+        PROV_LOGIN="log in as $email (password $pwhint)"
+    else
+        PROV_LOGIN="auto-provision incomplete — finish setup in the browser"
+    fi
+}
+
+_start_banner() {
+    cat >&2 <<EOF
+web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
+
+  ${PROV_LOGIN:-create the admin account in the browser}
+
+  From a laptop, tunnel the port and open it locally:
+      ssh -L $PORT:127.0.0.1:$PORT <this-host>
+      open http://127.0.0.1:$PORT/
+
+  The gold DuckDB database is pre-added as a read-only snapshot. Run
+  'wealthdb web refresh' after each 'wealthdb load' to update the data.
+EOF
+}
+
+web_help() {
+    cat <<'EOF'
+wealthdb web — optional dockerized Metabase BI server (host-side)
+
+usage:
+  wealthdb web <subcommand>
+
+subcommands:
+  start      snapshot gold (if needed) and run Metabase, detached
+  stop       stop + remove the container (keeps dashboards/users in H2)
+  status     running state, published port, snapshot freshness
+  restart    stop then start
+  refresh    re-copy gold → read-only snapshot, then restart Metabase
+             (run after 'wealthdb load' to update the data)
+  logs       follow the container logs
+  build      build the wealthdb/metabase image
+  help       this message
+
+Metabase reads a read-only SNAPSHOT of gold (never the live file), so
+it never blocks 'wealthdb load'. Published on 127.0.0.1 + [::1] only;
+reach it via SSH port-forward + Metabase's own login. Enable it with a
+"web" block in wealthdb.cfg:
+
+      "web": { "enabled": true, "port": 3000 }
+
+Auto-provision (default on): creates the admin + pre-adds the gold DB,
+skipping the browser setup wizard. Credentials:
+  WEALTHDB_WEB_ADMIN_EMAIL     (default admin@wealthdb.local)
+  WEALTHDB_WEB_ADMIN_PASSWORD  (unset = generated + saved chmod 600)
+  WEALTHDB_WEB_NO_PROVISION=1  (skip it; use the browser wizard instead)
+Secrets may also live in ~/.secrets/wealthdb-web.env.
+
+env overrides: WEALTHDB_CONFIG (non-default wealthdb.cfg path),
+WEALTHDB_WEB_IMAGE, WEALTHDB_WEB_CONTAINER, WEALTHDB_WEB_DATA_DIR,
+WEALTHDB_WEB_BIND (both|v4|v6).
+EOF
+}
+
+web_main() {
+    set -euo pipefail
+    # Optional secrets env for admin creds etc. (repo convention:
+    # secrets live in ~/.secrets, never in the config file).
+    local envf="${WEALTHDB_WEB_ENV_FILE:-$HOME/.secrets/wealthdb-web.env}"
+    [ -f "$envf" ] && . "$envf"
+    _resolve_knobs
+    local cmd="${1:-help}"
+    if [ "$#" -gt 0 ]; then shift; fi
+    case "$cmd" in
+        build)            web_build "$@" ;;
+        start)            web_start ;;
+        stop)             web_stop ;;
+        status)           web_status ;;
+        restart)          web_stop; web_start ;;
+        refresh)          web_refresh ;;
+        logs)             web_logs ;;
+        help|-h|--help)   web_help ;;
+        *) printf 'web: unknown subcommand %q\n\n' "$cmd" >&2; web_help; return 2 ;;
+    esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    web_main "$@"
+fi

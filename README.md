@@ -22,6 +22,7 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
 | Component | Role | Runtime | Source |
 | --- | --- | --- | --- |
 | [`wealthdb/`](wealthdb/) | Gold engine + `wealthdb` CLI | Go (Docker) | reads all silvers |
+| [`web/`](web/) | Optional Metabase BI server (`wealthdb web`) | Docker (Metabase) | reads a read-only gold snapshot |
 | [`collectors/schwab-api/`](collectors/schwab-api/) | Schwab holdings/tx | Python venv | Schwab Trader API (OAuth) |
 | [`collectors/schwab-web/`](collectors/schwab-web/) | Schwab statements/history | Docker (Camoufox) | client-web scrape |
 | [`collectors/ubs-psn/`](collectors/ubs-psn/) | UBS structured feed | Python venv | PSN SFTP (nightly) |

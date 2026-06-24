@@ -46,6 +46,33 @@ type Config struct {
 	// the subcommand fails loudly if Model is unset and
 	// --overrides-only wasn't passed.
 	SymbolResolution *SymbolResolutionConfig `json:"symbol_resolution,omitempty"`
+	// Web configures the optional dockerized Metabase BI server
+	// (`wealthdb web …`). Absent/omitted = not configured; `wealthdb
+	// web start` refuses with a pointer to this block. The server is
+	// host-orchestrated (Docker isn't reachable from inside the
+	// engine container) and reads a read-only *snapshot* of gold, so
+	// it never contends for the single-writer lock. See web/DESIGN.md.
+	Web *WebConfig `json:"web,omitempty"`
+}
+
+// DefaultWebPort is the host loopback port the Metabase server is
+// published on when `web.port` is omitted. 3000 is Metabase's own
+// default.
+const DefaultWebPort = 3000
+
+// WebConfig is the optional `web` block of wealthdb.cfg, driving the
+// dockerized Metabase server managed by `wealthdb web`. The lifecycle
+// runs host-side; the host wrapper reads these settings back via the
+// `web-config` subcommand (the one component that already parses this
+// JSON). Keep the field names in sync with web/web.
+type WebConfig struct {
+	// Enabled gates `wealthdb web start`. False (or an omitted block)
+	// means the server is not configured.
+	Enabled bool `json:"enabled"`
+	// Port is the loopback port Metabase is published on
+	// (127.0.0.1:Port and [::1]:Port → container :3000). Zero/omitted
+	// → DefaultWebPort.
+	Port int `json:"port,omitempty"`
 }
 
 // SymbolResolutionConfig is the `symbol_resolution` block of

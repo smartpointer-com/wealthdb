@@ -1,0 +1,9 @@
+# Local Metabase state / gold snapshot, in case WEALTHDB_WEB_DATA_DIR
+# is ever pointed inside the repo. Normally these live under
+# $XDG_DATA_HOME/wealthdb/web/ (outside the repo).
+metabase/
+snapshot/
+admin-password.txt
+*.tmp.*
+__pycache__/
+*.pyc
