@@ -543,6 +543,74 @@ def scrape_positions(page, bronze_dir, capture_dir):
 # Activity & Orders — one consolidated CSV per date-window
 # ---------------------------------------------------------------------------
 
+def _probe_activity_date_bounds(page, capture_dir):
+    """Open the page-level time-period picker → Custom tab, read the
+    ``min`` / ``max`` attributes off the date inputs, return
+    ``(min_date, max_date)``. Either may be ``None`` if the probe
+    couldn't reach the inputs (selector drift, picker collapsed,
+    no bounds set). Doesn't click Apply — purely a read.
+
+    Called once at the start of an activity backfill so the
+    chunker can clamp the requested ``--since`` / ``--until`` to
+    Fidelity's available retention window. Without this clamp, a
+    ``--lookback all`` against multi-decade history burns one
+    pointless round-trip per 93-day window walking from the
+    requested start up to Fidelity's retention floor (each clamps
+    to the same single-day window and overwrites the same CSV
+    file).
+    """
+    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
+    if pill.count() == 0:
+        log.debug("timepicker pill not found; bounds probe aborted")
+        return None, None
+    try:
+        pill.first.evaluate(
+            "el => { (el.querySelector('button') || el).click(); }"
+        )
+    except Exception as e:
+        log.debug("timepicker pill open click (probe): %s", e)
+        return None, None
+    time.sleep(0.8)
+    custom_segment = page.locator("apex-kit-segment[pvd-value='Custom']")
+    if custom_segment.count() == 0:
+        log.debug("Custom tab not found; bounds probe aborted")
+        return None, None
+    try:
+        custom_segment.first.evaluate(
+            "el => { "
+            "  const inp = el.querySelector('input[type=radio]'); "
+            "  if (inp) inp.click(); else el.click(); "
+            "}"
+        )
+    except Exception as e:
+        log.debug("Custom tab click (probe): %s", e)
+        return None, None
+    time.sleep(0.8)
+    capture(page, capture_dir, "activity-custom-bounds-probe")
+    from_input = page.locator("#customized-timeperiod-from-date").first
+    to_input = page.locator("#customized-timeperiod-to-date").first
+    if from_input.count() == 0 or to_input.count() == 0:
+        log.debug("Custom-tab date inputs not found; bounds probe aborted")
+        return None, None
+    def _read(loc):
+        try:
+            return loc.evaluate(
+                "el => ({min: el.min || null, max: el.max || null})"
+            )
+        except Exception:
+            return {"min": None, "max": None}
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return None
+    fb = _read(from_input)
+    tb = _read(to_input)
+    return _parse(fb.get("min")), _parse(tb.get("max"))
+
+
 def _select_activity_custom_range(page, since_date, until_date,
                                      capture_dir, label_suffix):
     """Drive the page-level time-period filter pill to its
@@ -660,6 +728,7 @@ def _select_activity_custom_range(page, since_date, until_date,
             "(#customized-timeperiod-from-date / -to-date)"
         )
         return None
+    orig_since, orig_until = since_date, until_date
     filled_since = _fill_date(from_input, since_date)
     filled_until = _fill_date(to_input, until_date)
     if not filled_since or not filled_until:
@@ -670,6 +739,24 @@ def _select_activity_custom_range(page, since_date, until_date,
         log.warning(
             "Custom-range date fill failed (since=%s, until=%s)",
             filled_since, filled_until,
+        )
+        return None
+    # Defensive: if both endpoints collapsed onto the same boundary
+    # after clamping (and the caller's original window was wider),
+    # we're outside Fidelity's retention — fetching would return
+    # the same single-day CSV over and over, overwriting any real
+    # data the same chunker emits for in-range windows. Bail out
+    # of just this window; `scrape_activity` does a one-time
+    # pre-flight probe (`_probe_activity_date_bounds`) to clamp
+    # the overall range upfront, so reaching this branch means
+    # Fidelity shifted its retention floor mid-run or the probe
+    # failed.
+    if filled_since == filled_until and orig_since != orig_until:
+        log.warning(
+            "activity Custom-range collapsed by clamping "
+            "(requested %s..%s, clamped to %s); skipping window",
+            orig_since.isoformat(), orig_until.isoformat(),
+            filled_since.isoformat(),
         )
         return None
     since_date, until_date = filled_since, filled_until
@@ -996,6 +1083,36 @@ def scrape_activity(page, since_date, until_date,
 
     # Custom-range path — historic backfill, one CSV per ≤93d window.
     if since_date is not None and until_date is not None:
+        # Pre-flight: clamp the requested range to whatever
+        # Fidelity exposes in its Custom-tab min/max attributes
+        # (typically ~5 years of retention). Without this clamp,
+        # a `--lookback all` against a 30-year requested window
+        # would chunk into ~120 same-empty-CSV iterations before
+        # the cursor reaches the available range.
+        fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
+        if fmin and since_date < fmin:
+            log.info(
+                "activity backfill: clamping requested since=%s up "
+                "to Fidelity's earliest available %s",
+                since_date.isoformat(), fmin.isoformat(),
+            )
+            since_date = fmin
+        if fmax and until_date > fmax:
+            log.info(
+                "activity backfill: clamping requested until=%s "
+                "down to Fidelity's latest available %s",
+                until_date.isoformat(), fmax.isoformat(),
+            )
+            until_date = fmax
+        if until_date < since_date:
+            log.info(
+                "activity backfill: requested range falls entirely "
+                "outside Fidelity's available window (probed %s..%s); "
+                "skipping activity phase",
+                fmin and fmin.isoformat(),
+                fmax and fmax.isoformat(),
+            )
+            return []
         windows = make_activity_windows(since_date, until_date)
         log.info(
             "activity backfill: windows=%d (since=%s until=%s)",
