@@ -14,8 +14,10 @@
 //
 // fred is a FALLBACK FX source: where another source (e.g. ubs-psn) has a
 // rate for a date, gold prefers that one; fred fills the rest. That
-// precedence lives in the gold FX resolver (internal/gold/fx.go), which
-// ranks reference sources below account sources.
+// precedence is data-driven — the gold fx_daily view orders by the
+// silver_sources.fx_priority column (stamped from config by
+// gold.SetFxPriorities), which ranks reference sources below account
+// sources.
 package fred
 
 import (

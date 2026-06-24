@@ -53,7 +53,9 @@ wealthdb/
 │   │       └── detect.go               kind="auto" sniffing via sqlite_master
 │   ├── gold/
 │   │   ├── migrations/                 SQL lives here (Go embed needs local path)
-│   │   │   └── 0001_initial.sql
+│   │   │   ├── 0001_initial.sql
+│   │   │   ├── 0020_fx_views.sql       fx_norm / fx_daily currency-conversion views
+│   │   │   └── 0021_report_macros.sql  report_* table macros (single source of truth)
 │   │   ├── schema.go                   //go:embed migrations/*.sql; Migrate()
 │   │   ├── open.go                     Open(path, mode); maps to DuckDB access_mode
 │   │   ├── writer.go                   inserts/upserts per canonical type, batched
@@ -62,7 +64,7 @@ wealthdb/
 │   │   ├── status.go                   gold-side queries for `wealthdb status`
 │   │   ├── snapshots.go                `wealthdb snapshots` query
 │   │   ├── positions.go                as-of query
-│   │   ├── fx.go                       historic/current FX with interpolation
+│   │   ├── fxpriority.go               SetFxPriorities: stamp silver_sources.fx_priority on load
 │   │   └── *_test.go                   in-memory DuckDB
 │   ├── config/
 │   │   ├── config.go                   types + JSON load/save
@@ -299,9 +301,11 @@ Coverage:
   never retreats (the DESIGN.md §8.4 guard).
 - Positions as-of query with multiple silvers at independent
   latest snapshots.
-- FX interpolation: exact match, bracketing pair, flat
-  extrapolation past edges, reciprocal-pair fallback. Golden
-  table-driven (target_ts × pair × mode → expected rate).
+- FX conversion via the `fx_norm` / `fx_daily` views: flat nearest
+  rate at or before the target day (no interpolation); direct and
+  reciprocal both resolve from `fx_norm`; CHF-then-USD triangulation
+  for crosses; a missing rate yields NULL (empty cell, not an error).
+  Golden table-driven (target_day × pair × mode → expected rate).
 - Reset: FK delete order correct; subsequent re-load works with
   watermark reset to `-1`.
 

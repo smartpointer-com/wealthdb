@@ -39,7 +39,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
 	currency := fs.String("x", "", "output currency for the _<CCY> aggregate columns (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)")
 	privacy := fs.Bool("p", false, "redact account IDs / quantities / monetary amounts in the output")
 	fs.BoolVar(privacy, "privacy", false, "redact account IDs / quantities / monetary amounts in the output")
 	fs.Usage = func() {
@@ -213,7 +213,7 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
+      --fx-mode MODE       'historic' (default; nearest rate at-or-before the snapshot) or 'current' (latest rate)
   -p, --privacy            redact account IDs, quantities, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

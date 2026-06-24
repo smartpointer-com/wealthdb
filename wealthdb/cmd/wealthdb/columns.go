@@ -9,8 +9,8 @@ import (
 )
 
 // columnSpec describes one named output column. T is the row
-// type the Extract function takes — gold.AccountRow,
-// gold.PortfolioRow, renderedPosition, or renderedTx in this
+// type the Extract function takes — gold.PositionRow,
+// gold.TransactionRow, gold.AccountRow, gold.PortfolioRow in this
 // codebase.
 type columnSpec[T any] struct {
 	Name    string

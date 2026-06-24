@@ -35,7 +35,7 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
 	currency := fs.String("x", "", "output currency for the _<CCY> columns (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)")
 	privacy := fs.Bool("p", false, "redact the monetary amounts in the output")
 	fs.BoolVar(privacy, "privacy", false, "redact the monetary amounts in the output")
 	fs.Usage = func() {
@@ -141,7 +141,7 @@ Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (table | csv | csv_plain | json)
   -x, --currency CCY       output currency for the _<CUR> columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; rate at snapshot time, interpolated) or 'current' (latest rate)
+      --fx-mode MODE       'historic' (default; nearest rate at-or-before the snapshot) or 'current' (latest rate)
   -p, --privacy            redact the monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)`
 }

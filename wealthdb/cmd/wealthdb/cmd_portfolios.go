@@ -56,7 +56,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
 	currency := fs.String("x", "", "output currency for the _<CCY> aggregate columns (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (rate at snapshot time, interpolated) or 'current' (latest available)")
+	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)")
 	privacy := fs.Bool("p", false, "redact portfolio / account IDs and monetary amounts in the output")
 	fs.BoolVar(privacy, "privacy", false, "redact portfolio / account IDs and monetary amounts in the output")
 	fs.Usage = func() {

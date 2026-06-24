@@ -61,8 +61,8 @@ strictly relational, and the surface that future analytics
   reports can be rendered in any ISO currency; the choice is made
   per-invocation, not baked into the database. FX conversion uses
   either "current" rates (latest available) or "historic" rates
-  (*default*, snapshot-time, with linear interpolation between
-  adjacent snapshotted rates). See §10.6.
+  (*default*, snapshot-time): the flat nearest rate at or before
+  the line's own day, no interpolation. See §10.6.
 - **Hands-off operation.** Non-interactive CLI. One process, one
   database, no daemons. Re-runs are idempotent.
 - **Read-only sharing.** A single gold DB file can be served
@@ -172,7 +172,7 @@ Prints the consolidated portfolio as of a date.
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
 | `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
-| `--fx-mode` | `historic` | `historic` = convert using the FX rate at each position's snapshot time (linear interpolation between snapshotted rates); `current` = convert using the latest FX rate available, regardless of snapshot time. |
+| `--fx-mode` | `historic` | `historic` = convert using the flat nearest FX rate at or before each position's snapshot day (no interpolation; a day before the first known rate yields an empty value cell); `current` = convert using the latest FX rate available, regardless of snapshot time. |
 | `--include-cash` | on | Include cash balances as synthetic rows with `asset_class = 'cash'`. |
 
 Formats:
@@ -185,8 +185,8 @@ Formats:
 Output columns always include `currency` (the position's natural
 currency, e.g. USD for a US equity) and `value_<CURRENCY>` (the
 converted value in the requested output currency). When the natural
-currency equals the output currency, the rate is `1.0` and no
-interpolation runs.
+currency equals the output currency, the conversion is the identity
+and the value passes through unchanged.
 
 Internally: for each silver source, find the latest `snapshot_at` ≤
 `--as-of` by querying `MAX(snapshot_at)` on `positions` /
@@ -1018,11 +1018,12 @@ CREATE TABLE cash_balances (
 --
 -- Multiple silvers may publish overlapping rates (UBS TDFXR,
 -- Swissquote List-of-Assets row's `rate_to_chf`, the `fred` reference
--- feed). We keep all rows and let the FX resolver pick per conversion:
--- it prefers the rate from the highest-priority source covering the
--- target day, falling back to the next. Priority is the per-source
+-- feed). We keep all rows and let the `fx_daily` view (§10.6) pick per
+-- (pair, UTC day): it prefers the rate from the highest-priority source
+-- covering that day, falling back to the next. Priority is the per-source
 -- `silver_sources[].fx_priority` config field (lower = higher priority,
--- absent = lowest, ties by config order). See §10.6 / §13.2.
+-- absent = lowest, ties by config order), stamped into the
+-- `silver_sources.fx_priority` gold column on load. See §10.6 / §13.2.
 -- ============================================================
 
 CREATE TABLE fx_rates (
@@ -1037,10 +1038,11 @@ CREATE TABLE fx_rates (
     PRIMARY KEY (silver_source_id, snapshot_at, base_currency, quote_currency)
 );
 
--- Lookup index for currency conversion at query time. The interpolation
--- query in §10.6 needs the closest fx_rates rows below and above a
--- target timestamp for a given (base, quote) pair; this index makes
--- that an O(log N) range scan instead of a full table scan.
+-- Lookup index for currency conversion at query time. The `fx_norm` /
+-- `fx_daily` views in §10.6 scan fx_rates by (base, quote) pair ordered
+-- by snapshot_at to pick the per-day winner and the most recent rate at
+-- or before a target day; this index makes that an O(log N) range scan
+-- instead of a full table scan.
 CREATE INDEX ix_fx_rates_pair_time
     ON fx_rates(base_currency, quote_currency, snapshot_at);
 
@@ -1322,9 +1324,9 @@ re-run `wealthdb init`.
 > the observable result a reader should expect; the actual Go
 > code may use prepared statements, batched/multi-row inserts,
 > different join orderings, CTE inlining or de-inlining,
-> DuckDB-specific extensions (`ASOF JOIN`, `interpolate`-style
-> window functions, scalar UDFs), or query rewrites for
-> performance — as long as the result is equivalent.
+> DuckDB-specific extensions (`ASOF JOIN`, window functions,
+> views, table macros), or query rewrites for performance — as
+> long as the result is equivalent.
 > Pseudo-SQL and pseudo-code blocks in §8 are likewise
 > illustrative of the load orchestration, not a literal program
 > the implementation must mirror.
@@ -1386,104 +1388,83 @@ SELECT * FROM positions
 `acquisition_date` will be NULL initially; a future migration
 populates it from `transactions` history.
 
-### 10.5 Net worth by bank (future, sketch)
+### 10.5 Net worth by bank
 
-```sql
-SELECT silver_source_id,
-       SUM(market_value * fx.rate) AS networth_in_output
-  FROM positions p
-  CROSS JOIN LATERAL fx_rate_at(p.currency, :output_currency,
-                                 p.snapshot_at, :fx_mode) AS fx
- WHERE p.snapshot_at IN (SELECT MAX(snapshot_at) ...)
- GROUP BY silver_source_id;
-```
+This is implemented as the `report_accounts` table macro (migration
+0021), which rolls each account's latest-snapshot positions and cash up
+to a single converted value per account, grouped under its silver
+source. The conversion to `:output_currency` is the §10.6 `fx_daily`
+lookup applied per line; the macro takes `:output_currency` and an
+as-of as parameters and is invoked from both the CLI
+(`SELECT * FROM report_accounts(?, ?)`) and the Metabase models.
 
-See §10.6 for `fx_rate_at`. FX-source precedence among silvers is a
-separate design point (§13.2).
+See §10.6 for the conversion itself. FX-source precedence among silvers
+is a separate design point (§13.2).
 
 ### 10.6 Currency conversion with historic FX rates
 
-Every value-producing query goes through a helper that resolves a
-rate from `(natural_currency, output_currency, target_timestamp,
-mode)` to a single DECIMAL. The helper is implemented as a SQL
-expression / scalar UDF; pseudocode below.
+Currency conversion lives **entirely in SQL** — two DuckDB views plus
+the report macros, defined in migrations `0020_fx_views.sql` and
+`0021_report_macros.sql`. There is no Go-side resolver: every
+value-producing query reaches the same rates through these views, so
+the CLI and the Metabase models convert identically by construction.
 
-**Trivial case.** `natural == output` ⇒ rate is `1.0`. No lookup,
-no interpolation.
+**`fx_norm` — both directions, with priority.** Each stored `fx_rates`
+row `(base_currency, quote_currency, mid_rate)` means "1 `quote` =
+`mid_rate` `base`". `fx_norm` emits every row in **both** directions: a
+direct `quote → base` rate of `mid_rate`, and a reciprocal `base →
+quote` rate of `1 / mid_rate`. Each emitted edge carries its source's
+`silver_sources.fx_priority` (NULL coalesced to a max sentinel so
+priority-less sources sort last).
 
-**`current` mode.** Use the latest available `fx_rates` row for
-the pair (regardless of `target_timestamp`):
+**`fx_daily` — one winner per pair per UTC day.** `fx_norm`'s edges are
+bucketed to the UTC day (`snapshot_at // 86400`). Within each
+`(from_ccy, to_ccy, day)`, a `ROW_NUMBER()` ordered by `fx_priority`
+ASC, then `snapshot_at` DESC picks a single winning rate. So a day two
+sources both cover goes to the higher-priority source; a day only one
+covers is filled by that one. (A reference source like `fred` thus
+keeps the deep historic tail an account source lacks, without
+overriding that account source on the days they overlap.)
 
-```sql
-SELECT mid_rate
-  FROM fx_rates
- WHERE base_currency = :natural
-   AND quote_currency = :output
- ORDER BY snapshot_at DESC
- LIMIT 1;
-```
+**Conversion inside the report macros.** The macros convert a line by
+an **ASOF LEFT JOIN** to `fx_daily` that takes the most recent rate **at
+or before** the line's own day — flat, with no interpolation between
+rates and nothing before the first known rate. A day with no rate
+at-or-before yields `NULL` → an **empty value cell**, not an error and
+not a guess. The lookup is a `COALESCE` that tries, in order, the
+first leg that resolves winning:
 
-If no such row exists, try the reciprocal pair and invert the
-rate. If neither direction has any row, the query fails with a
-"no FX rate available for X→Y" error — silent NULLs would corrupt
-roll-ups.
+1. **identity** — when `from == to`, the amount passes through unchanged;
+2. **direct** — the `from → to` rate from `fx_daily`;
+3. **triangulate through CHF** — `from → CHF → to`;
+4. **triangulate through USD** — `from → USD → to`.
 
-**`historic` mode.** Use the rate bracketing `:target_timestamp`,
-linearly interpolated:
+CHF and USD are the pivots because the feeds publish mostly CHF→X
+(UBS, Swissquote) and X→USD (FRED, crypto) pairs, so almost every
+needed cross resolves through one of them. Direct and reciprocal pairs
+are already both present in `fx_norm`, so leg 2 covers either
+direction without a separate fallback.
 
-```sql
-WITH below AS (
-    SELECT snapshot_at, mid_rate
-      FROM fx_rates
-     WHERE base_currency = :natural
-       AND quote_currency = :output
-       AND snapshot_at <= :target_timestamp
-     ORDER BY snapshot_at DESC
-     LIMIT 1
-),
-above AS (
-    SELECT snapshot_at, mid_rate
-      FROM fx_rates
-     WHERE base_currency = :natural
-       AND quote_currency = :output
-       AND snapshot_at >= :target_timestamp
-     ORDER BY snapshot_at ASC
-     LIMIT 1
-)
-SELECT CASE
-    WHEN below.snapshot_at = :target_timestamp THEN below.mid_rate
-    WHEN above.snapshot_at IS NULL THEN below.mid_rate              -- extrapolate flat past last known
-    WHEN below.snapshot_at IS NULL THEN above.mid_rate              -- extrapolate flat before first known
-    ELSE below.mid_rate
-       + (above.mid_rate - below.mid_rate)
-       * (:target_timestamp - below.snapshot_at)
-       / (above.snapshot_at - below.snapshot_at)
-END AS rate
-  FROM below FULL OUTER JOIN above ON TRUE;
-```
+**`current` vs `historic`.** Both modes use the same ASOF machinery;
+they differ only in the as-of passed to the macro:
 
-The same reciprocal-fallback applies: if no `(natural, output)`
-pair is found at all, try `(output, natural)` and invert.
+- **`historic`** (default) passes the real as-of date, so each line
+  lands on the newest rate at or before its own day.
+- **`current`** passes an as-of of `MAX(BIGINT)`, so the ASOF join
+  always lands on each source's latest snapshot.
 
-The interpolation is over Unix-second timestamps. For a daily-
-dump regime (typical), bracketing pairs are usually one day apart,
-making the linear assumption sound. Across multi-week gaps the
-assumption gets weaker but degrades gracefully.
+There is **no linear interpolation** in either mode, and a missing
+rate never fails the command — it leaves the value cell empty.
 
-`ix_fx_rates_pair_time` makes both `below` and `above` lookups
-single-row index probes.
-
-**Cross-silver precedence.** When multiple silvers publish the
-same `(base, quote)` pair, the queries above don't filter by
-`silver_source_id`; instead they order by **UTC day first** (so the
-nearest day always wins — a reference source like `fred` keeps the deep
-historic tail an account source lacks), then by a **source-priority
-tiebreak**, then by exact timestamp. The priority is the per-source
-`silver_sources[].fx_priority` config field (lower = higher priority,
-absent = lowest, ties by config declaration order), surfaced to the
-resolver via `gold.SetFxSourceOrder`. So on a day two sources both
-cover, the higher-priority source wins; on days only one covers, that
-one fills in. See §13.2.
+**Cross-silver precedence.** Precedence is **data, not runtime state**.
+Migration `0019` added a `silver_sources.fx_priority` INTEGER column;
+on every `load` / `reload`, `gold.SetFxPriorities(ctx, db,
+cfg.FxSourceOrder())` stamps each source's rank into it (rank 0 =
+highest priority; sources not listed = NULL = lowest). The config field
+is still `silver_sources[].fx_priority` (lower = higher priority,
+absent = lowest, ties broken by config declaration order), flattened by
+`config.FxSourceOrder()`. `fx_norm` / `fx_daily` read the stamped
+column. See §13.2.
 
 ## 11. Repository layout
 
@@ -1723,20 +1704,26 @@ actually bites.
 whichever row sorted first). Of the options floated, the implemented
 rule is the **configured per-source** one, refined with a day-bucket
 tiebreak so a reference source never overrides an account source on the
-days they overlap:
+days they overlap. Precedence is now **data, not runtime state**: it
+rides on a stamped gold column that the `fx_daily` view reads.
 
-- The lookups order by **UTC day first**, so the snapshot nearest the
-  target day always wins — a reference source (e.g. `fred`, reaching
-  back to 1971) keeps the deep historic tail a daily account source
-  lacks, without overriding that account source on days it covers.
+- `fx_daily` (§10.6) buckets each `(from, to)` pair to the **UTC day**,
+  so the snapshot nearest the target day always wins — a reference
+  source (e.g. `fred`, reaching back to 1971) keeps the deep historic
+  tail a daily account source lacks, without overriding that account
+  source on days it covers.
 - **Within a day**, a source-priority tiebreak chooses the winner: the
   per-source `silver_sources[].fx_priority` config field — lower = higher
   priority, absent/null = lowest, ties broken by config declaration
-  order. `config.Config.FxSourceOrder()` flattens this to an ordered
-  list of `silver_source_id`s; the read commands push it into the gold
-  FX resolver via `gold.SetFxSourceOrder`, and `internal/gold/fx.go`
-  emits it as a `CASE silver_source_id … END` ORDER BY fragment.
-- **Exact timestamp** breaks any remaining tie.
+  order. `config.FxSourceOrder()` flattens this to an ordered list of
+  `silver_source_id`s; on every `load` / `reload`,
+  `gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder())` stamps each
+  source's rank into the `silver_sources.fx_priority` gold column (added
+  by migration `0019`; rank 0 = highest, unlisted = NULL = lowest), and
+  the `fx_norm` / `fx_daily` views read that column directly. (The old
+  runtime hook `gold.SetFxSourceOrder` and `internal/gold/fx.go` are
+  gone.)
+- **Exact timestamp** (`snapshot_at` DESC) breaks any remaining tie.
 
 Still out of scope today: non-snapshotted FX sources (e.g. ECB
 reference rates, or a manually maintained `fx_overrides` table for

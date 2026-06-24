@@ -474,13 +474,13 @@ SELECT
 // gold's `value_USD` / `wealthdb transactions -x USD` for any row
 // whose Currency is a non-base asset — staking rewards, crypto
 // transfers, Other Fees paid in non-base coins, etc. — by giving
-// gold's ConvertValue a direct base→quote rate.
+// gold's SQL FX layer a direct base→quote rate.
 //
 // Each rate's snapshot_at is the price's `as_of_date` at UTC
-// midnight, so gold's historic-mode bracket interpolation picks
-// up the right day. Fiat-to-USD rates (EUR→USD, CHF→USD,
-// frankfurter-sourced) get the same treatment, which means an
-// EUR-base portfolio's USD valuation works through the direct
+// midnight, so gold's historic-mode (nearest rate at or before the
+// day) lookup picks up the right day. Fiat-to-USD rates (EUR→USD,
+// CHF→USD, frankfurter-sourced) get the same treatment, which means
+// an EUR-base portfolio's USD valuation works through the direct
 // pair as well.
 func (c *Connection) appendFxRates(ctx context.Context, batch *canonical.SnapshotBatch) error {
 	const q = `

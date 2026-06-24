@@ -322,9 +322,9 @@ func (b BalanceKind) Valid() bool {
 	return ok
 }
 
-// FxMode controls how `wealthdb positions -x <currency>` resolves
-// the FX rate for each row: at the position's snapshot time
-// (historic, interpolated) or at the most-recent available rate
+// FxMode controls how the `-x <currency>` reports resolve the FX
+// rate for each row: the nearest rate at or before the row's
+// snapshot time (historic) or the most-recent available rate
 // (current).
 type FxMode string
 

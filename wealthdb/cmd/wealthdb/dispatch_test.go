@@ -311,7 +311,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	}
 
 	// Bad currency → exit 2.
-	_, se, code = run(t, "-c", cfg, "positions", "-x", "DOLLAR")
+	_, _, code = run(t, "-c", cfg, "positions", "-x", "DOLLAR")
 	if code != 2 {
 		t.Errorf("bad currency exit = %d, want 2", code)
 	}
