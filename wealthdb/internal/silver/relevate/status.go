@@ -14,6 +14,14 @@ import (
 // a transaction-history endpoint, so the deposits_endpoint
 // source produces zero rows today). The transaction-extrema
 // fields stay at the -1 sentinel until that changes.
+//
+// OldestSnapshotAt / LatestSnapshotAt span both live (dump_runs)
+// and historical (Quartalsbericht-derived) tables — that's the
+// user-facing question "what dates does relevate cover in gold?".
+// LatestChangeNumber stays bound to MAX(dump_runs.snapshot_at) —
+// it's the "what new bronze has gold not seen yet" watermark, and
+// historical rows are deterministic outputs of the loader's PDF
+// parse step, not a separate change source.
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 	s := canonical.Status{
 		OldestSnapshotAt:    -1,
@@ -49,6 +57,22 @@ SELECT
 	if latestRun.Valid {
 		s.LatestChangeNumber = latestRun.Int64
 	}
+
+	// Fold the historical tables into the snapshot range.
+	histMin, histMax, err := c.historicalRange(ctx)
+	if err != nil {
+		return s, err
+	}
+	if histMin >= 0 {
+		if s.OldestSnapshotAt == -1 || histMin < s.OldestSnapshotAt {
+			s.OldestSnapshotAt = histMin
+		}
+	}
+	if histMax >= 0 {
+		if s.LatestSnapshotAt == -1 || histMax > s.LatestSnapshotAt {
+			s.LatestSnapshotAt = histMax
+		}
+	}
 	return s, nil
 }
 
@@ -56,6 +80,12 @@ SELECT
 // adapters: trigger is any new dump_run or transaction past
 // `since`, NewChangeNumber is MAX(dump_runs.snapshot_at) so
 // an idle reload is a no-op.
+//
+// When historical-PDF tables exist (silver migration 0002), the
+// Start of any new window is extended backwards to MIN(historical
+// snapshot_at). This ensures the loader's window-DELETE step
+// covers the historical rows before the re-INSERT, so freshly-
+// re-parsed historical content lands in gold idempotently.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	w := canonical.Window{NewChangeNumber: since}
 	const q = `
@@ -85,6 +115,18 @@ SELECT
 		w.Start = start.Int64
 		w.End = end.Int64
 		w.HasChanges = true
+
+		// Extend Start back to cover historical rows so a
+		// rebuild from the same set of Quartalsbericht PDFs
+		// replaces them in place rather than appending alongside
+		// stale rows from the prior gold load.
+		histMin, _, err := c.historicalRange(ctx)
+		if err != nil {
+			return w, err
+		}
+		if histMin >= 0 && histMin < w.Start {
+			w.Start = histMin
+		}
 	}
 	if newCN.Valid {
 		w.NewChangeNumber = newCN.Int64

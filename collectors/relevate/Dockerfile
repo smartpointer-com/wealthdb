@@ -10,7 +10,7 @@ RUN pip install -r requirements.txt
 # Copy scripts last. Listed explicitly so accidentally-present host
 # artefacts never make it into the image even if .dockerignore is
 # incomplete.
-COPY login.py download.py load.py /app/
+COPY login.py download.py load.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

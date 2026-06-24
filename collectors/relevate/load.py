@@ -30,6 +30,8 @@ from typing import Any
 
 from collectorkit import bronze, cli, parse, silver
 
+from pdf_parsers import parse_credit_note, parse_quarterly_report
+
 logger = logging.getLogger("load")
 
 # Bronze run dir name: YYYYMMDDTHHMMSSZ — same convention as the
@@ -88,14 +90,23 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+# Relevate's API serves fileNames in German on every observed
+# response; the older English needles are kept as defence in case
+# the API ever serves an en-locale flag we don't pass today.
 DOC_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("Fee statement", "quarterly_fee"),
-    ("Quarterly Report", "quarterly_report"),
-    ("Credit note", "credit_note"),
-    ("Pension Agreement", "pension_agreement"),
-    ("Pension Plan", "pension_plan"),
-    ("Investor profile", "investor_profile"),
-    ("Leaving statement", "leaving_statement"),
+    ("Fee statement",        "quarterly_fee"),
+    ("Gebührenabrechnung",   "quarterly_fee"),
+    ("Quarterly Report",     "quarterly_report"),
+    ("Quartalsbericht",      "quarterly_report"),
+    ("Credit note",          "credit_note"),
+    ("Gutschriftsanzeige",   "credit_note"),
+    ("Pension Agreement",    "pension_agreement"),
+    ("Vorsorgevereinbarung", "pension_agreement"),
+    ("Pension Plan",         "pension_plan"),
+    ("Investor profile",     "investor_profile"),
+    ("Anlegerprofil",        "investor_profile"),
+    ("Leaving statement",    "leaving_statement"),
+    ("Eröffnung / Eintritt", "account_opening"),
 )
 
 
@@ -490,18 +501,234 @@ def list_pending_dumps(
     return pending
 
 
+def load_historical_snapshots(
+    conn: sqlite3.Connection, bronze_root: Path,
+) -> None:
+    """
+    Parse every Quartalsbericht PDF currently indexed in `documents`,
+    INSERT OR REPLACE into `historical_position_snapshots` +
+    `historical_cash_balances`.
+
+    Idempotent: re-running produces the same rows because both target
+    tables are keyed on (snapshot_at, account_external_id, isin or
+    balance_kind) — the dimensions parsed from the PDF — not on
+    document_id. One PDF parse error doesn't kill the loop; logged
+    and skipped, and the next `load` attempt will retry.
+
+    Runs in its own transaction (separate from the per-dump
+    transactions) so a parser hiccup never rolls back live data.
+    """
+    rows = conn.execute(
+        "SELECT relevate_doc_id, bronze_path, content_sha256, file_name "
+        "FROM documents WHERE doc_kind = 'quarterly_report'"
+    ).fetchall()
+    if not rows:
+        logger.info(
+            "historical: no doc_kind='quarterly_report' rows in silver — "
+            "nothing to do",
+        )
+        return
+    logger.info(
+        "historical: parsing %d Quartalsbericht PDF(s)", len(rows),
+    )
+    parsed_ok = 0
+    n_positions = 0
+    n_cash = 0
+    conn.execute("BEGIN")
+    try:
+        for doc_id, bronze_path, content_sha256, file_name in rows:
+            pdf_abs = bronze_root / bronze_path
+            if not pdf_abs.is_file():
+                logger.warning(
+                    "historical: PDF missing on disk, skipping doc_id=%s",
+                    doc_id,
+                )
+                continue
+            try:
+                parsed = parse_quarterly_report(pdf_abs)
+            except Exception as exc:  # noqa: BLE001 — best-effort batch
+                logger.warning(
+                    "historical: parse failed for doc_id=%s: %s",
+                    doc_id, exc,
+                )
+                continue
+
+            snapshot_at = parsed["as_of_date"]
+            account_id = parsed["account_external_id"]
+
+            for pos in parsed["positions"]:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO historical_position_snapshots (
+                        snapshot_at, account_external_id, isin,
+                        security_name, asset_class,
+                        currency, units, allocation_pct, market_value,
+                        document_id, source_sha256, payload
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        snapshot_at, account_id, pos["isin"],
+                        pos["security_name"], pos.get("asset_class"),
+                        pos["currency"],
+                        pos.get("units"),
+                        pos.get("allocation_pct"),
+                        pos["market_value"],
+                        doc_id, content_sha256,
+                        canonical_json(pos),
+                    ),
+                )
+                n_positions += 1
+
+            for c in parsed["cash"]:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO historical_cash_balances (
+                        snapshot_at, account_external_id, currency,
+                        balance_kind, amount,
+                        document_id, source_sha256, payload
+                    ) VALUES (?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        snapshot_at, account_id, c["currency"],
+                        c["balance_kind"], c["amount"],
+                        doc_id, content_sha256,
+                        canonical_json(c),
+                    ),
+                )
+                n_cash += 1
+
+            parsed_ok += 1
+    except sqlite3.DatabaseError:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    logger.info(
+        "historical: parsed %d/%d PDF(s); %d position rows, %d cash rows",
+        parsed_ok, len(rows), n_positions, n_cash,
+    )
+
+
+def load_credit_note_transactions(
+    conn: sqlite3.Connection, bronze_root: Path,
+) -> None:
+    """
+    Parse every Gutschriftsanzeige PDF currently indexed in `documents`,
+    INSERT OR REPLACE into `transactions` with source='credit_note_pdf'.
+
+    Idempotent: `transaction_external_id` is derived deterministically
+    from the document id so re-running collapses to the same row.
+    `snapshot_at` reflects the *latest* dump_run (the moment the loader
+    last saw the credit note), matching the historical-positions
+    convention.
+
+    Runs in its own transaction so a parser hiccup never rolls back
+    the live deposits-endpoint transactions written upstream.
+    """
+    rows = conn.execute(
+        "SELECT relevate_doc_id, bronze_path, content_sha256 "
+        "FROM documents WHERE doc_kind = 'credit_note'"
+    ).fetchall()
+    if not rows:
+        logger.info(
+            "credit_note: no doc_kind='credit_note' rows in silver — "
+            "nothing to do",
+        )
+        return
+
+    # Latest dump_run snapshot_at is the "when did gold first see this"
+    # anchor we attach to every credit-note tx — mirrors what the
+    # historical-positions reader uses for its analogous tables.
+    latest = conn.execute(
+        "SELECT COALESCE(MAX(snapshot_at), 0) FROM dump_runs"
+    ).fetchone()[0]
+    if not latest:
+        logger.warning(
+            "credit_note: no dump_runs yet — skipping (need a snapshot_at "
+            "anchor for transactions.snapshot_at)",
+        )
+        return
+
+    logger.info(
+        "credit_note: parsing %d Gutschriftsanzeige PDF(s)", len(rows),
+    )
+    parsed_ok = 0
+    conn.execute("BEGIN")
+    try:
+        for doc_id, bronze_path, content_sha256 in rows:
+            pdf_abs = bronze_root / bronze_path
+            if not pdf_abs.is_file():
+                logger.warning(
+                    "credit_note: PDF missing on disk, skipping doc_id=%s",
+                    doc_id,
+                )
+                continue
+            try:
+                parsed = parse_credit_note(pdf_abs)
+            except Exception as exc:  # noqa: BLE001 — best-effort batch
+                logger.warning(
+                    "credit_note: parse failed for doc_id=%s: %s",
+                    doc_id, exc,
+                )
+                continue
+
+            tx_id = f"credit_note:{doc_id}"
+            payload = {
+                "occurred_at":   parsed["occurred_at"],
+                "currency":      parsed["currency"],
+                "amount":        parsed["amount"],
+                "kind":          parsed["kind"],
+                "source_sha256": parsed["source_sha256"],
+                "document_id":   doc_id,
+            }
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO transactions (
+                    transaction_external_id, snapshot_at, occurred_at,
+                    account_external_id, instrument_external_id,
+                    kind, currency, gross_amount, net_amount,
+                    quantity, price, source, payload
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    tx_id, latest, parsed["occurred_at"],
+                    parsed["account_external_id"], None,
+                    parsed["kind"], parsed["currency"],
+                    parsed["amount"], parsed["amount"],
+                    None, None,
+                    "credit_note_pdf",
+                    canonical_json(payload),
+                ),
+            )
+            parsed_ok += 1
+    except sqlite3.DatabaseError:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    logger.info(
+        "credit_note: parsed %d/%d PDF(s)", parsed_ok, len(rows),
+    )
+
+
 def do_load(args: argparse.Namespace) -> int:
     conn = open_db(args.silver_db)
     try:
         version = silver.apply_migrations(conn, MIGRATIONS_DIR)
         logger.info("silver schema at version %d", version)
         pending = list_pending_dumps(conn, args.bronze_dir)
-        if not pending:
+        if pending:
+            logger.info("loading %d pending dump(s)", len(pending))
+            for d in pending:
+                load_one_dump(conn, d, version)
+        else:
             logger.info("no pending dumps under %s", args.bronze_dir)
-            return 0
-        logger.info("loading %d pending dump(s)", len(pending))
-        for d in pending:
-            load_one_dump(conn, d, version)
+
+        # Historical PDF parsing runs after all per-dump phases so the
+        # `documents` table reflects every PDF the loader knows about,
+        # including ones from earlier dumps that survived as content-
+        # deduped rows. Idempotent — safe even when no new dumps landed.
+        load_historical_snapshots(conn, args.bronze_dir)
+        load_credit_note_transactions(conn, args.bronze_dir)
+
         return 0
     finally:
         conn.close()

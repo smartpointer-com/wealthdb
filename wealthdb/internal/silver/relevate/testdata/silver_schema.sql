@@ -54,8 +54,14 @@ CREATE TABLE transactions (
     snapshot_at             INTEGER NOT NULL,
     occurred_at             INTEGER NOT NULL,
     account_external_id     TEXT    NOT NULL,
+    instrument_external_id  TEXT,
     kind                    TEXT    NOT NULL,
-    amount                  REAL,
-    currency                TEXT    NOT NULL DEFAULT 'CHF',
+    currency                TEXT    NOT NULL,
+    gross_amount            REAL,
+    net_amount              REAL,
+    quantity                REAL,
+    price                   REAL,
+    source                  TEXT    NOT NULL
+        CHECK (source IN ('deposits_endpoint', 'credit_note_pdf', 'manual')),
     payload                 TEXT    NOT NULL
 );

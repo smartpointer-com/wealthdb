@@ -142,21 +142,51 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	}
 }
 
-// TestNoTransactions documents that relevate emits no canonical
-// transactions (vested-benefits cash flows are out of scope).
-func TestNoTransactions(t *testing.T) {
+// TestTransactionsCreditNote exercises the credit-note adapter
+// path: silver `kind='contribution'` (Pillar-2 vocabulary) projects
+// to canonical TxKindDeposit (cash IN to the account, positive
+// NetAmount per sign convention).
+func TestTransactionsCreditNote(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (2000, 1, '/x/1');
+        INSERT INTO transactions (transaction_external_id, snapshot_at, occurred_at,
+            account_external_id, instrument_external_id, kind, currency,
+            gross_amount, net_amount, quantity, price, source, payload)
+        VALUES ('credit_note:42', 2000, 1500, 'ACC1', NULL, 'contribution',
+                'CHF', 1234.56, 1234.56, NULL, NULL, 'credit_note_pdf', '{}');
     `); err != nil {
 		t.Fatal(err)
 	}
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
+	if !w.HasChanges {
+		t.Fatalf("ChangeWindow.HasChanges = false, want true (transaction at occurred_at=1500 should trigger a window)")
+	}
 	stream, _ := conn.Transactions(context.Background(), w)
 	defer stream.Close()
 	batch, _, _ := stream.Next(context.Background())
-	if len(batch.Transactions) != 0 {
-		t.Errorf("transactions = %d, want 0", len(batch.Transactions))
+	if len(batch.Transactions) != 1 {
+		t.Fatalf("transactions = %d, want 1", len(batch.Transactions))
+	}
+	tx := batch.Transactions[0]
+	if tx.Kind != canonical.TxKindDeposit {
+		t.Errorf("kind = %q, want %q", tx.Kind, canonical.TxKindDeposit)
+	}
+	if tx.AccountExternalID != "ACC1" {
+		t.Errorf("account = %q, want ACC1", tx.AccountExternalID)
+	}
+	if tx.Currency != "CHF" {
+		t.Errorf("currency = %q, want CHF", tx.Currency)
+	}
+	if tx.NetAmount == nil || tx.NetAmount.String() != "1234.56" {
+		got := "<nil>"
+		if tx.NetAmount != nil {
+			got = tx.NetAmount.String()
+		}
+		t.Errorf("net_amount = %s, want 1234.56", got)
+	}
+	if tx.InstrumentExternalID != nil {
+		t.Errorf("instrument = %v, want nil (cash event)", *tx.InstrumentExternalID)
 	}
 }

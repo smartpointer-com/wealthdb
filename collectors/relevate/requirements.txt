@@ -7,3 +7,10 @@ pytest>=8,<9
 # Tracking the latest stable 2.x line; the API is decade-stable so
 # a floor pin is enough.
 requests>=2.32,<3
+
+# pypdf with extraction_mode='layout' powers pdf_parsers.py, which
+# load.py invokes to extract historical positions + cash from the
+# Quartalsbericht PDFs the documents/ phase has saved. Same library
+# Swissquote uses for its historical Portfolio Performance PDFs.
+# Pure-Python, no native deps; small wheel.
+pypdf>=6,<7

@@ -19,9 +19,26 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	byTime := make(map[int64]*canonical.SnapshotBatch, len(times))
+	histTimes, err := c.historicalSnapshotTimes(ctx, w.Start, w.End)
+	if err != nil {
+		return nil, err
+	}
+	// Union live + historical; the same snapshot_at may appear in
+	// both (a Quartalsbericht date that also has a live dump_run),
+	// in which case both readers populate the SAME batch.
+	byTime := make(map[int64]*canonical.SnapshotBatch, len(times)+len(histTimes))
+	all := make([]int64, 0, len(times)+len(histTimes))
 	for _, t := range times {
-		byTime[t] = &canonical.SnapshotBatch{}
+		if _, ok := byTime[t]; !ok {
+			byTime[t] = &canonical.SnapshotBatch{}
+			all = append(all, t)
+		}
+	}
+	for _, t := range histTimes {
+		if _, ok := byTime[t]; !ok {
+			byTime[t] = &canonical.SnapshotBatch{}
+			all = append(all, t)
+		}
 	}
 
 	if err := c.appendAccounts(ctx, w, byTime); err != nil {
@@ -36,12 +53,34 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPositionsAndCash(ctx, w, byTime); err != nil {
 		return nil, err
 	}
+	// Historical projection from the Quartalsbericht PDFs (silver
+	// migration 0002). Silently no-op on silvers that haven't been
+	// migrated yet.
+	if err := c.appendHistoricalPositions(ctx, w, byTime); err != nil {
+		return nil, err
+	}
+	if err := c.appendHistoricalCash(ctx, w, byTime); err != nil {
+		return nil, err
+	}
 
-	out := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
+	// Sort the combined snapshot list for deterministic output.
+	sortInt64sAsc(all)
+	out := make([]canonical.SnapshotBatch, 0, len(all))
+	for _, t := range all {
 		out = append(out, *byTime[t])
 	}
 	return silver.NewSnapshotStream(out), nil
+}
+
+// sortInt64sAsc — small in-place ascending sort, same shape as the
+// UBS historical helper. Snapshot lists are tiny (low dozens), so
+// the O(n²) constant is fine and keeps the function self-contained.
+func sortInt64sAsc(xs []int64) {
+	for i := 1; i < len(xs); i++ {
+		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
+			xs[j-1], xs[j] = xs[j], xs[j-1]
+		}
+	}
 }
 
 // snapshotTimesInWindow unions dump_runs with the content
