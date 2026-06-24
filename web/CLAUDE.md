@@ -26,13 +26,17 @@ port-forward; auth is Metabase's own login.
 - Do **not** bake canned dashboards, saved questions, or source data
   into the image or the repo. The user builds dashboards in the UI;
   keeping the image content-free also keeps source data out of git.
-- The **one allowed exception** is the 5 report models (`report_global`,
-  `report_portfolios`, `report_accounts`, `report_positions`,
-  `report_transactions`) that `provision.py` creates at runtime over the
-  API. They are content-free shims — each is just `SELECT * FROM
-  report_x(…)` over the gold report macros (the same macros the CLI
-  commands use), so they bake in no data and track the CLI output by
-  construction. The gold DuckDB connection is likewise added at runtime
+- The **one allowed exception** is the report models that `provision.py`
+  creates at runtime over the API, in a dedicated `wealthdb (pre-defined)`
+  collection: `report_{global,portfolios,accounts,positions}_latest`,
+  `report_transactions`, and the daily-history `report_{global,portfolios,
+  accounts,positions}_history`. They are content-free shims — each is just
+  `SELECT * FROM report_x(…)` over the gold report macros (the same macros
+  the CLI commands use), lightly wrapped to fix column types for BI use
+  (the macros' VARCHAR money columns cast back to DECIMAL, epoch columns
+  to TIMESTAMP), so they bake in no data and track the CLI output by
+  construction. Provisioning is idempotent (updates in place, archives
+  retired names). The gold DuckDB connection is likewise added at runtime
   by `provision.py`, never baked into the image.
 - This component has **no credentials**. Don't add a `~/.secrets/*`
   mount or any secret env. Metabase manages its own admin account in
@@ -58,7 +62,7 @@ FROM positions` through the driver) and update the sha256.
 ## 5. Provisioning is API-based and idempotent
 
 `web/provision.py` skips the setup wizard by creating the admin, adding
-the gold DB, and creating the 5 report models over the OSS setup API.
+the gold DB, and creating the pre-defined report models over the OSS setup API.
 Keep it idempotent (safe on every start — it skips the admin, the DB,
 and any model that already exists by name). Do **not** switch to
 Metabase's config-file provisioning — it's Pro/EE-only and a silent

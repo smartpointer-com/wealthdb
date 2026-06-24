@@ -41,8 +41,8 @@ wealthdb web build         # or: make build-web
 
 # 2. Enable it in wealthdb.cfg (see above), then start it. This snapshots
 #    gold, runs Metabase, and AUTO-PROVISIONS it: creates the admin,
-#    pre-adds the gold database, and creates 5 report models mirroring
-#    the CLI commands — no "tell us about your company" wizard.
+#    pre-adds the gold database, and creates the report models (latest +
+#    daily history) mirroring the CLI — no "tell us about your company" wizard.
 wealthdb web start
 #    -> prints the admin login. A generated password is saved to
 #       $XDG_DATA_HOME/wealthdb/web/admin-password.txt (chmod 600);

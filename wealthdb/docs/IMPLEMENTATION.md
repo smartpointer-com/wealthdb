@@ -55,7 +55,8 @@ wealthdb/
 │   │   ├── migrations/                 SQL lives here (Go embed needs local path)
 │   │   │   ├── 0001_initial.sql
 │   │   │   ├── 0020_fx_views.sql       fx_norm / fx_daily currency-conversion views
-│   │   │   └── 0021_report_macros.sql  report_* table macros (single source of truth)
+│   │   │   ├── 0021_report_macros.sql  report_* table macros (single source of truth)
+│   │   │   └── 0022_report_history_macros.sql  report_*_history (daily carry-forward)
 │   │   ├── schema.go                   //go:embed migrations/*.sql; Migrate()
 │   │   ├── open.go                     Open(path, mode); maps to DuckDB access_mode
 │   │   ├── writer.go                   inserts/upserts per canonical type, batched
