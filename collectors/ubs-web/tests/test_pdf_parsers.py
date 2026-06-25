@@ -131,7 +131,12 @@ class TestStatementOfAssetsSecurities:
             f"Valued in {base_ccy}",
             "Portfolio 01",
             "Liquidity 11 111 11 111 22.58",
-            "Precious metals & commodities 1 234 567 1 234 567 75.00",
+            # market value + (equal) total + %NA, all single-space
+            # separated like pdfplumber emits. The 6-digit value is
+            # deliberate: its groups line up so a naive capture would
+            # slurp both equal columns into one doubled number
+            # (987 654 987 654) — the bug this fixture guards against.
+            "Precious metals & commodities 987 654 987 654 75.00",
             "Net assets 1 245 678",
             "Detailed positions",
             # 1. listed equity (cost / market / gain% triple)
@@ -204,7 +209,9 @@ class TestStatementOfAssetsSecurities:
               if r["description"] == "Precious metals & commodities"]
         assert len(pm) == 1
         row = pm[0]
-        assert row["market_value"] == pytest.approx(1234567.0)
+        # Only the Market value column — NOT the doubled mv+total run.
+        assert row["market_value"] == pytest.approx(987654.0)
+        assert row["market_value"] != pytest.approx(987654987654.0)
         assert row["currency_iso"] == "USD"
         assert row["portfolio_external_id"].endswith("0001")
         # Synthetic key must not look like a real ISIN (len != 12).

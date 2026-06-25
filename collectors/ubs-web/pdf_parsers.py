@@ -166,13 +166,22 @@ _PM_HEADLINE_RE = re.compile(
 # per-position Statement of assets for the precious-metals / custody
 # portfolio — only the relationship overview carries its
 # asset-class total). Anchored at column 0 so it matches the
-# portfolio-block line, not the right-hand consolidated column
-# (synthetic example):
-#   "Precious metals & commodities   12 345   12 345   75.00 ..."
+# portfolio-block line, not the right-hand consolidated column.
+#
+# The line reads "<market value> <total> <%NA>", all single-space
+# separated by pdfplumber. For precious metals the Total equals the
+# Market value (no accrued interest), and a plain thousands-aware
+# capture slurps BOTH equal columns into one doubled number whenever
+# their digit-groups line up under single-space separation — e.g.
+# "12 345 12 345 75.00" reads as 12 345 12 345. We anchor the Market
+# value by requiring the identical Total column to follow it (the
+# (?P=mv) backreference) and the %NA after that, so only the first
+# column is captured (synthetic example):
+#   "Precious metals & commodities 12 345 12 345 75.00 ..."
 _OVERVIEW_PORTFOLIO_RE = re.compile(r"^Portfolio\s+(?P<no>\d{2})\b")
 _OVERVIEW_PRECIOUS_METALS_RE = re.compile(
     r"^Precious metals & commodities\s+"
-    r"(?P<mv>\d{1,3}(?:[ ']\d{3})*(?:\.\d+)?)\b"
+    r"(?P<mv>\d{1,3}(?:[ ']\d{3})*)\s+(?P=mv)\s+-?\d+\.\d{2}\b"
 )
 
 
