@@ -109,6 +109,29 @@ SELECT account_external_id, payload
 	return out, nil
 }
 
+// firstHoldingsSnapshot returns the snapshot_at of PSN's earliest
+// securities-holdings batch (MIN over the holdings table); ok is
+// false when PSN carries no holdings at all. PSN's cash and
+// forward-contract feeds can begin a day or two before the first
+// MT535 holdings batch, so during that gap a PSN snapshot exists
+// with cash/forwards but no securities. The merge uses this to keep
+// web's carried-forward historical securities authoritative until
+// PSN actually holds them — see psnHoldingsGapFilter.
+func (r *psnReader) firstHoldingsSnapshot(ctx context.Context) (int64, bool, error) {
+	if r == nil {
+		return 0, false, nil
+	}
+	var v sql.NullInt64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT MIN(snapshot_at) FROM holdings`).Scan(&v); err != nil {
+		return 0, false, fmt.Errorf("psn firstHoldingsSnapshot: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
 // instrumentMetaByISIN is a thin wrapper over the existing
 // appendInstruments lookup-building logic, isolated here so the
 // overlay code can reuse it without dragging in the byTime
