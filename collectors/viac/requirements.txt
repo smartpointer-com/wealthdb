@@ -9,3 +9,11 @@ pytest>=8,<9
 # HTTP/1.1 but HTTP/2 matches what the SPA does and gives us
 # multiplexed PDF streaming for the documents phase.
 httpx[http2]==0.28.1
+
+# Text extraction for the INVESTMENT_REPORTING statement PDFs
+# (pdf_parsers.py) that backfill the historical position time
+# series. Python bindings to Google's PDFium — same choice as the
+# schwab-web collector, and on these A4 reports the fastest of the
+# extractors benchmarked (~3x pdftotext, ~50x pdfplumber) while
+# emitting each holdings row as one clean space-delimited line.
+pypdfium2>=4.30,<6

@@ -212,6 +212,48 @@ code would need to change beyond the underlying HTTP client.
 runs when the document number matches, so a re-run only
 fetches genuinely-new documents.
 
+## 5.1 Historical positions from the Reporting PDFs
+
+The REST API only exposes the *current* holdings snapshot
+(`assetsOverview`), so live scraping alone gives gold a position
+time series that starts the day scraping began. The document
+archive closes that gap: the `REPORT` / `INVESTMENT_REPORTING`
+PDFs (plus the on-demand `MANUAL_INVESTMENT_REPORTING`) are
+period-end statements that list, per portfolio, every fund held
+with its ISIN, units, prices and CHF market value — going back to
+the contract's first year. Observed cadence: semi-annual through
+2023, annual thereafter. One PDF covers every portfolio.
+
+[`pdf_parsers.py`](pdf_parsers.py) parses them (via **pypdfium2**
+— the fastest lossless extractor benchmarked on these A4 reports;
+see the module docstring). The "Securities overview" table row
+grammar is
+
+```
+<sub-asset-class…> <FX> <qty> <name…> <ISIN> \
+    <initial_price> <price> <return%> <share%> <market_value_chf>
+```
+
+anchored on the ISIN and the three-letter FX code, with asset
+class taken from the section header (Liquidity / Equity / Bonds /
+Real Estate / Commodities / Alternative Investments) that precedes
+each block. The "3a Account" liquidity row routes to
+`cash_balances`. Each report yields one position snapshot — plus
+one cash balance per portfolio — keyed on the report's period-end
+(as-of) date.
+
+`load.py`'s `load_historical_reports_phase` writes these into the
+same `positions` / `cash_balances` tables as the live scrapes,
+tagged `source = 'report:<docid>'` and keyed on the as-of date
+(which never collides with the live scrape timestamps). Re-parsing
+the same stable report across successive dumps converges
+(`INSERT OR REPLACE`). Reconstructed rows reconcile to the cent
+against each report's printed "Balance in CHF". Instruments held
+only historically (e.g. the pre-2024-fusion CS/iShares funds, no
+longer in the live holdings) enter the `instruments` catalogue
+through this path, and live instruments gain an earlier
+`first_seen_at`.
+
 ## 6. Silver schema
 
 Materialised in [`migrations/0001_initial.sql`](migrations/0001_initial.sql);
@@ -223,8 +265,8 @@ the overview.
 | `schema_meta` | `silver_schema_version` | Migration version registry. |
 | `dump_runs` | `snapshot_at` | One row per ingested bronze run; full `run.json` in `payload`. Promotes `dry_run`, `with_transaction_documents`, document-counter columns. |
 | `accounts` | `(snapshot_at, account_external_id)` | One row per (snapshot, portfolio). Promotes `product_code` ('3' p3a / '2' pvb / '1' inv) and `portfolio_index` parsed from the dotted number; plus the inventory + strategy union. p3a portfolios populate `strategy_*` and `custody_bank`; pvb portfolios populate `foundation` + `portfolio_type`. `management_style` is `'automated'` for every VIAC account today (see §7). |
-| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). Currently only `balance_kind='cash'` (`assetsOverview.cashAmount`); schema extensible. |
-| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | ACTUAL holdings from `assetsOverview` (not target allocation). `instrument_external_id` is the ISIN. Promotes `quantity` (fund units; VIAC's confusingly-named `amount` JSON field), `market_value_chf` (CHF mark-to-market; VIAC's `ratioInChf`), `ratio` (fraction of portfolio), `acquisition_price`, `asset_price`, both wealthdb-canonical `asset_class` and VIAC's raw `viac_asset_class` + `sub_asset_class` for forensics. |
+| `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). Only `balance_kind='cash'` today. `source` (schema v3) is `'live'` for `assetsOverview.cashAmount` rows, `'report:<docid>'` for the 3a-account liquidity reconstructed from a Reporting PDF (§5.1). |
+| `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | Holdings, `instrument_external_id` = ISIN. Promotes `quantity` (fund units; VIAC's confusingly-named `amount` JSON field), `market_value_chf` (CHF mark-to-market; VIAC's `ratioInChf`), `ratio` (fraction of portfolio), `acquisition_price`, `asset_price`, canonical `asset_class` + VIAC's raw `viac_asset_class` + `sub_asset_class`. `source` (schema v3) splits **live** rows from `assetsOverview` (snapshot_at = scrape time) and **historical** rows from the Reporting PDFs (`'report:<docid>'`, snapshot_at = the report's period-end date; §5.1). Both coexist; the gold adapter reads every snapshot_at uniformly, so a historical snapshot answers `wealthdb positions --as-of <past date>`. |
 | `instruments` | `instrument_external_id` | Slow-changing master data; ISIN-keyed. Upserts advance `last_seen_at`. |
 | `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). |
 | `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. NOT per-portfolio (VIAC's API doesn't expose per-portfolio history). |

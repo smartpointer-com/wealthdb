@@ -148,6 +148,115 @@ func TestSnapshotsTaxWrapperMapping(t *testing.T) {
 	}
 }
 
+// TestHistoricalSnapshotsSpanWindow covers the PDF-backfill
+// behaviour (silver schema v3): positions tagged
+// source='report:<docid>' carry a PAST as-of snapshot_at, and the
+// adapter must surface them as additional position snapshots so a
+// gold as-of query before live scraping began still finds holdings.
+//
+// The subtle case is the INCREMENTAL load: a new dump (advancing the
+// watermark) arrives carrying a report whose as-of date is in the
+// past. A naive (since, now] delta window would skip it; ChangeWindow
+// must widen to the full snapshot history whenever there's new work.
+func TestHistoricalSnapshotsSpanWindow(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	// Live dump at t=2000 with a live holding; a Reporting PDF
+	// reconstructs a historical holding at t=1000 (an earlier
+	// period-end). A SECOND live dump at t=3000 carries a NEW report
+	// reconstructing a holding at t=1500 — also in the past.
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
+            (2000, 3, '/x/2000'), (3000, 3, '/x/3000');
+        INSERT INTO accounts(snapshot_at, account_external_id, product_code, name, state, currency_code, management_style, payload) VALUES
+            (2000, 'P3A1', '3', 'Pillar 3a', 'ACTIVE', 'CHF', 'automated', '{}'),
+            (3000, 'P3A1', '3', 'Pillar 3a', 'ACTIVE', 'CHF', 'automated', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_external_id, asset_class, currency_code, name, quantity, market_value_chf, acquisition_price, asset_price, source, payload) VALUES
+            (1000, 'P3A1', 'CH0000000001', 'equity', 'CHF', 'Old Fund', 5, 600.00, 100.00, 120.00, 'report:DOC1000', '{}'),
+            (1500, 'P3A1', 'CH0000000001', 'equity', 'CHF', 'Old Fund', 7, 900.00, 100.00, 128.00, 'report:DOC1500', '{}'),
+            (2000, 'P3A1', 'CH0000000001', 'equity', 'CHF', 'Old Fund', 10, 1500.00, 120.00, 150.00, 'live', '{}'),
+            (3000, 'P3A1', 'CH0000000001', 'equity', 'CHF', 'Old Fund', 11, 1700.00, 120.00, 155.00, 'live', '{}');
+        INSERT INTO instruments(instrument_external_id, isin, name, currency_code, asset_class, first_seen_at, last_seen_at, payload) VALUES
+            ('CH0000000001', 'CH0000000001', 'Old Fund', 'CHF', 'equity', 1000, 3000, '{}');
+        INSERT INTO cash_balances(snapshot_at, account_external_id, currency, balance_kind, amount, source, payload) VALUES
+            (1000, 'P3A1', 'CHF', 'cash', 50.00, 'report:DOC1000', NULL),
+            (2000, 'P3A1', 'CHF', 'cash', 80.00, 'live', NULL);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	ctx := context.Background()
+
+	// Status: oldest snapshot is the report date (1000), not the
+	// oldest dump_run (2000); change number stays the latest dump.
+	s, err := conn.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.OldestSnapshotAt != 1000 {
+		t.Errorf("OldestSnapshotAt = %d, want 1000 (report date)", s.OldestSnapshotAt)
+	}
+	if s.LatestChangeNumber != 3000 {
+		t.Errorf("LatestChangeNumber = %d, want 3000 (latest dump)", s.LatestChangeNumber)
+	}
+
+	// Fresh load (since=-1): window spans the whole history.
+	collect := func(since int64) map[int64]bool {
+		w, err := conn.ChangeWindow(ctx, since)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !w.HasChanges {
+			t.Fatalf("ChangeWindow(%d): HasChanges=false, want true", since)
+		}
+		stream, err := conn.Snapshots(ctx, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		seen := map[int64]bool{}
+		for {
+			batch, more, err := stream.Next(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range batch.Positions {
+				seen[p.SnapshotAt] = true
+			}
+			if !more {
+				break
+			}
+		}
+		return seen
+	}
+
+	fresh := collect(-1)
+	for _, ts := range []int64{1000, 1500, 2000, 3000} {
+		if !fresh[ts] {
+			t.Errorf("fresh load: missing position snapshot at %d", ts)
+		}
+	}
+
+	// Incremental load (since=2000, the prior watermark): a new dump
+	// at 3000 is the trigger, but the window must still reach back to
+	// the past-dated report snapshots (1000, 1500) so they aren't
+	// lost on an incremental refresh.
+	incr := collect(2000)
+	for _, ts := range []int64{1000, 1500, 2000, 3000} {
+		if !incr[ts] {
+			t.Errorf("incremental load: missing position snapshot at %d", ts)
+		}
+	}
+
+	// Idle reload (since=3000, current watermark, no new work): no-op.
+	w, err := conn.ChangeWindow(ctx, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.HasChanges {
+		t.Errorf("ChangeWindow(3000): HasChanges=true, want false (idle reload)")
+	}
+}
+
 // TestTransactions covers the canonical-kind pass-through and the
 // sign convention (a dividend is a positive inflow).
 func TestTransactions(t *testing.T) {

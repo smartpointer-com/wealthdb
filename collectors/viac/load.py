@@ -30,6 +30,8 @@ from typing import Any
 
 from collectorkit import bronze, cli, parse, silver
 
+import pdf_parsers
+
 logger = logging.getLogger("load")
 
 # Bronze run dir name: YYYYMMDDTHHMMSSZ — same convention as the
@@ -393,6 +395,7 @@ def load_positions_phase(
                         viac_asset_class = excluded.viac_asset_class,
                         sub_asset_class = excluded.sub_asset_class,
                         etf_link_en = excluded.etf_link_en,
+                        first_seen_at = MIN(instruments.first_seen_at, excluded.first_seen_at),
                         last_seen_at = MAX(instruments.last_seen_at, excluded.last_seen_at),
                         payload = excluded.payload
                     """,
@@ -564,6 +567,165 @@ def load_wealth_history_phase(
     logger.info("  wealth_history phase: %d daily row(s)", len(all_dates))
 
 
+# Document subtypes whose PDFs carry a full historical holdings
+# table. The periodic auto-generated report and the on-demand manual
+# one share the same "Securities overview" layout.
+REPORT_SUBTYPES = ("INVESTMENT_REPORTING", "MANUAL_INVESTMENT_REPORTING")
+
+
+def _upsert_report_instrument(
+    conn: sqlite3.Connection, pos: "pdf_parsers.ReportPosition", seen_at: int,
+) -> None:
+    """Upsert an instrument observed in a historical report. Prefers
+    existing (live-load) metadata — only fills nulls, lowers
+    first_seen_at, raises last_seen_at — and leaves etf_link_en /
+    payload untouched, so a richer live row is never clobbered by an
+    older report row. This is how the report-only ISINs (instruments
+    held historically but sold before live scraping began, e.g. the
+    pre-2024-fusion CS/iShares funds) enter the catalogue, while the
+    still-held instruments keep their live metadata and merely gain an
+    earlier first_seen_at."""
+    conn.execute(
+        """
+        INSERT INTO instruments (
+            instrument_external_id, isin, name, currency_code,
+            asset_class, viac_asset_class, sub_asset_class, etf_link_en,
+            first_seen_at, last_seen_at, payload
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(instrument_external_id) DO UPDATE SET
+            name             = COALESCE(instruments.name, excluded.name),
+            currency_code    = COALESCE(instruments.currency_code, excluded.currency_code),
+            asset_class      = COALESCE(NULLIF(instruments.asset_class, ''), excluded.asset_class),
+            viac_asset_class = COALESCE(instruments.viac_asset_class, excluded.viac_asset_class),
+            sub_asset_class  = COALESCE(instruments.sub_asset_class, excluded.sub_asset_class),
+            first_seen_at    = MIN(instruments.first_seen_at, excluded.first_seen_at),
+            last_seen_at     = MAX(instruments.last_seen_at, excluded.last_seen_at)
+        """,
+        (
+            pos.isin, pos.isin, pos.name, pos.currency_code,
+            pos.asset_class, pos.viac_section, pos.sub_asset_class, None,
+            seen_at, seen_at,
+            canonical_json({
+                "isin": pos.isin, "name": pos.name,
+                "source": "report", "asset_class": pos.asset_class,
+            }),
+        ),
+    )
+
+
+def load_historical_reports_phase(
+    conn: sqlite3.Connection,
+    run_dir: Path,
+) -> None:
+    """Parse INVESTMENT_REPORTING PDFs in this dump into historical
+    position + cash snapshots.
+
+    VIAC's REST API only exposes current holdings; these periodic
+    "Reporting" statement PDFs are the only source of holdings
+    history. Each one is a period-end statement covering every
+    portfolio under the contract, so parsing it yields one positions
+    snapshot — plus one cash balance per portfolio — as of the report
+    date, going back to the contract's first year.
+
+    Rows are tagged source='report:<docid>' and keyed on the report's
+    as-of date (which never collides with the live scrape timestamps),
+    so historical and live snapshots coexist in the same tables.
+    INSERT OR REPLACE makes re-parsing the same stable report across
+    successive dumps converge. snapshot_at is the report as-of date,
+    NOT the dump time — this phase is deliberately independent of the
+    per-dump snapshot_at the live phases use."""
+    index_path = run_dir / "documents" / "index.json"
+    if not index_path.is_file():
+        return
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    if not isinstance(index, list):
+        return
+    n_reports = n_positions = n_cash = 0
+    for d in index:
+        if d.get("subType") not in REPORT_SUBTYPES:
+            continue
+        doc_id = d.get("documentNumber")
+        if not doc_id:
+            continue
+        pdf_path = run_dir / "documents" / f"{doc_id}.pdf"
+        if not pdf_path.is_file():
+            # Not in this dump's documents/ (gated tier, or the
+            # hard-link landed it in a different dump). Another dump
+            # carries it; skip here.
+            continue
+        try:
+            parsed = pdf_parsers.parse_investment_report(pdf_path)
+        except Exception as e:  # noqa: BLE001 — one bad PDF mustn't fail the dump
+            logger.warning("report %s parse failed: %s", doc_id, e)
+            continue
+        as_of = iso_date_to_epoch(parsed.as_of_date)
+        if as_of is None:
+            logger.warning("report %s: no parseable as-of date — skipping", doc_id)
+            continue
+        if not parsed.positions:
+            logger.warning("report %s: no positions parsed — skipping", doc_id)
+            continue
+        source = f"report:{doc_id}"
+        for p in parsed.positions:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO positions (
+                    snapshot_at, account_external_id, instrument_external_id,
+                    asset_class, viac_asset_class, sub_asset_class,
+                    currency_code, name,
+                    quantity, ratio, market_value_chf,
+                    acquisition_price, asset_price, rate_of_return,
+                    source, payload
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    as_of, p.account_external_id, p.isin,
+                    p.asset_class, p.viac_section, p.sub_asset_class,
+                    p.currency_code, p.name,
+                    p.quantity, p.ratio, p.market_value_chf,
+                    p.acquisition_price, p.asset_price, p.rate_of_return,
+                    source,
+                    canonical_json({
+                        "doc_id": doc_id, "as_of": parsed.as_of_date,
+                        "name": p.name, "fx": p.currency_code,
+                        "quantity": p.quantity,
+                        "market_value_chf": p.market_value_chf,
+                        "initial_price": p.acquisition_price,
+                        "price": p.asset_price,
+                        "return_pct": p.rate_of_return,
+                        "section": p.viac_section,
+                        "sub_asset_class": p.sub_asset_class,
+                    }),
+                ),
+            )
+            n_positions += 1
+            _upsert_report_instrument(conn, p, as_of)
+        for cb in parsed.cash:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO cash_balances (
+                    snapshot_at, account_external_id, currency,
+                    balance_kind, amount, source, payload
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
+                (
+                    as_of, cb.account_external_id, cb.currency,
+                    "cash", cb.amount, source,
+                    canonical_json({
+                        "doc_id": doc_id, "as_of": parsed.as_of_date,
+                        "source_field": "3a_account_liquidity",
+                    }),
+                ),
+            )
+            n_cash += 1
+        n_reports += 1
+    if n_reports:
+        logger.info(
+            "  historical reports phase: %d report(s), %d position(s), %d cash row(s)",
+            n_reports, n_positions, n_cash,
+        )
+
+
 def load_documents_phase(
     conn: sqlite3.Connection,
     snapshot_at: int,
@@ -674,6 +836,11 @@ def load_one_dump(
                                 since=tx_since, until=tx_until)
         load_wealth_history_phase(conn, snapshot_at, run_dir)
         load_documents_phase(conn, snapshot_at, run_dir)
+        # Historical holdings reconstructed from the Reporting PDFs.
+        # snapshot_at-independent (keyed on each report's as-of date),
+        # so it runs after the live phases and outside their per-dump
+        # snapshot grain.
+        load_historical_reports_phase(conn, run_dir)
 
         # dump_runs row last → a failure mid-load rolls everything
         # back and the dump remains "not yet loaded" on re-run.

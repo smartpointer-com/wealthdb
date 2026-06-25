@@ -1,7 +1,9 @@
 -- Minimal viac silver schema for adapter tests: the tables and
--- columns the adapter SELECTs, with the post-migration-0002 names
+-- columns the adapter SELECTs, with the post-migration-0003 shape
 -- (positions.quantity, positions.market_value_chf, accounts.
--- management_style). SQLite syntax.
+-- management_style, and positions/cash_balances.source — 'live'
+-- for scraped rows, 'report:<docid>' for PDF-reconstructed
+-- historical snapshots). SQLite syntax.
 
 CREATE TABLE dump_runs (
     snapshot_at           INTEGER NOT NULL PRIMARY KEY,
@@ -27,6 +29,7 @@ CREATE TABLE cash_balances (
     currency            TEXT    NOT NULL,
     balance_kind        TEXT    NOT NULL,
     amount              REAL    NOT NULL,
+    source              TEXT    NOT NULL DEFAULT 'live',
     payload             TEXT,
     PRIMARY KEY (snapshot_at, account_external_id, currency, balance_kind)
 );
@@ -42,6 +45,7 @@ CREATE TABLE positions (
     market_value_chf       REAL,
     acquisition_price      REAL,
     asset_price            REAL,
+    source                 TEXT    NOT NULL DEFAULT 'live',
     payload                TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, account_external_id, instrument_external_id)
 );
