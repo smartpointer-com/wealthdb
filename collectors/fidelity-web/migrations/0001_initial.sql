@@ -52,14 +52,16 @@
 --
 --   activity_id (transactions)
 --     Fidelity activity CSVs do NOT carry a stable per-row
---     identifier. Synthesised as the hex SHA-256 prefix of
---     "<account_external_id>|<run_date>|<amount>|<description>|
---      <symbol>|<source_sha256>|<row_index_within_csv>".
---     Stable across re-loads of the same source CSV; not portable
---     across re-downloads of overlapping windows that produce
---     different row ordering (Fidelity's export is deterministic
---     in our experience, but the `row_index_within_csv` anchor
---     limits the blast radius if it ever isn't).
+--     identifier. Synthesised as the hex SHA-256 prefix of the
+--     row's full normalized payload (every CSV column, sorted-key
+--     JSON) plus a per-file occurrence index. The key is
+--     file-independent: the same transaction re-downloaded across
+--     overlapping windows / repeated runs produces the same
+--     activity_id and collapses onto one row. The occurrence index
+--     preserves genuinely-repeated identical rows within a single
+--     export (every file covering a day sees that day's full row
+--     set, so the Nth copy gets the same index in every file).
+--     See load._synthesise_activity_id.
 --
 --   doc_sha256 (documents)
 --     Content hash of the PDF on disk. Same row regardless of how

@@ -238,16 +238,73 @@ def test_activity_id_stable_across_reload(migrated, tmp_path):
     _write_dump(tmp_path, "20260201T120000Z")
     load.load_dump(migrated, tmp_path / "20260201T120000Z", 1)
     second = set(
-        r[0] for r in migrated.execute(
-            "SELECT activity_id FROM transactions "
-            "WHERE source_sha256 = ("
-            "  SELECT source_sha256 FROM transactions "
-            "  WHERE activity_id IN ({0}) LIMIT 1"
-            ")".format(",".join("?" * len(first)))
-        , tuple(first))
+        r[0] for r in migrated.execute("SELECT activity_id FROM transactions")
     )
-    # The synthetic ID is content-derived → same row both times.
+    # The synthetic ID is content-derived → same rows both times,
+    # no growth in the transaction set.
     assert first == second
+
+
+def _activity_csv(rows: str) -> str:
+    """Wrap activity data rows in the BOM + blank-line + header
+    envelope Fidelity emits."""
+    return (
+        "﻿\n\n"
+        "Run Date,Account,Account Number,Action,Symbol,Description,"
+        "Type,Price ($),Quantity,Commission ($),Fees ($),"
+        "Accrued Interest ($),Amount ($),Settlement Date\n"
+        + rows
+    )
+
+
+def _div_row(date: str, amount: str) -> str:
+    return (
+        f'{date},"Trust: Under Agreement","{ACCT_TRUST}",'
+        f'"DIVIDEND RECEIVED STUB TICKER ONE ({SYM_TRUST}) (Cash)",'
+        f'{SYM_TRUST},"STUB TICKER ONE",Cash,,0.000,,,,{amount},\n'
+    )
+
+
+def test_activity_dedups_across_overlapping_windows(migrated, tmp_path):
+    """The same transaction re-downloaded in different window files
+    (different bytes → different source_sha256) must collapse onto
+    one row. This is the regression guard for the backfill-dup bug:
+    the dedup key must be file-independent."""
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    # Two overlapping windows both containing the 06/01 dividend;
+    # window B additionally carries a 06/15 dividend. Distinct
+    # filenames + distinct bytes → distinct source_sha256.
+    win_a = _activity_csv(_div_row("06/01/2024", "12.50"))
+    win_b = _activity_csv(
+        _div_row("06/01/2024", "12.50") + _div_row("06/15/2024", "9.00")
+    )
+    (dump / "activity" / "activity_20240401__20240630.csv").write_text(win_a)
+    (dump / "activity" / "activity_20240501__20240731.csv").write_text(win_b)
+    load._load_transactions(migrated, 1, dump)
+    n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    # 2 distinct transactions (06/01 + 06/15), not 3.
+    assert n == 2
+
+
+def test_activity_preserves_genuine_same_day_duplicates(migrated, tmp_path):
+    """Two byte-identical rows within a single export are two real
+    transactions (e.g. two same-day, same-amount fills) and must be
+    preserved — the per-file occurrence index keeps them distinct,
+    and they still collapse correctly across a re-download."""
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    twice = _activity_csv(
+        _div_row("06/01/2024", "12.50") + _div_row("06/01/2024", "12.50")
+    )
+    (dump / "activity" / "activity_20240401__20240630.csv").write_text(twice)
+    # A second window file with the same pair of identical rows.
+    (dump / "activity" / "activity_20240501__20240731.csv").write_text(twice)
+    load._load_transactions(migrated, 1, dump)
+    n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    # Both genuine copies survive (2), but the re-download doesn't
+    # inflate them to 4.
+    assert n == 2
 
 
 def test_documents_dedup_on_content_sha(migrated, tmp_path):

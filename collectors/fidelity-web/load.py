@@ -16,8 +16,10 @@ Load semantics
   (snapshot-table dedup is by PK alone — every dump's view of the
   master data is preserved).
 * Transactions UPSERT by synthetic activity_id (SHA-256 prefix of
-  the row's promoted columns + source file sha256 + row index).
-  Re-loading the same activity window converges.
+  the row's full content fingerprint + a per-file occurrence index;
+  see _synthesise_activity_id). The key is file-independent, so the
+  same transaction re-downloaded across overlapping windows / runs
+  collapses onto one row.
 * Documents are deduped by content_sha256; the first dump that
   observed a file's bytes wins snapshot_at for that row.
 
@@ -600,7 +602,11 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
         log.warning("unexpected activity CSV header in %s; skipping",
                     csv_path.name)
         return 0
-    for i, row in enumerate(reader):
+    # Per-file occurrence counter, keyed by the row's full content
+    # fingerprint. See _synthesise_activity_id for why this — rather
+    # than the file sha256 + global CSV row index — is the dedup key.
+    occ_counter: dict[str, int] = {}
+    for row in reader:
             run_date = (row.get("Run Date") or "").strip()
             # Footer "Date downloaded..." rows surface as a single
             # field that doesn't match Fidelity's data shape.
@@ -615,12 +621,11 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
             action = (row.get("Action") or "").strip()
             kind = _classify_action(action)
             symbol = (row.get("Symbol") or "").strip() or None
-            description = (row.get("Description") or "").strip()
             amount = parse_decimal(row.get("Amount ($)"))
-            activity_id = _synthesise_activity_id(
-                account_ext, run_date, amount, description,
-                symbol, src_sha, i,
-            )
+            payload = normalize_payload(dict(row))
+            occ = occ_counter.get(payload, 0)
+            occ_counter[payload] = occ + 1
+            activity_id = _synthesise_activity_id(payload, occ)
             conn.execute(
                 "INSERT OR REPLACE INTO transactions ("
                 "activity_id, timestamp, account_external_id, kind, "
@@ -634,7 +639,7 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
                     amount,
                     ts_from_mdy(row.get("Settlement Date")),
                     src_sha,
-                    normalize_payload(dict(row)),
+                    payload,
                     "USD",
                 ),
             )
@@ -683,15 +688,36 @@ def _classify_action(action):
     return action.split()[0].upper()
 
 
-def _synthesise_activity_id(account_ext, run_date, amount,
-                              description, symbol, src_sha, row_index):
+def _synthesise_activity_id(payload, occurrence):
+    """Stable, file-independent dedup key for one activity row.
+
+    Fidelity's Activity export is consolidated across all accounts
+    and the backfill downloads it window-by-window (≤93-day chunks)
+    on every run. The SAME real-world transaction therefore lands
+    in many distinct CSV files — different windows, different runs.
+    The dedup key must depend only on the transaction's intrinsic
+    content so those copies collapse onto one row.
+
+    The fingerprint is the row's full normalized payload (every CSV
+    column, sorted-key JSON — identical bytes for the same row in
+    any file) plus a per-file ``occurrence`` index. The occurrence
+    index disambiguates genuinely-repeated identical rows within a
+    single export (e.g. two same-day, same-amount fills) without
+    breaking cross-file convergence: every file that covers a given
+    day sees that day's complete set of rows, so the Nth identical
+    copy is assigned the same occurrence index N in every file.
+
+    NOTE: the earlier implementation folded the source-file sha256
+    and the global CSV row index into this key. Both vary per file,
+    so identical transactions across overlapping windows never
+    deduped — the table grew a fresh copy of every transaction on
+    every backfill run. source_sha256 is still stored as a column
+    for provenance, just not in the identity.
+    """
     h = hashlib.sha256()
-    parts = [
-        account_ext, run_date,
-        f"{amount:.6f}" if amount is not None else "",
-        description, symbol or "", src_sha, str(row_index),
-    ]
-    h.update("|".join(parts).encode("utf-8"))
+    h.update(payload.encode("utf-8"))
+    h.update(b"|")
+    h.update(str(occurrence).encode("ascii"))
     return h.hexdigest()[:32]
 
 

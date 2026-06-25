@@ -248,7 +248,7 @@ databases always conform to the latest schema.
 | `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
 | `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`, `management_style`; rest in `payload` |
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
-| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over `account|run_date|amount|description|symbol|source_sha256|row_index`) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
+| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's full normalized payload + a per-file occurrence index; file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 | `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated by `pdf_parsers.parse_statement_pdf()` from 529 quarterly + year-end statement PDFs (see §4.5). |
 
@@ -272,11 +272,17 @@ archetype: PK begins with `snapshot_at`, INSERT OR REPLACE per
 load. Every dump's view of the master data is preserved.
 
 `transactions` follows the event archetype: idempotent INSERT
-OR REPLACE on the synthetic `activity_id`. Re-loading the same
-source activity CSV converges (the ID is derived from row
-content + source-file sha256 + row index). Overlapping
-download windows produce duplicate rows that collapse on the
-shared `activity_id`.
+OR REPLACE on the synthetic `activity_id`. The ID is derived
+purely from the row's content fingerprint (its full normalized
+payload) plus a per-file occurrence index — **not** from the
+source-file sha256 or the CSV row index, both of which vary
+between download windows. This is what lets the same transaction
+re-downloaded across overlapping windows / repeated runs collapse
+onto one row. The per-file occurrence index preserves genuinely-
+repeated identical rows within a single export (e.g. two same-day,
+same-amount fills): every file covering a given day sees that
+day's complete row set, so the Nth identical copy is assigned the
+same occurrence index in every file.
 
 `documents` follows the event archetype: PRIMARY KEY on
 `content_sha256` so the same PDF / HTML across multiple dumps
