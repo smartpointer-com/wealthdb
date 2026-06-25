@@ -57,7 +57,8 @@ wealthdb/
 │   │   │   ├── 0020_fx_views.sql       fx_norm / fx_daily currency-conversion views
 │   │   │   ├── 0021_report_macros.sql  report_* table macros (single source of truth)
 │   │   │   ├── 0022_report_history_macros.sql  report_*_history (daily carry-forward)
-│   │   │   └── 0023_fx_clamp_and_orphan_portfolios.sql  FX earliest-rate clamp + orphan-portfolio fix
+│   │   │   ├── 0023_fx_clamp_and_orphan_portfolios.sql  FX earliest-rate clamp + orphan-portfolio fix
+│   │   │   └── 0024_multi_currency_reports.sql  shared line bases + report_*_multi (USD/CHF/EUR cols) for Metabase
 │   │   ├── schema.go                   //go:embed migrations/*.sql; Migrate()
 │   │   ├── open.go                     Open(path, mode); maps to DuckDB access_mode
 │   │   ├── writer.go                   inserts/upserts per canonical type, batched

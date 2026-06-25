@@ -1483,9 +1483,51 @@ line is valued **once** at its own snapshot's FX day, then expanded onto a daily
 spine via an at-or-before ASOF join — so `history@today` equals the matching
 `report_*(MAX)` "latest" report and per-day compute stays cheap. Empty
 entity-days are omitted (they would be 0). `report_global_history` is
-`Σ report_accounts_history`. The Metabase models (`web/provision.py`) wrap these,
-casting the epoch `as_of_day` to TIMESTAMP and the VARCHAR money columns back to
-DECIMAL.
+`Σ report_accounts_history`. The Metabase models wrap the **multi-currency**
+variants of these (§10.8), not the single-currency macros directly.
+
+### 10.8 Multi-currency reports (Metabase)
+
+The Metabase models need a value column **per reporting currency** (USD, CHF,
+EUR) so a user picks the currency by picking a column — Metabase native
+*models* don't expose template-tag parameters to questions built on them, so a
+"target currency" widget wouldn't reach the charts. Calling
+`report_x(MAX, 'USD' | 'CHF' | 'EUR')` three times and joining would re-run the
+whole pipeline per currency: only the out-currency conversion varies; the scan,
+cash dedup, and **base-currency** conversion are currency-agnostic. Migration
+`0024_multi_currency_reports.sql` factors that shared work out so it runs once.
+
+- **Shared line bases.** `account_lines_base(p_asof)`,
+  `portfolio_lines_base(p_asof)`, and `hist_acct_lines_base()` do the scan +
+  cash dedup + base-currency conversion **once**, emitting one row per line with
+  its raw `(ccy, amt, snap)` for the callers to convert.
+  `portfolio_acct_map()` (the orphan→`''` routing of §2/migration 0023) and
+  `portfolio_buckets()` (the bucket list + rolled-up taxonomy) are the single
+  source of truth for the portfolio rollup, shared by every portfolio macro.
+- **Single-currency macros refactored.** `report_accounts` /
+  `report_portfolios` and their `_history` variants are rebuilt on these bases;
+  their output columns/values are **unchanged** (the Go scan and gold tests are
+  unaffected — verified by a byte-for-byte before/after diff).
+- **`report_x_multi` macros.** `report_{global,accounts,portfolios,positions}_multi(p_asof)`,
+  `report_transactions_multi(p_from, p_to)`, and the four `report_*_history_multi()`
+  emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur}`
+  plus the base trio. Each `_<ccy>` column equals `report_x(MAX, '<ccy>')` for
+  that currency by construction (same base, identical 5-leg COALESCE). They are
+  Metabase-only, so they emit **DECIMAL** money directly (no CLI VARCHAR-trim
+  round-trip); the `web/provision.py` wrapper then only casts epoch columns to
+  TIMESTAMP. Per-currency conversion shares pivot legs (`ccy→{CHF,USD,EUR}` plus
+  the `CHF→{USD,EUR}` / `USD→{CHF,EUR}` crosses) rather than N independent
+  blocks. The reporting set is USD/CHF/EUR, fixed in the macros; change it in a
+  new migration.
+- **Account display defaults.** `report_accounts_multi` and
+  `report_accounts_history_multi` apply the conventional
+  `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
+  so the account-level Metabase reports are **never NULL** — matching the
+  `wealthdb accounts` render (§4). The single macros and the raw `accounts`
+  table keep NULL, preserving gold's "unknown vs. explicitly default"
+  distinction (the defaults are a display concern). Portfolio rollups keep their
+  strict NULL-on-mixed semantics (faithful to `wealthdb portfolios`, which shows
+  blank for ambiguous buckets).
 
 ## 11. Repository layout
 

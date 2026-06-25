@@ -31,13 +31,15 @@ port-forward; auth is Metabase's own login.
   collection: `report_{global,portfolios,accounts,positions}_latest`,
   `report_transactions`, and the daily-history `report_{global,portfolios,
   accounts,positions}_history`. They are content-free shims — each is just
-  `SELECT * FROM report_x(…)` over the gold report macros (the same macros
-  the CLI commands use), lightly wrapped to fix column types for BI use
-  (the macros' VARCHAR money columns cast back to DECIMAL, epoch columns
-  to TIMESTAMP), so they bake in no data and track the CLI output by
-  construction. Provisioning is idempotent (updates in place, archives
-  retired names). The gold DuckDB connection is likewise added at runtime
-  by `provision.py`, never baked into the image.
+  `SELECT * FROM report_x_multi(…)` over the gold multi-currency report
+  macros (migration 0024; built on the same line bases the CLI's
+  single-currency `report_x(…)` macros use, so each `_<ccy>` column equals
+  the CLI's output for that currency by construction). Those macros emit one
+  value-column set per currency (USD/CHF/EUR) as DECIMAL, so the wrapper only
+  casts epoch columns to TIMESTAMP. They bake in no data. Provisioning is
+  idempotent (updates in place, archives retired names). The gold DuckDB
+  connection is likewise added at runtime by `provision.py`, never baked into
+  the image.
 - This component has **no credentials**. Don't add a `~/.secrets/*`
   mount or any secret env. Metabase manages its own admin account in
   its H2 metadata DB (under `$XDG_DATA_HOME`, outside the repo).

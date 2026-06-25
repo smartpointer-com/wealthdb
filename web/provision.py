@@ -52,7 +52,8 @@ def main():
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
     ap.add_argument("--default-currency", default="USD",
-                    help="output currency the report models bind (report_x(..., CCY))")
+                    help="accepted for compatibility; no longer used — the report "
+                         "models now expose USD/CHF/EUR columns via report_x_multi(...)")
     a = ap.parse_args()
 
     if not wait_health(a.base):
@@ -111,7 +112,7 @@ def main():
             return 1
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
-    return ensure_models(a.base, sid, db_id, a.default_currency, coll_id)
+    return ensure_models(a.base, sid, db_id, coll_id)
 
 
 # MAX_BIGINT as the as-of epoch means "latest snapshot" (the macros'
@@ -129,76 +130,66 @@ RETIRED_MODEL_NAMES = ["report_global", "report_portfolios",
                        "report_accounts", "report_positions"]
 
 
-def report_models(ccy):
-    """model name -> (native SQL, description). The report_* DuckDB macros
-    (migrations 0021/0022) are the single source of truth; each model only
-    wraps a macro to bind the as-of / currency and to fix column types for
-    Metabase: the macros emit money/quantity columns as VARCHAR (the CLI
-    scans them as trimmed strings), so the wrapper casts them back to
-    DECIMAL, and renders epoch columns as TIMESTAMP (`to_timestamp` ->
-    naive-UTC). The `_latest` reports are as of each source's latest
-    snapshot; the `_history` reports carry value forward per day."""
-    D4, D8 = "DECIMAL(28,4)", "DECIMAL(28,8)"  # money/value vs quantity/price
-    # Per-report numeric (VARCHAR-in-macro) columns to cast to DECIMAL.
-    OUT3 = [("cash_balance_outccy", D4), ("positions_value_outccy", D4), ("total_value_outccy", D4)]
-    BASE3 = [("positions_value_base", D4), ("cash_balance_base", D4), ("total_value_base", D4)]
-    POS_NUMS = [("quantity", D8), ("market_value", D4), ("value_outccy", D4)]
-
-    def wrap(from_expr, ts_cols=(), num_casts=()):
+def report_models():
+    """model name -> (native SQL, description). The report_*_multi DuckDB
+    macros (migration 0024) are the single source of truth; each model only
+    wraps a macro to bind the as-of and to render epoch columns as TIMESTAMP
+    (`to_timestamp` -> naive-UTC) for Metabase. The macros already emit DECIMAL
+    money/quantity columns and one value column set per reporting currency
+    (USD/CHF/EUR), so no value casting is needed here. The `_latest` reports
+    are as of each source's latest snapshot; the `_history` reports carry value
+    forward per day."""
+    def wrap(from_expr, ts_cols=()):
         parts = [f"CAST(to_timestamp({c}) AS TIMESTAMP) AS {c}" for c in ts_cols]
-        parts += [f"CAST({c} AS {t}) AS {c}" for c, t in num_casts]
         return f"SELECT * REPLACE ({', '.join(parts)}) FROM {from_expr}"
 
-    L = f"({MAX_BIGINT}, '{ccy}')"   # _latest macro args (as-of = latest snapshot)
-    H = f"('{ccy}')"                 # _history macro args
+    L = f"({MAX_BIGINT})"   # _multi _latest macro arg (as-of = latest snapshot)
     return {
         "report_global_latest": (
-            wrap(f"report_global{L}", ["min_snapshot_at", "max_snapshot_at"], OUT3),
-            "Whole-portfolio rollup as of the latest snapshot: cash, positions, and "
-            f"total value in {ccy}, with the min/max snapshot date span. "
-            "Mirrors `wealthdb global`."),
+            wrap(f"report_global_multi{L}", ["min_snapshot_at", "max_snapshot_at"]),
+            "Whole-portfolio rollup as of the latest snapshot: cash, positions and "
+            "total value in USD, CHF and EUR (one column set per currency), with the "
+            "min/max snapshot date span. Mirrors `wealthdb global`."),
         "report_portfolios_latest": (
-            wrap(f"report_portfolios{L}", ["snapshot_at"], BASE3 + OUT3),
-            "One row per portfolio as of the latest snapshot: positions + cash "
-            f"totalled in the portfolio's base currency and in {ccy}, with rolled-up "
-            "tax wrapper / management style. Mirrors `wealthdb portfolios`."),
+            wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
+            "One row per portfolio as of the latest snapshot: positions + cash totalled "
+            "in the portfolio's base currency and in USD/CHF/EUR, with rolled-up tax "
+            "wrapper / management style. Mirrors `wealthdb portfolios`."),
         "report_accounts_latest": (
-            wrap(f"report_accounts{L}", ["snapshot_at"], BASE3 + OUT3),
+            wrap(f"report_accounts_multi{L}", ["snapshot_at"]),
             "One row per account as of the latest snapshot: positions + cash totalled "
-            f"in the account's base currency and in {ccy}, with kind, tax wrapper, and "
-            "management style. Mirrors `wealthdb accounts`."),
+            "in the account's base currency and in USD/CHF/EUR, with kind, tax wrapper "
+            "and management style. Mirrors `wealthdb accounts`."),
         "report_positions_latest": (
-            wrap(f"report_positions{L}", ["snapshot_at"], POS_NUMS),
-            "One row per held position as of the latest snapshot, with market value "
-            f"converted to {ccy}. Mirrors `wealthdb positions`."),
+            wrap(f"report_positions_multi{L}", ["snapshot_at"]),
+            "One row per held position as of the latest snapshot, with market value in "
+            "USD, CHF and EUR. Mirrors `wealthdb positions`."),
         "report_transactions": (
-            wrap(f"report_transactions(0, {MAX_BIGINT}, '{ccy}')", ["occurred_at"],
-                 [("gross_amount", D4), ("net_amount", D4), ("quantity", D8), ("price", D8), ("value_outccy", D4)]),
-            "Every transaction over all time, with net amount converted to "
-            f"{ccy} at the transaction date. Mirrors `wealthdb transactions` "
-            "(filter the date range in Metabase)."),
+            wrap(f"report_transactions_multi(0, {MAX_BIGINT})", ["occurred_at"]),
+            "Every transaction over all time, with net amount in USD, CHF and EUR at the "
+            "transaction date. Mirrors `wealthdb transactions` (filter the date range in "
+            "Metabase)."),
         # History reports: one row per entity per UTC day, from the first snapshot to
         # today, value carried forward between snapshots. For time-series charts; filter
         # / aggregate by as_of_day. history@today equals the matching _latest report.
         "report_global_history": (
-            wrap(f"report_global_history{H}", ["as_of_day"], OUT3),
+            wrap("report_global_history_multi()", ["as_of_day"]),
             "Whole-portfolio value for every day from the first snapshot to today "
-            f"(carried forward between snapshots), in {ccy}. The net-worth-over-time "
-            "series — chart total_value_outccy against as_of_day."),
+            "(carried forward between snapshots), in USD, CHF and EUR. The net-worth-"
+            "over-time series — chart total_value_usd (or _chf / _eur) against as_of_day."),
         "report_accounts_history": (
-            wrap(f"report_accounts_history{H}", ["as_of_day"], BASE3 + OUT3),
+            wrap("report_accounts_history_multi()", ["as_of_day"]),
             "Per-account value for every day (carried forward), in the account's base "
-            f"currency and in {ccy}. Filter to an account and chart against as_of_day."),
+            "currency and in USD/CHF/EUR. Filter to an account and chart against as_of_day."),
         "report_portfolios_history": (
-            wrap(f"report_portfolios_history{H}", ["as_of_day"], BASE3 + OUT3),
-            "Per-portfolio value for every day (carried forward), in the portfolio's "
-            f"base currency and in {ccy}. Filter to a portfolio and chart against "
-            "as_of_day."),
+            wrap("report_portfolios_history_multi()", ["as_of_day"]),
+            "Per-portfolio value for every day (carried forward), in the portfolio's base "
+            "currency and in USD/CHF/EUR. Filter to a portfolio and chart against as_of_day."),
         "report_positions_history": (
-            wrap(f"report_positions_history{H}", ["as_of_day", "snapshot_at"], POS_NUMS),
-            "Per-position value for every day (carried forward), converted to "
-            f"{ccy}. Large (days x held positions) — filter to a position / account / "
-            "date range before charting."),
+            wrap("report_positions_history_multi()", ["as_of_day", "snapshot_at"]),
+            "Per-position value for every day (carried forward), in USD, CHF and EUR. "
+            "Large (days x held positions) — filter to a position / account / date range "
+            "before charting."),
     }
 
 
@@ -218,7 +209,7 @@ def ensure_collection(base, sid, name):
     return None
 
 
-def ensure_models(base, sid, db_id, ccy, coll_id):
+def ensure_models(base, sid, db_id, coll_id):
     """Create/refresh the pre-defined report models in `coll_id`, and
     archive any retired (renamed-away) ones. Idempotent: an existing model
     of the same name is updated in place; re-running converges. The models
@@ -228,7 +219,7 @@ def ensure_models(base, sid, db_id, ccy, coll_id):
     by_name = {c.get("name"): c for c in cards} if isinstance(cards, list) else {}
 
     created = updated = 0
-    for name, (query, desc) in report_models(ccy).items():
+    for name, (query, desc) in report_models().items():
         payload = {
             "name": name,
             "type": "model",
@@ -265,7 +256,7 @@ def ensure_models(base, sid, db_id, ccy, coll_id):
             if st in (200, 201):
                 archived += 1
 
-    print(f"provision: report models in {ccy} — {created} created, {updated} updated, "
+    print(f"provision: report models (USD/CHF/EUR) — {created} created, {updated} updated, "
           f"{archived} retired (collection '{COLLECTION_NAME}')")
     return 0
 

@@ -82,13 +82,14 @@ OSS **setup API** ([`provision.py`](provision.py), stdlib only): create
 the admin (`POST /api/setup`, which also finishes the wizard), pre-add
 the gold DuckDB database (`POST /api/database`, `read_only`), and create
 the pre-defined report models (`POST /api/card`, `type: "model"`) as native-query
-shims over the gold report macros — `SELECT * FROM report_x(…)`, the
-same macros the CLI uses, so the models track command output by
-construction and bake in no data. Two families, in a `wealthdb
-(pre-defined)` collection: the `_latest` snapshot reports (+ all-time
-`report_transactions`), and the daily `_history` reports (migration
-0022) for time-series charts. Idempotent — re-running updates models in
-place and archives retired names. The admin password comes from
+shims over the gold **multi-currency** report macros — `SELECT * FROM
+report_x_multi(…)` (migration 0024), which build on the same line bases the
+CLI's single-currency macros use and emit one value-column set per currency
+(USD/CHF/EUR), so the models track command output by construction and bake in
+no data. Two families, in a `wealthdb (pre-defined)` collection: the `_latest`
+snapshot reports (+ all-time `report_transactions`), and the daily `_history`
+reports (migration 0022) for time-series charts. Idempotent — re-running
+updates models in place and archives retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
 generated once and saved chmod 600; `WEALTHDB_WEB_NO_PROVISION=1` opts
 back into the browser wizard.
