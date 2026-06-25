@@ -13,6 +13,7 @@ from pdf_parsers import (
     parse_account_statement_text,
     parse_label_statement_of_assets,
     parse_maturity_notice_text,
+    parse_statement_of_assets_text,
 )
 
 
@@ -73,12 +74,12 @@ class TestPortfolioExternalId:
         assert len(assembled) == 16
 
     def test_parse_statement_of_assets_raises_on_length_drift(
-            self, monkeypatch, tmp_path):
+            self, monkeypatch):
         """If the assembly ever drifts from 16 chars (regex change,
         upstream label format shift, etc.), the parser must raise
-        rather than silently inserting a bad row."""
-        from pdf_parsers import parse_statement_of_assets
-
+        rather than silently inserting a bad row. Exercised through
+        the text helper — the assembly happens there, before any PDF
+        content is consulted."""
         # Synthesize a pathological label_meta where the
         # portfolio_number is too long. We monkeypatch the label
         # parser to return it, then assert the assembly raises.
@@ -92,12 +93,132 @@ class TestPortfolioExternalId:
             "pdf_parsers.parse_label_statement_of_assets",
             lambda label: bad_meta,
         )
-        # parse_statement_of_assets opens the PDF before doing the
-        # assembly, so we need a real (empty) file path.
-        dummy = tmp_path / "x.pdf"
-        dummy.write_bytes(b"%PDF-1.4\n%%EOF\n")
         with pytest.raises(ValueError, match=r"length != 16"):
-            parse_statement_of_assets(dummy, "<doc-token>", "<label>")
+            parse_statement_of_assets_text("", "<doc-token>", "<label>")
+
+
+# ---- Statement-of-assets securities: listed + alternatives --------
+
+class TestStatementOfAssetsSecurities:
+    """The Statement-of-assets securities walker must capture three
+    row shapes off the Valor/ISIN anchor:
+
+      1. Listed securities — the cost/market/gain% triple.
+      2. Listed securities whose market price carries a one-letter
+         qualifier (e.g. a structured product's "120.00 B 20.00%").
+      3. Private-markets / SPV holdings — a single FX rate (or
+         "n.a.") in place of the triple; the funded "Outstanding
+         Shares" row carries the NAV, the n.a. commitment rows are 0.
+
+    All identifiers are synthetic placeholders per CLAUDE.md §4 —
+    the ISIN-shaped tokens use the reserved 'XX' prefix and repdigit
+    bodies so they are obviously not real instruments."""
+
+    # Synthetic Statement-of-assets listing label (3-digit branch,
+    # all-zero base, portfolio 06). Same shape as the docs page emits.
+    LABEL = (
+        "‍ Statement of assets as of 31032026 "
+        "02.04.2026 02 April 2026 P. Placeholder 999-00000000-06 300 KB"
+    )
+
+    def _soa_text(self, base_ccy: str = "USD") -> str:
+        """A minimal Statement-of-assets text body: a Portfolio-01
+        overview block (precious-metals asset-class total, no detail
+        page) followed by a Detailed-positions section carrying one
+        listed equity, one flagged structured product, one funded
+        private-markets holding and one unfunded-commitment row."""
+        return "\n".join([
+            f"Valued in {base_ccy}",
+            "Portfolio 01",
+            "Liquidity 11 111 11 111 22.58",
+            "Precious metals & commodities 1 234 567 1 234 567 75.00",
+            "Net assets 1 245 678",
+            "Detailed positions",
+            # 1. listed equity (cost / market / gain% triple)
+            "100 Reg.shs Placeholder Equity AG USD 10.000000 12.50 25.00% 1 250 5.00",
+            "Financials",
+            "Valor 111 - ISIN XX0000000011",
+            # 2. structured product with a one-letter price flag ('B')
+            "200 Example Structured Note USD 100.000000 120.00 B 20.00% 24 000 10.00",
+            "Valor 222 - ISIN XX0000000022",
+            # 3. funded private-markets Outstanding Shares (FX rate, NAV)
+            "300 MVPX Placeholder Fund USD 1.2500 9 999 4.00",
+            "Valor 333 - ISIN XX0000000033",
+            # 4. unfunded commitment (n.a. price, 0 value) -> skipped
+            "400 MVPX Placeholder Fund USD n.a. 0 0.00",
+            "Valor 444 - ISIN XX0000000044",
+            "Additional information Abbreviations",
+        ])
+
+    def _by_isin(self, rows):
+        return {r["instrument_isin"]: r for r in rows
+                if r["instrument_isin"]}
+
+    def test_listed_equity_still_parses(self):
+        """Regression guard: the cost/market/gain% triple path is
+        unchanged by the added flag/PM handling."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text(), "<doc-token>", self.LABEL)
+        eq = self._by_isin(rows)["XX0000000011"]
+        assert eq["market_value"] == pytest.approx(1250.0)
+        assert eq["cost_price"] == pytest.approx(10.0)
+        assert eq["market_price"] == pytest.approx(12.5)
+        assert eq["sector"] == "Financials"
+
+    def test_structured_product_with_price_flag(self):
+        """The one-letter qualifier after the market price ('120.00 B')
+        must not break the headline match."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text(), "<doc-token>", self.LABEL)
+        amc = self._by_isin(rows)["XX0000000022"]
+        assert amc["market_value"] == pytest.approx(24000.0)
+        assert amc["cost_price"] == pytest.approx(100.0)
+
+    def test_private_market_outstanding_shares_captured(self):
+        """A funded private-markets row (FX rate + NAV, no gain%) is
+        captured via the PM-headline fallback, with the FX rate kept
+        in exchange_rate_to_base and no cost/market price."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text(), "<doc-token>", self.LABEL)
+        pm = self._by_isin(rows)["XX0000000033"]
+        assert pm["market_value"] == pytest.approx(9999.0)
+        assert pm["units"] == pytest.approx(300.0)
+        assert pm["exchange_rate_to_base"] == pytest.approx(1.25)
+        assert pm["cost_price"] is None
+        assert pm["market_price"] is None
+
+    def test_unfunded_commitment_row_skipped(self):
+        """The 'n.a.'-priced 0-value commitment row adds no position."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text(), "<doc-token>", self.LABEL)
+        assert "XX0000000044" not in self._by_isin(rows)
+
+    def test_overview_precious_metals_synthesised_for_usd(self):
+        """The precious-metals portfolio has no Detailed-positions
+        page; its overview asset-class total is recovered as a
+        synthetic position with a non-ISIN-shaped key, attributed to
+        portfolio 01."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text("USD"), "<doc-token>", self.LABEL)
+        pm = [r for r in rows
+              if r["description"] == "Precious metals & commodities"]
+        assert len(pm) == 1
+        row = pm[0]
+        assert row["market_value"] == pytest.approx(1234567.0)
+        assert row["currency_iso"] == "USD"
+        assert row["portfolio_external_id"].endswith("0001")
+        # Synthetic key must not look like a real ISIN (len != 12).
+        assert len(row["instrument_isin"]) != 12
+        assert row["instrument_isin"].startswith("PM-")
+
+    def test_overview_precious_metals_skipped_for_non_usd(self):
+        """Only the USD-valued copy emits the synthetic, so the same
+        holding (printed once per portfolio currency) collapses to a
+        single deterministic row across the relationship's PDFs."""
+        rows = parse_statement_of_assets_text(
+            self._soa_text("CHF"), "<doc-token>", self.LABEL)
+        assert not [r for r in rows
+                    if r["description"] == "Precious metals & commodities"]
 
 
 # ---- Issue 1: opening/closing/total balances must be extracted ---

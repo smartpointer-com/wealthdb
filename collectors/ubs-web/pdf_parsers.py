@@ -127,11 +127,52 @@ _VALOR_ISIN_RE = re.compile(
 
 # Securities-position headline:
 #   "100 Reg.shs Example Equity AG (XMPL) EUR 100.000000 120.5 10.00% 12 050 1.25"
+#
+# UBS prints a one-letter price qualifier after the market price on
+# some rows — e.g. a structured product's estimated/indicative
+# price renders as "120.00 B 20.00%" (synthetic example). The optional
+# `[A-Za-z]` flag group swallows it so those rows still parse; without
+# it the whole headline failed to match and the position dropped
+# silently (the same instrument parses fine in periods where UBS omits
+# the flag).
 _SECURITY_HEADLINE_RE = re.compile(
     r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
     r"(?P<ccy>[A-Z]{3})\s+(?P<cost_price>[\d\s']+\.\d+)\s+"
-    r"(?P<market_price>[\d\s']+\.?\d*)\s+(?P<gain_pct>-?\d+\.\d+%)\s+"
+    r"(?P<market_price>[\d\s']+\.?\d*)\s+(?:[A-Za-z]\s+)?"
+    r"(?P<gain_pct>-?\d+\.\d+%)\s+"
     r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
+)
+
+# Private-markets / alternatives headline. Same outer column anchors
+# as _SECURITY_HEADLINE_RE, but the middle pricing block differs:
+# UBS-sponsored Private Markets funds and SPV interests carry a single
+# exchange rate (or the literal "n.a.") where listed securities print
+# the cost-price / market-price / market-gain triple. Synthetic
+# examples of the two forms:
+#   "1 000 Example PE Fund   USD  1.0500  12 345  5.00"
+#   "2 000 Example PE Fund   USD  n.a.    0        0.00"
+# The first form is the funded "Outstanding Shares" holding (real
+# NAV in market_value); the "n.a." form is a Net/Unfunded Commitment
+# tracking row with a 0 market value. Tried only as a fallback after
+# _SECURITY_HEADLINE_RE so listed-security parsing is unchanged.
+_PM_HEADLINE_RE = re.compile(
+    r"^\s*(?P<units>-?[\d\s']+(?:\.\d+)?)\s+(?P<desc>.+?)\s+"
+    r"(?P<ccy>[A-Z]{3})\s+(?P<rate>n\.a\.|[\d\s']+\.\d+)\s+"
+    r"(?P<market_value>-?[\d\s']+)\s+(?P<pct_na>-?\d+\.\d{2})\s*$"
+)
+
+# Overview asset-class line for a portfolio whose securities have no
+# Detailed-positions page of their own (UBS does not issue a
+# per-position Statement of assets for the precious-metals / custody
+# portfolio — only the relationship overview carries its
+# asset-class total). Anchored at column 0 so it matches the
+# portfolio-block line, not the right-hand consolidated column
+# (synthetic example):
+#   "Precious metals & commodities   12 345   12 345   75.00 ..."
+_OVERVIEW_PORTFOLIO_RE = re.compile(r"^Portfolio\s+(?P<no>\d{2})\b")
+_OVERVIEW_PRECIOUS_METALS_RE = re.compile(
+    r"^Precious metals & commodities\s+"
+    r"(?P<mv>\d{1,3}(?:[ ']\d{3})*(?:\.\d+)?)\b"
 )
 
 
@@ -140,6 +181,18 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
     """Walk a Statement-of-assets PDF and emit one row per detected
     position. Each row is a dict ready for INSERT into the
     `historical_position_snapshots` table."""
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(
+            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages
+        )
+    return parse_statement_of_assets_text(full_text, doc_token, label)
+
+
+def parse_statement_of_assets_text(full_text: str, doc_token: str,
+                                   label: str) -> list[dict]:
+    """Pure-text variant of parse_statement_of_assets — same row
+    shape, but takes already-extracted PDF text so the regex /
+    line-walk layer can be exercised without a real PDF on disk."""
     label_meta = parse_label_statement_of_assets(label)
     if label_meta is None:
         return []
@@ -151,28 +204,10 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
     # zfill(4) below restores it so the value joins to PSN's
     # `portfolios.portfolio_external_id` directly.
     branch, base = label_meta["account_number_prefix"].split("-", 1)
-    psn_portfolio = (
-        f"{branch.zfill(4)}"
-        f"{base.zfill(8)}"
-        f"{label_meta['portfolio_number'].zfill(4)}"
-    )
-    # Loud-fail if the assembly ever drifts from PSN's shape. The
-    # downstream gold layer joins on this column; a wrong length
-    # silently double-counts every position. Caught at parse time
-    # rather than at insert time so the source row is in the
-    # exception context.
-    if len(psn_portfolio) != 16:
-        raise ValueError(
-            f"portfolio_external_id length != 16: {psn_portfolio!r} "
-            f"(from acct_no={label_meta['account_number_prefix']!r}, "
-            f"portfolio_no={label_meta['portfolio_number']!r})"
-        )
+    psn_portfolio = _assemble_psn_portfolio(
+        branch, base, label_meta["portfolio_number"],
+        label_meta["account_number_prefix"])
 
-    results: list[dict] = []
-    with pdfplumber.open(pdf_path) as pdf:
-        full_text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages
-        )
     base_ccy = None
     m = _BASE_CCY_RE.search(full_text)
     if m:
@@ -188,6 +223,8 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
             break
         if in_detail:
             section.append(line)
+
+    results: list[dict] = []
 
     # --- Cash positions: walk lines, pair amount-line with next-IBAN-line ---
     pending_cash: dict | None = None
@@ -226,23 +263,36 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
             pending_cash = None
 
     # --- Securities positions: anchor on the Valor/ISIN line, look
-    # back up to 10 lines for the headline. ---
+    # back up to 10 lines for the headline. The headline is either a
+    # listed-security row (_SECURITY_HEADLINE_RE) or a private-markets
+    # row (_PM_HEADLINE_RE); the listed form is tried first so its
+    # parsing is unchanged. We keep the CLOSEST match above the ISIN
+    # line, of either kind, so adjacent blocks don't cross-attribute. ---
     for i, line in enumerate(section):
         vi = _VALOR_ISIN_RE.match(line)
         if not vi:
             continue
         isin = vi["isin"]
         headline = None
+        headline_is_pm = False
         sector = None
         for j in range(max(0, i - 10), i):
             prev = section[j]
             hm = _SECURITY_HEADLINE_RE.match(prev)
             if hm:
                 headline = hm
-            # Sector lives on the second line of the row, usually
-            # right after the description (e.g. 'Financials',
-            # 'Information Tech.', 'Communication').
-            if headline is not None and j > 0:
+                headline_is_pm = False
+            else:
+                pm = _PM_HEADLINE_RE.match(prev)
+                if pm:
+                    headline = pm
+                    headline_is_pm = True
+            # Sector lives on the second line of a listed-security row,
+            # usually right after the description (e.g. 'Financials',
+            # 'Information Tech.'). Private-markets rows have no sector
+            # column, so only scan for it when a listed headline is in
+            # play.
+            if headline is not None and not headline_is_pm and j > 0:
                 stripped = prev.strip()
                 if stripped and not any(
                     ch.isdigit() for ch in stripped.split()[-1]
@@ -250,6 +300,41 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
                     sector = stripped
         if headline is None:
             continue
+
+        if headline_is_pm:
+            mv = _to_float(headline["market_value"])
+            # Skip Net/Unfunded Commitment tracking rows: they print
+            # an 'n.a.' price and a 0 market value. The funded
+            # "Outstanding Shares" row carries the real NAV.
+            if not mv:
+                continue
+            rate = (None if headline["rate"] == "n.a."
+                    else _to_float(headline["rate"]))
+            results.append({
+                "as_of_date": label_meta["as_of_date"],
+                "portfolio_external_id": psn_portfolio,
+                "account_external_id": "",
+                "instrument_isin": isin,
+                "currency_iso": headline["ccy"],
+                "units": _to_float(headline["units"]),
+                "market_value": mv,
+                "market_value_currency": base_ccy,
+                "cost_price": None,
+                "market_price": None,
+                "accrued_interest": None,
+                "exchange_rate_to_base": rate,
+                "description": headline["desc"].strip(),
+                "sector": None,
+                "source_doc_token": doc_token,
+                "payload": json.dumps({
+                    "valor": vi["valor"],
+                    "isin": isin,
+                    "kind": "private_market",
+                    "headline": headline.group(),
+                }),
+            })
+            continue
+
         results.append({
             "as_of_date": label_meta["as_of_date"],
             "portfolio_external_id": psn_portfolio,
@@ -272,7 +357,98 @@ def parse_statement_of_assets(pdf_path: Path, doc_token: str,
                 "headline": headline.group(),
             }),
         })
+
+    # --- Overview-only asset classes: precious metals / commodities.
+    # UBS issues no Detailed-positions page for the precious-metals
+    # custody portfolio, so the gold bar has no per-instrument row in
+    # any PDF — only the relationship overview's asset-class total.
+    # We recover that value as a synthetic asset-class-level position.
+    # The overview prints the same holding once per portfolio-currency
+    # PDF (USD / CHF / EUR), so we emit only from USD-valued PDFs (the
+    # relationship's reporting currency); the 3 USD copies collapse to
+    # one row on the silver PK, giving a single deterministic value
+    # that gold converts at query time. The synthetic instrument key
+    # is deliberately not ISIN-shaped — the gold adapter detects that
+    # and leaves the canonical ISIN null. ---
+    if base_ccy == "USD":
+        results.extend(_overview_precious_metals(
+            full_text, label_meta, branch, base, base_ccy, doc_token))
+
     return results
+
+
+def _assemble_psn_portfolio(branch: str, base: str, portfolio_no: str,
+                            acct_no_prefix: str) -> str:
+    """Build the 16-char PSN-aligned portfolio_external_id and
+    loud-fail on length drift. The downstream gold layer joins on
+    this column; a wrong length silently double-counts every
+    position, so it's caught at parse time with the source row in the
+    exception context."""
+    psn_portfolio = f"{branch.zfill(4)}{base.zfill(8)}{portfolio_no.zfill(4)}"
+    if len(psn_portfolio) != 16:
+        raise ValueError(
+            f"portfolio_external_id length != 16: {psn_portfolio!r} "
+            f"(from acct_no={acct_no_prefix!r}, "
+            f"portfolio_no={portfolio_no!r})"
+        )
+    return psn_portfolio
+
+
+def _overview_precious_metals(full_text: str, label_meta: dict,
+                              branch: str, base: str, base_ccy: str,
+                              doc_token: str) -> list[dict]:
+    """Emit one synthetic precious-metals position per portfolio whose
+    overview block carries a 'Precious metals & commodities' total.
+    Attribution uses the most recent 'Portfolio NN' header. Deduped
+    within the PDF by portfolio so a repeated overview block doesn't
+    double-emit; cross-PDF dedup is handled by the silver PK."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    current_no: str | None = None
+    for line in full_text.splitlines():
+        hdr = _OVERVIEW_PORTFOLIO_RE.match(line.strip())
+        if hdr:
+            current_no = hdr["no"]
+            continue
+        pmm = _OVERVIEW_PRECIOUS_METALS_RE.match(line)
+        if not pmm or current_no is None:
+            continue
+        port16 = _assemble_psn_portfolio(
+            branch, base, current_no, label_meta["account_number_prefix"])
+        if port16 in seen:
+            continue
+        seen.add(port16)
+        mv = _to_float(pmm["mv"])
+        if not mv:
+            continue
+        # Synthetic, intentionally non-ISIN-shaped instrument key
+        # (len != 12) so the gold adapter routes it as a synthetic
+        # instrument with a null canonical ISIN.
+        synth_key = f"PM-{port16}"
+        rows.append({
+            "as_of_date": label_meta["as_of_date"],
+            "portfolio_external_id": port16,
+            "account_external_id": "",
+            "instrument_isin": synth_key,
+            "currency_iso": base_ccy,
+            "units": None,
+            "market_value": mv,
+            "market_value_currency": base_ccy,
+            "cost_price": None,
+            "market_price": None,
+            "accrued_interest": None,
+            "exchange_rate_to_base": None,
+            "description": "Precious metals & commodities",
+            "sector": None,
+            "source_doc_token": doc_token,
+            "payload": json.dumps({
+                "kind": "overview_asset_class",
+                "asset_class": "precious_metals",
+                "portfolio_no": current_no,
+                "market_value": pmm["mv"],
+            }),
+        })
+    return rows
 
 
 # ============================================================

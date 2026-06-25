@@ -253,6 +253,32 @@ snapshots from the PDF document archive. Two dedicated tables:
 | `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS doesn't surface the safekeeping account in the printed text in a way we can extract). |
 | `historical_cash_balances` | "Account Statement" PDFs (monthly) | One row per `(period_end, account_external_id)` with opening / closing balance + turnover totals. UBS only issues an Account Statement for a given month when the account had activity in that month, so coverage is uneven; year-end months tend to cover the full account inventory. |
 
+**Position-row shapes the Statement-of-assets walker handles.**
+The securities walker anchors on each `Valor … - ISIN …` line and
+reads the headline row just above it, in three flavours:
+
+1. **Listed securities** — the `cost-price / market-price /
+   market-gain%` triple. A one-letter price qualifier UBS sometimes
+   prints after the market price (e.g. a structured product's
+   `120.00 B 20.00%`) is tolerated.
+2. **Private-markets / SPV holdings** (UBS-sponsored Private Markets
+   funds and SPV interests) — these print a single FX rate, or the
+   literal `n.a.`, where listed rows print the triple. The funded
+   "Outstanding Shares" row carries the NAV; the `n.a.` Net/Unfunded
+   Commitment rows are 0-valued and skipped (the same fund's
+   commitment ISINs would otherwise add value-less rows).
+3. **Overview-only asset classes** — UBS issues no Detailed-positions
+   page for the precious-metals / custody portfolio, so its gold-bar
+   holding has no per-instrument row anywhere in the PDF. Its
+   asset-class total is recovered from the relationship overview as a
+   single synthetic position (`description = "Precious metals &
+   commodities"`, a non-ISIN-shaped `instrument_isin` key of the form
+   `PM-<portfolio>`). The overview prints the figure once per
+   portfolio-currency PDF, so the walker emits it only from
+   USD-valued PDFs (the relationship's reporting currency); the
+   duplicate USD copies collapse on the silver PK. The gold adapter
+   recognises the non-ISIN key and leaves the canonical ISIN null.
+
 **Why separate from the live-fetch `positions` / `accounts`
 tables.** Two reasons:
 

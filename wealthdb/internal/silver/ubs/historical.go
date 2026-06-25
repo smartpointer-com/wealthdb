@@ -189,11 +189,22 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			batch.Accounts = append(batch.Accounts, ac)
 		}
 
+		// Some historical rows carry a synthetic, non-ISIN-shaped
+		// instrument key — e.g. the overview-derived precious-metals
+		// position for a portfolio UBS issues no per-instrument
+		// Statement-of-Assets page for ("PM-<portfolio>"). It still
+		// needs a stable instrument/position identity, but must not
+		// claim a canonical ISIN, so leave InstrumentChange.ISIN nil
+		// for those.
 		isinCopy := isin
+		var isinPtr *string
+		if looksLikeISIN(isin) {
+			isinPtr = &isinCopy
+		}
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           canonical.AssetClassOther,
-			ISIN:                 &isinCopy,
+			ISIN:                 isinPtr,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
 			Currency:             silver.StrPtrIfNonEmpty(ccy),
 			FirstSeenAt:          asOf,

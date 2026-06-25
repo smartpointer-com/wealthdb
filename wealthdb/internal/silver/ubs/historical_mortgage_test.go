@@ -196,3 +196,74 @@ func TestHistoricalSecuritiesSafekeepingRepointing(t *testing.T) {
 			kindByID["0999AAAAAAAA09:overlay"])
 	}
 }
+
+// TestHistoricalSyntheticISIN locks in the overview-derived
+// precious-metals path: a row whose instrument_isin is a synthetic,
+// non-ISIN-shaped key ("PM-<portfolio>") still flows to gold as a
+// Position + Instrument, but must NOT claim a canonical ISIN — the
+// InstrumentChange.ISIN stays nil while a real-ISIN security keeps
+// its ISIN. Both still produce a position with the correct value.
+func TestHistoricalSyntheticISIN(t *testing.T) {
+	r := newWebFixture(t)
+	ctx := context.Background()
+	if _, err := r.db.ExecContext(ctx, `
+        INSERT INTO historical_position_snapshots
+            (as_of_date, portfolio_external_id, account_external_id,
+             instrument_isin, currency_iso, units, market_value,
+             market_value_currency, source_doc_token, payload)
+        VALUES
+            (1000, '0999AAAAAAAA02', '', 'CH0000000001', 'CHF',
+             10, 1500, 'CHF', 'tok', '{}'),
+            (1000, '0999AAAAAAAA01', '', 'PM-0999AAAAAAAA01', 'USD',
+             NULL, 1000000, 'USD', 'tok', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+
+	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
+	stream, err := r.snapshotsHistorical(ctx, w, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var positions []canonical.PositionChange
+	var instruments []canonical.InstrumentChange
+	for {
+		batch, more, err := stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, batch.Positions...)
+		instruments = append(instruments, batch.Instruments...)
+		if !more {
+			break
+		}
+	}
+
+	// Both positions must reach gold, keyed by their (synthetic or
+	// real) instrument key.
+	mvByKey := map[string]*canonical.Decimal{}
+	for _, p := range positions {
+		mvByKey[p.PositionKey] = p.MarketValue
+	}
+	if _, ok := mvByKey["CH0000000001"]; !ok {
+		t.Errorf("real-ISIN security missing from positions")
+	}
+	if mv, ok := mvByKey["PM-0999AAAAAAAA01"]; !ok || mv == nil {
+		t.Errorf("synthetic precious-metals position missing or has nil value")
+	}
+
+	// The canonical ISIN must be set for the real security and nil
+	// for the synthetic key.
+	isinByID := map[string]*string{}
+	for _, in := range instruments {
+		isinByID[in.InstrumentExternalID] = in.ISIN
+	}
+	if got := isinByID["CH0000000001"]; got == nil || *got != "CH0000000001" {
+		t.Errorf("real security ISIN = %v, want CH0000000001", got)
+	}
+	if got := isinByID["PM-0999AAAAAAAA01"]; got != nil {
+		t.Errorf("synthetic key must not claim a canonical ISIN, got %q", *got)
+	}
+}
