@@ -226,6 +226,70 @@ func TestSnapshotsHoldingFallbackCurrency(t *testing.T) {
 	}
 }
 
+// TestSnapshotsHoldingCrossListedCurrency locks in the cross-listed
+// currency fix: a position's currency must track the chosen 19A:HOLD
+// leg (the currency its market_value is denominated in), NOT the
+// instrument's GacInstrRskCcyIsoCd (issuer domicile / risk currency).
+// The two diverge for cross-listed names — Cayman/PRC-incorporated,
+// HK-listed shares quote in HKD but carry a KYD/CNY risk currency;
+// US-listed ADRs of Asian issuers quote in USD but carry a TWD/KRW/INR
+// risk currency. Tagging the HOLD amount with the domicile currency
+// makes gold convert it at the wrong FX rate (a large over- or
+// under-statement). Both ISINs/amounts below are synthetic.
+func TestSnapshotsHoldingCrossListedCurrency(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO instruments(snapshot_at, relationship_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'KYG000000001',
+             '{"InstrCtgyCFI":"ESVTFR","InstrNm":"HK-Listed Co","GacInstrRskCcyIsoCd":"KYD","NmnlCcyIsoCd":"HKD"}'),
+            (1000, 'SFTPCHxx', 'US0000000002',
+             '{"InstrCtgyCFI":"ESVTFR","InstrNm":"Asian ADR","GacInstrRskCcyIsoCd":"TWD"}');
+        INSERT INTO holdings(snapshot_at, relationship_id, safekeeping_external_id, isin, payload) VALUES
+            (1000, 'SFTPCHxx', 'CH00SAFE', 'KYG000000001',
+             '{"fields":{"19A":[":HOLD//HKD8000000,",":BOOK//HKD9000000,",":HOLD//USD1024000,"],"93B":[":AGGR//UNIT/5000,"]}}'),
+            (1000, 'SFTPCHxx', 'CH00SAFE', 'US0000000002',
+             '{"fields":{"19A":[":HOLD//USD2500000,"],"93B":[":AGGR//UNIT/1000,"]}}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	byISIN := map[string]canonical.PositionChange{}
+	for _, p := range batch.Positions {
+		byISIN[p.PositionKey] = p
+	}
+
+	// HK-listed share: HKD-quoted but KYD-domiciled. Currency must be
+	// HKD (the HOLD leg), value the HKD amount — not KYD.
+	hk, ok := byISIN["KYG000000001"]
+	if !ok {
+		t.Fatal("missing HK-listed position")
+	}
+	if hk.Currency != "HKD" {
+		t.Errorf("HK-listed Currency = %q, want HKD (HOLD leg, not KYD domicile)", hk.Currency)
+	}
+	if hk.MarketValue == nil || hk.MarketValue.String() != "8000000" {
+		t.Errorf("HK-listed MarketValue = %v, want 8000000 (HKD HOLD leg)", hk.MarketValue)
+	}
+
+	// ADR: USD-quoted but TWD-domiciled. Currency must be USD, not TWD.
+	adr, ok := byISIN["US0000000002"]
+	if !ok {
+		t.Fatal("missing ADR position")
+	}
+	if adr.Currency != "USD" {
+		t.Errorf("ADR Currency = %q, want USD (HOLD leg, not TWD domicile)", adr.Currency)
+	}
+	if adr.MarketValue == nil || adr.MarketValue.String() != "2500000" {
+		t.Errorf("ADR MarketValue = %v, want 2500000", adr.MarketValue)
+	}
+}
+
 // TestSnapshotsHoldingsJoinPromoted confirms that with silver
 // migration 0002 the safekeeping_accounts.account_external_id
 // and holdings.safekeeping_external_id share the same AcctId

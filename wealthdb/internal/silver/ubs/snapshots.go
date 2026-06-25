@@ -500,15 +500,24 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			marketValue = &mv
 		}
 
-		// Position currency precedence: instrument meta wins when
-		// known (matches the chosen HOLD entry anyway since we
-		// preferred it); else the chosen HOLD entry's currency
-		// (rescues "XXX-currency" positions whose instrument has
-		// no GacInstrRskCcyIsoCd but whose holding payload is
-		// reported in a real currency); else the "XXX" sentinel.
-		positionCcy := meta.Currency
+		// Position currency MUST equal the currency the stored
+		// market_value is denominated in — i.e. the currency of the
+		// chosen 19A:HOLD leg (mvCcy). The instrument's
+		// GacInstrRskCcyIsoCd is the issuer's *domicile / risk*
+		// currency, which diverges from the holding's quotation
+		// currency for cross-listed names: Cayman- or PRC-
+		// incorporated, HK-listed shares book in HKD but carry a
+		// domicile risk currency (KYD / CNY); US-listed ADRs of
+		// Asian issuers book in USD but carry a domicile risk
+		// currency (TWD / KRW / INR). Tagging the HOLD amount with
+		// the domicile currency made gold convert it at the wrong
+		// FX rate — a large over- or under-statement depending on
+		// the peg. So mvCcy wins; the instrument's risk currency is
+		// only a fallback for the no-HOLD case (where market_value
+		// is nil anyway), and "XXX" is the last resort.
+		positionCcy := mvCcy
 		if positionCcy == "" {
-			positionCcy = mvCcy
+			positionCcy = meta.Currency
 		}
 		if positionCcy == "" {
 			positionCcy = "XXX"
