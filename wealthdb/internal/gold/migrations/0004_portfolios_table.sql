@@ -19,12 +19,12 @@
 --                       when the bank doesn't group them, e.g.
 --                       Schwab, Swissquote).
 --
--- The `wealthdb portfolios` subcommand aggregates each portfolio's
+-- The `wealthdb holdings portfolios` subcommand aggregates each portfolio's
 -- value as the sum of its component accounts' values. Schwab and
 -- Swissquote accounts (no portfolio) and UBS accounts the bank
 -- didn't group still appear under a sentinel NULL portfolio per
--- silver_source so the totals tie out against `wealthdb accounts`
--- and `wealthdb positions --with-cash`.
+-- silver_source so the totals tie out against `wealthdb holdings accounts`
+-- and `wealthdb holdings positions --with-cash`.
 --
 -- The old `parent_account_external_id` column is dropped; the old
 -- `account_kind='portfolio'` rows are deleted (the next load

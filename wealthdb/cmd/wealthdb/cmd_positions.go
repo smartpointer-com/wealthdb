@@ -16,12 +16,8 @@ import (
 	"github.com/ptu/wealthdb/internal/output"
 )
 
-func init() {
-	register("positions", cmdPositions)
-}
-
 func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb positions", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wealthdb holdings positions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
@@ -188,7 +184,7 @@ func formatCents(p *string) string {
 	return d.StringFixed(2)
 }
 
-// defaultColumns is what `wealthdb positions` shows when --columns
+// defaultColumns is what `wealthdb holdings positions` shows when --columns
 // isn't passed. The dynamic `value` column (value_<CCY> in the
 // header) sits beside the natural-currency market_value.
 var defaultColumns = []string{
@@ -205,7 +201,7 @@ func positionsUsage() string {
 	// We don't know the user's chosen output currency at usage-print
 	// time; show a placeholder for the dynamic column.
 	registry := buildColumnRegistry("CCY")
-	return `usage: wealthdb positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print consolidated positions as of a date. For each silver source,
 the latest snapshot ≤ the as-of date is used. Default: today UTC,

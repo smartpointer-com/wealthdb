@@ -359,7 +359,7 @@ values. The only gold-schema change is migration `0015`, which widens the
   private_fund` (from `offerings.kind`), `name` = the company / fund label.
   A single-company SPV also carries `symbol = offerings.ticker_symbol`
   (EquityZen's per-company EZ-internal ticker, e.g. shown as "(ABCD)" in the
-  portal) so `wealthdb positions` displays a symbol like public equities;
+  portal) so `wealthdb holdings positions` displays a symbol like public equities;
   multi-company funds have none. No ISIN/CUSIP — adapter-scoped.
 - **Positions** map straight off the silver `positions` event rows:
   `market_value = market_value` (the collector's chosen mark — tender price

@@ -67,7 +67,7 @@ strictly relational, and the surface that future analytics
   database, no daemons. Re-runs are idempotent.
 - **Read-only sharing.** A single gold DB file can be served
   read-only over a network share (NFS, SMB, S3-FUSE) or shipped
-  via `scp`. Multiple consumers can run `wealthdb positions` /
+  via `scp`. Multiple consumers can run `wealthdb holdings positions` /
   `wealthdb status` against it concurrently while exactly one
   upstream owner runs `wealthdb load`. See §4.10.
 - **Dockerised everything.** Build, dev, and prod all run inside a
@@ -110,7 +110,8 @@ wealthdb config [-c <cfg>]            (setup) Interactive first-time wizard; wri
 wealthdb init                         (RW)    Initialise an empty gold DB at the configured path.
 wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into gold.
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
-wealthdb positions [flags]            (RO)    Print positions as of a date.
+wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
+wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
 wealthdb help [<subcommand>]
@@ -163,7 +164,7 @@ silver database itself is untouched.
 Use case: a silver was rebuilt from bronze (re-parse, new migration,
 data correction) and gold needs to be re-synced from scratch.
 
-### 4.6 `wealthdb positions`
+### 4.6 `wealthdb holdings positions`
 
 Prints the consolidated portfolio as of a date.
 
@@ -363,7 +364,7 @@ Typical setup for a shared read-only gold DB:
 
 ```
 host A (writer):      runs `wealthdb load -a` on a cron; writes /shared/wealthdb.db
-host B,C,... (readers): mount /shared read-only; run `wealthdb positions`,
+host B,C,... (readers): mount /shared read-only; run `wealthdb holdings positions`,
                        `wealthdb status`, etc.
 ```
 
@@ -380,7 +381,7 @@ when implemented. The schema must not preclude them.
   rolled-up balance sheet.
 - `wealthdb filter` / dedicated subcommands per asset_class
   (`wealthdb equities`, `wealthdb bonds`, `wealthdb fx`) — convenience
-  views over `wealthdb positions`.
+  views over `wealthdb holdings positions`.
 - `wealthdb pnl` — realised / unrealised P&L from `transactions` +
   current positions.
 
@@ -462,7 +463,7 @@ Example config file:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
-| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
+| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -889,7 +890,7 @@ CREATE TABLE load_audit (
 -- portfolio_external_id (nullable) names the parent portfolio in
 -- the `portfolios` table. Schwab and Swissquote accounts leave it
 -- NULL (no portfolio grouping); UBS cash/safekeeping/overlay
--- accounts populate it. See `wealthdb portfolios` rollup semantics.
+-- accounts populate it. See `wealthdb holdings portfolios` rollup semantics.
 CREATE TABLE accounts (
     silver_source_id        TEXT    NOT NULL,
     account_external_id     TEXT    NOT NULL,
@@ -914,7 +915,7 @@ CREATE TABLE accounts (
 -- that GROUPS one or more accounts under a single mandate; it
 -- does not hold positions or cash directly — its component
 -- accounts do. Portfolio-level totals come from rolling up
--- component-account values; see `wealthdb portfolios`.
+-- component-account values; see `wealthdb holdings portfolios`.
 CREATE TABLE portfolios (
     silver_source_id        TEXT    NOT NULL,
     portfolio_external_id   TEXT    NOT NULL,
@@ -1400,8 +1401,8 @@ as-of as parameters and is invoked from both the CLI
 
 `report_sources` (migration 0025) takes this one step coarser: it
 buckets the same lines by `silver_source_id` instead of account, so
-`wealthdb sources` is one row per silver source — the grain between
-`wealthdb accounts` / `portfolios` and the whole-portfolio `wealthdb
+`wealthdb holdings sources` is one row per silver source — the grain between
+`wealthdb holdings accounts` / `portfolios` and the whole-portfolio `wealthdb
 global`. Base currency, tax wrapper, and management style are rolled up
 agree-or-NULL across the source's non-overlay accounts (like
 `report_portfolios`). Because all four reports aggregate the same
@@ -1539,10 +1540,10 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
   so the account-level Metabase reports are **never NULL** — matching the
-  `wealthdb accounts` render (§4). The single macros and the raw `accounts`
+  `wealthdb holdings accounts` render (§4). The single macros and the raw `accounts`
   table keep NULL, preserving gold's "unknown vs. explicitly default"
   distinction (the defaults are a display concern). Portfolio rollups keep their
-  strict NULL-on-mixed semantics (faithful to `wealthdb portfolios`, which shows
+  strict NULL-on-mixed semantics (faithful to `wealthdb holdings portfolios`, which shows
   blank for ambiguous buckets).
 
 ## 11. Repository layout
@@ -1648,7 +1649,7 @@ docker run --rm -it \
 
 (`-it` is needed for `wealthdb config`; harmless for the others.)
 
-**Reader host** (only `wealthdb positions`, `wealthdb status`, ...,
+**Reader host** (only `wealthdb holdings positions`, `wealthdb status`, ...,
 against a read-only mount of someone else's gold tree):
 
 ```sh
@@ -1672,7 +1673,7 @@ picks this up and refuses (RW) subcommands with a clear message.
 ./wealthdb config              # one-time interactive setup wizard (§4.9)
 ./wealthdb init                # creates the gold DB at the configured gold_db path
 ./wealthdb load -a             # merges every configured silver into gold
-./wealthdb positions -f csv    # query
+./wealthdb holdings positions -f csv    # query
 ```
 
 The wrapper passes through arguments verbatim to the in-container
@@ -2003,7 +2004,7 @@ is the path for sharpening accounts the adapter can't classify
 on its own (e.g. a Schwab IRA whose wrapper isn't reachable
 from any silver-side field).
 
-Selectable columns: `wealthdb accounts -C
+Selectable columns: `wealthdb holdings accounts -C
 silver_source,account,account_kind,tax_wrapper,management_style,...`.
 The three structured classifiers are part of the default
 column set; the descriptor columns (`account_category`,

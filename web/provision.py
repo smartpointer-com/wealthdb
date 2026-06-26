@@ -149,26 +149,26 @@ def report_models():
             wrap(f"report_global_multi{L}", ["min_snapshot_at", "max_snapshot_at"]),
             "Whole-portfolio rollup as of the latest snapshot: cash, positions and "
             "total value in USD, CHF and EUR (one column set per currency), with the "
-            "min/max snapshot date span. Mirrors `wealthdb global`."),
+            "min/max snapshot date span. Mirrors `wealthdb holdings global`."),
         "report_sources_latest": (
             wrap(f"report_sources_multi{L}", ["snapshot_at"]),
             "One row per silver source as of the latest snapshot: positions + cash "
             "totalled in the source's base currency and in USD/CHF/EUR, with rolled-up "
-            "tax wrapper / management style. Mirrors `wealthdb sources`."),
+            "tax wrapper / management style. Mirrors `wealthdb holdings sources`."),
         "report_portfolios_latest": (
             wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
             "One row per portfolio as of the latest snapshot: positions + cash totalled "
             "in the portfolio's base currency and in USD/CHF/EUR, with rolled-up tax "
-            "wrapper / management style. Mirrors `wealthdb portfolios`."),
+            "wrapper / management style. Mirrors `wealthdb holdings portfolios`."),
         "report_accounts_latest": (
             wrap(f"report_accounts_multi{L}", ["snapshot_at"]),
             "One row per account as of the latest snapshot: positions + cash totalled "
             "in the account's base currency and in USD/CHF/EUR, with kind, tax wrapper "
-            "and management style. Mirrors `wealthdb accounts`."),
+            "and management style. Mirrors `wealthdb holdings accounts`."),
         "report_positions_latest": (
             wrap(f"report_positions_multi{L}", ["snapshot_at"]),
             "One row per held position as of the latest snapshot, with market value in "
-            "USD, CHF and EUR. Mirrors `wealthdb positions`."),
+            "USD, CHF and EUR. Mirrors `wealthdb holdings positions`."),
         "report_transactions": (
             wrap(f"report_transactions_multi(0, {MAX_BIGINT})", ["occurred_at"]),
             "Every transaction over all time, with net amount in USD, CHF and EUR at the "

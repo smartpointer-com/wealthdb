@@ -16,17 +16,13 @@ import (
 	"github.com/ptu/wealthdb/internal/output"
 )
 
-func init() {
-	register("global", cmdGlobal)
-}
-
 // cmdGlobal is the whole-portfolio rollup: a single row summing every
 // account's output-currency cash, positions, and total value, plus
 // the min/max of the per-account snapshot dates. The ultimate level
 // of aggregation above cmd_accounts.go / cmd_portfolios.go; it reuses
 // the accounts aggregation so the row reconciles with their sums.
 func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb global", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wealthdb holdings global", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
@@ -123,12 +119,12 @@ func buildGlobalColumnRegistry(outCcy string) []columnSpec[gold.GlobalRow] {
 }
 
 func globalCmdUsage() string {
-	return `usage: wealthdb global [-d YYYY-MM-DD] [-f FORMAT] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings global [-d YYYY-MM-DD] [-f FORMAT] [-x CCY] [--fx-mode MODE] [-p]
 
 Roll the entire portfolio up into a single row — the ultimate level
 of aggregation, summing every account's output-currency cash,
 positions, and total value. Reconciles with the sum of the rows from
-'wealthdb accounts'.
+'wealthdb holdings accounts'.
 
 Columns (CUR = the -x/--currency choice, default config.default_currency):
   min_snapshot_date      earliest of the per-account latest snapshot dates

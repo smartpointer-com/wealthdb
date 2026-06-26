@@ -16,10 +16,6 @@ import (
 	"github.com/ptu/wealthdb/internal/output"
 )
 
-func init() {
-	register("portfolios", cmdPortfolios)
-}
-
 // portfolioNamePrivacy picks the right redaction class for the
 // portfolio column's display value, which mixes different
 // conventions across sources:
@@ -45,7 +41,7 @@ func portfolioNamePrivacy(r gold.PortfolioRow) PrivacyClass {
 // is: sum(portfolios.total_value_<CCY>) == sum(accounts.total_value_<CCY>)
 // == positions --with-cash total.
 func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb portfolios", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wealthdb holdings portfolios", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
@@ -199,14 +195,14 @@ func resolvePortfolioColumns(flagValue, outCcy string) ([]columnSpec[gold.Portfo
 
 func portfoliosUsage() string {
 	registry := buildPortfolioColumnRegistry("CCY")
-	return `usage: wealthdb portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print one row per portfolio (wealth-management wrapper grouping
 component accounts) plus one sentinel row per silver_source that
 aggregates accounts with no portfolio (Schwab, Swissquote, any
 UBS account the bank didn't group). Sum of total_value_<CCY>
-across all rows equals the same sum from 'wealthdb accounts',
-which equals 'wealthdb positions --with-cash'.
+across all rows equals the same sum from 'wealthdb holdings
+accounts', which equals 'wealthdb holdings positions --with-cash'.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)

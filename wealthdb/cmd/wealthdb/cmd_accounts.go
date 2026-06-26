@@ -16,10 +16,6 @@ import (
 	"github.com/ptu/wealthdb/internal/output"
 )
 
-func init() {
-	register("accounts", cmdAccounts)
-}
-
 // cmdAccounts is the accounts-grain view of the portfolio. One row
 // per registered account with the account's promoted columns plus
 // derived aggregates: total non-cash positions value, cash value,
@@ -28,7 +24,7 @@ func init() {
 // currency. See cmd_positions.go for the parallel positions-grain
 // view.
 func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb accounts", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wealthdb holdings accounts", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
@@ -196,7 +192,7 @@ func resolveAccountColumns(flagValue, outCcy string) ([]columnSpec[gold.AccountR
 
 func accountsUsage() string {
 	registry := buildAccountColumnRegistry("CCY")
-	return `usage: wealthdb accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print one row per registered account, with derived aggregate
 columns rolled up over the account's positions and cash balances.

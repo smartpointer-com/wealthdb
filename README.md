@@ -46,9 +46,9 @@ Each component has its own `README.md` (usage), `DESIGN.md`
 ```
 collectors/<source>/         wealthdb/
   download.py  → bronze         load  ─┐
-  load.py      → silver  ─────────────┼─→ gold (DuckDB)  →  wealthdb positions
+  load.py      → silver  ─────────────┼─→ gold (DuckDB)  →  wealthdb holdings positions
   (one SQLite per source)             │                     wealthdb transactions
-                                      │                     wealthdb accounts ...
+                                      │                     wealthdb holdings accounts ...
   silver DBs live under $XDG_DATA_HOME/wealthdb/<source>/, read-only to gold
 ```
 
@@ -79,7 +79,7 @@ cd wealthdb
 ./wealthdb build            # build the wealthdb:latest image
 ./wealthdb config           # first-time setup wizard
 ./wealthdb load -a          # merge every configured silver into gold
-./wealthdb positions        # query
+./wealthdb holdings positions        # query
 ```
 
 **Collectors** — every collector ships a wrapper exposing the same

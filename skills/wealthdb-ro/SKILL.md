@@ -6,13 +6,15 @@ description: Query the owner's consolidated cross-institution investment portfol
 # wealthdb — portfolio queries (read-only)
 
 `wealthdb` is a **read-only** command-line tool over one canonical database
-that merges every bank, broker, pension, and crypto source the owner uses
-into four unified views. You only ever *read* from it. It is already
-configured — just run the command; no setup, no paths, no flags required to
-connect.
+that merges every bank, broker, pension, and crypto source the owner uses.
+The point-in-time portfolio views live under one parent command,
+**`wealthdb holdings <view>`** (`<view>` = positions, accounts, portfolios,
+sources, or global); **`wealthdb transactions`** is the separate money-in/out
+ledger. You only ever *read* from it. It is already configured — just run the
+command; no setup, no paths, no flags required to connect.
 
 ## Hard rules (do not break)
-- Allowed, all read-only: `global`, `sources`, `portfolios`, `accounts`, `positions`, `transactions` (the data queries) plus `status`, `snapshots`, `help` (harmless diagnostics — run freely).
+- Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`) and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
 - Every monetary amount is a decimal **string** (e.g. `"1380284.21"`). Convert to a number before doing arithmetic.
@@ -20,19 +22,19 @@ connect.
 ## Pick the right command
 | You want… | Use |
 |---|---|
-| One grand total for everything — net worth in a single row | `global` |
-| Net worth / totals, one row per institution (silver source) | `sources` |
-| Net worth / totals, one row per portfolio (top level) | `portfolios` |
-| Balances per individual account | `accounts` |
-| Every individual holding (one row per instrument) | `positions` |
+| One grand total for everything — net worth in a single row | `holdings global` |
+| Net worth / totals, one row per institution (silver source) | `holdings sources` |
+| Net worth / totals, one row per portfolio (top level) | `holdings portfolios` |
+| Balances per individual account | `holdings accounts` |
+| Every individual holding (one row per instrument) | `holdings positions` |
 | Trades, dividends, interest, fees, cash in/out over time | `transactions` |
 
-- `global`, `sources`, `portfolios`, `accounts`, `positions` are **point-in-time**: a snapshot as of one date.
+- The `holdings` views (`global`, `sources`, `portfolios`, `accounts`, `positions`) are **point-in-time**: a snapshot as of one date.
 - `transactions` is a **date range** of events.
-- Totals reconcile: `global` ≈ sum of `sources` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash` (to within rounding).
+- Totals reconcile across the holdings views: `global` ≈ sum of `sources` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash` (to within rounding).
 
 ## Dates
-**sources / portfolios / accounts / positions** — `-d YYYY-MM-DD` is the as-of date (default: today). Each source contributes its latest snapshot on or before that date.
+**holdings views (global / sources / portfolios / accounts / positions)** — `-d YYYY-MM-DD` is the as-of date (default: today). Each source contributes its latest snapshot on or before that date.
 
 **transactions** — give the range as positional arguments (default: past 30 days):
 | Argument | Meaning |
@@ -50,10 +52,10 @@ connect.
 - `-x CCY` — currency for value columns. Default is the configured base (USD). E.g. `-x CHF`, `-x EUR`.
 - `--fx-mode historic|current` — `historic` (default: FX rate at the snapshot/transaction date) or `current` (latest rate).
 - `-d`, `-p` (privacy/redact) work on all of them.
-- `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `global`, which is a single fixed row.)
-- `positions` only: `--with-cash` — add one cash-balance row per account+currency.
+- `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `holdings global`, which is a single fixed row.)
+- `holdings positions` only: `--with-cash` — add one cash-balance row per account+currency.
 
-## Columns you can rely on
+## Columns you can rely on (each view is `wealthdb holdings <view>`)
 - **global** (always exactly one row): `min_snapshot_date, max_snapshot_date, cash_balance_<CCY>, positions_value_<CCY>, total_value_<CCY>`. The two dates are the earliest/latest of the per-account snapshot dates, so you can see how stale any part of the total is.
 - **positions**: `silver_source, snapshot_date, account, symbol, name, asset_class, currency, quantity, market_value, value_<CCY>`
 - **accounts**: `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_<CCY>`
@@ -71,22 +73,22 @@ Slice/group using these account attributes:
 ## Examples
 ```sh
 # Whole-portfolio net worth in one row (USD)
-wealthdb global -f json
+wealthdb holdings global -f json
 
 # Net worth in CHF as of a past date
-wealthdb global -d 2025-12-31 -x CHF -f json
+wealthdb holdings global -d 2025-12-31 -x CHF -f json
 
 # Current net worth by portfolio (USD), parseable
-wealthdb portfolios -f json
+wealthdb holdings portfolios -f json
 
 # Total value in CHF as of a past date
-wealthdb portfolios -d 2025-12-31 -x CHF -f json
+wealthdb holdings portfolios -d 2025-12-31 -x CHF -f json
 
 # Every holding right now, including cash
-wealthdb positions --with-cash -f json
+wealthdb holdings positions --with-cash -f json
 
 # Per-account balances as of year-end
-wealthdb accounts -d 2025-12-31 -f json
+wealthdb holdings accounts -d 2025-12-31 -f json
 
 # All dividends/interest/trades in H1 2026
 wealthdb transactions 2026-01-01 2026-06-30 -f json

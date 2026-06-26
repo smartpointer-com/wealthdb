@@ -15,12 +15,15 @@ func init() {
 // help <subcommand>`. Subcommand handlers register their longer
 // usage via flag.Usage; this map is for the brief overview only.
 var helpText = map[string]string{
-	"config":          "Interactive first-time setup; writes the wealthdb.cfg file.",
-	"init":            "Initialise an empty gold DB at the configured gold_db path.",
-	"load":            "Merge new silver snapshots into gold (one source, or -a for all).",
-	"reset":           "Purge a silver source's data from gold (one source, or -a for all).",
+	"config":       "Interactive first-time setup; writes the wealthdb.cfg file.",
+	"init":         "Initialise an empty gold DB at the configured gold_db path.",
+	"load":         "Merge new silver snapshots into gold (one source, or -a for all).",
+	"reset":        "Purge a silver source's data from gold (one source, or -a for all).",
+	"holdings":     "Point-in-time portfolio views: positions, accounts, portfolios, sources, global ('wealthdb holdings <view> -h').",
+	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
+	// The holdings views — addressed as `wealthdb holdings <view>`, but kept
+	// here so `wealthdb help <view>` still resolves to a useful blurb.
 	"positions":       "Print consolidated positions as of a date (-f table|csv|csv_plain|json, -x CCY).",
-	"transactions":    "Print transactions over a date range (-r reverses to newest-first).",
 	"accounts":        "Print one row per account with derived value aggregates (-x CCY, -d date, -C cols).",
 	"portfolios":      "Roll each portfolio's accounts into one row, + a per-source sentinel (-x CCY, -d date, -C cols).",
 	"sources":         "Roll each silver source's accounts into one row (-x CCY, -d date, -C cols).",
@@ -46,6 +49,12 @@ func cmdHelp(_ context.Context, _ globalFlags, subargs []string, _ io.Reader, _,
 		return nil
 	}
 	name := subargs[0]
+	// Holdings views are addressed as `wealthdb holdings <view>`; point the
+	// user at that path rather than reporting them as unknown.
+	if _, ok := holdingsViews[name]; ok {
+		fmt.Fprintf(stderr, "Use 'wealthdb holdings %s -h' for detailed flags.\n%s\n", name, helpText[name])
+		return nil
+	}
 	if _, ok := subcommands[name]; !ok {
 		fmt.Fprintf(stderr, "wealthdb help: unknown subcommand %q\n\n", name)
 		printGlobalHelp(stderr)

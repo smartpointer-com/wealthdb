@@ -152,7 +152,7 @@ CREATE OR REPLACE MACRO report_accounts_multi(p_asof) AS TABLE (
                a.base_currency, a.relationship_id, a.nickname, a.account_category,
                a.portfolio_external_id,
                -- account-level display defaults (every account is non-NULL, matching
-               -- the `wealthdb accounts` CLI render); the raw accounts table keeps NULL.
+               -- the `wealthdb holdings accounts` CLI render); the raw accounts table keeps NULL.
                COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
                COALESCE(a.management_style, 'self_directed') AS management_style,
                COALESCE(g.max_snap, ss.s, 0) AS snapshot_at,

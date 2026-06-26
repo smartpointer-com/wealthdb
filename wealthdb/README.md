@@ -23,10 +23,8 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb load <id>\|-a` | Merge new silver snapshots into gold. |
 | `wealthdb reset <id>\|-a` | Purge a silver source's data from gold. |
 | `wealthdb reload <id>\|-a` | Reset then load (use after upgrading wealthdb). |
-| `wealthdb positions` | Print consolidated positions (table / csv / csv_plain / json) with currency conversion. |
+| `wealthdb holdings <view>` | Point-in-time portfolio views: `positions`, `accounts`, `portfolios`, `sources`, `global` — each with currency conversion and `-d`/`-f`/`-x`/`--fx-mode`/`-p` (and `-C` columns on all but `global`). |
 | `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
-| `wealthdb accounts` | Print one row per account with derived positions / cash / total value aggregates. |
-| `wealthdb portfolios` | Print one row per portfolio (plus sentinel-NULL row per silver source) with derived value aggregates. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
@@ -57,14 +55,14 @@ You need Docker. No host-side Go toolchain.
 ```sh
 git clone <this repo>
 cd wealthdb
-./wealthdb build                  # one-time, ~2 min on first run
-./wealthdb config                 # interactive setup wizard
-./wealthdb init                   # create the gold DB
-./wealthdb load -a                # merge every configured silver
-./wealthdb positions              # print consolidated positions (default table format, USD)
-./wealthdb positions -x CHF       # render values in CHF
-./wealthdb positions -f csv       # CSV output for scripting
-./wealthdb status -v              # quick health check across all silvers
+./wealthdb build                       # one-time, ~2 min on first run
+./wealthdb config                      # interactive setup wizard
+./wealthdb init                        # create the gold DB
+./wealthdb load -a                     # merge every configured silver
+./wealthdb holdings positions          # print consolidated positions (default table format, USD)
+./wealthdb holdings positions -x CHF   # render values in CHF
+./wealthdb holdings positions -f csv   # CSV output for scripting
+./wealthdb status -v                   # quick health check across all silvers
 ```
 
 The `config` wizard walks you through:

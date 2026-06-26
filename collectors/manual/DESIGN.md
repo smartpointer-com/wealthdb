@@ -3,7 +3,7 @@
 **Implemented end-to-end (2026-06-10).** `load.py` is verified against the
 synthetic [examples/](examples/) (`tests/`), and the **gold adapter is built**
 ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
-§6) — the manual source loads into gold and shows up in `wealthdb positions`.
+§6) — the manual source loads into gold and shows up in `wealthdb holdings positions`.
 
 A catch-all collector for **private holdings with no source UI at all** —
 the bank/portal sources are all covered by the other twelve collectors;

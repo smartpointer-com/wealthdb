@@ -16,7 +16,7 @@
 -- by snapshot_at (report dates vs scrape dates never collide) and
 -- tagged by `source` for provenance + idempotent re-parse. The gold
 -- adapter reads every snapshot_at uniformly, so a historical report
--- snapshot answers `wealthdb positions --as-of <past date>` with no
+-- snapshot answers `wealthdb holdings positions --as-of <past date>` with no
 -- adapter-side special-casing.
 --
 -- Existing rows are all live scrapes → backfilled to 'live'.

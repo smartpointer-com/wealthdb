@@ -13,7 +13,7 @@
 -- across the same-tx parent+child delete pattern the loader uses
 -- (see DESIGN.md note in §7.2).
 --
--- The `wealthdb accounts` rollup uses this column to compute
+-- The `wealthdb holdings accounts` rollup uses this column to compute
 -- aggregate values on portfolio rows: a portfolio row's
 -- positions_value and cash_balance include lines from every
 -- account whose parent_account_external_id matches the portfolio.

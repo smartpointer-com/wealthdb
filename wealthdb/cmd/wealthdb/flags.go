@@ -70,12 +70,8 @@ subcommands:
   load <id> | -a        merge new silver snapshots into gold
   reset <id> | -a       purge a silver source's data from gold
   reload <id> | -a      reset then load (use after upgrading wealthdb)
-  positions [flags]     print consolidated positions (table/csv/csv_plain/json)
+  holdings <view>       point-in-time portfolio views: positions, accounts, portfolios, sources, global
   transactions [flags]  print transactions over a date range (default all time, oldest first)
-  accounts [flags]      print one row per account with derived value aggregates
-  portfolios [flags]    print one row per portfolio (+ sentinel per source) with derived value aggregates
-  sources [flags]       print one row per silver source with derived value aggregates
-  global [flags]        roll the entire portfolio into a single total row (the ultimate aggregation)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
   web {start|stop|status}  manage the optional Metabase BI server (host-side; see web/README.md)

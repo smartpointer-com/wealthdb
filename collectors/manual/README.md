@@ -15,7 +15,7 @@ by hand; `load` validates them and projects them into a SQLite silver.
 > [examples/](examples/), and the gold adapter
 > ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
 > is built + registered — the manual source loads into gold and appears in
-> `wealthdb positions`. The collector tracks **positions + valuations only**
+> `wealthdb holdings positions`. The collector tracks **positions + valuations only**
 > (no transactions; see [DESIGN.md](DESIGN.md) §6).
 
 ## Tools

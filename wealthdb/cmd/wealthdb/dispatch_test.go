@@ -141,7 +141,7 @@ func TestInitLoadPositionsEndToEnd(t *testing.T) {
 	}
 
 	// positions
-	so, se, code = run(t, "-c", cfg, "positions")
+	so, se, code = run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 {
 		t.Fatalf("positions exit=%d stderr=%s", code, se)
 	}
@@ -173,7 +173,7 @@ func TestInitFailsOnExistingDB(t *testing.T) {
 
 func TestPositionsFailsBeforeInit(t *testing.T) {
 	cfg := setupCLITest(t)
-	_, se, code := run(t, "-c", cfg, "positions")
+	_, se, code := run(t, "-c", cfg, "holdings", "positions")
 	if code != 3 {
 		t.Errorf("positions before init exit = %d, want 3 (ExitMissingDB)", code)
 	}
@@ -210,7 +210,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 	}
 
 	// Default columns include "symbol".
-	so, _, code := run(t, "-c", cfg, "positions")
+	so, _, code := run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 {
 		t.Fatal("positions default failed")
 	}
@@ -219,7 +219,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 	}
 
 	// Explicit narrow list.
-	so, _, code = run(t, "-c", cfg, "positions", "--columns", "silver_source,symbol,market_value")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions", "--columns", "silver_source,symbol,market_value")
 	if code != 0 {
 		t.Fatal("positions narrow failed")
 	}
@@ -233,7 +233,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 	}
 
 	// `all` preset.
-	so, _, code = run(t, "-c", cfg, "positions", "--columns", "all")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions", "--columns", "all")
 	if code != 0 {
 		t.Fatal("positions all failed")
 	}
@@ -244,7 +244,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 	}
 
 	// Unknown column → exit 2 with helpful message listing all.
-	_, se, code := run(t, "-c", cfg, "positions", "--columns", "silver_source,bogus")
+	_, se, code := run(t, "-c", cfg, "holdings", "positions", "--columns", "silver_source,bogus")
 	if code != 2 {
 		t.Errorf("unknown column exit = %d, want 2", code)
 	}
@@ -265,7 +265,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	// Default output currency from config is USD; the Schwab
 	// fixture is USD-only, so the value column should equal
 	// market_value (rate is 1.0 when from == to).
-	so, _, code := run(t, "-c", cfg, "positions", "--columns", "currency,market_value,value")
+	so, _, code := run(t, "-c", cfg, "holdings", "positions", "--columns", "currency,market_value,value")
 	if code != 0 {
 		t.Fatalf("positions default-ccy failed; stderr=...")
 	}
@@ -281,7 +281,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	// leaves the value cell empty (NULL) rather than erroring. The
 	// command still succeeds and the natural-currency market_value is
 	// untouched.
-	so, se, code := run(t, "-c", cfg, "positions", "-x", "CHF", "-f", "csv",
+	so, se, code := run(t, "-c", cfg, "holdings", "positions", "-x", "CHF", "-f", "csv",
 		"--columns", "currency,market_value,value")
 	if code != 0 {
 		t.Fatalf("positions -x CHF should succeed with empty values; exit=%d stderr=%s", code, se)
@@ -302,7 +302,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	}
 
 	// Bad fx-mode → exit 2.
-	_, se, code = run(t, "-c", cfg, "positions", "--fx-mode", "yolo")
+	_, se, code = run(t, "-c", cfg, "holdings", "positions", "--fx-mode", "yolo")
 	if code != 2 {
 		t.Errorf("bad fx-mode exit = %d, want 2", code)
 	}
@@ -311,7 +311,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 	}
 
 	// Bad currency → exit 2.
-	_, _, code = run(t, "-c", cfg, "positions", "-x", "DOLLAR")
+	_, _, code = run(t, "-c", cfg, "holdings", "positions", "-x", "DOLLAR")
 	if code != 2 {
 		t.Errorf("bad currency exit = %d, want 2", code)
 	}
@@ -331,7 +331,7 @@ func TestAccountsBasicRollup(t *testing.T) {
 		t.Fatal("load failed")
 	}
 
-	so, _, code := run(t, "-c", cfg, "accounts")
+	so, _, code := run(t, "-c", cfg, "holdings", "accounts")
 	if code != 0 {
 		t.Fatalf("accounts failed; code=%d so=%q", code, so)
 	}
@@ -365,7 +365,7 @@ func TestPortfoliosBasic(t *testing.T) {
 		t.Fatal("load failed")
 	}
 
-	so, _, code := run(t, "-c", cfg, "portfolios")
+	so, _, code := run(t, "-c", cfg, "holdings", "portfolios")
 	if code != 0 {
 		t.Fatalf("portfolios failed; code=%d so=%q", code, so)
 	}
@@ -391,7 +391,7 @@ func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 		t.Fatal("load failed")
 	}
 
-	so, _, code := run(t, "-c", cfg, "accounts", "--columns", "all")
+	so, _, code := run(t, "-c", cfg, "holdings", "accounts", "--columns", "all")
 	if code != 0 {
 		t.Fatalf("accounts --columns all failed: %d", code)
 	}
@@ -403,7 +403,7 @@ func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 		}
 	}
 
-	_, se, code := run(t, "-c", cfg, "accounts", "--columns", "bogus")
+	_, se, code := run(t, "-c", cfg, "holdings", "accounts", "--columns", "bogus")
 	if code != 2 {
 		t.Errorf("unknown column exit = %d, want 2", code)
 	}
@@ -422,7 +422,7 @@ func TestResetClearsSource(t *testing.T) {
 	}
 
 	// positions should have rows before reset.
-	so, _, code := run(t, "-c", cfg, "positions")
+	so, _, code := run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 || !strings.Contains(so, "(1 row)") {
 		t.Fatalf("expected one position before reset; got code=%d so=%q", code, so)
 	}
@@ -436,7 +436,7 @@ func TestResetClearsSource(t *testing.T) {
 	}
 
 	// After reset, positions should produce zero rows.
-	so, _, code = run(t, "-c", cfg, "positions")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 {
 		t.Fatalf("positions post-reset failed; code=%d", code)
 	}
@@ -448,7 +448,7 @@ func TestResetClearsSource(t *testing.T) {
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("re-load failed")
 	}
-	so, _, code = run(t, "-c", cfg, "positions")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 || !strings.Contains(so, "(1 row)") {
 		t.Fatalf("expected one position after re-load; got code=%d", code)
 	}
@@ -476,7 +476,7 @@ func TestReloadIsResetThenLoad(t *testing.T) {
 	}
 
 	// Positions are present after the reload.
-	so, _, code = run(t, "-c", cfg, "positions")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions")
 	if code != 0 || !strings.Contains(so, "(1 row)") {
 		t.Fatalf("expected (1 row) after reload; got code=%d so=%q", code, so)
 	}
@@ -619,7 +619,7 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 	}
 
 	// CSV with header
-	so, _, code := run(t, "-c", cfg, "positions", "-f", "csv", "--columns", "silver_source,symbol,market_value")
+	so, _, code := run(t, "-c", cfg, "holdings", "positions", "-f", "csv", "--columns", "silver_source,symbol,market_value")
 	if code != 0 {
 		t.Fatalf("csv failed; code=%d", code)
 	}
@@ -632,7 +632,7 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 	}
 
 	// CSV plain — no header
-	so, _, code = run(t, "-c", cfg, "positions", "-f", "csv_plain", "--columns", "silver_source,symbol")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions", "-f", "csv_plain", "--columns", "silver_source,symbol")
 	if code != 0 {
 		t.Fatalf("csv_plain failed; code=%d", code)
 	}
@@ -641,7 +641,7 @@ func TestPositionsCSVAndJSON(t *testing.T) {
 	}
 
 	// JSON
-	so, _, code = run(t, "-c", cfg, "positions", "-f", "json", "--columns", "silver_source,symbol,market_value")
+	so, _, code = run(t, "-c", cfg, "holdings", "positions", "-f", "json", "--columns", "silver_source,symbol,market_value")
 	if code != 0 {
 		t.Fatalf("json failed; code=%d", code)
 	}
@@ -715,9 +715,61 @@ func TestHelp(t *testing.T) {
 	if code != 0 {
 		t.Errorf("help exit = %d, want 0", code)
 	}
-	for _, want := range []string{"init", "load", "positions"} {
+	for _, want := range []string{"init", "load", "holdings"} {
 		if !strings.Contains(se, want) {
 			t.Errorf("help missing %q: %s", want, se)
 		}
+	}
+}
+
+// TestHoldingsDispatch covers the `holdings` parent command: routing
+// to a view, the no-view and unknown-view error paths, and `-h`.
+func TestHoldingsDispatch(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+
+	// A view routed through holdings produces that view's output.
+	so, _, code := run(t, "-c", cfg, "holdings", "global")
+	if code != 0 {
+		t.Fatalf("holdings global exit=%d", code)
+	}
+	if !strings.Contains(so, "total_value_USD") {
+		t.Errorf("holdings global missing total column: %s", so)
+	}
+	so, _, code = run(t, "-c", cfg, "holdings", "sources")
+	if code != 0 || !strings.Contains(so, "schwab-test") {
+		t.Errorf("holdings sources failed: code=%d so=%q", code, so)
+	}
+
+	// No view → exit 2 with the holdings usage.
+	_, se, code := run(t, "-c", cfg, "holdings")
+	if code != 2 {
+		t.Errorf("bare holdings exit = %d, want 2", code)
+	}
+	if !strings.Contains(se, "point-in-time portfolio views") {
+		t.Errorf("bare holdings missing usage: %s", se)
+	}
+
+	// Unknown view → exit 2.
+	_, se, code = run(t, "-c", cfg, "holdings", "bogus")
+	if code != 2 {
+		t.Errorf("unknown view exit = %d, want 2", code)
+	}
+	if !strings.Contains(se, "unknown view") {
+		t.Errorf("unknown view missing guidance: %s", se)
+	}
+
+	// `holdings -h` prints the group usage and exits 0.
+	_, se, code = run(t, "-c", cfg, "holdings", "-h")
+	if code != 0 {
+		t.Errorf("holdings -h exit = %d, want 0", code)
+	}
+	if !strings.Contains(se, "wealthdb holdings <view>") {
+		t.Errorf("holdings -h missing usage: %s", se)
 	}
 }

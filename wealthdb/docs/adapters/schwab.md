@@ -84,7 +84,7 @@ to `transactions[].transferItems[].instrument` for equity legs:
 `description` is absent.
 
 So gold's `name` column is empty for any Schwab equity position
-(visible in `wealthdb positions --columns all`, where the
+(visible in `wealthdb holdings positions --columns all`, where the
 `name` column shows blank for equity rows but populated for
 funds/bonds). The company name lives on Schwab's
 `/marketdata/instruments` or `/marketdata/quotes` endpoints,

@@ -16,17 +16,13 @@ import (
 	"github.com/ptu/wealthdb/internal/output"
 )
 
-func init() {
-	register("sources", cmdSources)
-}
-
 // cmdSources is the silver-source-grain rollup: one row per silver
 // source, aggregating all of that source's accounts. It sits between
 // cmd_portfolios.go / cmd_accounts.go (finer) and cmd_global.go (the
 // whole portfolio). The invariant is: sum(sources.total_value_<CCY>)
 // == sum(accounts.total_value_<CCY>) == sum(portfolios.total_value_<CCY>).
 func cmdSources(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb sources", flag.ContinueOnError)
+	fs := flag.NewFlagSet("wealthdb holdings sources", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
@@ -154,13 +150,13 @@ func resolveSourceColumns(flagValue, outCcy string) ([]columnSpec[gold.SourceRow
 
 func sourcesUsage() string {
 	registry := buildSourceColumnRegistry("CCY")
-	return `usage: wealthdb sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
 
 Print one row per silver source, rolling up every one of its
 accounts (positions + cash). The source-grain level between
-'wealthdb accounts' / 'portfolios' and 'wealthdb global'. Sum of
-total_value_<CCY> across all rows equals the same sum from
-'wealthdb accounts', 'wealthdb portfolios', and 'wealthdb global'.
+'wealthdb holdings accounts' / 'portfolios' and 'holdings global'.
+Sum of total_value_<CCY> across all rows equals the same sum from
+'wealthdb holdings accounts', 'portfolios', and 'global'.
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
