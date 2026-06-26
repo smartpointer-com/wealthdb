@@ -113,27 +113,35 @@ def parse_args(argv):
                         "(default: %(default)s).")
     p.add_argument(
         "--supplied-statements-dir", type=Path, default=None,
-        help=("Optional directory of user-supplied trust statement "
-              "PDFs (filenames `<trust-name> <M>.<YY> Statement.PDF`; "
+        help=("Directory of user-supplied trust statement PDFs "
+              "(filenames `<trust-name> <M>.<YY> Statement.PDF`; "
               "Fidelity's naming convention for legacy monthly "
-              "statements). When set, monthly statements are parsed "
-              "via pdf_parsers_supplied and their per-account holdings "
-              "land in `historical_position_snapshots`. Trust "
-              "accounts are outside the live web-scraper's reach, "
-              "so this is the only path to populate their pre-"
-              "toolkit-era snapshots. Year-end statements in the "
-              "same directory are skipped (redundant with the "
-              "December monthly statement)."),
+              "statements). Monthly statements are parsed via "
+              "pdf_parsers_supplied and their per-account holdings land "
+              "in `historical_position_snapshots`. Trust accounts "
+              "are outside the live web-scraper's reach, so this is "
+              "the only path to populate their pre-toolkit-era "
+              "snapshots. Year-end statements in the same directory "
+              "are skipped (redundant with the December monthly "
+              "statement). DEFAULT: `<bronze-dir>/supplied-statements` "
+              "— keeping the PDFs under the bronze tree makes silver "
+              "reproducible from bronze, so `--force` rebuilds and "
+              "nightly reloads re-ingest them automatically. No-op "
+              "when the directory doesn't exist."),
     )
     p.add_argument(
         "--supplied-statement-signature", type=str, default=None,
-        help=("Optional substring that must appear on a supplied "
-              "statement's page-1 text (typically the account "
-              "registration) for the file to be ingested. Defends "
-              "against PDFs that happen to match the filename "
-              "pattern but belong to an unrelated account (misfiled "
-              "or sent in error). Mismatched "
-              "files are logged + skipped."),
+        help=("Substring that must appear on a trust statement's "
+              "page-1 text (typically the trust's name in upper "
+              "case) for the file to be ingested. Defends against "
+              "PDFs that match the filename pattern but belong to "
+              "an unrelated account (misfiled by the user / sent in "
+              "error by Fidelity); mismatched files are logged + "
+              "skipped. When omitted, falls back to the first line "
+              "of `<supplied-statements-dir>/signature.txt` if present "
+              "(keeps the trust name out of argv / shell history "
+              "and out of any committed orchestration script). No "
+              "guard is applied if neither is supplied."),
     )
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
@@ -170,8 +178,18 @@ def main(argv=None):
                 log.exception("load of %s failed; rolled back", dump.name)
         log.info("loaded=%d skipped=%d total=%d",
                  loaded, skipped, len(dumps))
+        # Default the supplied-statements dir to a bronze-resident
+        # location so a `--force` rebuild (which wipes silver and
+        # reloads from bronze) re-ingests the trust historical
+        # snapshots automatically — they'd otherwise be lost, since
+        # they live only in silver and are sourced from outside the
+        # timestamped-dump tree. Keeping them under <bronze-dir>
+        # restores the "silver is reproducible from bronze" invariant.
+        trust_dir = args.supplied_statements_dir
+        if trust_dir is None:
+            trust_dir = args.bronze_dir / "supplied-statements"
         _load_trust_statements_oneshot(
-            conn, args.supplied_statements_dir, schema_version,
+            conn, trust_dir, schema_version,
             signature=args.supplied_statement_signature,
         )
         validate(conn)
@@ -832,10 +850,19 @@ def _ingest_document(conn, snapshot_at, path, classification):
 #
 #   2. Trust statements — monthly PDFs obtained directly
 #      from Fidelity (the web scraper doesn't surface them; see
-#      DESIGN.md §4.5). The user lays them in a directory passed
-#      via `--supplied-statements-dir`; load.py reads them once per
-#      run regardless of dump cadence. Text-level parsing in
-#      `pdf_parsers_supplied.py`.
+#      DESIGN.md §4.5). These default to `<bronze-dir>/trust-
+#      statements/` (override with `--supplied-statements-dir`) and
+#      are read once per load run regardless of dump cadence.
+#      Text-level parsing in `pdf_parsers_supplied.py`.
+#
+#      Keeping the trust PDFs UNDER the bronze tree is deliberate:
+#      it preserves the "silver is reproducible from bronze alone"
+#      invariant that `silver.reset()` (i.e. `load --force`) relies
+#      on. An earlier design sourced them from an arbitrary
+#      external dir reachable only via the CLI flag, so every
+#      `--force` rebuild or flag-less nightly reload silently
+#      dropped the trust history. The bronze-resident default makes
+#      the ingest self-healing — no flag, no orchestration change.
 #
 # Both paths use a `ProcessPoolExecutor` since PDF text extraction
 # is CPU-bound, then insert rows serially.
@@ -991,6 +1018,29 @@ _TRUST_STATEMENT_FILENAME_RE = re.compile(
 )
 
 
+_TRUST_SIGNATURE_SIDECAR = "signature.txt"
+
+
+def _read_signature_sidecar(trust_dir):
+    """Resolve the trust-statement signature from
+    ``<trust_dir>/signature.txt`` (first non-empty, non-``#``-comment
+    line). This keeps the trust name — which is PII — in the local
+    data directory next to the PDFs, rather than in argv / shell
+    history or a committed orchestration script. Returns None when
+    the file is absent or carries no usable line."""
+    sidecar = trust_dir / _TRUST_SIGNATURE_SIDECAR
+    if not sidecar.is_file():
+        return None
+    try:
+        for line in sidecar.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                return s
+    except OSError as e:
+        log.warning("supplied-statements: could not read %s: %s", sidecar, e)
+    return None
+
+
 def _parse_supplied_statement_pdf_worker(args):
     """ProcessPoolExecutor target: parse one trust PDF and return
     its parsed dict, or ``{"_error": "<repr>"}`` so the parent can
@@ -1026,7 +1076,10 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
     if trust_dir is None:
         return
     if not trust_dir.is_dir():
-        log.info("supplied-statements: %s not a directory; skipping", trust_dir)
+        # The default (<bronze-dir>/supplied-statements) simply not
+        # existing is the normal case for deployments without trust
+        # accounts — debug, not info, so it isn't noise on every run.
+        log.debug("supplied-statements: %s not a directory; skipping", trust_dir)
         return
     if schema_version < 4:
         log.info(
@@ -1034,6 +1087,16 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
             "table); skipping", schema_version,
         )
         return
+    if signature is None:
+        signature = _read_signature_sidecar(trust_dir)
+    if signature is None:
+        log.warning(
+            "supplied-statements: no signature guard configured "
+            "(pass --supplied-statement-signature or add a "
+            "signature.txt to %s); ingesting every matching PDF "
+            "unverified — a misfiled statement for another account "
+            "would be loaded as trust history", trust_dir,
+        )
     candidates = [
         p for p in sorted(trust_dir.iterdir())
         if p.is_file() and _TRUST_STATEMENT_FILENAME_RE.match(p.name)

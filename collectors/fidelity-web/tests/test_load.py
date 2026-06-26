@@ -307,6 +307,33 @@ def test_activity_preserves_genuine_same_day_duplicates(migrated, tmp_path):
     assert n == 2
 
 
+def test_read_signature_sidecar_first_real_line(tmp_path):
+    # First non-empty, non-comment line wins; the registration (PII)
+    # lives in the data dir, never in argv or a committed script.
+    (tmp_path / "signature.txt").write_text(
+        "# guard substring\n\nPLACEHOLDER HOLDER\nIGNORED SECOND LINE\n"
+    )
+    assert load._read_signature_sidecar(tmp_path) == "PLACEHOLDER HOLDER"
+
+
+def test_read_signature_sidecar_absent_returns_none(tmp_path):
+    assert load._read_signature_sidecar(tmp_path) is None
+
+
+def test_trust_statements_default_dir_missing_is_noop(migrated, tmp_path):
+    # The bronze-resident default (<bronze>/supplied-statements) simply
+    # not existing must be a clean no-op — deployments without trust
+    # accounts never create it.
+    missing = tmp_path / "supplied-statements"
+    # schema_version 4 so the historical table exists; the guard is
+    # the directory check, not the schema.
+    load._load_trust_statements_oneshot(migrated, missing, 4)
+    n = migrated.execute(
+        "SELECT COUNT(*) FROM historical_position_snapshots"
+    ).fetchone()[0]
+    assert n == 0
+
+
 def test_documents_dedup_on_content_sha(migrated, tmp_path):
     _write_dump(tmp_path, "20260101T120000Z")
     load.load_dump(migrated, tmp_path / "20260101T120000Z", 1)
