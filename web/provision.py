@@ -150,6 +150,11 @@ def report_models():
             "Whole-portfolio rollup as of the latest snapshot: cash, positions and "
             "total value in USD, CHF and EUR (one column set per currency), with the "
             "min/max snapshot date span. Mirrors `wealthdb global`."),
+        "report_sources_latest": (
+            wrap(f"report_sources_multi{L}", ["snapshot_at"]),
+            "One row per silver source as of the latest snapshot: positions + cash "
+            "totalled in the source's base currency and in USD/CHF/EUR, with rolled-up "
+            "tax wrapper / management style. Mirrors `wealthdb sources`."),
         "report_portfolios_latest": (
             wrap(f"report_portfolios_multi{L}", ["snapshot_at"]),
             "One row per portfolio as of the latest snapshot: positions + cash totalled "
@@ -177,6 +182,11 @@ def report_models():
             "Whole-portfolio value for every day from the first snapshot to today "
             "(carried forward between snapshots), in USD, CHF and EUR. The net-worth-"
             "over-time series — chart total_value_usd (or _chf / _eur) against as_of_day."),
+        "report_sources_history": (
+            wrap("report_sources_history_multi()", ["as_of_day"]),
+            "Per-silver-source value for every day (carried forward), in the source's "
+            "base currency and in USD/CHF/EUR. Filter to a source and chart against "
+            "as_of_day."),
         "report_accounts_history": (
             wrap("report_accounts_history_multi()", ["as_of_day"]),
             "Per-account value for every day (carried forward), in the account's base "

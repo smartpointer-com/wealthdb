@@ -28,9 +28,9 @@ port-forward; auth is Metabase's own login.
   keeping the image content-free also keeps source data out of git.
 - The **one allowed exception** is the report models that `provision.py`
   creates at runtime over the API, in a dedicated `wealthdb (pre-defined)`
-  collection: `report_{global,portfolios,accounts,positions}_latest`,
-  `report_transactions`, and the daily-history `report_{global,portfolios,
-  accounts,positions}_history`. They are content-free shims — each is just
+  collection: `report_{global,sources,portfolios,accounts,positions}_latest`,
+  `report_transactions`, and the daily-history `report_{global,sources,
+  portfolios,accounts,positions}_history`. They are content-free shims — each is just
   `SELECT * FROM report_x_multi(…)` over the gold multi-currency report
   macros (migration 0024; built on the same line bases the CLI's
   single-currency `report_x(…)` macros use, so each `_<ccy>` column equals

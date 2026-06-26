@@ -12,7 +12,7 @@ configured — just run the command; no setup, no paths, no flags required to
 connect.
 
 ## Hard rules (do not break)
-- Allowed, all read-only: `global`, `portfolios`, `accounts`, `positions`, `transactions` (the data queries) plus `status`, `snapshots`, `help` (harmless diagnostics — run freely).
+- Allowed, all read-only: `global`, `sources`, `portfolios`, `accounts`, `positions`, `transactions` (the data queries) plus `status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
 - Every monetary amount is a decimal **string** (e.g. `"1380284.21"`). Convert to a number before doing arithmetic.
@@ -21,17 +21,18 @@ connect.
 | You want… | Use |
 |---|---|
 | One grand total for everything — net worth in a single row | `global` |
+| Net worth / totals, one row per institution (silver source) | `sources` |
 | Net worth / totals, one row per portfolio (top level) | `portfolios` |
 | Balances per individual account | `accounts` |
 | Every individual holding (one row per instrument) | `positions` |
 | Trades, dividends, interest, fees, cash in/out over time | `transactions` |
 
-- `global`, `portfolios`, `accounts`, `positions` are **point-in-time**: a snapshot as of one date.
+- `global`, `sources`, `portfolios`, `accounts`, `positions` are **point-in-time**: a snapshot as of one date.
 - `transactions` is a **date range** of events.
-- Totals reconcile: `global` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash` (to within rounding).
+- Totals reconcile: `global` ≈ sum of `sources` ≈ sum of `portfolios` ≈ sum of `accounts` ≈ `positions --with-cash` (to within rounding).
 
 ## Dates
-**portfolios / accounts / positions** — `-d YYYY-MM-DD` is the as-of date (default: today). Each source contributes its latest snapshot on or before that date.
+**sources / portfolios / accounts / positions** — `-d YYYY-MM-DD` is the as-of date (default: today). Each source contributes its latest snapshot on or before that date.
 
 **transactions** — give the range as positional arguments (default: past 30 days):
 | Argument | Meaning |
@@ -56,6 +57,7 @@ connect.
 - **global** (always exactly one row): `min_snapshot_date, max_snapshot_date, cash_balance_<CCY>, positions_value_<CCY>, total_value_<CCY>`. The two dates are the earliest/latest of the per-account snapshot dates, so you can see how stale any part of the total is.
 - **positions**: `silver_source, snapshot_date, account, symbol, name, asset_class, currency, quantity, market_value, value_<CCY>`
 - **accounts**: `silver_source, snapshot_date, account, account_kind, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_<CCY>`
+- **sources**: one row per institution — `silver_source, snapshot_date, tax_wrapper, management_style, base_currency, positions_value, cash_balance, total_value, total_value_<CCY>` (base columns blank when the source mixes currencies / tax wrappers)
 - **portfolios**: like accounts but the label column is `portfolio` (plus one sentinel row per source for accounts the bank didn't group)
 - **transactions**: `silver_source, date, account, kind, symbol, description, currency, gross_amount, net_amount, value_<CCY>`
 

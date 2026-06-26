@@ -58,7 +58,19 @@ merges them into one canonical schema. Sources only meet at gold.
 
 ## Build & run
 
-Each component builds independently — there is no top-level build.
+The repo-root `Makefile` orchestrates the whole suite — run it from
+the root, no `cd`-ing into subdirectories:
+
+```sh
+make            # show the target list
+make all        # build everything (gold engine + web + all collectors)
+make test       # test everything
+make build-<name> / make test-<name>   # one component (e.g. make build-schwab-web)
+make install    # symlink wealthdb + wealthdb-collect into ~/bin
+make update     # bring deps forward (host venvs, Go modules, base images)
+```
+
+Each component also builds independently if you prefer, as shown below.
 
 **Gold engine** (Go; Docker or host toolchain):
 

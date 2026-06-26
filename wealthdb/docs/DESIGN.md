@@ -1398,6 +1398,16 @@ lookup applied per line; the macro takes `:output_currency` and an
 as-of as parameters and is invoked from both the CLI
 (`SELECT * FROM report_accounts(?, ?)`) and the Metabase models.
 
+`report_sources` (migration 0025) takes this one step coarser: it
+buckets the same lines by `silver_source_id` instead of account, so
+`wealthdb sources` is one row per silver source — the grain between
+`wealthdb accounts` / `portfolios` and the whole-portfolio `wealthdb
+global`. Base currency, tax wrapper, and management style are rolled up
+agree-or-NULL across the source's non-overlay accounts (like
+`report_portfolios`). Because all four reports aggregate the same
+converted lines, `sum(sources.total_<ccy>) == sum(accounts.total_<ccy>)
+== sum(portfolios.total_<ccy>) == global.total_<ccy>` by construction.
+
 See §10.6 for the conversion itself. FX-source precedence among silvers
 is a separate design point (§13.2).
 
@@ -1472,7 +1482,8 @@ column. See §13.2.
 ### 10.7 History reports (time series)
 
 For charting value over time, each snapshot report has a
-`report_*_history(p_ccy)` variant (migration 0022): `report_global_history`,
+`report_*_history(p_ccy)` variant (migration 0022, plus `report_sources_history`
+in 0025): `report_global_history`, `report_sources_history`,
 `report_accounts_history`, `report_portfolios_history`, `report_positions_history`.
 Each emits one row per entity per UTC day, from the first snapshot to today,
 with the value **carried forward** — on a day with no new snapshot the most
@@ -1504,12 +1515,17 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   `portfolio_acct_map()` (the orphan→`''` routing of §2/migration 0023) and
   `portfolio_buckets()` (the bucket list + rolled-up taxonomy) are the single
   source of truth for the portfolio rollup, shared by every portfolio macro.
+  `source_buckets()` (migration 0025) is the per-silver-source analogue of
+  `portfolio_buckets()` — the rolled-up taxonomy + base currency, shared by
+  every source macro; `source_lines_base(p_asof)` is the latest-snapshot line
+  base behind `report_sources` / `report_sources_multi` (the history variants
+  build their own all-snapshot lines, like the portfolio history macros).
 - **Single-currency macros refactored.** `report_accounts` /
   `report_portfolios` and their `_history` variants are rebuilt on these bases;
   their output columns/values are **unchanged** (the Go scan and gold tests are
   unaffected — verified by a byte-for-byte before/after diff).
-- **`report_x_multi` macros.** `report_{global,accounts,portfolios,positions}_multi(p_asof)`,
-  `report_transactions_multi(p_from, p_to)`, and the four `report_*_history_multi()`
+- **`report_x_multi` macros.** `report_{global,sources,accounts,portfolios,positions}_multi(p_asof)`,
+  `report_transactions_multi(p_from, p_to)`, and the five `report_*_history_multi()`
   emit one value set per currency — `{positions_value,cash_balance,total_value}_{usd,chf,eur}`
   plus the base trio. Each `_<ccy>` column equals `report_x(MAX, '<ccy>')` for
   that currency by construction (same base, identical 5-leg COALESCE). They are
