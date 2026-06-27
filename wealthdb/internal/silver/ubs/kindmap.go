@@ -70,6 +70,25 @@ func kindFor(silverKind, narrative string, creditDebit string) canonical.TxKind 
 // Prefix matching is case-insensitive and looks at the first
 // "word" (run of letters) only.
 func cashMovementKind(narrative, creditDebit string) canonical.TxKind {
+	upper := strings.ToUpper(narrative)
+
+	// Swiss transfer stamp duty (Umsatzabgabe / droit de timbre /
+	// Stempelsteuer) is a transaction TAX, but its narratives ("DROIT DE
+	// TIMBRE", "UMSATZABGABE", "STEMPELSTEUER", "STAMP DUTY") don't begin with
+	// the IMP/IMPOT/STEUER/TAX prefixes, so a first-word match misses them and
+	// the row would fall through to deposit/withdrawal — a capital-movement
+	// kind that a returns calculation would wrongly strip out as external
+	// capital instead of a cost inside the return. Match the distinctive
+	// stamp-duty terms anywhere in the narrative so the duty always lands in
+	// tax. (Defensive: no live UBS stamp-duty sample to confirm the exact
+	// wording, so we cover the standard FR/DE/EN forms.)
+	if strings.Contains(upper, "TIMBRE") ||
+		strings.Contains(upper, "UMSATZABGABE") ||
+		strings.Contains(upper, "STEMPEL") ||
+		strings.Contains(upper, "STAMP") {
+		return canonical.TxKindTax
+	}
+
 	prefix := firstWord(narrative)
 	switch strings.ToUpper(prefix) {
 	case "INT", "INTERESTS", "INTERETS", "ZINSEN":

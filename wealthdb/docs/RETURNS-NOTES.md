@@ -30,6 +30,28 @@ milestone with tests green.
 
 ## Field decisions / deviations
 
+### UBS stamp-duty fix (locked decision 4) — mechanism deviation, outcome preserved
+
+- Spec said: "add the standard Swiss tokens to the tax mapping AND confirm the
+  default fall-through is `other`." **The code showed** the `cash_movement`
+  default fall-through is `signedDepositWithdrawal` (deposit/withdrawal by
+  sign), **not** `other` (the audit's "falls to TxKindOther" was imprecise).
+- **What was done:** added a substring match for the distinctive stamp-duty
+  terms (`TIMBRE`, `UMSATZABGABE`, `STEMPEL`, `STAMP`) in `cashMovementKind`,
+  routing stamp duty to `tax`. **Did NOT** change the default fall-through to
+  `other`.
+- **Why (flagged loudly):** changing the cash-movement default from
+  deposit/withdrawal to `other` would mis-route *genuine* unlabeled wires
+  (real external capital) to `other`, silently dropping them from a returns
+  flow series — the opposite, worse error. The locked decision's *outcome*
+  ("stamp duty never routes to deposit/withdrawal") is achieved by the token
+  match; the default for genuine movements is deliberately left as
+  deposit/withdrawal. A first-word match couldn't catch "DROIT DE TIMBRE"
+  (first word "DROIT", also used by "droit de garde" custody fees), so the fix
+  matches the duty terms anywhere in the narrative instead.
+- **Residual:** stamp-duty narrative variants not containing those terms would
+  still leak to deposit/withdrawal; defensive coverage only (no live sample).
+
 ### M1 — `internal/returns/` (pure math)
 
 - **Onboarding dedup injects the unexplained remainder, not a binary suppress.**
