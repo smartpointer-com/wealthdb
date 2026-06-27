@@ -186,8 +186,16 @@ web_refresh() {
     _snapshot "$GOLD_DB" "$SNAP"
     echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
     if _is_running; then
-        docker restart "$CONTAINER" >/dev/null
-        echo "web: restarted $CONTAINER to serve the new snapshot"
+        # Recreate the container — do NOT `docker restart`. The snapshot is
+        # bind-mounted as a single file (see _docker_run_args) and _snapshot
+        # swaps it via atomic rename, so the new copy is a new inode. A bind
+        # mount tracks the inode it resolved at container-creation time; a
+        # restart preserves the old mount namespace and would keep serving the
+        # stale (now-unlinked) inode. rm + run re-resolves the path to the new
+        # file. Re-running start also re-provisions (idempotent), so new or
+        # renamed report models show up after a refresh too.
+        web_stop >/dev/null
+        web_start
     fi
 }
 
