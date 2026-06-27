@@ -82,6 +82,56 @@ milestone with tests green.
 
 ---
 
+### M2 — macros: reused existing, no migration 0026 (mechanism deviation)
+
+- Spec/build-order called for a new migration `0026` with `report_boundary_values`
+  + `report_external_flows`. **Building showed the existing macros already
+  provide both, cleaner:**
+  - **Value spine:** `report_accounts_history(p_ccy)` is the per-account
+    carry-forward value series and already omits pre-inception days (ASOF inner
+    join) → NULL-by-absence, which is exactly the Fix #4 behavior
+    `report_boundary_values` was meant to add. Driving *all* grains off the
+    per-account spine (aggregated in Go) is also what the synthetic-onboarding
+    mechanism needs, so per-source/global history macros aren't used for the
+    return math (only for the value-identity reconciliation).
+  - **Flows:** `report_transactions(from,to,p_ccy)` already converts net_amount
+    to outCcy at occurred_at; the adapter kind and portfolio come from two
+    trivial lookups (`silver_sources`, and accounts via the history rows).
+- **Result: no new migration, no schema bump, no duplicate FX SQL.** Net new
+  query is one `DISTINCT snapshot day per account` over positions∪cash. Lower
+  risk than authoring 0026.
+
+### M3 — gold engine + CLI
+
+- **Netting scope:** at coarse grains v1 nets only transfer-like kinds
+  (transfer_in/out, journal), not deposit/withdrawal. A deposit+withdrawal of
+  equal size could be a genuine pair of external movements; netting them risks
+  cancelling real external capital, whereas transfer_in/out/journal are the
+  unambiguous inter-account-move signals. Deposit/withdrawal netting deferred.
+- **Explicit-closure proxy:** an account is treated as explicitly closed (→
+  synthetic outflow + atomic spine-zero) only when its last snapshot value is
+  ~0. Mere staleness never triggers closure (per §2.7). A closing transfer that
+  doesn't drive the value to 0 isn't detected as closure in v1.
+- **Default columns adapt to --method** (show twr unless mwr-only, mwr unless
+  twr-only) — a small UX improvement over a fixed default set.
+- **`-C` is offered on every view** (the proposal omitted it on `global`, like
+  holdings). The returns row shape is uniform, so there's no reason to special-
+  case global; kept it available everywhere.
+- **MWR "annualized" column** mirrors the MWR (XIRR is already an annual rate)
+  for spans ≥ 1y and is blank for short spans — it is not a second solve.
+
+### Deferred quality flags (computed flags are the v1 set; these are TODO)
+
+`fx_clamped_flow` / `pre_fx_history` (need an fx_rates min-day join to detect a
+day-0-clamped conversion), `corp_action_present` / `corp_action_split_timing`,
+`dormant_carryforward`, and `boundary_same_snapshot` (subsumed by
+`empty_bucket`/`carried_forward` in v1). The computed v1 set: `since_data_inception`,
+`partial_window`, `staggered_inception`, `empty_bucket`, `carried_forward`,
+`dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`, `mwr_no_sign_change`,
+`mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers`,
+`journal_present`, `nav_only`, `nav_only_capital_call_risk`,
+`crypto_unclassified_transfers`, `unknown_adapter_policy`, `after_tax`.
+
 ## Deferred / out of scope (TODO for review)
 
 - Real capital-call/distribution flows for carta/equityzen (would make their

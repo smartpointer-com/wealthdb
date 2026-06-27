@@ -158,3 +158,7 @@ func quarterOf(t time.Time) int {
 func dayToTime(day int64) time.Time {
 	return time.Unix(day*86400, 0).UTC()
 }
+
+// DayToTimeUTC converts an epoch day to its UTC midnight time. Exported for
+// callers that label reporting periods.
+func DayToTimeUTC(day int64) time.Time { return dayToTime(day) }
