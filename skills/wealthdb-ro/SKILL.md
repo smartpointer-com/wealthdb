@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the owner's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, and transaction history — through the read-only `wealthdb` CLI. Use whenever a question is about what the owner holds, what an account or portfolio is worth, allocation, or money in/out, as of any date.
+description: Query the owner's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, and investment returns (time-weighted TWR & money-weighted MWR/XIRR) — through the read-only `wealthdb` CLI. Use whenever a question is about what the owner holds, what an account or portfolio is worth, allocation, money in/out, or how an account / portfolio / the whole portfolio has performed over a period.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -14,7 +14,7 @@ ledger. You only ever *read* from it. It is already configured — just run the
 command; no setup, no paths, no flags required to connect.
 
 ## Hard rules (do not break)
-- Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`) and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
+- Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
 - Every monetary amount is a decimal **string** (e.g. `"1380284.21"`). Convert to a number before doing arithmetic.
@@ -28,6 +28,7 @@ command; no setup, no paths, no flags required to connect.
 | Balances per individual account | `holdings accounts` |
 | Every individual holding (one row per instrument) | `holdings positions` |
 | Trades, dividends, interest, fees, cash in/out over time | `transactions` |
+| **How an account / portfolio / everything performed** over a period (return %) | `returns <view>` |
 
 - The `holdings` views (`global`, `sources`, `portfolios`, `accounts`, `positions`) are **point-in-time**: a snapshot as of one date.
 - `transactions` is a **date range** of events.
@@ -95,6 +96,49 @@ wealthdb transactions 2026-01-01 2026-06-30 -f json
 
 # Full transaction history, newest first
 wealthdb transactions - today -r -f json
+```
+
+## Returns — performance over time (`wealthdb returns <view>`)
+Answers "how did it do?", not "what is it worth?". `<view>` is `accounts`,
+`portfolios`, `sources`, or `global` (no `positions`). Two methods:
+- **TWR** (time-weighted, the default & headline) — the return of the strategy,
+  stripping out the timing of deposits/withdrawals. Use for "how did the
+  investments perform?".
+- **MWR** (money-weighted / XIRR) — the return *the owner actually earned*, which
+  depends on when money went in/out. Use for "what did I actually make?". Add
+  `--method both` to see both, or `--method mwr`.
+
+Window is positional like `transactions` (default: since first snapshot → today):
+`returns accounts 2025`, `returns global 2024-01-01 -`. Buckets: `--period
+monthly|quarterly|annual|total` (default quarterly) — you get one row per bucket
+plus a since-inception summary row. Other flags: `--annualize auto|always|never`,
+`-x CCY` (historic FX only — there is **no** `--fx-mode`), `-f json`, `-p`.
+
+Columns: `silver_source, entity, period, start_<CCY>, end_<CCY>, net_flow_<CCY>,
+twr_% , mwr_% , twr_ann_%, mwr_ann_%, quality`. Returns are **after fees and
+taxes paid**.
+
+**Read the `quality` column — it is load-bearing.** A `twr`/`mwr` of `n/a`
+ALWAYS has a reason there; never report a blank or a bogus number. Common tags:
+`nonpositive_base` (a mortgage/liability or net-negative entity — no meaningful
+return; shown on its own line and excluded from rollups), `mwr_no_flows` (no
+external cash flows — MWR undefined; e.g. manually-valued private holdings and
+Carta/EquityZen, which are `nav_only`), `nav_only` / `nav_only_capital_call_risk`
+(value-only source; its TWR omits capital-call timing — caveat it),
+`since_data_inception` (since-inception means since the **first snapshot**, not
+account opening), `staggered_inception` / `unmatched_transfers` /
+`empty_bucket` (coarse-grain or stale-data approximations). **Account-grain
+returns are exact; portfolios/sources/global are best-effort.** Returns are
+**not additive across grains** — don't sum account returns to get a portfolio
+return; query the grain you want.
+
+```sh
+# Per-account TWR, quarterly, for 2025 (parseable)
+wealthdb returns accounts 2025 -f json
+# Whole-portfolio TWR + MWR since inception, annualized, in CHF
+wealthdb returns global --method both -x CHF -f json
+# Monthly TWR per institution over the last two years
+wealthdb returns sources --period monthly 2024-01-01 - -f json
 ```
 
 ## Diagnostics (read-only, safe — use when data looks missing or stale)

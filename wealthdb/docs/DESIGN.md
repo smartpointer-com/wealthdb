@@ -1546,6 +1546,56 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   strict NULL-on-mixed semantics (faithful to `wealthdb holdings portfolios`, which shows
   blank for ambiguous buckets).
 
+### 10.9 Returns — TWR / MWR (`wealthdb returns`)
+
+`wealthdb returns <view>` (`<view>` = `accounts` | `portfolios` | `sources` |
+`global`) computes **time-weighted** (TWR) and **money-weighted** (MWR / XIRR)
+returns over a window. Unlike the holdings views it is **not** a Metabase model:
+the XIRR root-find and geometric chaining are iterative, not expressible as a
+DuckDB macro. It is a CLI-only, hybrid computation:
+
+- **SQL assembles**, reusing existing macros — no new migration. The per-account
+  carry-forward value series comes from `report_accounts_history(p_ccy)` (§10.7;
+  its ASOF-inner join already omits pre-inception days, so a boundary before an
+  account's first snapshot reads as NULL — "not yet alive", not 0). External
+  flows come from `report_transactions(from,to,p_ccy)` (`net_amount` converted at
+  `occurred_at`). The source's adapter kind (`silver_sources.silver_kind`) and a
+  `DISTINCT snapshot-day per account` query complete the inputs.
+- **Go computes** (`internal/returns`, pure + unit-tested): Modified-Dietz per
+  sub-period, geometric chaining, XIRR (Newton + bisection), the per-adapter flow
+  policy, and the synthetic onboarding/closure mechanics. The gold orchestration
+  is `internal/gold/returns.go` (`RunReturns`), aggregating the per-account spine
+  to every grain.
+
+Method and conventions (see `docs/RETURNS-NOTES.md` for the full rationale and
+the verified per-adapter flow table):
+
+- **TWR** = chained period-Modified-Dietz; `--period {monthly|quarterly|annual|
+  total}` controls the per-bucket rows, but the since-inception cumulative figure
+  is pinned to a **canonical bucket** (daily where snapshots are dense, else
+  monthly) because chained Dietz is bucket-size dependent once flows exist.
+- **MWR** = XIRR over the window's external flows + opening/terminal values; n/a
+  (with a reason) for no-flow / no-sign-change / non-unique / NAV-only entities.
+- **Flow classification is per-adapter** (banks/pension = flow-complete; crypto =
+  fiat flows only; manual/carta/equityzen = NAV-only). `value_outccy` already
+  carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR `cf =
+  -value_outccy` with no per-kind exception.
+- **Historic-FX only** (no `--fx-mode`): FX movement is part of the return. **Net
+  of fees and taxes paid** (after-tax) — costs stay inside the value series.
+- **Mortgage / net-negative entities** are excluded from coarse rollups and shown
+  as a separate `nonpositive_base` liability line.
+- **Account-grain is exact**; coarse grains are best-effort (heuristic transfer
+  netting, synthetic onboarding for staggered inception). **Returns are NOT
+  additive across grains** — `global == Σ accounts` is a *value* identity, not a
+  return identity.
+
+The honesty surface is the **`quality` column**: every n/a carries a reason, and
+every approximation is tagged (`since_data_inception`, `staggered_inception`,
+`empty_bucket`/`carried_forward`, `dietz_degenerate`, `nonpositive_base`,
+`mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`, `mwr_incomplete_flows`,
+`unmatched_transfers`, `journal_present`, `nav_only`,
+`nav_only_capital_call_risk`, `crypto_unclassified_transfers`, `after_tax`).
+
 ## 11. Repository layout
 
 ```

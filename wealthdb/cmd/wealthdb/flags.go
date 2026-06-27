@@ -71,7 +71,8 @@ subcommands:
   reset <id> | -a       purge a silver source's data from gold
   reload <id> | -a      reset then load (use after upgrading wealthdb)
   holdings <view>       point-in-time portfolio views: positions, accounts, portfolios, sources, global
-  transactions [flags]  print transactions over a date range (default all time, oldest first)
+  returns <view>        TWR / MWR returns: accounts, portfolios, sources, global ('wealthdb returns <view> -h')
+  transactions [flags]  print transactions over a date range (default past 30 days, oldest first)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
   web {start|stop|status}  manage the optional Metabase BI server (host-side; see web/README.md)
