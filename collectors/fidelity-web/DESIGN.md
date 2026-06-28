@@ -571,7 +571,7 @@ URLs and selectors anchored to the live DOM as of 2026-05-24/25.
 | Post-auth landing | `https://digital.fidelity.com/ftgw/digital/portfolio/summary` |
 | Positions SPA | `https://digital.fidelity.com/ctgw/digital/positions/poswebex/client/` (we use the wrapper URL at `/ftgw/digital/portfolio/positions` which routes through) |
 | Activity & Orders | `https://digital.fidelity.com/ftgw/digital/portfolio/activity` |
-| Documents hub | `https://digital.fidelity.com/ftgw/digital/portfolio/documents` (redirects to Statements sub-page) |
+| Documents hub | `https://digital.fidelity.com/ftgw/digital/portfolio/documents` — now 302s to the Enterprise Document Center at `https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements` (a **different host**). The documents phase accepts that host as a valid landing (`DOCCENTER_PREFIX`); only a redirect to `/prgw/digital/signin` is treated as a session timeout. |
 | GraphQL endpoint | `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql` (not used; flagged as a future-iteration alternative to HTML scraping) |
 
 ### 8.2 Login
@@ -611,7 +611,7 @@ column.
 | Time-period filter pill | `[data-testid='ap143528-timeperiod-filter']` (opens `#timeperiod-select-container`) |
 | Preset day-count radios (Recent tab) | `helios-radio[pvd-value='<N>']` (`N` ∈ {10, 30, 60, 90}; default 30, preference 90) |
 | Apply (preset tab) | `button[aria-label='Apply Recent Time Period']` |
-| Custom tab | `apex-kit-segment[pvd-value='Custom']` |
+| Custom tab | `input#Custom[type='radio']` (PVD radio group `time-period-group-hsa`; the legacy `apex-kit-segment[pvd-value='Custom']` web component is gone — `_click_custom_timeperiod_tab` tries the radio first, then the legacy selector as fallback) |
 | Custom-tab date inputs | `#customized-timeperiod-from-date` / `#customized-timeperiod-to-date` (HTML5 `<input type="date">`, ISO YYYY-MM-DD; `min`/`max` attrs bound retention) |
 | Apply (Custom tab) | `button[aria-label='Apply Customized Time Period']` |
 | Download dropdown trigger | `button[aria-label='Download']` (opens `#downloadContent` popover; the SPA disables it while re-fetching after Apply — we poll on `disabled` clearing before clicking) |
@@ -625,45 +625,55 @@ silver loader fans out per-account from there.
 
 ### 8.5 Documents
 
-The documents hub redirects to the Statements sub-page by default;
-both Statements and Tax forms are accessed via left-sidebar
-navigation.
+Fidelity migrated the document center to the **Enterprise Document
+Center** (`digitalservices.fidelity.com/navigate/ent-documentcenter`),
+a Stencil/PVD component SPA. Statements and Tax forms share one
+shape; both are driven by `_doccenter_*` helpers in `download.py`.
 
 | Element | Selector |
 | --- | --- |
-| Sidebar link (Statements / Tax forms) | `a.sidebar-link:has-text('<label>')` |
-| Statement row description cells | `td.gridData.link[aria-label$=" (pdf)"]` (e.g. `"Jan-March 2026 — Statement (pdf)"`) |
-| Statement row download trigger | `button.downloadIconButton[aria-label='download statement']` — popover trigger; opens an in-row dropdown |
-| Statement popover items | `li.modal-options` inside `.downloadDropdownContainer` with text "Download as PDF" / "Download as CSV" |
-| Tax-year filter | `#options-select-TimeFilter` (native `<select>`; option values are year strings, currently 2019–2025) |
-| Tax-form anchors | `a[aria-label$=" (pdf)"]` — one per form per account. We click by the anchor's unique generated `id` (`link-<digits>`); the form-name aria-label is shared across accounts and the href is `javascript:void(0)` for all in-app downloads, so neither alone is unique. |
+| Document-type rail link | `a[href='statements']` (= "Personal" statements), `a[href='tax-forms']`, `a[href='ip-statements']` (interested-party — often empty). The default landing is `ip-statements`, which is empty, so the type MUST be switched. |
+| Document-type `<select>` | `select[aria-label='Document selector']` — present but **ignored**: the Stencil component doesn't react to programmatic value writes, which is why the rail link is used instead. |
+| Date filter | `#options-select-TimeFilter` (native `<select>`; "Last 3/6 months" + concrete years). Driven via Playwright `select_option`, then Apply. |
+| Apply | `button.pvd-button--primary:has-text('Apply')` |
+| Document row | `ent-ds-link` whose text ends in `(pdf)` (e.g. `"Jan-March 2026 — Statement (pdf)"`, `"Consolidated Form 1099 (pdf)"`). No stable `data-testid`/href — the href is `javascript:void(0)`. |
 
-**Statement download mechanism.** Clicking "Download as PDF" in
-the popover does NOT fire a Playwright `download` event — Fidelity
-opens the PDF in a new browser tab and lets the browser's PDF
-viewer render it. We catch this by polling `context.pages` for a
-new tab after the click (Camoufox's juggler patch doesn't reliably
-deliver `popup` events to ad-hoc listeners — same family as the
-`live_url` URL-cache bug), grabbing the popup's URL via
-`live_url()`, and fetching the bytes through `context.request.get`
-(which inherits the session cookies). CSV downloads use the
-canonical `page.expect_download` path. The icon button is
-scrolled into view before clicking and a JS-dispatched click is
-used as fallback — Playwright's actionability check flakes on
-rows below the fold even when the locator resolves cleanly.
+**Download mechanism (API-driven).** The center is backed by a JSON
+API. Clicking a row fires an authenticated **POST** to
+`.../retail-am-financialdoc/.../financial-documents/download` whose
+body identifies the document (`{id, formatType:"PDF", docType, …}`;
+statements use the `digitalservices` host + `/v2`, tax forms use
+`dpservice.fidelity.com` + `/v1` and add `acctNum`/`requestor`). The
+response is JSON carrying the PDF as **base64 in
+`document.docDetail.content`**; the SPA decodes it to an in-memory
+`blob:` and opens that in a viewer tab. Chasing the rendered blob is
+fragile (revoked URLs, viewer-context fetch errors), so
+`_doccenter_download_row` instead waits for the JSON response via the
+canonical `page.expect_response`, then base64-decodes the content
+(`_pdf_from_docapi_body`). No popup/blob/`context.request` dance.
 
-**Tax-form mechanism.** Per year (iterated across every option
-in the TimeFilter select), wait for the spinner to clear AND
-either form anchors to appear OR an empty-state message, then
-enumerate the `(pdf)`-suffixed anchors and click each by its
-unique id, capturing the CSV via `page.expect_download`. Most
-forms below the fold need scroll-into-view before each click.
+**Dedup.** Within a type, every visible `(pdf)` row is downloaded by
+index and deduped on **PDF content hash**, not label: tax forms
+repeat one label (`"Consolidated Form 1099 (pdf)"`) across accounts
+(distinct documents, distinct bytes), while a statement reappearing
+under several year filters is identical bytes. Statement-row labels
+carry a year used for the `min_year` floor; tax-form labels don't and
+are always kept.
 
-**Scope filter.** Only Statements + Tax-forms sub-pages are
-visited; prospectus / supplementary categories are out of scope
-(per CLAUDE.md §1). The external IRS-instructions links on
-each form row don't carry the `(pdf)` aria-label suffix, so
-they don't enter the enumeration.
+**Scope filter.** Only the personal Statements + Tax-forms types are
+walked; interested-party / prospectus / proxy categories are out of
+scope (per CLAUDE.md §1).
+
+**Householded statements → 529 parsing.** The Statements type returns
+**householded** combined Investment Reports (`isHouseholded:true`):
+one PDF per period that can cover several accounts of one household,
+each in its own section, including **EDUCATION (529)** sections.
+`_doc_stem` therefore names statement downloads
+`Statement_<period>.pdf` so the silver loader's 529 historical path
+(`Statement*.pdf` glob → `pdf_parsers.parse_statement_pdf`) parses the
+529 holdings into `historical_position_snapshots` (§4.5). An account
+outside the household surfaces as interested-party instead, which the
+walk leaves alone; its history can come from `<bronze-dir>/supplied-statements/`.
 
 ### 8.6 Balances + Performance
 
@@ -696,8 +706,8 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — positions Overview + DividendView (consolidated CSVs) | done |
 | `download.py` — activity preset 'Past 90 days' (page-level pill → radio → Apply Recent → networkidle) | done |
 | `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into ≤93-day windows) | done |
-| `download.py` — documents: statements (per-row popover; PDF via popup-tab + `context.request`, CSV via `page.expect_download`; scroll-into-view + JS-click fallback for rows below the fold) | done |
-| `download.py` — documents: tax forms (multi-year via `#options-select-TimeFilter`, one click per form by unique anchor id) | done |
+| `download.py` — documents: statements + tax forms via the Enterprise Document Center (rail-link type switch, year filter, row click → `financial-documents/download` JSON → base64 PDF; content-hash dedup) | done — see §8.5 |
+| `download.py` — `--explore`: shadow-/iframe-piercing DOM inventory for doc-center UI-drift debugging | done |
 | `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
 | `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
 | `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |

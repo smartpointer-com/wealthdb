@@ -74,6 +74,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -82,6 +83,7 @@ import os
 import re
 import sys
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -102,6 +104,12 @@ URL_DOCUMENTS = "https://digital.fidelity.com/ftgw/digital/portfolio/documents"
 URL_BALANCES = "https://digital.fidelity.com/ftgw/digital/portfolio/balances"
 URL_PERFORMANCE = "https://digital.fidelity.com/ftgw/digital/portfolio/performance"
 POST_AUTH_PREFIX = "https://digital.fidelity.com/ftgw/digital/portfolio/"
+# Fidelity migrated the document center off the portfolio host onto
+# a separate "Enterprise Document Center" SPA. Navigating to
+# URL_DOCUMENTS now 302s here, so the documents phase accepts this
+# prefix as a valid post-auth landing (it is NOT a session-timeout
+# bounce, which would redirect to the /prgw/digital/signin login).
+DOCCENTER_PREFIX = "https://digitalservices.fidelity.com/navigate/ent-documentcenter/"
 
 # Account-selector account-link testid pattern is
 # ``ap143528-accounts-selector-account-link-<account-id>``, with
@@ -112,6 +120,13 @@ POST_AUTH_PREFIX = "https://digital.fidelity.com/ftgw/digital/portfolio/"
 # cover the rest of the positions phase.
 SEL_ALL_ACCOUNTS = ".acct-selector__all-accounts"
 SEL_KEBAB_MENU = "[data-testid='kebab-menu']"
+# Any account-selector account-link (the enumeration target). Used
+# as a hydration proxy when retrying enumeration on the positions
+# surface — the links render in the DOM even with the dropdown
+# collapsed.
+SEL_ACCOUNT_LINK = (
+    "[data-testid^='ap143528-accounts-selector-account-link-']"
+)
 SEL_PRESET_VIEW_SELECT = "[data-testid='preset-views-dropdown'] select"
 
 # Timing.
@@ -377,11 +392,128 @@ def capture(page, capture_dir, label):
         log.debug("png capture %s: %s", label, e)
 
 
+def dump_dom_inventory(page, capture_dir, label):
+    """Exploration diagnostic: write a flat inventory of every
+    identifiable element — piercing open shadow roots and
+    same-origin iframes — to ``<ts>-<label>.dominv.json``.
+
+    page.content() only serialises the light DOM of the top
+    document, so SPAs that render lists inside shadow DOM or nested
+    iframes (e.g. Fidelity's new Enterprise Document Center) come
+    back empty in an ordinary capture. This walks shadow roots and
+    same-origin iframe documents and records each element's tag /
+    id / data-testid / role / aria-label / name / type / href and a
+    short text snippet, so a UI-drift investigation can see the real
+    interactive surface. Opt-in (``--explore``) — never raises."""
+    if capture_dir is None:
+        return
+    js = r"""
+    () => {
+      const out = [];
+      const SKIP = new Set(['SCRIPT','STYLE','NOSCRIPT','LINK','META',
+                            'svg','path','DEFS','USE','SYMBOL']);
+      const attr = (el, n) => (el.getAttribute ? el.getAttribute(n) : null);
+      const rec = (root, frame) => {
+        let els;
+        try { els = root.querySelectorAll('*'); } catch (e) { return; }
+        for (const el of els) {
+          const tag = el.tagName;
+          if (!tag || SKIP.has(tag)) continue;
+          const tid = attr(el, 'data-testid');
+          const role = attr(el, 'role');
+          const aria = attr(el, 'aria-label');
+          const href = attr(el, 'href');
+          const id = el.id || null;
+          const tagInteresting = ['A','BUTTON','INPUT','SELECT','OPTION',
+            'IFRAME'].includes(tag) || tag.includes('-');
+          if (tid || role || aria || href || id || tagInteresting) {
+            let txt = '';
+            try {
+              txt = (el.textContent || '').trim()
+                      .replace(/\s+/g, ' ').slice(0, 60);
+            } catch (e) {}
+            out.push({
+              frame, tag, id, testid: tid, role, aria,
+              name: attr(el, 'name'), type: attr(el, 'type'),
+              href: href ? href.slice(0, 120) : null,
+              cls: (el.className && el.className.toString)
+                     ? el.className.toString().slice(0, 60) : null,
+              text: txt,
+            });
+          }
+          if (el.shadowRoot) rec(el.shadowRoot, frame + '>shadow');
+        }
+      };
+      rec(document, 'top');
+      for (const f of document.querySelectorAll('iframe')) {
+        const tag = 'iframe:' + ((attr(f, 'title') || attr(f, 'name')
+                       || f.src || '?').slice(0, 50));
+        let doc = null;
+        try { doc = f.contentDocument; } catch (e) {}
+        if (doc) rec(doc, tag);
+        else out.push({frame: 'iframe-CROSSORIGIN',
+                       href: (f.src || '').slice(0, 120)});
+      }
+      return out;
+    }
+    """
+    try:
+        inv = page.evaluate(js)
+    except Exception as e:
+        log.warning("dom inventory %s: %s", label, e)
+        return
+    try:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        path = capture_dir / f"{bronze.ts_slug()}-{label}.dominv.json"
+        path.write_text(json.dumps(inv, indent=1), encoding="utf-8")
+        log.info("explore: wrote %d-element inventory to %s",
+                 len(inv), path.name)
+    except Exception as e:
+        log.warning("dom inventory write %s: %s", label, e)
+
+
+def _doccenter_settle(page):
+    """Give the document-center list a chance to (re)render after a
+    nav or filter change: wait for network-idle, scroll the document
+    (and any scrollable containers) to force row materialisation,
+    then scroll back to the top. Best-effort."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)
+    except Exception:
+        pass
+    try:
+        page.evaluate(
+            "() => { window.scrollTo(0, document.body.scrollHeight);"
+            " for (const el of document.querySelectorAll('*')) {"
+            "   if (el.scrollHeight > el.clientHeight + 50)"
+            "     el.scrollTop = el.scrollHeight; } }"
+        )
+    except Exception:
+        pass
+    time.sleep(3.0)
+    try:
+        page.evaluate("() => window.scrollTo(0, 0)")
+    except Exception:
+        pass
+    time.sleep(1.0)
+
+
 def goto_and_wait(page, url, wait_selector=None, wait_timeout_s=30):
     """Navigate, then wait for an optional selector (proxy for 'SPA
     hydrated'). Returns the live URL after settle."""
     log.info("navigating to %s", url)
-    page.goto(url, wait_until="domcontentloaded")
+    try:
+        page.goto(url, wait_until="domcontentloaded")
+    except Exception as e:
+        # A lingering async route from the previous phase can race our
+        # goto ("interrupted by another navigation"); a single retry
+        # after a brief settle clears it.
+        if "interrupted by another navigation" in str(e):
+            log.debug("goto %s interrupted; retrying once", url)
+            time.sleep(1.5)
+            page.goto(url, wait_until="domcontentloaded")
+        else:
+            raise
     if wait_selector:
         deadline = time.monotonic() + wait_timeout_s
         while time.monotonic() < deadline:
@@ -390,24 +522,6 @@ def goto_and_wait(page, url, wait_selector=None, wait_timeout_s=30):
             time.sleep(0.5)
     time.sleep(1.0)
     return live_url(page)
-
-
-def safe_save_download(dl, out_dir, fallback_name):
-    """Save a Playwright Download to a non-clobbering path under
-    ``out_dir``. Returns the file path written."""
-    suggested = (
-        dl.suggested_filename or fallback_name
-    ).replace("/", "_").replace("\\", "_")
-    out_path = out_dir / suggested
-    base, _, ext = suggested.rpartition(".")
-    k = 1
-    while out_path.exists():
-        out_path = out_dir / (
-            f"{base}__{k}.{ext}" if ext else f"{suggested}__{k}"
-        )
-        k += 1
-    dl.save_as(str(out_path))
-    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +657,78 @@ def scrape_positions(page, bronze_dir, capture_dir):
 # Activity & Orders — one consolidated CSV per date-window
 # ---------------------------------------------------------------------------
 
+# The time-period dropdown renders its Recent/Custom radios + date
+# inputs only while open, so their presence is a reliable
+# open-state probe.
+SEL_TIMEPICKER_OPEN = "input#Custom[type='radio'], input#Recent[type='radio']"
+
+
+def _ensure_timepicker_open(page):
+    """Open the activity time-period dropdown unless it already is.
+
+    Clicking the pill TOGGLES the dropdown, so a blind click on an
+    already-open picker closes it — and the dropdown's contents (the
+    Recent/Custom radios + Custom date inputs) exist in the DOM only
+    while it's open. The bounds probe opens the picker and leaves it
+    open, then the custom-range driver runs immediately after; a
+    second blind pill-click there would close it and lose the Custom
+    tab (observed as a spurious "Custom tab not found"). Guard on the
+    open-state probe so re-entry is idempotent. Returns True when the
+    dropdown ends up open."""
+    if page.locator(SEL_TIMEPICKER_OPEN).count() > 0:
+        return True
+    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
+    if pill.count() == 0:
+        log.debug("timepicker pill not found")
+        return False
+    try:
+        pill.first.evaluate(
+            "el => { (el.querySelector('button') || el).click(); }"
+        )
+    except Exception as e:
+        log.debug("timepicker pill open click: %s", e)
+        return False
+    time.sleep(1.0)
+    return page.locator(SEL_TIMEPICKER_OPEN).count() > 0
+
+
+def _click_custom_timeperiod_tab(page):
+    """Select the 'Custom' tab in the activity time-period picker.
+
+    Fidelity replaced the old ``apex-kit-segment`` web component with
+    a plain PVD radio group — the Custom option is now
+    ``<input class="pvd-segment__radio" type="radio" id="Custom">``.
+    Try the radio id first, then a value-based radio match, then the
+    legacy ``apex-kit-segment`` so a partial rollback on Fidelity's
+    side doesn't break us. Returns True when a Custom control was
+    found and clicked.
+
+    The id `Custom` is generic enough to risk a collision, so the
+    locators pin ``type=radio`` / the segment tag; whichever matches
+    first, we click the radio itself (or the input nested in the
+    legacy wrapper)."""
+    for sel in (
+        "input#Custom[type='radio']",
+        "input[type='radio'][value='Custom']",
+        "apex-kit-segment[pvd-value='Custom']",
+    ):
+        loc = page.locator(sel)
+        if loc.count() == 0:
+            continue
+        try:
+            loc.first.evaluate(
+                "el => { "
+                "  const inp = el.matches('input') "
+                "    ? el : el.querySelector('input[type=radio]'); "
+                "  (inp || el).click(); "
+                "}"
+            )
+            return True
+        except Exception as e:
+            log.debug("custom time-period tab click via %r: %s", sel, e)
+    return False
+
+
 def _probe_activity_date_bounds(page, capture_dir):
     """Open the page-level time-period picker → Custom tab, read the
     ``min`` / ``max`` attributes off the date inputs, return
@@ -559,31 +745,12 @@ def _probe_activity_date_bounds(page, capture_dir):
     to the same single-day window and overwrites the same CSV
     file).
     """
-    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
-    if pill.count() == 0:
+    if not _ensure_timepicker_open(page):
         log.debug("timepicker pill not found; bounds probe aborted")
         return None, None
-    try:
-        pill.first.evaluate(
-            "el => { (el.querySelector('button') || el).click(); }"
-        )
-    except Exception as e:
-        log.debug("timepicker pill open click (probe): %s", e)
-        return None, None
     time.sleep(0.8)
-    custom_segment = page.locator("apex-kit-segment[pvd-value='Custom']")
-    if custom_segment.count() == 0:
+    if not _click_custom_timeperiod_tab(page):
         log.debug("Custom tab not found; bounds probe aborted")
-        return None, None
-    try:
-        custom_segment.first.evaluate(
-            "el => { "
-            "  const inp = el.querySelector('input[type=radio]'); "
-            "  if (inp) inp.click(); else el.click(); "
-            "}"
-        )
-    except Exception as e:
-        log.debug("Custom tab click (probe): %s", e)
         return None, None
     time.sleep(0.8)
     capture(page, capture_dir, "activity-custom-bounds-probe")
@@ -627,35 +794,17 @@ def _select_activity_custom_range(page, since_date, until_date,
     request; callers MUST chunk longer requested windows via
     ``make_activity_windows`` before invoking this function.
     """
-    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
-    if pill.count() == 0:
+    # Open the dropdown idempotently — the bounds probe ran just
+    # before us and left it open; a blind pill-click here would
+    # toggle it shut and lose the Custom tab.
+    if not _ensure_timepicker_open(page):
         log.debug("page-level timepicker pill not found")
         return None
-    try:
-        pill.first.evaluate(
-            "el => { (el.querySelector('button') || el).click(); }"
-        )
-    except Exception as e:
-        log.debug("timepicker pill open click: %s", e)
-        return None
-    time.sleep(1.0)
 
-    # Switch to the Custom segmented-control tab.
-    custom_segment = page.locator(
-        "apex-kit-segment[pvd-value='Custom']"
-    )
-    if custom_segment.count() == 0:
+    # Switch to the Custom tab (PVD radio group; legacy
+    # apex-kit-segment as fallback — see _click_custom_timeperiod_tab).
+    if not _click_custom_timeperiod_tab(page):
         log.warning("Custom tab not found in timepicker; aborting")
-        return None
-    try:
-        custom_segment.first.evaluate(
-            "el => { "
-            "  const inp = el.querySelector('input[type=radio]'); "
-            "  if (inp) inp.click(); else el.click(); "
-            "}"
-        )
-    except Exception as e:
-        log.warning("Custom tab click failed: %s", e)
         return None
     time.sleep(1.0)
     capture(
@@ -1156,30 +1305,6 @@ def scrape_activity(page, since_date, until_date,
 # Documents — Statements + Tax forms
 # ---------------------------------------------------------------------------
 
-def _click_sidebar_link(page, text, capture_dir, label):
-    """Click a left-rail sidebar link by visible text. Returns True
-    on success, False on no-match."""
-    for sel in (
-        f"a.sidebar-link:has-text('{text}')",
-        f"a.sidebar-link:has-text(' {text}')",
-        f"a:has-text('{text}')",
-        f"[role=link]:has-text('{text}')",
-    ):
-        try:
-            loc = page.locator(sel).first
-            if loc.count() == 0:
-                continue
-            if not loc.is_visible(timeout=500):
-                continue
-            loc.click(timeout=5_000)
-            time.sleep(2.5)
-            log.info("clicked sidebar %r via %r", text, sel)
-            capture(page, capture_dir, f"sidebar-{label}")
-            return True
-        except Exception as e:
-            log.debug("sidebar link %r %r: %s", text, sel, e)
-    return False
-
 
 # Statement row labels are heterogeneous (monthly: "January 2026 — ...",
 # quarterly: "Jan-March 2026 — ...", annual: "Annual 2026 — ..."), so we
@@ -1198,690 +1323,315 @@ def _statement_label_year(label: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-# Known Fidelity 'Time Period' options. Each (label, days_covered)
-# row is one possible option the listbox may surface. The set is
-# customer-specific (account-age-bounded), so the runtime walks
-# this ladder and picks the first option that's actually visible.
-# Days_covered is the approximate window that label covers; pairs
-# of labels that mean the same thing (``Last 24 months`` /
-# ``Last 2 years``) share the same days value.
-_FIDELITY_PERIOD_LADDER = (
-    ("Last 3 months", 92),
-    ("Last 6 months", 184),
-    ("Last 12 months", 366),
-    ("Last 18 months", 549),
-    ("Last 24 months", 731),
-    ("Last 2 years", 731),
-    ("Last 36 months", 1097),
-    ("Last 3 years", 1097),
-    ("Last 5 years", 1827),
-    ("Last 10 years", 3653),
-    ("All time", 365 * 30),
-    ("All", 365 * 30),
+# ---------------------------------------------------------------------------
+# Enterprise Document Center (digitalservices.fidelity.com/navigate/
+# ent-documentcenter) — statements + tax forms.
+#
+# Fidelity migrated the document center off the portfolio host onto a
+# Stencil/PVD component SPA. Statements and Tax forms share one shape:
+#   * a left-rail nav link picks the document TYPE (relative hrefs:
+#     'statements' = Personal statements, 'tax-forms'); the default
+#     landing is an empty "Interested party statements". The Stencil
+#     <select> ignores programmatic value writes, so the type is
+#     switched by clicking the rail link, not by driving the select.
+#   * a `#options-select-TimeFilter` <select> + Apply set the year.
+#   * each document is an <ent-ds-link> whose text ends in "(pdf)";
+#     clicking it opens the PDF in a popup tab (no direct href), which
+#     we re-fetch via context.request (cookie-authenticated) — the
+#     same mechanism the old grid used, just different row selectors.
+# ---------------------------------------------------------------------------
+
+SEL_DOCCENTER_TIMEFILTER = "#options-select-TimeFilter"
+SEL_DOCCENTER_APPLY = (
+    "button.pvd-button--primary:has-text('Apply'), "
+    "button:has-text('Apply')"
 )
 
 
-def _select_statements_time_period(page, capture_dir, target_days=None):
-    """Expand the Statements page's 'Time Period' dropdown and pick
-    the option that best matches ``target_days``.
-
-    Fidelity uses a PVD listbox-style dropdown labelled
-    ``Time Period`` at the top of the Statements grid. The
-    collapsed state shows only the currently-selected option; the
-    expansion exposes the full list (``Last 3 months``,
-    ``Last 6 months``, ``Last 12 months``, … through the
-    customer's account-age maximum). Selecting a new option
-    triggers a grid re-fetch.
-
-    Selection policy (mirrors schwab-web's preset mapping):
-
-    * ``target_days`` set — pick the narrowest exposed option that
-      fully covers the window. Defaults at the
-      collectorkit/shared/wealthdb-refresh layer (90 days) thus
-      map to ``Last 3 months`` here, matching schwab-web's
-      ``Last3Months`` default. ``--lookback all`` widens through
-      the ladder to ``All time``.
-    * ``target_days`` None — widest available wins. Used by the
-      historical-PDF backfill path, where the caller hasn't
-      bounded the window.
-
-    Returns the label of the option selected, or ``None`` if no
-    option could be applied (the dropdown's pre-existing selection
-    stays in effect, which still produces a working — if possibly
-    shallow — dump).
-
-    Defensive: every step degrades silently to the default rather
-    than raising, so a future PVD redesign that drifts the
-    selectors doesn't break the statements walk wholesale.
-    """
-    trigger = None
-    for sel in (
-        "button[aria-label='Time Period']",
-        "[aria-label='Time Period'][role='button']",
-        "[aria-label='Time Period']",
-    ):
+def _doccenter_goto_type(page, rel_href, label, capture_dir, tag):
+    """Switch the document type by clicking its left-rail nav link
+    (the native <select> can't be driven programmatically — the
+    Stencil component ignores value writes). Returns True on a
+    successful click."""
+    for sel in (f"a[href='{rel_href}']:has-text('{label}')",
+                f"a[href='{rel_href}']",
+                f"a:has-text('{label}')"):
         loc = page.locator(sel).first
+        if loc.count() == 0:
+            continue
         try:
-            if loc.count() > 0 and loc.is_visible(timeout=500):
-                trigger = loc
-                break
+            loc.click(timeout=5_000)
+            _doccenter_settle(page)
+            capture(page, capture_dir, f"doccenter-{tag}")
+            return True
         except Exception as e:
-            log.debug("statements: time-period probe %r: %s", sel, e)
-    if trigger is None:
-        log.info(
-            "statements: no 'Time Period' filter; default window in effect"
-        )
-        return None
-    try:
-        trigger.click(timeout=5_000)
-        time.sleep(0.8)
-    except Exception as e:
-        log.warning("statements: time-period dropdown click failed: %s", e)
-        return None
-    capture(page, capture_dir, "statements-time-period-open")
-    if target_days is None:
-        # No bound — widest first (used by the unbounded historical-
-        # PDF backfill path).
-        ordered = sorted(_FIDELITY_PERIOD_LADDER, key=lambda r: -r[1])
-    else:
-        # Narrowest that fully covers `target_days` wins; non-covering
-        # options sink to the end so they're picked only if no
-        # covering option is visible at all (Fidelity caps the set
-        # to the customer's account age).
-        def _key(row):
-            _, days = row
-            covers = days >= target_days
-            return (0 if covers else 1, days if covers else -days)
-        ordered = sorted(_FIDELITY_PERIOD_LADDER, key=_key)
-    chosen = None
-    for label, _days in ordered:
-        for sel in (
-            f"[role='option']:has-text('{label}')",
-            f"li:has-text('{label}')",
-            f"button:has-text('{label}')",
-        ):
-            loc = page.locator(sel).first
-            if loc.count() == 0:
-                continue
-            try:
-                if not loc.is_visible(timeout=300):
-                    continue
-                loc.click(timeout=3_000)
-                chosen = label
-                break
-            except Exception as e:
-                log.debug(
-                    "statements: time-period option %r via %r: %s",
-                    label, sel, e,
-                )
-        if chosen:
-            break
-    if chosen is None:
-        log.info(
-            "statements: no widening Time Period option matched; "
-            "default window stays in effect"
-        )
-        try:
-            page.keyboard.press("Escape")
-        except Exception:
-            pass
-        return None
-    log.info("statements: Time Period set to %r", chosen)
-    try:
-        page.wait_for_load_state("networkidle", timeout=15_000)
-    except Exception:
-        time.sleep(3.0)
-    capture(page, capture_dir, "statements-time-period-applied")
-    return chosen
+            log.debug("doccenter type nav %r: %s", sel, e)
+    log.warning("doccenter: %r nav link not found", label)
+    return False
 
 
-def _enumerate_statement_row_labels(page):
-    """Return the aria-label of each statement-row description cell
-    (e.g. ``"Jan-March 2026 — Statement (pdf)"``) in document order
-    so we can dispatch downloads by index."""
-    js = """
-    () => {
-      const out = [];
-      const cells = document.querySelectorAll(
-        'td.gridData.link[aria-label]'
-      );
-      for (const c of cells) {
-        const label = c.getAttribute('aria-label') || '';
-        if (!/\\(pdf\\)$/i.test(label)) continue;
-        out.push(label);
-      }
-      return out;
-    }
-    """
+def _doccenter_year_options(page):
+    """Concrete year options in the TimeFilter <select> (DOM order is
+    most-recent-first), e.g. ['2026','2025',...]. Excludes the
+    'Last N months' rolling options."""
     try:
-        return page.evaluate(js) or []
+        vals = page.eval_on_selector_all(
+            SEL_DOCCENTER_TIMEFILTER + " option",
+            "els => els.map(o => (o.textContent || '').trim())",
+        ) or []
     except Exception as e:
-        log.warning("statement row enumeration failed: %s", e)
+        log.debug("doccenter year options: %s", e)
         return []
+    return [v for v in vals if re.fullmatch(r"20\d\d", v)]
 
 
-def _click_and_collect(page, context, click_locator,
-                        wait_seconds=20):
-    """Click ``click_locator``, then wait up to ``wait_seconds`` for
-    either a Playwright ``download`` event (file download) or a
-    new tab to appear in ``context.pages`` (popup). Returns
-    ``("download", <Download>)``, ``("popup", <Page>)``, or
-    ``(None, None)`` on timeout.
-
-    Why not ``page.expect_event('popup')``: Camoufox's juggler patch
-    doesn't reliably propagate ``popup`` events to ad-hoc
-    listeners — analogous to the ``frameNavigated`` bug ``live_url``
-    works around. But the new page DOES land in ``context.pages``,
-    so polling that list is reliable.
-
-    The ``download`` event side IS reliable; we use the canonical
-    ``page.expect_download`` with a short inner timeout, then fall
-    back to the polling loop for the popup case.
-    """
-    pages_before = set(context.pages)
+def _doccenter_set_year(page, year):
+    """Select a concrete year in the TimeFilter <select> and click
+    Apply. Returns True if the select accepted the value."""
     try:
-        with page.expect_download(timeout=3_000) as dl_info:
-            click_locator.click(timeout=5_000)
-        return ("download", dl_info.value)
-    except Exception:
-        # Either the download didn't fire within 3s (typical when
-        # Fidelity rendered the PDF in a popup tab instead), or
-        # the click failed. Move to the popup-polling path; if the
-        # click also failed, the wait will simply time out.
-        pass
-
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        new_pages = [p for p in context.pages if p not in pages_before]
-        if new_pages:
-            return ("popup", new_pages[-1])
-        time.sleep(0.3)
-    return (None, None)
-
-
-def _fetch_popup_pdf(context, popup_page, out_dir,
-                      fallback_name, timeout_s=20):
-    """A popup that landed on a Fidelity PDF URL hasn't given us a
-    Playwright Download — Firefox opened it in the browser's PDF
-    viewer. Grab the URL via ``location.href`` (live_url avoids the
-    Camoufox URL-cache bug) and re-fetch it through the context's
-    request API, which inherits the session cookies. Save the
-    response bytes to ``out_dir``. Returns the saved path."""
-    # Give the popup a moment to settle on its final URL.
-    deadline = time.monotonic() + timeout_s
-    pdf_url = None
-    while time.monotonic() < deadline:
+        page.select_option(SEL_DOCCENTER_TIMEFILTER, label=str(year))
+    except Exception as e:
+        log.debug("doccenter set year %s: %s", year, e)
+        return False
+    time.sleep(0.7)
+    loc = page.locator(SEL_DOCCENTER_APPLY).first
+    if loc.count() > 0:
         try:
-            url = live_url(popup_page)
-            if url and url not in ("about:blank", ""):
-                pdf_url = url
-                break
-        except Exception:
-            pass
-        time.sleep(0.3)
-    if not pdf_url:
-        raise RuntimeError(
-            "popup page never settled on a URL within "
-            f"{timeout_s}s"
-        )
-    log.info("fetching popup PDF via context.request: %s",
-             pdf_url[:100])
-    resp = context.request.get(pdf_url)
-    if not resp.ok:
-        raise RuntimeError(
-            f"context.request.get returned status {resp.status} "
-            f"for {pdf_url[:100]}"
-        )
-    body = resp.body()
-    # Pick a filename: try Content-Disposition first, fall back to
-    # URL path component, fall back to the supplied default.
-    cd = resp.headers.get("content-disposition", "")
-    cd_match = re.search(r'filename="?([^"]+)"?', cd or "")
-    if cd_match:
-        name = cd_match.group(1)
-    else:
-        path_tail = pdf_url.rstrip("/").rsplit("/", 1)[-1] or fallback_name
-        # Strip query string + url-escapes; basic sanity.
-        name = path_tail.split("?", 1)[0] or fallback_name
-        if not name.lower().endswith(".pdf"):
-            name = fallback_name
-    name = name.replace("/", "_").replace("\\", "_")
-    out_path = out_dir / name
+            loc.click(timeout=4_000)
+        except Exception as e:
+            log.debug("doccenter Apply: %s", e)
+    _doccenter_settle(page)
+    return True
+
+
+def _doccenter_pdf_rows(page):
+    """Locator over the clickable '(pdf)' document rows — one
+    <ent-ds-link> per document. 'Portfolio summary' and other
+    non-pdf entries are excluded by the text filter."""
+    return page.locator("ent-ds-link").filter(
+        has_text=re.compile(r"\(pdf\)\s*$", re.I))
+
+
+def _write_doc_bytes(docs_dir, name, body):
+    """Non-clobbering write of ``body`` under ``docs_dir``/``name``."""
+    out_path = docs_dir / name
     base, _, ext = name.rpartition(".")
     k = 1
     while out_path.exists():
-        out_path = out_dir / (
-            f"{base}__{k}.{ext}" if ext else f"{name}__{k}"
-        )
+        out_path = docs_dir / (f"{base}__{k}.{ext}" if ext else f"{name}__{k}")
         k += 1
     out_path.write_bytes(body)
     return out_path
 
 
-def _download_statement_format(page, context, row_index,
-                                 format_label, docs_dir,
-                                 capture_dir):
-    """Open the row's downloadIconButton popover, click the
-    'Download as <format_label>' menuitem, save the resulting
-    artefact. Handles both the CSV (download event) and PDF
-    (popup tab → fetch via context.request) paths.
-
-    Returns the saved Path. Raises on failure."""
-    # Dismiss any stale popover state from a prior iteration.
-    # Two Escape presses cover the case where a popover-from-the-
-    # previous-row is still visible plus any browser-PDF-viewer
-    # popup state that ate the first press.
+def _pdf_from_docapi_body(body):
+    """Extract the PDF bytes from a ``financial-documents/download``
+    JSON response. The endpoint returns the PDF as base64 in
+    ``document.docDetail.content`` (``contentType: application/pdf``).
+    The ``deflated`` flag is unreliable — some payloads are plain
+    base64(PDF), so we decode, use it directly if it's already a PDF,
+    and only zlib-inflate as a fallback. Returns bytes or None."""
     try:
-        page.keyboard.press("Escape")
-        time.sleep(0.2)
-        page.keyboard.press("Escape")
-        time.sleep(0.2)
+        d = json.loads(body)
+    except Exception:
+        return None
+    content = (d.get("document", {}) or {}).get("docDetail", {}) \
+                .get("content")
+    if not content:
+        return None
+    try:
+        raw = base64.b64decode(content)
+    except Exception:
+        return None
+    if raw[:4] == b"%PDF":
+        return raw
+    try:
+        inflated = zlib.decompress(raw)
+        if inflated[:4] == b"%PDF":
+            return inflated
     except Exception:
         pass
+    return None
 
-    btn_sel = "button[aria-label='download statement']"
-    btn = page.locator(btn_sel).nth(row_index)
-    # Lower-indexed rows are near the top of the viewport and
-    # click fine; later rows (Oct-Dec 2025 / row 2 in the current
-    # rendering) sit further down. Playwright's actionability
-    # check fails intermittently on those because the row is
-    # technically visible but partially obscured by sticky-headers
-    # or below the fold. Scroll into view explicitly, then fall
-    # back to a JS-dispatched click if the actionability check
-    # still rejects.
+
+def _doccenter_download_row(page, context, row_loc):
+    """Click one '(pdf)' row and return the PDF bytes.
+
+    The doc center is API-driven: clicking a row fires an
+    authenticated POST to ``.../financial-documents/download`` that
+    returns the PDF as base64-in-JSON, which the SPA then renders as
+    an in-memory blob. Chasing the rendered blob is fragile (revoked
+    URLs, viewer-context fetch errors), so we wait for that JSON
+    response (canonical expect_response) and decode it. Returns the
+    decoded PDF bytes or raises."""
+    pages_before = set(context.pages)
     try:
-        btn.scroll_into_view_if_needed(timeout=5_000)
-    except Exception as e:
-        log.debug("scroll_into_view row %d: %s", row_index, e)
-    try:
-        btn.click(timeout=5_000)
-    except Exception as e:
-        log.warning(
-            "row %d native click failed (%s); falling back to "
-            "JS-dispatched click", row_index, str(e)[:80],
-        )
-        btn.evaluate("el => el.click()")
-    time.sleep(0.7)
-    capture(page, capture_dir,
-            f"statement-popover-row{row_index}-{format_label}")
-
-    # The popover is scoped to the row's downloadDropdownContainer;
-    # if Fidelity reshuffles the DOM to render it elsewhere, fall
-    # back to a global search by literal text.
-    for item_sel in (
-        f".downloadDropdownContainer li.modal-options"
-        f":has-text('Download as {format_label}')",
-        f"li.modal-options:has-text('Download as {format_label}')",
-    ):
-        item = page.locator(item_sel).first
-        if item.count() > 0:
-            break
-    else:
-        raise RuntimeError(
-            f"no 'Download as {format_label}' menuitem in popover"
-        )
-
-    kind, value = _click_and_collect(
-        page, context, item, wait_seconds=20,
-    )
-    if kind == "download":
-        ext = format_label.lower()
-        return safe_save_download(
-            value, docs_dir, f"statement_{row_index}.{ext}",
-        )
-    if kind == "popup":
         try:
-            return _fetch_popup_pdf(
-                context, value, docs_dir,
-                f"statement_{row_index}.pdf",
-            )
-        finally:
+            row_loc.scroll_into_view_if_needed(timeout=5_000)
+        except Exception as e:
+            log.debug("doccenter row scroll: %s", e)
+        # The click fires an authenticated POST to
+        # .../financial-documents/download; wait for that response via
+        # the canonical expect_response (reliable, unlike reading
+        # bodies inside an ad-hoc event handler), then decode it.
+        with page.expect_response(
+                lambda r: "financial-documents/download" in (r.url or ""),
+                timeout=25_000) as resp_info:
             try:
-                value.close()
+                row_loc.click(timeout=5_000)
+            except Exception as e:
+                log.debug("doccenter row native click (%s); JS fallback", e)
+                row_loc.evaluate("el => el.click()")
+        pdf = _pdf_from_docapi_body(resp_info.value.body())
+        if not pdf:
+            raise RuntimeError("download response carried no decodable PDF")
+        return pdf
+    finally:
+        try:
+            context.remove_listener("response", _on_response)
+        except Exception:
+            pass
+        # Close any popup tab the click spawned; restore the list tab
+        # if the click navigated it away.
+        for p in list(context.pages):
+            if p not in pages_before:
+                try:
+                    p.close()
+                except Exception:
+                    pass
+        cur = live_url(page)
+        if cur and not cur.startswith(DOCCENTER_PREFIX):
+            try:
+                page.go_back(timeout=8_000)
+                _doccenter_settle(page)
             except Exception:
                 pass
-    raise RuntimeError(
-        f"neither download nor popup fired within 20s after "
-        f"clicking 'Download as {format_label}'"
-    )
+
+
+def _doc_stem(label, tag):
+    """Build a bronze filename stem from a row label. For the
+    statements type the stem is forced to begin with ``Statement`` so
+    the silver loader's 529 historical path (which globs
+    ``Statement*.pdf``) parses the householded Investment Report —
+    a combined statement can carry EDUCATION (529) account sections,
+    which ``pdf_parsers.parse_statement_pdf`` extracts. Redundant
+    ``Statement`` / ``(pdf)`` tokens in the label are dropped first so
+    the name stays readable."""
+    base = re.sub(r"\(pdf\)", "", label, flags=re.I)
+    if tag == "statements":
+        base = re.sub(r"statement", "", base, flags=re.I)
+    base = re.sub(r"[^A-Za-z0-9]+", "_", base).strip("_")[:60]
+    if tag == "statements":
+        return ("Statement_" + base).strip("_") if base else "Statement"
+    return base or "doc"
+
+
+def _doccenter_download_visible_rows(page, context, docs_dir, capture_dir,
+                                     min_year, seen_hashes, tag):
+    """Download every currently-visible '(pdf)' row. Dedup is by PDF
+    content hash (``seen_hashes``), NOT label: tax forms repeat one
+    label across accounts (distinct documents, distinct bytes), while
+    a statement reappearing under multiple year filters is the same
+    bytes — so a content hash keeps the former and collapses the
+    latter. Rows whose label-year is < ``min_year`` are skipped (only
+    statement labels carry a year; tax-form labels don't, and are
+    kept). ``tag`` selects the filename scheme (see _doc_stem).
+    Returns a list of result dicts."""
+    rows = _doccenter_pdf_rows(page)
+    try:
+        n = rows.count()
+    except Exception as e:
+        log.warning("doccenter: row enumeration failed: %s", e)
+        return []
+    log.info("doccenter: %d (pdf) row(s) visible", n)
+    results = []
+    downloaded = 0
+    for i in range(n):
+        row = rows.nth(i)
+        try:
+            label = re.sub(r"\s+", " ",
+                           (row.inner_text(timeout=3_000) or "").strip())
+        except Exception:
+            label = f"row {i}"
+        if min_year is not None:
+            yr = _statement_label_year(label)
+            if yr is not None and yr < min_year:
+                continue
+        if downloaded > 0:
+            time.sleep(1.0)
+        try:
+            pdf = _doccenter_download_row(page, context, row)
+        except Exception as e:
+            log.warning("doccenter row %r failed: %s", label[:55], e)
+            capture(page, capture_dir, f"doccenter-row{i}-failed")
+            results.append({"row_label": label, "ok": False, "error": str(e)})
+            continue
+        downloaded += 1
+        sha = hashlib.sha256(pdf).hexdigest()
+        if sha in seen_hashes:
+            log.debug("doccenter: row %r duplicate content; skipping write",
+                      label[:55])
+            continue
+        seen_hashes.add(sha)
+        out = _write_doc_bytes(docs_dir, _doc_stem(label, tag) + ".pdf", pdf)
+        log.info("doccenter: saved %s (%d bytes) <- %r",
+                 out.name, out.stat().st_size, label[:55])
+        results.append({"row_label": label, "file": out.name, "ok": True})
+    return results
+
+
+def _doccenter_walk_type(page, context, rel_href, label, tag,
+                         docs_dir, capture_dir, min_year):
+    """Shared walk for one document type: switch to it, iterate the
+    TimeFilter years >= min_year (newest first), and download every
+    '(pdf)' row. Falls back to the default (year-less) view when the
+    select exposes no concrete year options."""
+    if not _doccenter_goto_type(page, rel_href, label, capture_dir, tag):
+        return [{"ok": False, "error": f"{tag}-nav-not-found"}]
+    years = _doccenter_year_options(page)
+    if min_year is not None:
+        years = [y for y in years if int(y) >= min_year]
+    log.info("%s: iterating years %s", tag, years or ["(default view)"])
+    seen_hashes = set()
+    results = []
+    for y in (years or [None]):
+        if y is not None and not _doccenter_set_year(page, y):
+            continue
+        results.extend(_doccenter_download_visible_rows(
+            page, context, docs_dir, capture_dir, min_year,
+            seen_hashes, tag))
+    return results
 
 
 def scrape_statements(page, context, docs_dir, capture_dir,
                        min_year=None, target_days=None):
-    """Walk the Statements sub-page; for each ``(pdf)`` row open
-    the per-row download popover and grab both formats Fidelity
-    offers ('Download as PDF' / 'Download as CSV'). The CSV path
-    comes down as a regular file download; the PDF path opens a
-    popup tab that the browser would normally render in its PDF
-    viewer — we fetch the popup's URL via context.request so the
-    bytes land on disk regardless of viewer behaviour.
+    """Walk the Enterprise Document Center's personal Statements.
+    Switches to the Personal statements type (rail link -> relative
+    href 'statements'), then iterates the TimeFilter years from the
+    current year back to ``min_year``, downloading each '(pdf)'
+    document (quarterly statements + year-end investment reports) via
+    its popup PDF.
 
-    Not every row offers both formats — annual investment reports
-    typically only offer PDF. The CSV variant for those rows just
-    fails the menuitem lookup and is recorded as not-available.
-
-    Before enumerating rows, the Statements page's ``Time Period``
-    filter is widened to cover ``target_days`` (default 90) so
-    rows older than the dropdown's default ``Last 6 months`` are
-    visible — see ``_select_statements_time_period``.
-
-    If ``min_year`` is set, rows whose label-year is earlier than
-    that are skipped (the default scope from walk() is ``documents
-    _since.year``)."""
-    _select_statements_time_period(
-        page, capture_dir, target_days=target_days,
-    )
-    results = []
-    labels = _enumerate_statement_row_labels(page)
-    log.info("statements: %d (pdf) rows visible", len(labels))
-    in_scope: list[tuple[int, str]] = []
-    for i, label in enumerate(labels):
-        if min_year is not None:
-            yr = _statement_label_year(label)
-            if yr is not None and yr < min_year:
-                log.info(
-                    "statements: skip row %d (year %d < min_year %d): %r",
-                    i, yr, min_year, label[:60],
-                )
-                continue
-        in_scope.append((i, label))
-    if min_year is not None:
-        log.info(
-            "statements: %d of %d rows in scope (min_year=%d)",
-            len(in_scope), len(labels), min_year,
-        )
-    for n, (i, label) in enumerate(in_scope):
-        # Brief inter-row settle so the SPA's popover state from the
-        # prior iteration's failed click / closed popup doesn't bleed
-        # into this row's icon click.
-        if n > 0:
-            time.sleep(1.5)
-        for format_label in ("PDF", "CSV"):
-            try:
-                log.info(
-                    "statements: row %d %s — %r",
-                    i, format_label, label[:60],
-                )
-                out_path = _download_statement_format(
-                    page, context, i, format_label,
-                    docs_dir, capture_dir,
-                )
-                log.info(
-                    "statements: saved %s (%d bytes)",
-                    out_path.name, out_path.stat().st_size,
-                )
-                results.append({
-                    "row_index": i,
-                    "row_label": label,
-                    "format": format_label,
-                    "file": out_path.name,
-                    "ok": True,
-                })
-            except Exception as e:
-                log.warning(
-                    "statement row %d %s (%r) failed: %s",
-                    i, format_label, label[:60], e,
-                )
-                capture(
-                    page, capture_dir,
-                    f"statement-row{i}-{format_label}-failed",
-                )
-                results.append({
-                    "row_index": i,
-                    "row_label": label,
-                    "format": format_label,
-                    "ok": False, "error": str(e),
-                })
-    return results
+    ``target_days`` is kept for signature compatibility; the new UI
+    filters by whole year, so the effective floor is ``min_year``
+    (derived by walk() from ``--documents-since``)."""
+    return _doccenter_walk_type(
+        page, context, "statements", "Personal", "statements",
+        docs_dir, capture_dir, min_year)
 
 
-def _enumerate_tax_form_downloads(page):
-    """Use JS evaluate to enumerate direct download anchors on the
-    Tax forms sub-page. Each form has up to three associated
-    anchors in the DOM: an icon link with the form-name aria-label
-    ending in ``(pdf)``, a redundant 'click to download form'
-    text link, and an external-host link to the matching IRS
-    instructions PDF. They all carry ``href='javascript:void(0)'``
-    for the in-app downloads (so href-dedup collapses unrelated
-    forms across accounts) and the form-name aria-label is shared
-    across accounts for the same form type (so aria-label dedup
-    also collapses distinct forms).
-
-    We enumerate ONLY the (pdf)/(PDF) aria-label anchors — one
-    per form per account — and use their unique ``id`` as the
-    click selector. The 'click to download form' link is
-    functionally redundant; the IRS-instructions anchors are
-    out of scope per DESIGN §8.5."""
-    js = """
-    () => {
-      const out = [];
-      const selectors = [
-        'a[aria-label$=" (pdf)"]',
-        'a[aria-label$=" (PDF)"]',
-      ];
-      const seen_ids = new Set();
-      for (const sel of selectors) {
-        for (const el of document.querySelectorAll(sel)) {
-          const id = el.getAttribute('id') || '';
-          // De-dup by id: same element matched by overlapping
-          // selectors (case differences) should only count once.
-          if (id && seen_ids.has(id)) continue;
-          if (id) seen_ids.add(id);
-          out.push({
-            aria_label: el.getAttribute('aria-label') || '',
-            href: el.getAttribute('href') || '',
-            link_id: id,
-            text: (el.textContent || '').trim().slice(0, 80),
-          });
-        }
-      }
-      return out;
-    }
-    """
-    try:
-        return page.evaluate(js) or []
-    except Exception as e:
-        log.warning("tax-form enumeration failed: %s", e)
-        return []
-
-
-SEL_TAX_YEAR_SELECT = "#options-select-TimeFilter"
-
-
-def _enumerate_tax_form_years(page):
-    """Read the ``<option>`` values from the Tax-forms TimeFilter
-    select. Returns a list of year strings (e.g.
-    ``["2025","2024",...,"2019"]``) in DOM order, which is
-    Fidelity's most-recent-first."""
-    js = (
-        "() => Array.from(document.querySelectorAll("
-        " '#options-select-TimeFilter option'))"
-        " .map(o => o.value)"
-        " .filter(v => /^[0-9]{4}$/.test(v))"
-    )
-    try:
-        return page.evaluate(js) or []
-    except Exception as e:
-        log.warning("tax-year enumeration failed: %s", e)
-        return []
-
-
-def _select_tax_year(page, year, capture_dir):
-    """Switch the Tax-forms page to the given year via the native
-    ``<select>``. Year-switch fires an AJAX fetch that re-renders
-    the form list; we poll for the form-list anchors to repopulate
-    (or for the in-page spinner to clear) before declaring the
-    switch complete. networkidle alone is not enough — the SPA
-    keeps stale anchors from the prior year visible during the
-    fetch, and enumeration would pick them up under the wrong
-    year key.
-
-    Returns ``True`` on success (anchors visible OR confirmed-empty
-    after spinner clears); ``False`` on selector failure."""
-    sel = page.locator(SEL_TAX_YEAR_SELECT)
-    if sel.count() == 0:
-        log.warning("tax-year select %r not present", SEL_TAX_YEAR_SELECT)
-        return False
-    try:
-        sel.first.select_option(value=year)
-    except Exception as e:
-        log.warning("select_option(year=%s) failed: %s", year, e)
-        return False
-    # Poll up to 30s for the page to stabilise: spinner gone AND
-    # (form-list anchors present OR an empty-state message
-    # rendered). The empty-state branch handles years where the
-    # user truly has no forms (e.g. accounts that didn't exist).
-    deadline = time.monotonic() + 30.0
-    last_state = "init"
-    while time.monotonic() < deadline:
-        try:
-            state = page.evaluate(
-                "() => {"
-                "  const spin = document.querySelector("
-                "    'pvd-spinner, .pvd-spinner, [class*=spinner]'"
-                "  );"
-                "  const visible_spin = !!(spin && "
-                "    spin.getBoundingClientRect().height > 0);"
-                "  const anchors = document.querySelectorAll("
-                "    'a[aria-label$=\" (pdf)\"], "
-                "     a[aria-label$=\" (PDF)\"], "
-                "     a[aria-label=\"click to download form\"]'"
-                "  );"
-                "  const empty_text = "
-                "    document.body.innerText"
-                "    .match(/[Nn]o (tax )?forms? (are )?available/);"
-                "  return { spin: visible_spin, "
-                "           anchors: anchors.length, "
-                "           empty: !!empty_text };"
-                "}"
-            )
-        except Exception:
-            state = {"spin": True, "anchors": 0, "empty": False}
-        last_state = state
-        if not state.get("spin") and (
-            state.get("anchors", 0) > 0 or state.get("empty")
-        ):
-            break
-        time.sleep(0.5)
-    log.debug("tax-year %s settle state: %s", year, last_state)
-    capture(page, capture_dir, f"tax-forms-year-{year}")
-    return True
-
-
-def _scrape_tax_year(page, year, docs_dir, capture_dir):
-    """Walk all direct-download anchors for the year that's
-    currently active in the TimeFilter select."""
-    results = []
-    candidates = _enumerate_tax_form_downloads(page)
-    log.info(
-        "tax-forms: year=%s enumerated %d candidates",
-        year, len(candidates),
-    )
-    for i, cand in enumerate(candidates):
-        label = cand.get("aria_label", "") or cand.get("text", "")
-        link_id = cand.get("link_id", "")
-        # Click by the anchor's unique generated id. The
-        # form-name aria-label is shared across accounts for the
-        # same form type, and every in-app form anchor carries
-        # ``href='javascript:void(0)'``, so neither label nor
-        # href is unique enough to disambiguate.
-        if not link_id:
-            results.append({
-                "year": year, "index": i, "label": label,
-                "ok": False, "error": "no-link-id",
-            })
-            continue
-        anchor_sel = f'a[id={link_id!r}]'
-        try:
-            anchor = page.locator(anchor_sel).first
-            if anchor.count() == 0:
-                results.append({
-                    "year": year, "index": i, "label": label,
-                    "ok": False, "error": "selector-no-match",
-                })
-                continue
-            # Many form anchors are below the fold on the year
-            # page; scroll into view to avoid the same
-            # actionability flake the statements list had.
-            try:
-                anchor.scroll_into_view_if_needed(timeout=3_000)
-            except Exception:
-                pass
-            with page.expect_download(
-                timeout=DOWNLOAD_TIMEOUT_MS,
-            ) as dl_info:
-                anchor.click(timeout=10_000)
-            out_path = safe_save_download(
-                dl_info.value, docs_dir,
-                f"taxform_{year}_{i}.bin",
-            )
-            log.info(
-                "tax-forms %s: saved %s (%d bytes)",
-                year, out_path.name, out_path.stat().st_size,
-            )
-            results.append({
-                "year": year, "index": i, "label": label,
-                "file": out_path.name, "ok": True,
-            })
-        except Exception as e:
-            log.warning(
-                "tax-form %s #%d (%r) failed: %s",
-                year, i, label[:60], e,
-            )
-            results.append({
-                "year": year, "index": i, "label": label,
-                "ok": False, "error": str(e),
-            })
-    return results
-
-
-def scrape_tax_forms(page, docs_dir, capture_dir, min_year=None):
-    """Walk the Tax-forms sub-page across every selectable year in
-    Fidelity's TimeFilter dropdown (typically 7 years going back
-    to 2019). Each year's form list is enumerated independently;
-    anchors are plain ``<a>`` links so we collect via
-    ``page.expect_download`` (no popover indirection).
-    Year-empty selections (no forms generated for that year, e.g.
-    accounts that didn't yet exist) are logged and skipped.
-
-    If ``min_year`` is set, years older than it are skipped — the
-    default scope from walk() is ``documents_since.year``."""
-    years = _enumerate_tax_form_years(page)
-    if not years:
-        log.warning(
-            "no tax-year options enumerated; falling back to "
-            "current selection"
-        )
-        return _scrape_tax_year(page, "current", docs_dir, capture_dir)
-    if min_year is not None:
-        def _yr(y):
-            try:
-                return int(str(y))
-            except (TypeError, ValueError):
-                return None
-        kept = [y for y in years if _yr(y) is None or _yr(y) >= min_year]
-        skipped = [y for y in years if y not in kept]
-        if skipped:
-            log.info(
-                "tax-forms: skipping %d years older than %d: %s",
-                len(skipped), min_year, skipped,
-            )
-        years = kept
-    log.info("tax-forms: iterating %d years: %s", len(years), years)
-    results = []
-    for year in years:
-        if not _select_tax_year(page, year, capture_dir):
-            results.append({
-                "year": year, "ok": False,
-                "error": "year-select-failed",
-            })
-            continue
-        results.extend(_scrape_tax_year(page, year, docs_dir, capture_dir))
-    return results
+def scrape_tax_forms(page, context, docs_dir, capture_dir, min_year=None):
+    """Walk the Enterprise Document Center's Tax forms: switch to the
+    tax-forms type, iterate the TimeFilter years >= ``min_year``, and
+    download each '(pdf)' form (Consolidated 1099s, one per account
+    group). Same row + popup mechanism as statements."""
+    return _doccenter_walk_type(
+        page, context, "tax-forms", "Tax forms", "tax-forms",
+        docs_dir, capture_dir, min_year)
 
 
 def scrape_documents(page, context, bronze_dir, capture_dir,
-                      min_year=None, target_days=None):
+                      min_year=None, target_days=None, explore=False):
     """Walk Statements + Tax forms in the document center. Each
     sub-page is exercised independently so a failure in one
     category doesn't block the other. ``context`` is needed for the
@@ -1892,7 +1642,12 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
     from ``--documents-since``. ``target_days`` is the requested
     documents window length, used to pick the Statements page's
     ``Time Period`` filter (narrowest exposed option that covers
-    the window; ``None`` widens to the full archive)."""
+    the window; ``None`` widens to the full archive).
+
+    ``explore`` (``--explore``) additionally writes a shadow-DOM-
+    and iframe-piercing element inventory at each landmark — the
+    new Enterprise Document Center renders its content where an
+    ordinary HTML capture can't see it."""
     docs_dir = bronze_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     results = {"status": "walked"}
@@ -1906,16 +1661,24 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
         return {"status": "error", "error": str(e)}
 
     url = live_url(page)
-    if not url.startswith(POST_AUTH_PREFIX):
+    if not (url.startswith(POST_AUTH_PREFIX)
+            or url.startswith(DOCCENTER_PREFIX)):
         log.warning(
             "documents nav landed at %s — likely session-timeout "
             "redirect; aborting documents phase", url,
         )
         return {"status": "session-timeout", "landed_url": url}
 
+    if explore:
+        # Opt-in DOM inventory of the doc-center landing for future
+        # UI-drift debugging — shadow- and iframe-piercing, unlike an
+        # ordinary HTML capture (see dump_dom_inventory).
+        dump_dom_inventory(page, capture_dir, "documents-landed")
+
+    # Each scraper switches to its own document type via the left-rail
+    # nav and iterates the year filter itself — no shared sidebar
+    # navigation, so a failure in one doesn't strand the other.
     try:
-        _click_sidebar_link(page, "Statements", capture_dir, "statements")
-        time.sleep(2.0)
         results["statements"] = scrape_statements(
             page, context, docs_dir, capture_dir,
             min_year=min_year,
@@ -1926,20 +1689,10 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
         results["statements_error"] = str(e)
 
     try:
-        if _click_sidebar_link(
-            page, "Tax forms", capture_dir, "tax-forms",
-        ):
-            time.sleep(3.0)
-            capture(page, capture_dir, "tax-forms-landed")
-            results["tax_forms"] = scrape_tax_forms(
-                page, docs_dir, capture_dir,
-                min_year=min_year,
-            )
-        else:
-            log.warning(
-                "tax-forms sidebar link not found; skipping"
-            )
-            results["tax_forms_error"] = "sidebar-link-not-found"
+        results["tax_forms"] = scrape_tax_forms(
+            page, context, docs_dir, capture_dir,
+            min_year=min_year,
+        )
     except Exception as e:
         log.exception("tax-forms walk failed")
         results["tax_forms_error"] = str(e)
@@ -2101,6 +1854,31 @@ def walk(context, page, config):
 
     excluded = parse_exclude_list(config.get("exclude_accounts"))
     dimensions = enumerate_account_dimensions(page)
+    # The account-selector links live in the DOM of every portfolio
+    # surface (positions / balances / activity) even while the
+    # dropdown is collapsed — but Fidelity's current post-login
+    # landing page does NOT carry them, so a first pass there finds
+    # nothing. Retry on the positions surface (waiting for the
+    # selector to hydrate) before giving up; otherwise run.json ends
+    # up with zero account dimensions and the silver master load is a
+    # no-op (no nicknames, no portfolio grouping).
+    if not dimensions:
+        log.info(
+            "account enumeration empty on landing page; retrying on "
+            "the positions surface",
+        )
+        try:
+            goto_and_wait(
+                page, URL_POSITIONS,
+                wait_selector=SEL_ACCOUNT_LINK,
+                wait_timeout_s=20,
+            )
+            time.sleep(SPA_HYDRATE_WAIT_S)
+        except Exception as e:
+            log.warning(
+                "positions nav for account enumeration failed: %s", e,
+            )
+        dimensions = enumerate_account_dimensions(page)
     all_accounts = sorted({d["account_id"] for d in dimensions})
     # Auto-exclude non-9-digit accounts (the Fidelity Charitable
     # DAF uses a 7-digit id and is out of scope per DESIGN §1.3 /
@@ -2115,6 +1893,21 @@ def walk(context, page, config):
         len(parse_exclude_list(config.get("exclude_accounts"))),
         len(in_scope),
     )
+    # Zero enumerated accounts means the selector-link DOM probe found
+    # nothing on EITHER the landing page or the positions-surface
+    # retry — almost always a Fidelity selector/testid change, not a
+    # real empty login. It silently strands run.json without account
+    # dimensions (the silver master load becomes a no-op), so make it
+    # loud: this is the canary for the next account-selector UI drift.
+    if not all_accounts:
+        log.warning(
+            "account enumeration found NO accounts — the "
+            "account-selector DOM probe matched nothing (likely a "
+            "Fidelity selector/testid change). run.json will carry no "
+            "account dimensions and the silver master load will be a "
+            "no-op; investigate enumerate_account_dimensions / "
+            "SEL_ACCOUNT_LINK against the captured page DOM.",
+        )
 
     # account_dimensions: serialise under hashed keys so run.json
     # doesn't carry raw 9-digit account ids on disk (parity with
@@ -2191,6 +1984,7 @@ def walk(context, page, config):
                 page, context, bronze_dir, capture_dir,
                 min_year=docs_min_year,
                 target_days=docs_target_days,
+                explore=config.get("explore", "false").lower() == "true",
             )
         if mode in ("all", "balances"):
             run_json["balances_results"] = scrape_balances(
@@ -2848,6 +2642,7 @@ def run_oneshot(args):
                 "dest": str(args.dest),
                 "mode": args.mode,
                 "dry_run": "true" if args.dry_run else "false",
+                "explore": "true" if args.explore else "false",
                 "since": since.isoformat(),
                 "until": until.isoformat(),
                 "documents_since": docs_since.isoformat(),
@@ -2946,6 +2741,13 @@ def parse_args(argv):
     p.add_argument(
         "--dry-run", action="store_true",
         help="Walk + enumerate without writing artefacts.",
+    )
+    p.add_argument(
+        "--explore", action="store_true",
+        help=("Diagnostic: at each document-center landmark, also "
+              "write a shadow-DOM- and iframe-piercing element "
+              "inventory (<ts>-<label>.dominv.json) for adapting "
+              "scrapers to UI drift. Read-only; no extra exports."),
     )
     # --- Diagnostics ---
     p.add_argument(
