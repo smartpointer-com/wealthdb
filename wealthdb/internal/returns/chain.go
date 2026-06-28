@@ -95,6 +95,8 @@ func CanonicalHeadlineBucket(snapshotDays []int64) BucketKind {
 		return BucketMonthly
 	}
 	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
+	// Upper-median (middle-ranked) gap — no averaging of the two central values
+	// for an even count; the threshold comparison makes that distinction moot.
 	median := gaps[len(gaps)/2]
 	if median <= denseGapDays {
 		return BucketDaily

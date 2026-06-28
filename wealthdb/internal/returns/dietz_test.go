@@ -20,6 +20,12 @@ func TestModifiedDietz(t *testing.T) {
 		{"degenerate-v0-zero-end-inflow", 0, 50, 0, 30, []Flow{{30, 50}}, 0, false},
 		// Net-negative (mortgage/liability) base ⇒ denom ≤ 0 ⇒ undefined.
 		{"nonpositive-base", -100, -90, 0, 30, nil, 0, false},
+		// Zero-length window (start==end), no flows, positive base ⇒ plain ratio.
+		{"zero-len-noflow-positive-v0", 100, 110, 30, 30, nil, 0.10, true},
+		// Zero-length window with a negative base ⇒ not OK.
+		{"zero-len-negative-v0", -100, -90, 30, 30, nil, 0, false},
+		// Zero-length window with a flow ⇒ can't time-weight ⇒ not OK.
+		{"zero-len-with-flow", 100, 110, 30, 30, []Flow{{30, 50}}, 0, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

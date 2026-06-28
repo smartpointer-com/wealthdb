@@ -84,6 +84,19 @@ func TestCanonicalHeadlineBucket(t *testing.T) {
 	if got := CanonicalHeadlineBucket([]int64{5}); got != BucketMonthly {
 		t.Errorf("single snapshot: got %v, want BucketMonthly", got)
 	}
+	// All snapshots on the same day ⇒ no positive gaps ⇒ monthly.
+	if got := CanonicalHeadlineBucket([]int64{5, 5, 5}); got != BucketMonthly {
+		t.Errorf("duplicate snapshot days: got %v, want BucketMonthly", got)
+	}
+}
+
+func TestDayToTimeUTC(t *testing.T) {
+	if got := DayToTimeUTC(0); !got.Equal(time.Unix(0, 0).UTC()) {
+		t.Errorf("DayToTimeUTC(0) = %v, want epoch", got)
+	}
+	if got := DayToTimeUTC(1); got.Day() != 2 || got.Month() != time.January || got.Year() != 1970 {
+		t.Errorf("DayToTimeUTC(1) = %v, want 1970-01-02", got)
+	}
 }
 
 func TestBucketBoundaries(t *testing.T) {
@@ -131,5 +144,14 @@ func TestBucketBoundaries(t *testing.T) {
 	assertContiguous(t, q, qf, qt)
 	if len(q) != 2 {
 		t.Errorf("quarterly buckets = %d, want 2 (split at 2021-12-31)", len(q))
+	}
+
+	// Annual across two year boundaries: Nov 2021 → Feb 2023 ⇒ splits at
+	// 2021-12-31 and 2022-12-31 ⇒ 3 buckets.
+	af, at := day(2021, time.November, 1), day(2023, time.February, 1)
+	a := BucketBoundaries(af, at, BucketAnnual)
+	assertContiguous(t, a, af, at)
+	if len(a) != 3 {
+		t.Errorf("annual buckets = %d, want 3", len(a))
 	}
 }

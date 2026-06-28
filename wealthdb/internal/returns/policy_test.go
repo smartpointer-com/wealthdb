@@ -57,6 +57,27 @@ func TestFlowPolicyRegimes(t *testing.T) {
 	}
 }
 
+func TestRegimeStringAndTransferLike(t *testing.T) {
+	cases := map[Regime]string{
+		RegimeFlowComplete:  "flow_complete",
+		RegimeCryptoPartial: "crypto_partial",
+		RegimeNavOnly:       "nav_only",
+		Regime(99):          "unknown",
+	}
+	for r, want := range cases {
+		if got := r.String(); got != want {
+			t.Errorf("Regime(%d).String() = %q, want %q", r, got, want)
+		}
+	}
+	ubs := FlowPolicyFor("ubs")
+	if !ubs.IsTransferLike(canonical.TxKindTransferIn) {
+		t.Error("ubs transfer_in must be transfer-like (netting candidate)")
+	}
+	if ubs.IsTransferLike(canonical.TxKindDeposit) {
+		t.Error("deposit must not be transfer-like (never netted)")
+	}
+}
+
 // TestCapitalDirectionMatchesCanonical pins the documentary direction map to the
 // canonical sign that value_outccy already carries (proposal §3.B): for every
 // fixed-direction external kind, CapitalDirection == sign(ApplyCanonicalSign).

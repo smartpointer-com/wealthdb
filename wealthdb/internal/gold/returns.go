@@ -4,12 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/returns"
 )
+
+// acctKey is the in-memory map key for an account: source id + a NUL separator
+// + account id (NUL can't appear in an id, so the join is unambiguous). Reused
+// for the source+portfolio grouping key, which has the same shape.
+func acctKey(a, b string) string { return a + "\x00" + b }
 
 // ReturnRow is one row of `wealthdb returns`: an entity's return over one
 // reporting bucket (or the since-inception summary). Money columns are decimal
@@ -85,7 +91,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		if len(assets) == 0 {
 			continue
 		}
-		out = append(out, computeEntityReturn(key, assets, p, toDay)...)
+		out = append(out, computeEntityReturn(assets, p, toDay)...)
 	}
 	return out, nil
 }
@@ -129,13 +135,6 @@ func (a *accountData) firstDay() int64 {
 	return a.series[0].day
 }
 
-func (a *accountData) lastDay() int64 {
-	if len(a.series) == 0 {
-		return 0
-	}
-	return a.series[len(a.series)-1].day
-}
-
 // valueAt returns the carry-forward value on `day` and whether the account was
 // alive then (a day before its first snapshot is NULL, not 0 — Fix #4).
 func (a *accountData) valueAt(day int64) (float64, bool) {
@@ -154,7 +153,7 @@ func (a *accountData) closureDay() int64 {
 		return 0
 	}
 	last := a.series[len(a.series)-1]
-	if last.val > -1e-6 && last.val < 1e-6 {
+	if math.Abs(last.val) < valueTol {
 		return last.day
 	}
 	return 0
@@ -162,7 +161,6 @@ func (a *accountData) closureDay() int64 {
 
 func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string]*accountData, error) {
 	byKey := map[string]*accountData{}
-	key := func(src, acct string) string { return src + "\x00" + acct }
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT as_of_day, silver_source_id, account_external_id, account_kind,
@@ -192,7 +190,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		if !ok {
 			continue // unpriceable account-day (no FX path) — omit from the series
 		}
-		k := key(src, acct)
+		k := acctKey(src, acct)
 		a := byKey[k]
 		if a == nil {
 			a = &accountData{src: src, acct: acct, kind: kind, policy: returns.FlowPolicyFor(kinds[src])}
@@ -209,7 +207,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		return nil, err
 	}
 
-	if err := loadSnapshotDays(ctx, db, byKey, key); err != nil {
+	if err := loadSnapshotDays(ctx, db, byKey); err != nil {
 		return nil, err
 	}
 	return byKey, nil
@@ -232,7 +230,7 @@ func loadSourceKinds(ctx context.Context, db *sql.DB) (map[string]string, error)
 	return out, rows.Err()
 }
 
-func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*accountData, key func(string, string) string) error {
+func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*accountData) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT silver_source_id, account_external_id, snapshot_at // 86400 AS day FROM positions
 		UNION
@@ -248,7 +246,7 @@ func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*account
 		if err := rows.Scan(&src, &acct, &day); err != nil {
 			return err
 		}
-		if a := byKey[key(src, acct)]; a != nil {
+		if a := byKey[acctKey(src, acct)]; a != nil {
 			a.snapDays = append(a.snapDays, day)
 		}
 	}
@@ -263,7 +261,7 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 		return err
 	}
 	for _, t := range txns {
-		a := byKey[t.SilverSourceID+"\x00"+t.AccountExternalID]
+		a := byKey[acctKey(t.SilverSourceID, t.AccountExternalID)]
 		if a == nil {
 			continue
 		}
@@ -302,8 +300,7 @@ func groupAccounts(level string, accts map[string]*accountData) (map[string][]*a
 	switch level {
 	case "accounts":
 		for _, a := range accts {
-			k := a.src + "\x00" + a.acct
-			groups[k] = []*accountData{a}
+			groups[acctKey(a.src, a.acct)] = []*accountData{a}
 		}
 	case "sources":
 		for _, a := range accts {
@@ -311,7 +308,8 @@ func groupAccounts(level string, accts map[string]*accountData) (map[string][]*a
 		}
 	case "portfolios":
 		for _, a := range accts {
-			groups[a.src+"\x00"+a.portfolio] = append(groups[a.src+"\x00"+a.portfolio], a)
+			k := acctKey(a.src, a.portfolio)
+			groups[k] = append(groups[k], a)
 		}
 	default: // global
 		for _, a := range accts {
@@ -339,20 +337,26 @@ func splitLiabilities(members []*accountData) (liability, assets []*accountData)
 
 // ---- helpers -------------------------------------------------------------
 
-func parseFloat(n sql.NullString) (float64, bool) {
-	if !n.Valid || n.String == "" {
+func parseFloat64(s string) (float64, bool) {
+	if s == "" {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(n.String, 64)
+	v, err := strconv.ParseFloat(s, 64)
 	return v, err == nil
 }
 
-func parseFloatPtr(s *string) (float64, bool) {
-	if s == nil || *s == "" {
+func parseFloat(n sql.NullString) (float64, bool) {
+	if !n.Valid {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(*s, 64)
-	return v, err == nil
+	return parseFloat64(n.String)
+}
+
+func parseFloatPtr(s *string) (float64, bool) {
+	if s == nil {
+		return 0, false
+	}
+	return parseFloat64(*s)
 }
 
 func decStr(v float64) *string {

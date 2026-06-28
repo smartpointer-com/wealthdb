@@ -1,7 +1,5 @@
 package returns
 
-import "math"
-
 // onboardingDedupTol is the absolute (output-currency) tolerance below which a
 // real funding flow in the debut bucket is treated as "explaining" the opening
 // value, suppressing the synthetic onboarding inflow.
@@ -53,6 +51,3 @@ func ZeroedValue(value float64, day, closureDay int64) float64 {
 	}
 	return value
 }
-
-// approxEqual is a small helper used by tests and dedup reasoning.
-func approxEqual(a, b, tol float64) bool { return math.Abs(a-b) <= tol }

@@ -77,6 +77,43 @@ func TestXIRREdgeCases(t *testing.T) {
 	}
 }
 
+func TestXIRRBisectionFallback(t *testing.T) {
+	// Direct bisection on a clean linear NPV with a root at 0.5.
+	if r, err := bisectXIRR(func(r float64) float64 { return 0.5 - r }); err != nil {
+		t.Fatalf("bisect err: %v", err)
+	} else {
+		almost(t, r, 0.5, 1e-6, "bisected root")
+	}
+
+	// No sign change anywhere in the scan domain ⇒ ErrNoConverge.
+	if _, err := bisectXIRR(func(float64) float64 { return 1.0 }); !errors.Is(err, ErrNoConverge) {
+		t.Errorf("constant npv: err=%v, want ErrNoConverge", err)
+	}
+
+	// NaN samples (here for r < -0.5) must not bracket a spurious root against a
+	// poisoned previous sample; the root at 0.2 must still be found.
+	nanThenLinear := func(r float64) float64 {
+		if r < -0.5 {
+			return math.NaN()
+		}
+		return 0.2 - r
+	}
+	if r, err := bisectXIRR(nanThenLinear); err != nil {
+		t.Fatalf("nan-then-linear err: %v", err)
+	} else {
+		almost(t, r, 0.2, 1e-6, "root after NaN region")
+	}
+
+	// End-to-end near-total drawdown whose true root sits below the -100% floor:
+	// XIRR clamps to ≈ -100% (the near-total-loss convention) rather than
+	// diverging or reporting a bogus positive rate.
+	if r, err := XIRR(1000, 0.0001, 0, 365, nil); err != nil {
+		t.Errorf("sub-floor loss: unexpected err %v", err)
+	} else if r > -0.99 || r <= -1 {
+		t.Errorf("sub-floor loss rate = %v, want ≈ -100%% (clamped, in (-1,-0.99])", r)
+	}
+}
+
 func TestMWRSignChanges(t *testing.T) {
 	// Contribution, then a withdrawal, then another contribution: the investor
 	// vector flips sign more than once ⇒ possibly non-unique IRR.

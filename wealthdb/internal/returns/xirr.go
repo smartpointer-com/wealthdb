@@ -6,7 +6,8 @@ import (
 )
 
 // Sentinel errors returned by XIRR so callers can map them to quality flags
-// (mwr_no_flows, mwr_no_sign_change) instead of presenting a bogus rate.
+// (mwr_no_flows, mwr_no_sign_change, mwr_no_converge) instead of presenting a
+// bogus rate.
 var (
 	// ErrNoFlows is returned when fewer than two cash flows are supplied.
 	ErrNoFlows = errors.New("returns: fewer than two cash flows")
@@ -47,13 +48,20 @@ type datedCF struct {
 // with only [-v0, +v1] has a single sign change and would yield the holding
 // period return dressed up as an IRR. Treat len(flows)==0 as mwr_no_flows.
 func XIRR(v0, v1 float64, startDay, endDay int64, flows []Flow) (float64, error) {
+	return xirr(investorCFs(v0, v1, startDay, endDay, flows))
+}
+
+// investorCFs assembles the investor cash-flow vector: pay in the opening value
+// (-v0), each capital-in flow is money out of pocket (-Amount), and receive the
+// terminal value (+v1). Shared by XIRR and MWRSignChanges so the two can't drift.
+func investorCFs(v0, v1 float64, startDay, endDay int64, flows []Flow) []datedCF {
 	cfs := make([]datedCF, 0, len(flows)+2)
 	cfs = append(cfs, datedCF{startDay, -v0})
 	for _, f := range flows {
 		cfs = append(cfs, datedCF{f.Day, -f.Amount})
 	}
 	cfs = append(cfs, datedCF{endDay, v1})
-	return xirr(cfs)
+	return cfs
 }
 
 func xirr(cfs []datedCF) (float64, error) {
@@ -130,22 +138,23 @@ func xirr(cfs []datedCF) (float64, error) {
 func bisectXIRR(npv func(float64) float64) (float64, error) {
 	prev := xirrRateFloor
 	fPrev := npv(prev)
-	if math.Abs(fPrev) < npvTol {
+	havePrev := !math.IsNaN(fPrev) && !math.IsInf(fPrev, 0)
+	if havePrev && math.Abs(fPrev) < npvTol {
 		return prev, nil
 	}
 	for cur := prev + xirrScanStep; cur <= xirrRateCeil; cur += xirrScanStep {
 		fCur := npv(cur)
 		if math.IsNaN(fCur) || math.IsInf(fCur, 0) {
-			prev, fPrev = cur, fCur
+			havePrev = false // don't bracket against a poisoned sample
 			continue
 		}
 		if math.Abs(fCur) < npvTol {
 			return cur, nil
 		}
-		if (fPrev < 0) != (fCur < 0) {
+		if havePrev && (fPrev < 0) != (fCur < 0) {
 			return bisect(npv, prev, cur), nil
 		}
-		prev, fPrev = cur, fCur
+		prev, fPrev, havePrev = cur, fCur, true
 	}
 	return 0, ErrNoConverge
 }
@@ -171,12 +180,7 @@ func bisect(npv func(float64) float64, lo, hi float64) float64 {
 // (-v0, -flows, +v1) ordered by day. More than one change means the IRR may be
 // non-unique (Descartes' rule of signs) — callers flag mwr_nonunique.
 func MWRSignChanges(v0, v1 float64, startDay, endDay int64, flows []Flow) int {
-	cfs := make([]datedCF, 0, len(flows)+2)
-	cfs = append(cfs, datedCF{startDay, -v0})
-	for _, f := range flows {
-		cfs = append(cfs, datedCF{f.Day, -f.Amount})
-	}
-	cfs = append(cfs, datedCF{endDay, v1})
+	cfs := investorCFs(v0, v1, startDay, endDay, flows)
 	stableSortByDay(cfs)
 
 	changes := 0

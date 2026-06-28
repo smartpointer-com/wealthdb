@@ -5,7 +5,9 @@ brief: assumptions, places the implementation deviated from the spec (spec
 assumed → what the code showed → what was done → why), and anything deferred.
 All examples synthetic (CLAUDE.md §4).
 
-Build order: (1) `internal/returns/` pure math, (2) migration `0026` macros,
+Build order: (1) `internal/returns/` pure math, (2) macros — *planned as
+migration `0026`; reused the existing `report_accounts_history` +
+`report_transactions` instead, no new migration — see the M2 section below*,
 (3) `internal/gold/returns.go` + `cmd/wealthdb/cmd_returns.go`. Commit at each
 milestone with tests green.
 
@@ -119,6 +121,39 @@ milestone with tests green.
   case global; kept it available everywhere.
 - **MWR "annualized" column** mirrors the MWR (XIRR is already an annual rate)
   for spans ≥ 1y and is blank for short spans — it is not a second solve.
+
+### M4 — refactor + coverage pass
+
+A post-implementation review (duplication/dead-code, coverage, doc accuracy, PII)
+drove these changes:
+- **Dedup:** extracted `investorCFs` (the investor cash-flow vector was assembled
+  identically in `XIRR` and `MWRSignChanges`) and `acctKey` (the `src\x00acct`
+  map key was built inline in ~4 places); `parseFloat`/`parseFloatPtr` now share
+  a `parseFloat64` core; `entityFlows` reuses `flowsIn`; `closureDay` uses
+  `math.Abs(v) < valueTol` instead of an open-coded epsilon.
+- **Dead code removed:** `accountData.lastDay()` (never called); `approxEqual`
+  moved out of production `synthetic.go` into the test helpers; the unused `key`
+  parameter dropped from `computeEntityReturn`.
+- **Hardening:** `bisectXIRR` now resets its bracket on a NaN/Inf sample instead
+  of comparing a sign against a poisoned previous value (latent, not live, given
+  current inputs).
+- **Coverage:** `internal/returns` 76% → ~94%; added gold tests for `netTransfers`,
+  the portfolios grain, staggered-inception synthetic onboarding (incl.
+  `fundingNear` partial dedup), `mwr_incomplete_flows`/`mwr_nonunique`,
+  `journal_present`/`crypto_unclassified_transfers`, `partial_window` +
+  `--inception strict`, and `empty_bucket`.
+- **Finding — `unknown_adapter_policy` is unreachable via the real pipeline.**
+  `silver_sources.silver_kind` has a CHECK constraint admitting only the 12 known
+  adapter kinds, so `FlowPolicyFor` never returns `Known=false` for a loaded
+  source. The flag + the policy `default` branch are kept as defense-in-depth (a
+  future adapter added to the CHECK but not to `FlowPolicyFor` would surface it),
+  and the `default` is unit-tested at the `FlowPolicyFor` level; the gold-level
+  flag emission is intentionally left uncovered.
+- **Docs:** corrected the DESIGN §10.9 quality-flag list (added `mwr_no_converge`,
+  `unknown_adapter_policy`, `partial_window`), scoped `--fx-mode`/`-d` away from
+  `returns` in SKILL.md, and annotated this build-order line.
+- **PII:** independent sweep of the added tests, docs, and all four commit
+  messages — CLEAN (synthetic fixtures only).
 
 ### Deferred quality flags (computed flags are the v1 set; these are TODO)
 

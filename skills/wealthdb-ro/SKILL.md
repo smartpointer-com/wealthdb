@@ -51,10 +51,11 @@ command; no setup, no paths, no flags required to connect.
 ## Flags (the query commands)
 - `-f json|csv|table` — output format. Default is `table` (for humans). Use `json` to parse.
 - `-x CCY` — currency for value columns. Default is the configured base (USD). E.g. `-x CHF`, `-x EUR`.
-- `--fx-mode historic|current` — `historic` (default: FX rate at the snapshot/transaction date) or `current` (latest rate).
-- `-d`, `-p` (privacy/redact) work on all of them.
+- `--fx-mode historic|current` — `historic` (default: FX rate at the snapshot/transaction date) or `current` (latest rate). **holdings + transactions only** — `returns` is historic-FX only and has no `--fx-mode`.
+- `-d` (as-of date) applies to **holdings** views; `transactions` and `returns` take a positional date range/window instead, not `-d`. `-p` (privacy/redact) works on all.
 - `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `holdings global`, which is a single fixed row.)
 - `holdings positions` only: `--with-cash` — add one cash-balance row per account+currency.
+- `returns` only: `--method`, `--period`, `--annualize`, `--netting`, `--inception` (see the Returns section).
 
 ## Columns you can rely on (each view is `wealthdb holdings <view>`)
 - **global** (always exactly one row): `min_snapshot_date, max_snapshot_date, cash_balance_<CCY>, positions_value_<CCY>, total_value_<CCY>`. The two dates are the earliest/latest of the per-account snapshot dates, so you can see how stale any part of the total is.

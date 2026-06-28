@@ -14,7 +14,7 @@ const valueTol = 1e-6
 // the since-inception summary row for one entity built from its constituent
 // asset accounts. A single-account accounts-grain entity is the degenerate case:
 // no synthetic onboarding, no netting — exact.
-func computeEntityReturn(key string, assets []*accountData, p ReturnParams, toDay int64) []ReturnRow {
+func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64) []ReturnRow {
 	src := assets[0].src
 	entityID, label := entityIdentity(p.Level, assets)
 
@@ -193,30 +193,17 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
-		for _, f := range assets[0].allExternal() {
-			if f.Day > winFrom && f.Day <= winTo {
-				flows = append(flows, f)
-			}
-		}
-		return flows, tags
+		return flowsIn(assets[0].allExternal(), winFrom, winTo), tags
 	}
 
 	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES).
 	for _, a := range assets {
-		for _, f := range a.nonTransfer {
-			if f.Day > winFrom && f.Day <= winTo {
-				flows = append(flows, f)
-			}
-		}
+		flows = append(flows, flowsIn(a.nonTransfer, winFrom, winTo)...)
 	}
 	// Transfer-like: net opposite pairs within the boundary to drop internal moves.
 	var cand []returns.Flow
 	for _, a := range assets {
-		for _, f := range a.transferLike {
-			if f.Day > winFrom && f.Day <= winTo {
-				cand = append(cand, f)
-			}
-		}
+		cand = append(cand, flowsIn(a.transferLike, winFrom, winTo)...)
 	}
 	if p.Netting {
 		kept, unmatched := netTransfers(cand)
