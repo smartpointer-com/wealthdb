@@ -27,18 +27,28 @@ func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow,
 // aggregate constituent, plus the day from which the constituent's carried-
 // forward spine contribution MUST be zeroed.
 //
-// The two are an atomic pair: the carry-forward spine keeps lastValue in V_end
-// past the closure day, so booking the -lastValue outflow without also zeroing
-// the spine contribution double-counts and prints a spurious return on the
-// closure link (proposal §2.7 / §3, verified). ok is false when there is no
-// explicit closure (closureDay==0); staleness/dormancy must route to the
-// carried_forward flag, never here — firing on mere silence mis-books a slow
-// source as a divestment.
-func ClosureFlow(closureDay int64, lastValue float64) (flow Flow, zeroFrom int64, ok bool) {
+// The spine zeroing (zeroFrom) is returned whenever there is an explicit closure,
+// independent of whether a synthetic flow is injected — the carry-forward spine
+// keeps lastValue in V_end past the closure day, so the zeroing is mandatory
+// (proposal §2.7 / §3, verified).
+//
+// The synthetic outflow is deduped against any REAL closing capital-out near the
+// closure day (realClosing = magnitude of real withdrawal/transfer_out flows),
+// mirroring the onboarding side: the textbook "withdraw everything" closure books
+// a real −lastValue AND drives the snapshot to ~0, so injecting another
+// −lastValue would double-count and depress the closure-link return (review #2).
+// Only the unexplained remainder (lastValue − realClosing) is synthesized; ok is
+// false (no flow) when a real closing flow already covers it, or when there is no
+// explicit closure (closureDay==0). Staleness/dormancy must never reach here.
+func ClosureFlow(closureDay int64, lastValue, realClosing float64) (flow Flow, zeroFrom int64, ok bool) {
 	if closureDay == 0 {
 		return Flow{}, 0, false
 	}
-	return Flow{Day: closureDay, Amount: -lastValue}, closureDay, true
+	synthetic := lastValue - realClosing
+	if synthetic <= onboardingDedupTol {
+		return Flow{}, closureDay, false // real closing flow already explains the exit
+	}
+	return Flow{Day: closureDay, Amount: -synthetic}, closureDay, true
 }
 
 // ZeroedValue is the atomic counterpart to ClosureFlow: a constituent's

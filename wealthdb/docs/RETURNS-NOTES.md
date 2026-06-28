@@ -96,6 +96,13 @@ milestone with tests green.
     per-account spine (aggregated in Go) is also what the synthetic-onboarding
     mechanism needs, so per-source/global history macros aren't used for the
     return math (only for the value-identity reconciliation).
+    - **Correction (review #1, fixed in M5):** the macro also stops emitting an
+      account once a *later* same-source snapshot supersedes it without that
+      account — i.e. **post-disappearance absence reads as 0, NOT the same as
+      pre-inception NULL.** `valueAt` originally carried a vanished account
+      forward at its last value (diverging from the macro and breaking
+      `global == Σ accounts`); it now returns 0 after the last emitted row and
+      flags `dropped_while_nonzero`.
   - **Flows:** `report_transactions(from,to,p_ccy)` already converts net_amount
     to outCcy at occurred_at; the adapter kind and portfolio come from two
     trivial lookups (`silver_sources`, and accounts via the history rows).
@@ -110,10 +117,14 @@ milestone with tests green.
   equal size could be a genuine pair of external movements; netting them risks
   cancelling real external capital, whereas transfer_in/out/journal are the
   unambiguous inter-account-move signals. Deposit/withdrawal netting deferred.
+  **Ratified** (review #7) — coarse-grain returns do not net
+  deposit/withdrawal moves; an internal move booked that way is surfaced as two
+  external flows, not silently cancelled.
 - **Explicit-closure proxy:** an account is treated as explicitly closed (→
   synthetic outflow + atomic spine-zero) only when its last snapshot value is
   ~0. Mere staleness never triggers closure (per §2.7). A closing transfer that
-  doesn't drive the value to 0 isn't detected as closure in v1.
+  doesn't drive the value to 0 isn't detected as closure in v1. *(M5: the
+  synthetic outflow is now deduped against a real closing withdrawal — review #2.)*
 - **Default columns adapt to --method** (show twr unless mwr-only, mwr unless
   twr-only) — a small UX improvement over a fixed default set.
 - **`-C` is offered on every view** (the proposal omitted it on `global`, like
@@ -155,17 +166,52 @@ drove these changes:
 - **PII:** independent sweep of the added tests, docs, and all four commit
   messages — CLEAN (synthetic fixtures only).
 
-### Deferred quality flags (computed flags are the v1 set; these are TODO)
+### M5 — supervisor-review fix pass
 
-`fx_clamped_flow` / `pre_fx_history` (need an fx_rates min-day join to detect a
-day-0-clamped conversion), `corp_action_present` / `corp_action_split_timing`,
-`dormant_carryforward`, and `boundary_same_snapshot` (subsumed by
-`empty_bucket`/`carried_forward` in v1). The computed v1 set: `since_data_inception`,
-`partial_window`, `staggered_inception`, `empty_bucket`, `carried_forward`,
+The independent supervisor review (`returns-impl-review.md`: 25 confirmed / 3
+partial / 0 refuted, no critical/high) drove these fixes — all in the
+best-effort coarse-grain / closure / old-or-cross-currency zones; the verified
+account-grain headline math was left untouched:
+- **#1 disappearing account:** `valueAt` returns 0 after an account's last
+  emitted row (matching the macro), so `global == Σ accounts` reconciles (gold
+  reconciliation test vs `GlobalAsOf`); flags `dropped_while_nonzero`. The
+  per-entity window is clamped to the latest available data day. *(`lastDay()`,
+  removed as dead in M4, is reintroduced and now used.)*
+- **#2 closure dedup:** the synthetic closure outflow is deduped against a real
+  closing withdrawal/transfer_out (`closingNear`), mirroring onboarding — no more
+  double-count on a "withdraw everything" closure.
+- **#3 FX-clamp honesty:** emit `fx_clamped_flow` (a flow valued before its
+  currency's first FX rate) and `pre_fx_history` (window starts before a held
+  non-output currency's first rate), via a per-currency earliest-rate-day join.
+- **#4 `boundary_same_snapshot`:** the *receiving* bucket (prior bucket empty +
+  this bucket has a fresh snapshot) is now flagged — it is NOT subsumed by
+  `empty_bucket` (which flags the flat donor bucket); the old "subsumed" note was
+  wrong.
+- **#6 deterministic netting:** `Flow.ID` (transaction id) added; `netTransfers`
+  sorts stably by `(|amount|, day, id)`.
+- **#7 sub-(-100%) loss:** XIRR returns `ErrNoConverge` (→ `mwr_no_converge`)
+  instead of a clamped non-root ~-100%.
+- **#8:** `unmatched_transfers=N` carries the count; the `mwr_%` column shows the
+  *period* (de-annualized) figure, consistent with `twr_%` (`mwr_ann_%` holds the
+  annualized XIRR).
+- **#9 end-to-end gold tests** through `RunReturns`: disappearance reconciliation,
+  closure dedup, coarse netting + `--netting off`, MWR error-flag mapping,
+  FX-clamp flags, and a wiring-checked MWR.
+
+### Deferred quality flags (the computed v1 set is below; these remain TODO)
+
+Still deferred: `corp_action_present` / `corp_action_split_timing`,
+`dormant_carryforward`, `flows_before_inception`, `stale_snapshot` (the principled
+`empty_bucket`/`carried_forward` condition covers the common stale case; a
+generous source-relative `stale_snapshot` threshold is still TODO).
+
+Computed v1 set: `since_data_inception`, `partial_window`, `staggered_inception`,
+`empty_bucket`, `carried_forward`, `boundary_same_snapshot`, `dropped_while_nonzero`,
 `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`, `mwr_no_sign_change`,
-`mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers`,
+`mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers=N`,
 `journal_present`, `nav_only`, `nav_only_capital_call_risk`,
-`crypto_unclassified_transfers`, `unknown_adapter_policy`, `after_tax`.
+`crypto_unclassified_transfers`, `unknown_adapter_policy`, `fx_clamped_flow`,
+`pre_fx_history`, `after_tax`.
 
 ## Deferred / out of scope (TODO for review)
 

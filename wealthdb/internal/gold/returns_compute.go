@@ -14,7 +14,7 @@ const valueTol = 1e-6
 // the since-inception summary row for one entity built from its constituent
 // asset accounts. A single-account accounts-grain entity is the degenerate case:
 // no synthetic onboarding, no netting — exact.
-func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64) []ReturnRow {
+func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx fxBounds) []ReturnRow {
 	src := assets[0].src
 	entityID, label := entityIdentity(p.Level, assets)
 
@@ -55,6 +55,9 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64) []R
 	entityQ := append([]string{}, incFlags...)
 	entityQ = append(entityQ, qFlowTags...)
 	entityQ = append(entityQ, regimeFlags(assets)...)
+	if preFxHistory(assets, p.OutCcy, winFrom, fx) {
+		entityQ = append(entityQ, "pre_fx_history")
+	}
 	entityQ = append(entityQ, "after_tax")
 
 	v0, ok0 := av(winFrom)
@@ -72,10 +75,24 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64) []R
 
 	var out []ReturnRow
 
-	// Per-bucket display rows (TWR only).
+	// Per-bucket display rows (TWR only). prevEmpty tracks whether the preceding
+	// bucket carried forward with no fresh snapshot, so the *receiving* bucket
+	// (fresh V1, stale carried V0) that over-attributes the accumulated move can
+	// be flagged boundary_same_snapshot — distinct from the donor empty_bucket
+	// (review #5).
 	if p.Period != "total" {
+		prevEmpty := false
 		for _, b := range returns.BucketBoundaries(winFrom, winTo, periodKind(p.Period)) {
-			out = append(out, bucketRow(base, b[0], b[1], p.Period, av, flows, snaps))
+			row := bucketRow(base, b[0], b[1], p.Period, av, flows)
+			empty := !hasSnapshotIn(snaps, b[0], b[1])
+			switch {
+			case empty:
+				row.Quality = append(row.Quality, "empty_bucket", "carried_forward")
+			case prevEmpty:
+				row.Quality = append(row.Quality, "boundary_same_snapshot")
+			}
+			prevEmpty = empty
+			out = append(out, row)
 		}
 	}
 
@@ -84,7 +101,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64) []R
 	return out
 }
 
-func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (float64, bool), flows []returns.Flow, snaps []int64) ReturnRow {
+func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (float64, bool), flows []returns.Flow) ReturnRow {
 	r := base
 	r.StartDay, r.EndDay = bs, be
 	r.Period = periodLabel(bs, be, period)
@@ -101,10 +118,22 @@ func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (floa
 			r.Quality = append(r.Quality, "dietz_degenerate")
 		}
 	}
-	if !hasSnapshotIn(snaps, bs, be) {
-		r.Quality = append(r.Quality, "empty_bucket", "carried_forward")
-	}
 	return r
+}
+
+// preFxHistory reports whether the entity's window starts before the earliest FX
+// rate for a held non-output currency, so its boundary values were converted off
+// the migration-0023 day-0 clamped rate (review #4).
+func preFxHistory(assets []*accountData, outCcy string, winFrom int64, fx fxBounds) bool {
+	for _, a := range assets {
+		if a.baseCurrency == "" || a.baseCurrency == outCcy {
+			continue
+		}
+		if e, ok := fx.earliest[a.baseCurrency]; ok && winFrom < e {
+			return true
+		}
+	}
+	return false
 }
 
 func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, bool), flows []returns.Flow, snaps []int64, assets []*accountData, p ReturnParams, entityQ []string) ReturnRow {
@@ -174,14 +203,15 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	if returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) > 1 {
 		q = append(q, "mwr_nonunique")
 	}
-	var ann *float64
 	days := float64(winTo - winFrom)
+	var ann *float64
 	if returns.ShouldAnnualize(p.Annualize, days) {
-		// XIRR is already annualized; the "annualized" column mirrors it for spans
-		// ≥ 1y and is left nil (== cumulative shown) for short spans.
-		ann = f64(rate)
+		ann = f64(rate) // XIRR is already an annual rate
 	}
-	return f64(rate), ann, q
+	// The mwr_% column shows the PERIOD (cumulative-equivalent) figure so it is
+	// consistent with the twr_% column; mwr_ann_% holds the annualized XIRR
+	// (review #8). For a full-year window the two coincide.
+	return f64(returns.DeAnnualize(rate, days)), ann, q
 }
 
 // entityFlows assembles the entity's external flow series: kept transfer-like
@@ -209,13 +239,14 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		kept, unmatched := netTransfers(cand)
 		flows = append(flows, kept...)
 		if unmatched > 0 {
-			tags = append(tags, "unmatched_transfers")
+			tags = append(tags, fmt.Sprintf("unmatched_transfers=%d", unmatched))
 		}
 	} else {
 		flows = append(flows, cand...)
 	}
 
-	// Synthetic onboarding (deduped against real debut funding) + explicit closure.
+	// Synthetic onboarding (deduped against real debut funding) + explicit closure
+	// (deduped against a real closing withdrawal/transfer_out).
 	for _, a := range assets {
 		debut := a.firstDay()
 		if debut > winFrom && debut <= winTo {
@@ -227,13 +258,26 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		}
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
-			if cf, _, ok := returns.ClosureFlow(cd, last); ok {
+			realClosing := closingNear(a.allExternal(), cd)
+			if cf, _, ok := returns.ClosureFlow(cd, last, realClosing); ok {
 				flows = append(flows, cf)
 			}
 		}
 	}
 	sortFlows(flows)
 	return flows, tags
+}
+
+// closingNear sums the magnitude of real capital-out flows (withdrawals /
+// transfer_out) near `day` — the closure-side mirror of fundingNear.
+func closingNear(flows []returns.Flow, day int64) float64 {
+	var s float64
+	for _, f := range flows {
+		if f.Amount < 0 && absDay(f.Day-day) <= nettingWindowDay {
+			s += -f.Amount
+		}
+	}
+	return s
 }
 
 // netTransfers greedily matches opposite-direction transfer legs (largest first)
@@ -249,8 +293,19 @@ func netTransfers(cand []returns.Flow) (kept []returns.Flow, unmatched int) {
 			neg = append(neg, f)
 		}
 	}
+	// Largest-magnitude first, with a fully deterministic tie-break on
+	// (day, transaction id) so equal-magnitude legs match reproducibly (review #6).
 	byMag := func(s []returns.Flow) {
-		sort.Slice(s, func(i, j int) bool { return math.Abs(s[i].Amount) > math.Abs(s[j].Amount) })
+		sort.SliceStable(s, func(i, j int) bool {
+			mi, mj := math.Abs(s[i].Amount), math.Abs(s[j].Amount)
+			if mi != mj {
+				return mi > mj
+			}
+			if s[i].Day != s[j].Day {
+				return s[i].Day < s[j].Day
+			}
+			return s[i].ID < s[j].ID
+		})
 	}
 	byMag(pos)
 	byMag(neg)
@@ -452,6 +507,12 @@ func regimeFlags(assets []*accountData) []string {
 		}
 		if !a.policy.Known {
 			flags = append(flags, "unknown_adapter_policy")
+		}
+		if a.hasClampedFlow {
+			flags = append(flags, "fx_clamped_flow")
+		}
+		if a.droppedNonzero {
+			flags = append(flags, "dropped_while_nonzero")
 		}
 	}
 	return dedupeStrings(flags)

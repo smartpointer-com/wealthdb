@@ -66,17 +66,41 @@ const (
 // the per-account value spine (report_accounts_history) aggregated in Go, so the
 // staggered-inception synthetic-onboarding mechanism applies uniformly.
 func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, error) {
+	fx, err := loadFxBounds(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 	accts, err := loadAccountData(ctx, db, p.OutCcy)
 	if err != nil {
 		return nil, err
 	}
-	if err := attachFlows(ctx, db, p.OutCcy, accts); err != nil {
+	if err := attachFlows(ctx, db, p.OutCcy, accts, fx); err != nil {
 		return nil, err
 	}
 
-	toDay := p.ToEpoch / 86400
-	groups, order := groupAccounts(p.Level, accts)
+	// The spine's latest emitted day across all accounts (≈ today). An account
+	// whose own series ends before this dropped out of a later same-source
+	// snapshot (closed / feed-dropped) — its value is 0 thereafter (matching the
+	// macro), and we flag it if it dropped while still holding value (review #1).
+	var globalMax int64
+	for _, a := range accts {
+		if d := a.lastDay(); d > globalMax {
+			globalMax = d
+		}
+	}
+	for _, a := range accts {
+		if a.lastDay() < globalMax && math.Abs(a.lastVal()) > valueTol {
+			a.droppedNonzero = true
+		}
+	}
 
+	// Never value past the latest available data (also guards a future ToEpoch).
+	toDay := p.ToEpoch / 86400
+	if toDay > globalMax {
+		toDay = globalMax
+	}
+
+	groups, order := groupAccounts(p.Level, accts)
 	var out []ReturnRow
 	for _, key := range order {
 		members := groups[key]
@@ -91,9 +115,49 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		if len(assets) == 0 {
 			continue
 		}
-		out = append(out, computeEntityReturn(assets, p, toDay)...)
+		out = append(out, computeEntityReturn(assets, p, toDay, fx)...)
 	}
 	return out, nil
+}
+
+// fxBounds holds the earliest FX-rate day per currency, so the engine can flag
+// conversions that fall back to the migration-0023 day-0 clamped rate.
+type fxBounds struct {
+	earliest map[string]int64 // currency → earliest rate day; absent ⇒ no rate at all
+}
+
+// clampedBefore reports whether converting `ccy` to outCcy on `day` falls before
+// the earliest real rate for that currency (so it used the day-0 clamp). Same
+// currency, or no known rate at all, is not a clamp.
+func (f fxBounds) clampedBefore(ccy, outCcy string, day int64) bool {
+	if ccy == outCcy {
+		return false
+	}
+	e, ok := f.earliest[ccy]
+	return ok && day < e
+}
+
+func loadFxBounds(ctx context.Context, db *sql.DB) (fxBounds, error) {
+	f := fxBounds{earliest: map[string]int64{}}
+	rows, err := db.QueryContext(ctx, `
+		SELECT ccy, MIN(day) FROM (
+			SELECT base_currency  AS ccy, snapshot_at // 86400 AS day FROM fx_rates
+			UNION ALL
+			SELECT quote_currency AS ccy, snapshot_at // 86400 AS day FROM fx_rates)
+		GROUP BY ccy`)
+	if err != nil {
+		return f, fmt.Errorf("loadFxBounds: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ccy string
+		var day int64
+		if err := rows.Scan(&ccy, &day); err != nil {
+			return f, err
+		}
+		f.earliest[ccy] = day
+	}
+	return f, rows.Err()
 }
 
 // ---- data loading --------------------------------------------------------
@@ -104,10 +168,11 @@ type dayVal struct {
 }
 
 type accountData struct {
-	src, acct string
-	kind      string
-	portfolio string // "" when none
-	label     string
+	src, acct    string
+	kind         string
+	portfolio    string // "" when none
+	label        string
+	baseCurrency string // account base currency ("" when unknown)
 
 	series   []dayVal // carry-forward value per emitted day, ascending
 	snapDays []int64  // distinct real snapshot days, ascending
@@ -117,6 +182,8 @@ type accountData struct {
 	transferLike   []returns.Flow // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
 	cryptoExcluded bool
+	hasClampedFlow bool // a flow was valued at the migration-0023 day-0 clamped FX rate
+	droppedNonzero bool // dropped out of a later same-source snapshot while still holding value
 }
 
 // allExternal returns every policy-external flow (used at the accounts grain,
@@ -135,10 +202,28 @@ func (a *accountData) firstDay() int64 {
 	return a.series[0].day
 }
 
-// valueAt returns the carry-forward value on `day` and whether the account was
-// alive then (a day before its first snapshot is NULL, not 0 — Fix #4).
+func (a *accountData) lastDay() int64 {
+	if len(a.series) == 0 {
+		return 0
+	}
+	return a.series[len(a.series)-1].day
+}
+
+func (a *accountData) lastVal() float64 {
+	if len(a.series) == 0 {
+		return 0
+	}
+	return a.series[len(a.series)-1].val
+}
+
+// valueAt returns the value on `day` and whether the account was present then.
+// Before its first emitted row it is NULL ("not yet alive", Fix #4); AFTER its
+// last emitted row it is gone — the macro stops emitting the account once a
+// later same-source snapshot supersedes it without it, so carrying forward past
+// the last row would diverge from report_*_history and break global == Σ accounts
+// (review #1). Within [first,last] the daily spine has a row for every day.
 func (a *accountData) valueAt(day int64) (float64, bool) {
-	if len(a.series) == 0 || day < a.series[0].day {
+	if len(a.series) == 0 || day < a.series[0].day || day > a.series[len(a.series)-1].day {
 		return 0, false
 	}
 	i := sort.Search(len(a.series), func(k int) bool { return a.series[k].day > day })
@@ -164,7 +249,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT as_of_day, silver_source_id, account_external_id, account_kind,
-		        display_name, portfolio_external_id, total_value_outccy
+		        display_name, base_currency, portfolio_external_id, total_value_outccy
 		   FROM report_accounts_history(?)
 		  ORDER BY silver_source_id, account_external_id, as_of_day`, outCcy)
 	if err != nil {
@@ -181,9 +266,10 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		var (
 			asOf            int64
 			src, acct, kind string
-			label, pf, tot  sql.NullString
+			label, base, pf sql.NullString
+			tot             sql.NullString
 		)
-		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &pf, &tot); err != nil {
+		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf, &tot); err != nil {
 			return nil, fmt.Errorf("RunReturns scan: %w", err)
 		}
 		v, ok := parseFloat(tot)
@@ -195,6 +281,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		if a == nil {
 			a = &accountData{src: src, acct: acct, kind: kind, policy: returns.FlowPolicyFor(kinds[src])}
 			a.portfolio = pf.String
+			a.baseCurrency = base.String
 			a.label = acct
 			if label.Valid && label.String != "" {
 				a.label = label.String
@@ -254,8 +341,9 @@ func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*account
 }
 
 // attachFlows loads transactions once and distributes the policy-external ones
-// to their accounts.
-func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[string]*accountData) error {
+// to their accounts, tagging each flow with its source id (for deterministic
+// netting) and flagging any valued at the day-0 clamped FX rate.
+func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[string]*accountData, fx fxBounds) error {
 	txns, err := TransactionsBetween(ctx, db, 0, maxEpoch, outCcy, SortAscending)
 	if err != nil {
 		return err
@@ -278,10 +366,14 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 		if !ok {
 			continue // unresolved FX on the flow — skip (documented limitation)
 		}
+		day := t.OccurredAt / 86400
 		if kind == canonical.TxKindJournal {
 			a.journalPresent = true
 		}
-		f := returns.Flow{Day: t.OccurredAt / 86400, Amount: val}
+		if fx.clampedBefore(t.Currency, outCcy, day) {
+			a.hasClampedFlow = true
+		}
+		f := returns.Flow{Day: day, Amount: val, ID: t.TransactionExternalID}
 		if a.policy.IsTransferLike(kind) {
 			a.transferLike = append(a.transferLike, f)
 		} else {

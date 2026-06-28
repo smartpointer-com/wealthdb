@@ -61,6 +61,17 @@ func Annualize(cum, days float64) float64 {
 	return math.Pow(1+cum, xirrDayBasis/days) - 1
 }
 
+// DeAnnualize is the inverse of Annualize: it converts an annual rate to the
+// equivalent cumulative return over `days`. Used to render a money-weighted
+// (XIRR, natively annual) figure as a period figure consistent with the
+// cumulative TWR column.
+func DeAnnualize(annual, days float64) float64 {
+	if days <= 0 {
+		return annual
+	}
+	return math.Pow(1+annual, days/xirrDayBasis) - 1
+}
+
 // ShouldAnnualize implements the --annualize policy: auto annualizes only spans
 // of at least a year; always/never override.
 func ShouldAnnualize(mode string, days float64) bool {

@@ -20,12 +20,22 @@ func TestOnboardingFlow(t *testing.T) {
 }
 
 func TestClosureFlowAndZeroing(t *testing.T) {
-	if _, _, ok := ClosureFlow(0, 500); ok {
+	if _, _, ok := ClosureFlow(0, 500, 0); ok {
 		t.Error("no explicit closure (day 0) must not produce a closure flow")
 	}
-	f, zeroFrom, ok := ClosureFlow(50, 500)
+	// No real closing flow ⇒ inject the full synthetic outflow.
+	f, zeroFrom, ok := ClosureFlow(50, 500, 0)
 	if !ok || zeroFrom != 50 || !approxEqual(f.Amount, -500, 1e-9) {
 		t.Errorf("closure: got (%+v, zeroFrom=%d, %v), want {50,-500},50,true", f, zeroFrom, ok)
+	}
+	// A real closing withdrawal already covers the exit ⇒ no synthetic flow, but
+	// the spine still zeroes from the closure day (review #2 dedup).
+	if _, zf, ok := ClosureFlow(50, 500, 500); ok || zf != 50 {
+		t.Errorf("fully-covered closure: got (zeroFrom=%d, ok=%v), want zeroFrom 50 + no flow", zf, ok)
+	}
+	// Partial real closing ⇒ synthesize only the remainder.
+	if cf, _, ok := ClosureFlow(50, 500, 200); !ok || !approxEqual(cf.Amount, -300, 1e-9) {
+		t.Errorf("partial closing: got (%+v, %v), want amount -300", cf, ok)
 	}
 
 	if v := ZeroedValue(500, 40, 0); v != 500 {
@@ -50,7 +60,7 @@ func TestClosurePhantomLossRegression(t *testing.T) {
 		bucketEnd    = int64(30)
 		closureDay   = int64(5)
 	)
-	flow, zeroFrom, ok := ClosureFlow(closureDay, vLast)
+	flow, zeroFrom, ok := ClosureFlow(closureDay, vLast, 0) // no real closing flow
 	if !ok {
 		t.Fatal("expected a closure flow")
 	}

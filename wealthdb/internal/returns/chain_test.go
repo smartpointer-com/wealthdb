@@ -56,6 +56,13 @@ func TestAnnualize(t *testing.T) {
 	almost(t, Annualize(0.21, 365.25/2), 1.21*1.21-1, 1e-9, "half-year")
 }
 
+func TestDeAnnualize(t *testing.T) {
+	almost(t, DeAnnualize(0.10, 365.25), 0.10, 1e-9, "one-year identity")
+	almost(t, DeAnnualize(0.21, 365.25/2), math.Pow(1.21, 0.5)-1, 1e-9, "half-year")
+	// DeAnnualize inverts Annualize.
+	almost(t, DeAnnualize(Annualize(0.3, 180), 180), 0.3, 1e-9, "inverse")
+}
+
 func TestShouldAnnualize(t *testing.T) {
 	cases := []struct {
 		mode string

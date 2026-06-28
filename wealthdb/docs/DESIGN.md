@@ -1591,11 +1591,14 @@ the verified per-adapter flow table):
 
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
 every approximation is tagged (`since_data_inception`, `partial_window`,
-`staggered_inception`, `empty_bucket`/`carried_forward`, `dietz_degenerate`,
-`nonpositive_base`, `mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
-`mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers`,
-`journal_present`, `nav_only`, `nav_only_capital_call_risk`,
-`crypto_unclassified_transfers`, `unknown_adapter_policy`, `after_tax`).
+`staggered_inception`, `empty_bucket`/`carried_forward`, `boundary_same_snapshot`,
+`dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`,
+`mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
+`unmatched_transfers=N`, `journal_present`, `nav_only`, `nav_only_capital_call_risk`,
+`crypto_unclassified_transfers`, `unknown_adapter_policy`, `fx_clamped_flow`,
+`pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts` is a
+**value** identity (verified by reconciliation test), but **returns are not
+additive across grains**.
 
 ## 11. Repository layout
 
