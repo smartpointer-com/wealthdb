@@ -83,10 +83,14 @@ case "${1:-help}" in
         # reCAPTCHA challenge that flags the Camoufox/Playwright automation
         # stack, so there is no unattended login.
         #
-        # Fast path: if the saved Firefox profile still holds a non-expired
-        # session cookie, lift it and exit 0 — no VNC sign-in needed. Flags:
-        #   --check  probe only; report whether the saved session is valid,
-        #            never open Firefox (exit 1 if not).
+        # Fast path: if the saved profile holds a non-expired session cookie
+        # AND a headless probe confirms the server still accepts it, lift the
+        # cookie and exit 0 — no VNC sign-in needed. The probe matters: a
+        # cookie can be unexpired yet server-rejected (stale), which would
+        # otherwise make `download` fail after login wrongly reported success.
+        # Flags:
+        #   --check  probe only; report whether the session is valid, never
+        #            open Firefox (exit 1 if not).
         #   --force  skip the check and always re-login.
         # Otherwise launch a genuine, un-instrumented stock Firefox under
         # Xvfb + VNC so the operator clears the login by hand; on a clean
@@ -100,11 +104,20 @@ case "${1:-help}" in
             --force) login_mode=force; shift ;;
         esac
         if [[ "$login_mode" != "force" ]]; then
+            # 1. Cheap client-side filter: lift the cookie only if a non-expired
+            #    session cookie is present in the saved profile.
             if python3 /app/extract_cookies.py \
                     --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES" --require-valid; then
-                echo "login: existing AngelList session still valid — cookie lifted to" >&2
-                echo "login:   $COOKIES. No VNC login needed (pass --force to re-login)." >&2
-                exit 0
+                # 2. Authoritative server probe: a cookie can be unexpired yet
+                #    rejected by AngelList (stale/revoked session). Confirm it
+                #    actually establishes identity (headless, no VNC) before
+                #    skipping the sign-in — otherwise `download` would fail.
+                if python3 /app/download.py --cookies "$COOKIES" --check-session; then
+                    echo "login: existing AngelList session still valid — cookie lifted to" >&2
+                    echo "login:   $COOKIES. No VNC login needed (pass --force to re-login)." >&2
+                    exit 0
+                fi
+                echo "login: saved cookie is unexpired but the server rejected it (stale session)." >&2
             fi
             if [[ "$login_mode" == "check" ]]; then
                 echo "login --check: no valid saved session — run \`login\` to refresh." >&2
@@ -126,8 +139,8 @@ user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("trailhead.firstrun.didSeeAboutWelcome", true);
 user_pref("security.sandbox.content.level", 0);
 // Save downloads (K-1 CSV/PDF, financial statements) straight to the
-// mounted /data/angellist-documents (= $XDG_DATA_HOME/wealthdb/angellist/angellist-
-// documents on the host) instead of the container-ephemeral ~/Downloads,
+// mounted /data/angellist-documents (= angellist-documents/ in the wealthdb
+// data dir on the host) instead of the container-ephemeral ~/Downloads,
 // so documents grabbed from the Taxes & Documents page persist. (The doc
 // endpoints reject our cookie-injection, so a real-browser download here
 // is the way to get them onto the host.)
@@ -148,8 +161,8 @@ PREFS
         echo "login: opening Firefox -> https://venture.angellist.com/v/login" >&2
         echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2
         echo "login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
-        echo "login: your K-1 CSVs/PDFs — they save to" >&2
-        echo "login:   $XDG_DATA_HOME/wealthdb/angellist/angellist-documents/" >&2
+        echo "login: your K-1 CSVs/PDFs save to angellist-documents/ in your" >&2
+        echo "login:   wealthdb data dir (mounted here at /data)." >&2
         echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
         firefox -profile "$FXPROFILE" -no-remote -new-instance \
             "https://venture.angellist.com/v/login" >/tmp/firefox.log 2>&1 || true
@@ -183,7 +196,8 @@ Usage:
 
 Subcommands:
   login       The auth path (formerly byo-login). Fast path: if the saved
-              profile still holds a valid session cookie, it's lifted to
+              profile holds a valid session — cookie unexpired AND a headless
+              probe confirms the server still accepts it — it's lifted to
               /secrets/angellist-cookies.json and login exits — no VNC.
               Otherwise launch a genuine, stock Mozilla Firefox under VNC so
               you clear AngelList's invisible anti-bot login by hand (+2FA);

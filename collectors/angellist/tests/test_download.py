@@ -35,3 +35,10 @@ def test_abs_url():
     assert download._abs_url("https://cdn.example/x.pdf") == "https://cdn.example/x.pdf"
     assert download._abs_url(None) is None
     assert download._abs_url("") == ""
+
+
+def test_check_session_flag():
+    # `login` uses `download --check-session` as the authoritative server
+    # probe (a cookie can be unexpired yet server-rejected).
+    assert download.parse_args(["--check-session"]).check_session is True
+    assert download.parse_args([]).check_session is False

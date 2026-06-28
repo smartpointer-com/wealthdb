@@ -205,6 +205,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "GraphQL to fire. Default: %(default)s.")
     p.add_argument("--dry-run", action="store_true",
                    help="Navigate + capture but write no bronze (smoke test).")
+    p.add_argument("--check-session", action="store_true",
+                   help="Probe only whether the BYO session is still accepted by "
+                        "the server (bootstrap identity, navigate nothing else, "
+                        "write nothing); exit 0 if valid, non-zero if stale. "
+                        "`login` uses this to decide whether a fresh sign-in is "
+                        "needed — a cookie can be unexpired yet server-rejected.")
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -311,6 +317,13 @@ def main(argv: list[str]) -> int:
                 accounts = cu.get("investAccounts") or []
             log.info("identity: userSlug=%s, %d invest account(s)",
                      user_slug, len(accounts))
+
+            if args.check_session:
+                # The server accepted the cookie (identity established) — the
+                # session is live. Nothing to capture or write.
+                log.info("session valid — the saved cookie is still accepted; "
+                         "no fresh login needed")
+                return 0
 
             for acct in accounts:
                 aslug = acct.get("slugName")

@@ -58,8 +58,8 @@ Subcommands:
                       SAFEs/notes), transactions (exercise / share-sale /
                       RSU-settlement), 409A FMVs, and tax documents
                       (3921 / 1099-B). Writes a UTC-timestamped subdir +
-                      run.json manifest under $XDG_DATA_HOME/wealthdb/carta/. --dry-run
-                      walks the navigation without firing exports.
+                      run.json manifest under the data dir ($HOST_DATA).
+                      --dry-run walks the navigation without firing exports.
   load [args...]      Ingest bronze snapshots into the SQLite silver:
                       portfolios, issuers, securities, vesting_events,
                       transactions, fair_market_values, tax_documents.
