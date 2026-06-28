@@ -306,3 +306,60 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 		t.Errorf("account tax_wrapper = %v, want taxable_personal", a.TaxWrapper)
 	}
 }
+
+// TestMortgageLiabilityNegated locks in the liability path: a `mortgage`
+// position is entered as a positive balance but projects to a NEGATIVE
+// market/book value, so it nets against the property it secures; the asset
+// itself is untouched, and the mortgage drops out at its payoff (closed_at).
+func TestMortgageLiabilityNegated(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO load_runs(load_at, silver_schema_version, bronze_dir, payload)
+            VALUES (1700000000, 1, '/tmp', '{}');
+        INSERT INTO positions(id, kind, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
+            ('re-x',   'real_estate', 'Property X', 'USD', '2021-01-01', NULL,         '', '{}'),
+            ('loan-x', 'mortgage',    'Loan X',     'USD', '2021-01-01', '2022-01-01', '', '{"secures_position_id":"re-x"}');
+        INSERT INTO valuations(position_id, as_of_date, value, currency, notes, payload) VALUES
+            ('re-x',   '2021-01-01', '1000', 'USD', '', '{}'),
+            ('loan-x', '2021-01-01', '800',  'USD', '', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	batches := collectSnapshots(t, conn, w)
+
+	posByT := map[int64]map[string]canonical.PositionChange{}
+	for _, b := range batches {
+		for _, p := range b.Positions {
+			if posByT[p.SnapshotAt] == nil {
+				posByT[p.SnapshotAt] = map[string]canonical.PositionChange{}
+			}
+			posByT[p.SnapshotAt][p.PositionKey] = p
+		}
+	}
+
+	at1 := posByT[iso(t, "2021-01-01")]
+	loan := at1["loan-x"]
+	if loan.AssetClass != canonical.AssetClassMortgage {
+		t.Errorf("loan asset_class = %q, want mortgage", loan.AssetClass)
+	}
+	if loan.MarketValue == nil || loan.MarketValue.StringFixed(2) != "-800.00" {
+		t.Errorf("loan market_value = %v, want -800.00 (liability negated)", loan.MarketValue)
+	}
+	if loan.BookValue == nil || loan.BookValue.StringFixed(2) != "-800.00" {
+		t.Errorf("loan book_value = %v, want -800.00", loan.BookValue)
+	}
+	// the secured asset stays a positive value
+	if re := at1["re-x"]; re.MarketValue == nil || re.MarketValue.StringFixed(2) != "1000.00" {
+		t.Errorf("property market_value = %v, want 1000.00 (asset unchanged)", at1["re-x"].MarketValue)
+	}
+	// at payoff (closed_at) the mortgage drops out; only the property remains
+	at2 := posByT[iso(t, "2022-01-01")]
+	if _, ok := at2["loan-x"]; ok {
+		t.Errorf("loan-x present at payoff date, want dropped out")
+	}
+	if _, ok := at2["re-x"]; !ok {
+		t.Errorf("re-x missing at 2022-01-01")
+	}
+}

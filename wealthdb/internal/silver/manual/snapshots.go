@@ -134,14 +134,18 @@ SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
 		}
 		// market_value = latest valuation ≤ t (forward-filled). book_value =
 		// the valuation dated at acquired_at (the cost basis); held constant
-		// while market moves.
+		// while market moves. A liability kind (mortgage) is entered as a
+		// positive outstanding balance — "direction comes from kind" — so we
+		// negate it here, matching the gold convention that liability positions
+		// carry a negative market_value and net against assets in rollups.
+		neg := ac == canonical.AssetClassMortgage
 		if marketValue.Valid {
-			if mv, err := canonical.NewDecimalFromString(marketValue.String); err == nil {
+			if mv, err := canonical.NewDecimalFromString(signed(marketValue.String, neg)); err == nil {
 				pos.MarketValue = &mv
 			}
 		}
 		if bookValue.Valid {
-			if bv, err := canonical.NewDecimalFromString(bookValue.String); err == nil {
+			if bv, err := canonical.NewDecimalFromString(signed(bookValue.String, neg)); err == nil {
 				pos.BookValue = &bv
 			}
 		}
@@ -189,6 +193,16 @@ SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
 		LastSeenAt:        t,
 	})
 	return batch, nil
+}
+
+// signed flips a positive-magnitude decimal string to negative for liability
+// positions (mortgage); asset values pass through unchanged. The collector
+// validates valuations as non-negative, so the input is always a magnitude.
+func signed(magnitude string, neg bool) string {
+	if neg {
+		return "-" + magnitude
+	}
+	return magnitude
 }
 
 // acqDate converts a unix-seconds timestamp to a UTC-midnight calendar date

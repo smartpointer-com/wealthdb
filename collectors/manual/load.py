@@ -83,8 +83,11 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
 # `kind` is deliberately identical to the canonical gold `asset_class` (the
 # gold classmap is then an identity), so the bronze CSV self-documents the
 # asset class.
+# `mortgage` is a real-property-backed LIABILITY: its valuation is entered as a
+# positive outstanding balance (direction comes from kind), which the gold
+# adapter negates so it nets against the property it secures.
 POSITION_KINDS = {"real_estate", "private_equity", "convertible_note",
-                  "private_fund", "spv", "other"}
+                  "private_fund", "spv", "mortgage", "other"}
 
 # --- CSV column contracts. Required columns must be present in the header;
 # optional columns default to empty when a file omits them; any unexpected
