@@ -30,7 +30,7 @@ func TestChainBreaksOnDegenerate(t *testing.T) {
 // the published headline must be pinned to a canonical bucket.
 func TestChainBucketSizeMattersWithFlows(t *testing.T) {
 	// One quarterly bucket over [0,90] with a +50 flow at the midpoint.
-	rQ, ok := ModifiedDietz(100, 200, 0, 90, []Flow{{45, 50}})
+	rQ, ok := ModifiedDietz(100, 200, 0, 90, []Flow{{Day: 45, Amount: 50}})
 	if !ok {
 		t.Fatal("quarterly bucket degenerate")
 	}
@@ -39,7 +39,7 @@ func TestChainBucketSizeMattersWithFlows(t *testing.T) {
 	// Two monthly buckets split at the flow: 100→120, then 120→200 with the
 	// +50 flow at the second bucket's start.
 	r1, _ := ModifiedDietz(100, 120, 0, 45, nil)
-	r2, _ := ModifiedDietz(120, 200, 45, 90, []Flow{{45, 50}})
+	r2, _ := ModifiedDietz(120, 200, 45, 90, []Flow{{Day: 45, Amount: 50}})
 	cumM, _ := Chain([]Bucket{{R: r1, OK: true}, {R: r2, OK: true}})
 
 	if math.Abs(cumM-cumQ) < 1e-3 {

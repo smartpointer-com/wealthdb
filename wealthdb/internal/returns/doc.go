@@ -33,4 +33,9 @@ package returns
 type Flow struct {
 	Day    int64
 	Amount float64
+	// ID is the source transaction id (transaction_external_id). It is used only
+	// as a deterministic tie-break when netting equal-magnitude transfer legs at
+	// coarse grains; it is empty for synthetic onboarding/closure flows (which
+	// never enter netting).
+	ID string
 }

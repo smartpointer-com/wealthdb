@@ -34,7 +34,7 @@ func TestXIRRGoldenVectors(t *testing.T) {
 		{"ten-percent-one-year", 1000, 1100, 0, 365, nil, 0.10, 2e-3},
 		{"flat", 1000, 1000, 0, 365, nil, 0.0, 2e-3},
 		// Invest 1000 at year 1, receive 2200 at year 2 ⇒ -1000(1+r)+2200=0 ⇒ r=1.2.
-		{"contribution-then-exit", 0, 2200, 0, 730, []Flow{{365, 1000}}, 1.20, 5e-3},
+		{"contribution-then-exit", 0, 2200, 0, 730, []Flow{{Day: 365, Amount: 1000}}, 1.20, 5e-3},
 		// Near-total loss: pay 1000, get back 1 a year later ⇒ r≈-0.999.
 		{"near-total-loss", 1000, 1, 0, 365, nil, -0.999, 2e-3},
 	}
@@ -60,7 +60,7 @@ func TestXIRRGoldenVectors(t *testing.T) {
 
 func TestXIRREdgeCases(t *testing.T) {
 	// No sign change: only capital in, nothing returned.
-	if _, err := XIRR(100, 0, 0, 365, []Flow{{180, 50}}); !errors.Is(err, ErrNoSignChange) {
+	if _, err := XIRR(100, 0, 0, 365, []Flow{{Day: 180, Amount: 50}}); !errors.Is(err, ErrNoSignChange) {
 		t.Errorf("all-outflow: err = %v, want ErrNoSignChange", err)
 	}
 	// Fewer than two cash flows (internal guard).
@@ -104,25 +104,23 @@ func TestXIRRBisectionFallback(t *testing.T) {
 		almost(t, r, 0.2, 1e-6, "root after NaN region")
 	}
 
-	// End-to-end near-total drawdown whose true root sits below the -100% floor:
-	// XIRR clamps to ≈ -100% (the near-total-loss convention) rather than
-	// diverging or reporting a bogus positive rate.
-	if r, err := XIRR(1000, 0.0001, 0, 365, nil); err != nil {
-		t.Errorf("sub-floor loss: unexpected err %v", err)
-	} else if r > -0.99 || r <= -1 {
-		t.Errorf("sub-floor loss rate = %v, want ≈ -100%% (clamped, in (-1,-0.99])", r)
+	// End-to-end near-total drawdown whose true root sits BELOW the -100% floor:
+	// the step-tol stall against the floor is not a root (NPV far from 0), so
+	// XIRR reports ErrNoConverge rather than presenting a bogus clamped ≈ -100%.
+	if _, err := XIRR(1000, 0.0001, 0, 365, nil); !errors.Is(err, ErrNoConverge) {
+		t.Errorf("sub-floor loss: err=%v, want ErrNoConverge (no bogus clamped rate)", err)
 	}
 }
 
 func TestMWRSignChanges(t *testing.T) {
 	// Contribution, then a withdrawal, then another contribution: the investor
 	// vector flips sign more than once ⇒ possibly non-unique IRR.
-	flows := []Flow{{30, 50}, {60, -30}, {90, 40}}
+	flows := []Flow{{Day: 30, Amount: 50}, {Day: 60, Amount: -30}, {Day: 90, Amount: 40}}
 	if n := MWRSignChanges(0, 100, 0, 120, flows); n <= 1 {
 		t.Errorf("sign changes = %d, want > 1 (non-unique)", n)
 	}
 	// Plain: contributions only then a terminal value ⇒ exactly one change.
-	if n := MWRSignChanges(0, 200, 0, 120, []Flow{{30, 50}, {60, 50}}); n != 1 {
+	if n := MWRSignChanges(0, 200, 0, 120, []Flow{{Day: 30, Amount: 50}, {Day: 60, Amount: 50}}); n != 1 {
 		t.Errorf("sign changes = %d, want 1 (unique)", n)
 	}
 }

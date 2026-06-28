@@ -126,7 +126,15 @@ func xirr(cfs []datedCF) (float64, error) {
 			next = (r + xirrRateFloor) / 2 // damp toward the floor, don't overshoot below -100%
 		}
 		if math.Abs(next-r) < stepTol {
-			return next, nil
+			// Converged on the step, but only a root if NPV is actually ~0.
+			// A stalled damping against the -100% floor (a loss worse than
+			// -100%) lands here with NPV far from 0 — that is NOT a root, so
+			// fall through to bisection (→ ErrNoConverge) rather than reporting
+			// a bogus clamped ≈ -100%.
+			if math.Abs(npv(next)) < npvTol {
+				return next, nil
+			}
+			break
 		}
 		r = next
 	}
