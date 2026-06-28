@@ -197,6 +197,23 @@ account-grain headline math was left untouched:
 - **#9 end-to-end gold tests** through `RunReturns`: disappearance reconciliation,
   closure dedup, coarse netting + `--netting off`, MWR error-flag mapping,
   FX-clamp flags, and a wiring-checked MWR.
+- **Global `silver_source` bug (post-review):** the `global` grain spans all
+  sources, so its row's `silver_source` is now empty — it was previously filled
+  from `assets[0].src`, a non-deterministic map pick (the visible symptom was a
+  random/non-sensical source on `returns global`). Regression-guarded by a
+  multi-source global test. The accounts/sources/portfolios grains group by source
+  so their `silver_source` is unaffected.
+
+### Known semantics on record
+
+- **Mid-series disappearance (account vanishes for a snapshot or two, then
+  reappears):** Go carries the account across the gap (its value series resumes
+  after), whereas the macros read 0 inside the gap. This is left as-is — it is in
+  the economically-sensible direction (it does not inflate the terminal value, and
+  the end-disappearance case that broke `global == Σ accounts` is fixed by #1). The
+  only consequence is that a per-bucket value at a boundary that lands *inside* a
+  mid-series gap can differ from `report_*_history`; the headline and terminal
+  reconcile.
 
 ### Deferred quality flags (the computed v1 set is below; these remain TODO)
 

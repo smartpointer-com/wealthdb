@@ -166,6 +166,11 @@ func TestRunReturnsMWRFlags(t *testing.T) {
 	if len(g) != 1 || g[0].MWR == nil || !qualityHas(g[0], "mwr_incomplete_flows") {
 		t.Errorf("global MWR should be defined + mwr_incomplete_flows; got %+v", g[0])
 	}
+	// The global row spans multiple sources, so silver_source must be empty —
+	// never a non-deterministic single-source pick.
+	if g[0].SilverSourceID != "" {
+		t.Errorf("global silver_source = %q, want empty (cross-source)", g[0].SilverSourceID)
+	}
 
 	// An account with a withdrawal then a later deposit gives >1 sign change in
 	// the investor vector ⇒ mwr_nonunique (a root is still reported).
@@ -265,13 +270,25 @@ func TestRunReturnsEmptyBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
-	var sawEmpty bool
+	var sawEmpty, sawBoundary bool
 	for _, r := range rows {
-		if !r.IsSummary && qualityHas(r, "empty_bucket") && qualityHas(r, "carried_forward") {
+		if r.IsSummary {
+			continue
+		}
+		if qualityHas(r, "empty_bucket") && qualityHas(r, "carried_forward") {
 			sawEmpty = true
+		}
+		// The receiving bucket (a fresh snapshot after empty months) over-attributes
+		// the accumulated move and must carry boundary_same_snapshot — distinct from
+		// the donor empty_bucket (review #5).
+		if qualityHas(r, "boundary_same_snapshot") {
+			sawBoundary = true
 		}
 	}
 	if !sawEmpty {
 		t.Errorf("expected at least one empty_bucket/carried_forward month; rows=%d", len(rows))
+	}
+	if !sawBoundary {
+		t.Errorf("expected a boundary_same_snapshot receiving bucket after the gap; rows=%d", len(rows))
 	}
 }

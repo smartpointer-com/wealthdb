@@ -15,7 +15,13 @@ const valueTol = 1e-6
 // asset accounts. A single-account accounts-grain entity is the degenerate case:
 // no synthetic onboarding, no netting — exact.
 func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx fxBounds) []ReturnRow {
-	src := assets[0].src
+	// The accounts/sources/portfolios grains group by source, so every asset
+	// shares one src; the global grain spans all sources, so there is no single
+	// silver_source — assets[0].src would be a non-deterministic map pick.
+	src := ""
+	if p.Level != "global" {
+		src = assets[0].src
+	}
 	entityID, label := entityIdentity(p.Level, assets)
 
 	winFrom, winTo, incFlags := entityWindow(assets, p, toDay)
