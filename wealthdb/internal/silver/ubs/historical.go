@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
@@ -114,6 +115,21 @@ func (r *webReader) appendHistoricalSecurities(
 	getBatch func(int64) *canonical.SnapshotBatch,
 	safekeepingByPortfolio map[string]string,
 ) error {
+	// Year-end Statements of Assets print a per-instrument gold-bar
+	// detail line for the precious-metals overlay portfolio that the
+	// quarterly statements omit. We already synthesise a single
+	// overview precious-metals position (PM-<portfolio>) for that
+	// portfolio from the sibling reporting-currency statement, so
+	// emitting the detail line too would double-count the metal at
+	// every year-end (the two reach gold under distinct position
+	// keys). Suppress the detail line whenever its overview sibling
+	// exists for the same (as_of_date, portfolio): the overview row
+	// is continuous across all quarters and reported in clean USD.
+	pmOverview, err := r.preciousMetalsOverviewKeys(ctx, w)
+	if err != nil {
+		return err
+	}
+
 	const q = `
 SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
        units, market_value, market_value_currency,
@@ -144,6 +160,13 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if err := rows.Scan(&asOf, &portID, &isin, &ccy, &units, &mv, &mvCcy,
 			&cost, &price, &accrued, &descr, &payload); err != nil {
 			return err
+		}
+		// Drop the year-end precious-metals detail line when its
+		// synthetic overview sibling is present for the same
+		// (as_of, portfolio) — see the function's opening comment.
+		if looksLikeISIN(isin) && pmOverview[pmKey{asOf, portID}] &&
+			isPreciousMetalsLine(descr.String, payload) {
+			continue
 		}
 		batch := getBatch(asOf)
 
@@ -230,6 +253,62 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		})
 	}
 	return rows.Err()
+}
+
+// pmKey identifies a (snapshot, portfolio) that carries a synthetic
+// overview precious-metals row.
+type pmKey struct {
+	asOf int64
+	port string
+}
+
+// preciousMetalsOverviewKeys returns the (as_of_date, portfolio)
+// pairs in the window that carry a synthetic overview precious-metals
+// row (instrument_isin like 'PM-%'). Used to suppress the duplicate
+// year-end gold-bar detail line for those portfolios.
+func (r *webReader) preciousMetalsOverviewKeys(
+	ctx context.Context, w canonical.Window,
+) (map[pmKey]bool, error) {
+	const q = `
+SELECT DISTINCT as_of_date, portfolio_external_id
+  FROM historical_position_snapshots
+ WHERE instrument_isin LIKE 'PM-%'
+   AND as_of_date BETWEEN ? AND ?`
+	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
+	if err != nil {
+		return nil, fmt.Errorf("preciousMetalsOverviewKeys: %w", err)
+	}
+	defer rows.Close()
+	set := map[pmKey]bool{}
+	for rows.Next() {
+		var asOf int64
+		var port string
+		if err := rows.Scan(&asOf, &port); err != nil {
+			return nil, err
+		}
+		set[pmKey{asOf, port}] = true
+	}
+	return set, rows.Err()
+}
+
+// isPreciousMetalsLine reports whether a historical_position_snapshots
+// row is a precious-metals detail line (e.g. the year-end "Gold bar(s)
+// fine weight" Statement-of-Assets row), matched on its description and
+// raw payload. The call site already gates on an overview sibling being
+// present for the same portfolio, so this only ever fires inside a
+// precious-metals overlay portfolio — a genuine non-metal security
+// there (e.g. a money-market fund) is left untouched.
+func isPreciousMetalsLine(description, payload string) bool {
+	hay := strings.ToLower(description + " " + payload)
+	for _, kw := range []string{
+		"gold bar", "fine weight", "precious metal",
+		"bullion", "silver bar", "platinum", "palladium",
+	} {
+		if strings.Contains(hay, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendHistoricalCashBalances emits opening and closing balance

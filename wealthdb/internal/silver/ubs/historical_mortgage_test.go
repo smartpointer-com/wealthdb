@@ -267,3 +267,78 @@ func TestHistoricalSyntheticISIN(t *testing.T) {
 		t.Errorf("synthetic key must not claim a canonical ISIN, got %q", *got)
 	}
 }
+
+// TestHistoricalPreciousMetalsDedup locks in the year-end gold-bar
+// dedup: when a portfolio carries the synthetic overview precious-
+// metals row (PM-<portfolio>), the year-end "Gold bar(s)" detail line
+// in that SAME portfolio+snapshot is suppressed so the metal is not
+// double-counted. The suppression is portfolio-scoped (a real security
+// in a portfolio with no overview row is untouched) and metal-scoped
+// (a genuine non-metal security in the overlay portfolio is untouched).
+func TestHistoricalPreciousMetalsDedup(t *testing.T) {
+	r := newWebFixture(t)
+	ctx := context.Background()
+	if _, err := r.db.ExecContext(ctx, `
+        INSERT INTO historical_position_snapshots
+            (as_of_date, portfolio_external_id, account_external_id,
+             instrument_isin, currency_iso, units, market_value,
+             market_value_currency, description, source_doc_token, payload)
+        VALUES
+            -- overlay portfolio …01: overview metal row (kept)
+            (1000, '0999AAAAAAAA01', '', 'PM-0999AAAAAAAA01', 'USD',
+             NULL, 1000000, 'USD', 'Precious metals & commodities', 'tok',
+             '{"kind":"overview_asset_class","asset_class":"precious_metals"}'),
+            -- overlay portfolio …01: year-end gold-bar detail (SUPPRESSED)
+            (1000, '0999AAAAAAAA01', '', 'CH0000000001', 'USD',
+             12000, 815000, 'CHF', 'Gold bar(s) fine weight', 'tok',
+             '{"headline":"12 000 Gold bar(s) fine weight USD ..."}'),
+            -- overlay portfolio …01: a genuine non-metal security (kept)
+            (1000, '0999AAAAAAAA01', '', 'CH0000000003', 'CHF',
+             100, 50000, 'CHF', 'UBS Money Market Fund CHF', 'tok', '{}'),
+            -- portfolio …02: a real equity, NO overview row here (kept)
+            (1000, '0999AAAAAAAA02', '', 'CH0000000002', 'CHF',
+             20, 2500, 'CHF', 'Some Equity', 'tok', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+
+	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
+	stream, err := r.snapshotsHistorical(ctx, w, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	mvByKey := map[string]*canonical.Decimal{}
+	for {
+		batch, more, err := stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range batch.Positions {
+			mvByKey[p.PositionKey] = p.MarketValue
+		}
+		if !more {
+			break
+		}
+	}
+
+	// The overview metal row survives; the gold-bar detail is dropped.
+	if _, ok := mvByKey["PM-0999AAAAAAAA01"]; !ok {
+		t.Errorf("overview precious-metals row missing — should be kept")
+	}
+	if _, ok := mvByKey["CH0000000001"]; ok {
+		t.Errorf("year-end gold-bar detail present — should be suppressed " +
+			"(it double-counts the overview metal)")
+	}
+	// Portfolio-scope guard: a real security in a portfolio with no
+	// overview row is never suppressed.
+	if _, ok := mvByKey["CH0000000002"]; !ok {
+		t.Errorf("real security in a non-overlay portfolio was wrongly suppressed")
+	}
+	// Metal-scope guard: a non-metal security in the overlay portfolio
+	// is never suppressed.
+	if _, ok := mvByKey["CH0000000003"]; !ok {
+		t.Errorf("non-metal security in the overlay portfolio was wrongly suppressed")
+	}
+}
