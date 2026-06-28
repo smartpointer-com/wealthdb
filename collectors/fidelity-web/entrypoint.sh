@@ -119,9 +119,29 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
+    login)
+        # `login` is a natural thing to type (most collectors have
+        # it) but fidelity-web has none: the Fidelity session lives
+        # only for the browser's lifetime, so a login that exits
+        # leaves nothing reusable. Catch it explicitly — otherwise it
+        # falls through to the pass-through below and execs the
+        # container's /bin/login (util-linux), which aborts with the
+        # baffling "Cannot possibly work without effective root"
+        # (it needs euid 0; the container runs as a non-root user).
+        echo "fidelity-web: no standalone 'login' subcommand." >&2
+        echo "  The Fidelity session is browser-lifetime only, so" >&2
+        echo "  there's nothing to persist from a login-and-exit." >&2
+        echo "  Use instead:" >&2
+        echo "    vnc-login   first-time / re-auth via VNC-assisted MFA" >&2
+        echo "    download    one-shot login -> walk (login is folded in)" >&2
+        exit 2
+        ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run fidelity-web python -c '...'`.
+        # e.g. `docker run fidelity-web python -c '...'`. Note this
+        # execs the literal argv, so an unrecognised subcommand-like
+        # word runs as a system command (see the `login` arm above
+        # for why we special-case the most likely such mistake).
         exec "$@"
         ;;
 esac
