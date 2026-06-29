@@ -1572,8 +1572,13 @@ the verified per-adapter flow table):
 
 - **TWR** = chained period-Modified-Dietz; `--period {monthly|quarterly|annual|
   total}` controls the per-bucket rows, but the since-inception cumulative figure
-  is pinned to a **canonical bucket** (daily where snapshots are dense, else
-  monthly) because chained Dietz is bucket-size dependent once flows exist.
+  is chained over the entity's **actual valuation (snapshot) days**, independent of
+  `--period`. Snapshot-aligned sub-periods keep each flow in the same bucket as the
+  value change it causes; a fixed calendar grid splits a flow from a later value
+  realisation when a period boundary lands in a snapshot gap, manufacturing a
+  sub-(−100%) bucket that collapses the geometric chain (see RETURNS-NOTES
+  §"snapshot-aligned headline"). For dense (daily-snapshot) sources this is just
+  daily bucketing.
 - **MWR** = XIRR over the window's external flows + opening/terminal values; n/a
   (with a reason) for no-flow / no-sign-change / non-unique / NAV-only entities.
 - **Flow classification is per-adapter** (banks/pension = flow-complete; crypto =

@@ -19,7 +19,9 @@ milestone with tests green.
    twr/mwr = n/a + `nonpositive_base`; reported on a separate liability line.
 2. Canonical headline bucket = daily where snapshots are dense, else monthly
    (per entity); the since-inception cumulative TWR uses it independent of
-   `--period`.
+   `--period`. **⚠ SUPERSEDED** — replaced by snapshot-aligned bucketing (chain
+   over actual valuation days); fixed calendar buckets collapsed the chain for
+   sparse-snapshot flow-bearing sources. See "Snapshot-aligned headline" below.
 3. NAV-only sources (manual, carta, equityzen) → value-growth TWR + `nav_only`
    + `nav_only_capital_call_risk`; MWR = `mwr_no_flows`. Blended aggregate MWR
    computed + tagged `mwr_incomplete_flows` (disclose, don't refuse).
@@ -64,10 +66,24 @@ milestone with tests green.
   *partial* real funding correctly (inject only the uncovered opening), which the
   binary rule would mis-handle by double-counting or under-crediting. Same intent,
   strictly more correct.
-- **Canonical headline bucket uses a median-inter-snapshot-gap heuristic**
-  (`denseGapDays = 4`): daily if median gap ≤ 4 days, else monthly. The spec said
-  "daily where snapshots support it, else monthly" without a rule; this is the
-  operationalization. Tunable constant; documented.
+- **Snapshot-aligned headline** *(⚠ supersedes locked decision 2 — daily-if-dense-
+  else-monthly)*. The since-inception cumulative TWR now chains Modified-Dietz over
+  the entity's **actual valuation (snapshot) days** (`canonicalChainBounds`), not a
+  fixed daily/monthly calendar grid. **Why the change:** fixed calendar buckets
+  detonate the geometric chain for sparse-snapshot, flow-bearing sources. Concrete
+  failure mode (a source with irregular ~monthly NAV snapshots): a
+  run of deposits lands in a gap with no snapshot, so the deposit's calendar bucket
+  sees a flow with no value move (Dietz ≈ `−F/base`, a sub-(−100%) sub-period) while
+  the value jump shows up at the next snapshot a bucket later (a huge positive) —
+  chaining the poisoned factor sent the since-inception TWR orders of magnitude
+  below −100%. Breaking at the real valuation days keeps each flow in the same
+  sub-period as the value change it causes (textbook TWR at valuation dates), so the
+  bucket reads ≈0% and the headline is sane. A carried tail past the last snapshot is not a valuation
+  sub-period and is excluded; a window with no interior valuation falls back to a
+  single `[winFrom, winTo]` bucket. For dense (daily-snapshot) sources this is
+  identical to the old daily bucket, so only sparse sources move. `CanonicalHeadline-
+  Bucket` / `denseGapDays` removed as dead. Guard: `TestRunReturnsSparseSnapshotNo-
+  ChainCollapse`.
 - **All returns math is float64.** XIRR is inherently iterative; Modified-Dietz is
   an approximation. Money is exact (DECIMAL) up to the gold→returns boundary and
   floated only here, per the proposal. No precision claim beyond ~1e-7 on rates.

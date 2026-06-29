@@ -151,15 +151,20 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 	r.NetFlow = decStr(sumFlows(flowsIn(flows, winFrom, winTo)))
 	q := append([]string{}, entityQ...)
 
-	// Cumulative TWR at the canonical headline bucket (daily-if-dense-else-monthly),
-	// independent of --period.
-	canon := returns.CanonicalHeadlineBucket(snaps)
+	// Cumulative TWR chained over the entity's actual valuation (snapshot) days,
+	// independent of --period. Snapshot-aligned sub-periods keep every flow in the
+	// same bucket as the value change it causes, so a flow landing in a gap
+	// between sparse snapshots can't manufacture a sub-(-100%) bucket that poisons
+	// the geometric chain — a fixed calendar bucket could, when a period boundary
+	// falls inside a snapshot gap and splits a flow from its later value
+	// realisation (see RETURNS-NOTES §"snapshot-aligned headline").
+	bounds := canonicalChainBounds(winFrom, winTo, snaps)
 	var buckets []returns.Bucket
 	degenerate := false
-	for _, b := range returns.BucketBoundaries(winFrom, winTo, canon) {
-		bv0, _ := av(b[0])
-		bv1, _ := av(b[1])
-		rr, ok := returns.ModifiedDietz(bv0, bv1, b[0], b[1], flowsIn(flows, b[0], b[1]))
+	for i := 0; i+1 < len(bounds); i++ {
+		bv0, _ := av(bounds[i])
+		bv1, _ := av(bounds[i+1])
+		rr, ok := returns.ModifiedDietz(bv0, bv1, bounds[i], bounds[i+1], flowsIn(flows, bounds[i], bounds[i+1]))
 		buckets = append(buckets, returns.Bucket{R: rr, OK: ok})
 		if !ok {
 			degenerate = true
@@ -168,7 +173,7 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 	if p.Method == "twr" || p.Method == "both" {
 		if cum, ok := returns.Chain(buckets); ok {
 			r.TWR = f64(cum)
-			days := float64(winTo - winFrom)
+			days := float64(bounds[len(bounds)-1] - bounds[0])
 			if returns.ShouldAnnualize(p.Annualize, days) {
 				r.TWRAnnualized = f64(returns.Annualize(cum, days))
 			}
@@ -510,6 +515,28 @@ func unionSnapshotDays(assets []*accountData) []int64 {
 func hasSnapshotIn(snaps []int64, from, to int64) bool {
 	i := sort.Search(len(snaps), func(k int) bool { return snaps[k] > from })
 	return i < len(snaps) && snaps[i] <= to
+}
+
+// canonicalChainBounds returns the valuation-day boundaries for the canonical
+// cumulative TWR: winFrom, then every snapshot day in (winFrom, winTo]. Each
+// sub-period therefore spans one real valuation interval, so a flow is always
+// chained against the snapshot-to-snapshot value change it belongs to — never
+// against a carried-flat calendar bucket, which is what let a flow in a sparse
+// snapshot gap poison the chain with a sub-(-100%) sub-period. A carried tail
+// past the last snapshot (winTo with no fresh valuation) is not a sub-period and
+// is excluded; a window with no interior valuation falls back to one
+// [winFrom, winTo] bucket. snaps must be ascending (unionSnapshotDays).
+func canonicalChainBounds(winFrom, winTo int64, snaps []int64) []int64 {
+	bounds := []int64{winFrom}
+	for _, d := range snaps {
+		if d > winFrom && d <= winTo {
+			bounds = append(bounds, d)
+		}
+	}
+	if len(bounds) == 1 {
+		bounds = append(bounds, winTo)
+	}
+	return bounds
 }
 
 func flowsIn(flows []returns.Flow, from, to int64) []returns.Flow {

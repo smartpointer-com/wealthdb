@@ -214,3 +214,45 @@ func TestRunReturnsMWRWiring(t *testing.T) {
 		t.Errorf("ACC MWR (period) = %.6f, want %.6f (de-annualized XIRR of the seeded flows)", *acc.MWR, want)
 	}
 }
+
+// TestRunReturnsSparseSnapshotNoChainCollapse guards the snapshot-aligned headline
+// chain: a large deposit lands in a snapshot gap that straddles a month boundary
+// and its value only shows at the next snapshot. Fixed monthly buckets would split
+// the flow (its month has no value move ⇒ a sub-(-100%) Dietz) from the value jump
+// (the next month), and chaining the poisoned factor collapses the headline (the
+// real-data symptom was a since-inception TWR orders of magnitude below -100%).
+// Snapshot-aligned sub-periods keep both in one [snap,snap] bucket.
+func TestRunReturnsSparseSnapshotNoChainCollapse(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "sprx", "ubs")
+	jan7 := dy(2024, time.January, 7)
+	jan15 := dy(2024, time.January, 15)
+	feb20 := dy(2024, time.February, 20)
+	// Snapshots only at Jan 7 (1000) and Feb 20 (51500); a +50000 deposit on Jan 15
+	// sits in the gap and is reflected only at the Feb 20 valuation.
+	seedAcct(t, db, ctx, "sprx", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{jan7, 1000}, {feb20, 51500}},
+		[]txn{{jan15, canonical.TxKindDeposit, 50000}})
+
+	rows, err := RunReturns(ctx, db, params("sources", 0, eod(2024, time.March, 1)))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	s, ok := summaryFor(rows, "sprx")
+	if !ok || s.TWR == nil {
+		t.Fatalf("no sprx TWR: %+v", s)
+	}
+	// The canonical chain is the single snapshot-aligned bucket [Jan7, Feb20]: the
+	// deposit explains the jump, leaving only the small real move. Independent oracle.
+	want, dok := returns.ModifiedDietz(1000, 51500, jan7/86400, feb20/86400,
+		[]returns.Flow{{Day: jan15 / 86400, Amount: 50000}})
+	if !dok {
+		t.Fatal("reference Dietz degenerate")
+	}
+	if math.Abs(*s.TWR-want) > 1e-9 {
+		t.Errorf("summary TWR = %.4f, want %.4f (single snapshot-aligned bucket; monthly buckets would collapse)", *s.TWR, want)
+	}
+	if *s.TWR <= -1.0 {
+		t.Errorf("summary TWR = %.2f collapsed below -100%% (monthly-bucket regression)", *s.TWR)
+	}
+}

@@ -2,19 +2,12 @@ package returns
 
 import (
 	"math"
-	"sort"
 	"time"
 )
 
 // minAnnualizeDays is the GIPS convention boundary: never annualize a span
 // shorter than one year (it would extrapolate noise).
 const minAnnualizeDays = 365.0
-
-// denseGapDays decides the canonical headline bucket: an entity whose median
-// inter-snapshot gap is at most this many days is "dense" enough that daily
-// buckets meaningfully resolve mid-period flows; otherwise monthly is used (per
-// design decision §2.3 / locked decision 2).
-const denseGapDays = 4
 
 // BucketKind enumerates the period granularities.
 type BucketKind int
@@ -83,36 +76,6 @@ func ShouldAnnualize(mode string, days float64) bool {
 	default: // "auto"
 		return days >= minAnnualizeDays
 	}
-}
-
-// CanonicalHeadlineBucket picks the bucket granularity for an entity's published
-// since-inception cumulative TWR — independent of the --period display choice
-// (the chained-Dietz headline is bucket-size dependent once flows exist, so it
-// must be pinned, §3.A). Daily when the entity's snapshots are dense, else
-// monthly.
-func CanonicalHeadlineBucket(snapshotDays []int64) BucketKind {
-	if len(snapshotDays) < 2 {
-		return BucketMonthly
-	}
-	ds := append([]int64(nil), snapshotDays...)
-	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
-	gaps := make([]int64, 0, len(ds)-1)
-	for i := 1; i < len(ds); i++ {
-		if g := ds[i] - ds[i-1]; g > 0 {
-			gaps = append(gaps, g)
-		}
-	}
-	if len(gaps) == 0 {
-		return BucketMonthly
-	}
-	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
-	// Upper-median (middle-ranked) gap — no averaging of the two central values
-	// for an even count; the threshold comparison makes that distinction moot.
-	median := gaps[len(gaps)/2]
-	if median <= denseGapDays {
-		return BucketDaily
-	}
-	return BucketMonthly
 }
 
 // BucketBoundaries splits [fromDay, toDay] into consecutive [start, end] pairs

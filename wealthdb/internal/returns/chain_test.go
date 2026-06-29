@@ -81,22 +81,6 @@ func TestShouldAnnualize(t *testing.T) {
 	}
 }
 
-func TestCanonicalHeadlineBucket(t *testing.T) {
-	if got := CanonicalHeadlineBucket([]int64{0, 1, 2, 3, 4}); got != BucketDaily {
-		t.Errorf("dense snapshots: got %v, want BucketDaily", got)
-	}
-	if got := CanonicalHeadlineBucket([]int64{0, 30, 60, 90}); got != BucketMonthly {
-		t.Errorf("sparse snapshots: got %v, want BucketMonthly", got)
-	}
-	if got := CanonicalHeadlineBucket([]int64{5}); got != BucketMonthly {
-		t.Errorf("single snapshot: got %v, want BucketMonthly", got)
-	}
-	// All snapshots on the same day ⇒ no positive gaps ⇒ monthly.
-	if got := CanonicalHeadlineBucket([]int64{5, 5, 5}); got != BucketMonthly {
-		t.Errorf("duplicate snapshot days: got %v, want BucketMonthly", got)
-	}
-}
-
 func TestDayToTimeUTC(t *testing.T) {
 	if got := DayToTimeUTC(0); !got.Equal(time.Unix(0, 0).UTC()) {
 		t.Errorf("DayToTimeUTC(0) = %v, want epoch", got)
