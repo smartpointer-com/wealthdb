@@ -115,14 +115,15 @@ func TestRunReturnsPortfoliosGrain(t *testing.T) {
 }
 
 // TestRunReturnsStaggeredOnboarding covers the aggregate path: synthetic
-// onboarding (with partial real-funding dedup via fundingNear) and the
-// staggered_inception flag.
+// onboarding (the late constituent's full debut value, with its own debut-region
+// deposit subsumed — see subsumesAt) and the staggered_inception flag.
 func TestRunReturnsStaggeredOnboarding(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")
 	t0, tMid, t1 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
-	// A: present from t0, flat. B: debuts at tMid worth 500, with a partial real
-	// deposit of 200 near debut (so onboarding injects only the 300 remainder).
+	// A: present from t0, flat. B: debuts at tMid worth 500, with a real deposit of
+	// 200 ON the debut day (subsumed, so onboarding books B's full 500 once — the
+	// deposit is NOT also counted on top).
 	seedAcct(t, db, ctx, "ubs", "A", canonical.AccountKindBrokerage, nil, []snap{{t0, 1000}, {t1, 1000}}, nil)
 	seedAcct(t, db, ctx, "ubs", "B", canonical.AccountKindBrokerage, nil, []snap{{tMid, 500}, {t1, 520}},
 		[]txn{{tMid, canonical.TxKindDeposit, 200}})

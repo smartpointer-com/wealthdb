@@ -220,9 +220,27 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	return f64(returns.DeAnnualize(rate, days)), ann, q
 }
 
-// entityFlows assembles the entity's external flow series: kept transfer-like
-// flows (netted at coarse grains), all deposit/withdrawal flows, and the
-// synthetic onboarding/closure flows (which never enter netting).
+// ownedFlow is a constituent flow tagged with its owning account and whether it
+// falls in a region the aggregate value series does NOT reflect (a late
+// constituent's pre-debut arrival, or a closing constituent's drain into the
+// zeroing snapshot). Such flows are SUBSUMED by the synthetic onboarding/closure
+// amount instead of being counted again. Netting still runs over the full set
+// (subsumed legs included) so genuine internal transfer pairs annihilate before
+// subsumption ever applies (the staggered-inception netting interaction).
+type ownedFlow struct {
+	returns.Flow
+	subsumed bool
+}
+
+// entityFlows assembles the entity's external flow series at a coarse grain:
+//   - deposit/withdrawal flows (never netted — see RETURNS-NOTES);
+//   - transfer-like flows, netted to drop internal moves;
+//   - the synthetic onboarding/closure flows (which never enter netting).
+//
+// Each constituent's flows in a region the aggregate value series cannot yet (or
+// no longer) reflect are subsumed by the synthetic amount, so each dollar
+// crossing the entity boundary is counted exactly once, in the same bucket as the
+// value change it causes. See subsumesAt / RETURNS-NOTES §"staggered inception".
 func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av func(int64) (float64, bool), aggregate bool) ([]returns.Flow, []string) {
 	var flows []returns.Flow
 	var tags []string
@@ -234,38 +252,55 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 
 	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES).
 	for _, a := range assets {
-		flows = append(flows, flowsIn(a.nonTransfer, winFrom, winTo)...)
+		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
+			if !subsumesAt(a, f.Day, winFrom, winTo) {
+				flows = append(flows, f)
+			}
+		}
 	}
-	// Transfer-like: net opposite pairs within the boundary to drop internal moves.
-	var cand []returns.Flow
+
+	// Transfer-like: net opposite pairs within the boundary to drop internal moves,
+	// THEN subsume any surviving pre-debut / closure-drain leg. Netting runs over the
+	// full candidate set (subsumed legs included) so an internal pair whose other leg
+	// sits on an already-alive account still annihilates and is never orphaned.
+	var cand []ownedFlow
 	for _, a := range assets {
-		cand = append(cand, flowsIn(a.transferLike, winFrom, winTo)...)
+		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
+			cand = append(cand, ownedFlow{Flow: f, subsumed: subsumesAt(a, f.Day, winFrom, winTo)})
+		}
 	}
 	if p.Netting {
-		kept, unmatched := netTransfers(cand)
-		flows = append(flows, kept...)
+		kept, unmatched := netOwnedTransfers(cand)
+		for _, of := range kept {
+			if !of.subsumed { // a survivor that is its own pre-debut/closure capital is subsumed
+				flows = append(flows, of.Flow)
+			}
+		}
 		if unmatched > 0 {
 			tags = append(tags, fmt.Sprintf("unmatched_transfers=%d", unmatched))
 		}
 	} else {
-		flows = append(flows, cand...)
+		for _, of := range cand {
+			if !of.subsumed {
+				flows = append(flows, of.Flow)
+			}
+		}
 	}
 
-	// Synthetic onboarding (deduped against real debut funding) + explicit closure
-	// (deduped against a real closing withdrawal/transfer_out).
+	// Synthetic onboarding (the late constituent's whole arrival) + explicit closure
+	// (its whole exit). The real pre-debut / closure-drain flows were subsumed above,
+	// so the synthetic amount is the FULL boundary value — no near-day dedup needed.
 	for _, a := range assets {
 		debut := a.firstDay()
 		if debut > winFrom && debut <= winTo {
-			realFunding := fundingNear(a.allExternal(), debut)
 			v, _ := a.valueAt(debut)
-			if of, ok := returns.OnboardingFlow(debut, v, realFunding); ok {
+			if of, ok := returns.OnboardingFlow(debut, v, 0); ok {
 				flows = append(flows, of)
 			}
 		}
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
-			realClosing := closingNear(a.allExternal(), cd)
-			if cf, _, ok := returns.ClosureFlow(cd, last, realClosing); ok {
+			if cf, _, ok := returns.ClosureFlow(cd, last, 0); ok {
 				flows = append(flows, cf)
 			}
 		}
@@ -274,24 +309,54 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	return flows, tags
 }
 
-// closingNear sums the magnitude of real capital-out flows (withdrawals /
-// transfer_out) near `day` — the closure-side mirror of fundingNear.
-func closingNear(flows []returns.Flow, day int64) float64 {
-	var s float64
-	for _, f := range flows {
-		if f.Amount < 0 && absDay(f.Day-day) <= nettingWindowDay {
-			s += -f.Amount
+// subsumesAt reports whether a constituent's flow on `day` lands in a region the
+// aggregate value series does not reflect, so it is subsumed by the synthetic
+// onboarding/closure amount rather than counted as a visible flow:
+//
+//   - PRE-DEBUT: the constituent debuts (joins the value spine) at d > winFrom and
+//     the flow is dated on or before d. The aggregate value series is 0 for this
+//     constituent until d, so a pre-debut deposit/journal-in caused no visible
+//     ΔV; onboarding books the whole firstValue at d instead.
+//   - CLOSURE-DRAIN: the constituent closes (value → 0) at cd ≤ winTo and the flow
+//     is dated after the last snapshot that still carried a non-zero value, up to
+//     cd. The carried value is flat across that gap (no visible ΔV), so a drain
+//     there would double-count with the synthetic closure outflow at cd.
+func subsumesAt(a *accountData, day, winFrom, winTo int64) bool {
+	if debut := a.firstDay(); debut > winFrom && debut <= winTo && day <= debut {
+		return true
+	}
+	if cd := a.closureDay(); cd > winFrom && cd <= winTo {
+		if day > a.lastNonzeroDay() && day <= cd {
+			return true
 		}
 	}
-	return s
+	return false
 }
 
 // netTransfers greedily matches opposite-direction transfer legs (largest first)
 // whose output-currency magnitudes agree within ε and whose days are within the
 // netting window, dropping matched pairs as internal. Returns the survivors and
-// the count of unmatched legs.
+// the count of unmatched legs. Thin wrapper over netOwnedTransfers for the
+// ownership-free case (used directly only in tests).
 func netTransfers(cand []returns.Flow) (kept []returns.Flow, unmatched int) {
-	var pos, neg []returns.Flow
+	owned := make([]ownedFlow, len(cand))
+	for i, f := range cand {
+		owned[i] = ownedFlow{Flow: f}
+	}
+	keptOwned, unmatched := netOwnedTransfers(owned)
+	for _, of := range keptOwned {
+		kept = append(kept, of.Flow)
+	}
+	return kept, unmatched
+}
+
+// netOwnedTransfers is netTransfers carrying per-leg ownership/subsumed tags
+// through unchanged: the greedy largest-first match with the deterministic
+// (|amount|, day, id) tie-break is identical, so internal pairs annihilate the
+// same way whether or not a leg is subsumed. Survivors keep their tags so the
+// caller can drop subsumed pre-debut / closure-drain legs AFTER netting.
+func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
+	var pos, neg []ownedFlow
 	for _, f := range cand {
 		if f.Amount >= 0 {
 			pos = append(pos, f)
@@ -301,7 +366,7 @@ func netTransfers(cand []returns.Flow) (kept []returns.Flow, unmatched int) {
 	}
 	// Largest-magnitude first, with a fully deterministic tie-break on
 	// (day, transaction id) so equal-magnitude legs match reproducibly (review #6).
-	byMag := func(s []returns.Flow) {
+	byMag := func(s []ownedFlow) {
 		sort.SliceStable(s, func(i, j int) bool {
 			mi, mj := math.Abs(s[i].Amount), math.Abs(s[j].Amount)
 			if mi != mj {
@@ -461,16 +526,6 @@ func sumFlows(flows []returns.Flow) float64 {
 	var s float64
 	for _, f := range flows {
 		s += f.Amount
-	}
-	return s
-}
-
-func fundingNear(flows []returns.Flow, day int64) float64 {
-	var s float64
-	for _, f := range flows {
-		if f.Amount > 0 && absDay(f.Day-day) <= nettingWindowDay {
-			s += f.Amount
-		}
 	}
 	return s
 }

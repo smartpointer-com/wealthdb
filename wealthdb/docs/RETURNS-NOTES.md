@@ -204,6 +204,61 @@ account-grain headline math was left untouched:
   multi-source global test. The accounts/sources/portfolios grains group by source
   so their `silver_source` is unaffected.
 
+### M6 — staggered-inception double-count fix (pre-debut funding subsumed)
+
+A confirmed bug: at coarse grains (`sources`/`portfolios`/`global`) the engine
+**double-counted** capital for a constituent that joins the aggregate value spine
+*mid-window* ("staggered inception"). The synthetic onboarding fired at the
+account's full first-snapshot value AND the real funding flow was also counted,
+because the old dedup (`fundingNear`, ±3 days) only suppressed funding within
+three days of the debut *snapshot*. An account fed only by month-end snapshots can be funded mid-month and
+first appear in the value spine weeks or months later, so the dedup never
+fired. The flow-insensitive chained TWR broke too: the
+real funding lands in an early bucket where the aggregate value series does not
+yet include the account (it is not alive until debut), so that bucket reads `+F`
+against `ΔV≈0` (strongly negative); onboarding then zeroes the debut bucket. The
+two halves live in different buckets, so chaining compounded rather than
+cancelled them — driving cumulative TWR below −100%.
+
+**Principle implemented:** at every grain each dollar crossing the entity
+boundary is counted exactly once, in the same bucket as the value change it
+causes. A constituent's flows in a region the aggregate value series does NOT
+reflect — *before its debut*, or *during its closure gap* — are **subsumed** by
+the synthetic onboarding/closure amount instead of double-counted.
+
+**Mechanism (`subsumesAt` + the reworked `entityFlows`):**
+- A constituent debuting at `d > winFrom` has every own external flow dated `≤ d`
+  dropped from the aggregate flow series (it is pre-spine-arrival, no visible
+  ΔV); onboarding books the **full firstValue** at `d` for the whole arrival
+  (`OnboardingFlow(d, firstValue, 0)` — the near-day `fundingNear` partial dedup
+  is now redundant and removed). Accounts already alive at `winFrom` keep all
+  in-window flows and get no onboarding (unchanged, exact).
+- The **closure mirror** (`lastNonzeroDay`): a closing constituent's drains dated
+  after its last non-zero carried value, up to the zeroing day `cd`, are
+  subsumed by the synthetic closure outflow (the carried value is flat across
+  that gap — no visible ΔV — so a drain there would double-count). `ClosureFlow`
+  is now called with `realClosing=0` for the same reason.
+
+**Netting interaction (the subtle part).** Transfer/journal
+netting runs over the **full candidate set, pre-debut legs included**, BEFORE
+subsumption, so genuine internal pairs still annihilate. Only legs that *survive*
+netting as a constituent's own pre-debut/closure capital are then subsumed. This
+is why `netTransfers` was refactored to a tagged `netOwnedTransfers` that carries
+each leg's owning account + a `subsumed` flag through the greedy match unchanged
+(`netTransfers` is kept as a thin ownership-free wrapper for its direct unit
+test). The phantom the design warns about — dropping a pre-debut journal-IN while
+its sibling journal-OUT remains — does *not* arise: a surviving journal-OUT sits
+on an *alive* account whose value series genuinely reflects the −X drop, so the
+−X is real, not orphaned. Pairs that don't net (different magnitudes / outside
+±3 days) leave the OUT-leg as a real outflow and subsume only the IN-leg into the
+late account's onboarding; capital is still counted once.
+
+**Verified against a read-only copy of a populated gold DB:** constituents
+funded well before their first snapshot no longer double-count, and
+constituents with no funding transactions keep their onboarding flow.
+`TestStaggeredJournalFundedNoPhantom` proves the netting interaction is
+handled without a phantom.
+
 ### Known semantics on record
 
 - **Mid-series disappearance (account vanishes for a snapshot or two, then

@@ -244,6 +244,21 @@ func (a *accountData) closureDay() int64 {
 	return 0
 }
 
+// lastNonzeroDay returns the day of the last carry-forward value that is still
+// non-zero — the day on which the synthetic closure outflow's lastValue was
+// established. The value is flat (carried) from here to the zeroing closure day,
+// so a closing constituent's drains dated after this day have no visible ΔV and
+// are subsumed by the closure outflow (the closure mirror of pre-debut). Returns
+// the first day for an all-zero series.
+func (a *accountData) lastNonzeroDay() int64 {
+	for i := len(a.series) - 1; i >= 0; i-- {
+		if math.Abs(a.series[i].val) >= valueTol {
+			return a.series[i].day
+		}
+	}
+	return a.firstDay()
+}
+
 func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string]*accountData, error) {
 	byKey := map[string]*accountData{}
 

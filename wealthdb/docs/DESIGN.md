@@ -1588,6 +1588,24 @@ the verified per-adapter flow table):
   netting, synthetic onboarding for staggered inception). **Returns are NOT
   additive across grains** — `global == Σ accounts` is a *value* identity, not a
   return identity.
+- **Staggered inception (corrected semantics).** When a constituent joins a
+  coarse aggregate *mid-window* (debut `d > winFrom`), its arrival is booked once
+  as a synthetic onboarding inflow of its **full** first-snapshot value at `d`,
+  and **all of its own external flows dated `≤ d` are subsumed** (dropped from the
+  aggregate flow series) — they happened while the aggregate value series did not
+  yet reflect the account, so counting them too would double-count the capital and
+  drive the chained TWR below −100%. A constituent already alive at `winFrom`
+  keeps every in-window flow and gets no onboarding. The symmetric **closure**
+  case subsumes a closing constituent's drains across its zeroing gap into the
+  synthetic closure outflow. The netting interaction is handled by running
+  transfer/journal netting over the *full* candidate set (pre-debut legs included)
+  **before** subsumption, so genuine internal pairs annihilate and only a
+  constituent's own surviving pre-debut/closure capital is subsumed — never
+  orphaning a phantom outflow whose sibling sits on an already-alive account
+  (whose value series does reflect it). Onboarding still legitimately recognizes
+  *untracked pre-existing* capital (a late account with no funding transactions at
+  all, e.g. a custody account whose backfill carries no transactions), which is NOT a double-count.
+  See `docs/RETURNS-NOTES.md` §M6.
 
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
 every approximation is tagged (`since_data_inception`, `partial_window`,
