@@ -1,0 +1,9 @@
+# The svb collector parses a static archive of SVB Wealth Advisory / NFS
+# brokerage statement PDFs into the silver DB. pdfplumber (on pdfminer.six)
+# gives the table-aware text extraction the statement layout needs. It is
+# imported lazily inside pdf_parsers_svbwa._extract_pdf_text, so the unit
+# tests (which monkeypatch that seam) don't need it, but a real `load` does.
+pdfplumber>=0.11,<1
+
+# pytest for the host-venv test run (`make test-svb`).
+pytest>=8,<9

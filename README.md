@@ -35,6 +35,7 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
 | [`collectors/angellist/`](collectors/angellist/) | AngelList LP portal (SPVs / fund deals) | Docker (Camoufox) | web scrape |
 | [`collectors/carta/`](collectors/carta/) | Carta (private holdings / cap table) | Docker (Camoufox) | web scrape |
 | [`collectors/equityzen/`](collectors/equityzen/) | EquityZen (pre-IPO secondary SPVs) | Docker (Camoufox) | web scrape |
+| [`collectors/svb/`](collectors/svb/) | SVB Wealth Advisory (historical sideload) | Python venv | PDF statements (one-shot) |
 | [`collectors/manual/`](collectors/manual/) | Private holdings, no portal (CSV) | Python venv | manual entry |
 | [`collectors/fred/`](collectors/fred/) | Historic FX rates (reference data) | Python venv | FRED API (US Fed H.10) |
 
@@ -85,7 +86,7 @@ cd wealthdb
 **Collectors** — every collector ships a wrapper exposing the same
 `login` / `download` / `load` verbs, whether it's a Docker collector
 (the web/REST ones) or a host-venv collector (`schwab-api`, `ubs-psn`,
-`fred`, `manual`). Drive the whole fleet through the `wealthdb-collect`
+`fred`, `manual`, `svb`). Drive the whole fleet through the `wealthdb-collect`
 dispatcher:
 
 ```sh

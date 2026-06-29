@@ -1,10 +1,13 @@
-"""Tests for build_svb_sleeves: the carry-forward (skip-empty), $0-closure, and
-master-synthesis logic. The PDF parser is mocked, so no real statements are
+"""Tests for load.py — the svb builder's carry-forward (skip-empty), $0-closure,
+and master-synthesis logic. The PDF parser is mocked, so no real statements are
 needed and all data is synthetic."""
 import sqlite3
+import sys
 from pathlib import Path
 
-import build_svb_sleeves as B
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import load as B  # noqa: E402
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 
@@ -44,6 +47,18 @@ def _build(tmp_path, monkeypatch):
     B.build(db, bronze, signature=None, closure_date="2023-09-30",
             migrations_dir=MIGRATIONS)
     return sqlite3.connect(str(db))
+
+
+def test_migrations_lockstep_with_fidelity_web():
+    """svb.db is read by the shared Fidelity gold adapter (kind:"fidelity"), so
+    these migrations MUST stay byte-identical to fidelity-web's silver schema.
+    This guard fails if either side drifts (see CLAUDE.md / DESIGN.md)."""
+    fidelity = MIGRATIONS.parent.parent / "fidelity-web" / "migrations"
+    for mig in sorted(MIGRATIONS.glob("*.sql")):
+        twin = fidelity / mig.name
+        assert twin.is_file(), f"{mig.name} has no fidelity-web counterpart"
+        assert mig.read_bytes() == twin.read_bytes(), (
+            f"{mig.name} drifted from fidelity-web/migrations — re-sync them")
 
 
 def test_skip_empty_carries_forward(tmp_path, monkeypatch):

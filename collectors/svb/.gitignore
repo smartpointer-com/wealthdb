@@ -1,0 +1,56 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+.python-version
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE / editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Silver DB (SQLite) — lives under the host data tree, never in the repo.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.duckdb
+
+# The REAL statement PDFs are the most sensitive artefact this collector
+# touches — they name a real holder, account ids, holdings, and exact
+# balances. They live OUTSIDE the repo under $XDG_DATA_HOME/wealthdb/svb/.
+# Block any stray in-tree drop (the tests write synthetic %PDF-fake bytes to
+# tmp dirs, never into the tree, so there is nothing to allowlist):
+*.pdf
+
+# The page-1 signature guard contains a real registration string (PII).
+signature.txt
+
+# In case someone overrides the data path to sit under the repo.
+bronze/
+data/
+svb.db

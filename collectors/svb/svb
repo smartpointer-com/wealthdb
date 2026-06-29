@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# svb — host wrapper for the wealthdb "svb" collector.
+#
+# A one-shot historical sideload: it parses a static archive of SVB Wealth
+# Advisory / NFS brokerage statement PDFs into a silver SQLite (svb.db) that
+# uses the fidelity-web silver schema, so the shared Fidelity gold adapter
+# projects it under a separate source id ("svb"). SVB wound down in 2023;
+# there is no live source to log into and nothing to download on a schedule —
+# the statements are a fixed archive you drop in the data dir — so `login`
+# and `download` are no-ops. Host-venv collector (no Docker).
+#
+# Subcommands:
+#   load [args...]      Rebuild svb.db from the statement PDFs in the data dir.
+#   download | login    No-op (explains the sideload model).
+#
+# Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+# > default), accepted on `load`:
+#   --data-dir  DIR     statement-PDF dir (default $XDG_DATA_HOME/wealthdb/svb)
+#   --silver-db PATH    silver DB path    (default <data-dir>/svb.db)
+# Extra `load` flags pass through to load.py (e.g. --closure-date, --signature).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME=svb
+ENV_PREFIX=SVB
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
+
+cmd="${1:-load}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+    -h|--help|help)
+        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    download|login)
+        cat >&2 <<'EOF'
+svb: no-op. This collector has no live source — the SVB Wealth Advisory
+statements are a fixed historical archive (SVB wound down in 2023). Drop the
+in-scope statement PDFs (+ an optional signature.txt page-1 guard) into the
+data dir (default $XDG_DATA_HOME/wealthdb/svb/), then run `./svb load` to
+rebuild svb.db from them.
+EOF
+        exit 0
+        ;;
+    load)
+        host_resolve_dirs "$@"
+        py="$(host_python)"
+        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
+    *)
+        echo "svb: unknown command '$cmd' (expected: load)" >&2
+        exit 2
+        ;;
+esac

@@ -27,6 +27,7 @@ one owner and a stable contract with the next.
  collectors/carta/        JSON + PDF  ─→  carta.db        ─┤   accounts / portfolios ...
  collectors/equityzen/    JSON + PDF  ─→  equityzen.db    ─┤
  collectors/manual/       CSV         ─→  manual.db       ─┤
+ collectors/svb/          PDF stmts   ─→  svb.db          ─┤   (historical; loads via the fidelity adapter)
  collectors/fred/         JSON        ─→  fred.db         ─┘
 ```
 

@@ -9,7 +9,7 @@ uses the **fidelity-web** schema, so the existing fidelity gold adapter projects
 it — but under a SEPARATE source id (``svb``). Keeping it a separate source is
 load-bearing: the gold history macros carry positions forward per *source*, so
 folding these staggered-date accounts into ``fidelity-web`` would let unrelated
-fidelity snapshots supersede and drop them. See SVB-SLEEVES.md.
+fidelity snapshots supersede and drop them. See DESIGN.md.
 
 Carry-forward policy: a statement with no holdings (an account's empty unwind) is
 SKIPPED, so an account carries its last real value forward until a later
@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pdf_parsers_svbwa
 
-log = logging.getLogger("build_svb_sleeves")
+log = logging.getLogger("svb")
 
 _SYNTHETIC_PORTFOLIO = "SVB-Sleeves"
 _SYNTHETIC_KIND = "other"  # gold default → taxable_personal; config sets the real wrapper
