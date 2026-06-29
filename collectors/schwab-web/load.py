@@ -20,12 +20,14 @@ Idempotency:
   * `documents` is keyed by `sha256` — a PDF/XML/CSV file that
     appears in multiple bronze dumps collapses to one row.
   * `transactions` is keyed by a deterministic synthetic
-    `activity_id` (see _synthesize_activity_id below) — re-parsing
-    the same statement converges. Re-parsing with an improved
-    parser requires an explicit DELETE WHERE source_sha256 = ?
-    step (load.py does that automatically when the source PDF's
-    sha256 is already present in documents but no transactions
-    reference it yet; the user can also force it with --reparse).
+    `activity_id` (see _synthesize_activity_id below) that is
+    sha256-independent — re-parsing the same statement (even from
+    a Schwab-regenerated PDF with a new sha256) converges to the
+    same rows via INSERT OR IGNORE. The load gate uses the
+    `logical_doc_key` column (account + doc_date + filename) so
+    re-downloads of the same logical PDF are skipped. Use
+    --reparse to force re-ingestion of a logical document (deletes
+    by logical_doc_key, then re-inserts).
 
 Usage:
     load.py --silver-db <path.db> --bronze-dir <root>
@@ -253,13 +255,24 @@ def already_loaded(conn: sqlite3.Connection, snapshot_at: int) -> bool:
 
 def _synthesize_activity_id(account_external_id: str,
                             tx: dict,
-                            index: int,
-                            source_sha256: str) -> str:
-    """Deterministic synthetic id for a statement-parsed
-    transaction. Stable across re-loads of the same PDF; differs
-    if anything in the row's promoted columns or its position
-    within the statement differs. Hex SHA-256, first 32 chars
-    (128 bits — collision probability negligible at our scale)."""
+                            index: int) -> str:
+    """Deterministic synthetic id for a statement-parsed transaction.
+
+    Stable across re-downloads of the same logical statement, even when
+    Schwab regenerates the PDF with a different sha256 (see INTEROP.md
+    §3). Depends ONLY on transaction content + its ordinal position within
+    the logical statement — NOT on the source document's sha256.
+
+    `index` is the 0-based position of this transaction within the parsed
+    list for a single logical statement (same account + period). It is
+    stable because PDFium's text extraction is deterministic for the same
+    logical PDF content, and tx-history JSON exports preserve Schwab's
+    server-side ordering. This disambiguates genuinely-distinct transactions
+    that share the same (date, amount, description, symbol) — e.g. two
+    identical $50 fees booked on the same day.
+
+    Hex SHA-256, first 32 chars (128 bits — collision probability is
+    negligible at our scale)."""
     parts = [
         account_external_id,
         tx.get("date") or "",
@@ -267,9 +280,25 @@ def _synthesize_activity_id(account_external_id: str,
         tx.get("description") or "",
         tx.get("symbol") or "",
         str(index),
-        source_sha256,
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _logical_doc_key(account_external_id: str,
+                     doc_date: int,
+                     filename: str) -> str:
+    """Stable opaque key for a logical document (same account +
+    period + filename regardless of which sha256 the download produced).
+    Used to gate transaction loading: if any transactions for this logical
+    document already exist in silver we can skip re-parsing, and for
+    --reparse delete to clear all sha256-churn variants at once.
+
+    Format: "<account_external_id>|<doc_date_int>|<filename>". Schwab
+    filenames contain only letters, digits, hyphens, underscores, and
+    dots — no pipe chars — so the delimiter is safe. The format is
+    intentionally human-readable (aids debugging) and computable in SQL
+    (needed for the backfill migration)."""
+    return f"{account_external_id}|{doc_date}|{filename}"
 
 
 def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
@@ -364,9 +393,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # download (different sha256 each time — see INTEROP.md §3),
     # but the parser output is byte-identical for the same logical
     # document. We parse the first sha256 we see per logical doc,
-    # then skip subsequent re-downloads for positions / cash. The
-    # transactions table still gets a row per sha256 by design
-    # (see migration 0001) — gold dedupes that side itself.
+    # then skip subsequent re-downloads for positions / cash /
+    # transactions within THIS run. Across runs, each table uses
+    # its own natural gate (see below).
     seen_logical_docs: set[tuple] = set()
 
     # Parse jobs accumulated during the manifest walk. Each entry
@@ -469,21 +498,35 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 stats["documents_missing_on_disk"] += 1
                 continue
 
-            # Three independent gates: transactions (per-sha256),
-            # positions (per logical statement), cash (per logical
-            # statement). Each gate decides if its inserter should
-            # run; the PDF is parsed once if ANY gate is open.
-            tx_already = conn.execute(
-                "SELECT 1 FROM transactions WHERE source_sha256 = ?",
-                (sha256,),
-            ).fetchone() is not None
-
+            # Three independent gates: transactions (per logical
+            # document), positions (per logical statement), cash
+            # (per logical statement). Each gate decides if its
+            # inserter should run; the PDF is parsed once if ANY
+            # gate is open.
+            #
+            # Transaction gate uses the logical-document key
+            # (account + doc_date + filename), NOT the sha256.
+            # Schwab regenerates PDFs per download (new sha256
+            # each time — INTEROP.md §3), so a sha256-based gate
+            # would re-insert duplicates on every re-download.
+            # The activity_id is also sha256-independent now
+            # (see _synthesize_activity_id), so INSERT OR IGNORE
+            # prevents row-level duplication; this gate is just
+            # the efficiency optimisation to skip re-parsing.
             logical_key = (suffix, doc_date, doc_kind, filename)
             logical_dup = logical_key in seen_logical_docs
             if logical_dup:
                 stats["statements_logical_deduped"] += 1
 
-            need_tx = (not tx_already) or reparse
+            ldk = _logical_doc_key(suffix, doc_date, filename)
+            tx_already = (
+                logical_dup
+                or conn.execute(
+                    "SELECT 1 FROM transactions WHERE logical_doc_key = ?",
+                    (ldk,),
+                ).fetchone() is not None
+            )
+
             # Skip positions/cash parsing if we've already done this
             # logical doc THIS run (sha256 churn). Across runs the
             # INSERT OR REPLACE in the inserters keeps things
@@ -508,6 +551,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             need_pos = (not pos_already) or reparse
             need_cash = (not cash_already) or reparse
 
+            need_tx = (not tx_already) or reparse
             if not (need_tx or need_pos or need_cash):
                 continue
 
@@ -520,6 +564,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             parse_jobs.append({
                 "suffix": suffix,
                 "sha256": sha256,
+                "ldk": ldk,
                 "pdf_path": str(pdf_path),
                 "doc_date": doc_date,
                 "year_hint": year_hint,
@@ -583,9 +628,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 registration_by_acct[job["suffix"]] = reg
 
             if job["tx_reparse_delete"]:
+                # Delete by logical_doc_key so all sha256-churn
+                # variants of the same statement are cleared at once.
                 conn.execute(
-                    "DELETE FROM transactions WHERE source_sha256 = ?",
-                    (job["sha256"],),
+                    "DELETE FROM transactions WHERE logical_doc_key = ?",
+                    (job["ldk"],),
                 )
                 stats["transactions_reparsed"] += 1
 
@@ -593,6 +640,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 n = _insert_statement_transactions(
                     conn, job["suffix"],
                     parsed.get("transactions", []), job["sha256"],
+                    job["ldk"],
                 )
                 stats["transactions_inserted"] += n
 
@@ -712,16 +760,23 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                             json_path)
                 stats["documents_missing_on_disk"] += 1
                 continue
+            # Logical-doc gate for tx-history: keyed on
+            # (account, snapshot_at, filename) since each export
+            # run produces a uniquely-named file. The gate avoids
+            # redundant re-parsing across loaders; INSERT OR IGNORE
+            # in _insert_tx_history_transactions is the row-level
+            # dedup backstop.
+            tx_ldk = _logical_doc_key(suffix, snapshot_at, filename)
             already_has_rows = conn.execute(
-                "SELECT 1 FROM transactions WHERE source_sha256 = ?",
-                (sha256,),
+                "SELECT 1 FROM transactions WHERE logical_doc_key = ?",
+                (tx_ldk,),
             ).fetchone() is not None
             if already_has_rows and not reparse:
                 continue
             if already_has_rows and reparse:
                 conn.execute(
-                    "DELETE FROM transactions WHERE source_sha256 = ?",
-                    (sha256,),
+                    "DELETE FROM transactions WHERE logical_doc_key = ?",
+                    (tx_ldk,),
                 )
                 stats["transactions_reparsed"] += 1
             try:
@@ -733,7 +788,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 continue
             txs = payload.get("BrokerageTransactions") or []
             n = _insert_tx_history_transactions(
-                conn, suffix, txs, sha256, more_details,
+                conn, suffix, txs, sha256, more_details, tx_ldk,
             )
             stats["transactions_inserted"] += n
 
@@ -817,11 +872,16 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
                                     account_external_id: str,
                                     transactions: list[dict],
                                     source_sha256: str,
-                                    more_details: dict) -> int:
+                                    more_details: dict,
+                                    logical_doc_key: str) -> int:
     """INSERT OR IGNORE one row per Schwab-JSON-exported
     transaction. Same activity-id derivation contract as the
     statement parser (synthetic SHA-256 prefix), but over the
     JSON export's field names (Title-Cased: Date, Amount, etc.).
+
+    `logical_doc_key` is stored on every row so --reparse can
+    delete all rows for a logical export without touching other
+    sources.
 
     If `more_details[row_key]` exists for a row, its key-value
     pairs are merged into the row's `payload` JSON under a
@@ -847,7 +907,7 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
             "symbol": tx.get("Symbol"),
         }
         activity_id = _synthesize_activity_id(
-            account_external_id, normalised, idx, source_sha256,
+            account_external_id, normalised, idx,
         )
         # Merge any matching More-modal detail into payload.
         payload_dict = dict(tx)
@@ -858,12 +918,13 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
         cur = conn.execute(
             "INSERT OR IGNORE INTO transactions"
             " (activity_id, timestamp, account_external_id, kind,"
-            "  instrument_key, source, source_sha256, payload)"
-            " VALUES (?, ?, ?, ?, ?, 'tx_history_json', ?, ?)",
+            "  instrument_key, source, source_sha256, logical_doc_key,"
+            "  payload)"
+            " VALUES (?, ?, ?, ?, ?, 'tx_history_json', ?, ?, ?)",
             (activity_id, timestamp, account_external_id,
              tx.get("Action") or "Unknown",
              tx.get("Symbol") or None,
-             source_sha256, payload),
+             source_sha256, logical_doc_key, payload),
         )
         if cur.rowcount:
             inserted += 1
@@ -873,9 +934,15 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
 def _insert_statement_transactions(conn: sqlite3.Connection,
                                    account_external_id: str,
                                    transactions: list[dict],
-                                   source_sha256: str) -> int:
+                                   source_sha256: str,
+                                   logical_doc_key: str) -> int:
     """INSERT OR IGNORE one row per parsed transaction. Returns
     the count inserted.
+
+    `logical_doc_key` is the sha256-independent key for the
+    logical document (account + doc_date + filename), stored on
+    every row so the load gate and --reparse delete can operate
+    on it without touching source_sha256.
 
     Skips rows that have no amount (parser failure indicator) —
     a parser regression should drop the bad row, not break the
@@ -888,7 +955,7 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
                          ("date", "category", "symbol")})
             continue
         activity_id = _synthesize_activity_id(
-            account_external_id, tx, idx, source_sha256,
+            account_external_id, tx, idx,
         )
         timestamp = parse_iso_date(tx.get("date"))
         if timestamp is None:
@@ -907,10 +974,11 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
         cur = conn.execute(
             "INSERT OR IGNORE INTO transactions"
             " (activity_id, timestamp, account_external_id, kind,"
-            "  instrument_key, source, source_sha256, payload)"
-            " VALUES (?, ?, ?, ?, ?, 'statement_pdf', ?, ?)",
+            "  instrument_key, source, source_sha256, logical_doc_key,"
+            "  payload)"
+            " VALUES (?, ?, ?, ?, ?, 'statement_pdf', ?, ?, ?)",
             (activity_id, timestamp, account_external_id, kind,
-             instrument_key, source_sha256, payload),
+             instrument_key, source_sha256, logical_doc_key, payload),
         )
         if cur.rowcount:
             inserted += 1

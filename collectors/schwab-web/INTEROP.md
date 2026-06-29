@@ -62,8 +62,8 @@ opaque). One-line lookup.
 | | `schwab-web` | `schwab-api` |
 | --- | --- | --- |
 | Column | `transactions.activity_id` | `transactions.activity_id` |
-| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index\|source_sha256>` | Schwab-supplied `activityId` |
-| Stable across re-loads? | Yes (deterministic) | Yes |
+| Value | Synthetic SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent since migration 0004) | Schwab-supplied `activityId` |
+| Stable across re-loads? | Yes (deterministic; sha256-churn-safe since 0004) | Yes |
 | Joinable? | **No** — different value spaces |
 
 ### Gold-layer bridge
@@ -126,9 +126,14 @@ JOIN logical_docs ld
   ON d.sha256 = ld.canonical_sha256;
 ```
 
-Dedupe transactions similarly on `(account_external_id,
-timestamp, payload-key-subset)` — pick one representative per
-logical event.
+Transactions are **already deduped at the silver level** since
+migration 0004: `activity_id` is sha256-independent and
+`INSERT OR IGNORE` prevents duplicate rows even if the same logical
+statement is re-downloaded with a new sha256. Gold does **not**
+need a second dedup pass for sha256-churn duplicates; the silver is
+clean. The only remaining overlap gold needs to handle is the
+two-source case (§7: `statement_pdf` and `tx_history_json` covering
+the same logical event).
 
 ## 4. Tax-form structure has no api equivalent
 

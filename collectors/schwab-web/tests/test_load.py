@@ -277,24 +277,27 @@ class TestSynthesizeActivityId:
                "description": "Sale", "symbol": "ABC"}
 
     def test_same_inputs_same_id(self):
-        a = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-x")
-        b = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-x")
+        a = load._synthesize_activity_id("000", self.BASE_TX, 0)
+        b = load._synthesize_activity_id("000", self.BASE_TX, 0)
         assert a == b
         assert len(a) == 32
 
     def test_different_index_differs(self):
-        a = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-x")
-        b = load._synthesize_activity_id("000", self.BASE_TX, 1, "sha-x")
+        a = load._synthesize_activity_id("000", self.BASE_TX, 0)
+        b = load._synthesize_activity_id("000", self.BASE_TX, 1)
         assert a != b
 
-    def test_different_source_differs(self):
-        a = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-x")
-        b = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-y")
-        assert a != b
+    def test_sha256_independent(self):
+        """activity_id must be identical regardless of which sha256
+        (i.e. which download of the same logical PDF) produced the row.
+        This is the core fix for the sha256-churn duplication bug."""
+        a = load._synthesize_activity_id("000", self.BASE_TX, 0)
+        b = load._synthesize_activity_id("000", self.BASE_TX, 0)
+        assert a == b  # trivially true — sha256 is no longer a param
 
     def test_different_account_differs(self):
-        a = load._synthesize_activity_id("000", self.BASE_TX, 0, "sha-x")
-        b = load._synthesize_activity_id("999", self.BASE_TX, 0, "sha-x")
+        a = load._synthesize_activity_id("000", self.BASE_TX, 0)
+        b = load._synthesize_activity_id("999", self.BASE_TX, 0)
         assert a != b
 
 
@@ -658,10 +661,9 @@ class TestPositionsAndCashLoad:
         stats1 = load.load_run(migrated, run1, workers=1)
         migrated.commit()
         # Same logical doc, different sha256, second run — the
-        # dispatcher should detect existing positions and skip the
-        # parse. (The transactions table independently sees a new
-        # source_sha256 so it would insert again; we only care
-        # that positions don't duplicate.)
+        # dispatcher should detect existing positions (and now
+        # transactions, since the gate is logical-doc-key-based)
+        # and skip the parse entirely.
         run2 = _make_bronze_run(tmp_path, "20260521T130000Z", [
             {"suffix": "NNN", "label": "L",
              "documents": [{"date": "02/28/2026", "type": "Statements",
@@ -814,3 +816,198 @@ class TestTxHistoryRowKey:
              "Description": "X", "Symbol": "ABC", "Action": "Buy"}
         b = dict(a, Amount="$2.00")
         assert load._tx_history_row_key(a) != load._tx_history_row_key(b)
+
+
+# ============================================================
+# SHA-256-churn idempotency for transactions (the duplication bug)
+# ============================================================
+
+class TestSha256ChurnTransactionIdempotency:
+    """Core regression tests for the sha256-churn duplication bug.
+
+    Schwab regenerates PDFs on every download (INTEROP.md §3). Before
+    migration 0004, each re-download produced a fresh set of activity_ids
+    (sha256 was baked into the hash) and the per-sha256 insert gate let
+    them all in, causing multiplicative duplication.
+
+    Invariants verified here:
+      1. Loading the same logical statement under N distinct sha256s
+         produces exactly ONE set of transactions.
+      2. Genuinely-distinct same-day same-amount transactions (different
+         ordinal position within the statement) are preserved as
+         separate rows.
+      3. The logical_doc_key column is populated on inserted rows.
+    """
+
+    # Minimal parsed statement with two transactions on the same day.
+    PARSED_TWO_TX = {
+        "path": "<patched>",
+        "period_start": "2026-01-01",
+        "period_end": "2026-01-31",
+        "transactions": [
+            {"date": "2026-01-15", "category": "CashDividend",
+             "action": "DividendReinvestment", "symbol": "SYN",
+             "description": "SYNTH CORP DIV", "quantity": None,
+             "price": None, "charges": None, "amount": 42.00,
+             "realized_gain_loss": None, "term": None,
+             "raw_lines": ["01/15 CashDividend SYNTH CORP DIV 42.00"]},
+            {"date": "2026-01-15", "category": "CashDividend",
+             "action": "DividendReinvestment", "symbol": "SYN",
+             "description": "SYNTH CORP DIV", "quantity": None,
+             "price": None, "charges": None, "amount": 42.00,
+             "realized_gain_loss": None, "term": None,
+             "raw_lines": ["01/15 CashDividend SYNTH CORP DIV 42.00"]},
+        ],
+        "positions": [],
+        "cash_summary": None,
+        "account_registration": None,
+    }
+
+    def _run_with_patched_parser(self, monkeypatch, migrated, tmp_path,
+                                 run_ts: str, filename: str,
+                                 pdf_bytes_extra: bytes = b"") -> dict:
+        """Build a bronze run with a (possibly byte-tweaked) PDF and
+        load it. Returns stats. `pdf_bytes_extra` forces a different
+        sha256 while the logical document (account + date + filename)
+        stays the same."""
+        monkeypatch.setattr(
+            load.pp, "parse_statement_pdf",
+            lambda path, statement_year=None: dict(self.PARSED_TWO_TX),
+        )
+        run = _make_bronze_run(tmp_path, run_ts, [
+            {"suffix": "NNN", "label": "Synthetic …NNN",
+             "documents": [
+                 {"date": "01/31/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": filename},
+             ]},
+        ])
+        if pdf_bytes_extra:
+            p = run / "statements" / "NNN" / filename
+            p.write_bytes(p.read_bytes() + pdf_bytes_extra)
+            new_sha = bronze.sha256_file(p)[0]
+            manifest = json.loads((run / "run.json").read_text())
+            manifest["statements"][0]["documents"][0]["sha256"] = new_sha
+            (run / "run.json").write_text(json.dumps(manifest))
+        return load.load_run(migrated, run, workers=1)
+
+    def test_two_downloads_yield_one_set_of_transactions(
+            self, monkeypatch, migrated, tmp_path):
+        """Loading the same statement under two distinct sha256s must
+        produce exactly the same two transaction rows — not four."""
+        filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
+        # First download (original sha256).
+        self._run_with_patched_parser(
+            monkeypatch, migrated, tmp_path,
+            "20260201T080000Z", filename,
+        )
+        migrated.commit()
+
+        # Second download — tweak bytes to produce a different sha256,
+        # but same logical document (same account + date + filename).
+        self._run_with_patched_parser(
+            monkeypatch, migrated, tmp_path,
+            "20260202T090000Z", filename,
+            pdf_bytes_extra=b"%SCHWAB-REGEN-STAMP-2%",
+        )
+        migrated.commit()
+
+        rows = migrated.execute(
+            "SELECT COUNT(*) FROM transactions "
+            "WHERE account_external_id = 'NNN'"
+        ).fetchone()[0]
+        # Exactly 2 rows (one per transaction in the statement),
+        # NOT 4 (which would happen if sha256-churn caused duplication).
+        assert rows == 2, (
+            f"expected 2 transactions after two sha256-churned loads, "
+            f"got {rows}"
+        )
+
+    def test_four_downloads_yield_one_set_of_transactions(
+            self, monkeypatch, migrated, tmp_path):
+        """Four downloads (4 distinct sha256s, same logical content)
+        must still yield exactly 2 rows — matching the observed worst
+        case of 4 sha256s per statement (INTEROP.md §3)."""
+        filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
+        for i, extra in enumerate([b"", b"V2", b"V3", b"V4"], start=1):
+            run_ts = f"2026020{i}T08000{i}Z"
+            self._run_with_patched_parser(
+                monkeypatch, migrated, tmp_path,
+                run_ts, filename,
+                pdf_bytes_extra=extra,
+            )
+            migrated.commit()
+        rows = migrated.execute(
+            "SELECT COUNT(*) FROM transactions "
+            "WHERE account_external_id = 'NNN'"
+        ).fetchone()[0]
+        assert rows == 2, (
+            f"expected 2 transactions after 4 sha256-churned loads, "
+            f"got {rows}"
+        )
+
+    def test_distinct_same_day_same_amount_transactions_preserved(
+            self, monkeypatch, migrated, tmp_path):
+        """Two genuinely-distinct transactions with identical
+        (date, amount, description, symbol) must survive as SEPARATE
+        rows — the ordinal index disambiguates them."""
+        filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
+        self._run_with_patched_parser(
+            monkeypatch, migrated, tmp_path,
+            "20260201T080000Z", filename,
+        )
+        migrated.commit()
+        rows = migrated.execute(
+            "SELECT activity_id FROM transactions "
+            "WHERE account_external_id = 'NNN' "
+            "ORDER BY activity_id"
+        ).fetchall()
+        # Both rows exist and have distinct activity_ids.
+        assert len(rows) == 2
+        assert rows[0][0] != rows[1][0]
+
+    def test_logical_doc_key_column_populated(
+            self, monkeypatch, migrated, tmp_path):
+        """Every inserted transaction must carry a non-NULL
+        logical_doc_key so the load gate and --reparse delete work."""
+        filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
+        self._run_with_patched_parser(
+            monkeypatch, migrated, tmp_path,
+            "20260201T080000Z", filename,
+        )
+        migrated.commit()
+        null_count = migrated.execute(
+            "SELECT COUNT(*) FROM transactions "
+            "WHERE logical_doc_key IS NULL"
+        ).fetchone()[0]
+        assert null_count == 0
+
+    def test_idempotent_same_run_ts_is_noop(
+            self, monkeypatch, migrated, tmp_path):
+        """Re-running load_run with the exact same run dir (same
+        run_ts, same sha256) must not duplicate transactions. The
+        dump_run PK prevents re-entry at the run level; this test
+        covers the load-gate path."""
+        filename = "Brokerage-Statement_2026-01-31_NNN.PDF"
+        self._run_with_patched_parser(
+            monkeypatch, migrated, tmp_path,
+            "20260201T080000Z", filename,
+        )
+        migrated.commit()
+        n_before = migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+        ).fetchone()[0]
+        # Manually re-invoke the inserter (bypassing the
+        # already_loaded dump_run gate) via _insert_statement_transactions
+        # directly to confirm INSERT OR IGNORE holds.
+        ldk = load._logical_doc_key("NNN", load.parse_doc_date("01/31/2026"),
+                                    filename)
+        for idx, tx in enumerate(self.PARSED_TWO_TX["transactions"]):
+            load._insert_statement_transactions(
+                migrated, "NNN", [tx], "any-sha256", ldk,
+            )
+        migrated.commit()
+        n_after = migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+        ).fetchone()[0]
+        assert n_before == n_after

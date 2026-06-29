@@ -44,12 +44,14 @@
 --     Schwab web has no stable per-transaction identifier.
 --     Synthesised as the hex SHA-256 prefix of
 --     "<account_external_id>|<date>|<amount>|<description>|
---      <symbol>|<index_within_statement>|<source_document_sha256>".
---     This is stable across re-loads but NOT join-able with
---     schwab-api's `activity_id`, which is the Schwab
---     activityId/orderId. Gold must match web↔api transactions
---     by (resolved account, timestamp, amount, description)
---     with tolerance, NOT by activity_id.
+--      <symbol>|<index_within_statement>".
+--     sha256-independent since migration 0004 (removing
+--     source_sha256 prevents sha256-churn duplication when
+--     Schwab regenerates the same PDF with a new sha256).
+--     NOT join-able with schwab-api's `activity_id`, which is
+--     Schwab's activityId/orderId. Gold must match web↔api
+--     transactions by (resolved account, timestamp, amount,
+--     description) with tolerance, NOT by activity_id.
 --
 --   instrument_key
 --     CUSIP > ticker, mirroring api's convention. Tax-form XML

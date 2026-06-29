@@ -70,8 +70,8 @@ bridge them manually.
 
 | | web silver | api silver |
 | --- | --- | --- |
-| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index\|source_sha256>` | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
-| Stable across re-loads? | Yes (deterministic) | Yes |
+| Value | Synthetic hex SHA-256 prefix of `<acct\|date\|amount\|description\|symbol\|index>` (sha256-independent since migration 0004) | Schwab-supplied `activityId` from `/accounts/{hash}/transactions` |
+| Stable across re-loads? | Yes (deterministic; sha256-churn-safe since 0004) | Yes |
 | Joinable across silvers? | **No** — see §4.2 |
 
 ### 2.3 `instrument_key`
@@ -196,18 +196,21 @@ total docs                                 929
 unique (account_external_id, doc_date, filename)   467
 ```
 
-**Gold-layer mitigation**: when consuming web silver
+**Silver mitigation (since migration 0004)**: the `transactions`
+table is now sha256-churn-safe. `activity_id` no longer includes
+`source_sha256`; the load gate uses `logical_doc_key`
+(`account|doc_date|filename`) instead of `source_sha256`; and
+`INSERT OR IGNORE` on the `activity_id` PK prevents row-level
+duplicates. Re-downloading the same logical PDF with a new sha256
+is a clean no-op for transactions. **Gold no longer needs a
+transaction dedup pass for this case.**
+
+**Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,
 doc_kind, filename)` rather than `sha256`. Pick any one
 representative row per logical doc (e.g. `MIN(snapshot_at)` —
-the first time we saw the logical doc). The `transactions`
-table is unaffected: synthetic `activity_id` is derived from
-`source_sha256`, so even when two PDFs of the same statement
-have different sha256s, the transaction rows extracted from
-each have **different `activity_id`s** and BOTH get inserted.
-Gold should also dedupe transactions by
-`(account_external_id, timestamp, payload-key-subset)` if it
-cares — silver fidelity is preserved.
+the first time we saw the logical doc). The `transactions` table
+is clean.
 
 ### 4.5 No per-position snapshot in web silver
 
