@@ -173,6 +173,49 @@ class TestMigrations:
                 "historical_position_snapshots",
                 "historical_cash_balances"} <= names
 
+    def test_0004_backfills_logical_doc_key_and_collapses_churn(self, conn, tmp_path):
+        # Apply only 0001..0003 so we can seed pre-0004 sha256-churn rows.
+        early = tmp_path / "m"
+        early.mkdir()
+        for name in ("0001_initial.sql", "0002_historical_snapshots.sql",
+                     "0003_account_registration.sql"):
+            (early / name).write_text((MIGRATIONS_DIR / name).read_text())
+        load.apply_migrations(conn, early)
+
+        # Two PDFs = one logical statement re-downloaded (sha256 churn): same
+        # account / doc_date / filename, different sha256. 'aaa' and 'bbb' are the
+        # same logical transaction parsed from each copy (identical content,
+        # distinct activity_id); 'ccc' is a genuinely-distinct transaction.
+        conn.executescript(
+            """
+            INSERT INTO documents(sha256, snapshot_at, account_external_id, doc_date,
+                                  doc_kind, file_format, filename, size_bytes, payload)
+            VALUES
+              ('shaA', 1000, 'NNN', 1709251200, 'brokerage', 'PDF', 'Stmt_2024-03.PDF', 10, '{}'),
+              ('shaB', 1000, 'NNN', 1709251200, 'brokerage', 'PDF', 'Stmt_2024-03.PDF', 11, '{}');
+            INSERT INTO transactions(activity_id, timestamp, account_external_id, kind,
+                                     instrument_key, source, source_sha256, payload)
+            VALUES
+              ('aaa', 1709251200, 'NNN', 'Withdrawal', NULL, 'statement_pdf', 'shaA', '{"amount":-1000}'),
+              ('bbb', 1709251200, 'NNN', 'Withdrawal', NULL, 'statement_pdf', 'shaB', '{"amount":-1000}'),
+              ('ccc', 1709251200, 'NNN', 'Deposit',    NULL, 'statement_pdf', 'shaA', '{"amount":250}');
+            """
+        )
+        assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
+
+        # Apply the pending migration (0004 only).
+        load.apply_migrations(conn, MIGRATIONS_DIR)
+
+        rows = dict(conn.execute(
+            "SELECT activity_id, logical_doc_key FROM transactions"
+        ).fetchall())
+        # Churn copies collapse to MIN(activity_id) = 'aaa'; the distinct row survives.
+        assert set(rows) == {"aaa", "ccc"}, rows
+        # logical_doc_key backfilled from the documents join (sha256-independent).
+        assert rows["aaa"] == "NNN|1709251200|Stmt_2024-03.PDF"
+        assert rows["ccc"] == "NNN|1709251200|Stmt_2024-03.PDF"
+        assert load._current_schema_version(conn) == 4
+
 
 # ============================================================
 # discover_bronze_runs
