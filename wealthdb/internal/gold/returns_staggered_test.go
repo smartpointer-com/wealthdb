@@ -187,12 +187,13 @@ func TestStaggeredJournalFundedNoPhantom(t *testing.T) {
 	}
 }
 
-// TestStaggeredClosureDrainSubsumed is the closure mirror: a constituent drains via
-// a real withdrawal in a snapshot-less (carried-forward) region BEFORE the zeroing
-// snapshot, so the carried value is flat across the drain (no visible ΔV). The
-// drain must be subsumed by the synthetic closure outflow, not double-counted with
-// it (which would otherwise depress the closure-link return).
-func TestStaggeredClosureDrainSubsumed(t *testing.T) {
+// TestStaggeredClosureNoSyntheticAfterWindow guards the boundary case where a
+// constituent's zero-carry closureDay (today) falls AFTER the requested window
+// end: the closure machinery must stay out of it, so the only flow over the
+// window is the single real drain — never a drain PLUS a synthetic closure
+// outflow. (For the in-window subsumption itself, see
+// TestStaggeredPostClosureFlowSubsumed.)
+func TestStaggeredClosureNoSyntheticAfterWindow(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubsx", "ubs")
 	t0 := dy(2024, time.January, 2)
@@ -213,16 +214,45 @@ func TestStaggeredClosureDrainSubsumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
-	// The closure is recognized exactly once: net_flow over the window is the single
-	// -1000 exit (A contributes no flows). The pre-fix double-count (drain -1000 in
-	// March + synthetic closure -1000 in July) would give -2000.
+	// net_flow over the window is the single -1000 drain (A contributes no flows).
+	// The closureDay is today — past this July window end — so no synthetic closure
+	// outflow is added; counting both would give -2000.
 	if nf := netFlowOf(t, rows, "ubsx"); math.Abs(nf-(-1000)) > 1e-6 {
-		t.Errorf("net_flow = %.2f, want -1000 (drain subsumed by closure, not -2000)", nf)
+		t.Errorf("net_flow = %.2f, want -1000 (real drain only; no out-of-window synthetic)", nf)
 	}
-	// A grows ~5%% and C exits cleanly ⇒ the source TWR stays close to A's return,
-	// not the spuriously-negative double-count.
+	// A grows ~5%% and C exits ⇒ the source TWR stays close to A's return, not the
+	// spuriously-negative double-count.
 	s, _ := summaryFor(rows, "ubsx")
 	if s.TWR == nil || *s.TWR < -0.1 || *s.TWR > 0.2 {
 		t.Errorf("closure TWR = %v, want ~A's small positive return (no closure double-count)", s.TWR)
+	}
+}
+
+// TestStaggeredPostClosureFlowSubsumed exercises the closure-drain branch of
+// subsumesAt (and lastNonzeroDay): with the window run out to today, a closed
+// account's closureDay (today, via the 0-carry spine) is in-window, so a stray
+// flow dated in the flat zero-carry gap — after the last non-zero day — is
+// subsumed rather than booked as a spurious exit with no matching value move.
+func TestStaggeredPostClosureFlowSubsumed(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "clx", "ubs")
+	t0 := dy(2024, time.January, 2)
+	zero := dy(2024, time.March, 1)
+	post := dy(2024, time.April, 1)
+	// A anchors the source alive to today; C reads 0 from March, then a stray
+	// -500 withdrawal posts in April (after C already shows 0).
+	seedAcct(t, db, ctx, "clx", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 2000}, {dy(2024, time.June, 1), 2100}}, nil)
+	seedAcct(t, db, ctx, "clx", "C", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 1000}, {zero, 0}},
+		[]txn{{post, canonical.TxKindWithdrawal, -500}})
+
+	// Far-future end ⇒ clamped to today ⇒ C.closureDay (today) is in-window.
+	rows, err := RunReturns(ctx, db, params("sources", 0, eod(2027, time.January, 1)))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	if nf := netFlowOf(t, rows, "clx"); math.Abs(nf) > 1e-6 {
+		t.Errorf("net_flow = %.2f, want 0 (post-closure -500 is subsumed, not a phantom exit)", nf)
 	}
 }
