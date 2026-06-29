@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/ptu/wealthdb/internal/canonical"
@@ -271,24 +272,28 @@ func (r *webReader) transactionsBeforeAPIStart(
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
+	// ORDER BY makes the cross-feed dedup below deterministic (its greedy
+	// first-fit consumes JSON legs in a stable order). `source` distinguishes
+	// the two overlapping sub-feeds (statement_pdf vs tx_history_json).
 	const q = `
-SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload
+SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload, source
   FROM transactions
- WHERE timestamp BETWEEN ? AND ?`
+ WHERE timestamp BETWEEN ? AND ?
+ ORDER BY timestamp, activity_id`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("schwab-web Transactions: %w", err)
 	}
 	defer rows.Close()
 
-	out := canonical.TransactionBatch{}
+	var built []builtWebTx
 	for rows.Next() {
 		var (
-			activityID, suffix, kind, payload string
-			ts                                int64
-			instrumentKey                     sql.NullString
+			activityID, suffix, kind, payload, source string
+			ts                                        int64
+			instrumentKey                             sql.NullString
 		)
-		if err := rows.Scan(&activityID, &ts, &suffix, &kind, &instrumentKey, &payload); err != nil {
+		if err := rows.Scan(&activityID, &ts, &suffix, &kind, &instrumentKey, &payload, &source); err != nil {
 			return nil, err
 		}
 		hash, ok := bridge[suffix]
@@ -315,7 +320,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 		netAmount, quantity, price := extractWebTxAmounts(payload)
 		description := extractWebTxDescription(payload)
 		txKind := webKind(kind)
-		out.Transactions = append(out.Transactions, canonical.TransactionChange{
+		built = append(built, builtWebTx{source: source, tx: canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            ts,
 			AccountExternalID:     hash,
@@ -331,10 +336,118 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			Quantity:    quantity,
 			Price:       price,
 			Description: description,
-			Payload:   json.RawMessage(payload),
-		})
+			Payload:     json.RawMessage(payload),
+		}})
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
+	return silver.NewTransactionStream(out), nil
+}
+
+// builtWebTx is a parsed web transaction paired with the silver sub-feed it came
+// from, so dedupeCrossFeedExternalFlows can tell statement-PDF rows from
+// tx-history-JSON rows.
+type builtWebTx struct {
+	tx     canonical.TransactionChange
+	source string
+}
+
+// schwab-web silver `source` discriminators for the two transaction sub-feeds.
+const (
+	sourceStatementPDF  = "statement_pdf"
+	sourceTxHistoryJSON = "tx_history_json"
+)
+
+// Cross-feed dedup tolerance. The statement-PDF and tx-history-JSON sub-feeds
+// overlap (statements reach back to 2017, tx-history only ~2 years) and record
+// the same external capital flow with a settlement-vs-trade-date offset
+// (observed ~3 days) and sub-dollar rounding. A twin is matched within this
+// window — the same tolerance the gold returns layer uses to net internal
+// transfers (±3 days, 0.5% / $1).
+const (
+	crossFeedDayWindow = int64(3)
+	crossFeedEpsFloor  = 1.0
+	crossFeedEpsRel    = 0.005
+)
+
+// externalFlowKinds are the canonical kinds that move owner capital across the
+// account boundary — the only ones that affect net_flow (and so returns). Trades
+// are deliberately excluded: they have no net cash impact, are an order of
+// magnitude noisier across the two feeds (vocabulary, lot granularity), and are
+// reconciled by the feed-authority splice, not here.
+var externalFlowKinds = map[canonical.TxKind]bool{
+	canonical.TxKindDeposit:     true,
+	canonical.TxKindWithdrawal:  true,
+	canonical.TxKindTransferIn:  true,
+	canonical.TxKindTransferOut: true,
+	canonical.TxKindJournal:     true,
+}
+
+// dedupeCrossFeedExternalFlows drops the statement-PDF copy of an external
+// capital flow that the tx-history-JSON feed also records. Both web sub-feeds
+// cover the overlap years and book the same wires/journals (with the date offset
+// and rounding noted above), so without this the gold transaction set — and the
+// returns net_flow derived from it — double-counts every overlapping flow.
+//
+// Only external-flow kinds are deduped: they are what moves net_flow. Each
+// statement-PDF external leg is matched 1:1 against an as-yet-unconsumed
+// tx-history-JSON external leg for the same account within the tolerance window;
+// on a match the PDF leg is dropped and the (structured) JSON leg kept. Every
+// non-external row, and every external leg with no cross-feed twin, passes
+// through untouched, so no transaction is lost.
+func dedupeCrossFeedExternalFlows(built []builtWebTx) []canonical.TransactionChange {
+	type leg struct {
+		day      int64
+		amount   float64
+		consumed bool
+	}
+	// Index the JSON external legs per account (input-stable order).
+	jsonByAcct := map[string][]*leg{}
+	for i := range built {
+		b := &built[i]
+		if b.source == sourceTxHistoryJSON && externalFlowKinds[b.tx.Kind] && b.tx.NetAmount != nil {
+			jsonByAcct[b.tx.AccountExternalID] = append(jsonByAcct[b.tx.AccountExternalID],
+				&leg{day: b.tx.OccurredAt / 86400, amount: b.tx.NetAmount.InexactFloat64()})
+		}
+	}
+
+	out := make([]canonical.TransactionChange, 0, len(built))
+	for i := range built {
+		b := &built[i]
+		if b.source == sourceStatementPDF && externalFlowKinds[b.tx.Kind] && b.tx.NetAmount != nil {
+			day := b.tx.OccurredAt / 86400
+			amt := b.tx.NetAmount.InexactFloat64()
+			matched := false
+			for _, l := range jsonByAcct[b.tx.AccountExternalID] {
+				if l.consumed {
+					continue
+				}
+				eps := crossFeedEpsFloor
+				if r := crossFeedEpsRel * math.Max(math.Abs(amt), math.Abs(l.amount)); r > eps {
+					eps = r
+				}
+				if absInt64(day-l.day) <= crossFeedDayWindow && math.Abs(amt-l.amount) <= eps {
+					l.consumed = true
+					matched = true
+					break
+				}
+			}
+			if matched {
+				continue // duplicate of a JSON leg — drop the PDF copy
+			}
+		}
+		out = append(out, b.tx)
+	}
+	return out
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // webKind maps the web silver's `kind` discriminator (the
