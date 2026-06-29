@@ -28,6 +28,49 @@ func survivingIDs(rows []canonical.TransactionChange) map[string]bool {
 	return out
 }
 
+func builtIDs(rows []builtWebTx) map[string]bool {
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		out[r.tx.TransactionExternalID] = true
+	}
+	return out
+}
+
+// TestSpliceNonExternalToJSON pins the feed-authority splice: within the JSON
+// export's per-account coverage span the JSON copy of a non-external row wins and
+// the statement-PDF copy is dropped, while PDF rows outside the span survive as
+// backfill, external flows are left for the no-loss dedup, and accounts with no
+// JSON keep their PDF rows.
+func TestSpliceNonExternalToJSON(t *testing.T) {
+	const pdf, js = sourceStatementPDF, sourceTxHistoryJSON
+	in := []builtWebTx{
+		// JSON defines account A's coverage span [100, 200].
+		wtx("jA-lo", js, canonical.TxKindBuy, "A", 100, -500),
+		wtx("jA-hi", js, canonical.TxKindSell, "A", 200, 500),
+		wtx("pA-before", pdf, canonical.TxKindBuy, "A", 50, -100),   // pre-span backfill → kept
+		wtx("pA-in", pdf, canonical.TxKindBuy, "A", 150, -100),      // in span → dropped
+		wtx("pA-onlo", pdf, canonical.TxKindDividend, "A", 100, 10), // on boundary → dropped
+		wtx("pA-after", pdf, canonical.TxKindBuy, "A", 250, -100),   // past span → kept
+		wtx("pA-extin", pdf, canonical.TxKindWithdrawal, "A", 150, -1000), // external in span → kept (dedup handles it)
+		wtx("pB", pdf, canonical.TxKindBuy, "B", 150, -100),         // account B has no JSON → kept
+	}
+	got := builtIDs(spliceNonExternalToJSON(in))
+	wantKept := []string{"jA-lo", "jA-hi", "pA-before", "pA-after", "pA-extin", "pB"}
+	for _, id := range wantKept {
+		if !got[id] {
+			t.Errorf("%q should be kept; survivors = %v", id, got)
+		}
+	}
+	for _, id := range []string{"pA-in", "pA-onlo"} {
+		if got[id] {
+			t.Errorf("%q should be dropped (JSON authoritative in span); survivors = %v", id, got)
+		}
+	}
+	if len(got) != len(wantKept) {
+		t.Errorf("kept %d rows, want %d: %v", len(got), len(wantKept), got)
+	}
+}
+
 // TestDedupeCrossFeedExternalFlows pins the statement-PDF ↔ tx-history-JSON
 // cross-feed dedup: external-flow twins (within ±3 days / 0.5% / $1) collapse to
 // the JSON copy, while trades, beyond-tolerance flows, opposite signs, and

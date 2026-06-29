@@ -342,8 +342,64 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Reconcile the two overlapping web sub-feeds: the JSON export is
+	// authoritative for non-external rows across its coverage span (PDFs only
+	// backfill older history), and external flows are matched 1:1 across the
+	// feeds so net_flow isn't double-counted.
+	built = spliceNonExternalToJSON(built)
 	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
 	return silver.NewTransactionStream(out), nil
+}
+
+// spliceNonExternalToJSON makes the tx-history-JSON export authoritative for
+// non-external rows (trades, dividends, fees, …) across its per-account coverage
+// span: a statement-PDF non-external row dated within [minJSONday, maxJSONday]
+// for that account is dropped (the structured JSON copy, which carries the trade
+// date, is kept), while PDF rows OUTSIDE that span are retained as the deep
+// backfill the ~2-year JSON export can't reach. Mirrors the api-over-web
+// transaction splice in merge.go, one level down.
+//
+// External flows are deliberately untouched here — they move net_flow, so they
+// use the no-loss 1:1 cross-feed dedup in dedupeCrossFeedExternalFlows, which
+// keeps feed-unique legs rather than dropping them. Caveat: an internal gap in
+// the JSON export drops the PDF rows inside it too; acceptable because
+// non-external rows don't affect net_flow or holdings and the transaction report
+// stays single-sourced within the JSON span.
+func spliceNonExternalToJSON(built []builtWebTx) []builtWebTx {
+	type span struct{ lo, hi int64 }
+	jrange := map[string]*span{}
+	for i := range built {
+		b := &built[i]
+		if b.source != sourceTxHistoryJSON {
+			continue
+		}
+		day := b.tx.OccurredAt / 86400
+		if s := jrange[b.tx.AccountExternalID]; s != nil {
+			if day < s.lo {
+				s.lo = day
+			}
+			if day > s.hi {
+				s.hi = day
+			}
+		} else {
+			jrange[b.tx.AccountExternalID] = &span{lo: day, hi: day}
+		}
+	}
+
+	out := make([]builtWebTx, 0, len(built))
+	for i := range built {
+		b := built[i]
+		if b.source == sourceStatementPDF && !externalFlowKinds[b.tx.Kind] {
+			if s := jrange[b.tx.AccountExternalID]; s != nil {
+				day := b.tx.OccurredAt / 86400
+				if day >= s.lo && day <= s.hi {
+					continue // JSON is authoritative for non-external rows in its span
+				}
+			}
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // builtWebTx is a parsed web transaction paired with the silver sub-feed it came
