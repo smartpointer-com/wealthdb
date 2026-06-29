@@ -43,6 +43,12 @@ type SourceSpec struct {
 	// Overrides — so an account-level override always wins over
 	// a portfolio-level one on the same column.
 	PortfolioOverrides map[string]PortfolioOverride
+	// TransferLedger holds this source's rows from the optional
+	// equity-transfer ledger (config `equity_transfers`). The loader
+	// injects each as a canonical transfer_in/transfer_out transaction
+	// after the adapter's own transactions, replacing any previously
+	// injected ledger rows. Empty ⇒ nothing to inject.
+	TransferLedger []TransferEntry
 }
 
 // AccountOverride is the loader's view of one config-file
@@ -68,13 +74,13 @@ type PortfolioOverride struct {
 // changes were applied (AlreadyUpToDate == true) so callers can
 // report progress for `wealthdb status` / `wealthdb load` output.
 type LoadResult struct {
-	SourceID            string
-	AlreadyUpToDate     bool
-	ChangeNumberBefore  int64 // -1 on first-ever load
-	ChangeNumberAfter   int64
-	Window              canonical.Window
-	SnapshotsLoaded     int
-	TransactionsLoaded  int
+	SourceID           string
+	AlreadyUpToDate    bool
+	ChangeNumberBefore int64 // -1 on first-ever load
+	ChangeNumberAfter  int64
+	Window             canonical.Window
+	SnapshotsLoaded    int
+	TransactionsLoaded int
 }
 
 // Loader holds the gold *sql.DB. One Loader per process; safe to
@@ -184,6 +190,17 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): apply transactions: %w", spec.ID, err)
 		}
 		res.TransactionsLoaded = nTx
+
+		// Inject the optional equity-transfer ledger as canonical transfer
+		// transactions, replacing this source's prior ledger rows. The
+		// delete+insert spans the whole ledger (rows are dated outside the
+		// change window), so any load that has changes — and every `reload` —
+		// re-applies edits to the CSV.
+		nLedger, err := applyTransferLedger(ctx, tx, spec.ID, spec.TransferLedger)
+		if err != nil {
+			return nil, fmt.Errorf("Load(%s): %w", spec.ID, err)
+		}
+		res.TransactionsLoaded += nLedger
 
 		if err := insertLoadAudit(ctx, tx, spec.ID, nowNano, watermark, res); err != nil {
 			return nil, fmt.Errorf("Load(%s): insert load_audit: %w", spec.ID, err)

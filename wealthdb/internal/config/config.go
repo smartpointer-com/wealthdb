@@ -22,6 +22,14 @@ type Config struct {
 	GoldDB          string         `json:"gold_db"`
 	DefaultCurrency string         `json:"default_currency"`
 	SilverSources   []SilverSource `json:"silver_sources"`
+	// EquityTransfers is an optional path to a CSV ledger of equity
+	// transfers in/out of a tracked account that the collectors don't
+	// capture as valued flows — typically appreciated securities moved
+	// between custodians, whose value would otherwise read as in-account
+	// performance. The loader turns each row into a canonical
+	// transfer_in/transfer_out transaction at load time. Absent ⇒ no
+	// ledger. See docs/DESIGN.md §13.10 and internal/loader/transfers.go.
+	EquityTransfers string `json:"equity_transfers,omitempty"`
 	// AccountOverrides lets the user override the per-account
 	// `nickname` and `account_category` columns adapters would
 	// otherwise emit. Keyed by silver_source_id (outer) and then
@@ -142,8 +150,8 @@ type SilverSource struct {
 	// fills only the days no account source covered). Absent/null =
 	// minimum priority. Ties (equal or both-null) break by the order
 	// sources appear in the config — earlier wins. See FxSourceOrder.
-	FxPriority *int               `json:"fx_priority,omitempty"`
-	Subsources []SilverSubsource  `json:"subsources,omitempty"`
+	FxPriority *int              `json:"fx_priority,omitempty"`
+	Subsources []SilverSubsource `json:"subsources,omitempty"`
 	// Relationships pairs cross-subsource entity identities under
 	// a single user-chosen label. Used by the UBS adapter to link
 	// the web `banking_relationship_id` (opaque SPA token) to the
@@ -259,6 +267,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: gold_db: %w", err)
 	}
 	c.GoldDB = expanded
+	if c.EquityTransfers != "" {
+		expanded, err := expandPath(c.EquityTransfers, configDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: equity_transfers: %w", err)
+		}
+		c.EquityTransfers = expanded
+	}
 	for i := range c.SilverSources {
 		if c.SilverSources[i].Path != "" {
 			expanded, err := expandPath(c.SilverSources[i].Path, configDir)
@@ -336,4 +351,3 @@ func parseYYYYMMDD(s string) (int64, error) {
 	}
 	return t.UTC().Unix(), nil
 }
-

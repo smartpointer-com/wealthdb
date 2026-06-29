@@ -464,6 +464,7 @@ Example config file:
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
 | `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
+| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. `~` / `$HOME` / `${VAR}` expanded; a missing file is a no-op. See §13.10. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -2092,3 +2093,43 @@ Still on the roadmap:
   subcommands.
 - Long-form `wealthdb status` flag to show wrapper / style
   alongside account IDs.
+
+### 13.10 Equity-transfer ledger
+
+Securities transferred *into* a tracked account (e.g. shares
+transferred in from another custodian at appreciated value)
+are a capital inflow at their market value on the transfer date —
+but the collectors often don't capture them as valued transactions
+(the position just appears in a later snapshot, or the transfer is
+booked as a $0-cash share journal). Left uncorrected, that value
+reads as in-account performance, inflating returns — most visibly
+the money-weighted figure, which over-weights an early arrival on a
+small base. The discriminator is **cost basis ≪ market value**: an
+appreciated transfer-in carries a basis far below its value (the
+gain happened elsewhere), whereas an ordinary holding has basis ≈
+value.
+
+The optional `equity_transfers` CSV ledger (config §5) records each
+known transfer; the loader turns every row into a canonical
+`transfer_in` / `transfer_out` transaction at load time, so the
+returns engine books it as an ordinary flow with no special-casing
+and it shows in the transactions report. Columns:
+`silver_source_id, account, occurred_at (YYYY-MM-DD), direction
+(in|out), quantity, cost_basis, value, currency, instrument, note`.
+`value` is the market value at transfer — the capital flow;
+`cost_basis` (the pre-transfer basis) rides along in the payload for
+reference and is not used by the returns math. `account` accepts
+either the gold `account_external_id` or an account nickname
+(resolved at load). A row whose value isn't yet known is left at 0
+— a placeholder that books nothing until filled in.
+
+Mechanics (`internal/loader/transfers.go`): ledger transactions get
+a deterministic `xfer:`-prefixed synthetic id keyed on the row's
+content (not its amounts), so editing a value updates the same row;
+each load deletes the source's prior `xfer:` rows and re-inserts the
+current set, so a `reload` picks up edits. A transfer dated at or
+before an account's first snapshot is *subsumed by the
+staggered-inception onboarding flow* (§10.9) — it is not
+double-counted — while a mid-life transfer is booked in full. The
+ledger is source-agnostic; any source's transfers are just rows
+with that `silver_source_id`.

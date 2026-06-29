@@ -50,6 +50,10 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
+	ledger, err := loader.ParseTransferLedger(cfg.EquityTransfers)
+	if err != nil {
+		return err
+	}
 
 	// Resolve targets to a list of (id, config.SilverSource) pairs so
 	// the load step has the kind/path it needs without re-resolving.
@@ -107,7 +111,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 			}
 			continue
 		}
-		spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides)
+		spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, ledger)
 		if err != nil {
 			fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
 			if firstErr == nil {

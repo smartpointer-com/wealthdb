@@ -40,6 +40,10 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
+	ledger, err := loader.ParseTransferLedger(cfg.EquityTransfers)
+	if err != nil {
+		return err
+	}
 
 	// Resolve which sources to load.
 	var specs []loader.SourceSpec
@@ -49,7 +53,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides)
+			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, ledger)
 			if err != nil {
 				return err
 			}
@@ -64,7 +68,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides)
+		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, ledger)
 		if err != nil {
 			return err
 		}
@@ -131,17 +135,19 @@ func buildSourceSpec(
 	s config.SilverSource,
 	accountOverrides map[string]map[string]config.AccountOverride,
 	portfolioOverrides map[string]map[string]config.PortfolioOverride,
+	transferLedger map[string][]loader.TransferEntry,
 ) (loader.SourceSpec, error) {
 	openSpec, err := s.ToSilverOpenSpec()
 	if err != nil {
 		return loader.SourceSpec{}, err
 	}
 	spec := loader.SourceSpec{
-		ID:            s.ID,
-		Kind:          s.Kind,
-		Path:          openSpec.Path,
-		Subsources:    openSpec.Subsources,
-		Relationships: openSpec.Relationships,
+		ID:             s.ID,
+		Kind:           s.Kind,
+		Path:           openSpec.Path,
+		Subsources:     openSpec.Subsources,
+		Relationships:  openSpec.Relationships,
+		TransferLedger: transferLedger[s.ID],
 	}
 	if cfgOvr := accountOverrides[s.ID]; len(cfgOvr) > 0 {
 		spec.Overrides = make(map[string]loader.AccountOverride, len(cfgOvr))
