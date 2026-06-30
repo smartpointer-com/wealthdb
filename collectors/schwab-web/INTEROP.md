@@ -220,6 +220,15 @@ the web feed is and isn't carrying:
 > these sources, `form_1099b` and `third_party_distribution` rows
 > either double-count against the existing feeds or sit unused. The
 > silver side is complete; this is the gold side of the same feature.
+>
+> **Status — implemented.** The gold side landed in `web_reader.go`:
+> `supersedeSalesWith1099B` makes the 1099-B authoritative for sales
+> within a covered `(account, tax_year)` (dropping the statement /
+> tx-history sells in that calendar year), and
+> `supersedeStatementCashWithDistributions` makes a cash distribution
+> authoritative over a matching statement / tx-history cash debit.
+> Securities transfers route through `externalFlowKinds`, drawing their
+> net-flow magnitude from `market_value` / `cash_amount`.
 
 ### 8.1 `form_1099b` — authoritative-for-sales within its tax year
 

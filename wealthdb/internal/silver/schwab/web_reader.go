@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/ptu/wealthdb/internal/canonical"
 	"github.com/ptu/wealthdb/internal/silver"
@@ -253,10 +254,10 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 // `apiStartByHash` maps api hashValue → MIN(timestamp). A web tx
 // is emitted only when:
 //
-//   1. its account bridges to an api hashValue; AND
-//   2. its timestamp is strictly less than apiStartByHash[hash]
-//      (or hash has no api transactions at all, in which case
-//      everything from the web side passes).
+//  1. its account bridges to an api hashValue; AND
+//  2. its timestamp is strictly less than apiStartByHash[hash]
+//     (or hash has no api transactions at all, in which case
+//     everything from the web side passes).
 //
 // Hard cut, not overlap-merge — per INTEROP §2 the two silvers'
 // transaction-id spaces are disjoint so any cross-source per-row
@@ -342,11 +343,21 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Reconcile the two overlapping web sub-feeds: the JSON export is
-	// authoritative for non-external rows across its coverage span (PDFs only
-	// backfill older history), and external flows are matched 1:1 across the
-	// feeds so net_flow isn't double-counted.
+	// Reconcile the overlapping web sub-feeds (INTEROP §8), in order:
+	//   1. JSON is authoritative for non-external rows across its coverage span
+	//      (statement PDFs only backfill older history).
+	//   2. A third_party_distribution cash transfer is authoritative over a
+	//      matching statement/tx-history cash debit (it names the counterparty);
+	//      run before the PDF↔JSON dedup so the final external set is correct.
+	//   3. form_1099b is authoritative for sales within its covered tax years;
+	//      the superseded statement/tx-history sells are dropped.
+	//   4. Remaining statement_pdf ↔ tx_history_json external flows are matched
+	//      1:1 so net_flow isn't double-counted.
+	// Securities distributions are new data (no other feed records them) and
+	// pass straight through as TxKindTransferOut external flows.
 	built = spliceNonExternalToJSON(built)
+	built = supersedeStatementCashWithDistributions(built)
+	built = supersedeSalesWith1099B(built)
 	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
 	return silver.NewTransactionStream(out), nil
 }
@@ -410,10 +421,17 @@ type builtWebTx struct {
 	source string
 }
 
-// schwab-web silver `source` discriminators for the two transaction sub-feeds.
+// schwab-web silver `source` discriminators for the transaction sub-feeds.
+// statement_pdf and tx_history_json overlap on the same economic events and are
+// reconciled against each other (splice + cross-feed dedup). form_1099b is the
+// authoritative-for-sales tax-lot feed (supersedes the other two for sells in its
+// covered tax years), and third_party_distribution carries transfer flows out
+// (securities = new data; cash = deduped against statement debits). See INTEROP §8.
 const (
-	sourceStatementPDF  = "statement_pdf"
-	sourceTxHistoryJSON = "tx_history_json"
+	sourceStatementPDF           = "statement_pdf"
+	sourceTxHistoryJSON          = "tx_history_json"
+	sourceFORM1099B              = "form_1099b"
+	sourceThirdPartyDistribution = "third_party_distribution"
 )
 
 // Cross-feed dedup tolerance. The statement-PDF and tx-history-JSON sub-feeds
@@ -480,11 +498,7 @@ func dedupeCrossFeedExternalFlows(built []builtWebTx) []canonical.TransactionCha
 				if l.consumed {
 					continue
 				}
-				eps := crossFeedEpsFloor
-				if r := crossFeedEpsRel * math.Max(math.Abs(amt), math.Abs(l.amount)); r > eps {
-					eps = r
-				}
-				if absInt64(day-l.day) <= crossFeedDayWindow && math.Abs(amt-l.amount) <= eps {
+				if crossFeedMatch(day, amt, l.day, l.amount) {
 					l.consumed = true
 					matched = true
 					break
@@ -495,6 +509,127 @@ func dedupeCrossFeedExternalFlows(built []builtWebTx) []canonical.TransactionCha
 			}
 		}
 		out = append(out, b.tx)
+	}
+	return out
+}
+
+// crossFeedMatch reports whether two external-flow legs (given as epoch-day and
+// signed amount) describe the same capital movement under the shared cross-feed
+// tolerance: same calendar direction (sign), within ±crossFeedDayWindow days, and
+// amounts within max(crossFeedEpsFloor, crossFeedEpsRel·max|amt|). Opposite signs
+// never match (math.Abs(a-b) exceeds eps once the signs differ at these scales).
+func crossFeedMatch(dayA int64, amtA float64, dayB int64, amtB float64) bool {
+	eps := crossFeedEpsFloor
+	if r := crossFeedEpsRel * math.Max(math.Abs(amtA), math.Abs(amtB)); r > eps {
+		eps = r
+	}
+	return absInt64(dayA-dayB) <= crossFeedDayWindow && math.Abs(amtA-amtB) <= eps
+}
+
+// supersedeSalesWith1099B applies the 1099-B authoritative-for-sales precedence
+// (INTEROP §8.1): within any (account, tax_year) that has at least one form_1099b
+// lot, the 1099-B is the complete cost-basis-bearing record of sales, so the
+// statement_pdf / tx_history_json copies of those sales (anything mapping to
+// TxKindSell whose OccurredAt calendar year equals the covered tax_year) are
+// dropped and the 1099-B lots kept instead. Outside covered (account, tax_year)
+// pairs every feed passes through untouched. form_1099b rows carry no ticker —
+// instrument_key is NULL and the only identifier is payload.security_name — so
+// unresolved lots are surfaced name-keyed (via Description), never dropped.
+func supersedeSalesWith1099B(built []builtWebTx) []builtWebTx {
+	// Covered (account, tax_year). tax_year comes from form content
+	// (payload.tax_year), not the row timestamp, because a lot sold in
+	// December can land on the next year's form.
+	type cover struct {
+		acct string
+		year int
+	}
+	covered := map[cover]bool{}
+	for i := range built {
+		b := &built[i]
+		if b.source != sourceFORM1099B {
+			continue
+		}
+		if y, ok := extractTaxYear(string(b.tx.Payload)); ok {
+			covered[cover{acct: b.tx.AccountExternalID, year: y}] = true
+		}
+	}
+	if len(covered) == 0 {
+		return built
+	}
+
+	out := make([]builtWebTx, 0, len(built))
+	for i := range built {
+		b := built[i]
+		if (b.source == sourceStatementPDF || b.source == sourceTxHistoryJSON) &&
+			b.tx.Kind == canonical.TxKindSell {
+			year := time.Unix(b.tx.OccurredAt, 0).UTC().Year()
+			if covered[cover{acct: b.tx.AccountExternalID, year: year}] {
+				continue // 1099-B is authoritative for sales in this tax year
+			}
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// supersedeStatementCashWithDistributions applies the third_party_distribution
+// cash-transfer precedence (INTEROP §8.2): a cash distribution (method wire /
+// schwab_third_party) may also surface as a statement_pdf / tx_history_json cash
+// debit for the same movement. The distribution names the counterparty, so it is
+// authoritative — every matching statement/tx-history external debit (within the
+// shared cross-feed tolerance) is dropped so the movement isn't summed twice.
+// Securities transfers are NOT deduped here (they are new data no other feed
+// records); they pass straight through to net_flow. Distribution legs themselves
+// are never dropped, and the downstream PDF↔JSON dedup ignores them (neither
+// source), so no double-drop occurs.
+//
+// Matching is intentionally non-consuming: a statement/tx-history debit is
+// dropped if ANY distribution leg matches it, so one distribution can supersede
+// every same-amount debit inside the window. This biases toward over-drop, never
+// under-drop — never summing a movement twice (the spec's goal) beats preserving
+// a rare coincidental same-amount, same-window distinct debit. A consuming
+// variant would have to consume exactly one copy per feed (PDF and JSON) per
+// distribution; getting that per-feed bookkeeping wrong would under-drop and
+// re-introduce the double-count this stage exists to prevent, so we keep the
+// safe direction.
+func supersedeStatementCashWithDistributions(built []builtWebTx) []builtWebTx {
+	// Index the authoritative distribution cash legs per account.
+	type leg struct {
+		day    int64
+		amount float64
+	}
+	distByAcct := map[string][]leg{}
+	for i := range built {
+		b := &built[i]
+		if b.source == sourceThirdPartyDistribution && externalFlowKinds[b.tx.Kind] &&
+			b.tx.NetAmount != nil && distributionIsCash(string(b.tx.Payload)) {
+			distByAcct[b.tx.AccountExternalID] = append(distByAcct[b.tx.AccountExternalID],
+				leg{day: b.tx.OccurredAt / 86400, amount: b.tx.NetAmount.InexactFloat64()})
+		}
+	}
+	if len(distByAcct) == 0 {
+		return built
+	}
+
+	out := make([]builtWebTx, 0, len(built))
+	for i := range built {
+		b := built[i]
+		if (b.source == sourceStatementPDF || b.source == sourceTxHistoryJSON) &&
+			externalFlowKinds[b.tx.Kind] && b.tx.NetAmount != nil {
+			day := b.tx.OccurredAt / 86400
+			amt := b.tx.NetAmount.InexactFloat64()
+			matched := false
+			for _, l := range distByAcct[b.tx.AccountExternalID] {
+				if crossFeedMatch(day, amt, l.day, l.amount) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				continue // the distribution is authoritative for this cash movement
+			}
+		}
+		out = append(out, b)
 	}
 	return out
 }
@@ -554,6 +689,13 @@ func webKind(s string) canonical.TxKind {
 		return canonical.TxKindDeposit
 	case "Withdrawal", "Wire Sent":
 		return canonical.TxKindWithdrawal
+	case "Transfer Out":
+		// Directional third_party_distribution rows (INTEROP §8.2);
+		// distinct from the undirected "Transfer" below, which stays
+		// a Journal because its capital direction is unknown.
+		return canonical.TxKindTransferOut
+	case "Transfer In":
+		return canonical.TxKindTransferIn
 	case "MoneyLink Transfer", "Transfer", "Security Transfer",
 		"Journal", "Journaled Shares":
 		return canonical.TxKindJournal
@@ -572,18 +714,30 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-// schwabWebTxPayload captures the two payload shapes the silver
+// schwabWebTxPayload captures the payload shapes the silver
 // produces side-by-side. Statement-PDF rows use lower-case keys
 // with numeric values (`amount`, `quantity`, `price`).
 // Transaction-history JSON rows use Schwab's CSV-export-style
 // capitalised string keys (`Amount`, `Quantity`, `Price`) with
-// values like `"$384.01"`, `"(25,000.00)"`, or `""`. Both
-// payloads land in the same silver row keyed by source, so the
-// adapter probes both.
+// values like `"$384.01"`, `"(25,000.00)"`, or `""`.
+// third_party_distribution rows carry the external-flow magnitude
+// as `market_value` (securities) or `cash_amount` (cash) per the
+// documented payload contract (schwab-web DESIGN.md §6 / INTEROP
+// §8.2-8.3) — they don't structure a plain `amount`, so those are
+// the NetAmount source for transfer rows. Both payloads land in
+// the same silver row keyed by source, so the adapter probes
+// every shape.
 type schwabWebTxPayload struct {
 	Amount   *float64 `json:"amount"`
 	Quantity *float64 `json:"quantity"`
 	Price    *float64 `json:"price"`
+
+	// Distribution external-flow magnitude. Only consulted when
+	// neither `amount` nor `Amount` is present, so a row that does
+	// carry a plain amount is unaffected (and securities and cash
+	// transfers never both set their magnitude key on one row).
+	MarketValue *float64 `json:"market_value"`
+	CashAmount  *float64 `json:"cash_amount"`
 
 	AmountStr   string `json:"Amount"`
 	QuantityStr string `json:"Quantity"`
@@ -601,6 +755,18 @@ func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.
 		return nil, nil, nil
 	}
 	netAmount = pickWebAmount(p.Amount, p.AmountStr)
+	if netAmount == nil {
+		// third_party_distribution transfer rows carry the
+		// external-flow magnitude under `market_value` (securities)
+		// or `cash_amount` (cash), not a plain `amount` (DESIGN.md
+		// §6 / INTEROP §8.2-8.3). The canonical sign helper applied
+		// in the build loop turns this magnitude into the directional
+		// net_flow (e.g. TxKindTransferOut → negative outflow).
+		netAmount = pickWebAmount(p.MarketValue, "")
+		if netAmount == nil {
+			netAmount = pickWebAmount(p.CashAmount, "")
+		}
+	}
 	quantity = pickWebAmount(p.Quantity, p.QuantityStr)
 	price = pickWebAmount(p.Price, p.PriceStr)
 	return
@@ -626,6 +792,35 @@ func extractWebTxDescription(payload string) *string {
 		}
 	}
 	return nil
+}
+
+// extractTaxYear reads payload.tax_year off a form_1099b row. The tax year is
+// form content (the year the lot is REPORTED under), not derivable from the row
+// timestamp, because a December sale can land on the following year's form.
+// Returns ok=false when the key is absent/null so an unparseable lot simply
+// doesn't establish a covered (account, tax_year) — it never silently coerces.
+func extractTaxYear(payload string) (int, bool) {
+	var p struct {
+		TaxYear *int `json:"tax_year"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil || p.TaxYear == nil {
+		return 0, false
+	}
+	return *p.TaxYear, true
+}
+
+// distributionIsCash reports whether a third_party_distribution row is a cash
+// transfer (payload.transfer_kind == "cash"). Cash transfers may overlap a
+// statement cash debit and are deduped against it; securities transfers
+// (transfer_kind == "securities") are new data and are left untouched.
+func distributionIsCash(payload string) bool {
+	var p struct {
+		TransferKind string `json:"transfer_kind"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	return p.TransferKind == "cash"
 }
 
 func pickWebAmount(num *float64, str string) *canonical.Decimal {
