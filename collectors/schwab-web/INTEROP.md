@@ -66,6 +66,13 @@ opaque). One-line lookup.
 | Stable across re-loads? | Yes (deterministic; sha256-churn-safe since 0004) | Yes |
 | Joinable? | **No** — different value spaces |
 
+All four web feeds — `statement_pdf`, `tx_history_json`, `form_1099b`,
+`third_party_distribution` — share the **same** synthetic-id scheme
+(content + ordinal index, sha256-independent). So they collide
+deterministically only when their content genuinely matches; in
+general the same economic event carries a *different* id per feed and
+gold reconciles by content, not by id (see §4 + §8).
+
 ### Gold-layer bridge
 
 **Date-splice, do not per-row-match across the boundary.**
@@ -102,9 +109,11 @@ Effects on the web silver:
 - `documents` is keyed on `sha256`, so it preserves every
   physical fetch (no data loss). But the **logical** document
   count is roughly half the row count.
-- `transactions` follows: synthetic `activity_id` includes
-  `source_sha256`, so each physical PDF yields a distinct set
-  of `activity_id`s. Same transaction, two activity_ids.
+- `transactions` were affected before migration 0004 (the synthetic
+  `activity_id` then included `source_sha256`, so each physical PDF
+  yielded a distinct id set). Since 0004 the id is sha256-independent
+  and the load gates on `logical_doc_key`, so a re-download no longer
+  duplicates rows (see below).
 
 ### Gold-layer mitigation
 
@@ -145,9 +154,12 @@ IRS-level categorisation.
 
 ### Gold-layer mitigation
 
-Add a **1099-XML parser** in the gold layer (or as a follow-up
-in `schwab-web.load.py`); project the per-lot detail into
-a gold-only `tax_lots` table. **Do not** modify the api silver —
+**The 1099-B parser now lives in silver** (`source='form_1099b'`,
+DESIGN.md §6a): per-lot proceeds, cost basis, acquisition date,
+term, and wash-sale flag land in the row `payload`. Gold projects
+these into its `tax_lots` table and treats them as
+authoritative-for-sales (see §8). Remaining 1099 sections (DIV /
+INT / OID) are still unparsed. **Do not** modify the api silver —
 the data simply isn't in the api.
 
 ## 5. No live position snapshots in web silver
@@ -193,7 +205,82 @@ the web feed is and isn't carrying:
 | Gap | Impact on gold |
 | --- | --- |
 | pdf_parsers occasionally returns `amount=None` on Sale rows (≈1% — concentrated on money-market-fund proceeds and a handful of early-2025 fee rows) | A handful of missing transactions per year; gold can detect via a row-count sanity check |
-| Two parallel transaction sources (`statement_pdf` + `tx_history_json`) | Same logical event lands twice with different synthetic `activity_id`s. Gold should dedupe by (account, timestamp, amount, ±description) and prefer `tx_history_json` where both exist |
+| Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and lets `form_1099b` supersede sales in its tax year (§8) |
 | Per-row "More"-modal data not captured by default | The opt-in `--with-more-detail` flag enables it (~1 click/transaction). When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
-| 1099 XML / CSV not parsed | Tax-lot detail unavailable (see §4) |
+| `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold must bridge name → instrument (its symbol/CUSIP map), §8 |
+| `third_party_distribution` cash transfers may overlap a statement cash debit | Gold dedupes cash distributions against external flows; securities distributions are new data (§8) |
 | Account-number → suffix mapping not yet auto-extracted | Manual map maintenance for now (see §1) |
+
+---
+
+## 8. Gold-layer hand-off: consuming the two new silver sources
+
+> **Paired task — schedule alongside the silver change.** Until the
+> gold reader (`wealthdb/internal/silver/schwab/web_reader.go`) handles
+> these sources, `form_1099b` and `third_party_distribution` rows
+> either double-count against the existing feeds or sit unused. The
+> silver side is complete; this is the gold side of the same feature.
+
+### 8.1 `form_1099b` — authoritative-for-sales within its tax year
+
+The 1099-B is the complete, cost-basis-bearing record of sales. The
+`statement_pdf` and `tx_history_json` feeds carry sales too (partially
+— the statement parser misses most real sales), so the three overlap
+and must not be summed.
+
+- **Precedence.** Within a `(account, tax_year)` that has any
+  `form_1099b` rows, `form_1099b` is authoritative for **sales**:
+  drop `statement_pdf` / `tx_history_json` rows that map to `TxKindSell`
+  whose `timestamp` falls in that calendar year, and use the
+  `form_1099b` lots instead. Outside covered tax years, keep the
+  existing feeds. (Apply this *after* the existing JSON-authoritative
+  splice and the cross-feed external-flow dedup, as a third stage.)
+- **Cost basis.** Each lot's `payload` carries `proceeds`,
+  `cost_basis` (nullable — `null` means Schwab did not report it; see
+  the `basis_not_shown` / `noncovered` flags + `cost_basis_raw`),
+  `acquired_date` (ISO, `"Various"`, or null), `term`, and
+  `wash_sale_disallowed`. Surface proceeds as the sale net amount
+  (canonical `TxKindSell` → positive) and basis as the lot's
+  acquisition outlay.
+- **Instrument resolution.** `form_1099b` rows have **no ticker or
+  CUSIP** — `instrument_key` is `NULL`, the only identifier is
+  `payload.security_name`. Gold must bridge the name to an instrument
+  via its existing symbol/name map; lots that don't resolve should be
+  surfaced as name-keyed rather than dropped.
+- **Tax year** is in `payload.tax_year` (form content, not filename).
+
+### 8.2 `third_party_distribution` — transfer flows out
+
+- **Securities transfers** (`payload.transfer_kind == "securities"`)
+  are **new** data — no other feed records them; the statements show
+  them only as an unexplained position drop. Map `kind='Transfer Out'`
+  → `TxKindTransferOut`; the row carries `symbol`/`instrument_key`,
+  `quantity`, and `market_value` (the external-flow magnitude). These
+  reconciled cleanly against position deltas in testing (the position
+  drops by the transferred quantity across the letter date).
+- **Cash transfers** (`payload.transfer_kind == "cash"`, `method` ∈
+  {`wire`, `schwab_third_party`}) **may overlap** a `statement_pdf` /
+  `tx_history_json` cash debit for the same movement. Run them through
+  the existing cross-feed external-flow dedup (3-day / 0.5%-amount
+  tolerance); when matched, treat `third_party_distribution` as
+  authoritative (it names the counterparty). Do **not** sum a cash
+  distribution and a matching statement debit.
+- `payload` also carries `counterparty`, `counterparty_bank`,
+  `counterparty_account_suffix`, and `direction` for the transfer-flow
+  surface.
+
+### 8.3 Concrete gold-side edits
+
+- Add `sourceFORM1099B = "form_1099b"` and
+  `sourceThirdPartyDistribution = "third_party_distribution"`
+  constants alongside `sourceStatementPDF` / `sourceTxHistoryJSON`.
+- Extend `webKind` to map `"Transfer Out"` / `"Transfer In"` →
+  `TxKindTransferOut` / `TxKindTransferIn`, and confirm `"Sale"` →
+  `TxKindSell` already covers the 1099-B rows.
+- Add a 1099-B authority stage in `transactionsBeforeAPIStart` after
+  `spliceNonExternalToJSON` + `dedupeCrossFeedExternalFlows`: index
+  `form_1099b` sales by `(account, tax_year)`, drop other-feed sells
+  in those windows, emit the 1099-B lots (with basis) instead.
+- Route `third_party_distribution` rows through `externalFlowKinds`
+  so they affect `net_flow`; give securities transfers a position
+  effect and cash transfers the dedup-against-statement treatment.

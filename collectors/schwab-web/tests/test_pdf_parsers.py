@@ -1288,3 +1288,124 @@ class TestStatementPdfReturnShape:
         assert positions and positions[0]["instrument_key"] == "SYN1"
         cash = pp.parse_cash_summary(text)
         assert cash and cash["closing_balance"] == 5.50
+
+
+# ============================================================
+# 3rd-Party-Distribution letters
+# ============================================================
+#
+# Synthetic text mimicking pypdfium2's one-row-per-line extraction of
+# the three observed layout families. Wholly invented counterparties /
+# amounts; VTI is a widely-held example ticker (CLAUDE.md §4).
+
+class TestParseDistributionText:
+    _SECURITIES = (
+        "Account(s) ending: 999\n"
+        "January 23, 2024\n"
+        "Confirmation: We've moved funds as requested.\n"
+        "account noted above. We've transferred these funds as described below.\n"
+        "Transfer(s) to Schwab accounts of third parties\n"
+        "To account ending in: 321\n"
+        "Account name: SYNTH FAMILY TRUST\n"
+        "Security(ies) transferred:\n"
+        "Symbol Quantity Market Value\n"
+        "VTI 12.50000 $1,250.00\n"
+        "Total market value: $1,250.00\n"
+        "Please note that the transaction amounts above do not reflect transaction fees.\n"
+    )
+    _WIRE = (
+        "Account(s) ending: 999\n"
+        "October 9, 2025\n"
+        "We've transferred these funds as described below.\n"
+        "Wire transfer(s)\n"
+        "Reference: SYNTHWIREREF0001\n"
+        "To the account of SYNTH OPPORTUNITY FUND LP at Some Synthetic Bank and\n"
+        "Account ending in: 654\n"
+        "Cash transfer amount requested: $25,000.00\n"
+    )
+    _CASH_SCHWAB = (
+        "Account(s) ending: 999\n"
+        "June 17, 2024\n"
+        "We've transferred these funds as described below.\n"
+        "Transfer(s) to Schwab accounts of third parties\n"
+        "To account ending in: 777\n"
+        "Account name: SYNTH BENEFICIARY\n"
+        "Cash transfer amount requested: $3,141.59\n"
+    )
+
+    def test_securities_transfer(self):
+        rows = pp.parse_distribution_text(
+            self._SECURITIES, filename="3rd-Party-Distribution_2024-01-23_999.PDF")
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["transfer_kind"] == "securities"
+        assert r["direction"] == "out"
+        assert r["kind"] == "Transfer Out"
+        assert r["method"] == "schwab_third_party"
+        assert r["symbol"] == "VTI"
+        assert r["instrument_key"] == "VTI"
+        assert r["quantity"] == 12.5
+        assert r["market_value"] == 1250.0
+        assert r["amount"] == 1250.0
+        assert r["counterparty"] == "SYNTH FAMILY TRUST"
+        assert r["counterparty_account_suffix"] == "321"
+        assert r["date"] == "2024-01-23"
+
+    def test_wire_cash_transfer(self):
+        rows = pp.parse_distribution_text(
+            self._WIRE, filename="3rd-Party-Distribution_2025-10-09_999.PDF")
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["transfer_kind"] == "cash"
+        assert r["method"] == "wire"
+        assert r["cash_amount"] == 25000.0
+        assert r["amount"] == 25000.0
+        assert r["symbol"] is None
+        assert r["instrument_key"] is None
+        assert r["counterparty"] == "SYNTH OPPORTUNITY FUND LP"
+        assert r["counterparty_bank"] == "Some Synthetic Bank"
+        assert r["counterparty_account_suffix"] == "654"
+        assert r["date"] == "2025-10-09"
+
+    def test_cash_to_schwab_third_party(self):
+        rows = pp.parse_distribution_text(
+            self._CASH_SCHWAB, filename="3rd-Party-Distribution_2024-06-17_999.PDF")
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["transfer_kind"] == "cash"
+        assert r["method"] == "schwab_third_party"
+        assert r["cash_amount"] == 3141.59
+        assert r["counterparty"] == "SYNTH BENEFICIARY"
+        assert r["counterparty_account_suffix"] == "777"
+
+    def test_date_falls_back_to_filename(self):
+        # Body with no "Month D, YYYY" line → use the filename date.
+        text = ("Wire transfer(s)\n"
+                "To the account of SYNTH LP at Bank\n"
+                "Cash transfer amount requested: $1.00\n")
+        rows = pp.parse_distribution_text(
+            text, filename="3rd-Party-Distribution_2022-03-04_999.PDF")
+        assert rows[0]["date"] == "2022-03-04"
+
+    def test_unrecognised_layout_emits_no_rows(self):
+        rows = pp.parse_distribution_text(
+            "Some unrelated letter with no transfer block.\n",
+            filename="3rd-Party-Distribution_2024-01-01_999.PDF")
+        assert rows == []
+
+    def test_multi_security_table(self):
+        text = (
+            "March 1, 2024\n"
+            "Transfer(s) to Schwab accounts of third parties\n"
+            "To account ending in: 100\n"
+            "Account name: SYNTH DAF\n"
+            "Security(ies) transferred:\n"
+            "Symbol Quantity Market Value\n"
+            "VTI 1.00000 $100.00\n"
+            "SPY 2.00000 $200.00\n"
+            "Total market value: $300.00\n"
+        )
+        rows = pp.parse_distribution_text(text, filename="x_2024-03-01_100.PDF")
+        assert len(rows) == 2
+        assert {r["symbol"] for r in rows} == {"VTI", "SPY"}
+        assert all(r["transfer_kind"] == "securities" for r in rows)

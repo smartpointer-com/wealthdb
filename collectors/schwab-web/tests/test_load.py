@@ -1054,3 +1054,272 @@ class TestSha256ChurnTransactionIdempotency:
             "SELECT COUNT(*) FROM transactions"
         ).fetchone()[0]
         assert n_before == n_after
+
+
+# ============================================================
+# 1099-B + 3rd-Party-Distribution load integration
+# ============================================================
+
+def _make_doc_bronze(root: Path, run_ts: str, suffix: str,
+                     docs: list[dict]) -> Path:
+    """Bronze run whose statements area holds arbitrary documents.
+
+    Each doc: {date, type, document, filename, content}. `content` is
+    written verbatim (real synthetic XML/CSV, or a stub PDF body), so
+    the real parsers run against it where applicable. format is
+    inferred from the extension."""
+    run_dir = root / run_ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stmts = []
+    for d in docs:
+        p = run_dir / "statements" / suffix / d["filename"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        content = d["content"]
+        p.write_bytes(content.encode("utf-8") if isinstance(content, str)
+                      else content)
+        sha, _ = bronze.sha256_file(p)
+        stmts.append({
+            "date": d["date"], "type": d["type"],
+            "document": d.get("document", ""), "filename": d["filename"],
+            "format": d.get("format")
+            or d["filename"].rsplit(".", 1)[-1].lower(),
+            "size": p.stat().st_size, "sha256": sha,
+        })
+    manifest = {
+        "run_ts": run_ts, "mode": "statements", "dry_run": False,
+        "statements": [{"suffix": suffix, "label": f"Demo …{suffix}",
+                        "documents": stmts}],
+        "transactions": [],
+    }
+    (run_dir / "run.json").write_text(json.dumps(manifest))
+    return run_dir
+
+
+# A 2-lot synthetic 1099-B OFX-2.x XML (covered + Various lots).
+_MINI_1099B_XML = (
+    '<?xml version="1.0"?>\n<?OFX OFXHEADER="200" VERSION="200" ?>\n'
+    "<OFX><TAX1099MSGSRSV1><TAX1099TRNRS><TAX1099RS>"
+    "<TAX1099B_V100><TAXYEAR>2021</TAXYEAR><EXTDBINFO_V100>"
+    "<PROCDET_V100><FORM8949CODE>D</FORM8949CODE><DTSALE>20211001</DTSALE>"
+    "<SECNAME>SYNTH ALPHA CORP</SECNAME>"
+    "<SALEDESCRIPTION>100.00 SYNTH ALPHA CORP</SALEDESCRIPTION>"
+    "<NUMSHRS>100.000000</NUMSHRS><COSTBASIS>100.00</COSTBASIS>"
+    "<SALESPR>3000.00</SALESPR><LONGSHORT>LONG</LONGSHORT>"
+    "<DTAQD>20100104</DTAQD><NONCOVEREDSECURITY>N</NONCOVEREDSECURITY>"
+    "<BASISNOTSHOWN>N</BASISNOTSHOWN></PROCDET_V100>"
+    "<PROCDET_V100><FORM8949CODE>B</FORM8949CODE><DTSALE>20210615</DTSALE>"
+    "<SECNAME>SYNTH BETA INC</SECNAME>"
+    "<SALEDESCRIPTION>50.00 SYNTH BETA INC</SALEDESCRIPTION>"
+    "<NUMSHRS>50.000000</NUMSHRS><COSTBASIS>500.00</COSTBASIS>"
+    "<SALESPR>1000.00</SALESPR><LONGSHORT>SHORT</LONGSHORT><DTVAR>Y</DTVAR>"
+    "<NONCOVEREDSECURITY>N</NONCOVEREDSECURITY>"
+    "<BASISNOTSHOWN>N</BASISNOTSHOWN></PROCDET_V100>"
+    "</EXTDBINFO_V100></TAX1099B_V100></TAX1099RS></TAX1099TRNRS>"
+    "</TAX1099MSGSRSV1></OFX>"
+)
+
+# A 1-lot CSV twin whose security name is a sentinel — if it ever shows
+# up in silver, the CSV was parsed when the XML twin should have won.
+_MINI_1099B_CSV = (
+    ":Account,XXXX-X999\r\n"
+    "Form 1099 B\r\n"
+    "1a,1b,1c,1d,1e,2,12\r\n"
+    "Description of property,Date acquired,Date sold,Proceeds,"
+    "Cost or other basis,Term,Basis reported\r\n"
+    "9.00 CSV SENTINEL CORP,01/02/2020,03/04/2021,99.00,9.00,Long Term,X\r\n"
+)
+
+
+class TestForm1099bLoad:
+    def test_xml_loads_sale_rows(self, migrated, tmp_path):
+        run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["form_1099b_transactions_inserted"] == 2
+        rows = migrated.execute(
+            "SELECT kind, instrument_key, source,"
+            " json_extract(payload,'$.security_name'),"
+            " json_extract(payload,'$.cost_basis'),"
+            " json_extract(payload,'$.tax_year')"
+            " FROM transactions WHERE source='form_1099b' ORDER BY timestamp"
+        ).fetchall()
+        assert rows == [
+            ("Sale", None, "form_1099b", "SYNTH BETA INC", 500.0, 2021),
+            ("Sale", None, "form_1099b", "SYNTH ALPHA CORP", 100.0, 2021),
+        ]
+
+    def test_xml_preferred_over_csv_twin(self, migrated, tmp_path):
+        # XML + CSV share the base filename "XXXX-X999"; the loader must
+        # parse exactly one (XML) — 2 rows, never the CSV sentinel.
+        run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML},
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.CSV", "content": _MINI_1099B_CSV},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["form_1099b_transactions_inserted"] == 2
+        n = migrated.execute(
+            "SELECT COUNT(*) FROM transactions WHERE source='form_1099b'"
+        ).fetchone()[0]
+        assert n == 2
+        sentinel = migrated.execute(
+            "SELECT COUNT(*) FROM transactions WHERE"
+            " json_extract(payload,'$.security_name') = 'CSV SENTINEL CORP'"
+        ).fetchone()[0]
+        assert sentinel == 0
+
+    def test_csv_fallback_when_no_xml(self, migrated, tmp_path):
+        run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.CSV", "content": _MINI_1099B_CSV},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["form_1099b_transactions_inserted"] == 1
+        name = migrated.execute(
+            "SELECT json_extract(payload,'$.security_name')"
+            " FROM transactions WHERE source='form_1099b'"
+        ).fetchone()[0]
+        assert name == "CSV SENTINEL CORP"
+
+    def test_reload_is_idempotent(self, migrated, tmp_path):
+        docs = [{"date": "02/15/2022", "type": "Tax Forms",
+                 "document": "1099 Composite and Year-End Summary - 2021",
+                 "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML}]
+        load.load_run(migrated, _make_doc_bronze(
+            tmp_path, "20260520T120000Z", "999", docs), workers=1)
+        migrated.commit()
+        # Re-download (new run_ts, same logical form). The base-filename
+        # logical_doc_key gate must skip re-insertion.
+        stats2 = load.load_run(migrated, _make_doc_bronze(
+            tmp_path, "20260521T120000Z", "999", docs), workers=1)
+        migrated.commit()
+        assert stats2["form_1099b_transactions_inserted"] == 0
+        n = migrated.execute(
+            "SELECT COUNT(*) FROM transactions WHERE source='form_1099b'"
+        ).fetchone()[0]
+        assert n == 2
+
+    def test_reparse_parse_failure_preserves_prior_rows(
+            self, monkeypatch, migrated, tmp_path):
+        """A parse that fails during --reparse must NOT drop the prior
+        rows (delete happens only after a successful parse)."""
+        docs = [{"date": "02/15/2022", "type": "Tax Forms",
+                 "document": "1099 Composite and Year-End Summary - 2021",
+                 "filename": "XXXX-X999.XML", "content": _MINI_1099B_XML}]
+        load.load_run(migrated, _make_doc_bronze(
+            tmp_path, "20260520T120000Z", "999", docs), workers=1)
+        migrated.commit()
+        n0 = migrated.execute(
+            "SELECT COUNT(*) FROM transactions WHERE source='form_1099b'"
+        ).fetchone()[0]
+        assert n0 == 2
+
+        def _boom(path, fmt=None):
+            raise RuntimeError("synthetic parse failure")
+        monkeypatch.setattr(load.tf, "parse_1099b", _boom)
+        stats = load.load_run(migrated, _make_doc_bronze(
+            tmp_path, "20260521T120000Z", "999", docs),
+            reparse=True, workers=1)
+        migrated.commit()
+        assert stats["form_1099b_parse_errors"] == 1
+        assert stats["transactions_reparsed"] == 0   # delete not performed
+        n1 = migrated.execute(
+            "SELECT COUNT(*) FROM transactions WHERE source='form_1099b'"
+        ).fetchone()[0]
+        assert n1 == n0 == 2                          # prior rows preserved
+
+    def test_pdf_only_form_is_coverage_gap(self, migrated, tmp_path):
+        run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
+            {"date": "02/15/2019", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2018",
+             "filename": "XXXX-X999.PDF", "content": "%PDF-1.4 stub\n"},
+        ])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["form_1099b_transactions_inserted"] == 0
+        assert stats["form_1099b_pdf_only"] == 1
+
+
+class TestDistributionLoad:
+    _SYNTH_ROWS = [{
+        "date": "2024-01-23", "direction": "out", "method": "schwab_third_party",
+        "counterparty": "SYNTH FAMILY TRUST", "counterparty_bank": None,
+        "counterparty_account_suffix": "321", "kind": "Transfer Out",
+        "amount": 1250.0, "symbol": "VTI", "instrument_key": "VTI",
+        "description": "Securities transfer out to SYNTH FAMILY TRUST",
+        "transfer_kind": "securities", "security_symbol": "VTI",
+        "quantity": 12.5, "market_value": 1250.0,
+    }]
+
+    def _bronze(self, tmp_path, run_ts="20260520T120000Z",
+                filename="3rd-Party-Distribution_2024-01-23_999.PDF"):
+        return _make_doc_bronze(tmp_path, run_ts, "999", [
+            {"date": "01/23/2024", "type": "Letters",
+             "document": "3rd Party Distribution",
+             "filename": filename, "content": f"%PDF-1.4 stub {filename}\n"},
+        ])
+
+    def test_distribution_letter_loads(self, monkeypatch, migrated, tmp_path):
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf",
+                            lambda path: [dict(r) for r in self._SYNTH_ROWS])
+        stats = load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        migrated.commit()
+        assert stats["distribution_transactions_inserted"] == 1
+        row = migrated.execute(
+            "SELECT kind, instrument_key, source,"
+            " json_extract(payload,'$.transfer_kind'),"
+            " json_extract(payload,'$.counterparty'),"
+            " json_extract(payload,'$.market_value')"
+            " FROM transactions WHERE source='third_party_distribution'"
+        ).fetchone()
+        assert row == ("Transfer Out", "VTI", "third_party_distribution",
+                       "securities", "SYNTH FAMILY TRUST", 1250.0)
+
+    def test_distribution_reload_is_idempotent(
+            self, monkeypatch, migrated, tmp_path):
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf",
+                            lambda path: [dict(r) for r in self._SYNTH_ROWS])
+        load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        migrated.commit()
+        stats2 = load.load_run(
+            migrated, self._bronze(tmp_path, run_ts="20260521T120000Z"),
+            workers=1)
+        migrated.commit()
+        assert stats2["distribution_transactions_inserted"] == 0
+        n = migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+            " WHERE source='third_party_distribution'"
+        ).fetchone()[0]
+        assert n == 1
+
+    def test_reparse_parse_failure_preserves_prior_rows(
+            self, monkeypatch, migrated, tmp_path):
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf",
+                            lambda path: [dict(r) for r in self._SYNTH_ROWS])
+        load.load_run(migrated, self._bronze(tmp_path), workers=1)
+        migrated.commit()
+
+        def _boom(path):
+            raise RuntimeError("synthetic parse failure")
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf", _boom)
+        stats = load.load_run(
+            migrated, self._bronze(tmp_path, run_ts="20260521T120000Z"),
+            reparse=True, workers=1)
+        migrated.commit()
+        assert stats["distribution_parse_errors"] == 1
+        assert stats["transactions_reparsed"] == 0
+        n = migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+            " WHERE source='third_party_distribution'"
+        ).fetchone()[0]
+        assert n == 1                                # prior row preserved

@@ -57,6 +57,7 @@ apply_migrations = silver.apply_migrations
 _current_schema_version = silver.current_schema_version
 
 import pdf_parsers as pp
+import tax_form_parsers as tf
 
 log = logging.getLogger("schwab-web.load")
 
@@ -383,6 +384,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "transactions_inserted": 0,
         "transactions_reparsed": 0,
         "pdf_parse_errors": 0,
+        "distribution_transactions_inserted": 0,
+        "distribution_parse_errors": 0,
+        "form_1099b_transactions_inserted": 0,
+        "form_1099b_parse_errors": 0,
+        "form_1099b_pdf_only": 0,
         "positions_inserted": 0,
         "cash_balances_inserted": 0,
         "statements_logical_deduped": 0,
@@ -703,6 +709,16 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             n_updated += 1
         stats["account_registration_updated"] = n_updated
 
+    # 3rd-Party-Distribution letters and 1099-Composite tax forms.
+    # Both are already in the documents table (recorded in the
+    # statement walk above) but skipped there for row parsing; these
+    # two passes add their transaction rows. They iterate the same
+    # manifest["statements"] documents and use their own
+    # logical_doc_key gates, so they're idempotent across runs and
+    # sha256 re-downloads independently of the statement parser.
+    _load_distribution_letters(conn, run_dir, manifest, reparse, stats)
+    _load_1099b_forms(conn, run_dir, manifest, reparse, stats)
+
     # Tx-history exports: per-account CSV/JSON/XML + a landing
     # HTML capture. JSON is the canonical source for silver rows;
     # CSV/XML are stored as opaque documents for traceability.
@@ -985,6 +1001,215 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
     return inserted
 
 
+def _insert_parsed_transactions(conn: sqlite3.Connection,
+                                account_external_id: str,
+                                rows: list[dict],
+                                source: str,
+                                source_sha256: str,
+                                logical_doc_key: str) -> int:
+    """INSERT OR IGNORE one row per normalised parser row, for the
+    newer feeds (form_1099b, third_party_distribution).
+
+    Mirrors `_insert_statement_transactions` — same synthetic
+    activity_id contract (`date`/`amount`/`description`/`symbol` +
+    ordinal index), same logical_doc_key bookkeeping — but takes the
+    `source` and the silver `kind` / `instrument_key` straight from
+    the row dict (the parser already mapped them) and stores the whole
+    row as the payload. Rows with no parseable `date` are dropped with
+    a warning rather than failing the load."""
+    inserted = 0
+    for idx, row in enumerate(rows):
+        timestamp = parse_iso_date(row.get("date"))
+        if timestamp is None:
+            log.warning("skipping %s row with no parseable date: %r",
+                        source, row.get("date"))
+            continue
+        activity_id = _synthesize_activity_id(account_external_id, row, idx)
+        kind = row.get("kind") or "Unknown"
+        instrument_key = row.get("instrument_key")
+        payload = canonical_json(row)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO transactions"
+            " (activity_id, timestamp, account_external_id, kind,"
+            "  instrument_key, source, source_sha256, logical_doc_key,"
+            "  payload)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (activity_id, timestamp, account_external_id, kind,
+             instrument_key, source, source_sha256, logical_doc_key, payload),
+        )
+        if cur.rowcount:
+            inserted += 1
+    return inserted
+
+
+def _gate_logical_doc(conn: sqlite3.Connection, ldk: str,
+                      reparse: bool) -> tuple[bool, bool]:
+    """Shared transactions load gate for the newer feeds. Returns
+    `(should_process, rows_exist)` and deletes nothing.
+
+    The delete-on-reparse is intentionally NOT done here: the caller
+    must parse first and only delete on a *successful* parse (via
+    `_reparse_delete`), so a parse failure can never drop existing rows
+    without a replacement. This mirrors the statement-PDF path, which
+    checks the parse result before its window delete."""
+    already = conn.execute(
+        "SELECT 1 FROM transactions WHERE logical_doc_key = ?", (ldk,),
+    ).fetchone() is not None
+    if already and not reparse:
+        return False, True
+    return True, already
+
+
+def _reparse_delete(conn: sqlite3.Connection, ldk: str, rows_exist: bool,
+                    reparse: bool, stats: dict) -> None:
+    """Clear all rows for a logical doc immediately before re-insert,
+    once its parse has succeeded. No-op unless `--reparse` and rows
+    already exist (all sha256-churn variants share one logical_doc_key,
+    so this clears them together)."""
+    if rows_exist and reparse:
+        conn.execute(
+            "DELETE FROM transactions WHERE logical_doc_key = ?", (ldk,),
+        )
+        stats["transactions_reparsed"] += 1
+
+
+def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
+                               manifest: dict, reparse: bool,
+                               stats: dict) -> None:
+    """Parse 3rd-Party-Distribution letters (doc_kind='letter', the
+    "3rd-Party-Distribution_*.PDF" filename) into transfer rows with
+    source='third_party_distribution'.
+
+    These letters are already recorded in the documents table by the
+    statement walk; this pass only adds the transaction rows. Each
+    letter is one logical document (no format twins), so the
+    logical_doc_key uses the filename directly."""
+    statements_dir = run_dir / "statements"
+    for acct in manifest.get("statements", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        for doc in acct.get("documents", []):
+            filename = doc.get("filename") or ""
+            raw_type = doc.get("type") or ""
+            doc_kind = _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower())
+            if doc_kind != "letter":
+                continue
+            if not filename.startswith("3rd-Party-Distribution"):
+                continue
+            if _format_from_filename(filename) != "pdf":
+                continue
+            doc_date = parse_doc_date(doc.get("date") or "")
+            if doc_date is None:
+                log.warning("distribution %s has unparseable date %r; skipping",
+                            filename, doc.get("date"))
+                continue
+            path = statements_dir / suffix / filename
+            if not path.is_file():
+                log.warning("distribution in manifest but missing on disk: %s",
+                            path)
+                stats["documents_missing_on_disk"] += 1
+                continue
+            ldk = _logical_doc_key(suffix, doc_date, filename)
+            proceed, rows_exist = _gate_logical_doc(conn, ldk, reparse)
+            if not proceed:
+                continue
+            try:
+                rows = pp.parse_distribution_pdf(path)
+            except Exception as e:
+                log.warning("distribution parse failed for %s: %s", path, e)
+                stats["distribution_parse_errors"] += 1
+                continue
+            # Delete only after a successful parse, so a failure can't
+            # drop the prior rows with no replacement.
+            _reparse_delete(conn, ldk, rows_exist, reparse, stats)
+            n = _insert_parsed_transactions(
+                conn, suffix, rows, "third_party_distribution",
+                doc.get("sha256") or "", ldk,
+            )
+            stats["transactions_inserted"] += n
+            stats["distribution_transactions_inserted"] += n
+
+
+def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
+                      manifest: dict, reparse: bool, stats: dict) -> None:
+    """Parse 1099 Composite tax forms (doc_kind='tax_form', document
+    name containing "1099 Composite") into sale rows with
+    source='form_1099b'.
+
+    Schwab ships each logical form in up to three formats (XML, CSV,
+    PDF) that share a base filename. We prefer the XML, fall back to
+    the CSV, and key the logical_doc_key on the **base filename
+    (without extension)** so the XML and CSV twins dedup to one set of
+    rows. A form available only as PDF is logged as a coverage gap
+    (no machine-readable lot detail to parse)."""
+    statements_dir = run_dir / "statements"
+    for acct in manifest.get("statements", []):
+        suffix = acct.get("suffix")
+        if not suffix:
+            continue
+        # Group this account's 1099-Composite docs by base filename
+        # (sans extension); within each group keep one doc per format.
+        groups: dict[str, dict[str, dict]] = {}
+        for doc in acct.get("documents", []):
+            raw_type = doc.get("type") or ""
+            if _DOC_KIND_BY_TYPE.get(raw_type, raw_type.lower()) != "tax_form":
+                continue
+            if "1099 Composite" not in (doc.get("document") or ""):
+                continue
+            filename = doc.get("filename") or ""
+            fmt = _format_from_filename(filename)
+            if fmt not in ("xml", "csv", "pdf"):
+                continue
+            base = filename[: -(len(fmt) + 1)] if "." in filename else filename
+            groups.setdefault(base, {}).setdefault(fmt, doc)
+
+        for base, by_fmt in groups.items():
+            if "xml" in by_fmt:
+                fmt, doc = "xml", by_fmt["xml"]
+            elif "csv" in by_fmt:
+                fmt, doc = "csv", by_fmt["csv"]
+            else:
+                # PDF-only form — no machine-readable lots to parse.
+                log.info("1099 Composite %s available only as PDF; "
+                         "no lot detail parsed", base)
+                stats["form_1099b_pdf_only"] += 1
+                continue
+
+            filename = doc.get("filename") or ""
+            doc_date = parse_doc_date(doc.get("date") or "")
+            if doc_date is None:
+                log.warning("1099 %s has unparseable date %r; skipping",
+                            filename, doc.get("date"))
+                continue
+            path = statements_dir / suffix / filename
+            if not path.is_file():
+                log.warning("1099 in manifest but missing on disk: %s", path)
+                stats["documents_missing_on_disk"] += 1
+                continue
+            # Format-independent key: the XML and CSV twins share `base`,
+            # so whichever we parse first wins and the other is skipped.
+            ldk = _logical_doc_key(suffix, doc_date, base)
+            proceed, rows_exist = _gate_logical_doc(conn, ldk, reparse)
+            if not proceed:
+                continue
+            try:
+                parsed = tf.parse_1099b(path, fmt)
+            except Exception as e:
+                log.warning("1099-B parse failed for %s: %s", path, e)
+                stats["form_1099b_parse_errors"] += 1
+                continue
+            # Delete only after a successful parse, so a failure can't
+            # drop the prior rows with no replacement.
+            _reparse_delete(conn, ldk, rows_exist, reparse, stats)
+            n = _insert_parsed_transactions(
+                conn, suffix, parsed.get("lots", []), "form_1099b",
+                doc.get("sha256") or "", ldk,
+            )
+            stats["transactions_inserted"] += n
+            stats["form_1099b_transactions_inserted"] += n
+
+
 def _registration_from_tax_forms(conn: sqlite3.Connection,
                                   account_external_id: str) -> str | None:
     """Fallback registration-label lookup for accounts whose
@@ -1142,7 +1367,9 @@ def run_load(args: argparse.Namespace) -> int:
                 log.info(
                     "loaded %s: accts +%d/-%d, docs +%d/-%d, "
                     "tx +%d (reparsed %d), positions +%d, cash +%d, "
-                    "logical-dup %d, registrations %d, pdf errors %d",
+                    "logical-dup %d, registrations %d, pdf errors %d; "
+                    "1099-B +%d (pdf-only %d, errors %d), "
+                    "distributions +%d (errors %d)",
                     run_dir.name,
                     stats["accounts_inserted"], stats["accounts_deduped"],
                     stats["documents_new"], stats["documents_dup"],
@@ -1153,6 +1380,11 @@ def run_load(args: argparse.Namespace) -> int:
                     stats["statements_logical_deduped"],
                     stats["account_registration_updated"],
                     stats["pdf_parse_errors"],
+                    stats["form_1099b_transactions_inserted"],
+                    stats["form_1099b_pdf_only"],
+                    stats["form_1099b_parse_errors"],
+                    stats["distribution_transactions_inserted"],
+                    stats["distribution_parse_errors"],
                 )
             except Exception:
                 conn.rollback()

@@ -269,14 +269,81 @@ silver doesn't strictly need any of them.
                                     invoked with --with-more-detail
 ```
 
-The silver loader reads `run.json` for the document inventory and
-the on-disk PDFs (for statement parsing) + JSON (for tx-history
-row ingestion, source = `'tx_history_json'`). CSV / XML are
-sha256-keyed into `documents` for traceability but their rows
-aren't re-parsed — JSON carries the same set plus Schwab's
-`AcctgRuleCd`. If `more-details.json` is present, the loader
-merges each record into the matching transaction's `payload`
-under `_more` (keyed by `_tx_history_row_key`).
+The silver loader reads `run.json` for the document inventory and,
+per document kind, parses these into `transactions`:
+
+- **Statement PDFs** → `source='statement_pdf'` (also positions +
+  cash, see §5).
+- **Tx-history JSON** → `source='tx_history_json'`. The tx-history
+  CSV / XML twins are sha256-keyed into `documents` for traceability
+  but not re-parsed — the JSON carries the same set plus Schwab's
+  `AcctgRuleCd`. If `more-details.json` is present, the loader merges
+  each record into the matching transaction's `payload` under `_more`
+  (keyed by `_tx_history_row_key`).
+- **1099-Composite XML / CSV** → `source='form_1099b'` (the 1099-B
+  sale lots; see §6a). XML preferred over the CSV twin; the PDF copy
+  stays an opaque document.
+- **3rd-Party-Distribution letters** (the `Letters` doc kind) →
+  `source='third_party_distribution'` (securities + cash transfers
+  out; see §6b).
+
+### 6a. 1099-B sale lots (`source='form_1099b'`)
+
+The 1099 Composite is the **authoritative annual record of sales**,
+carrying cost basis and acquisition date per lot — data the
+statement parser cannot see when a sale prints only as a bare
+position delta rather than as an activity row. Parsed by
+[`tax_form_parsers.py`](tax_form_parsers.py).
+
+- **Format precedence.** Schwab ships the form as PDF + XML + CSV
+  twins sharing one base filename. We prefer the **XML** (OFX-2.x,
+  cleaner per-field structure, an explicit `DTVAR` "Various" flag, a
+  `TAXYEAR` element), fall back to the **CSV**, and leave the PDF as
+  an opaque document. The `logical_doc_key` keys on the **base
+  filename without extension**, so the XML and CSV twins dedup to one
+  set of rows (whichever is parsed first wins; `--reparse` clears all
+  formats at once).
+- **Tax year** is taken from the content (`TAXYEAR`, cross-checked
+  against the sold-date year), never the unreliable `.N` filename
+  suffix.
+- **One row per lot**, `kind='Sale'`. The payload carries
+  `proceeds`, `cost_basis`, `acquired_date` (ISO / `'Various'` /
+  null), `term`, `wash_sale_disallowed`, `quantity`, `security_name`,
+  and the `noncovered` / `basis_not_shown` flags.
+- **Cost-basis honesty.** A noncovered lot whose basis Schwab does
+  not know renders `COSTBASIS=0`; we null the promoted `cost_basis`
+  for those (keeping the raw `0` + flags in payload) so a placeholder
+  is never mistaken for a real zero. A genuine `$0` basis on a
+  *covered* lot (e.g. a lot with a zero basis) is preserved.
+- **No ticker / CUSIP.** Neither the XML nor the CSV carries a
+  security identifier — only `security_name`. `instrument_key` is
+  therefore `NULL`; resolving the name to an instrument is gold's job
+  (see INTEROP.md).
+
+### 6b. 3rd-Party-Distribution transfers (`source='third_party_distribution'`)
+
+These `Letters`-kind PDFs are the **only record of securities (and
+cash) moved out of an account to a third party** — gifts to people /
+DAFs, transfers to other custodians or accounts. The statements show
+such a move only as an unexplained position drop. Parsed by
+`pdf_parsers.parse_distribution_pdf` (text via the same pypdfium2
+extractor the statement parser uses — a bake-off showed it recovers
+every required field on every form, ~5× faster than poppler/pdftotext
+and with no extra system dependency).
+
+- Three observed layout families, all outbound: a **wire** ("To the
+  account of NAME at BANK"), a **cash transfer to a Schwab third
+  party** ("Account name: NAME"), and a **securities transfer** (a
+  `Symbol / Quantity / Market Value` table).
+- **One row per security line** for a securities transfer (one for a
+  cash transfer), `kind='Transfer Out'`. The payload carries
+  `transfer_kind` (`securities` / `cash`), `method` (`wire` /
+  `schwab_third_party`), `counterparty`, `counterparty_bank`,
+  `counterparty_account_suffix`, and `symbol` / `quantity` /
+  `market_value` (securities) or `cash_amount` (cash). Securities
+  transfers set `instrument_key` to the ticker.
+- An unrecognised layout emits **no rows** and logs a warning, rather
+  than corrupting the load.
 
 ## 7. Known gaps (not blockers for the gold merge, but worth noting)
 
@@ -292,20 +359,26 @@ under `_more` (keyed by `_tx_history_row_key`).
   rows). Skipped during load with a warning rather than
   failing the whole statement; about 1% of rows in the
   archive we tested against. Worth a follow-up parser pass.
-- **Two parallel transaction sources**. After enabling the
-  tx-history JSON ingest, the same logical event lands in
-  silver from both `source='statement_pdf'` (parser-derived,
-  multi-year coverage via quarterly statements) AND
-  `source='tx_history_json'` (Schwab-rendered, ~4-year coverage
-  for "All" date range). They have different synthetic
-  `activity_id`s (different `source_sha256` in the hash input),
-  so both rows insert without UNIQUE conflict. Gold should
-  treat them as redundant feeds and dedupe by `(account,
-  timestamp, amount, ±description)`; prefer tx_history_json
-  where both exist (it has cleaner field separation).
-- **1099 Composite XML/CSV are stored but not parsed for
-  tax-lot detail**. Gold-only consumer can pick them up by
-  filename from the `documents` table.
+- **Multiple overlapping transaction sources**. The same logical
+  event can land in silver from more than one feed:
+  `statement_pdf` (parser-derived, multi-year via quarterly
+  statements), `tx_history_json` (Schwab-rendered, ~4-year "All"
+  range), and now `form_1099b` (authoritative sales within a tax
+  year). They get different synthetic `activity_id`s (their content
+  fields differ — the id no longer depends on `source_sha256` since
+  migration 0004), so all rows insert without UNIQUE conflict. Gold
+  reconciles them: dedupe `statement_pdf` ↔ `tx_history_json` by
+  `(account, timestamp, amount, ±description)` preferring
+  tx_history_json; and treat `form_1099b` as authoritative-for-sales
+  within its covered tax year (see INTEROP.md §4 + §8).
+- **1099 Composite sales are now parsed** into `form_1099b`
+  (§6a). Remaining 1099 sections (DIV / INT / OID / MISC) are not
+  parsed; tax years available only as a PDF (no XML/CSV twin) are
+  skipped with a logged `form_1099b_pdf_only` count.
+- **3rd-Party-Distribution transfers are now parsed** into
+  `third_party_distribution` (§6b). These are mostly new data the
+  other feeds lack; cash transfers may overlap a statement cash
+  debit and are gold's to dedupe (INTEROP.md §8).
 - **`--with-more-detail` is implemented but not enabled by
   default** — it adds ~1 modal click per transaction, on the
   order of an hour per ~5k-tx account. Use it for a one-off
