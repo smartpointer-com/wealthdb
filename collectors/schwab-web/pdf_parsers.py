@@ -408,25 +408,6 @@ def _line_starts_new_row(line: str) -> bool:
     return False
 
 
-def _looks_like_continuation(line: str) -> bool:
-    """True for lines we should merge into the previous row.
-    These are things like 'ETF', 'IndustryFee$0.16', the second
-    line of a wrapping description ('NOTE DUE12/31/99'), etc."""
-    if not line:
-        return False
-    if _line_starts_new_row(line):
-        return False
-    # Common-suffix line types Schwab emits on row two:
-    if line.startswith(("IndustryFee", "Commission", "AccruedInterest",
-                        "NOTE", "DUE", "ETF", "BETF", "RATEBETF", "(continued)")):
-        return True
-    # Heuristic fallback: lines that are short and ALL CAPS /
-    # symbol-only are usually continuation tokens.
-    if len(line) < 40 and line.upper() == line and not any(c.isdigit() for c in line):
-        return True
-    return False
-
-
 def _extract_realized(text: str) -> tuple[str, float | None, str | None]:
     """Pull off the ",(ST)" / ",(LT)"-tagged realised-gain
     column, if any. Returns
@@ -444,91 +425,6 @@ def _extract_realized(text: str) -> tuple[str, float | None, str | None]:
     after = text[m.end():].lstrip()
     rest = (before + " " + after).strip() if after else before
     return rest, realized, term
-
-
-def _parse_row_header(line: str, current_date: date | None,
-                      stmt_year: int) -> TransactionRow:
-    """Parse the first line of a transaction row.
-
-    The line either starts with MM/DD (new date) or with a
-    Category keyword (continuation of the previous date).
-    """
-    row = TransactionRow()
-    rest = line
-    m_date = _DATE_RE.match(rest)
-    if m_date:
-        mm, dd = m_date.group(1).split("/")
-        row.date = date(stmt_year, int(mm), int(dd))
-        rest = rest[m_date.end():].lstrip()
-    else:
-        row.date = current_date
-
-    m_cat = _CAT_RE.match(rest)
-    if not m_cat:
-        # Couldn't identify a category — store raw and return.
-        row.description = rest
-        return row
-    row.category = m_cat.group("cat")
-    rest = rest[m_cat.end():].lstrip()
-
-    # Peel off the trailing realised-gain tag if any.
-    rest, realized, term = _extract_realized(rest)
-    if realized is not None:
-        row.realized_gain_loss = realized
-        row.term = term
-
-    # Collect trailing numbers; how many depends on category.
-    # The columns (in order after Description) are:
-    #   Quantity | Price/Rate | Charges/Interest | Amount
-    # Some categories (Withdrawal/Deposit) only have Amount.
-    # Strategy: pull all trailing numeric tokens off the end and
-    # interpret based on count.
-    tokens = rest.rsplit()
-    trailing_nums = []
-    cut = len(tokens)
-    while cut > 0 and _NUM_RE.fullmatch(tokens[cut - 1]):
-        trailing_nums.append(_parse_number(tokens[cut - 1]))
-        cut -= 1
-    trailing_nums.reverse()
-    leading_tokens = tokens[:cut]
-
-    # Interpret trailing numbers:
-    #   4 numbers → quantity, price, charges, amount
-    #   3 numbers → quantity, price, amount   (no charge column)
-    #   2 numbers → price, amount             (rare — e.g. dividend with rate)
-    #   1 number  → amount                    (Withdrawal/Deposit/Dividend)
-    if len(trailing_nums) >= 4:
-        row.quantity, row.price, row.charges, row.amount = trailing_nums[-4:]
-    elif len(trailing_nums) == 3:
-        row.quantity, row.price, row.amount = trailing_nums
-    elif len(trailing_nums) == 2:
-        row.price, row.amount = trailing_nums
-    elif len(trailing_nums) == 1:
-        row.amount = trailing_nums[0]
-
-    # First leading token is the action subtype OR the symbol.
-    # Heuristic: if it looks like a ticker / CUSIP, it's the
-    # symbol; otherwise it's an action string (MoneyLinkTxn,
-    # CashDividend, NRATax, FundsPaid, FundsReceived, etc.).
-    if leading_tokens:
-        first = leading_tokens[0]
-        if _TICKER_RE.match(first) or _CUSIP_RE.match(first):
-            row.symbol = first
-            row.description = " ".join(leading_tokens[1:])
-        else:
-            row.action = first
-            # Some rows have action AND symbol (rare); if the
-            # second token also looks like a ticker, treat it
-            # as the symbol.
-            if len(leading_tokens) > 1 and (
-                _TICKER_RE.match(leading_tokens[1])
-                or _CUSIP_RE.match(leading_tokens[1])
-            ):
-                row.symbol = leading_tokens[1]
-                row.description = " ".join(leading_tokens[2:])
-            else:
-                row.description = " ".join(leading_tokens[1:])
-    return row
 
 
 def parse_transactions(text: str, statement_year: int | None = None) -> list[TransactionRow]:
@@ -1422,14 +1318,7 @@ def _parse_positions_legacy(text: str) -> list[dict]:
         tokens = line.split()
         if not tokens:
             continue
-        # Count trailing trailing-col tokens (allows the
-        # in-place reuse of the new-format's helper).
-        cnt = 0
-        for tok in reversed(tokens):
-            if _is_trailing_col_token(tok):
-                cnt += 1
-            else:
-                break
+        cnt = _count_trailing_col_tokens(tokens)
         # A "main row" has >= 7 trailing tokens AND a leading
         # uppercase token that is NOT a known continuation
         # marker. Tax-lot lines have a date token mid-row which
@@ -1460,18 +1349,13 @@ def _parse_legacy_position_block(block_lines: list[str],
         return None
     main = block_lines[0]
     tokens = main.split()
-    cnt = 0
-    for tok in reversed(tokens):
-        if _is_trailing_col_token(tok):
-            cnt += 1
-        else:
-            break
+    cnt = _count_trailing_col_tokens(tokens)
     if cnt < 7:
         return None
     trailing = tokens[len(tokens) - cnt:]
     desc_tokens = tokens[: len(tokens) - cnt]
     description = " ".join(desc_tokens)
-    description = re.sub(r"\(M\),?", "", description).strip()
+    description = _strip_margin_marker(description)
 
     instrument_key: str | None = None
     cost_basis: float | None = None
@@ -1516,12 +1400,6 @@ def _parse_legacy_position_block(block_lines: list[str],
             instrument_key = first
     if instrument_key is None:
         return None
-
-    def _as_num(s):
-        s = s.rstrip("%").rstrip(",")
-        if s in ("N/A", "<1%"):
-            return None
-        return _parse_number(s)
 
     # Trailing-column order in the legacy layout:
     # quantity, market_price, market_value, pct_of_acct,
@@ -1716,6 +1594,35 @@ def _parse_very_old_position_block(block_lines: list[str]) -> dict | None:
     }
 
 
+def _strip_margin_marker(desc: str) -> str:
+    """Drop the "(M)" / "(M)," margin-eligibility marker Schwab glues
+    into a holding's description, returning the trimmed remainder."""
+    return re.sub(r"\(M\),?", "", desc).strip()
+
+
+def _as_num(s: str) -> float | None:
+    """Coerce a trailing position-column token to a float, mapping the
+    "N/A" / "<1%" placeholders (and a trailing "%" / ",") to None /
+    a bare number. Shared by the position-block parsers."""
+    s = s.rstrip("%").rstrip(",")
+    if s in ("N/A", "<1%"):
+        return None
+    return _parse_number(s)
+
+
+def _count_trailing_col_tokens(tokens: list[str]) -> int:
+    """Number of trailing tokens (scanning right-to-left) that fit a
+    position-row column slot — the legacy parsers' run length used to
+    tell a main row from a description/tax-lot continuation."""
+    cnt = 0
+    for tok in reversed(tokens):
+        if _is_trailing_col_token(tok):
+            cnt += 1
+        else:
+            break
+    return cnt
+
+
 def _is_trailing_col_token(s: str) -> bool:
     """True if `s` fits a Positions-row trailing column slot —
     a number, a number-with-%, an integer, or one of the literal
@@ -1865,13 +1772,7 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
         end = (len(toks) - numbers_consumed) if i == numbers_idx else len(toks)
         desc_parts.extend(toks[start:end])
     description = " ".join(desc_parts)
-    description = re.sub(r"\(M\),?", "", description).strip()
-
-    def _as_num(s):
-        s = s.rstrip("%").rstrip(",")
-        if s in ("N/A", "<1%"):
-            return None
-        return _parse_number(s)
+    description = _strip_margin_marker(description)
 
     quantity = _as_num(trailing_tokens[0]) if len(trailing_tokens) >= 1 else None
     market_price = _as_num(trailing_tokens[1]) if len(trailing_tokens) >= 2 else None
@@ -1888,98 +1789,6 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
 
     return {
         "instrument_key": ticker,
-        "description": description,
-        "quantity": quantity,
-        "market_price": market_price,
-        "market_value": market_value,
-        "cost_basis": cost_basis,
-        "unrealized_gain_loss": unrealized,
-        "accrued_interest": None,
-        "est_yield": est_yield,
-        "est_annual_income": est_annual_income,
-        "pct_of_acct": pct_of_acct,
-        "section": section,
-        "footnotes": footnotes or None,
-        "raw_lines": [],
-    }
-
-
-def _parse_position_row(line: str, section: str) -> dict | None:
-    """Parse one row of a Positions block. Returns the row dict
-    or None if `line` doesn't look like a position-row header
-    (in which case the caller treats it as a description
-    continuation of the previous row).
-    """
-    tokens = line.split()
-    if len(tokens) < 4:
-        return None
-    first = tokens[0]
-    # Must be a plausible ticker or CUSIP.
-    if not (_TICKER_RE.match(first) or _CUSIP_RE.match(first)):
-        return None
-
-    # Schwab annotates margin-eligible equities with a trailing
-    # "(M)" or "(M)," glued to the description. Strip the marker
-    # but keep the rest of the description intact.
-    # Peel trailing-column tokens off the end. A trailing-column
-    # token is one of:
-    #   - a decimal number, optionally comma-grouped, optionally
-    #     parened-negative ("1,234.56", "(5,000.00)");
-    #   - an integer ("100", "27");
-    #   - any of those with a "%" suffix ("1%", "27%", "0.86%");
-    #   - the literal placeholders "N/A" and "<1%".
-    trailing_nums, consumed, footnotes = _peel_position_columns(tokens)
-    cut = len(tokens) - consumed
-
-    desc_tokens = tokens[1:cut]
-    description = " ".join(desc_tokens)
-    # Strip "(M)" / "(M)," margin marker.
-    description = re.sub(r"\(M\),?", "", description).strip()
-    # Position rows have at most 8 numeric-ish trailing columns:
-    #   Quantity, Price, MarketValue, CostBasis, UnrealizedGain,
-    #   EstYield, EstAnnualIncome, PctOfAcct
-    # but Yield / AnnualIncome / pct can be "N/A" or "<1%". Map
-    # by position from the END (more reliable than from the
-    # START when descriptions are missing).
-    if len(trailing_nums) < 3:
-        # Not a position row.
-        return None
-
-    def _as_num(s):
-        s = s.rstrip("%").rstrip(",")
-        if s in ("N/A", "<1%"):
-            return None
-        return _parse_number(s)
-
-    # Slot trailing_nums right-aligned into the canonical
-    # column order. Position rows we've seen carry either:
-    #   - all 8 columns (full equity row with yield + income)
-    #   - 5 columns: quantity, price, mv, cb, gain (no yield/income, "N/A" stripped)
-    #   - others
-    # We map by indexing from the start of `trailing_nums`.
-    quantity = _as_num(trailing_nums[0]) if len(trailing_nums) >= 1 else None
-    market_price = _as_num(trailing_nums[1]) if len(trailing_nums) >= 2 else None
-    market_value = _as_num(trailing_nums[2]) if len(trailing_nums) >= 3 else None
-    cost_basis = _as_num(trailing_nums[3]) if len(trailing_nums) >= 4 else None
-    unrealized = _as_num(trailing_nums[4]) if len(trailing_nums) >= 5 else None
-    # Trailing yield / annual_income / pct_of_acct keep their
-    # original printed form when they're percent-shaped — the
-    # printed form is what users will compare against the source
-    # PDF. Numeric annual_income still gets coerced via _as_num.
-    est_yield = trailing_nums[5] if len(trailing_nums) >= 6 else None
-    est_annual_income = (
-        _as_num(trailing_nums[6]) if len(trailing_nums) >= 7 else None
-    )
-    pct_of_acct = trailing_nums[-1] if trailing_nums and (
-        trailing_nums[-1].endswith("%") or trailing_nums[-1] == "<1%"
-    ) else None
-    # When pct_of_acct is the last token, est_annual_income may
-    # actually be at trailing_nums[-2]. The fixed-position mapping
-    # above is the common case for full rows; we'll let the
-    # payload preserve the raw line so consumers can re-derive.
-
-    return {
-        "instrument_key": first,
         "description": description,
         "quantity": quantity,
         "market_price": market_price,

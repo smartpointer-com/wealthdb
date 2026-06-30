@@ -86,8 +86,10 @@ practice:
   fund proxies).
 - **web silver** has whatever pdf_parsers picks out of the
   statement PDF's activity rows — typically the ticker only.
-  CUSIP is in the statement's holdings/positions block, which
-  pdf_parsers currently does not extract.
+  CUSIP lives in the statement's holdings/positions block;
+  pdf_parsers extracts that block (`parse_positions` →
+  `historical_position_snapshots`), but those rows too usually
+  surface only the ticker.
 
 Gold can resolve `web.instrument_key` → CUSIP via api's
 `instruments` table by symbol match. Pre-API-coverage dates have
@@ -102,8 +104,8 @@ those rows.
 | `dump_runs` | `dump_runs` | Identical convention; `snapshot_at` is the bronze dir's UTC timestamp on both |
 | `accounts` | `accounts` | Both promote `nickname`. api also has `account_type` / `preference_type`; web doesn't expose either. Different `account_external_id` value space — see §2.1 |
 | `user_preference` | — | api-only |
-| `account_balances` | — | api-only. Web exposes balances only via the year-end summary PDFs, which pdf_parsers does not currently extract |
-| `positions` | — | api-only on a per-snapshot basis. Web has annual snapshots in the 1099 Composite detail; not yet parsed |
+| `account_balances` | `historical_cash_balances` | api has live per-dump balances; web parses the monthly statement cash-flow summary (opening/closing) into `historical_cash_balances` |
+| `positions` | `historical_position_snapshots` | api has live per-dump positions; web parses the monthly/quarterly statement holdings block into `historical_position_snapshots` |
 | `open_orders` | — | api-only |
 | `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2 |
 | `instruments` | — | api-only (and only when `--with-instruments`) |
@@ -212,13 +214,15 @@ representative row per logical doc (e.g. `MIN(snapshot_at)` —
 the first time we saw the logical doc). The `transactions` table
 is clean.
 
-### 4.5 No per-position snapshot in web silver
+### 4.5 Web position snapshots are statement-cadence, not live
 
 api silver has live position snapshots per dump run. Web silver
-captures positions only annually via the year-end summary tax
-form, and not currently parsed. Gold's position history before
-api activation will be sparse: one snapshot per year, at
-year-end, derived from the 1099 if the parser is implemented.
+captures positions at statement cadence — `parse_positions` reads
+each monthly/quarterly statement's holdings block into
+`historical_position_snapshots` (and the cash-flow summary into
+`historical_cash_balances`). So pre-api position history is one
+snapshot per statement period, not the per-dump granularity the
+api gives.
 
 **Gold-layer recommendation**: don't try to interpolate
 mid-year positions for pre-api dates. Mark gaps explicitly. The

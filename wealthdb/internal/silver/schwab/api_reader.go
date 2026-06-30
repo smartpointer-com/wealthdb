@@ -7,8 +7,7 @@ import "database/sql"
 // this file just defines the type and lifecycle. Mirrors
 // internal/silver/ubs/psn_reader.go.
 type apiReader struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 func (r *apiReader) Close() error {

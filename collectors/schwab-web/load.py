@@ -491,9 +491,12 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             else:
                 stats["documents_dup"] += 1
 
-            # Only the Statements PDFs are parsed into rows today.
-            # Tax-form XML / CSV parsing is a follow-up — they're
-            # captured as opaque-blob documents for now.
+            # This walk parses only the Statement PDFs (positions,
+            # cash, transactions). The 1099-Composite tax forms and
+            # 3rd-Party-Distribution letters captured here are parsed
+            # in their own later passes (_load_1099b_forms,
+            # _load_distribution_letters); everything else stays an
+            # opaque-blob document.
             if doc_kind != "statement" or fmt != "pdf":
                 continue
 
@@ -1272,6 +1275,10 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
             "est_yield": pos.get("est_yield"),
             "est_annual_income": pos.get("est_annual_income"),
             "pct_of_acct": pos.get("pct_of_acct"),
+            # Schwab Endnote markers on this holding (e.g. "e" = edited
+            # by the account holder, "t" = by a third party) — flags an
+            # account-provided / SPV valuation. None when unmarked.
+            "footnotes": pos.get("footnotes"),
             "raw_lines": pos.get("raw_lines"),
         })
         conn.execute(

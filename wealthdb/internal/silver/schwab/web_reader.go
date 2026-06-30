@@ -31,8 +31,7 @@ import (
 // open time and the methods on this reader rewrite the suffix to
 // the bridged hash before emitting downstream.
 type webReader struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 func (r *webReader) Close() error {
