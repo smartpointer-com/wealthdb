@@ -736,6 +736,132 @@ class TestParseCashSummary:
         assert cash is None
 
 
+class TestParsePositionsFootnoteMarker:
+    """An Endnote reference letter printed inline among a holding's
+    numeric columns (e.g. 'e' = "edited or provided by the account
+    holder" on an SPV / alternative interest, 't' = "edited by a third
+    party") must not shift the column mapping. Without the fix the
+    scan stopped at the marker and the columns slid left — quantity
+    read the unrealized gain, market value read blank. Wholly synthetic
+    fixtures (invented tickers, round made-up dollar values)."""
+
+    def test_inline_marker_single_row_does_not_shift_columns(self):
+        # 'e' sits between Cost Basis and Unrealized Gain — the exact
+        # shape that mis-parsed (qty=unrealized, mv=blank) before the fix.
+        text = _wrap_equities_block(
+            "SYN1 SyntheticSpvInc(M) 300.0000 50.00000 15,000.00 "
+            "12,000.00 e 3,000.00 N/A 0.00 2%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["instrument_key"] == "SYN1"
+        assert r["quantity"] == 300.0           # NOT the unrealized gain
+        assert r["market_price"] == 50.0
+        assert r["market_value"] == 15000.0     # NOT blank/0
+        assert r["cost_basis"] == 12000.0
+        assert r["unrealized_gain_loss"] == 3000.0
+        assert r["pct_of_acct"] == "2%"
+        assert r["footnotes"] == ["e"]          # marker preserved
+
+    def test_inline_marker_multiline_block(self):
+        # Multi-line block: ticker + name on one line, "(M)" on the
+        # next, the numbers (with the 'e' marker) on a third.
+        text = (
+            "Positions - Equities\n"
+            "Unrealized Est. Est.Annual %of\n"
+            "Symbol Description Quantity Price($) Market Value($) "
+            "CostBasis($) Gain/(Loss)($) Yield Income($) Acct\n"
+            "SYN1 SyntheticSpvInc\n"
+            "(M)\n"
+            "300.0000 50.00000 15,000.00 12,000.00 e 3,000.00 N/A 0.00 2%\n"
+            "TotalEquities $0.00 $0.00 $0.00 N/A 0%\n"
+        )
+        rows = pp.parse_positions(text)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["instrument_key"] == "SYN1"
+        assert r["quantity"] == 300.0
+        assert r["market_value"] == 15000.0
+        assert r["cost_basis"] == 12000.0
+        assert r["footnotes"] == ["e"]
+
+    def test_third_party_marker_t(self):
+        text = _wrap_equities_block(
+            "SYN2 SyntheticTrust 100.0000 40.00000 4,000.00 3,500.00 "
+            "t 500.00 N/A 0.00 <1%\n"
+        )
+        r = pp.parse_positions(text)[0]
+        assert r["quantity"] == 100.0
+        assert r["market_value"] == 4000.0
+        assert r["footnotes"] == ["t"]
+
+    def test_description_ending_in_lone_letter_not_eaten(self):
+        # A description that ends in a single letter ("CLASS A") must
+        # NOT be mistaken for a footnote marker — the lone 'A' has a
+        # non-column token to its left, so the scan keeps it in the
+        # description.
+        text = _wrap_equities_block(
+            "SYN3 Synthetic Holding Co CLASS A 100.0000 50.00000 "
+            "5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
+        )
+        r = pp.parse_positions(text)[0]
+        assert r["quantity"] == 100.0
+        assert r["market_value"] == 5000.0
+        assert "CLASS A" in r["description"]
+        assert r["footnotes"] is None
+
+    def test_unmarked_row_has_null_footnotes(self):
+        text = _wrap_equities_block(
+            "SYN4 SyntheticPlain(M) 100.0000 50.00000 5,000.00 "
+            "4,000.00 1,000.00 N/A N/A 1%\n"
+        )
+        assert pp.parse_positions(text)[0]["footnotes"] is None
+
+    def test_marker_glued_to_parenthesised_negative(self):
+        # pypdfium2 glues the marker to a parenthesised-negative column,
+        # e.g. "t(1,000.00)" — the unrealized loss on a third-party-
+        # edited holding. Must split into the column + the marker.
+        text = _wrap_equities_block(
+            "SYN5 SyntheticTrust 200.0000 30.00000 6,000.00 7,000.00 "
+            "t(1,000.00) N/A 5.00 3%\n"
+        )
+        r = pp.parse_positions(text)[0]
+        assert r["quantity"] == 200.0
+        assert r["market_value"] == 6000.0
+        assert r["cost_basis"] == 7000.0
+        assert r["unrealized_gain_loss"] == -1000.0
+        assert r["footnotes"] == ["t"]
+
+
+class TestSponsoredAdrSegmentation:
+    """An ADR's "SPONSORED ADR" description-continuation line must not
+    be mistaken for a new position-row header — "SPONSORED" is nine
+    uppercase chars and so matches the ticker shape. Before the fix it
+    split the ADR's block and stole the real ticker's numbers (dropping
+    the ADR, emitting a spurious "SPONSORED" holding). Synthetic data."""
+
+    def test_sponsored_adr_does_not_steal_numbers(self):
+        text = (
+            "Positions - Equities\n"
+            "Unrealized Est. Est.Annual %of\n"
+            "Symbol Description Quantity Price($) Market Value($) "
+            "CostBasis($) Gain/(Loss)($) Yield Income($) Acct\n"
+            "SYN1 Synthetic Holdings Ltd F\n"
+            "SPONSORED ADR\n"
+            "1 ADR REPS 1 ORD SHS\n"
+            "20.0000 75.00000 1,500.00 1,200.00 300.00 N/A 0.00 <1%\n"
+            "TotalEquities $0.00 $0.00 $0.00 N/A 0%\n"
+        )
+        rows = pp.parse_positions(text)
+        keys = [r["instrument_key"] for r in rows]
+        assert "SPONSORED" not in keys
+        assert keys == ["SYN1"]
+        assert rows[0]["quantity"] == 20.0
+        assert rows[0]["market_value"] == 1500.0
+        assert "SPONSORED ADR" in rows[0]["description"]
+
+
 # ============================================================
 # parse_statement_pdf — return-dict shape
 # ============================================================

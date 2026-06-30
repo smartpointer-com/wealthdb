@@ -1248,6 +1248,13 @@ def parse_positions(text: str) -> list[dict]:
     return _parse_positions_very_old(text)
 
 
+# All-caps ADR description-continuation words that happen to fit the
+# ticker shape (<= 9 chars) and so must NOT be mistaken for a new
+# position-row header. "UNSPONSORED" is 11 chars and already fails
+# _TICKER_RE, but we list it for clarity / robustness.
+_POSITIONS_CONT_WORDS = frozenset({"SPONSORED", "UNSPONSORED"})
+
+
 def _parse_positions_new(text: str) -> list[dict]:
     """2025+ parser — "Positions - <Section>" anchors.
 
@@ -1299,11 +1306,15 @@ def _parse_positions_new(text: str) -> list[dict]:
         # A "new row starts here" signal is a leading token that
         # looks like a ticker or CUSIP. Column-header chrome
         # like "Symbol Description ..." doesn't match (lowercase
-        # chars present in token[0]), and continuation lines
-        # ("(M)", "SPONSORED ADR", "1,234.56 ...") don't either.
-        # If the flush of a stray header buffer fails to produce
-        # numeric content, _flush silently discards it.
-        if _TICKER_RE.match(tokens[0]) or _CUSIP_RE.match(tokens[0]):
+        # chars present in token[0]), and most continuation lines
+        # ("(M)", "1,234.56 ...") don't either. The exception is an
+        # ADR description line "SPONSORED ADR" — "SPONSORED" is nine
+        # uppercase chars and so matches _TICKER_RE; without the
+        # deny-set below it would split the ADR's block and steal
+        # the real ticker's numbers (dropping the ADR itself and
+        # emitting a spurious "SPONSORED" holding).
+        if ((_TICKER_RE.match(tokens[0]) or _CUSIP_RE.match(tokens[0]))
+                and tokens[0] not in _POSITIONS_CONT_WORDS):
             _flush()
             buffer = [line]
             raw_buffer = [raw]
@@ -1726,6 +1737,81 @@ def _is_trailing_col_token(s: str) -> bool:
     return False
 
 
+# Schwab prints Endnote reference letters (single letters, occasionally
+# comma-joined) inline among a holding's numeric columns — e.g. an "e"
+# ("Data for this holding has been edited or provided by the account
+# holder") sitting between Cost Basis and Unrealized Gain on an
+# account-marked SPV / alternative interest, or an "S"/"t" on an
+# option / short / third-party-edited line. The right-to-left column
+# scan must step OVER such a marker instead of stopping at it;
+# otherwise the columns shift left (quantity reads the unrealized gain,
+# market value reads blank). We only skip a marker that sits BETWEEN
+# two column tokens, so a description ending in a lone letter
+# ("… CLASS A") is never consumed.
+_POSITION_FOOTNOTE_RE = re.compile(r"[A-Za-z](?:,[A-Za-z]){0,4}")
+# A footnote marker glued (no whitespace) to the FRONT of a numeric
+# column token — pypdfium2 emits this when the marked column is a
+# parenthesised negative, e.g. "t(1,200.00)" (third-party-edited
+# unrealized loss). Group 1 = marker letters, group 2 = the column.
+_POSITION_FOOTNOTE_GLUED_RE = re.compile(
+    r"^([A-Za-z](?:,[A-Za-z]){0,4})(\(?-?[\d,].*)$")
+
+
+def _split_glued_footnote(tok: str) -> tuple[str | None, str | None]:
+    """If `tok` is a footnote letter glued to a numeric column token,
+    return `(column, marker)`; otherwise `(None, None)`."""
+    m = _POSITION_FOOTNOTE_GLUED_RE.match(tok)
+    if m and _is_trailing_col_token(m.group(2)):
+        return m.group(2), m.group(1)
+    return None, None
+
+
+def _peel_position_columns(
+    tokens: list[str],
+) -> tuple[list[str], int, list[str]]:
+    """Right-to-left, collect a holding row's trailing numeric /
+    placeholder column tokens, transparently stepping over inline
+    Endnote-marker letters (both whitespace-separated, "… 9,000.00 e
+    45,000.00 …", and glued to a parenthesised negative, "… t(1,200.00)
+    …").
+
+    Returns `(columns, consumed, footnotes)`: `columns` left-to-right in
+    source order; `consumed` the number of source tokens taken from the
+    end (markers included, so `tokens[: len(tokens) - consumed]` is the
+    description); `footnotes` the marker tokens that were skipped."""
+    columns: list[str] = []
+    footnotes: list[str] = []
+    i = len(tokens) - 1
+    while i >= 0:
+        tok = tokens[i]
+        if _is_trailing_col_token(tok):
+            columns.append(tok)
+            i -= 1
+            continue
+        # A standalone marker that sits BETWEEN two column tokens (so a
+        # description ending in a lone letter, "… CLASS A", is never
+        # eaten).
+        if (i > 0 and _POSITION_FOOTNOTE_RE.fullmatch(tok.rstrip(","))
+                and _is_trailing_col_token(tokens[i - 1])):
+            footnotes.append(tok.rstrip(","))
+            i -= 1
+            continue
+        # A marker glued to the front of a numeric column — only within
+        # the numeric run (at least one column already collected).
+        if columns:
+            col, mark = _split_glued_footnote(tok)
+            if col is not None:
+                columns.append(col)
+                footnotes.append(mark)
+                i -= 1
+                continue
+        break
+    columns.reverse()
+    footnotes.reverse()
+    consumed = len(tokens) - 1 - i
+    return columns, consumed, footnotes
+
+
 def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
     """Parse a multi-line position block (typically 1-3 lines)
     into a position row dict.
@@ -1742,20 +1828,18 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
     """
     if not block_lines:
         return None
-    # Find the numbers line.
+    # Find the numbers line (footnote-marker-tolerant peel).
     numbers_idx = -1
     trailing_tokens: list[str] = []
+    footnotes: list[str] = []
+    numbers_consumed = 0
     for i, line in enumerate(block_lines):
-        toks = line.split()
-        cnt = 0
-        for tok in reversed(toks):
-            if _is_trailing_col_token(tok):
-                cnt += 1
-            else:
-                break
-        if cnt >= 3:
+        cols, consumed, foot = _peel_position_columns(line.split())
+        if len(cols) >= 3:
             numbers_idx = i
-            trailing_tokens = toks[len(toks) - cnt:]
+            trailing_tokens = cols
+            footnotes = foot
+            numbers_consumed = consumed
             break
     if numbers_idx < 0:
         return None
@@ -1778,7 +1862,7 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
         if not toks:
             continue
         start = 1 if i == 0 else 0
-        end = (len(toks) - len(trailing_tokens)) if i == numbers_idx else len(toks)
+        end = (len(toks) - numbers_consumed) if i == numbers_idx else len(toks)
         desc_parts.extend(toks[start:end])
     description = " ".join(desc_parts)
     description = re.sub(r"\(M\),?", "", description).strip()
@@ -1815,6 +1899,7 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
         "est_annual_income": est_annual_income,
         "pct_of_acct": pct_of_acct,
         "section": section,
+        "footnotes": footnotes or None,
         "raw_lines": [],
     }
 
@@ -1843,12 +1928,8 @@ def _parse_position_row(line: str, section: str) -> dict | None:
     #   - an integer ("100", "27");
     #   - any of those with a "%" suffix ("1%", "27%", "0.86%");
     #   - the literal placeholders "N/A" and "<1%".
-    trailing_nums = []
-    cut = len(tokens)
-    while cut > 0 and _is_trailing_col_token(tokens[cut - 1]):
-        trailing_nums.append(tokens[cut - 1])
-        cut -= 1
-    trailing_nums.reverse()
+    trailing_nums, consumed, footnotes = _peel_position_columns(tokens)
+    cut = len(tokens) - consumed
 
     desc_tokens = tokens[1:cut]
     description = " ".join(desc_tokens)
@@ -1910,6 +1991,7 @@ def _parse_position_row(line: str, section: str) -> dict | None:
         "est_annual_income": est_annual_income,
         "pct_of_acct": pct_of_acct,
         "section": section,
+        "footnotes": footnotes or None,
         "raw_lines": [],
     }
 
