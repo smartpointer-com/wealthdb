@@ -366,6 +366,30 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
+		// The pre-2024 Account-Statement PDF cash backfill is held OUT
+		// of the return flow stream for now (mapped to a non-flow
+		// kind), while remaining a queryable transaction in gold.
+		//
+		// UBS cash/current accounts are CONDUITS: external capital
+		// enters as cash and is immediately routed into securities /
+		// mandates / FX, then the securities' value carries the return.
+		// Feeding those conduit movements into a flow-based TWR/MWR
+		// double-counts capital that the securities value spine already
+		// reflects (the arrival is booked once as the cash deposit and
+		// again as the securities-account debut), which collapses the
+		// return. Correctly turning this backfill into accurate returns
+		// is a scoped returns-engine change (external-vs-internal
+		// classification at the relationship boundary + conduit-aware
+		// onboarding); until that lands, holding the rows out keeps the
+		// returns at their prior baseline rather than regressing them.
+		// MT940 rows (post-2024) carry no such payload marker and are
+		// left exactly as before.
+		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
+			if isPDFCashBackfill(payload) {
+				kind = canonical.TxKindOther
+			}
+		}
+
 		// Reversal rows (description_kind tagged `<base>;Reversal`)
 		// already carry the bank's correction sign in credit/
 		// debit, so the canonical-sign helper would mask the
@@ -623,19 +647,52 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 	if base, ok := stripReversalSuffix(descKind); ok {
 		return webKind(base, hasDebit, hasCredit)
 	}
-	switch descKind {
-	case "Dividend":
+	// Match case-insensitively on the whole (trimmed) string. The
+	// MT940 CSV feed and the PDF Account-Statement backfill spell the
+	// same concept differently ("Dividend" vs "DIVIDEND",
+	// "e-banking payment order" vs "E-BANKING PAYMENT ORDER"), so an
+	// upper-cased EXACT-string match classifies both. Exact (not
+	// prefix/substring) matching keeps the two vocabularies from
+	// colliding: MT940's distinctive multi-token forms ("Sale FX
+	// Spot", "UCCDD…; order") never equal a bare PDF booking type
+	// ("SALE", "ORDER"), so this leaves every MT940 row's kind — and
+	// therefore the post-2024 flow set — exactly as before.
+	switch strings.ToUpper(strings.TrimSpace(descKind)) {
+	// ---- Income / cost: NOT capital flows; excluded from returns.
+	case "DIVIDEND", "REVERSAL DIVIDEND":
 		return canonical.TxKindDividend
-	case "Coupon":
+	case "COUPON":
 		return canonical.TxKindCoupon
-	case "Interest":
+	case "INTEREST",
+		"INTEREST CALCULATION BALANCE",
+		"CALL DEPOSIT INTEREST PAYMENT",
+		"FIXED TERM DEPOSIT INTEREST PAYMENT":
 		return canonical.TxKindInterest
-	case "Fee", "Fees":
+	case "FEE", "FEES",
+		"CUSTODY PRICE",
+		"ADR/GDR HANDLING FEES",
+		"THIRD-PARTY CHARGES",
+		"RENTAL FEE SAFE BOX",
+		"BALANCE CLOSING OF SERVICE PRICES",
+		"ADVICE", "UBS ADVICE":
 		return canonical.TxKindFee
-	case "Buy", "Securities purchase":
+	// ---- Currency conversion between the holder's own accounts —
+	// an internal reshuffle, not a capital flow.
+	case "FOREX PURCHASE", "FOREX SALE":
+		return canonical.TxKindFxSpot
+	// ---- Securities settlements: reallocate between cash and
+	// instruments; excluded from flows. Side by cash direction.
+	case "BUY", "SECURITIES PURCHASE":
 		return canonical.TxKindBuy
-	case "Sell", "Securities sale":
+	case "SELL", "SECURITIES SALE":
 		return canonical.TxKindSell
+	case "SHARE", "MUTUAL FUNDS", "INVESTMENT FUNDS",
+		"UBS INVESTMENT FUNDS", "STRUCTURED PRODUCTS",
+		"ORDER", "PURCHASE", "SALE",
+		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
+		"SUBSCRIPTION RIGHT",
+		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE":
+		return securitiesSide(hasDebit, hasCredit)
 	}
 	// No description_kind hint → use direction. Credit-only
 	// without instrument context = deposit; debit-only =
@@ -647,6 +704,31 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	}
 	return canonical.TxKindOther
+}
+
+// securitiesSide maps a securities-settlement row to buy (cash out /
+// debit) or sell (cash in / credit). Both kinds are excluded from
+// the returns flow set, so the side is for analytics only.
+func securitiesSide(hasDebit, hasCredit bool) canonical.TxKind {
+	if hasCredit && !hasDebit {
+		return canonical.TxKindSell
+	}
+	return canonical.TxKindBuy
+}
+
+// isPDFCashBackfill reports whether a transaction came from the
+// pre-2024 Account-Statement PDF backfill (source=
+// "account_statement_pdf"). Used to hold those cash movements out of
+// the return flow stream; the MT940 feed carries no such marker and
+// is unaffected.
+func isPDFCashBackfill(payload string) bool {
+	var p struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	return p.Source == "account_statement_pdf"
 }
 
 // extractInstrumentFromDescription1 pulls (ISIN, full caption)

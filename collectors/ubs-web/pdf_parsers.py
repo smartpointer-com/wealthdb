@@ -764,3 +764,347 @@ def _to_float(s: str | None) -> float | None:
         return float(s)
     except ValueError:
         return None
+
+
+# ============================================================
+# Account-Statement MOVEMENT parser (per-transaction ledger rows)
+# ============================================================
+#
+# The summary parser above (`parse_account_statement`) reads only
+# the opening/closing balances. This parser walks the ledger and
+# emits every booking (movement) row, so the pre-MT940 transaction
+# history that the CSV feed hard-caps at 2024-01-02 can be
+# backfilled from the PDF archive.
+#
+# Layout (see docs + probing): the ledger is a visually-aligned,
+# NOT a real PDF table. Columns are:
+#
+#   Date | Information | Debits | Credits | Value date | Balance
+#
+# Only ONE of Debits / Credits is populated per row, and — crucially
+# — the plain text gives no marker of WHICH column an amount sits in.
+# We therefore work at the WORD level (`extract_words`) and bucket
+# each numeric token by its x-position against the ledger header's
+# per-column anchors. Alphabetic tokens are the booking-type text
+# (Information); they never poison the amount columns. This is
+# validated against the running Balance column: for every statement
+# in the archive `opening + Σ(credit − debit) == balance` chains
+# row-by-row to the printed Closing balance.
+#
+# Conventions handled: space (thin-space / NBSP) thousands
+# separators ('199 993.01'); trailing-minus negatives ('16.05-');
+# 2-digit years (DD.MM.YY); multi-page ledgers with a repeated
+# header per page; the "not included in the closing balance"
+# post-closing trailer (future-period bookings shown for
+# information — flagged `post_closing`, excluded from the
+# opening→closing reconciliation, deduped across statements by the
+# loader's content id).
+
+_STMT_ROW_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")   # DD.MM.YY
+_STMT_IBAN_RE = re.compile(r"CH\d{2}(?:[ ]?[A-Z0-9]){17}")
+# A counter-account reference in a continuation line: either a full
+# CH-IBAN (inter-account e-banking transfer) or a UBS mortgage
+# account stamp ("HYPOTHEK <base>.H1D 0002" / ".H1Y 0003").
+_STMT_HYPO_RE = re.compile(r"HYPOTHEK\s+[\d ]+\.[A-Z0-9]+\s+\d+")
+
+# Booking types that MOVE cash (become deposits/withdrawals in gold).
+# Only these are eligible to be re-tagged as an internal transfer —
+# securities settlements / dividends / fees are already excluded from
+# flows, so they must never be touched.
+_STMT_FLOW_TYPES = frozenset({
+    "CREDIT", "DEBIT",
+    "E-BANKING PAYMENT ORDER", "E-BANKING CREDIT",
+    "MULTI E-BANKING ORDER",
+    "PAYMENT ORDER", "PAYMENT ORDER BY TELEPHONE", "SPECIAL PAYMENT ORDER",
+    "PAYNET ORDER", "MULTI PAYNET ORDER",
+})
+
+# Name-free markers of an INTRA-portfolio cash move (funding /
+# reducing a managed mandate, or an explicit book-transfer). These
+# reshuffle cash between the holder's OWN UBS accounts/mandates and
+# so are NOT external capital — re-tag them so gold nets them out
+# instead of double-counting them as deposits/withdrawals. Genuine
+# external credits (an incoming bank transfer, a SIC payment, salary)
+# carry none of these tokens and stay a deposit. All tokens are
+# generic banking terms — no personal identifiers.
+_STMT_INTERNAL_MARKERS = (
+    "UEBERTRAG", "UMBUCHUNG",              # DE: transfer / rebooking
+    "MANDAT", "MANAGE",                    # managed-mandate operations
+    "PORTFOLIO", "REDUK", "REDUCTION", "INCREAS",
+)
+
+
+def _stmt_is_internal_transfer(desc: str, cont_lines: list[str]) -> bool:
+    """True when a cash-moving booking is an intra-portfolio reshuffle
+    (funding/reducing a managed mandate, or an explicit book transfer)
+    rather than external capital."""
+    if desc not in _STMT_FLOW_TYPES:
+        return False
+    blob = " ".join(cont_lines).upper()
+    return any(m in blob for m in _STMT_INTERNAL_MARKERS)
+
+
+def _stmt_amount(tokens: list[str]) -> float | None:
+    """Join a ledger column's numeric word-fragments into a float.
+    Handles space/apostrophe thousands separators and trailing-minus
+    negatives ('16.05-' → -16.05). Returns None for an empty column
+    or a non-numeric fragment (e.g. leaked Information text)."""
+    if not tokens:
+        return None
+    s = "".join(tokens)
+    for ch in (" ", " ", " ", "'", "’", ","):
+        s = s.replace(ch, "")
+    neg = s.endswith("-")
+    s = s.rstrip("-").rstrip("+")
+    if not re.match(r"^\d+(?:\.\d+)?$", s):
+        return None
+    return -float(s) if neg else float(s)
+
+
+def _stmt_cluster_rows(words: list[dict], ytol: float = 3.0) -> list[dict]:
+    """Group extract_words() output into visual rows by `top`."""
+    rows: list[dict] = []
+    for w in sorted(words, key=lambda w: (w["top"], w["x0"])):
+        for r in rows:
+            if abs(r["top"] - w["top"]) <= ytol:
+                r["words"].append(w)
+                break
+        else:
+            rows.append({"top": w["top"], "words": [w]})
+    for r in rows:
+        r["words"].sort(key=lambda w: w["x0"])
+    return rows
+
+
+def _stmt_find_header(rows: list[dict]) -> dict | None:
+    """Return the ledger header's per-column anchor x-centres.
+
+    The REAL ledger header carries the full label set; a decoy
+    summary box ("Your account at a glance  Debits Credits Balance")
+    lacks Date/Information/Value, so require them all."""
+    for r in rows:
+        texts = [w["text"] for w in r["words"]]
+        if all(t in texts for t in
+               ("Date", "Information", "Value", "Debits", "Credits",
+                "Balance")):
+            def centre(label: str) -> float | None:
+                for w in r["words"]:
+                    if w["text"] == label:
+                        return (w["x0"] + w["x1"]) / 2
+                return None
+            return {
+                "Debits": centre("Debits"),
+                "Credits": centre("Credits"),
+                "ValueDate": centre("Value"),
+                "Balance": centre("Balance"),
+                "top": r["top"],
+            }
+    return None
+
+
+def _stmt_assign_numeric(word: dict, anchors: dict) -> str | None:
+    """Nearest NUMERIC-column anchor for a digit-leading token."""
+    cx = (word["x0"] + word["x1"]) / 2
+    best, best_d = None, 1e9
+    for col in ("Debits", "Credits", "ValueDate", "Balance"):
+        a = anchors.get(col)
+        if a is None:
+            continue
+        d = abs(cx - a)
+        if d < best_d:
+            best_d, best = d, col
+    return best
+
+
+def _stmt_counter_account(cont_lines: list[str]) -> str | None:
+    """Pull a counter-account reference (CH-IBAN or HYPOTHEK stamp)
+    from a movement's continuation lines, for the gold engine's
+    internal-transfer / mortgage netting. Whitespace-normalised."""
+    for c in cont_lines:
+        m = _STMT_IBAN_RE.search(c)
+        if m:
+            return re.sub(r"\s+", "", m.group(0))
+    for c in cont_lines:
+        m = _STMT_HYPO_RE.search(c)
+        if m:
+            return re.sub(r"\s+", " ", m.group(0)).strip()
+    return None
+
+
+def parse_account_statement_transactions(
+        pdf_path: Path, doc_token: str, label: str) -> list[dict]:
+    """Walk an Account-Statement PDF and emit one dict per booking
+    (movement) row. The loader maps these into the silver
+    `transactions` table (with a deterministic id + per-account
+    MT940 cut-over). Rows carry the statement-level reconciliation
+    result so the loader can gate on it."""
+    with pdfplumber.open(pdf_path) as pdf:
+        return parse_account_statement_transactions_pages(pdf, doc_token)
+
+
+def parse_account_statement_transactions_pages(pdf, doc_token: str) -> list[dict]:
+    """Core of parse_account_statement_transactions, taking an open
+    pdfplumber document so tests can feed a synthetic one."""
+    iban = None
+    currency = None
+    opening = None
+    closing = None
+    movements: list[dict] = []
+    cur: dict | None = None
+    seen_closing = False
+
+    for page in pdf.pages:
+        text = page.extract_text(x_tolerance=2) or ""
+        if iban is None:
+            m = _STMT_IBAN_RE.search(text)
+            if m:
+                iban = re.sub(r"\s+", "", m.group(0)).upper()
+        if currency is None:
+            cm = _CCY_HEADER_RE.search(text.replace(" ", ""))
+            if cm:
+                currency = cm["ccy"]
+
+        rows = _stmt_cluster_rows(
+            page.extract_words(x_tolerance=1.5, keep_blank_chars=False))
+        anchors = _stmt_find_header(rows)
+        if not anchors:
+            continue
+
+        for r in rows:
+            if r["top"] <= anchors["top"] + 1:
+                continue
+            ws = r["words"]
+            # Row date = leading DD.MM.YY token in the far-left Date
+            # column (x0 < 80). Everything else is content.
+            row_date = None
+            content = ws
+            if _STMT_ROW_DATE_RE.match(ws[0]["text"]) and ws[0]["x0"] < 80:
+                row_date = ws[0]["text"]
+                content = ws[1:]
+
+            if row_date is None:
+                # Continuation line — attach to the preceding movement.
+                if cur is not None:
+                    cur["_cont"].append(" ".join(w["text"] for w in ws))
+                continue
+
+            # Digit-leading tokens → numeric columns (by nearest
+            # anchor); alphabetic tokens → Information booking type.
+            buckets: dict[str, list[str]] = {}
+            info_words: list[str] = []
+            for w in content:
+                if w["text"][:1].isdigit():
+                    col = _stmt_assign_numeric(w, anchors)
+                    buckets.setdefault(col, []).append(w["text"])
+                else:
+                    info_words.append(w["text"])
+            info = " ".join(info_words).strip()
+
+            if info == "Opening balance":
+                if opening is None:
+                    opening = _stmt_amount(buckets.get("Balance", []))
+                cur = None
+                continue
+            if info == "Closing balance":
+                closing = _stmt_amount(buckets.get("Balance", []))
+                seen_closing = True
+                cur = None
+                continue
+
+            vd = None
+            for t in buckets.get("ValueDate", []):
+                if _STMT_ROW_DATE_RE.match(t):
+                    vd = t
+                    break
+            cur = {
+                "booking_dmy": row_date,
+                "value_dmy": vd,
+                "description_kind": info,
+                "amount_debit": _stmt_amount(buckets.get("Debits", [])),
+                "amount_credit": _stmt_amount(buckets.get("Credits", [])),
+                "running_balance": _stmt_amount(buckets.get("Balance", [])),
+                "post_closing": seen_closing,
+                "_cont": [],
+            }
+            movements.append(cur)
+
+    # Statement-level reconciliation: opening + Σ(credit − debit)
+    # must chain to each row's Balance and the printed closing, over
+    # the MAIN ledger only (post-closing trailer excluded).
+    reconciled = True
+    if opening is None:
+        reconciled = False
+    else:
+        run = opening
+        for mv in movements:
+            if mv["post_closing"]:
+                continue
+            run += (mv["amount_credit"] or 0.0) - (mv["amount_debit"] or 0.0)
+            bal = mv["running_balance"]
+            if bal is not None and abs(run - bal) > 0.02:
+                reconciled = False
+                break
+        if reconciled and closing is not None and abs(run - closing) > 0.02:
+            reconciled = False
+
+    # Finalise each row: dates, counter-account, per-statement
+    # occurrence index (disambiguates identical same-day bookings and
+    # keeps the id stable across the monthly/annual statement overlap
+    # and the post-closing trailer), and the payload.
+    occ: dict[tuple, int] = {}
+    out: list[dict] = []
+    for mv in movements:
+        booking = _stmt_dmy_to_unix(mv["booking_dmy"])
+        value = _stmt_dmy_to_unix(mv["value_dmy"]) or booking
+        counter = _stmt_counter_account(mv["_cont"])
+        counterparty = mv["_cont"][0] if mv["_cont"] else None
+        raw_kind = mv["description_kind"] or None
+        # Mandate-funding / book-transfer marker: preserved as payload
+        # metadata for the gold returns adapter's external-vs-internal
+        # flow classifier. The silver `description_kind` stays the raw
+        # booking type — the flow decision (which also needs the
+        # counter-IBAN and the relationship's own-account set) happens
+        # in gold, not here.
+        internal = _stmt_is_internal_transfer(mv["description_kind"], mv["_cont"])
+        key = (booking, value, mv["description_kind"],
+               mv["amount_debit"], mv["amount_credit"])
+        idx = occ.get(key, 0)
+        occ[key] = idx + 1
+        out.append({
+            "booking_date": booking,
+            "value_date": value,
+            "account_external_id": iban,
+            "currency_iso": currency,
+            "amount_debit": mv["amount_debit"],
+            "amount_credit": mv["amount_credit"],
+            "description_kind": raw_kind,
+            "counterparty": counterparty,
+            "counter_account": counter,
+            "running_balance": mv["running_balance"],
+            "post_closing": mv["post_closing"],
+            "occurrence": idx,
+            "reconciled": reconciled,
+            "source_doc_token": doc_token,
+            "payload": json.dumps({
+                "booking_type": raw_kind,
+                "internal_transfer": internal,
+                "running_balance": mv["running_balance"],
+                "value_date": mv["value_dmy"],
+                "counter_account": counter,
+                "continuation": mv["_cont"],
+                "post_closing": mv["post_closing"],
+                "source": "account_statement_pdf",
+            }, ensure_ascii=False),
+        })
+    return out
+
+
+def _stmt_dmy_to_unix(dmy: str | None) -> int | None:
+    """DD.MM.YY (2-digit year, 20YY) → Unix seconds UTC midnight."""
+    if not dmy:
+        return None
+    try:
+        d, mo, yy = (int(x) for x in dmy.split("."))
+    except ValueError:
+        return None
+    return _to_unix(date(2000 + yy, mo, d))

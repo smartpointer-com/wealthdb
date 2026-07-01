@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -257,14 +258,14 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
-    hist_pos, hist_cash, hist_mort = _load_historical_from_pdfs(
-        conn, dump_dir)
+    hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
+        conn, snapshot_at, dump_dir)
 
     log.info("loaded %s: positions=%d transactions=%d documents=%d "
              "hist_positions=%d hist_cash_balances=%d "
-             "hist_mortgages=%d",
+             "hist_mortgages=%d hist_transactions=%d",
              dump_dir.name, pos_count, txn_count, doc_count,
-             hist_pos, hist_cash, hist_mort)
+             hist_pos, hist_cash, hist_mort, hist_txn)
 
 
 def _read_run_json(dump_dir: Path) -> dict:
@@ -762,7 +763,7 @@ def _parse_one_pdf(args: tuple[str, str, str]
     `rows` or `error_message` is set on every non-skipped call."""
     from pdf_parsers import (
         parse_statement_of_assets, parse_account_statement,
-        parse_maturity_notice,
+        parse_account_statement_transactions, parse_maturity_notice,
     )
     token, fp, label, doc_type = args
     path = Path(fp)
@@ -775,26 +776,33 @@ def _parse_one_pdf(args: tuple[str, str, str]
         if doc_type == "Maturity notice":
             rows = parse_maturity_notice(path, token, label)
             return token, "mortgage", path.name, rows, None
-        rows = parse_account_statement(path, token, label)
-        return token, "cash", path.name, rows, None
+        # Account Statement: emit BOTH the summary balances (for
+        # historical_cash_balances) and the per-transaction movement
+        # rows (for the transactions backfill). One PDF read each,
+        # both CPU-bound, so we keep them in the same worker call.
+        cash = parse_account_statement(path, token, label)
+        txns = parse_account_statement_transactions(path, token, label)
+        return (token, "account_statement", path.name,
+                {"cash": cash, "transactions": txns}, None)
     except Exception as e:  # noqa: BLE001
         return token, "error", path.name, None, f"{type(e).__name__}: {e}"
 
 
-def _load_historical_from_pdfs(conn: sqlite3.Connection,
-                               dump_dir: Path) -> tuple[int, int, int]:
+def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
+                               dump_dir: Path) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, or a
     Maturity notice; parse it in a worker-pool of subprocesses,
-    and upsert into the historical_* tables on the main thread.
-    Returns (position_rows, cash_rows, mortgage_rows).
+    and upsert into the historical_* / transactions tables on the
+    main thread. Returns (position_rows, cash_rows, mortgage_rows,
+    transaction_rows).
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
     threads. SQLite writes stay on the main connection."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     # Pull (doc_token, file_path, label, doc_type) for relevant docs
     # from the documents table — that's where bronze metadata lives.
@@ -806,11 +814,22 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection,
     )
     work = cur.fetchall()
     if not work:
-        return 0, 0, 0
+        return 0, 0, 0, 0
+
+    # Per-account MT940 cut-over floors: the CSV feed's coverage is
+    # UNEVEN per account (some accounts from 2024-01, one only from
+    # 2026-02, most never), so a single global floor would silently
+    # drop years of movements. PDF movements are ingested only BELOW
+    # each account's own MT940 floor; MT940 owns everything from the
+    # floor onward. Computed from the bronze tree, so it is
+    # independent of dump load order.
+    mt940_floors = _mt940_floors_by_account(dump_dir)
 
     pos_rows = 0
     cash_rows = 0
     mortgage_rows = 0
+    txn_rows = 0
+    txn_reject_stmts = 0
     n_workers = max(1, os.cpu_count() or 1)
     log.info("parsing %d PDFs across %d workers", len(work), n_workers)
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
@@ -822,11 +841,21 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection,
                 continue
             if kind == "positions":
                 pos_rows += _insert_hist_positions(conn, rows or [])
-            elif kind == "cash":
-                cash_rows += _insert_hist_cash_balances(conn, rows or [])
             elif kind == "mortgage":
                 mortgage_rows += _insert_hist_mortgages(conn, rows or [])
-    return pos_rows, cash_rows, mortgage_rows
+            elif kind == "account_statement":
+                cash_rows += _insert_hist_cash_balances(
+                    conn, (rows or {}).get("cash") or [])
+                n, rejected = _insert_hist_transactions(
+                    conn, snapshot_at, (rows or {}).get("transactions") or [],
+                    mt940_floors)
+                txn_rows += n
+                txn_reject_stmts += rejected
+    if txn_reject_stmts:
+        log.warning("%d Account-Statement PDF(s) failed movement "
+                    "reconciliation; their transactions were NOT ingested",
+                    txn_reject_stmts)
+    return pos_rows, cash_rows, mortgage_rows, txn_rows
 
 
 def _insert_hist_positions(conn: sqlite3.Connection,
@@ -881,6 +910,114 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
         except sqlite3.IntegrityError as e:
             log.debug("hist cash insert failed: %s", e)
     return n
+
+
+def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
+    """Per-account MT940 coverage floor (Unix seconds), read from the
+    `From:` line of every `transactions/cash_*.csv` in the WHOLE
+    bronze tree (all dumps), keyed by canonical IBAN.
+
+    The MT940/CSV feed is authoritative from its declared `From:`
+    date onward for the account it covers; below that date the PDF
+    Account Statements are the only source. Coverage is uneven per
+    account, so we take the EARLIEST `From:` seen for each account.
+    Accounts that never appear in any CSV are absent from the map —
+    the PDF then owns all of their history (no cut-over)."""
+    floors: dict[str, int] = {}
+    root = dump_dir.parent if dump_dir.parent.is_dir() else dump_dir
+    for csv_path in sorted(root.glob("*/transactions/cash_*.csv")):
+        iban = None
+        frm = None
+        try:
+            lines = csv_path.read_text(encoding="utf-8-sig").splitlines()
+        except OSError:
+            continue
+        for ln in lines[:15]:
+            if ln.startswith(TXN_HEADER_IBAN):
+                iban = ln.split(";", 1)[1].rstrip(";").strip() or None
+            elif ln.startswith("From:"):
+                frm = ln.split(";", 1)[1].rstrip(";").strip() or None
+        acct = iban_canonical(iban)
+        floor = ts_from_iso(frm)
+        if not acct or not floor:
+            continue
+        if acct not in floors or floor < floors[acct]:
+            floors[acct] = floor
+    return floors
+
+
+def _stmt_txn_id(account: str, r: dict) -> str:
+    """Content-stable transaction id for a PDF movement row. Same
+    booking on the monthly AND the annual statement (and in a
+    statement's post-closing trailer) hashes identically, so the
+    ON CONFLICT upsert dedups the overlap; the per-statement
+    occurrence index keeps genuinely-distinct identical same-day
+    bookings apart."""
+    parts = "|".join(str(x) for x in (
+        account, r["booking_date"], r["value_date"],
+        r.get("amount_debit"), r.get("amount_credit"),
+        r.get("description_kind") or "", r.get("occurrence", 0),
+    ))
+    return "stmt:" + hashlib.sha256(parts.encode("utf-8")).hexdigest()[:16]
+
+
+def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
+                              rows: list[dict],
+                              mt940_floors: dict[str, int]) -> tuple[int, int]:
+    """Insert PDF-derived movement rows into the silver `transactions`
+    table, applying the per-account MT940 cut-over and content-id
+    dedup. Returns (rows_inserted, statements_rejected).
+
+    A statement whose movements failed the running-balance
+    reconciliation is rejected wholesale (its column assignment is
+    not trustworthy). Movements at/after their account's MT940 floor
+    are skipped — MT940 owns that window."""
+    if not rows:
+        return 0, 0
+    if not rows[0].get("reconciled", False):
+        return 0, 1  # whole statement rejected
+    inserted = 0
+    for r in rows:
+        account = iban_canonical(r.get("account_external_id"))
+        if not account:
+            continue  # non-cash / non-IBAN statement header
+        floor = mt940_floors.get(account)
+        if floor is not None and r["booking_date"] >= floor:
+            continue  # MT940 owns this window for this account
+        txn_id = _stmt_txn_id(account, r)
+        try:
+            conn.execute(
+                "INSERT INTO transactions ("
+                "transaction_external_id, account_external_id, snapshot_at, "
+                "trade_date, booking_date, value_date, currency_iso, "
+                "amount_debit, amount_credit, counterparty, "
+                "description_kind, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(transaction_external_id, account_external_id) "
+                "DO UPDATE SET "
+                "snapshot_at = excluded.snapshot_at, "
+                "booking_date = excluded.booking_date, "
+                "value_date = excluded.value_date, "
+                "currency_iso = excluded.currency_iso, "
+                "amount_debit = excluded.amount_debit, "
+                "amount_credit = excluded.amount_credit, "
+                "counterparty = excluded.counterparty, "
+                "description_kind = excluded.description_kind, "
+                "payload = excluded.payload",
+                (
+                    txn_id, account, snapshot_at,
+                    None,  # trade_date: no statement equivalent
+                    r["booking_date"], r["value_date"],
+                    r.get("currency_iso") or "",
+                    r.get("amount_debit"), r.get("amount_credit"),
+                    r.get("counterparty"), r.get("description_kind"),
+                    r.get("payload") or "{}",
+                ),
+            )
+            inserted += 1
+        except sqlite3.IntegrityError as e:
+            log.debug("hist transaction insert failed: %s", e)
+    return inserted, 0
 
 
 def _insert_hist_mortgages(conn: sqlite3.Connection,

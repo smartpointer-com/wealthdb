@@ -10,11 +10,219 @@ from __future__ import annotations
 import pytest
 
 from pdf_parsers import (
+    _stmt_is_internal_transfer,
     parse_account_statement_text,
+    parse_account_statement_transactions_pages,
     parse_label_statement_of_assets,
     parse_maturity_notice_text,
     parse_statement_of_assets_text,
 )
+
+
+# ============================================================
+# Account-Statement MOVEMENT parser
+# ============================================================
+#
+# The movement parser is WORD-based: it disambiguates the Debits vs
+# Credits column purely from x-position, so a text fixture isn't
+# enough — we build a fake pdfplumber document whose pages return
+# synthetic `extract_words()` output at the SAME column geometry the
+# real UBS statements use (Debits right-edge ~329, Credits ~414,
+# Value date x0 ~432, Balance right-edge ~553). All amounts / dates /
+# the IBAN are synthetic placeholders per CLAUDE.md §4.
+
+# Synthetic IBAN (all-zero placeholder, valid CH-IBAN shape).
+_SYN_IBAN = "CH00 0000 0000 0000 0000 1"
+_SYN_COUNTER_IBAN = "CH00 0000 0000 0000 0000 2"
+
+# Ledger column anchor bands (x0, x1) mirroring the real layout.
+_BAND = {
+    "debit": (289, 329),
+    "credit": (374, 414),
+    "vdate": (432, 468),
+    "bal": (508, 553),
+}
+_HEADER_TOP = 100.0
+
+
+def _w(text: str, x0: float, x1: float, top: float) -> dict:
+    return {"text": text, "x0": x0, "x1": x1, "top": top}
+
+
+def _band_word(text: str, band: str, top: float) -> dict:
+    x0, x1 = _BAND[band]
+    return _w(text, x0, x1, top)
+
+
+def _header_row(top: float = _HEADER_TOP) -> list[dict]:
+    return [
+        _w("Date", 42, 62, top), _w("Information", 85, 135, top),
+        _w("Debits", 302, 329, top), _w("Credits", 384, 414, top),
+        _w("Value", 430, 454, top), _w("date", 457, 476, top),
+        _w("Balance", 520, 553, top),
+    ]
+
+
+def _info_words(info: str, top: float) -> list[dict]:
+    ws, x = [], 85.0
+    for tok in info.split():
+        wdt = len(tok) * 6
+        ws.append(_w(tok, x, x + wdt, top))
+        x += wdt + 4
+    return ws
+
+
+class _FakePage:
+    def __init__(self, words: list[dict], text: str):
+        self._words = words
+        self._text = text
+
+    def extract_words(self, **_kw) -> list[dict]:
+        return list(self._words)
+
+    def extract_text(self, **_kw) -> str:
+        return self._text
+
+
+class _FakePDF:
+    def __init__(self, pages: list[_FakePage]):
+        self.pages = pages
+
+
+# Page-header text used only for IBAN + currency detection.
+_PAGE_TEXT = f"UBS personal account CHF\nIBAN {_SYN_IBAN}\n"
+
+
+def _build_statement_pdf() -> _FakePDF:
+    """A synthetic 2-page CHF statement exercising: credit deposit
+    (+ counterparty + counter-IBAN continuation), a debit
+    e-banking order, a space-separated debit that drives the balance
+    NEGATIVE (trailing-minus), a printed Closing balance, and a
+    post-closing 'not included' trailer booking (next period)."""
+    # Page 1: opening + two movements.
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    # 04.10.21 CREDIT +12345.00 -> 13345.00, with continuation lines.
+    p1 += [_w("04.10.21", 42, 77, 140), *_info_words("CREDIT", 140),
+           _band_word("12345.00", "credit", 140),
+           _w("04.10.21", 432, 468, 140),
+           _band_word("13345.00", "bal", 140)]
+    p1 += [_w("JOHN", 85, 110, 155), _w("DOE", 112, 130, 155)]
+    p1 += [_w(_SYN_COUNTER_IBAN, 85, 200, 170)]
+    # 10.10.21 E-BANKING PAYMENT ORDER -2345.00 -> 11000.00.
+    p1 += [_w("10.10.21", 42, 77, 200),
+           *_info_words("E-BANKING PAYMENT ORDER", 200),
+           _band_word("2345.00", "debit", 200),
+           _w("10.10.21", 432, 468, 200),
+           _band_word("11000.00", "bal", 200)]
+
+    # Page 2: a space-separated debit driving the balance negative,
+    # the Closing balance, then the post-closing trailer.
+    p2 = _header_row()
+    # 15.10.21 SHARE debit '11 016.05' (space-separated) -> 16.05-.
+    p2 += [_w("15.10.21", 42, 77, 120), *_info_words("SHARE", 120),
+           _w("11", 289, 304, 120), _w("016.05", 306, 329, 120),
+           _w("15.10.21", 432, 468, 120),
+           _w("16.05-", 520, 553, 120)]
+    p2 += [_w("31.10.21", 42, 77, 160), *_info_words("Closing balance", 160),
+           _w("16.05-", 520, 553, 160)]
+    p2 += [_w("The", 42, 55, 180), _w("following", 57, 100, 180),
+           _w("bookings", 102, 140, 180)]  # trailer preamble (no date)
+    p2 += _header_row(200)
+    # 02.11.21 CREDIT +5000.00 (NEXT period; post-closing trailer).
+    p2 += [_w("02.11.21", 42, 77, 220), *_info_words("CREDIT", 220),
+           _band_word("5000.00", "credit", 220),
+           _w("02.11.21", 432, 468, 220),
+           _band_word("4983.95", "bal", 220)]
+
+    return _FakePDF([_FakePage(p1, _PAGE_TEXT), _FakePage(p2, _PAGE_TEXT)])
+
+
+class TestAccountStatementTransactions:
+    def _rows(self):
+        return parse_account_statement_transactions_pages(
+            _build_statement_pdf(), "synthetic-token")
+
+    def test_extracts_all_movements(self):
+        rows = self._rows()
+        assert len(rows) == 4  # 3 main + 1 trailer
+
+    def test_debit_credit_disambiguation(self):
+        rows = self._rows()
+        by_kind = {r["description_kind"]: r for r in rows if not r["post_closing"]}
+        # CREDIT is a credit-only row.
+        assert by_kind["CREDIT"]["amount_credit"] == 12345.00
+        assert by_kind["CREDIT"]["amount_debit"] is None
+        # E-BANKING PAYMENT ORDER is a debit-only row.
+        assert by_kind["E-BANKING PAYMENT ORDER"]["amount_debit"] == 2345.00
+        assert by_kind["E-BANKING PAYMENT ORDER"]["amount_credit"] is None
+
+    def test_space_separated_amount_and_negative_balance(self):
+        rows = self._rows()
+        share = next(r for r in rows if r["description_kind"] == "SHARE")
+        assert share["amount_debit"] == 11016.05        # '11 016.05' merged
+        assert share["running_balance"] == -16.05        # trailing-minus
+
+    def test_currency_and_account(self):
+        rows = self._rows()
+        assert rows[0]["currency_iso"] == "CHF"
+        assert rows[0]["account_external_id"] == "CH0000000000000000001"
+
+    def test_continuation_counterparty_and_counter_account(self):
+        rows = self._rows()
+        credit = next(r for r in rows
+                      if r["description_kind"] == "CREDIT" and not r["post_closing"])
+        assert credit["counterparty"] == "JOHN DOE"
+        assert credit["counter_account"] == "CH0000000000000000002"
+
+    def test_post_closing_trailer_flagged(self):
+        rows = self._rows()
+        trailer = [r for r in rows if r["post_closing"]]
+        assert len(trailer) == 1
+        # Next-period booking (November), the only trailer row.
+        assert trailer[0]["amount_credit"] == 5000.00
+
+    def test_reconciliation_passes(self):
+        rows = self._rows()
+        # Opening 1000 + 12345 − 2345 − 11016.05 = −16.05 = closing.
+        assert all(r["reconciled"] for r in rows)
+
+    def test_booking_dates_and_value_dates(self):
+        rows = self._rows()
+        from datetime import datetime, timezone
+        credit = next(r for r in rows
+                      if r["description_kind"] == "CREDIT" and not r["post_closing"])
+        d = datetime.fromtimestamp(credit["booking_date"], timezone.utc)
+        assert (d.year, d.month, d.day) == (2021, 10, 4)
+
+
+class TestInternalTransferDetection:
+    """Intra-portfolio reshuffles (mandate funding/reduction, book
+    transfers) are re-tagged so gold nets them instead of counting
+    them as external deposits/withdrawals. Genuine external credits
+    keep their booking type."""
+
+    def test_mandate_funding_is_internal(self):
+        assert _stmt_is_internal_transfer(
+            "CREDIT", ["INCREAS US EQUITY PORTFOLIO", "P. HOLDER"])
+        assert _stmt_is_internal_transfer(
+            "PAYMENT ORDER BY TELEPHONE",
+            ["UEBERTRAG", "REDUKTION US EQUITY MANDAT"])
+        assert _stmt_is_internal_transfer(
+            "SPECIAL PAYMENT ORDER", ["REDUCTION INVESTMENT PORTFOLIO"])
+
+    def test_external_credit_stays_external(self):
+        # Incoming external bank transfer — no internal marker.
+        assert not _stmt_is_internal_transfer(
+            "CREDIT", ["SOME EXTERNAL BANK", "1 times Incoming SIC-payment"])
+        assert not _stmt_is_internal_transfer("CREDIT", ["SALARY PAYER LTD"])
+
+    def test_only_cash_flow_types_eligible(self):
+        # A securities settlement referencing a portfolio must NOT be
+        # re-tagged (it is already excluded from flows as a buy/sell).
+        assert not _stmt_is_internal_transfer("SHARE", ["MANAGE US EQ PORTFOLIO"])
+        assert not _stmt_is_internal_transfer("DIVIDEND", ["MANAGE PORTFOLIO"])
 
 
 # ---- Issue 2: portfolio_external_id length must be 16 -------------

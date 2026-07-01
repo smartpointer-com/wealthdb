@@ -170,3 +170,119 @@ def test_load_mortgage_variable_rate(tmp_path):
     assert row["rate_type"] == "variable"
     assert row["start_date"] is None
     assert row["end_date"] is None
+
+
+# ================================================================
+# Pre-2024 transaction backfill: per-account MT940 cut-over + dedup
+# ================================================================
+
+# Synthetic IBANs (all-zero placeholders, valid CH-IBAN shape).
+_IBAN_A = "CH0000000000000000001"   # has an MT940 floor (2024-01-02)
+_IBAN_B = "CH0000000000000000002"   # NO MT940 coverage → PDF owns all
+
+
+def _write_cash_csv(dump: Path, iban_spaced: str, from_date: str,
+                    hash_id: str) -> None:
+    """Write a minimal synthetic MT940 cash CSV carrying just the
+    IBAN: and From: metadata lines the floor scanner reads."""
+    tdir = dump / "transactions"
+    tdir.mkdir(parents=True, exist_ok=True)
+    body = (
+        f"Product:;UBS personal account;\r\n"
+        f"IBAN:;{iban_spaced};\r\n"
+        f"From:;{from_date};\r\n"
+        f"To:;2026-01-01;\r\n"
+        "Trade date;Booking date;Value date;Currency;Debit;Credit;"
+        "Transaction no.;Description1;Description2\r\n"
+    )
+    (tdir / f"cash_{hash_id}_x.csv").write_text(body, encoding="utf-8-sig")
+
+
+def _mv(account: str, booking: int, *, credit=None, debit=None,
+        desc="CREDIT", occ=0, reconciled=True, value=None) -> dict:
+    return {
+        "booking_date": booking,
+        "value_date": value if value is not None else booking,
+        "account_external_id": account,
+        "currency_iso": "CHF",
+        "amount_debit": debit,
+        "amount_credit": credit,
+        "description_kind": desc,
+        "counterparty": None,
+        "counter_account": None,
+        "occurrence": occ,
+        "reconciled": reconciled,
+        "payload": "{}",
+    }
+
+
+# 2024-01-02 and a pre/post reference point, as Unix seconds UTC.
+_FLOOR = loader.ts_from_iso("2024-01-02")
+_PRE = loader.ts_from_iso("2023-12-15")    # below the floor
+_POST = loader.ts_from_iso("2024-03-06")   # at/after the floor
+
+
+def test_mt940_floors_by_account(tmp_path: Path):
+    root = tmp_path / "bronze"
+    # Account A appears in two dumps; take the EARLIEST From:.
+    _write_cash_csv(root / "20260101T000000Z", "CH00 0000 0000 0000 0000 1",
+                    "2024-01-02", "aaaa")
+    _write_cash_csv(root / "20260201T000000Z", "CH00 0000 0000 0000 0000 1",
+                    "2026-02-20", "bbbb")
+    floors = loader._mt940_floors_by_account(root / "20260201T000000Z")
+    assert floors.get(_IBAN_A) == loader.ts_from_iso("2024-01-02")
+    # Account B never appears → no floor (PDF owns all its history).
+    assert _IBAN_B not in floors
+
+
+def test_cutover_gate_per_account(tmp_path: Path):
+    conn = _fresh_db(tmp_path)
+    floors = {_IBAN_A: _FLOOR}   # A has a floor; B absent
+    rows = [
+        _mv(_IBAN_A, _PRE, credit=100.0),    # below floor → INGEST
+        _mv(_IBAN_A, _POST, credit=200.0),   # at/after floor → SKIP (MT940)
+        _mv(_IBAN_B, _POST, credit=300.0),   # B has no floor → INGEST
+    ]
+    with conn:
+        n, rejected = loader._insert_hist_transactions(conn, 1, rows, floors)
+    assert rejected == 0
+    got = conn.execute(
+        "SELECT account_external_id, booking_date, amount_credit "
+        "FROM transactions ORDER BY amount_credit").fetchall()
+    assert n == 2
+    assert [r["amount_credit"] for r in got] == [100.0, 300.0]
+
+
+def test_reconciliation_failure_rejects_whole_statement(tmp_path: Path):
+    conn = _fresh_db(tmp_path)
+    rows = [_mv(_IBAN_A, _PRE, credit=100.0, reconciled=False),
+            _mv(_IBAN_A, _PRE, debit=50.0, reconciled=False, occ=1)]
+    with conn:
+        n, rejected = loader._insert_hist_transactions(conn, 1, rows, {})
+    assert n == 0 and rejected == 1
+    assert conn.execute("SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 0
+
+
+def test_content_id_dedups_overlapping_statements(tmp_path: Path):
+    """The same booking on the monthly AND the annual statement (or in
+    a post-closing trailer) must collapse to one row; two genuinely
+    distinct identical same-day bookings must both survive."""
+    conn = _fresh_db(tmp_path)
+    same = dict(account=_IBAN_A, booking=_PRE, credit=100.0, desc="CREDIT")
+    with conn:
+        loader._insert_hist_transactions(conn, 1, [_mv(**same, occ=0)], {})
+        # Re-ingest identical row (as if from the annual statement).
+        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=0)], {})
+        # A genuinely distinct second identical same-day booking (occ=1).
+        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=1)], {})
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 2
+
+
+def test_stmt_txn_id_stable_and_namespaced():
+    r = _mv(_IBAN_A, _PRE, credit=100.0)
+    a = loader._stmt_txn_id(_IBAN_A, r)
+    b = loader._stmt_txn_id(_IBAN_A, r)
+    assert a == b and a.startswith("stmt:")
+    # Different occurrence → different id.
+    assert loader._stmt_txn_id(_IBAN_A, {**r, "occurrence": 1}) != a
