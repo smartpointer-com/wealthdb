@@ -7,12 +7,19 @@ import (
 )
 
 // ReturnsPolicy is the per-source superset container for the returns engine. It
-// holds the FlowPolicy that classifies transactions into return flows (the ONLY
-// part the engine reads today) PLUS the forward knobs from the pluggable-policy
-// design (docs/RETURNS-NOTES.md). The forward knobs are DEFINED
-// but NOT YET consumed by the engine — they land with the per-source migrations
-// (proposal §5) — and every one defaults to reproduce CURRENT behavior, so a
-// DefaultReturnsPolicy() is a strict no-op.
+// holds the FlowPolicy that classifies transactions into return flows PLUS the
+// pluggable-policy knobs (docs/RETURNS-NOTES.md).
+//
+// The UBS migration has landed, so a subset of the knobs is now consumed by the
+// engine: OnboardScope (returns_compute.go, per-entity-once onboarding),
+// Inception (entityWindow, first-real-snapshot anchor), ConduitKinds via
+// IsConduit (returns.go), and the ClassifyFlow/ExternalOnly hook path
+// (attachFlows in returns.go). The remaining knobs — NettingTol, SpineDensity,
+// InKindJumpTol, the NavOnly mirror, and the OnboardAmount hook — are DEFINED
+// but NOT YET consumed. Every knob defaults to reproduce CURRENT behavior, so
+// DefaultReturnsPolicy() is a strict no-op: a recognised-but-unmigrated source
+// stays byte-identical, and each consumed knob only changes numbers when a
+// source opts into a non-default value.
 //
 // A source declares its ReturnsPolicy co-located in its silver package and
 // registers it via RegisterPolicy from that package's init(). The engine
@@ -20,32 +27,40 @@ import (
 // never enumerates sources itself.
 type ReturnsPolicy struct {
 	// Flow is the flow-classification policy (regime + external / transfer-like
-	// kind sets). This is the only field the engine reads today; FlowPolicyFor
-	// returns exactly this member.
+	// kind sets); FlowPolicyFor returns exactly this member.
 	Flow FlowPolicy
 
-	// ---- forward knobs (proposal §2); defined, defaulted, not yet consumed ----
+	// ---- consumed knobs (proposal §2/§3; live since the UBS migration) ----
 
 	// OnboardScope: whether synthetic onboarding fires per constituent account
-	// (today's behavior) or once per computed entity at inception.
+	// (default) or once per computed entity at inception.
 	OnboardScope OnboardScope
-	// Inception: full-window (today) vs. anchored at the first real snapshot.
+	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode
 	// ConduitKinds: account kinds that are plumbing (e.g. UBS cash), not a
-	// return-bearing unit. Empty today.
+	// return-bearing unit. Empty by default.
 	ConduitKinds []canonical.AccountKind
-	// ExternalOnly: count only boundary-crossing flows. False today (the flow
-	// set is governed by Flow.external / Flow.transferLike as now).
+	// ExternalOnly: count only boundary-crossing flows. It gates the ClassifyFlow
+	// hook in the engine (attachFlows): a source that ships ClassifyFlow drops
+	// flows the hook calls internal. A source that pre-tags external/internal in
+	// silver (UBS demotes internal rows to a non-flow kind) leaves ClassifyFlow
+	// nil, so this flag is then a silver-side contract and inert in the engine.
+	// False by default (the flow set is governed by Flow.external / Flow.
+	// transferLike).
 	ExternalOnly bool
+
+	// ---- forward knobs (proposal §2); defined, defaulted, NOT yet consumed ----
+
 	// NettingTol: transfer-netting window / epsilon. Zero value = today's
-	// netting behavior.
+	// netting behavior (the engine still uses its module-level netting constants).
 	NettingTol Tolerance
 	// SpineDensity: daily vs. sparse-carry-forward value spine. Zero value =
 	// today's behavior.
 	SpineDensity SpineMode
 	// NavOnly: capital-call-risk vehicles (suppress flow-based return, surface
-	// NAV growth). The engine currently derives this from Flow.Regime ==
-	// RegimeNavOnly; this knob mirrors that for the migration and defaults false.
+	// NAV growth). The engine still derives NAV-only from Flow.Regime ==
+	// RegimeNavOnly; this knob mirrors that for the migration (set by
+	// DefaultReturnsPolicy) but is not itself read, and defaults false.
 	NavOnly bool
 	// InKindJumpTol: suspected-in-kind honesty-flag tolerance. Zero = today.
 	InKindJumpTol canonical.Decimal
@@ -53,10 +68,11 @@ type ReturnsPolicy struct {
 	// ---- escape hatches (proposal §2); optional, nil => default behavior ----
 
 	// ClassifyFlow, if non-nil, overrides external-vs-internal flow
-	// classification (proposal §4). nil today => the FlowPolicy kind-set rule.
+	// classification (proposal §4) under ExternalOnly. nil => the FlowPolicy
+	// kind-set rule (UBS pre-tags in silver instead, so it ships nil).
 	ClassifyFlow func(FlowCtx) FlowClass
 	// OnboardAmount, if non-nil, overrides the synthetic onboarding amount. nil
-	// today => the engine's default.
+	// today => the engine's default. NOT yet consumed.
 	OnboardAmount func(DebutCtx) canonical.Decimal
 }
 
@@ -68,7 +84,8 @@ const (
 	// constituent account.
 	OnboardPerConstituent OnboardScope = iota
 	// OnboardPerEntityOnce fires onboarding once per computed entity at
-	// inception (proposal §3). Not yet consumed.
+	// inception (proposal §3). Consumed by the engine (groupOnboardStep) and set
+	// live by UBS.
 	OnboardPerEntityOnce
 )
 
@@ -78,8 +95,8 @@ type InceptionMode int
 const (
 	// InceptionFullWindow is today's behavior: the full report window.
 	InceptionFullWindow InceptionMode = iota
-	// InceptionFirstRealSnapshot anchors at the first real value snapshot. Not
-	// yet consumed.
+	// InceptionFirstRealSnapshot anchors at the first real value snapshot.
+	// Consumed by the engine (entityWindow) and set live by UBS.
 	InceptionFirstRealSnapshot
 )
 
@@ -168,4 +185,35 @@ func lookupPolicy(kind string) (ReturnsPolicy, bool) {
 	defer policyMu.RUnlock()
 	p, ok := policyRegistry[kind]
 	return p, ok
+}
+
+// ReturnsPolicyFor returns the full ReturnsPolicy registered for a silver
+// source's adapter kind (gold silver_sources.silver_kind), so the compute
+// engine can read the forward knobs (OnboardScope, Inception, ConduitKinds,
+// ExternalOnly, …) — not just the Flow member that FlowPolicyFor exposes. An
+// unregistered kind returns DefaultReturnsPolicy(defaultFlowPolicy()) with ok
+// false; the default knobs reproduce today's behavior, so a miss is a strict
+// no-op at every knob site. Because kind is resolved per source and the engine
+// carries each constituent's src, the policy is naturally source-scoped even
+// inside the merged global entity — a UBS constituent keeps the UBS policy while
+// every other source keeps its own default.
+func ReturnsPolicyFor(adapterKind string) (ReturnsPolicy, bool) {
+	if p, ok := lookupPolicy(adapterKind); ok {
+		return p, true
+	}
+	return DefaultReturnsPolicy(defaultFlowPolicy()), false
+}
+
+// IsConduit reports whether an account of the given kind is plumbing under this
+// policy (a member of ConduitKinds): it contributes to the value spine but emits
+// no per-account synthetic onboarding. Empty ConduitKinds (the default) makes
+// this always false, so no source treats any account as a conduit unless it opts
+// in.
+func (p ReturnsPolicy) IsConduit(kind canonical.AccountKind) bool {
+	for _, k := range p.ConduitKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }

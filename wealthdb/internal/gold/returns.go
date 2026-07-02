@@ -177,9 +177,10 @@ type accountData struct {
 	series   []dayVal // carry-forward value per emitted day, ascending
 	snapDays []int64  // distinct real snapshot days, ascending
 
-	policy         returns.FlowPolicy
-	nonTransfer    []returns.Flow // external deposit/withdrawal — always kept (never netted)
-	transferLike   []returns.Flow // transfer_in/out/journal — netting candidates at coarse grains
+	policy         returns.FlowPolicy    // the Flow member (classification) — hot path
+	rpolicy        returns.ReturnsPolicy // full per-source policy incl. forward knobs (OnboardScope/Inception/ConduitKinds/ExternalOnly)
+	nonTransfer    []returns.Flow        // external deposit/withdrawal — always kept (never netted)
+	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
 	cryptoExcluded bool
 	hasClampedFlow bool // a flow was valued at the migration-0023 day-0 clamped FX rate
@@ -200,6 +201,24 @@ func (a *accountData) firstDay() int64 {
 		return 0
 	}
 	return a.series[0].day
+}
+
+// isConduit reports whether this account is a conduit (plumbing) under its
+// source's ReturnsPolicy: it feeds the aggregate value spine but emits no
+// per-account synthetic onboarding. Default policy (empty ConduitKinds) => false
+// for every account, so non-conduit sources are unaffected.
+func (a *accountData) isConduit() bool {
+	return a.rpolicy.IsConduit(canonical.AccountKind(a.kind))
+}
+
+// firstRealSnapshotDay returns the earliest real snapshot day for this account
+// (the first entry in snapDays), or its spine firstDay() when no real snapshot
+// day was loaded. This is the anchor used under Inception=first-real-snapshot.
+func (a *accountData) firstRealSnapshotDay() int64 {
+	if len(a.snapDays) > 0 {
+		return a.snapDays[0]
+	}
+	return a.firstDay()
 }
 
 func (a *accountData) lastDay() int64 {
@@ -294,7 +313,8 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		k := acctKey(src, acct)
 		a := byKey[k]
 		if a == nil {
-			a = &accountData{src: src, acct: acct, kind: kind, policy: returns.FlowPolicyFor(kinds[src])}
+			rp, _ := returns.ReturnsPolicyFor(kinds[src])
+			a = &accountData{src: src, acct: acct, kind: kind, policy: rp.Flow, rpolicy: rp}
 			a.portfolio = pf.String
 			a.baseCurrency = base.String
 			a.label = acct
@@ -380,6 +400,22 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 		val, ok := parseFloatPtr(t.ValueOutCcy)
 		if !ok {
 			continue // unresolved FX on the flow — skip (documented limitation)
+		}
+		// ExternalOnly: count only boundary-crossing flows; internal churn
+		// (cash<->securities settlements, inter-account transfers, FX, mandate
+		// funding) is NOT a flow. The engine drops an internal flow here ONLY via a
+		// non-nil ClassifyFlow hook (gated by ExternalOnly); ExternalOnly alone does
+		// nothing in the engine. UBS sets ExternalOnly=true but ships NO ClassifyFlow
+		// — it pre-tags the classification in silver instead (internal rows are
+		// emitted under a non-flow kind, so they never reach IsExternal here), which
+		// keeps the counter-account / own-IBAN logic — and any PII — entirely inside
+		// the collector. For UBS, therefore, ExternalOnly is a silver-side contract
+		// and this branch is inert. This is source-scoped via a.rpolicy, so non-UBS
+		// sources (ExternalOnly=false) are untouched.
+		if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
+			if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
+				continue
+			}
 		}
 		day := t.OccurredAt / 86400
 		if kind == canonical.TxKindJournal {

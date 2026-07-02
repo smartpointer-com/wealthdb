@@ -1582,10 +1582,16 @@ the verified per-adapter flow table):
   daily bucketing.
 - **MWR** = XIRR over the window's external flows + opening/terminal values; n/a
   (with a reason) for no-flow / no-sign-change / non-unique / NAV-only entities.
-- **Flow classification is per-adapter** (banks/pension = flow-complete; crypto =
-  fiat flows only; manual/carta/equityzen = NAV-only). `value_outccy` already
-  carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR `cf =
-  -value_outccy` with no per-kind exception.
+- **Each source declares a pluggable `ReturnsPolicy`**, co-located in
+  `internal/silver/<source>/policy.go` and registered from that package's `init()`,
+  resolved by adapter kind via a registry (`internal/returns/returnspolicy.go`).
+  The engine takes **zero source names or branches** — it reads knobs off the
+  resolved policy (onboarding grain, conduit kinds, external-only, inception
+  anchor) and the policy is source-scoped even at the global grain. **Flow
+  classification** is one member of that policy (banks/pension = flow-complete;
+  crypto = fiat flows only; manual/carta/equityzen = NAV-only). `value_outccy`
+  already carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR
+  `cf = -value_outccy` with no per-kind exception.
 - **Historic-FX only** (no `--fx-mode`): FX movement is part of the return. **Net
   of fees and taxes paid** (after-tax) — costs stay inside the value series.
 - **Mortgage / net-negative entities** are excluded from coarse rollups and shown
@@ -1612,6 +1618,18 @@ the verified per-adapter flow table):
   *untracked pre-existing* capital (a late account with no funding transactions at
   all, e.g. a custody account whose backfill carries no transactions), which is NOT a double-count.
   See `docs/RETURNS-NOTES.md` §M6.
+- **Conduit relationships (per-source policy knobs).** A source whose policy opts
+  in (UBS today) is treated specially by the source-blind engine purely via its
+  `ReturnsPolicy`: **conduit-kind** accounts (UBS cash) feed the value spine but
+  emit no per-account onboarding; **per-entity-once** onboarding books the group
+  step-up net of same-day negative sibling funding drops (floored at 0), so an
+  internal cash→securities move inside a relationship onboards nothing — the
+  capital was already counted at inception; **external-only** drops internal churn
+  (UBS pre-tags external vs. internal in silver, so the engine hook is inert for
+  it); **inception = first-real-snapshot** anchors the window past sparse cash-only
+  pre-history (kills the tiny-base artifact). All four are source-scoped, so
+  every other source stays byte-identical even in the merged global entity. See
+  `docs/RETURNS-NOTES.md` §M7.
 
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
 every approximation is tagged (`since_data_inception`, `partial_window`,
@@ -1654,12 +1672,16 @@ wealthdb/
 │   │   ├── reset.go
 │   │   ├── positions.go            — as-of query, formatting
 │   │   └── status.go
+│   ├── returns/                    — source-agnostic returns math + pluggable policy
+│   │   ├── returnspolicy.go        — ReturnsPolicy superset + kind-keyed registry
+│   │   ├── policy.go               — FlowPolicy, Regime, FlowPolicyFor
+│   │   ├── dietz.go / xirr.go / chain.go / synthetic.go
 │   ├── silver/                     — adapter interface and registry
 │   │   ├── adapter.go              — interfaces from §6
 │   │   ├── registry.go             — silver.Register / silver.Get
-│   │   ├── schwab/                 — Schwab adapter implementation (see docs/adapters/schwab.md)
-│   │   ├── ubs/                    — UBS adapter implementation (see docs/adapters/ubs.md)
-│   │   └── swissquote/             — Swissquote adapter implementation (see docs/adapters/swissquote.md)
+│   │   ├── schwab/                 — Schwab adapter (impl + co-located policy.go)
+│   │   ├── ubs/                    — UBS adapter (impl + co-located policy.go, conduit knobs)
+│   │   └── swissquote/             — Swissquote adapter (impl + co-located policy.go)
 │   └── output/                     — table / csv / csv_plain / json formatters
 └── migrations/
     └── 0001_initial.sql            — the schema in §7.2

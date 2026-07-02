@@ -68,24 +68,33 @@ func params(level string, from, to int64) ReturnParams {
 		Method: "both", Period: "total", Annualize: "auto", Netting: true, Inception: "full"}
 }
 
-// TestNetTransfers covers the heuristic internal-transfer matching directly.
+// TestNetTransfers covers the heuristic internal-transfer matching directly
+// against netOwnedTransfers (the ownership-free case: untagged ownedFlow inputs).
 func TestNetTransfers(t *testing.T) {
+	net := func(fs ...returns.Flow) (int, int) {
+		owned := make([]ownedFlow, len(fs))
+		for i, f := range fs {
+			owned[i] = ownedFlow{Flow: f}
+		}
+		kept, unmatched := netOwnedTransfers(owned)
+		return len(kept), unmatched
+	}
 	// Opposite pair, same magnitude, within ±3 days ⇒ netted (internal move).
-	if kept, n := netTransfers([]returns.Flow{{Day: 10, Amount: 1000}, {Day: 12, Amount: -1000}}); len(kept) != 0 || n != 0 {
-		t.Errorf("matched pair: kept=%d unmatched=%d, want 0/0", len(kept), n)
+	if kept, n := net(returns.Flow{Day: 10, Amount: 1000}, returns.Flow{Day: 12, Amount: -1000}); kept != 0 || n != 0 {
+		t.Errorf("matched pair: kept=%d unmatched=%d, want 0/0", kept, n)
 	}
 	// Same pair but outside the ±3-day window ⇒ both kept, both unmatched.
-	if kept, n := netTransfers([]returns.Flow{{Day: 10, Amount: 1000}, {Day: 20, Amount: -1000}}); len(kept) != 2 || n != 2 {
-		t.Errorf("out-of-window: kept=%d unmatched=%d, want 2/2", len(kept), n)
+	if kept, n := net(returns.Flow{Day: 10, Amount: 1000}, returns.Flow{Day: 20, Amount: -1000}); kept != 2 || n != 2 {
+		t.Errorf("out-of-window: kept=%d unmatched=%d, want 2/2", kept, n)
 	}
 	// Relative-eps branch: a 0.4% leg difference on a large transfer (within the
 	// 0.5% tolerance) still nets.
-	if kept, _ := netTransfers([]returns.Flow{{Day: 10, Amount: 100000}, {Day: 11, Amount: -100400}}); len(kept) != 0 {
-		t.Errorf("rel-eps pair should net: kept=%d", len(kept))
+	if kept, _ := net(returns.Flow{Day: 10, Amount: 100000}, returns.Flow{Day: 11, Amount: -100400}); kept != 0 {
+		t.Errorf("rel-eps pair should net: kept=%d", kept)
 	}
 	// A lone leg can't match ⇒ kept + counted unmatched.
-	if kept, n := netTransfers([]returns.Flow{{Day: 10, Amount: -500}}); len(kept) != 1 || n != 1 {
-		t.Errorf("lone leg: kept=%d unmatched=%d, want 1/1", len(kept), n)
+	if kept, n := net(returns.Flow{Day: 10, Amount: -500}); kept != 1 || n != 1 {
+		t.Errorf("lone leg: kept=%d unmatched=%d, want 1/1", kept, n)
 	}
 }
 

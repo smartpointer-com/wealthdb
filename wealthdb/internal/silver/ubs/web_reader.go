@@ -326,6 +326,10 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, err
 	}
+	ownIBANs, err := r.buildOwnIBANSet(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	const q = `
 SELECT transaction_external_id, value_date, account_external_id,
@@ -366,26 +370,25 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
-		// The pre-2024 Account-Statement PDF cash backfill is held OUT
-		// of the return flow stream for now (mapped to a non-flow
-		// kind), while remaining a queryable transaction in gold.
-		//
-		// UBS cash/current accounts are CONDUITS: external capital
-		// enters as cash and is immediately routed into securities /
-		// mandates / FX, then the securities' value carries the return.
-		// Feeding those conduit movements into a flow-based TWR/MWR
-		// double-counts capital that the securities value spine already
-		// reflects (the arrival is booked once as the cash deposit and
-		// again as the securities-account debut), which collapses the
-		// return. Correctly turning this backfill into accurate returns
-		// is a scoped returns-engine change (external-vs-internal
-		// classification at the relationship boundary + conduit-aware
-		// onboarding); until that lands, holding the rows out keeps the
-		// returns at their prior baseline rather than regressing them.
-		// MT940 rows (post-2024) carry no such payload marker and are
-		// left exactly as before.
+		// Pre-2024 Account-Statement PDF cash backfill: classify each
+		// deposit/withdrawal as EXTERNAL (boundary-crossing owner
+		// capital) or INTERNAL (conduit churn) at the relationship
+		// boundary. UBS cash/current accounts are CONDUITS — external
+		// capital enters as cash and is routed into securities /
+		// mandates / FX, whose value spine carries the return — so
+		// internal churn fed into a flow-based return double-counts.
+		// The conservative rule (pdfCashIsExternal, default INTERNAL,
+		// own-IBAN-based, PII-free) keeps only provably-external moves
+		// in the flow stream; INTERNAL rows are demoted to a non-flow
+		// kind (TxKindOther, absent from BankExternal) so they stay
+		// queryable in gold but out of the return. The engine's UBS
+		// policy (OnboardPerEntityOnce + ConduitKinds:[cash] +
+		// ExternalOnly + Inception=first-real-snapshot) then onboards
+		// the relationship's inception value ONCE and counts external
+		// deposits on top, so capital is counted exactly once. MT940
+		// rows (post-2024) carry no source marker and are unaffected.
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
-			if isPDFCashBackfill(payload) {
+			if isPDFCashBackfill(payload) && !pdfCashIsExternal(payload, ownIBANs) {
 				kind = canonical.TxKindOther
 			}
 		}
@@ -471,9 +474,9 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                int64
-			extID, payload                      string
-			relID, description                  sql.NullString
+			snap               int64
+			extID, payload     string
+			relID, description sql.NullString
 		)
 		if err := rows.Scan(&snap, &extID, &relID, &description, &payload); err != nil {
 			return err
@@ -516,9 +519,9 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                                  int64
-			extID, kind, payload                                  string
-			ccy, relID, portfolioID, description                 sql.NullString
+			snap                                 int64
+			extID, kind, payload                 string
+			ccy, relID, portfolioID, description sql.NullString
 		)
 		if err := rows.Scan(&snap, &extID, &kind, &ccy, &relID, &portfolioID, &description, &payload); err != nil {
 			return err
@@ -585,14 +588,41 @@ SELECT a.account_external_id, a.banking_relationship_id
 	return out, rows.Err()
 }
 
+// buildOwnIBANSet returns the set of the relationship's OWN account IBANs, keyed
+// by the normalized (spaces stripped, upper-cased) IBAN — exactly the shape a
+// transaction payload's counter_account normalizes to. account_external_id IS the
+// IBAN (schema: "IBAN no-spaces upper"), so this is a name-free, PII-free key:
+// membership decides internal-vs-external without any holder name. Used by the
+// pre-2024 PDF cash-flow classifier to recognise inter-own-account moves as a
+// SUPPLEMENT to the parser's internal_transfer boolean: it can demote a KNOWN own
+// counter to internal, but it cannot promote — the parser flag is checked first
+// and is authoritative, so an own mandate/portfolio destination absent from
+// `accounts` is still vetoed to internal by that flag, not by this set.
+func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT account_external_id FROM accounts`)
+	if err != nil {
+		return nil, fmt.Errorf("buildOwnIBANSet: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var iban string
+		if err := rows.Scan(&iban); err != nil {
+			return nil, err
+		}
+		out[normalizeIBAN(iban)] = true
+	}
+	return out, rows.Err()
+}
+
 // buildPSNStartByWebRel resolves the PSN-start cutoff per web
 // banking_relationship_id using the config relationships pairing
 // and the *psnReader (if configured). Returns an empty map when
 // psn is nil (degenerate splice — every web row passes).
 //
 // Resolution order per relationship:
-//   1. RelationshipPair.PSNStartOverride if non-zero.
-//   2. MIN(snapshot_at) in PSN for the paired PSNID, otherwise.
+//  1. RelationshipPair.PSNStartOverride if non-zero.
+//  2. MIN(snapshot_at) in PSN for the paired PSNID, otherwise.
 //
 // A relationship with no PSN counterpart (PSNID empty, or empty
 // MIN) gets cutoff=0 → no filter applied to its web rows.
@@ -731,6 +761,73 @@ func isPDFCashBackfill(payload string) bool {
 	return p.Source == "account_statement_pdf"
 }
 
+// normalizeIBAN strips spaces and upper-cases an IBAN-shaped string so a payload's
+// formatted counter_account ("CH.. .... ....") compares byte-for-byte with an
+// account_external_id (already no-spaces upper). Name-free.
+func normalizeIBAN(s string) string {
+	return strings.ToUpper(strings.ReplaceAll(s, " ", ""))
+}
+
+// pdfCashIsExternal decides whether a pre-2024 PDF-backfill cash movement is a
+// genuine boundary-crossing (EXTERNAL) owner-capital flow or internal churn.
+//
+// UBS cash/current accounts are conduits: external cash lands and is routed into
+// securities / mandates / FX inside the relationship, and the securities value
+// spine carries the return. Feeding that internal churn into a flow-based return
+// double-counts capital. The rule is therefore CONSERVATIVE toward internal —
+// default INTERNAL, mark EXTERNAL only when the counterparty is PROVABLY a
+// non-own party — because a missed external merely understates capital (safe)
+// while a fabricated external double-counts (catastrophic; this is what sank the
+// prior attempt via loose org-markers). It uses ONLY the normalized
+// counter_account IBAN against the relationship's own-IBAN set — NO holder name,
+// NO free-text counterparty, NO org markers, i.e. no PII.
+//
+// EXTERNAL iff the parser did NOT already flag the row internal_transfer AND
+// counter_account is a populated, non-own Swiss/Liechtenstein IBAN that is not a
+// mortgage (HYPOTHEK) payoff or a structured-product maturity / closing.
+// Everything else — parser-confirmed internal_transfer, null counter, own IBAN,
+// non-CH/LI IBAN, mortgage amortisation, maturity/closing — is INTERNAL.
+func pdfCashIsExternal(payload string, own map[string]bool) bool {
+	var p struct {
+		CounterAccount   string `json:"counter_account"`
+		BookingType      string `json:"booking_type"`
+		InternalTransfer bool   `json:"internal_transfer"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	// The collector's own name-free markers (UEBERTRAG/UMBUCHUNG/MANDAT/MANAGE/
+	// PORTFOLIO/REDUK on the continuation lines) already identified this row as an
+	// intra-relationship mandate-funding / book-transfer move. That is authoritative
+	// and VETOES external BEFORE the IBAN promotion below: a mandate/portfolio
+	// destination absent from `accounts` is a known-internal row whose counter IBAN
+	// would otherwise pass all four EXTERNAL conditions and fabricate owner capital
+	// (the conduit direction this model exists to prevent). own-IBAN membership is a
+	// supplement that can only DEMOTE a known-own counter to internal; it cannot
+	// catch such a row, so the parser flag must gate first.
+	if p.InternalTransfer {
+		return false // parser-confirmed internal reshuffle ⇒ never external
+	}
+	ctr := normalizeIBAN(p.CounterAccount)
+	if ctr == "" {
+		return false // no counterparty IBAN ⇒ not provably external ⇒ INTERNAL
+	}
+	if own[ctr] {
+		return false // inter-own-account move: supplement demoting a KNOWN own counter (parser flag already handled unknown-destination internals above)
+	}
+	if !strings.HasPrefix(ctr, "CH") && !strings.HasPrefix(ctr, "LI") {
+		return false // only Swiss/Liechtenstein counterparties count; anything else stays INTERNAL
+	}
+	// Mortgage amortisation + structured-product maturity/closing net inside the
+	// relationship (payoff of an own liability / roll of an own product), not owner
+	// capital crossing the boundary.
+	bt := strings.ToUpper(p.BookingType)
+	if strings.Contains(bt, "HYPOTHEK") || strings.Contains(bt, "MATURITY") || strings.Contains(bt, "CLOSING") {
+		return false
+	}
+	return true
+}
+
 // extractInstrumentFromDescription1 pulls (ISIN, full caption)
 // out of the silver row's payload.Description1 field, when
 // present. UBS web statements format this field as
@@ -846,11 +943,11 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                          int64
-			extID, currency, payload                      string
+			snap                                            int64
+			extID, currency, payload                        string
 			relID, portfolioID, rateType, collateral, descr sql.NullString
-			outstanding                                   sql.NullFloat64
-			startDate, endDate                            sql.NullInt64
+			outstanding                                     sql.NullFloat64
+			startDate, endDate                              sql.NullInt64
 		)
 		if err := rows.Scan(&snap, &extID, &relID, &portfolioID,
 			&currency, &outstanding, &startDate, &endDate, &rateType,

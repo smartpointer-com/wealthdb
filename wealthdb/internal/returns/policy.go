@@ -121,12 +121,12 @@ func defaultFlowPolicy() FlowPolicy {
 // (gold silver_sources.silver_kind). Each kind's policy is co-located in its
 // silver package and registered via RegisterPolicy (from that package's init()).
 // An unregistered kind defaults to the bank set with Known=false so the caller
-// can flag it. The body no longer enumerates sources — it is a registry lookup.
+// can flag it. It is a thin convenience wrapper over ReturnsPolicyFor exposing
+// just the Flow member — the body no longer enumerates sources, and the shared
+// registry lookup + miss-fallback lives once in ReturnsPolicyFor.
 func FlowPolicyFor(adapterKind string) FlowPolicy {
-	if p, ok := lookupPolicy(adapterKind); ok {
-		return p.Flow
-	}
-	return defaultFlowPolicy()
+	p, _ := ReturnsPolicyFor(adapterKind)
+	return p.Flow
 }
 
 // CapitalDirection returns the effect of an external flow kind on the entity's

@@ -1,6 +1,6 @@
 # `wealthdb returns` — implementation notes
 
-Companion to the design proposal (rev. 2). Records, per the build's autonomy
+Companion to the design proposal (now implemented — see §M7). Records, per the build's autonomy
 brief: assumptions, places the implementation deviated from the spec (spec
 assumed → what the code showed → what was done → why), and anything deferred.
 All examples synthetic (CLAUDE.md §4).
@@ -164,18 +164,22 @@ drove these changes:
 - **Hardening:** `bisectXIRR` now resets its bracket on a NaN/Inf sample instead
   of comparing a sign against a poisoned previous value (latent, not live, given
   current inputs).
-- **Coverage:** `internal/returns` 76% → ~94%; added gold tests for `netTransfers`,
-  the portfolios grain, staggered-inception synthetic onboarding (incl.
+- **Coverage:** `internal/returns` 76% → ~94%; added gold tests for the transfer
+  netting (`netOwnedTransfers`), the portfolios grain, staggered-inception synthetic onboarding (incl.
   `fundingNear` partial dedup), `mwr_incomplete_flows`/`mwr_nonunique`,
   `journal_present`/`crypto_unclassified_transfers`, `partial_window` +
   `--inception strict`, and `empty_bucket`.
 - **Finding — `unknown_adapter_policy` is unreachable via the real pipeline.**
   `silver_sources.silver_kind` has a CHECK constraint admitting only the 12 known
-  adapter kinds, so `FlowPolicyFor` never returns `Known=false` for a loaded
-  source. The flag + the policy `default` branch are kept as defense-in-depth (a
-  future adapter added to the CHECK but not to `FlowPolicyFor` would surface it),
-  and the `default` is unit-tested at the `FlowPolicyFor` level; the gold-level
-  flag emission is intentionally left uncovered.
+  adapter kinds, and each of those registers a policy co-located in its silver
+  package (from that package's `init()`), so the registry lookup never falls to
+  the `Known=false` default for a loaded source. The flag + the miss-fallback
+  branch are kept as defense-in-depth (a future adapter added to the CHECK but not
+  registering a policy would surface it), and the fallback is unit-tested at the
+  policy-resolution level (`FlowPolicyFor` / `ReturnsPolicyFor`); the gold-level
+  flag emission is intentionally left uncovered. Note `FlowPolicyFor` is now a thin
+  wrapper over `ReturnsPolicyFor` returning `.Flow` — a pure registry lookup, no
+  source-enumerating switch.
 - **Docs:** corrected the DESIGN §10.9 quality-flag list (added `mwr_no_converge`,
   `unknown_adapter_policy`, `partial_window`), scoped `--fx-mode`/`-d` away from
   `returns` in SKILL.md, and annotated this build-order line.
@@ -203,8 +207,8 @@ account-grain headline math was left untouched:
   this bucket has a fresh snapshot) is now flagged — it is NOT subsumed by
   `empty_bucket` (which flags the flat donor bucket); the old "subsumed" note was
   wrong.
-- **#6 deterministic netting:** `Flow.ID` (transaction id) added; `netTransfers`
-  sorts stably by `(|amount|, day, id)`.
+- **#6 deterministic netting:** `Flow.ID` (transaction id) added; the transfer
+  netting (`netOwnedTransfers`) sorts stably by `(|amount|, day, id)`.
 - **#7 sub-(-100%) loss:** XIRR returns `ErrNoConverge` (→ `mwr_no_converge`)
   instead of a clamped non-root ~-100%.
 - **#8:** `unmatched_transfers=N` carries the count; the `mwr_%` column shows the
@@ -234,7 +238,7 @@ real funding lands in an early bucket where the aggregate value series does not
 yet include the account (it is not alive until debut), so that bucket reads `+F`
 against `ΔV≈0` (strongly negative); onboarding then zeroes the debut bucket. The
 two halves live in different buckets, so chaining compounded rather than
-cancelled them — driving cumulative TWR below −100%.
+cancelled them — driving cumulative TWR below −100% for the affected sources.
 
 **Principle implemented:** at every grain each dollar crossing the entity
 boundary is counted exactly once, in the same bucket as the value change it
@@ -259,10 +263,10 @@ the synthetic onboarding/closure amount instead of double-counted.
 netting runs over the **full candidate set, pre-debut legs included**, BEFORE
 subsumption, so genuine internal pairs still annihilate. Only legs that *survive*
 netting as a constituent's own pre-debut/closure capital are then subsumed. This
-is why `netTransfers` was refactored to a tagged `netOwnedTransfers` that carries
-each leg's owning account + a `subsumed` flag through the greedy match unchanged
-(`netTransfers` is kept as a thin ownership-free wrapper for its direct unit
-test). The phantom the design warns about — dropping a pre-debut journal-IN while
+is why netting is done by the tagged `netOwnedTransfers`, which carries each
+leg's owning account + a `subsumed` flag through the greedy match unchanged (its
+direct unit test wraps untagged `ownedFlow`s to exercise the ownership-free
+case). The phantom the design warns about — dropping a pre-debut journal-IN while
 its sibling journal-OUT remains — does *not* arise: a surviving journal-OUT sits
 on an *alive* account whose value series genuinely reflects the −X drop, so the
 −X is real, not orphaned. Pairs that don't net (different magnitudes / outside
@@ -300,6 +304,40 @@ Computed v1 set: `since_data_inception`, `partial_window`, `staggered_inception`
 `journal_present`, `nav_only`, `nav_only_capital_call_risk`,
 `crypto_unclassified_transfers`, `unknown_adapter_policy`, `fx_clamped_flow`,
 `pre_fx_history`, `after_tax`.
+
+## M7 — pluggable per-source `ReturnsPolicy` + UBS conduit migration
+
+The design proposal is now **implemented**. Two commits landed the framework and
+the first source migration: the pluggable per-source policy (`bce7774`) and the
+UBS conduit migration (`c93dd41`).
+
+- **Superset policy + registry.** `internal/returns/returnspolicy.go` defines
+  `ReturnsPolicy` (the `Flow FlowPolicy` member plus the proposal knobs) and a
+  `kind`-keyed registry (`RegisterPolicy` / `lookupPolicy` / `ReturnsPolicyFor`).
+  Each source declares its policy co-located in `internal/silver/<source>/
+  policy.go` and registers it from that package's `init()` — the same pattern as
+  the adapter registry. `ReturnsPolicyFor` resolves by adapter kind, so the policy
+  is **source-scoped even at the global grain** (each constituent keeps its
+  origin's policy inside the merged entity) — this kills the cross-grain leak §1
+  of the proposal warned about. `FlowPolicyFor` is now a thin wrapper over it.
+- **UBS knobs (live).** UBS's policy sets four knobs, all source-scoped:
+  `OnboardScope = OnboardPerEntityOnce` (books the relationship's inception step-up
+  once, not per account — an internal cash→securities move onboards nothing);
+  `ConduitKinds = [cash]` (cash accounts feed the value spine but emit no
+  per-account onboarding); `ExternalOnly = true` (contract honored in silver — UBS
+  pre-tags external/internal via the own-IBAN rule and demotes internal rows to a
+  non-flow kind, so the engine's `ExternalOnly`+`ClassifyFlow` branch is inert for
+  UBS); `Inception = InceptionFirstRealSnapshot` (anchors the window at the first
+  real position snapshot, killing the tiny-base artifact).
+- **§4c residual onboarding was REVERTED.** The residual/throughput reconciliation
+  approach was implemented then removed; no leftovers remain (grep-clean). The
+  chosen fix is the per-entity-once step-up in `groupOnboardStep`, netting only
+  negative sibling funding drops and floored at 0.
+- **Still-dormant knobs.** `SpineDensity`, `NettingTol`, `InKindJumpTol`, the
+  `NavOnly` mirror, and the `ClassifyFlow` / `OnboardAmount` hooks are defined and
+  defaulted but not yet consumed by the engine (NAV-only and crypto handling still
+  ride `Flow.Regime`, not dedicated knobs). They are forward stubs per the
+  proposal.
 
 ## Deferred / out of scope (TODO for review)
 

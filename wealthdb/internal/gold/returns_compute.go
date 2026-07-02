@@ -295,7 +295,38 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// Synthetic onboarding (the late constituent's whole arrival) + explicit closure
 	// (its whole exit). The real pre-debut / closure-drain flows were subsumed above,
 	// so the synthetic amount is the FULL boundary value — no near-day dedup needed.
+	//
+	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
+	// constituent debuts after winFrom:
+	//   - OnboardPerConstituent (default): the debuting account's OWN value. Today's
+	//     behavior, untouched — no sibling account moves on a debut day in the
+	//     flow-complete sources, so per-account == aggregate step-up there.
+	//   - OnboardPerEntityOnce: the newly-debuting constituents' first value MINUS
+	//     same-day sibling FUNDING drops only (NOT the raw calendar aggregate delta —
+	//     see groupOnboardStep: same-day external deposits and market moves on
+	//     siblings are excluded so they aren't double-counted). An internal
+	//     cash->securities move inside a UBS
+	//     relationship debuts a securities account while its funding cash account
+	//     drops by the same amount, so the step-up nets to ~0 and NOTHING is
+	//     onboarded — the capital was already booked once (inception value + the
+	//     external cash deposit). Genuinely new external value that wasn't captured
+	//     as a same-unit deposit still steps the aggregate up and is onboarded. This
+	//     is the conduit double-count fix, and it is source-scoped: the grain is read
+	//     per constituent from a.rpolicy, so a non-UBS constituent keeps
+	//     per-constituent onboarding even in the merged global entity.
+	// Conduit-kind accounts never emit their OWN onboarding (ConduitKinds); under
+	// per-entity-once their value still enters the aggregate step-up (they hold the
+	// inception cash), and under the default they are simply skipped.
+	perEntityGroups := map[string][]*accountData{}
 	for _, a := range assets {
+		if a.rpolicy.OnboardScope == returns.OnboardPerEntityOnce {
+			perEntityGroups[a.src] = append(perEntityGroups[a.src], a)
+			continue
+		}
+		if a.isConduit() {
+			continue // conduit: value only, no per-account onboarding
+		}
+		// Default per-constituent onboarding: the debuting account's own value.
 		debut := a.firstDay()
 		if debut > winFrom && debut <= winTo {
 			v, _ := a.valueAt(debut)
@@ -303,6 +334,26 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 				flows = append(flows, of)
 			}
 		}
+	}
+	// Per-entity-once: onboard the aggregate step-up at each distinct post-winFrom
+	// debut day within the source group. When the group's inception coincides with
+	// winFrom (the common case once the window is anchored at the first real
+	// snapshot) NO account debuts after winFrom, so nothing is onboarded: the
+	// inception value is the opening base V0, external deposits add capital, and
+	// internal churn is nothing — capital counted exactly once.
+	for _, grp := range perEntityGroups {
+		for _, day := range groupDebutDays(grp, winFrom, winTo) {
+			step := groupOnboardStep(grp, day)
+			if of, ok := returns.OnboardingFlow(day, step, 0); ok {
+				flows = append(flows, of)
+			}
+		}
+	}
+
+	// Explicit closure (a constituent's whole exit) is unchanged by OnboardScope /
+	// ConduitKinds: the carry-forward spine keeps lastValue past the closure day, so
+	// the zeroing outflow is mandatory whether or not the account onboarded.
+	for _, a := range assets {
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
 			if cf, _, ok := returns.ClosureFlow(cd, last, 0); ok {
@@ -312,6 +363,75 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	}
 	sortFlows(flows)
 	return flows, tags
+}
+
+// groupDebutDays returns the ascending, de-duplicated set of days on which a
+// per-entity-once source group gains a constituent after winFrom (a constituent's
+// firstDay() in (winFrom, winTo]). The aggregate step-up is booked on each such
+// day.
+func groupDebutDays(grp []*accountData, winFrom, winTo int64) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, a := range grp {
+		d := a.firstDay()
+		if d > winFrom && d <= winTo && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// groupOnboardStep is the capital onboarded when one or more constituents of a
+// per-entity-once group debut on `day`. It is the newly-debuting constituents'
+// first value NET OF same-day sibling FUNDING drops only — NOT the raw aggregate
+// calendar delta (the group's total value on day minus its total on day-1).
+//
+// The raw delta absorbed EVERY value movement across ALL group accounts on the
+// debut day, so it double-counted two things that are not new onboarding capital:
+//
+//   - a same-day external cash deposit into a sibling conduit — already booked as
+//     its own nonTransfer flow, so sweeping it into the step-up counts it twice;
+//   - organic market appreciation / dividends / interest on existing holdings that
+//     day — genuine RETURN silently reclassified as a capital inflow.
+//
+// Both surface as POSITIVE sibling deltas, so we exclude them: only NEGATIVE
+// sibling deltas (a funding cash conduit draining to fund the new account) offset
+// the debut value. An internal cash->securities move (new securities +X, funding
+// cash -X) therefore nets to 0; a genuine external inflow landing straight as a
+// new account (no sibling drop) onboards its full value; same-day deposits and
+// market moves on siblings do not touch the step-up. Floored at 0 so a debut day
+// dominated by sibling drops can never book negative onboarding.
+func groupOnboardStep(grp []*accountData, day int64) float64 {
+	var debutValue, siblingFundingDrop float64
+	for _, a := range grp {
+		newlyDebuts := a.firstDay() == day
+		if newlyDebuts {
+			if v, alive := a.valueAt(day); alive {
+				debutValue += returns.ZeroedValue(v, day, a.closureDay())
+			}
+			continue
+		}
+		// Already-alive sibling: count only a value DECREASE across the debut day
+		// as funding (the conduit draining into the new account). Positive deltas
+		// (market gains, external deposits) are NOT onboarding capital.
+		vPrev, alivePrev := a.valueAt(day - 1)
+		vCur, aliveCur := a.valueAt(day)
+		if !alivePrev || !aliveCur {
+			continue
+		}
+		prev := returns.ZeroedValue(vPrev, day-1, a.closureDay())
+		cur := returns.ZeroedValue(vCur, day, a.closureDay())
+		if drop := prev - cur; drop > 0 {
+			siblingFundingDrop += drop
+		}
+	}
+	step := debutValue - siblingFundingDrop
+	if step < 0 {
+		step = 0
+	}
+	return step
 }
 
 // subsumesAt reports whether a constituent's flow on `day` lands in a region the
@@ -338,28 +458,14 @@ func subsumesAt(a *accountData, day, winFrom, winTo int64) bool {
 	return false
 }
 
-// netTransfers greedily matches opposite-direction transfer legs (largest first)
-// whose output-currency magnitudes agree within ε and whose days are within the
-// netting window, dropping matched pairs as internal. Returns the survivors and
-// the count of unmatched legs. Thin wrapper over netOwnedTransfers for the
-// ownership-free case (used directly only in tests).
-func netTransfers(cand []returns.Flow) (kept []returns.Flow, unmatched int) {
-	owned := make([]ownedFlow, len(cand))
-	for i, f := range cand {
-		owned[i] = ownedFlow{Flow: f}
-	}
-	keptOwned, unmatched := netOwnedTransfers(owned)
-	for _, of := range keptOwned {
-		kept = append(kept, of.Flow)
-	}
-	return kept, unmatched
-}
-
-// netOwnedTransfers is netTransfers carrying per-leg ownership/subsumed tags
-// through unchanged: the greedy largest-first match with the deterministic
-// (|amount|, day, id) tie-break is identical, so internal pairs annihilate the
-// same way whether or not a leg is subsumed. Survivors keep their tags so the
-// caller can drop subsumed pre-debut / closure-drain legs AFTER netting.
+// netOwnedTransfers greedily matches opposite-direction transfer legs (largest
+// first) whose output-currency magnitudes agree within ε and whose days are
+// within the netting window, dropping matched pairs as internal. It carries
+// per-leg ownership/subsumed tags through unchanged: the deterministic
+// (|amount|, day, id) tie-break means internal pairs annihilate the same way
+// whether or not a leg is subsumed. Survivors keep their tags so the caller can
+// drop subsumed pre-debut / closure-drain legs AFTER netting. Returns the
+// survivors and the count of unmatched legs.
 func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
 	var pos, neg []ownedFlow
 	for _, f := range cand {
@@ -432,15 +538,49 @@ func liabilityRow(a *accountData, toDay int64) ReturnRow {
 
 func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to int64, flags []string) {
 	to = toDay
-	// Per-constituent inception.
+	// Per-constituent inception. Under a constituent's Inception=first-real-
+	// snapshot policy its anchor is the first REAL snapshot day rather than the
+	// first spine day, which kills the tiny-base artifact where a sparse pre-
+	// snapshot cash tail opened the window years early (UBS 2021). The choice is
+	// per constituent, so it is source-scoped even in the merged global entity:
+	// only that source's constituents move their anchor; every other source keeps
+	// firstDay(). Default policy (InceptionFullWindow) leaves anchorDay == firstDay.
+	// Under Inception=first-real-snapshot a conduit account's sparse cash-only
+	// pre-history must NOT drag the anchor early (UBS held cash months before the
+	// first securities position); the unit's real inception is when a non-conduit
+	// account first has a real snapshot. So for that policy the min-anchor is taken
+	// over NON-conduit constituents only, using their first real snapshot day. If a
+	// group is all conduit, fall back to including conduits so the window is never
+	// empty. Every other constituent keeps firstDay() (default), so this is
+	// source-scoped.
+	// anchorDay is a constituent's inception anchor: firstDay() by default;
+	// firstRealSnapshotDay() under Inception=first-real-snapshot. A first-real-
+	// snapshot CONDUIT is skipped from the min so its sparse cash pre-history can't
+	// anchor the unit early — the anchor prefers a non-conduit real snapshot.
+	anchorDay := func(a *accountData) (day int64, skipForMin bool) {
+		if a.rpolicy.Inception == returns.InceptionFirstRealSnapshot {
+			return a.firstRealSnapshotDay(), a.isConduit()
+		}
+		return a.firstDay(), false
+	}
 	incMin, incMax := int64(math.MaxInt64), int64(0)
 	for _, a := range assets {
-		fd := a.firstDay()
-		if fd < incMin {
-			incMin = fd
-		}
+		fd, skip := anchorDay(a)
 		if fd > incMax {
 			incMax = fd
+		}
+		if !skip && fd < incMin {
+			incMin = fd
+		}
+	}
+	// Fallback: an all-conduit first-real-snapshot group contributed nothing to the
+	// min above — anchor over every constituent so the window is never empty.
+	if incMin == int64(math.MaxInt64) {
+		for _, a := range assets {
+			fd, _ := anchorDay(a)
+			if fd < incMin {
+				incMin = fd
+			}
 		}
 	}
 	aggregate := len(assets) > 1
