@@ -586,22 +586,34 @@ func regimeFlags(assets []*accountData) []string {
 	} else if anyNavOnly(assets) {
 		flags = append(flags, "nav_only_capital_call_risk")
 	}
+	// Aggregate the per-asset conditions first, then emit in a fixed order, so
+	// the flag list is deterministic regardless of asset-iteration order. These
+	// flags are a display SET — order carries no meaning — and emitting them in
+	// iteration order made a multi-asset entity's flag ordering depend on which
+	// constituent happened to be visited first (non-deterministic for e.g.
+	// cointracking).
+	var crypto, journal, unknown, clamped, dropped bool
 	for _, a := range assets {
-		if a.policy.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded {
-			flags = append(flags, "crypto_unclassified_transfers")
-		}
-		if a.journalPresent {
-			flags = append(flags, "journal_present")
-		}
-		if !a.policy.Known {
-			flags = append(flags, "unknown_adapter_policy")
-		}
-		if a.hasClampedFlow {
-			flags = append(flags, "fx_clamped_flow")
-		}
-		if a.droppedNonzero {
-			flags = append(flags, "dropped_while_nonzero")
-		}
+		crypto = crypto || (a.policy.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)
+		journal = journal || a.journalPresent
+		unknown = unknown || !a.policy.Known
+		clamped = clamped || a.hasClampedFlow
+		dropped = dropped || a.droppedNonzero
+	}
+	if crypto {
+		flags = append(flags, "crypto_unclassified_transfers")
+	}
+	if journal {
+		flags = append(flags, "journal_present")
+	}
+	if unknown {
+		flags = append(flags, "unknown_adapter_policy")
+	}
+	if clamped {
+		flags = append(flags, "fx_clamped_flow")
+	}
+	if dropped {
+		flags = append(flags, "dropped_while_nonzero")
 	}
 	return dedupeStrings(flags)
 }
