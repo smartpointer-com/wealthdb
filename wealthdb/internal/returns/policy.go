@@ -64,58 +64,69 @@ func set(ks ...canonical.TxKind) map[canonical.TxKind]bool {
 	return m
 }
 
-// bankExternal is the standard flow-complete external set. Including kinds an
-// adapter never emits (e.g. fidelity emits only journal) is harmless — no such
-// transactions exist — and keeps the policy robust to adapter evolution.
-var bankExternal = []canonical.TxKind{
-	canonical.TxKindDeposit, canonical.TxKindWithdrawal,
-	canonical.TxKindTransferIn, canonical.TxKindTransferOut,
-	canonical.TxKindJournal,
+// NewFlowPolicy constructs a FlowPolicy from the given regime and external /
+// transfer-like kind sets. It is the exported constructor silver packages use to
+// declare their co-located policy (the external/transferLike sets are unexported
+// map fields, so a constructor is required to build byte-identical sets from
+// outside the package). Known is set true — a registered policy is by definition
+// a recognised adapter; the Known=false shape is reserved for the FlowPolicyFor
+// miss-fallback (see defaultFlowPolicy).
+func NewFlowPolicy(regime Regime, external, transferLike []canonical.TxKind) FlowPolicy {
+	return FlowPolicy{
+		Regime:       regime,
+		Known:        true,
+		external:     set(external...),
+		transferLike: set(transferLike...),
+	}
 }
 
-var bankTransferLike = []canonical.TxKind{
-	canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal,
+// BankExternal is the standard flow-complete external kind set. Including kinds
+// an adapter never emits (e.g. fidelity emits only journal) is harmless — no
+// such transactions exist — and keeps the policy robust to adapter evolution.
+// Exported so the flow-complete bank/pension silver packages register the
+// identical set without duplicating the literal.
+func BankExternal() []canonical.TxKind {
+	return []canonical.TxKind{
+		canonical.TxKindDeposit, canonical.TxKindWithdrawal,
+		canonical.TxKindTransferIn, canonical.TxKindTransferOut,
+		canonical.TxKindJournal,
+	}
+}
+
+// BankTransferLike is the standard flow-complete transfer-like (netting) subset.
+func BankTransferLike() []canonical.TxKind {
+	return []canonical.TxKind{
+		canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal,
+	}
+}
+
+// BankFlowPolicy is the flow policy shared by the flow-complete banks/pension
+// (ubs, schwab, swissquote, fidelity, relevate, viac). relevate (P2) and viac
+// (P3a) map pension contributions to `deposit`, not `contribution`, so the bank
+// set covers them; fidelity moves capital only via `journal`.
+func BankFlowPolicy() FlowPolicy {
+	return NewFlowPolicy(RegimeFlowComplete, BankExternal(), BankTransferLike())
+}
+
+// defaultFlowPolicy is the FlowPolicyFor miss-fallback: the conservative bank
+// set with Known=false so the caller surfaces unknown_adapter_policy. It differs
+// from BankFlowPolicy ONLY by Known=false.
+func defaultFlowPolicy() FlowPolicy {
+	p := BankFlowPolicy()
+	p.Known = false
+	return p
 }
 
 // FlowPolicyFor returns the flow policy for a silver source's adapter kind
-// (gold silver_sources.silver_kind). An unknown kind defaults to the bank set
-// with Known=false so the caller can flag it.
+// (gold silver_sources.silver_kind). Each kind's policy is co-located in its
+// silver package and registered via RegisterPolicy (from that package's init()).
+// An unregistered kind defaults to the bank set with Known=false so the caller
+// can flag it. The body no longer enumerates sources — it is a registry lookup.
 func FlowPolicyFor(adapterKind string) FlowPolicy {
-	switch adapterKind {
-	case "ubs", "schwab", "swissquote", "fidelity", "relevate", "viac":
-		// Flow-complete banks/pension. relevate (P2) and viac (P3a) map pension
-		// contributions to `deposit`, not `contribution`, so the bank set covers
-		// them. fidelity moves capital only via `journal`.
-		return FlowPolicy{Regime: RegimeFlowComplete, Known: true,
-			external: set(bankExternal...), transferLike: set(bankTransferLike...)}
-
-	case "angellist":
-		// Real funding-wallet ledger: deposit/withdrawal are genuine bank wires.
-		// contribution/distribution are INTERNAL (funding wallet ↔ tracked
-		// deals) and are deliberately NOT external.
-		return FlowPolicy{Regime: RegimeFlowComplete, Known: true,
-			external:     set(canonical.TxKindDeposit, canonical.TxKindWithdrawal),
-			transferLike: set()}
-
-	case "cointracking":
-		// Crypto: only FIAT deposit/withdrawal are real external capital. Crypto
-		// transfer_in/out are an unclassifiable mix (wallet-to-wallet internal +
-		// airdrops/gifts which are return) with no discriminator surviving to
-		// gold → excluded (flag crypto_unclassified_transfers).
-		return FlowPolicy{Regime: RegimeCryptoPartial, Known: true,
-			external:     set(canonical.TxKindDeposit, canonical.TxKindWithdrawal),
-			transferLike: set()}
-
-	case "carta", "equityzen", "manual":
-		// NAV-only: manual emits no transactions; carta/equityzen emit synthetic
-		// balanced double-entries on a 0-pinned sentinel. No usable flows.
-		return FlowPolicy{Regime: RegimeNavOnly, Known: true,
-			external: set(), transferLike: set()}
-
-	default:
-		return FlowPolicy{Regime: RegimeFlowComplete, Known: false,
-			external: set(bankExternal...), transferLike: set(bankTransferLike...)}
+	if p, ok := lookupPolicy(adapterKind); ok {
+		return p.Flow
 	}
+	return defaultFlowPolicy()
 }
 
 // CapitalDirection returns the effect of an external flow kind on the entity's

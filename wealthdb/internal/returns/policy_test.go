@@ -6,58 +6,55 @@ import (
 	"github.com/ptu/wealthdb/internal/canonical"
 )
 
-func TestFlowPolicyRegimes(t *testing.T) {
-	navOnly := []string{"manual", "carta", "equityzen"}
-	for _, k := range navOnly {
-		p := FlowPolicyFor(k)
-		if p.Regime != RegimeNavOnly {
-			t.Errorf("%s: regime %v, want nav_only", k, p.Regime)
-		}
-		if p.IsExternal(canonical.TxKindDeposit) || p.IsExternal(canonical.TxKindContribution) {
-			t.Errorf("%s: nav-only must have no external kinds", k)
-		}
-	}
-
-	ct := FlowPolicyFor("cointracking")
-	if ct.Regime != RegimeCryptoPartial {
-		t.Errorf("cointracking regime %v, want crypto_partial", ct.Regime)
-	}
-	if !ct.IsExternal(canonical.TxKindDeposit) || !ct.IsExternal(canonical.TxKindWithdrawal) {
-		t.Error("cointracking: fiat deposit/withdrawal must be external")
-	}
-	if ct.IsExternal(canonical.TxKindTransferIn) || ct.IsExternal(canonical.TxKindTransferOut) {
-		t.Error("cointracking: crypto transfer legs must be excluded")
-	}
-
-	fid := FlowPolicyFor("fidelity")
-	if !fid.IsExternal(canonical.TxKindJournal) {
-		t.Error("fidelity: journal must be external (its only capital-movement kind)")
-	}
-
-	al := FlowPolicyFor("angellist")
-	if !al.IsExternal(canonical.TxKindDeposit) || !al.IsExternal(canonical.TxKindWithdrawal) {
-		t.Error("angellist: deposit/withdrawal must be external")
-	}
-	if al.IsExternal(canonical.TxKindContribution) || al.IsExternal(canonical.TxKindDistribution) {
-		t.Error("angellist: contribution/distribution are INTERNAL (funding↔deals)")
-	}
-
-	ubs := FlowPolicyFor("ubs")
-	for _, k := range []canonical.TxKind{
-		canonical.TxKindDeposit, canonical.TxKindWithdrawal,
-		canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal,
-	} {
-		if !ubs.IsExternal(k) {
-			t.Errorf("ubs: %s must be external", k)
-		}
-	}
-
-	if u := FlowPolicyFor("totally-new-source"); u.Known {
+// TestFlowPolicyForUnknownDefault pins the FlowPolicyFor miss-fallback. The
+// per-kind assertions (ubs/fidelity/cointracking/angellist/manual/…) now live in
+// policy_registered_test.go (package returns_test), which blank-imports the
+// silver adapters so their init()-time RegisterPolicy calls run — here in bare
+// package returns no source is registered, so every kind would (correctly) fall
+// to the Known=false default.
+func TestFlowPolicyForUnknownDefault(t *testing.T) {
+	u := FlowPolicyFor("totally-new-source")
+	if u.Known {
 		t.Error("unknown adapter must report Known=false")
+	}
+	// The default is the conservative bank set (differs from BankFlowPolicy only
+	// by Known=false).
+	for _, k := range BankExternal() {
+		if !u.IsExternal(k) {
+			t.Errorf("default fallback: %s must be external", k)
+		}
+	}
+	for _, k := range BankTransferLike() {
+		if !u.IsTransferLike(k) {
+			t.Errorf("default fallback: %s must be transfer-like", k)
+		}
+	}
+	if u.Regime != RegimeFlowComplete {
+		t.Errorf("default fallback regime %v, want flow_complete", u.Regime)
 	}
 }
 
-func TestRegimeStringAndTransferLike(t *testing.T) {
+// TestBankFlowPolicyShape pins the shared bank policy shape (used by the six
+// flow-complete bank/pension silver packages) without depending on registration.
+func TestBankFlowPolicyShape(t *testing.T) {
+	bank := BankFlowPolicy()
+	if !bank.Known {
+		t.Error("BankFlowPolicy must be Known")
+	}
+	for _, k := range BankExternal() {
+		if !bank.IsExternal(k) {
+			t.Errorf("bank: %s must be external", k)
+		}
+	}
+	if !bank.IsTransferLike(canonical.TxKindTransferIn) {
+		t.Error("bank transfer_in must be transfer-like (netting candidate)")
+	}
+	if bank.IsTransferLike(canonical.TxKindDeposit) {
+		t.Error("deposit must not be transfer-like (never netted)")
+	}
+}
+
+func TestRegimeString(t *testing.T) {
 	cases := map[Regime]string{
 		RegimeFlowComplete:  "flow_complete",
 		RegimeCryptoPartial: "crypto_partial",
@@ -68,13 +65,6 @@ func TestRegimeStringAndTransferLike(t *testing.T) {
 		if got := r.String(); got != want {
 			t.Errorf("Regime(%d).String() = %q, want %q", r, got, want)
 		}
-	}
-	ubs := FlowPolicyFor("ubs")
-	if !ubs.IsTransferLike(canonical.TxKindTransferIn) {
-		t.Error("ubs transfer_in must be transfer-like (netting candidate)")
-	}
-	if ubs.IsTransferLike(canonical.TxKindDeposit) {
-		t.Error("deposit must not be transfer-like (never netted)")
 	}
 }
 
