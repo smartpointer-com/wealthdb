@@ -54,6 +54,35 @@ func TestBankFlowPolicyShape(t *testing.T) {
 	}
 }
 
+// TestOnboardNoneAndAccountsGrainMeaninglessDefaults pins the cointracking-
+// migration knobs: OnboardNone is a distinct enum value appended after the existing
+// scopes (so their numeric values are preserved), and DefaultReturnsPolicy leaves
+// OnboardScope==OnboardPerConstituent and AccountsGrainMeaningless==false — a strict
+// no-op for every unmigrated source.
+func TestOnboardNoneAndAccountsGrainMeaninglessDefaults(t *testing.T) {
+	// Numeric values of the pre-existing scopes are unchanged by the append.
+	if OnboardPerConstituent != 0 || OnboardPerEntityOnce != 1 {
+		t.Errorf("existing OnboardScope values shifted: PerConstituent=%d PerEntityOnce=%d, want 0,1",
+			OnboardPerConstituent, OnboardPerEntityOnce)
+	}
+	// OnboardNone is a distinct constant, appended last.
+	if OnboardNone == OnboardPerConstituent || OnboardNone == OnboardPerEntityOnce {
+		t.Errorf("OnboardNone must be distinct from the existing scopes (got %d)", OnboardNone)
+	}
+	if OnboardNone != 2 {
+		t.Errorf("OnboardNone = %d, want 2 (appended after the existing values)", OnboardNone)
+	}
+
+	// DefaultReturnsPolicy leaves both new knobs at their no-op defaults.
+	dp := DefaultReturnsPolicy(BankFlowPolicy())
+	if dp.OnboardScope != OnboardPerConstituent {
+		t.Errorf("default OnboardScope = %d, want OnboardPerConstituent", dp.OnboardScope)
+	}
+	if dp.AccountsGrainMeaningless {
+		t.Error("default AccountsGrainMeaningless must be false")
+	}
+}
+
 func TestRegimeString(t *testing.T) {
 	cases := map[Regime]string{
 		RegimeFlowComplete:  "flow_complete",

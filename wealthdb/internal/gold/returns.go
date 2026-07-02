@@ -115,9 +115,34 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		if len(assets) == 0 {
 			continue
 		}
-		out = append(out, computeEntityReturn(assets, p, toDay, fx)...)
+		rows := computeEntityReturn(assets, p, toDay, fx)
+		// AccountsGrainMeaningless: per-wallet (accounts-grain) rows for a crypto-
+		// sweep source are economically meaningless (coins sweep between wallets on
+		// arrival), so keep their start/end values but blank TWR/MWR to n/a and flag
+		// it. Gate STRICTLY on the group's per-constituent rpolicy so ONLY that
+		// source's wallet rows change; the portfolios/sources/global grains are NEVER
+		// gated (they aggregate coherent units, which ARE valid). One row per wallet
+		// is still emitted.
+		if p.Level == "accounts" && accountsGrainMeaningless(assets) {
+			for i := range rows {
+				rows[i].TWR, rows[i].TWRAnnualized = nil, nil
+				rows[i].MWR, rows[i].MWRAnnualized = nil, nil
+				rows[i].Quality = dedupeStrings(append(rows[i].Quality, "accounts_grain_meaningless"))
+			}
+		}
+		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// accountsGrainMeaningless reports whether the group's constituent policy marks
+// the per-wallet (accounts) grain meaningless (AccountsGrainMeaningless). At the
+// accounts grain every constituent of a group shares one source (groupAccounts
+// keys on src), so the whole group carries one rpolicy; reading the first
+// constituent is exact and source-scoped. Default policy (false) leaves every
+// other source untouched.
+func accountsGrainMeaningless(assets []*accountData) bool {
+	return len(assets) > 0 && assets[0].rpolicy.AccountsGrainMeaningless
 }
 
 // fxBounds holds the earliest FX-rate day per currency, so the engine can flag

@@ -33,8 +33,14 @@ type ReturnsPolicy struct {
 	// ---- consumed knobs (proposal §2/§3; live since the UBS migration) ----
 
 	// OnboardScope: whether synthetic onboarding fires per constituent account
-	// (default) or once per computed entity at inception.
+	// (default), once per computed entity at inception, or never.
 	OnboardScope OnboardScope
+	// AccountsGrainMeaningless: per-wallet (accounts-grain) return rows are
+	// economically meaningless for this source (coins sweep between wallets on
+	// arrival, so a single wallet's return is noise); the portfolios/sources/global
+	// grains stay valid because they aggregate coherent units. Default false leaves
+	// every grain's TWR/MWR computed as today.
+	AccountsGrainMeaningless bool
 	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode
 	// ConduitKinds: account kinds that are plumbing (e.g. UBS cash), not a
@@ -87,6 +93,12 @@ const (
 	// inception (proposal §3). Consumed by the engine (groupOnboardStep) and set
 	// live by UBS.
 	OnboardPerEntityOnce
+	// OnboardNone never injects synthetic onboarding for this source's
+	// constituents — for crypto-sweep sources whose mid-window debuts are funded
+	// by within-entity transfers already excluded from flows, so onboarding would
+	// double-count. Appended last so OnboardPerConstituent(0) and
+	// OnboardPerEntityOnce(1) keep their numeric values.
+	OnboardNone
 )
 
 // InceptionMode selects the window anchor.

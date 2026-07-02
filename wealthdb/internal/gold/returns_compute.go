@@ -319,6 +319,13 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// inception cash), and under the default they are simply skipped.
 	perEntityGroups := map[string][]*accountData{}
 	for _, a := range assets {
+		if a.rpolicy.OnboardScope == returns.OnboardNone {
+			// Crypto-sweep source: mid-window debuts are funded by within-entity
+			// transfers already excluded from flows, so any onboarding here would
+			// double-count. Read source-scoped from a.rpolicy exactly like the
+			// per-entity-once check, so only this source's constituents skip.
+			continue
+		}
 		if a.rpolicy.OnboardScope == returns.OnboardPerEntityOnce {
 			perEntityGroups[a.src] = append(perEntityGroups[a.src], a)
 			continue
