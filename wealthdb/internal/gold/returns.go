@@ -193,11 +193,12 @@ type dayVal struct {
 }
 
 type accountData struct {
-	src, acct    string
-	kind         string
-	portfolio    string // "" when none
-	label        string
-	baseCurrency string // account base currency ("" when unknown)
+	src, acct     string
+	kind          string
+	portfolio     string // portfolio_external_id ("" when none)
+	portfolioName string // resolved portfolio display name ("" when none/unresolved)
+	label         string
+	baseCurrency  string // account base currency ("" when unknown)
 
 	series   []dayVal // carry-forward value per emitted day, ascending
 	snapDays []int64  // distinct real snapshot days, ascending
@@ -321,6 +322,11 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		return nil, err
 	}
 
+	pfNames, err := loadPortfolioNames(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
 	for rows.Next() {
 		var (
 			asOf            int64
@@ -341,6 +347,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 			rp, _ := returns.ReturnsPolicyFor(kinds[src])
 			a = &accountData{src: src, acct: acct, kind: kind, policy: rp.Flow, rpolicy: rp}
 			a.portfolio = pf.String
+			a.portfolioName = pfNames[acctKey(src, pf.String)]
 			a.baseCurrency = base.String
 			a.label = acct
 			if label.Valid && label.String != "" {
@@ -373,6 +380,29 @@ func loadSourceKinds(ctx context.Context, db *sql.DB) (map[string]string, error)
 			return nil, err
 		}
 		out[id] = kind
+	}
+	return out, rows.Err()
+}
+
+// loadPortfolioNames maps (silver_source_id, portfolio_external_id) to the
+// portfolio's display_name so the portfolios grain reports the friendly label
+// (e.g. a nickname) the holdings views already show, not the raw external id.
+// Portfolios without a display_name are absent, so the label falls back to the id.
+func loadPortfolioNames(ctx context.Context, db *sql.DB) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT silver_source_id, portfolio_external_id, display_name
+		   FROM portfolios WHERE display_name IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("RunReturns portfolio names: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var src, pid, name string
+		if err := rows.Scan(&src, &pid, &name); err != nil {
+			return nil, fmt.Errorf("RunReturns portfolio-name scan: %w", err)
+		}
+		out[acctKey(src, pid)] = name
 	}
 	return out, rows.Err()
 }

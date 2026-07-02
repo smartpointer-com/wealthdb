@@ -623,6 +623,11 @@ func entityIdentity(level string, assets []*accountData) (id, label string) {
 		if a.portfolio == "" {
 			return "", "(no portfolio)"
 		}
+		// EntityID stays the stable portfolio_external_id; the label prefers the
+		// resolved display name (falling back to the id when unresolved).
+		if a.portfolioName != "" {
+			return a.portfolio, a.portfolioName
+		}
 		return a.portfolio, a.portfolio
 	default:
 		return "", "global"

@@ -123,6 +123,36 @@ func TestRunReturnsPortfoliosGrain(t *testing.T) {
 	}
 }
 
+// TestRunReturnsPortfolioNameResolved verifies the portfolios grain reports the
+// portfolio's display_name as the entity label while EntityID stays the stable
+// external id (so the friendly name shows in the `entity` column like holdings).
+func TestRunReturnsPortfolioNameResolved(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "ubs", "ubs")
+	pid, name := "PF9", "my-nickname"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertPortfolios(ctx, []canonical.PortfolioChange{{
+			SilverSourceID: "ubs", PortfolioExternalID: pid, DisplayName: &name,
+			FirstSeenAt: 1000, LastSeenAt: 1000,
+		}})
+	})
+	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
+	seedAcct(t, db, ctx, "ubs", "A1", canonical.AccountKindBrokerage, &pid,
+		[]snap{{t0, 1000}, {t1, 1100}}, nil)
+
+	rows, err := RunReturns(ctx, db, params("portfolios", 0, t1))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	r, ok := summaryFor(rows, pid) // EntityID stays the external id
+	if !ok {
+		t.Fatalf("missing %s portfolio row", pid)
+	}
+	if r.EntityLabel != name {
+		t.Errorf("EntityLabel = %q, want display_name %q", r.EntityLabel, name)
+	}
+}
+
 // TestRunReturnsStaggeredOnboarding covers the aggregate path: synthetic
 // onboarding (the late constituent's full debut value, with its own debut-region
 // deposit subsumed — see subsumesAt) and the staggered_inception flag.
