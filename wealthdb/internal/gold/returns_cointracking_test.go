@@ -85,6 +85,39 @@ func TestCointrackingOnboardNoneNoPhantomInflow(t *testing.T) {
 	}
 }
 
+// TestCointrackingOnboardNoneKeepsLateDebutDeposit guards the debut-region
+// subsumption fix. Under OnboardNone there is no synthetic onboarding to replace a
+// subsumed pre-debut flow, so a real fiat deposit funding a wallet that debuts
+// AFTER winFrom must be KEPT. Before the fix it was subsumed and vanished, so the
+// funded value read as pure performance on the tiny opening base.
+func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "ctx", "cointracking")
+
+	wStart := dy(2023, time.January, 2)
+	late := dy(2023, time.June, 30) // a second wallet debuts here, funded by fiat
+	end := dy(2023, time.December, 29)
+
+	// SEED anchors winFrom with a tiny opening base, alive across the window.
+	seedAcct(t, db, ctx, "ctx", "SEED", canonical.AccountKindBrokerage, nil,
+		[]snap{{wStart, 20}, {late, 20}, {end, 20}}, nil)
+	// LATE debuts after winFrom with a fiat Deposit on its debut day; that deposit
+	// is external capital and must survive (not be subsumed as if onboarded).
+	seedAcct(t, db, ctx, "ctx", "LATE", canonical.AccountKindBrokerage, nil,
+		[]snap{{late, 5000}, {end, 5000}},
+		[]txn{{late, canonical.TxKindDeposit, 5000}})
+
+	rows, err := RunReturns(ctx, db, params("sources", 0, eod(2023, time.December, 29)))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	// The late fiat deposit must appear in net_flow. Before the fix it was subsumed
+	// (net_flow 0), so the +5000 value jump on the 20 base read as a huge gain.
+	if nf := netFlowOf(t, rows, "ctx"); math.Abs(nf-5000) > 1e-6 {
+		t.Errorf("net_flow = %.2f, want 5000 (late-debut deposit kept under OnboardNone)", nf)
+	}
+}
+
 // TestCointrackingDeadCoinClosureSurvivesOnboardNone proves genuine drain-to-zero
 // losses survive OnboardNone: a wallet draining to ~0 while STILL emitting a real
 // (zeroing) snapshot books a ClosureFlow outflow (closureDay != 0). OnboardNone

@@ -256,11 +256,21 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	}
 
 	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES).
+	// Pre-debut flows are normally subsumed because synthetic onboarding books the
+	// debut value instead; under OnboardNone there is no onboarding, so a real
+	// debut-region deposit IS the capital event and must be kept (otherwise the
+	// funded value shows up as pure performance). Closure-drain flows are still
+	// subsumed — explicit closure fires regardless of OnboardScope.
 	for _, a := range assets {
+		onboardNone := a.rpolicy.OnboardScope == returns.OnboardNone
 		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
-			if !subsumesAt(a, f.Day, winFrom, winTo) {
-				flows = append(flows, f)
+			if subsumesAtClosure(a, f.Day, winFrom, winTo) {
+				continue
 			}
+			if !onboardNone && subsumesAtDebut(a, f.Day, winFrom, winTo) {
+				continue
+			}
+			flows = append(flows, f)
 		}
 	}
 
@@ -453,16 +463,26 @@ func groupOnboardStep(grp []*accountData, day int64) float64 {
 //     is dated after the last snapshot that still carried a non-zero value, up to
 //     cd. The carried value is flat across that gap (no visible ΔV), so a drain
 //     there would double-count with the synthetic closure outflow at cd.
+//
+// subsumesAtDebut reports whether a flow on `day` falls in a late constituent's
+// pre-debut region, where synthetic onboarding books the debut value instead. It
+// must NOT fire for an OnboardNone source: there is no onboarding to replace the
+// subsumed flow, so the real deposit IS the capital event and has to be kept.
+func subsumesAtDebut(a *accountData, day, winFrom, winTo int64) bool {
+	debut := a.firstDay()
+	return debut > winFrom && debut <= winTo && day <= debut
+}
+
+// subsumesAtClosure reports whether a flow drains into a constituent's closure
+// (the explicit closure outflow accounts for it). Independent of OnboardScope —
+// explicit closure fires regardless.
+func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
+	cd := a.closureDay()
+	return cd > winFrom && cd <= winTo && day > a.lastNonzeroDay() && day <= cd
+}
+
 func subsumesAt(a *accountData, day, winFrom, winTo int64) bool {
-	if debut := a.firstDay(); debut > winFrom && debut <= winTo && day <= debut {
-		return true
-	}
-	if cd := a.closureDay(); cd > winFrom && cd <= winTo {
-		if day > a.lastNonzeroDay() && day <= cd {
-			return true
-		}
-	}
-	return false
+	return subsumesAtDebut(a, day, winFrom, winTo) || subsumesAtClosure(a, day, winFrom, winTo)
 }
 
 // netOwnedTransfers greedily matches opposite-direction transfer legs (largest
