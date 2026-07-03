@@ -683,10 +683,9 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 	// "e-banking payment order" vs "E-BANKING PAYMENT ORDER"), so an
 	// upper-cased EXACT-string match classifies both. Exact (not
 	// prefix/substring) matching keeps the two vocabularies from
-	// colliding: MT940's distinctive multi-token forms ("Sale FX
-	// Spot", "UCCDD…; order") never equal a bare PDF booking type
-	// ("SALE", "ORDER"), so this leaves every MT940 row's kind — and
-	// therefore the post-2024 flow set — exactly as before.
+	// colliding: MT940's distinctive multi-token forms ("UCCDD…;
+	// order") never equal a bare PDF booking type ("ORDER"), so each
+	// feed's rows resolve independently.
 	switch strings.ToUpper(strings.TrimSpace(descKind)) {
 	// ---- Income / cost: NOT capital flows; excluded from returns.
 	case "DIVIDEND", "REVERSAL DIVIDEND":
@@ -707,9 +706,22 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"ADVICE", "UBS ADVICE":
 		return canonical.TxKindFee
 	// ---- Currency conversion between the holder's own accounts —
-	// an internal reshuffle, not a capital flow.
-	case "FOREX PURCHASE", "FOREX SALE":
-		return canonical.TxKindFxSpot
+	// an internal reshuffle, not a capital flow. Spot, forward and
+	// swap legs all reallocate cash across the holder's single-
+	// currency accounts; none is external capital. The MT940 feed
+	// names the instrument ("Purchase/Sale FX Spot/Forward", "…from
+	// FX Swap"), the older PDF backfill only says "FOREX". All map
+	// to non-flow fx kinds so they never enter net_flow — before
+	// this, the multi-token MT940 forms fell through to the
+	// direction switch below and were mis-booked as deposits /
+	// withdrawals.
+	case "FOREX PURCHASE", "FOREX SALE",
+		"PURCHASE FX SPOT", "SALE FX SPOT":
+		return canonical.TxKindFx
+	case "PURCHASE FX FORWARD", "SALE FX FORWARD":
+		return canonical.TxKindFxForward
+	case "PURCHASE FROM FX SWAP", "SALE FROM FX SWAP":
+		return canonical.TxKindFxSwap
 	// ---- Securities settlements: reallocate between cash and
 	// instruments; excluded from flows. Side by cash direction.
 	case "BUY", "SECURITIES PURCHASE":
@@ -720,6 +732,7 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"UBS INVESTMENT FUNDS", "STRUCTURED PRODUCTS",
 		"ORDER", "PURCHASE", "SALE",
 		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
+		"BUY PM SPOT W/O VAT", "SELL PM SPOT W/O VAT",
 		"SUBSCRIPTION RIGHT",
 		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE":
 		return securitiesSide(hasDebit, hasCredit)

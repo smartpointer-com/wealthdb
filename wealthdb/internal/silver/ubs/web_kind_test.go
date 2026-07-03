@@ -10,9 +10,11 @@ import (
 // mapping for BOTH transaction sources that share the ubs-web
 // `transactions` table:
 //
-//   - the MT940 CSV feed (2024-01-02 onward), whose vocabulary must
-//     stay classified EXACTLY as before so the post-2024 flow set
-//     (and hence the returns) is unchanged by the PDF backfill; and
+//   - the MT940 CSV feed (2024-01-02 onward), whose genuine
+//     deposit/withdrawal rows must stay classified as before so the
+//     PDF backfill never perturbs the post-2024 flow set; its FX
+//     legs are the deliberate exception — reclassified out of the
+//     flow set into non-flow fx kinds (see below); and
 //   - the pre-2024 Account-Statement PDF backfill, whose booking
 //     types must land in the right kind so settlements / dividends /
 //     fees / FX are excluded from flows and only genuine
@@ -24,11 +26,11 @@ func TestWebKindClassification(t *testing.T) {
 		N = false // absent
 	)
 	cases := []struct {
-		name             string
-		desc             string
-		hasDebit         bool
-		hasCredit        bool
-		want             canonical.TxKind
+		name      string
+		desc      string
+		hasDebit  bool
+		hasCredit bool
+		want      canonical.TxKind
 	}{
 		// ---- MT940 feed: MUST be unchanged (regression guard). ----
 		{"mt940 dividend", "Dividend", N, C, canonical.TxKindDividend},
@@ -37,11 +39,17 @@ func TestWebKindClassification(t *testing.T) {
 		{"mt940 ebanking payment", "e-banking payment order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 ebanking credit", "e-banking credit", N, C, canonical.TxKindDeposit},
 		{"mt940 transfer prefix", "TRANSFER; e-banking payment order", D, N, canonical.TxKindWithdrawal},
-		// FX in the MT940 feed keeps its historical direction-based
-		// classification (NOT reclassified to fx_spot) — the multi-
-		// token form never equals the bare PDF "FOREX PURCHASE".
-		{"mt940 fx spot sale", "Sale FX Spot", N, C, canonical.TxKindDeposit},
-		{"mt940 fx forward purchase", "Purchase FX Forward", D, N, canonical.TxKindWithdrawal},
+		// FX legs in the MT940 feed classify to non-flow fx kinds by
+		// instrument (spot/forward/swap) so the conversion legs never
+		// enter net_flow. Both cash directions occur per instrument.
+		// Precious-metal spot trades are securities, not fx.
+		{"mt940 fx spot sale", "Sale FX Spot", N, C, canonical.TxKindFx},
+		{"mt940 fx spot purchase", "Purchase FX Spot", D, N, canonical.TxKindFx},
+		{"mt940 fx forward purchase", "Purchase FX Forward", D, N, canonical.TxKindFxForward},
+		{"mt940 fx forward sale", "Sale FX Forward", N, C, canonical.TxKindFxForward},
+		{"mt940 fx swap sale", "Sale from FX Swap", N, C, canonical.TxKindFxSwap},
+		{"mt940 fx swap purchase", "Purchase from FX Swap", D, N, canonical.TxKindFxSwap},
+		{"mt940 pm spot sell", "Sell PM spot w/o VAT", N, C, canonical.TxKindSell},
 		{"mt940 order prefixed", "UCCDD01000001494; order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 capital gain", "Capital gain", N, C, canonical.TxKindDeposit},
 		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindWithdrawal},
@@ -63,8 +71,8 @@ func TestWebKindClassification(t *testing.T) {
 		{"pdf service fee", "BALANCE CLOSING OF SERVICE PRICES", D, N, canonical.TxKindFee},
 		{"pdf call deposit interest", "CALL DEPOSIT INTEREST PAYMENT", N, C, canonical.TxKindInterest},
 		// FX conversion — internal, excluded.
-		{"pdf forex purchase", "FOREX PURCHASE", D, N, canonical.TxKindFxSpot},
-		{"pdf forex sale", "FOREX SALE", N, C, canonical.TxKindFxSpot},
+		{"pdf forex purchase", "FOREX PURCHASE", D, N, canonical.TxKindFx},
+		{"pdf forex sale", "FOREX SALE", N, C, canonical.TxKindFx},
 		// Securities settlements — buy/sell by direction, excluded.
 		{"pdf share buy", "SHARE", D, N, canonical.TxKindBuy},
 		{"pdf share sell", "SHARE", N, C, canonical.TxKindSell},

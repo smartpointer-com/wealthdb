@@ -529,7 +529,7 @@ func TestKindMapping(t *testing.T) {
 	}{
 		{"trade_confirmation", "", "", canonical.TxKindBuy},
 		{"corporate_action_confirmation", "", "", canonical.TxKindCorporateAction},
-		{"fx_confirmation", "", "", canonical.TxKindFxSpot},
+		{"fx_confirmation", "", "", canonical.TxKindFx},
 		{"charges_advice", "", "", canonical.TxKindFee},
 		{"cash_movement", "Salary deposit", "C", canonical.TxKindDeposit},
 		{"cash_movement", "Wire", "D", canonical.TxKindWithdrawal},

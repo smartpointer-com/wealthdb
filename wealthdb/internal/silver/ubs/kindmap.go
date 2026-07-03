@@ -23,14 +23,15 @@ func kindFor(silverKind, narrative string, creditDebit string) canonical.TxKind 
 		return canonical.TxKindCorporateAction
 
 	case "fx_confirmation":
-		return canonical.TxKindFxSpot
+		return canonical.TxKindFx
 
 	case "fx_option_confirmation":
 		// No dedicated fx_option TxKind in the canonical
-		// taxonomy; the option settlement is effectively a spot
-		// trade at expiry, so we route here. Revisit if a
-		// distinct kind becomes useful for analytics.
-		return canonical.TxKindFxSpot
+		// taxonomy; the option settlement is effectively an fx
+		// conversion at expiry, so we route to the generic fx
+		// kind. Revisit if a distinct kind becomes useful for
+		// analytics.
+		return canonical.TxKindFx
 
 	case "loan_deposit_confirmation":
 		return canonical.TxKindOther // future: money_market-related

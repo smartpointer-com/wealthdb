@@ -11,7 +11,7 @@ package canonical
 // Other kinds depend on context: Interest can be received
 // (positive, cash sweep / coupon-like) or paid (negative,
 // margin / overdraft). CapitalGain can be a realised gain
-// (positive) or loss (negative). FxSpot / FxForward have one
+// (positive) or loss (negative). Fx / FxForward / FxSwap have one
 // leg in each currency. CorporateAction can be cash-positive
 // (cash dividend), zero (stock split), or negative (cash
 // merger). Journal / Other are catch-alls. For those, the
@@ -29,7 +29,7 @@ func canonicalSign(k TxKind) int {
 		return +1
 	}
 	// TxKindInterest, TxKindStaking, TxKindCapitalGain,
-	// TxKindFxSpot, TxKindFxForward, TxKindCorporateAction,
+	// TxKindFx, TxKindFxForward, TxKindFxSwap, TxKindCorporateAction,
 	// TxKindJournal, TxKindOther: source-dependent. Staking is
 	// almost always inbound (+) but slashing penalties on
 	// proof-of-stake chains can yield a negative, so the canonical

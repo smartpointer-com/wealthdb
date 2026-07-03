@@ -271,8 +271,9 @@ const (
 	TxKindTax             TxKind = "tax"
 	TxKindDeposit         TxKind = "deposit"
 	TxKindWithdrawal      TxKind = "withdrawal"
-	TxKindFxSpot          TxKind = "fx_spot"
+	TxKindFx              TxKind = "fx"
 	TxKindFxForward       TxKind = "fx_forward"
+	TxKindFxSwap          TxKind = "fx_swap"
 	TxKindCorporateAction TxKind = "corporate_action"
 	TxKindTransferIn      TxKind = "transfer_in"
 	TxKindTransferOut     TxKind = "transfer_out"
@@ -284,8 +285,8 @@ var txKindValues = map[TxKind]struct{}{
 	TxKindBuy: {}, TxKindSell: {}, TxKindDividend: {}, TxKindCoupon: {},
 	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindStaking: {},
 	TxKindContribution: {}, TxKindDistribution: {}, TxKindFee: {}, TxKindTax: {},
-	TxKindDeposit: {}, TxKindWithdrawal: {}, TxKindFxSpot: {},
-	TxKindFxForward: {}, TxKindCorporateAction: {}, TxKindTransferIn: {},
+	TxKindDeposit: {}, TxKindWithdrawal: {}, TxKindFx: {},
+	TxKindFxForward: {}, TxKindFxSwap: {}, TxKindCorporateAction: {}, TxKindTransferIn: {},
 	TxKindTransferOut: {}, TxKindJournal: {}, TxKindOther: {},
 }
 
