@@ -482,6 +482,7 @@ Example config file:
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 
 ### 5.2 `kind: "auto"`
 
@@ -500,6 +501,42 @@ Adding a new silver source to the config and running `wealthdb load
 <new-id>` works: the source is registered into `silver_sources`
 on first load. Removing a silver source from the config does not
 remove it from gold — run `wealthdb reset <id>` first.
+
+### 5.4 Inception overrides (returns window)
+
+`inception_overrides` lets the user pin where a returns track record
+STARTS, per entity, so a portfolio funded on top of a tiny pre-history
+dust base (an account-opening gift, a stub position) isn't measured from
+that base — which would leave the money-multiple correct but blow the
+*time-weighted* return up by orders of magnitude. It is general to every
+source, not just crypto.
+
+```json
+"inception_overrides": {
+    "sources":    { "cointracking": "2017-07-01" },
+    "portfolios": { "cointracking": { "cu_000001": "2019-09-24" } },
+    "accounts":   { "schwab-retail": { "<account-hash>": "2020-01-01" } }
+}
+```
+
+- **Keys** are the stable external ids the rest of the config uses
+  (`silver_source_id`, `portfolio_external_id`, `account_external_id`);
+  copy them from the `entity_id` column of `wealthdb returns <grain>`.
+- **Values** are `YYYY-MM-DD` (UTC midnight), validated at load.
+- **Resolution** when an entity is computed is most-specific-first: the
+  accounts grain tries account → its portfolio → source; the portfolios
+  grain tries portfolio → source; the sources grain tries source. The
+  **global** grain is never anchored (v1).
+- **Semantics:** `winFrom = max(data-inception, configured-inception, --from)`
+  — it can only move an anchor LATER, never earlier (an inception before an
+  entity's data is a no-op). The opening base `V0` becomes the entity's
+  carry-forward value on that date. Truncation is tagged
+  `configured_inception` (replacing `since_data_inception`). Composes with
+  the policy `Inception` mode (e.g. UBS `first-real-snapshot`) as `max`.
+  MOIC is unaffected (time-insensitive); this re-anchors the TWR/MWR chain.
+- Absent block ⇒ every entity keeps its data-derived inception, byte for
+  byte. A typo'd portfolio/account id silently no-ops (it can't be checked
+  against gold at load) — a known v1 gap; a source-id typo fails the load.
 
 ## 6. Plugin / adapter architecture
 

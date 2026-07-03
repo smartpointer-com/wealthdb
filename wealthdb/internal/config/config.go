@@ -48,6 +48,20 @@ type Config struct {
 	// individually would be churn. Per-account overrides still win
 	// over portfolio overrides on the same column.
 	PortfolioOverrides map[string]map[string]PortfolioOverride `json:"portfolio_overrides,omitempty"`
+	// InceptionOverrides pins the returns-window START date per silver
+	// source, portfolio, or account, so an entity's track record can
+	// begin at its first real capital instead of a tiny pre-history
+	// dust base (an account-opening gift, a stub position) that would
+	// otherwise dominate its time-weighted return. Keyed by grain:
+	// sources[source_id], portfolios[source_id][portfolio_external_id],
+	// accounts[source_id][account_external_id]. Values are YYYY-MM-DD
+	// (UTC midnight). When an entity is computed, the floor is resolved
+	// most-specific-first (account → its portfolio → source); the global
+	// grain is never anchored. It can only move an anchor LATER, never
+	// earlier. Absent block ⇒ every entity keeps its data-derived
+	// inception (today's behaviour). Works for every source, not just
+	// crypto. See docs/DESIGN.md §5 and internal/gold entityWindow.
+	InceptionOverrides *InceptionOverrides `json:"inception_overrides,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -235,6 +249,52 @@ type AccountOverride struct {
 // can be added here if a use case emerges.
 type PortfolioOverride struct {
 	TaxWrapper string `json:"tax_wrapper,omitempty"`
+}
+
+// InceptionOverrides is the `inception_overrides` block of wealthdb.cfg.
+// Each map value is a YYYY-MM-DD date (UTC midnight). All three maps are
+// optional. Keys are the same stable external ids the rest of the config
+// uses (silver_source_id, portfolio_external_id, account_external_id) —
+// copy them from the `entity_id` column of `wealthdb returns <grain>`.
+type InceptionOverrides struct {
+	Sources    map[string]string            `json:"sources,omitempty"`    // source_id -> date
+	Portfolios map[string]map[string]string `json:"portfolios,omitempty"` // source_id -> portfolio_external_id -> date
+	Accounts   map[string]map[string]string `json:"accounts,omitempty"`   // source_id -> account_external_id -> date
+}
+
+// Epochs parses the YYYY-MM-DD values to Unix-seconds (UTC midnight),
+// producing the three maps the returns engine resolves against. Only
+// call after Validate, which has already verified the date format
+// (parse errors here are therefore ignored — a bad date can't reach
+// this point). A nil receiver returns three nil maps.
+func (o *InceptionOverrides) Epochs() (sources map[string]int64, portfolios, accounts map[string]map[string]int64) {
+	if o == nil {
+		return nil, nil, nil
+	}
+	if len(o.Sources) > 0 {
+		sources = make(map[string]int64, len(o.Sources))
+		for id, d := range o.Sources {
+			e, _ := parseYYYYMMDD(d)
+			sources[id] = e
+		}
+	}
+	return sources, inceptionEpochsNested(o.Portfolios), inceptionEpochsNested(o.Accounts)
+}
+
+func inceptionEpochsNested(in map[string]map[string]string) map[string]map[string]int64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]int64, len(in))
+	for src, m := range in {
+		inner := make(map[string]int64, len(m))
+		for id, d := range m {
+			e, _ := parseYYYYMMDD(d)
+			inner[id] = e
+		}
+		out[src] = inner
+	}
+	return out
 }
 
 // Load reads and parses the JSON config at the given path,

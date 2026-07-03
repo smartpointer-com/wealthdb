@@ -616,6 +616,21 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 		entityInception = incMax
 	}
 
+	// User-configured inception floor (wealthdb.cfg inception_overrides),
+	// resolved per grain most-specific-first from the entity's own identity.
+	// It can only move the anchor LATER, never earlier, and only for the entity
+	// whose key matched — so an unconfigured entity (nil overrides, or no key)
+	// keeps its data-derived inception exactly. The global grain is never
+	// resolved (resolve returns false), so a merged global entity is untouched.
+	a0 := assets[0]
+	configured := false
+	if cfg, ok := p.InceptionOverrides.resolve(p.Level, a0.src, a0.portfolio, a0.acct); ok {
+		if cfgDay := cfg / 86400; cfgDay > entityInception {
+			entityInception = cfgDay
+			configured = true
+		}
+	}
+
 	if p.FromEpoch > 0 {
 		from = p.FromEpoch / 86400
 		if from < entityInception {
@@ -624,7 +639,12 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 		}
 	} else {
 		from = entityInception
-		flags = append(flags, "since_data_inception")
+		if !configured {
+			flags = append(flags, "since_data_inception")
+		}
+	}
+	if configured {
+		flags = append(flags, "configured_inception")
 	}
 	if aggregate && incMax > from {
 		flags = append(flags, "staggered_inception")

@@ -53,6 +53,67 @@ type ReturnParams struct {
 	Annualize string // auto | always | never
 	Netting   bool   // net heuristically-matched internal transfers at coarse grains
 	Inception string // full | strict
+	// InceptionOverrides carries user-configured per-entity inception
+	// floors from wealthdb.cfg. Nil ⇒ every entity keeps its data-derived
+	// inception (the default). See entityWindow.
+	InceptionOverrides *InceptionOverrides
+}
+
+// InceptionOverrides carries user-configured per-entity inception floors
+// (Unix seconds, UTC midnight), built from wealthdb.cfg's
+// inception_overrides block. When an entity is computed the floor is
+// resolved most-specific-first; it can only move an anchor later, never
+// earlier. Nil ⇒ no overrides.
+type InceptionOverrides struct {
+	Sources    map[string]int64            // source_id -> epoch
+	Portfolios map[string]map[string]int64 // source_id -> portfolio_external_id -> epoch
+	Accounts   map[string]map[string]int64 // source_id -> account_external_id -> epoch
+}
+
+// resolve returns the configured inception floor (epoch seconds) for an
+// entity at a grain, trying the most specific key first: the accounts grain
+// tries the account, then its portfolio, then the source; the portfolios
+// grain tries the portfolio, then the source; the sources grain tries the
+// source. The global grain is never anchored. (0,false) ⇒ no override. A nil
+// receiver always returns (0,false), so the default path is untouched.
+func (o *InceptionOverrides) resolve(level, src, portfolio, acct string) (int64, bool) {
+	if o == nil {
+		return 0, false
+	}
+	switch level {
+	case "accounts":
+		if m := o.Accounts[src]; m != nil {
+			if d, ok := m[acct]; ok {
+				return d, true
+			}
+		}
+		if portfolio != "" {
+			if m := o.Portfolios[src]; m != nil {
+				if d, ok := m[portfolio]; ok {
+					return d, true
+				}
+			}
+		}
+		if d, ok := o.Sources[src]; ok {
+			return d, true
+		}
+	case "portfolios":
+		if portfolio != "" {
+			if m := o.Portfolios[src]; m != nil {
+				if d, ok := m[portfolio]; ok {
+					return d, true
+				}
+			}
+		}
+		if d, ok := o.Sources[src]; ok {
+			return d, true
+		}
+	case "sources":
+		if d, ok := o.Sources[src]; ok {
+			return d, true
+		}
+	}
+	return 0, false
 }
 
 // netting tolerances (proposal §2.2 / locked decision 5).

@@ -48,6 +48,55 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
+func TestLoadInceptionOverrides(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/wealthdb.db",
+        "default_currency": "USD",
+        "silver_sources": [{"id": "cointracking", "kind": "cointracking", "path": "/tmp/ct.db"}],
+        "inception_overrides": {
+            "sources":    {"cointracking": "2017-07-01"},
+            "portfolios": {"cointracking": {"cu_000001": "2019-09-24"}},
+            "accounts":   {"cointracking": {"WALLET1": "2020-01-01"}}
+        }
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.InceptionOverrides == nil {
+		t.Fatal("InceptionOverrides nil")
+	}
+	s, p, a := c.InceptionOverrides.Epochs()
+	wantS, _ := parseYYYYMMDD("2017-07-01")
+	wantP, _ := parseYYYYMMDD("2019-09-24")
+	wantA, _ := parseYYYYMMDD("2020-01-01")
+	if s["cointracking"] != wantS {
+		t.Errorf("sources epoch = %d, want %d", s["cointracking"], wantS)
+	}
+	if p["cointracking"]["cu_000001"] != wantP {
+		t.Errorf("portfolios epoch = %d, want %d", p["cointracking"]["cu_000001"], wantP)
+	}
+	if a["cointracking"]["WALLET1"] != wantA {
+		t.Errorf("accounts epoch = %d, want %d", a["cointracking"]["WALLET1"], wantA)
+	}
+}
+
+func TestLoadInceptionOverridesRejects(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
+	cases := map[string]string{
+		"bad source date":       `"inception_overrides":{"sources":{"cointracking":"2019-13-99"}}}`,
+		"unknown source":        `"inception_overrides":{"sources":{"nope":"2019-01-01"}}}`,
+		"unknown nested source": `"inception_overrides":{"portfolios":{"nope":{"P":"2019-01-01"}}}}`,
+		"empty inner key":       `"inception_overrides":{"accounts":{"cointracking":{"":"2019-01-01"}}}}`,
+		"bad nested date":       `"inception_overrides":{"accounts":{"cointracking":{"A":"not-a-date"}}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}
+
 func TestLoadExpandsTilde(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

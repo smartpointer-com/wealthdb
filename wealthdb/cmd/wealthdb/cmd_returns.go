@@ -130,10 +130,17 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	}
 	defer db.Close()
 
+	var inceptionOv *gold.InceptionOverrides
+	if cfg.InceptionOverrides != nil {
+		s, p, a := cfg.InceptionOverrides.Epochs()
+		inceptionOv = &gold.InceptionOverrides{Sources: s, Portfolios: p, Accounts: a}
+	}
+
 	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
 		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
 		Method: *method, Period: *period, Annualize: *annualize,
 		Netting: *netting == "on", Inception: *inception,
+		InceptionOverrides: inceptionOv,
 	})
 	if err != nil {
 		return err

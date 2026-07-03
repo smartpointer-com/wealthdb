@@ -161,6 +161,28 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// inception_overrides: source ids must name a declared silver
+	// source (catches typos early); portfolio/account ids must be
+	// non-empty; every value must parse as YYYY-MM-DD. Portfolio /
+	// account ids can't be checked against gold here (no DB access at
+	// load), so a typo'd inner key silently no-ops — a known v1 gap.
+	if o := c.InceptionOverrides; o != nil {
+		for sourceID, d := range o.Sources {
+			if !seenIDs[sourceID] {
+				return fmt.Errorf("config: inception_overrides.sources[%q]: no silver_sources[].id matches", sourceID)
+			}
+			if _, err := parseYYYYMMDD(d); err != nil {
+				return fmt.Errorf("config: inception_overrides.sources[%q]: %w", sourceID, err)
+			}
+		}
+		if err := validateInceptionNested("portfolios", o.Portfolios, seenIDs); err != nil {
+			return err
+		}
+		if err := validateInceptionNested("accounts", o.Accounts, seenIDs); err != nil {
+			return err
+		}
+	}
+
 	// web: optional dockerized BI server. Only the port needs a
 	// shape check; an absent block or zero port means "use the
 	// default" (DefaultWebPort), resolved at read time.
@@ -168,6 +190,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: web.port %d is out of range (1-65535)", c.Web.Port)
 	}
 
+	return nil
+}
+
+// validateInceptionNested checks one grain map of inception_overrides
+// (portfolios or accounts): every source id must be declared, every
+// inner id non-empty, every value a YYYY-MM-DD date.
+func validateInceptionNested(grain string, m map[string]map[string]string, seenIDs map[string]bool) error {
+	for sourceID, inner := range m {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: inception_overrides.%s[%q]: no silver_sources[].id matches", grain, sourceID)
+		}
+		for id, d := range inner {
+			if id == "" {
+				return fmt.Errorf("config: inception_overrides.%s[%q]: empty external-id key", grain, sourceID)
+			}
+			if _, err := parseYYYYMMDD(d); err != nil {
+				return fmt.Errorf("config: inception_overrides.%s[%q][%q]: %w", grain, sourceID, id, err)
+			}
+		}
+	}
 	return nil
 }
 
