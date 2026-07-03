@@ -62,6 +62,17 @@ type Config struct {
 	// inception (today's behaviour). Works for every source, not just
 	// crypto. See docs/DESIGN.md §5 and internal/gold entityWindow.
 	InceptionOverrides *InceptionOverrides `json:"inception_overrides,omitempty"`
+	// ReturnsExclude omits whole accounts or portfolios from HIGHER-grain
+	// return aggregates (sources, global) while still reporting them at their
+	// own grain. Use it to keep holdings tracked in a shared login that
+	// belong to another person out of source/global
+	// returns. Keyed by grain: portfolios[source_id] and accounts[source_id]
+	// each map to a list of external ids. An excluded account is also omitted
+	// from its portfolio's row; an excluded portfolio still shows its own row.
+	// Returns only — holdings / net-worth are unaffected (a proper owner
+	// dimension is future work). Absent ⇒ nothing excluded. See docs/DESIGN.md
+	// §5.5 and internal/gold groupAccounts.
+	ReturnsExclude *ReturnsExclude `json:"returns_exclude,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -293,6 +304,39 @@ func inceptionEpochsNested(in map[string]map[string]string) map[string]map[strin
 			inner[id] = e
 		}
 		out[src] = inner
+	}
+	return out
+}
+
+// ReturnsExclude is the `returns_exclude` block of wealthdb.cfg. Each map is
+// keyed by silver_source_id and lists the external ids to omit from higher-grain
+// return aggregates. Both maps are optional. Keys are the stable external ids
+// (portfolio_external_id / account_external_id) from the `entity_id` column.
+type ReturnsExclude struct {
+	Portfolios map[string][]string `json:"portfolios,omitempty"` // source_id -> [portfolio_external_id...]
+	Accounts   map[string][]string `json:"accounts,omitempty"`   // source_id -> [account_external_id...]
+}
+
+// Sets turns the exclude lists into source-keyed membership sets the returns
+// engine tests against. A nil receiver returns two nil maps.
+func (e *ReturnsExclude) Sets() (portfolios, accounts map[string]map[string]bool) {
+	if e == nil {
+		return nil, nil
+	}
+	return excludeSets(e.Portfolios), excludeSets(e.Accounts)
+}
+
+func excludeSets(in map[string][]string) map[string]map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]bool, len(in))
+	for src, ids := range in {
+		set := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			set[id] = true
+		}
+		out[src] = set
 	}
 	return out
 }

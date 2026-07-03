@@ -183,6 +183,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// returns_exclude: source ids must name a declared silver source; listed
+	// portfolio/account ids must be non-empty. Portfolio/account ids can't be
+	// checked against gold here (no DB access at load).
+	if e := c.ReturnsExclude; e != nil {
+		if err := validateExcludeNested("portfolios", e.Portfolios, seenIDs); err != nil {
+			return err
+		}
+		if err := validateExcludeNested("accounts", e.Accounts, seenIDs); err != nil {
+			return err
+		}
+	}
+
 	// web: optional dockerized BI server. Only the port needs a
 	// shape check; an absent block or zero port means "use the
 	// default" (DefaultWebPort), resolved at read time.
@@ -207,6 +219,22 @@ func validateInceptionNested(grain string, m map[string]map[string]string, seenI
 			}
 			if _, err := parseYYYYMMDD(d); err != nil {
 				return fmt.Errorf("config: inception_overrides.%s[%q][%q]: %w", grain, sourceID, id, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateExcludeNested checks one grain map of returns_exclude (portfolios or
+// accounts): every source id must be declared, every listed id non-empty.
+func validateExcludeNested(grain string, m map[string][]string, seenIDs map[string]bool) error {
+	for sourceID, ids := range m {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: returns_exclude.%s[%q]: no silver_sources[].id matches", grain, sourceID)
+		}
+		for _, id := range ids {
+			if id == "" {
+				return fmt.Errorf("config: returns_exclude.%s[%q]: empty external-id in list", grain, sourceID)
 			}
 		}
 	}

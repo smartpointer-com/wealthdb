@@ -57,6 +57,36 @@ type ReturnParams struct {
 	// floors from wealthdb.cfg. Nil ⇒ every entity keeps its data-derived
 	// inception (the default). See entityWindow.
 	InceptionOverrides *InceptionOverrides
+	// ReturnsExclude omits accounts/portfolios from higher-grain aggregates
+	// (sources, global). Nil ⇒ nothing excluded. See groupAccounts.
+	ReturnsExclude *ReturnsExclude
+}
+
+// ReturnsExclude holds the source-keyed membership sets of accounts and
+// portfolios to omit from higher-grain return aggregates, built from
+// wealthdb.cfg's returns_exclude block. Nil ⇒ nothing excluded.
+type ReturnsExclude struct {
+	Portfolios map[string]map[string]bool // source_id -> portfolio_external_id -> true
+	Accounts   map[string]map[string]bool // source_id -> account_external_id -> true
+}
+
+// excluded reports whether an account is omitted from the group at a grain. It
+// is never excluded from its OWN grain: the accounts grain always shows every
+// account, and the portfolios grain still shows an excluded PORTFOLIO's own row
+// (only an excluded ACCOUNT drops out of its portfolio there). At the sources
+// and global grains, both an excluded account and any account of an excluded
+// portfolio drop out. A nil receiver excludes nothing.
+func (e *ReturnsExclude) excluded(level, src, portfolio, acct string) bool {
+	if e == nil {
+		return false
+	}
+	switch level {
+	case "portfolios":
+		return e.Accounts[src][acct]
+	case "sources", "global":
+		return e.Accounts[src][acct] || e.Portfolios[src][portfolio]
+	}
+	return false // accounts grain: never excluded
 }
 
 // InceptionOverrides carries user-configured per-entity inception floors
@@ -161,7 +191,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		toDay = globalMax
 	}
 
-	groups, order := groupAccounts(p.Level, accts)
+	groups, order := groupAccounts(p.Level, accts, p.ReturnsExclude)
 	var out []ReturnRow
 	for _, key := range order {
 		members := groups[key]
@@ -554,26 +584,24 @@ const maxEpoch = int64(1) << 62
 
 // ---- grouping ------------------------------------------------------------
 
-func groupAccounts(level string, accts map[string]*accountData) (map[string][]*accountData, []string) {
+func groupAccounts(level string, accts map[string]*accountData, excl *ReturnsExclude) (map[string][]*accountData, []string) {
 	groups := map[string][]*accountData{}
-	switch level {
-	case "accounts":
-		for _, a := range accts {
-			groups[acctKey(a.src, a.acct)] = []*accountData{a}
+	for _, a := range accts {
+		if excl.excluded(level, a.src, a.portfolio, a.acct) {
+			continue // omitted from this (higher) grain; still shown at its own grain
 		}
-	case "sources":
-		for _, a := range accts {
-			groups[a.src] = append(groups[a.src], a)
+		var k string
+		switch level {
+		case "accounts":
+			k = acctKey(a.src, a.acct)
+		case "sources":
+			k = a.src
+		case "portfolios":
+			k = acctKey(a.src, a.portfolio)
+		default: // global
+			k = "global"
 		}
-	case "portfolios":
-		for _, a := range accts {
-			k := acctKey(a.src, a.portfolio)
-			groups[k] = append(groups[k], a)
-		}
-	default: // global
-		for _, a := range accts {
-			groups["global"] = append(groups["global"], a)
-		}
+		groups[k] = append(groups[k], a)
 	}
 	order := make([]string, 0, len(groups))
 	for k := range groups {

@@ -81,6 +81,43 @@ func TestLoadInceptionOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadReturnsExclude(t *testing.T) {
+	path := writeConfig(t, `{
+        "gold_db": "/tmp/wealthdb.db",
+        "default_currency": "USD",
+        "silver_sources": [{"id": "cointracking", "kind": "cointracking", "path": "/tmp/ct.db"}],
+        "returns_exclude": {
+            "portfolios": {"cointracking": ["cu_000001", "cu_000002"]},
+            "accounts":   {"cointracking": ["WALLET1"]}
+        }
+    }`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pf, ac := c.ReturnsExclude.Sets()
+	if !pf["cointracking"]["cu_000001"] || !pf["cointracking"]["cu_000002"] {
+		t.Errorf("portfolio exclude set missing entries: %v", pf)
+	}
+	if pf["cointracking"]["cu_999"] {
+		t.Error("unexpected portfolio in exclude set")
+	}
+	if !ac["cointracking"]["WALLET1"] {
+		t.Errorf("account exclude set missing entry: %v", ac)
+	}
+
+	// rejects: unknown source + empty id
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
+	for name, block := range map[string]string{
+		"unknown source": `"returns_exclude":{"portfolios":{"nope":["P"]}}}`,
+		"empty id":       `"returns_exclude":{"accounts":{"cointracking":[""]}}}`,
+	} {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}
+
 func TestLoadInceptionOverridesRejects(t *testing.T) {
 	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
 	cases := map[string]string{

@@ -135,12 +135,17 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 		s, p, a := cfg.InceptionOverrides.Epochs()
 		inceptionOv = &gold.InceptionOverrides{Sources: s, Portfolios: p, Accounts: a}
 	}
+	var exclude *gold.ReturnsExclude
+	if cfg.ReturnsExclude != nil {
+		pf, ac := cfg.ReturnsExclude.Sets()
+		exclude = &gold.ReturnsExclude{Portfolios: pf, Accounts: ac}
+	}
 
 	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
 		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
 		Method: *method, Period: *period, Annualize: *annualize,
 		Netting: *netting == "on", Inception: *inception,
-		InceptionOverrides: inceptionOv,
+		InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
 	})
 	if err != nil {
 		return err

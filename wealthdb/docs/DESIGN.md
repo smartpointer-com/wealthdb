@@ -538,6 +538,30 @@ source, not just crypto.
   byte. A typo'd portfolio/account id silently no-ops (it can't be checked
   against gold at load) — a known v1 gap; a source-id typo fails the load.
 
+### 5.5 Returns exclusion (higher grains)
+
+`returns_exclude` omits whole accounts or portfolios from the SOURCES and GLOBAL
+return aggregates while still reporting them at their own grain — for holdings
+tracked in a shared login that belong to another person.
+
+```json
+"returns_exclude": {
+    "portfolios": { "cointracking": ["cu_000002"] },
+    "accounts":   { "schwab-retail": ["<account-hash>"] }
+}
+```
+
+- **Keys** are the same stable external ids as elsewhere
+  (`portfolio_external_id`, `account_external_id`), from the `entity_id` column.
+- **Semantics:** an excluded entity still shows at its OWN grain — the accounts
+  grain shows every account, and an excluded PORTFOLIO still shows its own
+  portfolios row (only an excluded ACCOUNT drops from its portfolio there). At
+  the sources and global grains, an excluded account, and every account of an
+  excluded portfolio, are omitted from the aggregate.
+- **Returns only.** Holdings / net-worth views are unaffected; excluding
+  someone's holdings from your net worth is a separate owner-dimension task.
+- Absent ⇒ nothing excluded, byte-identical to before.
+
 ## 6. Plugin / adapter architecture
 
 Each bank has a Go package that implements a common `Adapter`
