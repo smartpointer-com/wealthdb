@@ -196,6 +196,18 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	if allNavOnly(assets) || len(windowFlows) == 0 {
 		return nil, nil, append(q, "mwr_no_flows")
 	}
+	// If the entity's net invested capital over the window — the opening base plus
+	// the total net external flow (deposits minus withdrawals) — is zero or below,
+	// the investor has on net been repaid at least everything they committed, so
+	// the money-weighted return is a return on non-positive capital: XIRR yields an
+	// extreme, non-unique root. Surface n/a. This is a WHOLE-WINDOW measure on
+	// purpose: an interim contribution dip (one constituent's large distribution
+	// before another's later deposits, or a journal-out whose funding trade isn't a
+	// counted flow) does not mean the capital was ever truly negative, so a window
+	// that ends net-positive still gets a valid MWR.
+	if mwrNetCapitalNonPositive(v0, windowFlows) {
+		return nil, nil, append(q, "mwr_negative_net_capital")
+	}
 	rate, err := returns.XIRR(v0, v1, winFrom, winTo, windowFlows)
 	if err != nil {
 		switch err {
@@ -739,6 +751,16 @@ func flowsIn(flows []returns.Flow, from, to int64) []returns.Flow {
 		}
 	}
 	return out
+}
+
+// mwrNetCapitalNonPositive reports whether the entity's net invested capital over
+// the window — the opening base v0 plus the total net external flow (deposits
+// positive, withdrawals negative, per the net_flow convention) — is zero or
+// below. It is a whole-window sum, not a running minimum: an interim dip in
+// cumulative contributions is not a genuinely-negative capital position (the
+// account value never went there), so it must not disqualify the MWR.
+func mwrNetCapitalNonPositive(v0 float64, flows []returns.Flow) bool {
+	return v0+sumFlows(flows) <= valueTol
 }
 
 func sumFlows(flows []returns.Flow) float64 {
