@@ -213,21 +213,30 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Snapshots: %w", err)
 		}
-		// When web is also configured, drop PSN position rows dated
-		// before PSN's first holdings batch. PSN's cash + forward
-		// feeds can begin a day or two before the first MT535
-		// holdings snapshot; that holdings-less snapshot would
-		// otherwise win gold's "latest snapshot per source" and blank
-		// out web's carried-forward historical securities for the gap
-		// day(s) — a one-day dip to ~0. Cash/dimensions still flow.
-		if c.web != nil {
-			firstHoldings, ok, err := c.psn.firstHoldingsSnapshot(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("ubs psn first holdings: %w", err)
+		// Drop PSN position rows dated outside the [first, last] window
+		// of PSN's securities-holdings batches. PSN's cash + forward
+		// feeds can bracket those batches — they begin a day or two
+		// before the first MT535 snapshot, and after a nightly run they
+		// can arrive before that day's holdings land. On such a day PSN
+		// emits a holdings-less positions snapshot (forwards / mortgage
+		// only) that would otherwise win gold's "latest snapshot per
+		// source" and blank out securities: a one-day dip to ~0 at the
+		// leading edge, or a collapse to forwards-only at the trailing
+		// edge (a same-day nightly captured before that day's holdings).
+		// Cash/dimensions still flow, so the nearest complete securities
+		// snapshot stays authoritative. The leading bound only bites
+		// when web carries securities across the gap; the trailing bound
+		// guards every configuration.
+		first, last, ok, err := c.psn.holdingsSnapshotRange(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ubs psn holdings range: %w", err)
+		}
+		if ok {
+			lower := int64(0)
+			if c.web != nil {
+				lower = first
 			}
-			if ok {
-				s = &psnHoldingsGapFilter{inner: s, firstHoldingsAt: firstHoldings}
-			}
+			s = &psnHoldingsGapFilter{inner: s, firstHoldingsAt: lower, lastHoldingsAt: last}
 		}
 		if len(webPosPayloads)+len(webCashPayloads)+len(webMortgages) > 0 {
 			s = &psnWebFoldStream{
@@ -350,25 +359,27 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 	return out
 }
 
-
-// psnHoldingsGapFilter drops PSN PositionChanges whose SnapshotAt is
-// strictly before firstHoldingsAt — the snapshot_at of PSN's first
-// MT535 holdings batch. PSN's cash and forward-contract feeds can go
-// live a day or two before holdings do; on those gap days PSN emits a
-// positions snapshot (forwards only, no securities) that would win
-// gold's "latest snapshot per source" and replace web's
-// carried-forward historical securities with a near-empty view (a
-// one-day dip to ~0 the day before holdings begin). Suppressing those
-// early position rows keeps web authoritative for securities until
-// PSN actually carries them. Cash balances and dimensions in the same
-// batches pass through untouched, so PSN cash still takes over the
-// moment it begins. Running BEFORE psnWebFoldStream means an emptied
-// gap-day batch carries no positions, so the fold won't anchor a
-// mortgage onto it either (matching the historical mortgage-anchoring
-// rule that a position-less snapshot must not hijack the today view).
+// psnHoldingsGapFilter drops PSN PositionChanges whose SnapshotAt falls
+// outside the [firstHoldingsAt, lastHoldingsAt] window of PSN's MT535
+// holdings batches. PSN's cash and forward-contract feeds can bracket
+// holdings: they go live a day or two before the first batch, and after
+// a nightly run they can arrive before that day's holdings land. On
+// those bracket days PSN emits a positions snapshot (forwards only, no
+// securities) that would win gold's "latest snapshot per source" and
+// replace the real portfolio with a near-empty view — a one-day dip to
+// ~0 before holdings begin, or a collapse to forwards/mortgage-only
+// when a same-day nightly is captured before that day's holdings. Both
+// edges are suppressed here so the nearest complete securities snapshot
+// stays authoritative. Cash balances and dimensions in the same batches
+// pass through untouched, so PSN cash still flows. Running BEFORE
+// psnWebFoldStream means an emptied bracket-day batch carries no
+// positions, so the fold won't anchor a mortgage onto it either
+// (matching the rule that a position-less snapshot must not hijack the
+// today view). lastHoldingsAt == 0 means no upper bound.
 type psnHoldingsGapFilter struct {
 	inner           silver.SnapshotStream
 	firstHoldingsAt int64
+	lastHoldingsAt  int64
 }
 
 func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
@@ -379,7 +390,8 @@ func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatc
 	if len(batch.Positions) > 0 {
 		kept := batch.Positions[:0]
 		for _, p := range batch.Positions {
-			if p.SnapshotAt >= s.firstHoldingsAt {
+			if p.SnapshotAt >= s.firstHoldingsAt &&
+				(s.lastHoldingsAt == 0 || p.SnapshotAt <= s.lastHoldingsAt) {
 				kept = append(kept, p)
 			}
 		}

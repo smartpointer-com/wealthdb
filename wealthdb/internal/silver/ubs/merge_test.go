@@ -8,28 +8,32 @@ import (
 	"github.com/ptu/wealthdb/internal/silver"
 )
 
-// TestPSNHoldingsGapFilter locks in the cutover-gap fix: PSN's cash
-// and forward-contract feeds can go live a day before its first MT535
-// holdings batch. On that gap day PSN emits a positions snapshot with
+// TestPSNHoldingsGapFilter locks in the cutover-gap fix at BOTH edges.
+// PSN's cash and forward-contract feeds can bracket its MT535 holdings
+// batches: they go live a day before the first batch, and (after a
+// nightly run) can arrive before that day's holdings land. On such a
+// leading OR trailing gap day PSN emits a positions snapshot with
 // forwards but no securities; left alone it wins gold's "latest
-// snapshot per source" and blanks out web's carried-forward
-// historical securities (a one-day dip to ~0). The filter drops PSN
-// position rows dated before the first holdings snapshot while leaving
-// cash balances (and dimensions) intact, so web stays authoritative
-// for securities until PSN actually holds them and PSN cash still
-// takes over immediately.
+// snapshot per source" and blanks the real portfolio to ~0. The filter
+// drops PSN position rows dated outside the [first, last] holdings
+// window while leaving cash balances (and dimensions) intact, so the
+// nearest complete securities snapshot stays authoritative and PSN cash
+// still flows.
 func TestPSNHoldingsGapFilter(t *testing.T) {
-	const firstHoldings = 200
+	const firstHoldings, lastHoldings = 200, 200
 	mv := canonical.NewDecimalFromFloat(1)
-	gapDay := canonical.SnapshotBatch{
-		Positions: []canonical.PositionChange{{
-			SnapshotAt: 100, AccountExternalID: "fwd", PositionKey: "fwd",
-			AssetClass: canonical.AssetClassFxForward, MarketValue: &mv,
-		}},
-		CashBalances: []canonical.CashBalanceChange{{
-			SnapshotAt: 100, AccountExternalID: "iban", Currency: "CHF",
-		}},
+	fwdDay := func(at int64) canonical.SnapshotBatch {
+		return canonical.SnapshotBatch{
+			Positions: []canonical.PositionChange{{
+				SnapshotAt: at, AccountExternalID: "fwd", PositionKey: "fwd",
+				AssetClass: canonical.AssetClassFxForward, MarketValue: &mv,
+			}},
+			CashBalances: []canonical.CashBalanceChange{{
+				SnapshotAt: at, AccountExternalID: "iban", Currency: "CHF",
+			}},
+		}
 	}
+	leadingDay := fwdDay(100) // before the first holdings batch
 	holdingsDay := canonical.SnapshotBatch{
 		Positions: []canonical.PositionChange{{
 			SnapshotAt: firstHoldings, AccountExternalID: "sk", PositionKey: "CH0000000001",
@@ -39,13 +43,14 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 			SnapshotAt: firstHoldings, AccountExternalID: "iban", Currency: "CHF",
 		}},
 	}
-	inner := silver.NewSnapshotStream([]canonical.SnapshotBatch{gapDay, holdingsDay})
-	s := &psnHoldingsGapFilter{inner: inner, firstHoldingsAt: firstHoldings}
+	trailingDay := fwdDay(300) // a nightly captured before that day's holdings
+	inner := silver.NewSnapshotStream([]canonical.SnapshotBatch{leadingDay, holdingsDay, trailingDay})
+	s := &psnHoldingsGapFilter{inner: inner, firstHoldingsAt: firstHoldings, lastHoldingsAt: lastHoldings}
 	defer s.Close()
 
 	ctx := context.Background()
-	var posBySnap = map[int64]int{}
-	var cashBySnap = map[int64]int{}
+	posBySnap := map[int64]int{}
+	cashBySnap := map[int64]int{}
 	for {
 		batch, more, err := s.Next(ctx)
 		if err != nil {
@@ -62,12 +67,15 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 		}
 	}
 
-	// Gap-day (pre-holdings) positions dropped; cash kept.
-	if posBySnap[100] != 0 {
-		t.Errorf("gap-day positions = %d, want 0 (must not supersede web securities)", posBySnap[100])
-	}
-	if cashBySnap[100] != 1 {
-		t.Errorf("gap-day cash = %d, want 1 (PSN cash must still flow)", cashBySnap[100])
+	// Bracket-day positions (before first / after last holdings) dropped;
+	// cash kept.
+	for _, at := range []int64{100, 300} {
+		if posBySnap[at] != 0 {
+			t.Errorf("gap-day %d positions = %d, want 0 (must not supersede the portfolio)", at, posBySnap[at])
+		}
+		if cashBySnap[at] != 1 {
+			t.Errorf("gap-day %d cash = %d, want 1 (PSN cash must still flow)", at, cashBySnap[at])
+		}
 	}
 	// Holdings-day positions kept.
 	if posBySnap[firstHoldings] != 1 {

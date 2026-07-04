@@ -109,27 +109,28 @@ SELECT account_external_id, payload
 	return out, nil
 }
 
-// firstHoldingsSnapshot returns the snapshot_at of PSN's earliest
-// securities-holdings batch (MIN over the holdings table); ok is
-// false when PSN carries no holdings at all. PSN's cash and
-// forward-contract feeds can begin a day or two before the first
-// MT535 holdings batch, so during that gap a PSN snapshot exists
-// with cash/forwards but no securities. The merge uses this to keep
-// web's carried-forward historical securities authoritative until
-// PSN actually holds them — see psnHoldingsGapFilter.
-func (r *psnReader) firstHoldingsSnapshot(ctx context.Context) (int64, bool, error) {
+// holdingsSnapshotRange returns the snapshot_at of PSN's earliest and
+// latest securities-holdings batches (MIN and MAX over the holdings
+// table); ok is false when PSN carries no holdings at all. PSN's cash
+// and forward-contract feeds can bracket the holdings batches — they
+// begin a day or two before the first MT535 batch, and after a nightly
+// run they can arrive before that day's holdings land — so on those
+// bracket days a PSN snapshot exists with cash/forwards but no
+// securities. The merge uses this window to keep the nearest complete
+// securities snapshot authoritative — see psnHoldingsGapFilter.
+func (r *psnReader) holdingsSnapshotRange(ctx context.Context) (first, last int64, ok bool, err error) {
 	if r == nil {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
-	var v sql.NullInt64
+	var lo, hi sql.NullInt64
 	if err := r.db.QueryRowContext(ctx,
-		`SELECT MIN(snapshot_at) FROM holdings`).Scan(&v); err != nil {
-		return 0, false, fmt.Errorf("psn firstHoldingsSnapshot: %w", err)
+		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM holdings`).Scan(&lo, &hi); err != nil {
+		return 0, 0, false, fmt.Errorf("psn holdingsSnapshotRange: %w", err)
 	}
-	if !v.Valid {
-		return 0, false, nil
+	if !lo.Valid {
+		return 0, 0, false, nil
 	}
-	return v.Int64, true, nil
+	return lo.Int64, hi.Int64, true, nil
 }
 
 // instrumentMetaByISIN is a thin wrapper over the existing
