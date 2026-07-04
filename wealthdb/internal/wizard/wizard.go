@@ -127,7 +127,7 @@ func Run(stdin io.Reader, stdout io.Writer, configPath string, def Defaults) (*R
 	return &Result{Config: cfg, ConfigPath: configPath}, nil
 }
 
-// promptSilverSource walks the user through one silver-source
+// promptSilverSource walks through one silver-source
 // entry: id (slug, not-already-used), kind (registered or auto),
 // path (file exists and looks like a silver SQLite).
 func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds []string) (*config.SilverSource, error) {
@@ -200,8 +200,8 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 // probeSilverDB opens the path as a read-only SQLite and checks
 // that a `dump_runs` table is present. That's our minimum-viable
 // "looks like a silver SQLite" test — every adapter relies on
-// dump_runs, so its absence is a clear signal the user pointed
-// at the wrong file.
+// dump_runs, so its absence is a clear signal the configured path
+// is wrong.
 func probeSilverDB(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {

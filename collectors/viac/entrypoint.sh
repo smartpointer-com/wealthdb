@@ -10,7 +10,7 @@ case "${1:-help}" in
     login)
         # Mint or refresh the session cookie jar + CSRF metadata
         # in /secrets/viac-state.json. Prompts on stdin for the
-        # mTAN code sent to the user's phone. --check probes an
+        # mTAN code sent to the registered phone. --check probes an
         # existing session without triggering a new mTAN push.
         shift
         exec python3 /app/login.py "$@"

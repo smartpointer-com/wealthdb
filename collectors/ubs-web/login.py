@@ -9,7 +9,7 @@ until UBS invalidates the session.
 
 The `--check` mode validates an existing state file against a live
 landmark URL without re-logging in (no QR challenge). See CLAUDE.md
-§2: non-check invocations must be explicitly authorised by the user.
+§2: non-check invocations must be explicitly authorised.
 
 Usage:
     login.py [--contract-number <num>]

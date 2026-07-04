@@ -223,7 +223,7 @@ With `<id>`: snapshots for the one named silver source. With
 ### 4.9 `wealthdb config [-c <cfg-file-path>]`
 
 Interactive first-time setup wizard. Writes the config file at
-`-c` (default `$HOME/.config/wealthdb.cfg`) by walking the user
+`-c` (default `$HOME/.config/wealthdb.cfg`) by walking
 through:
 
 1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`. The wizard
@@ -239,8 +239,8 @@ through:
    a `dump_runs` table, and — for `kind != "auto"` — verifies the
    declared kind matches what auto-detection would have inferred
    (warns on mismatch but accepts).
-4. **Add another silver source?** — repeats step 3 until the user
-   says no.
+4. **Add another silver source?** — repeats step 3 until
+   declined.
 
 On success the wizard writes the JSON config and prints a
 suggested next-step message ("Run `wealthdb init`, then `wealthdb
@@ -276,8 +276,8 @@ to silently consuming stdin and producing an empty config.
 - **Read-write** — `init`, `load`, `reset` plus all read commands.
 - **Read-only** — only `positions`, `status`, `snapshots`, `help`.
   Suitable when the gold DB lives on a read-only share, has been
-  `chmod`'d 0444 for safekeeping, or the user is running on a
-  consumer host that should never write.
+  `chmod`'d 0444 for safekeeping, or sits on a consumer
+  host that should never write.
 
 #### Detection
 
@@ -285,8 +285,8 @@ On startup, after parsing config, `wealthdb` decides the mode in this
 order:
 
 1. If `-r` / `--read-only` is passed, the mode is **read-only**
-   unconditionally. This is the user's explicit "treat this run as
-   read-only even though I could write" safety opt-in.
+   unconditionally. It is the explicit "treat this run as
+   read-only even though writes are possible" safety opt-in.
 2. Else, `os.Stat` the gold DB file:
    - If it does not exist and the subcommand is `init`, proceed in
      read-write mode.
@@ -320,8 +320,8 @@ unaffected.)
 
 #### Subcommand gating
 
-If the resolved mode is read-only and the user invoked a (RW)
-subcommand, `wealthdb` exits **before opening DuckDB** with a clear
+If the resolved mode is read-only and a (RW) subcommand was
+invoked, `wealthdb` exits **before opening DuckDB** with a clear
 error message — never with a generic "permission denied" stack
 trace. The same error table applies to other early-failure modes
 (missing DB, existing DB on `init`, etc.) so all operational
@@ -463,7 +463,7 @@ Example config file:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. `~` and `$HOME` expanded. |
-| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when the user doesn't pass one. Overridable per invocation. |
+| `default_currency` | string | ISO 4217. Used as the default `--currency` for `wealthdb holdings positions` (and future net-worth commands) when `--currency` is omitted. Overridable per invocation. |
 | `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors don't capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. `~` / `$HOME` / `${VAR}` expanded; a missing file is a no-op. See §13.10. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
@@ -504,7 +504,7 @@ remove it from gold — run `wealthdb reset <id>` first.
 
 ### 5.4 Inception overrides (returns window)
 
-`inception_overrides` lets the user pin where a returns track record
+`inception_overrides` pins where a returns track record
 STARTS, per entity, so a portfolio funded on top of a tiny pre-history
 dust base (an account-opening gift, a stub position) isn't measured from
 that base — which would leave the money-multiple correct but blow the
@@ -733,7 +733,7 @@ What this guarantees:
 - Replays are idempotent (`ChangeNumber == watermark` ⇒ no-op).
 - A silver DB restored from backup or rebuilt is detected: if its
   new change number is **less than** the stored watermark, gold
-  refuses to load and asks the user to run `wealthdb reset <id>`.
+  refuses to load and asks for `wealthdb reset <id>`.
 
 What it does **not** guarantee:
 - Same `LatestChangeNumber` with different silver content. If
@@ -1206,7 +1206,7 @@ continuous queries. We just trigger it manually.
        no-op, exit (silver has not advanced)
    if status.LatestChangeNumber < watermark:
        error: silver appears to have gone backwards (rebuilt? restored?).
-       Tell the user to `wealthdb reset <id>` and try again.
+       Report that `wealthdb reset <id>` is needed, then retry.
 
 5. window := plugin.ChangeWindow(sinceChangeNumber=watermark)
 

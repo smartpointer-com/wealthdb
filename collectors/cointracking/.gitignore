@@ -74,7 +74,7 @@ silver/
 *.duckdb
 *.duckdb.wal
 
-# Bootstrap material the user drops in for landmarking (sample HTML,
+# Bootstrap material dropped in for landmarking (sample HTML,
 # screenshots, MHTML saves of the cointracking.info UI). These contain
 # real portfolio data and must never be committed. Move them into a
 # tracked location only after redaction.

@@ -122,7 +122,7 @@ CREATE TABLE dump_runs (
 -- `nickname` is promoted because it's the only user-visible name
 -- attached to an account (the web UI doesn't expose Schwab's
 -- internal account-type taxonomy directly — IRA vs ESA vs UTMA
--- etc. is conveyed only via the nickname the user set when the
+-- etc. is conveyed only via the nickname set when the
 -- account was opened).
 CREATE TABLE accounts (
     snapshot_at         INTEGER NOT NULL,

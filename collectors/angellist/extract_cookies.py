@@ -41,7 +41,7 @@ DEFAULT_DB = Path("/secrets/angellist-fxprofile/cookies.sqlite")
 DEFAULT_OUT = Path("/secrets/angellist-cookies.json")
 
 # AngelList's session cookie (domain-wide `.angellist.com`, ~27-day expiry).
-# A non-expired one in the saved profile means the user is still logged in,
+# A non-expired one in the saved profile means the session is still valid,
 # so `login` can lift it without a fresh VNC sign-in.
 SESSION_COOKIE = "_angellist_v2"
 

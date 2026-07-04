@@ -64,7 +64,7 @@ a one-off historic backfill is feasible without manually clicking
 through years of statements.
 
 A second-factor approval (SMS code / voice call / push / security
-question — depends on the user's configured factor) is required
+question — depends on the configured factor) is required
 on every fresh login. Unattended cron is therefore impossible;
 this toolkit is human-triggered (one code entry or biometric tap
 per fresh session) but reuses the persisted session cookie across

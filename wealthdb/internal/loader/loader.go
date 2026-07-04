@@ -94,8 +94,8 @@ func New(goldDB *sql.DB) *Loader { return &Loader{gold: goldDB} }
 
 // ErrSilverWentBackwards is returned by Load when the silver
 // source reports a LatestChangeNumber strictly less than the
-// stored high_watermark. Per DESIGN.md §8.5 the user must run
-// `wealthdb reset <id>` before re-loading.
+// stored high_watermark. Per DESIGN.md §8.5 `wealthdb reset <id>`
+// must be run before re-loading.
 var ErrSilverWentBackwards = errors.New("silver went backwards relative to stored watermark; run `wealthdb reset` to re-sync")
 
 // Load runs the full IVM sequence for one silver source. See
@@ -463,8 +463,8 @@ func applyPortfolioOverrides(accounts []canonical.AccountChange, overrides map[s
 // override fields replace the adapter's value (Nickname /
 // AccountCategory / TaxWrapper / ManagementStyle); empty fields
 // are left as-is. Overrides for account_external_ids not in the
-// batch are silently ignored — the user may have configured
-// overrides for accounts that happen not to be in this snapshot
+// batch are silently ignored — overrides may be configured
+// for accounts that happen not to be in this snapshot
 // window.
 func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[string]AccountOverride) {
 	if len(overrides) == 0 {

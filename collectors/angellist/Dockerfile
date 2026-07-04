@@ -21,7 +21,7 @@ RUN pip install -r requirements.txt
 RUN playwright install firefox && playwright install-deps firefox
 
 # Stock Mozilla Firefox (arm64/amd64 from Mozilla's own APT repo) for the
-# BYO-session login: a genuine, un-instrumented browser the user drives
+# BYO-session login: a genuine, un-instrumented browser, driven by hand
 # over VNC to clear AngelList's invisible anti-bot login challenge, which
 # flags the Camoufox/Playwright automation stack (see DESIGN.md). We then
 # read its plaintext cookies.sqlite to lift the session. libdbus-glib-1-2

@@ -173,8 +173,8 @@ lands.
 ### Gold-layer mitigation
 
 For pre-api dates, mark position gaps explicitly. Do **not**
-interpolate. If the user really needs mid-year positions for a
-historical date, recompute from the statement-transaction feed
+interpolate. Mid-year positions for a historical date can be
+recomputed from the statement-transaction feed
 (silver carries the activity; gold can replay it).
 
 ---

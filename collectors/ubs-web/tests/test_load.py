@@ -84,7 +84,7 @@ def test_positions_base_currency_footer(tmp_path):
 # Mortgages', the IBAN column carries a 'dd.mm.yyyy - dd.mm.yyyy'
 # term, Number/Amt. is the negative principal.
 # Obviously-synthetic placeholder term + principal. NOT the real
-# user's mortgage dates / balance.
+# the mortgage dates / balance.
 SYN_TERM = "01.01.2020 - 31.12.2024"
 SYN_PRINCIPAL = "-1234567.89"
 

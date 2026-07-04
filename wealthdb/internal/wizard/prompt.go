@@ -45,7 +45,7 @@ func (p *prompter) ask(question, dflt string) (string, error) {
 
 // askValidated re-prompts until the supplied validator accepts
 // the input. The validator returns a non-nil error to reject;
-// the error's text is shown to the user and the prompt repeats.
+// the error's text is shown and the prompt repeats.
 // Limited to 5 attempts so a misbehaving piped input can't loop
 // forever.
 func (p *prompter) askValidated(question, dflt string, validate func(string) error) (string, error) {

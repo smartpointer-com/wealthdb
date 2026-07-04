@@ -76,8 +76,8 @@ PSN sees each as a separate SFTP endpoint (`SFTPCH01`, `SFTPCH02`,
   a human label pairing each web relationship with its PSN
   counterpart.
 
-When the user runs `download.py` against a different relationship
-(by first switching it in the UBS UI), a new
+When `download.py` runs against a different relationship
+(after it is switched in the UBS UI), a new
 `banking_relationships` row appears with its own opaque token.
 
 ### 3.2 Portfolios
@@ -364,7 +364,7 @@ wins per date) is owned by the wealthdb UBS adapter — see
 - **Idempotency.** Re-running the loader on the same bronze dir
   is a no-op (PK collisions caught + content-dedup).
 - **Atomicity.** One transaction per dump-run. Roll back on any
-  parsing failure; user re-runs after fixing.
+  parsing failure; re-run after fixing.
 
 ## 5. Feed-coverage gaps the adapter must reckon with
 

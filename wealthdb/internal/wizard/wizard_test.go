@@ -15,10 +15,10 @@ import (
 
 // stubAdapter exists only so silver.Kinds() returns at least one
 // entry during these tests (the wizard reads the registry to
-// help the user).
+// build its prompts).
 type stubAdapter struct{ name string }
 
-func (s *stubAdapter) Kind() string                                            { return s.name }
+func (s *stubAdapter) Kind() string { return s.name }
 func (s *stubAdapter) Open(_ interface{ Done() <-chan struct{} }, _ string) (silver.Connection, error) {
 	return nil, nil
 }
@@ -122,9 +122,9 @@ func TestRunRejectsBadCurrency(t *testing.T) {
 	// Type a bad currency, then a good one, then continue normally.
 	stdin := scriptedInput(
 		"/tmp/gold.db",
-		"usd",  // bad: not uppercase
+		"usd",    // bad: not uppercase
 		"DOLLAR", // bad: too long
-		"USD",  // good
+		"USD",    // good
 		"x", "schwab", sp, "n",
 	)
 	var stdout bytes.Buffer

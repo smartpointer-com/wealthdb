@@ -11,7 +11,7 @@ within seconds of Firefox closing.
 
 walk() drives two read-only surfaces (CLAUDE.md §1):
 
-  Statements & Tax Forms — enumerate the user's accounts, apply
+  Statements & Tax Forms — enumerate the accounts, apply
   the document-type chip filter, paginate the results, and fetch
   every PDF (Statements / Tax Forms / Letters / Reports & Plans;
   Trade Confirms intentionally skipped).
@@ -116,7 +116,7 @@ def enumerate_accounts(page) -> list[dict]:
 
     The DOM ids follow `account-selector-header-0-account-<N>`
     — stable across the sample HTML drops we've seen. We anchor
-    on the prefix and let N grow with the user's account count.
+    on the prefix and let N grow with the account count.
     """
     log.info("enumerating accounts via account selector")
     selector_button = page.locator(
@@ -250,7 +250,7 @@ def select_date_range(page, value: str) -> None:
     setting all matching selects is safer than picking `.first`.
     The native `change`/`input` events bubble out of
     `<sdps-dropdown>` and the SPA's change handler runs as if
-    the user picked the option from the styled dropdown.
+    the option was picked from the styled dropdown.
 
     Accepts either Statements or Tx-history option values — the
     two pages share the select id but expose disjoint option

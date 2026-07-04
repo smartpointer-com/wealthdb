@@ -1013,7 +1013,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 // account in web silver, populated from the row with the largest
 // snapshot_at ≤ asOf for that account. Used by the fold stream to
 // carry web-only mortgage data forward into each PSN snapshot:
-// web dumps fire when the user logs in, PSN snapshots fire
+// web dumps fire on login, PSN snapshots fire
 // nightly, so without carry-forward the gold "latest snapshot per
 // source" query falls onto a PSN-only time where the mortgage
 // isn't refreshed and disappears from the position table.

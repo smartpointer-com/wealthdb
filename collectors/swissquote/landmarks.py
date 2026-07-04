@@ -30,12 +30,12 @@ HOST = "trade.swissquote.ch"
 #
 # There is no static "login URL" — we must request a protected resource
 # to trigger F5's interception. The eBanking SPA root works reliably
-# as the trigger and is also where the user lands after auth.
+# as the trigger and is also where auth lands.
 LOGIN_TRIGGER_URL = f"https://{HOST}/sqc-web-client-portal/"
 
 # Path fragment F5 uses for the login form. The MFA wait page lives
 # at a *different* URL (F5 transitions away from /my.policy as soon
-# as credentials are accepted, before the user approves the push),
+# as credentials are accepted, before the push is approved),
 # so "/my.policy not in url" is NOT a valid signal of "MFA done".
 F5_AUTH_PATH = "/my.policy"
 
@@ -55,10 +55,10 @@ def is_post_auth_url(url: str) -> bool:
 def is_profile_validation_url(url: str) -> bool:
     """Detects Swissquote's periodic regulatory-KYC interstitial.
 
-    After MFA approval, F5 sometimes routes the user to a profile-
+    After MFA approval, F5 sometimes routes to a profile-
     validation plugin (e.g. the "executive position" question that
     Swissquote refreshes annually for regulatory reasons). The script
-    cannot answer this on the user's behalf — it has to be done once
+    cannot answer this automatically — it has to be done once
     via a regular browser. We detect it so we can fail fast with an
     actionable message instead of hanging on wait_for_url.
     """
@@ -100,15 +100,15 @@ LOGIN_SUBMIT_BUTTON = "button#loginText"
 # MFA — Mobile Level 3 wait page
 # ============================================================
 
-# The MFA page does not have a stable form; the user approves the
-# push on their phone and the page transitions on its own. We detect
+# The MFA page does not have a stable form; the push is approved
+# on the phone and the page transitions on its own. We detect
 # arrival on this page by a text landmark, and detect departure by
 # *navigation away* from it (URL change), not by DOM mutation.
 MFA_PAGE_TEXT_LANDMARK = "Mobile Level 3 Authentication"
 
 # Operation No. — the 6-character TAN code the phone app shows
-# alongside the approval prompt. The user is supposed to verify the
-# two match before tapping approve. login.py scrapes it from this
+# alongside the approval prompt. The two are meant to match
+# before approval is tapped. login.py scrapes it from this
 # selector and prints it to the terminal so the operator does not
 # need to reach for the browser screenshot.
 MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"

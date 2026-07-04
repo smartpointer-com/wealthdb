@@ -476,8 +476,8 @@ func formatPerKind(m map[string]int) string {
 }
 
 // unresolvedCandidates returns the subset of the input candidate
-// set that didn't get a resolution in `valid`. The user inspects
-// this list to decide whether to re-run (e.g. with more anchors,
+// set that didn't get a resolution in `valid`. This list is
+// inspected to decide whether to re-run (e.g. with more anchors,
 // a different model) or to fix upstream silver data (e.g. tag
 // cash-interest rows so they aren't bucketed as 'dividend' in the
 // first place).
@@ -496,7 +496,7 @@ func unresolvedCandidates(cands []candidate, valid []resolution) []candidate {
 }
 
 // printSummary writes a multi-line resolution report covering the
-// numbers the user needs to assess success and decide on follow-up.
+// numbers needed to assess success and decide on follow-up.
 // Always run; both dry-run and write paths print it before the
 // per-row plan / persist block.
 //
@@ -531,7 +531,7 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 		fmt.Fprintf(w, "  resolution rate:    %s\n", formatResolutionRate(stats.PerSource, perSourceResolved))
 	}
 
-	// Sample of unresolved candidates so the user can see WHAT
+	// Sample of unresolved candidates so the output shows WHAT
 	// didn't resolve and judge whether the input is even
 	// resolvable (e.g. "BANK INT 081624-091524" is not a security
 	// → expected to skip; "Reg.shs Foo Corp" without a ticker
@@ -563,7 +563,7 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 
 // stratifiedSample picks up to maxN candidates from items by
 // round-robin'ing across (silver_source_id, lookup_kind) groups.
-// Keeps the head-of-list bias out of the sample so the user sees
+// Keeps the head-of-list bias out of the sample so it shows
 // representation from every source × kind combination present in
 // the input.
 func stratifiedSample(items []candidate, maxN int) []candidate {
@@ -749,7 +749,7 @@ func callLLM(ctx context.Context, cfg *config.ModelConfig, system, user string) 
 		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}
 	// MLX local serves tend to be slow on long prompts — give it
-	// a generous per-call ceiling. The user can ctrl-C if it
+	// a generous per-call ceiling. It can be interrupted (ctrl-C) if it
 	// wedges. (No background goroutines to clean up; this is a
 	// straight blocking call.)
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -1012,11 +1012,11 @@ const manualOverrideModelName = "manual-override"
 //     (so previously-synced corrections that aren't in cfg anymore
 //     disappear from the DB).
 //  2. For each cfg override entry:
-//       - if `delete: true`, DELETE the matching PK row regardless
-//         of model_name (suppresses an LLM result the user marked
-//         as garbage — US Treasury CUSIPs, private products etc.);
-//       - otherwise UPSERT it as a manual-override row, replacing
-//         any prior LLM result for the same key.
+//     - if `delete: true`, DELETE the matching PK row regardless
+//     of model_name (suppresses an LLM result marked
+//     as garbage — US Treasury CUSIPs, private products etc.);
+//     - otherwise UPSERT it as a manual-override row, replacing
+//     any prior LLM result for the same key.
 //
 // Returns (purged, upserted, suppressed) counts:
 //   - purged: rows wiped by phase 1 (previous-run manual overrides)

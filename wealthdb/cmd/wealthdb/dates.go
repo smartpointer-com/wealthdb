@@ -46,12 +46,12 @@ func newParseConfig(now time.Time) *dateparser.Configuration {
 // to the start (endOfPeriod=false) or end (endOfPeriod=true) of
 // the parsed precision unit:
 //
-//   "2025-06-15"          → Day:   00:00 / 23:59 of that day
-//   "2025-06"             → Month: 2025-06-01 00:00 / 2025-06-30 23:59
-//   "2025"                → Year:  2025-01-01 00:00 / 2025-12-31 23:59
-//   "yesterday"           → Day:   00:00 / 23:59 yesterday
-//   "January 1st last year" → Day: 00:00 / 23:59 of that day
-//   "2025-06-15 14:30:00" → Hour-or-finer: returned as-is
+//	"2025-06-15"          → Day:   00:00 / 23:59 of that day
+//	"2025-06"             → Month: 2025-06-01 00:00 / 2025-06-30 23:59
+//	"2025"                → Year:  2025-01-01 00:00 / 2025-12-31 23:59
+//	"yesterday"           → Day:   00:00 / 23:59 yesterday
+//	"January 1st last year" → Day: 00:00 / 23:59 of that day
+//	"2025-06-15 14:30:00" → Hour-or-finer: returned as-is
 //
 // `now` is the reference point for relative inputs.
 func parseDate(s string, now time.Time, endOfPeriod bool) (time.Time, error) {
@@ -84,7 +84,7 @@ func parseDate(s string, now time.Time, endOfPeriod bool) (time.Time, error) {
 	case dpdate.Day:
 		return anchorToDay(t, endOfPeriod), nil
 	default:
-		// Hour-or-finer precision: the user gave a specific time.
+		// Hour-or-finer precision: a specific time was given.
 		return t, nil
 	}
 }
@@ -119,14 +119,14 @@ func parseAsOf(s string, now time.Time) (int64, error) {
 // subcommands). Returns [fromEpoch, toEpoch] Unix seconds
 // inclusive.
 //
-//   0 args            → past 30 days
-//   1 arg             → the parsed period's bounds: "2025" →
-//                       full year, "2025-06" → full month,
-//                       "2025-06-15" / "yesterday" → that day,
-//                       "January 1st last year" → that day.
-//   2 args            → explicit from/to. "-" on either side is
-//                       the open-ended sentinel (epoch on from,
-//                       today's end-of-day on to).
+//	0 args            → past 30 days
+//	1 arg             → the parsed period's bounds: "2025" →
+//	                    full year, "2025-06" → full month,
+//	                    "2025-06-15" / "yesterday" → that day,
+//	                    "January 1st last year" → that day.
+//	2 args            → explicit from/to. "-" on either side is
+//	                    the open-ended sentinel (epoch on from,
+//	                    today's end-of-day on to).
 func parseDateRange(args []string, now time.Time) (int64, int64, error) {
 	nowUTC := now.UTC()
 	endOfNow := anchorToDay(nowUTC, true).Unix()

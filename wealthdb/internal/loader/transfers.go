@@ -144,7 +144,7 @@ func transferFromRecord(rec []string, get func([]string, string) string) (Transf
 	}
 	e.OccurredAt = ts.UTC().Unix()
 	// value/quantity/cost_basis tolerate 0 / blank — a not-yet-known row is a
-	// 0-value placeholder (it books nothing) until the user fills it in.
+	// 0-value placeholder (it books nothing) until filled in.
 	if e.Value, err = parseLedgerFloat(get(rec, "value")); err != nil {
 		return e, fmt.Errorf("value: %w", err)
 	}

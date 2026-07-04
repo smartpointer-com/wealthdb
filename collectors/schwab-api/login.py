@@ -5,7 +5,7 @@ Schwab OAuth login helper.
 Schwab access tokens last 30 minutes and refresh transparently from a
 refresh token. Schwab refresh tokens last 7 days and CANNOT be renewed
 programmatically — they require a fresh authorization-code grant through
-the user's browser. This script drives that grant and writes the token
+a browser. This script drives that grant and writes the token
 bundle to a file that `download.py` consumes.
 
 The default flow opens Schwab's OAuth authorize page in a headed

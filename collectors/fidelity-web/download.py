@@ -4,7 +4,7 @@ Fidelity client-web one-shot fetch: login → walk → logout → exit.
 
 Boots Camoufox (a stealth-patched Firefox fork) against
 ``digital.fidelity.com``, runs the read-only login + MFA flow,
-walks whichever export phases the user selected, attempts a clean
+walks whichever export phases were selected, attempts a clean
 logout, and exits. Bronze artefacts land in a timestamped
 ``<dest>/<UTC-ts>/`` directory.
 
@@ -1725,8 +1725,8 @@ def scrape_balances(page, bronze_dir, capture_dir):
     the dollar figures, accessible to the silver loader). We
     therefore persist the full balances HTML the same way we
     persist performance HTML, and leave the Balance Letter
-    wizard as a follow-up if the user later needs the formal
-    PDF artefact."""
+    wizard as a follow-up; the formal PDF artefact is
+    fetched on demand."""
     out_dir = bronze_dir / "balances"
     out_dir.mkdir(parents=True, exist_ok=True)
     try:

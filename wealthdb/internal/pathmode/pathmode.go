@@ -32,17 +32,17 @@ func (m Mode) String() string {
 }
 
 // Reason explains why a particular Mode was chosen. Mostly used
-// for log lines and error messages so the user sees *why* a
+// for log lines and error messages that show *why* a
 // (RW) subcommand was refused.
 type Reason string
 
 const (
-	ReasonExplicitFlag        Reason = "-r/--read-only flag set"
-	ReasonDirNotWriteable     Reason = "parent directory is not writeable"
-	ReasonFileNotWriteable    Reason = "file mode lacks owner write bit"
-	ReasonDBMissingForInit    Reason = "gold database does not exist (init will create)"
-	ReasonDBWriteable         Reason = "gold database and parent directory are writeable"
-	ReasonDBMissingForRO      Reason = "gold database does not exist"
+	ReasonExplicitFlag     Reason = "-r/--read-only flag set"
+	ReasonDirNotWriteable  Reason = "parent directory is not writeable"
+	ReasonFileNotWriteable Reason = "file mode lacks owner write bit"
+	ReasonDBMissingForInit Reason = "gold database does not exist (init will create)"
+	ReasonDBWriteable      Reason = "gold database and parent directory are writeable"
+	ReasonDBMissingForRO   Reason = "gold database does not exist"
 )
 
 // Decision is the full result of a Detect call.

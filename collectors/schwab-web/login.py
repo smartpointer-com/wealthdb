@@ -168,7 +168,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--post-auth-timeout", type=int, default=7200,
-        help=("Seconds to wait for the user to complete login + 2FA "
+        help=("Seconds to wait for login + 2FA to complete "
               "via VNC (default: 7200 = 2 hours). The default is "
               "deliberately generous — vnc-login is human-in-the-loop "
               "and the operator should not have to drop everything to "
@@ -1067,7 +1067,7 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
 def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> None:
     """Pre-fill #loginIdInput + #passwordInput inside the homepage's
     `#schwablmslogin` iframe. Non-fatal on failure — if anything
-    goes wrong the user can still type into the form themselves."""
+    goes wrong, the form can still be filled in by hand."""
     try:
         iframe = page.locator(f"#{schwab.LOGIN_IFRAME_ID}")
         iframe.wait_for(state="visible", timeout=20_000)

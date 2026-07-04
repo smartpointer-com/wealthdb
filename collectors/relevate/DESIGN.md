@@ -43,8 +43,8 @@ taught us:
   reverse-proxy gateway). Confirmed by cookies `AL_SESS-S`,
   `AL_LoginFromNewDevice`, the `CSRFT759-S` CSRF cookie, and the
   asset bundles served from `/auth/ui/assets/airlock/`.
-- 2FA factor: **mTAN** (SMS code to the user's registered mobile
-  number). The user confirms this; the URL `/auth/ui/app/auth/
+- 2FA factor: **mTAN** (SMS code to the registered mobile
+  number), confirmed on that device; the URL `/auth/ui/app/auth/
   flow/b2c/mtan` and the API endpoint
   `/auth/rest/public/authentication/mtan/otp/check` both match.
 
@@ -182,7 +182,7 @@ Stack:
   the Airlock cookies (`AL_SESS-S`, `AL_LoginFromNewDevice`,
   `CSRFT759-S`).
 - **No `httpx`, no async**, no scheduling library. Simpler is
-  better for a tool the user invokes by hand.
+  better for a tool invoked by hand.
 
 ## 3. `login.py` (REST auth)
 
@@ -219,8 +219,8 @@ The script reproduces what the Angular SPA does:
    surface it to the operator.
 5. Display the phone number on stderr and read the OTP from
    stdin via `getpass` (input hidden). Retry on rejection up to
-   `--max-otp-attempts` (default 3); on each retry the user can
-   enter the next code that arrived (mTANs are usually
+   `--max-otp-attempts` (default 3); each retry accepts the next
+   code that arrived (mTANs are usually
    single-use but Airlock typically allows multiple-in-flight).
 6. `POST /auth/rest/public/authentication/mtan/otp/check` with
    body `{"otp": "..."}` and the same `X-CSRFT759` +
@@ -269,8 +269,8 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
   landmark probe, prints `ALIVE` / `DEAD` / `MISSING` on stdout.
   Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
   user prompt (CLAUDE.md §2).
-- `--max-otp-attempts` — retry budget when the user mistypes the
-  OTP (default 3). The operator can pause indefinitely between
+- `--max-otp-attempts` — retry budget for a mistyped OTP
+  (default 3). The operator can pause indefinitely between
   attempts; `getpass` blocks on stdin without a deadline. This
   is the "no immediate-response interactive flows" rule honoured
   by NOT having a timeout, rather than by setting a long one.
@@ -326,7 +326,7 @@ browser-class consumer to Airlock:
    placeholder `Authorization: bearer undefined`. No `X-CSRFT759`
    on GETs — Airlock only enforces double-submit on POSTs.
 3. Probe `/auth/rest/protected/self-service/ui/configuration/portal`.
-   Non-200 → exit; tell the user the session is dead.
+   Non-200 → exit; report that the session is dead.
 4. Create the run dir `/data/<UTC-ts>/`. Open the
    `Manifest` (run.json writer); flush after every artefact so a
    Ctrl-C run leaves an inspectable partial manifest.
@@ -713,7 +713,7 @@ container is purely an HTTP client.
   explicitly off-limits. The CLI must never accept a flag that
   would trigger a write.
 - **No 2FA bypass.** Every fresh `login.py` invocation prompts
-  for a code from the user's phone. No SMS-receiver integration,
+  for a code from the phone. No SMS-receiver integration,
   no TOTP-secret storage, no email-poll-and-extract.
 - **No `--password` flag** anywhere. Env-only for secrets.
 - **No scheduling.** Cron / launchd / Actions are out of scope —
@@ -791,6 +791,6 @@ follow-up:
    vested benefits but worth confirming.
 7. **OTP retry behaviour.** Does Airlock invalidate the mTAN
    after one bad guess, or accept the next attempt? `login.py`
-   currently allows 3 attempts; verify the user can in fact
-   correct a fat-finger before the session locks.
+   currently allows 3 attempts; verify a fat-finger can in fact
+   be corrected before the session locks.
 

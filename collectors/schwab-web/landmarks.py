@@ -36,8 +36,8 @@ PASSWORD_INPUT_ID = "passwordInput"
 LOGIN_BUTTON_ID = "btnLogin"
 LOGIN_BUTTON_TEXT = "Log In"
 
-# Symantec VIP / 2FA code entry. After the Log In click the user is
-# served a top-level page on sws-gateway-nr.schwab.com with a code
+# Symantec VIP / 2FA code entry. After the Log In click, a top-level
+# page on sws-gateway-nr.schwab.com is served with a code
 # input and a Continue button. Schwab has shipped at least two ids
 # for the input (`securityCode` and the older `txt-token`), and the
 # Continue button has shifted between a submit and a role=button —
@@ -94,7 +94,7 @@ TRANSACTION_HISTORY_URL = "https://client.schwab.com/app/accounts/history/"
 # Document-type filter chips, addressed by their `lookupid`
 # attribute (text labels live inside the Stencil <sdps-chips>
 # shadow DOM, so `:has-text(...)` doesn't reach them). Per the
-# user's brief, all bank documents EXCEPT trade confirms are
+# collection brief, all bank documents EXCEPT trade confirms are
 # wanted: DOC_TYPES_WANTED is the set we ensure ON, the rest of
 # DOC_TYPES we ensure OFF.
 DOC_TYPES = (
@@ -209,7 +209,7 @@ TX_SEARCH_BUTTON_ID = "lbl_search-button"
 # rows are in the DOM at any time. We side-step the lossy DOM
 # scrape by driving the "Export Transactions Data" modal that
 # Schwab exposes — same data, machine-readable, complete in one
-# fetch. The modal lets the user pick a format (CSV/JSON/XML);
+# fetch. The modal offers a choice of format (CSV/JSON/XML);
 # we grab all three on the first iteration so silver can prefer
 # whichever has the richest field set.
 TX_EXPORT_MODAL_TITLE = "Export Transactions Data"

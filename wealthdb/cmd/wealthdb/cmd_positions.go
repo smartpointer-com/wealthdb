@@ -198,7 +198,7 @@ func resolvePositionColumns(flagValue, outCcy string) ([]columnSpec[gold.Positio
 }
 
 func positionsUsage() string {
-	// We don't know the user's chosen output currency at usage-print
+	// We don't know the chosen output currency at usage-print
 	// time; show a placeholder for the dynamic column.
 	registry := buildColumnRegistry("CCY")
 	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]

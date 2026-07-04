@@ -73,7 +73,7 @@ viac-discovery/
 *.db-wal
 *.db-shm
 
-# Bootstrap material the user drops in for landmarking (sample HTML,
+# Bootstrap material dropped in for landmarking (sample HTML,
 # JSON responses, screenshots, MHTML saves of app.viac.ch). These
 # contain real account data and must never be committed. Move them
 # into a tracked location only after redaction.

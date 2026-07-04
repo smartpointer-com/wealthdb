@@ -35,7 +35,7 @@ transactions and positions, PDF download for eDocuments (trade
 confirmations, statements, fee notes). This toolkit automates that
 channel under Playwright.
 
-A **Mobile Level 3** push to the user's phone is required on every
+A **Mobile Level 3** push to the registered phone is required on every
 fresh login. Unattended cron is therefore impossible; this toolkit is
 human-triggered (one biometric tap per fresh session) but reuses the
 persisted session cookie across runs until it expires.
@@ -85,8 +85,8 @@ mount/wrapper conventions (`~/.secrets → /secrets`,
 ### Headless remote host
 
 The toolkit is built to run on a headless remote Linux host (e.g. an
-always-on home server or a small VPS). The user `scp`s the bronze
-directory back to their workstation for analysis. Chromium runs
+always-on home server or a small VPS). The bronze directory is
+`scp`'d back to a workstation for analysis. Chromium runs
 headless inside the container; the MFA push is approved on the
 user's phone, not in any UI on the remote host.
 
@@ -126,7 +126,7 @@ port-forwarding), then run scripted afterwards.
 Bronze and silver paths are independently configurable; the layout
 above is the path of least resistance for personal use.
 
-The `manual/` directory is for bronze artefacts the user produces
+The `manual/` directory is for bronze artefacts produced
 out-of-band — most notably the annual Swissquote e-tax statement
 PDF (CHF 91 each, contains full year of positions + income +
 transactions and is useful as a year-end reconciliation against the
@@ -144,8 +144,8 @@ Swissquote sessions have two layers:
   exits with a clear "run login.py" message). Lifetime is
   policy-driven by Swissquote and unconfirmed; expect to re-login
   at least once per working session in practice.
-- **MFA gate** — Mobile Level 3 push to the user's phone. Required
-  on every fresh login. Cannot be scripted away; the user must tap.
+- **MFA gate** — Mobile Level 3 push to the registered phone. Required
+  on every fresh login. Cannot be scripted away; each login needs a manual tap.
   Swissquote occasionally skips the push when the device
   fingerprint is recent enough — the script handles that case
   silently.
@@ -204,7 +204,7 @@ new MFA push, no fresh login):
 | `--state-path` | _(required)_ | Path to read/write the Playwright `storageState.json` file. |
 | `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
-| `--mfa-timeout` | `300` | Seconds to wait for the user to approve the Mobile Level 3 push. |
+| `--mfa-timeout` | `300` | Seconds to wait for the Mobile Level 3 push to be approved. |
 | `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [CLAUDE.md](CLAUDE.md) §4. |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. Never auto-writes to the secrets dir. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
@@ -419,8 +419,8 @@ Reload semantics mirror the Schwab loader:
   intentionally NOT indexed into the `documents` table.
 
 The `manual/` directory under the bronze root (e.g. pre-Swissquote-era
-e-tax statements brought forward, anything dropped in by the user out
-of band) is treated as a parallel bronze input on every run: each
+e-tax statements brought forward, anything dropped in out of
+band) is treated as a parallel bronze input on every run: each
 file's sha256 is compared against `documents.content_sha256`, and only
 new files are recorded as `source = 'manual'`.
 

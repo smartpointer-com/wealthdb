@@ -344,7 +344,7 @@ def _account_nickname(label: str | None, suffix: str) -> str | None:
     The label is rendered as the literal text of the dropdown's
     sdps-account-selector__left-col + …NNN suffix + an "Account
     ending in N N N" sr-only span. We strip the suffix and the
-    sr-only echo, leaving just the user's chosen name.
+    sr-only echo, leaving just the chosen account name.
 
     If the label is missing or pure-numeric, return None — the
     nickname column should not store the suffix again.

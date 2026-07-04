@@ -36,7 +36,7 @@ Two dead ends, recorded so they aren't re-litigated:
 **The solution — bring-your-own-cookie.** `login` runs a *genuine,
 un-instrumented stock Mozilla Firefox* (Mozilla apt repo, arm64) under
 Xvfb + VNC inside the container. A real Firefox clears the invisible
-challenge; the user logs in by hand. On a clean Firefox close,
+challenge; login is completed by hand. On a clean Firefox close,
 `extract_cookies.py` reads the profile's plaintext `cookies.sqlite` and
 writes the session to `~/.secrets/angellist-cookies.json` (0600) — no
 manual export/copying. The key cookie is `_angellist_v2` (domain-wide

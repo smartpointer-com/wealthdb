@@ -9,7 +9,7 @@ Swissquote invalidates the session.
 
 The `--check` mode validates an existing state file against a live
 landmark URL without re-logging in (no MFA push). See CLAUDE.md §2:
-non-check invocations must be explicitly authorised by the user.
+non-check invocations must be explicitly authorised.
 
 Usage:
     login.py --state-path <file> [--username <name>] [--check]
@@ -70,7 +70,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--mfa-timeout", type=int, default=300,
-        help="Seconds to wait for the user to approve the Mobile Level 3 "
+        help="Seconds to wait for approval of the Mobile Level 3 "
              "push (default: 300).",
     )
     p.add_argument(

@@ -186,7 +186,7 @@ CREATE INDEX ix_transactions_account_occurred
 -- Two sources feed this table:
 --   'auto'   — fetched by download.py from the eBanking Documents
 --              endpoint; swissquote_doc_id is populated.
---   'manual' — dropped into <bronze-dir>/manual/ by the user (e-tax
+--   'manual' — dropped into <bronze-dir>/manual/ out-of-band (e-tax
 --              statements brought forward from prior years, anything
 --              else out-of-band); swissquote_doc_id is NULL.
 --

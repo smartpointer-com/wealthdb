@@ -30,7 +30,7 @@ type Config struct {
 	// transfer_in/transfer_out transaction at load time. Absent ⇒ no
 	// ledger. See docs/DESIGN.md §13.10 and internal/loader/transfers.go.
 	EquityTransfers string `json:"equity_transfers,omitempty"`
-	// AccountOverrides lets the user override the per-account
+	// AccountOverrides replace the per-account
 	// `nickname` and `account_category` columns adapters would
 	// otherwise emit. Keyed by silver_source_id (outer) and then
 	// account_external_id (inner). Either field of the value may

@@ -14,7 +14,7 @@ import (
 // caring where the wealthdb binary's cwd is.
 //
 // Resolution order:
-//  1. Replace leading `~/` or `$HOME/` with the user's home dir.
+//  1. Replace leading `~/` or `$HOME/` with the home directory.
 //  2. Expand environment variables ($FOO, ${FOO}) via os.Expand.
 //  3. If the result is still relative, resolve against baseDir.
 //

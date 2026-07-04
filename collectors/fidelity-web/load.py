@@ -28,8 +28,8 @@ After every load run, the loader validates that:
   * Every non-cash transaction has an instrument_key.
   * Every classified portfolio is logged with its account count.
 
-Failures are logged but don't fail the run — the user is expected
-to investigate, fix, and re-load.
+Failures are logged but don't fail the run — investigate, fix,
+and re-load.
 
 Usage:
     load.py --silver-db <file> --bronze-dir <dir> [-v]
@@ -135,7 +135,7 @@ def parse_args(argv):
               "page-1 text (typically the trust's name in upper "
               "case) for the file to be ingested. Defends against "
               "PDFs that match the filename pattern but belong to "
-              "an unrelated account (misfiled by the user / sent in "
+              "an unrelated account (misfiled or sent in "
               "error by Fidelity); mismatched files are logged + "
               "skipped. When omitted, falls back to the first line "
               "of `<supplied-statements-dir>/signature.txt` if present "

@@ -46,7 +46,7 @@ Schwab issues two tokens with very different lifetimes:
 - **Access token** — 30 minutes. Refreshed transparently by `schwab-py`
   whenever a request needs one. You never touch this.
 - **Refresh token** — **7 days, hard cap.** Cannot be renewed
-  programmatically; the user must repeat the OAuth authorization flow
+  programmatically; the OAuth authorization flow must be repeated
   in a browser. `login.py` exists solely to perform this re-auth.
 
 So in a normal week the rhythm is: run `login.py` once, then

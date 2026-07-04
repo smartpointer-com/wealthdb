@@ -133,8 +133,8 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 			Privacy:     PrivacyAccountID,
 			PrivacyFunc: portfolioNamePrivacy,
 			Extract: func(r gold.PortfolioRow) string {
-				// Sentinel rows render as "(no portfolio)" so the user
-				// can spot them at a glance; real portfolios show their
+				// Sentinel rows render as "(no portfolio)" so they
+				// stand out at a glance; real portfolios show their
 				// display_name if present, else their external_id.
 				if r.PortfolioExternalID == "" {
 					return "(no portfolio)"

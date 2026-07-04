@@ -103,7 +103,7 @@ type schwabAccountPayload struct {
 // user-set label from /userPreference; we forward it as Nickname.
 // AccountCategory stays nil — Schwab's `account_type` is CASH or
 // MARGIN, which is margin enablement rather than a wealth-
-// management wrapper category, so the user fills it in via the
+// management wrapper category, so it is filled in via the
 // config-side override.
 func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	hasNickname, err := silver.HasColumn(ctx, c.db, "accounts", "nickname")
@@ -244,11 +244,11 @@ type schwabInstrument struct {
 // schwabPositionPayload covers the fields we extract from each
 // positions row.
 type schwabPositionPayload struct {
-	LongQuantity    canonical.Decimal  `json:"longQuantity"`
-	ShortQuantity   canonical.Decimal  `json:"shortQuantity"`
-	AveragePrice    *canonical.Decimal `json:"averagePrice"`
-	MarketValue     *canonical.Decimal `json:"marketValue"`
-	Instrument      schwabInstrument   `json:"instrument"`
+	LongQuantity  canonical.Decimal  `json:"longQuantity"`
+	ShortQuantity canonical.Decimal  `json:"shortQuantity"`
+	AveragePrice  *canonical.Decimal `json:"averagePrice"`
+	MarketValue   *canonical.Decimal `json:"marketValue"`
+	Instrument    schwabInstrument   `json:"instrument"`
 }
 
 // appendPositions emits InstrumentChange + PositionChange for each
@@ -401,4 +401,3 @@ SELECT i.symbol, i.payload
 	}
 	return out, rows.Err()
 }
-

@@ -172,7 +172,7 @@ The bridge is unambiguous as long as no two api accounts share
 the same trailing-N digits in their account numbers. At a handful
 of accounts the data is unambiguous on 3-digit suffixes; if
 a future account triggers ambiguity, the bridge fails loudly so
-the user can add an explicit override (not yet implemented —
+an explicit override can be added (not yet implemented —
 file a request when needed).
 
 Web rows whose suffix doesn't bridge to any api hashValue are

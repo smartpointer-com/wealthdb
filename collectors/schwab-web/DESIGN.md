@@ -227,7 +227,7 @@ api gives.
 **Gold-layer recommendation**: don't try to interpolate
 mid-year positions for pre-api dates. Mark gaps explicitly. The
 statement transactions feed gives ENOUGH activity context to
-recompute positions retroactively if the user really needs them,
+recompute positions retroactively when needed,
 but that's a gold-layer derivation, not a silver one.
 
 ## 5. Recommendations for schwab-api

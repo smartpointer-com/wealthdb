@@ -14,7 +14,7 @@ Reuses the Playwright session minted by login.py to export:
 
 Files land in <dest>/<UTC-timestamp>/<artefact>. Read-only — see
 CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
-authorised by the user.
+explicitly authorised.
 
 Usage:
     download.py --state-path <file> --dest <dir>

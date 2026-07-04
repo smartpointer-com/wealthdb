@@ -62,7 +62,7 @@
 --   accounts.product_code='2'     →  gold.accounts.tax_wrapper='vested_benefits'
 --   accounts.product_code='1'     →  gold.accounts.tax_wrapper='taxable_personal'
 --                                    (INV is VIAC's non-retirement product
---                                    line; not yet observed in any user's
+--                                    line; not yet observed in the source
 --                                    data, mapping speculative)
 --   ALL VIAC accounts             →  gold.accounts.management_style='automated'
 --                                    VIAC is robo-advisor-shaped — the holder

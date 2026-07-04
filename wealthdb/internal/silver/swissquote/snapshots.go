@@ -84,16 +84,16 @@ ORDER BY snapshot_at`
 // (canonical enum, mapped per the table documented in the
 // swissquote README "Gold-layer integration" section):
 //
-//   Trading / Savings      → taxable_personal (default)
-//   Säule 3a               → pillar_3a
-//   Freizügigkeit          → vested_benefits
-//   anything else / empty  → leave TaxWrapper nil so the config-
-//                            side override or the COALESCE upsert
-//                            can supply a value.
+//	Trading / Savings      → taxable_personal (default)
+//	Säule 3a               → pillar_3a
+//	Freizügigkeit          → vested_benefits
+//	anything else / empty  → leave TaxWrapper nil so the config-
+//	                         side override or the COALESCE upsert
+//	                         can supply a value.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// Silver v5 renamed `account_type` to `account_product`. Read
 	// whichever exists so older silvers (pre-v5) still load until
-	// the user re-runs the silver loader.
+	// the silver loader is re-run.
 	productCol := ""
 	if has, err := silver.HasColumn(ctx, c.db, "accounts", "account_product"); err != nil {
 		return err
@@ -116,10 +116,10 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap       int64
-			extID      string
-			payload    string
-			product    string
+			snap    int64
+			extID   string
+			payload string
+			product string
 		)
 		if err := rows.Scan(&snap, &extID, &payload, &product); err != nil {
 			return err
@@ -149,25 +149,25 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 // positionPayload mirrors the Swissquote position payload fields
 // the silver loader extracts. Two shapes are handled:
 //
-//   live (XLS export):   quantity, price, unit_cost, total_value,
-//                        total_value_chf
-//   historical (PDF):    quantity, market_price, avg_price,
-//                        valuation_chf  (no `total_value`)
+//	live (XLS export):   quantity, price, unit_cost, total_value,
+//	                     total_value_chf
+//	historical (PDF):    quantity, market_price, avg_price,
+//	                     valuation_chf  (no `total_value`)
 //
 // market_value resolution: prefer total_value; fall back to
 // valuation_chf when the row's currency is CHF (the historical
 // positions here are all CHF); else compute from
 // quantity × market_price as a last resort.
 type positionPayload struct {
-	AssetClass    string             `json:"asset_class"`
-	Currency      string             `json:"currency"`
-	Symbol        string             `json:"symbol"`
-	Quantity      *canonical.Decimal `json:"quantity"`
-	Price         *canonical.Decimal `json:"price"`
-	MarketPrice   *canonical.Decimal `json:"market_price"`
-	UnitCost      *canonical.Decimal `json:"unit_cost"`
-	TotalValue    *canonical.Decimal `json:"total_value"`
-	ValuationCHF  *canonical.Decimal `json:"valuation_chf"`
+	AssetClass   string             `json:"asset_class"`
+	Currency     string             `json:"currency"`
+	Symbol       string             `json:"symbol"`
+	Quantity     *canonical.Decimal `json:"quantity"`
+	Price        *canonical.Decimal `json:"price"`
+	MarketPrice  *canonical.Decimal `json:"market_price"`
+	UnitCost     *canonical.Decimal `json:"unit_cost"`
+	TotalValue   *canonical.Decimal `json:"total_value"`
+	ValuationCHF *canonical.Decimal `json:"valuation_chf"`
 }
 
 // effectiveMarketValue resolves market_value across the two
@@ -190,9 +190,9 @@ func (p *positionPayload) effectiveMarketValue() *canonical.Decimal {
 // InstrumentChange per positions row. The silver `positions`
 // table mixes two provenances (migration 0004 `source` column):
 //
-//   `live`        — current Portfolio Overview XLS export
-//   `pp:<doc_id>` — reconstructed from a Portfolio Performance
-//                   PDF, with snapshot_at = the PDF's as-of date
+//	`live`        — current Portfolio Overview XLS export
+//	`pp:<doc_id>` — reconstructed from a Portfolio Performance
+//	                PDF, with snapshot_at = the PDF's as-of date
 //
 // `name` and `isin` were promoted in silver migration 0003
 // (scraped from the Portfolio Overview DOM tooltip and FullQuote
@@ -245,10 +245,10 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                       int64
-			extID, symbol, currency    string
-			payload                    string
-			name, isin                 string
+			snap                    int64
+			extID, symbol, currency string
+			payload                 string
+			name, isin              string
 		)
 		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin); err != nil {
 			return err
@@ -337,8 +337,8 @@ SELECT symbol, currency, isin
 // ---- currency_balances → CashBalance + FxRate ----------------------------
 
 type currencyBalancePayload struct {
-	CashBalance    *canonical.Decimal `json:"cash_balance"`
-	RateToCHF      *canonical.Decimal `json:"rate_to_chf"`
+	CashBalance *canonical.Decimal `json:"cash_balance"`
+	RateToCHF   *canonical.Decimal `json:"rate_to_chf"`
 }
 
 // appendCurrencyBalancesAndFxRates does double duty per
@@ -358,9 +358,9 @@ SELECT snapshot_at, account_external_id, currency, payload
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                  int64
-			extID, currency       string
-			payload               string
+			snap            int64
+			extID, currency string
+			payload         string
 		)
 		if err := rows.Scan(&snap, &extID, &currency, &payload); err != nil {
 			return err

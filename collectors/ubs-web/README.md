@@ -205,10 +205,10 @@ Override any of the host paths via env vars:
 ### Headless remote host
 
 The toolkit is built to run on a headless remote Linux host (e.g.
-an always-on home server or a small VPS). The user `scp`s the
-bronze directory back to their workstation for analysis. Chromium
+an always-on home server or a small VPS). The bronze directory
+is `scp`'d back to a workstation for analysis. Chromium
 runs headless inside the container; the MFA approval happens on
-the user's phone, not in any UI on the remote host.
+the phone, not in any UI on the remote host.
 
 **First-run device verification.** UBS does device fingerprinting
 on retail netbanking. The first login from a new IP (i.e. the
@@ -242,7 +242,7 @@ run scripted afterwards.
 Bronze and silver paths are independently configurable; the layout
 above is the path of least resistance for personal use.
 
-The `manual/` directory is for bronze artefacts the user produces
+The `manual/` directory is for bronze artefacts produced
 out-of-band — most notably PDFs already downloaded by hand from
 the netbanking archive before this toolkit existed. `load.py` will
 ingest `manual/` on every run using the same dedup-by-hash
@@ -275,8 +275,8 @@ UBS netbanking sessions, like Swissquote's, have two layers:
   `storageState.json`; `download.py` reuses that file directly.
   Lifetime is policy-driven and unconfirmed; expect to re-login at
   least once per working session in practice.
-- **MFA gate** — UBS Access App push (or the user's configured
-  fallback factor) on every fresh login. Cannot be scripted away.
+- **MFA gate** — UBS Access App push (or the configured fallback
+  factor) on every fresh login. Cannot be scripted away.
 
 So the normal rhythm is: run `login.py` once, then `download.py`
 as many times as you like during the cookie's lifetime. When

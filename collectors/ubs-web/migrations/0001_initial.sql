@@ -139,8 +139,8 @@ CREATE TABLE dump_runs (
 -- ============================================================
 
 -- One row per banking relationship per snapshot. The web SPA only
--- exposes one banking_relationship_id per session (the one the
--- user has switched into); users with multiple relationships
+-- exposes one banking_relationship_id per session (the one
+-- currently switched into); users with multiple relationships
 -- must re-run download.py once per relationship after switching
 -- in the UI. The `description`
 -- column is empty by default — fill it via a manual UPDATE so

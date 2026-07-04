@@ -55,7 +55,7 @@ tokens.json
 data/
 downloads/
 
-# Bootstrap material the user drops in for landmarking (sample HTML,
+# Bootstrap material dropped in for landmarking (sample HTML,
 # screenshots, MHTML saves of the netbanking UI). These contain real
 # account data and must never be committed. Move them into a tracked
 # location only after redaction.

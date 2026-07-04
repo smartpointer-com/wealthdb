@@ -7,7 +7,7 @@ import (
 )
 
 // SourceStatus summarises the gold-side state for one silver
-// source. Used by `wealthdb status` to give the user a quick
+// source. Used by `wealthdb status` for a quick
 // "what does gold currently know about this silver" view.
 type SourceStatus struct {
 	SilverSourceID    string
@@ -122,13 +122,13 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 
 // LoadAuditRow is one row from gold's load_audit history.
 type LoadAuditRow struct {
-	LoadedAt             int64
-	ChangeNumberBefore   sql.NullInt64
-	ChangeNumberAfter    int64
-	WindowStart          int64
-	WindowEnd            int64
-	SnapshotsLoaded      int
-	TransactionsLoaded   int
+	LoadedAt           int64
+	ChangeNumberBefore sql.NullInt64
+	ChangeNumberAfter  int64
+	WindowStart        int64
+	WindowEnd          int64
+	SnapshotsLoaded    int
+	TransactionsLoaded int
 }
 
 // RecentLoadAudit returns up to `limit` most-recent load_audit

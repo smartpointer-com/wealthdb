@@ -64,7 +64,7 @@ empty configs.`)
 		}
 	}
 
-	// Ensure parent dir exists before we ask the user about
+	// Ensure parent dir exists before resolving
 	// gold-DB defaults that may rely on the XDG data dir already.
 	configDir := filepath.Dir(g.ConfigPath)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {

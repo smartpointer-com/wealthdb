@@ -36,8 +36,8 @@ Owns whatever credential dance the upstream requires:
 
 **Why a separate tool?** Auth is interactive, episodic (weekly for
 Schwab, once-and-forget for UBS), and has its own failure modes. It
-should not live inside the fetch loop where it would prompt the user
-mid-cron.
+should not live inside the fetch loop, where it would trigger an
+interactive prompt mid-cron.
 
 **Lessons from the Schwab implementation that generalise:**
 - A `--check` subcommand that reports auth-credential age without
@@ -46,7 +46,7 @@ mid-cron.
 - If the underlying library has interactive prompts (schwab-py asks
   "Press ENTER to open the browser"), suppress them. They expire
   auth codes when running over SSH, in remote dev environments, or
-  whenever the user takes a phone call.
+  whenever a phone call interrupts.
 - File mode 0600 on the credential file, programmatically. Don't
   trust user umask.
 

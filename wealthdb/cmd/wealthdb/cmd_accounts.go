@@ -168,7 +168,7 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			Extract: func(a gold.AccountRow) string { return formatCents(a.TotalValueBase) }},
 
 		// Output-currency aggregates. Single column-wide currency
-		// (the user's -x/--currency choice) so the header carries
+		// (the -x/--currency choice) so the header carries
 		// the suffix.
 		{Name: "positions_value_outccy", Header: "positions_value" + suffix, Align: output.AlignRight, Privacy: PrivacyMoney,
 			Extract: func(a gold.AccountRow) string { return formatCents(a.PositionsValueOutCcy) }},
