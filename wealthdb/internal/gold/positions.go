@@ -7,7 +7,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // PositionRow is one row of the consolidated positions output.

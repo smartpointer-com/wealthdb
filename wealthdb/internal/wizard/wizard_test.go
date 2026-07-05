@@ -10,7 +10,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // stubAdapter exists only so silver.Kinds() returns at least one

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 )
 
 func init() {

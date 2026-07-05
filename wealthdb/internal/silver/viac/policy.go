@@ -1,6 +1,6 @@
 package viac
 
-import "github.com/ptu/wealthdb/internal/returns"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 
 // init registers this source's co-located ReturnsPolicy in the returns registry,
 // beside the silver.Register(&Adapter{}) call. Flow-complete bank/pension:

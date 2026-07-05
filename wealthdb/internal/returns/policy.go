@@ -1,6 +1,6 @@
 package returns
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // Regime classifies how much of an entity's return is recoverable from flows.
 type Regime int

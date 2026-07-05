@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // accountKey is the custody account holding the positions; fundingAccountKey

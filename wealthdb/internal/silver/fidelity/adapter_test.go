@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 //go:embed testdata/silver_schema.sql

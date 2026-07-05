@@ -12,7 +12,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // Config is the in-memory shape of the wealthdb config file.

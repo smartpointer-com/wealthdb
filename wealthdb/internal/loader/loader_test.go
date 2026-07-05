@@ -15,12 +15,12 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ptu/wealthdb/internal/gold"
-	"github.com/ptu/wealthdb/internal/loader"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/loader"
 
 	// Blank-import so the Schwab adapter registers itself with
 	// the silver registry. The loader looks it up by kind.
-	_ "github.com/ptu/wealthdb/internal/silver/schwab"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
 )
 
 // silverFixtureSchema is the same minimal schema the Schwab

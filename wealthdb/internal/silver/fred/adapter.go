@@ -24,7 +24,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "fred"

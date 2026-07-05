@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 )
 
 // Run is the testable entry point. main is a one-liner around it.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // CashAsOf returns one synthetic PositionRow per (silver_source_id,

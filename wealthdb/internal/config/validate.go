@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // idPattern restricts silver_source_id values to slug-style

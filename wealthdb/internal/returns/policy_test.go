@@ -3,7 +3,7 @@ package returns
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestFlowPolicyForUnknownDefault pins the FlowPolicyFor miss-fallback. The

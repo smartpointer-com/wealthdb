@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // contentExtrema yields the MIN/MAX content date — the position event

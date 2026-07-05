@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ptu/wealthdb/internal/errs"
-	"github.com/ptu/wealthdb/internal/wizard"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/wizard"
 	"golang.org/x/term"
 )
 

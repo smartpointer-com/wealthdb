@@ -3,7 +3,7 @@ package ubs
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestWebKindClassification pins the description_kind → TxKind

@@ -1,6 +1,6 @@
 package carta
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // assetClassFor maps a carta entity to its canonical AssetClass.
 //

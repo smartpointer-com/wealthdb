@@ -9,8 +9,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // Snapshots forward-fills the per-day portfolio from the silver's

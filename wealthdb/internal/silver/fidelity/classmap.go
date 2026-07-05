@@ -1,6 +1,6 @@
 package fidelity
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // assetClassFor maps fidelity-web's `positions.asset_class`
 // (the silver-side classification: 'equity' / 'etf' / 'mutual_fund'

@@ -1,6 +1,6 @@
 package viac
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // taxWrapperFor maps silver's `accounts.product_code` to the
 // canonical tax_wrapper. Unknown codes fall through to

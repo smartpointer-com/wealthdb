@@ -3,7 +3,7 @@ package ubs
 import (
 	"strings"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // kindFor maps a UBS events.kind value (with optional narrative

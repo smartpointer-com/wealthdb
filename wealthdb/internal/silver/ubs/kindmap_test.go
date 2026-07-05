@@ -3,7 +3,7 @@ package ubs
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestCashMovementStampDuty guards the returns-flow fix: Swiss transfer stamp

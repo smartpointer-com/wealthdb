@@ -3,7 +3,7 @@ package gold
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // TestGlobalAsOfRollup seeds two USD accounts captured at different

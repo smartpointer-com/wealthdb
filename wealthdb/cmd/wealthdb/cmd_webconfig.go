@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ptu/wealthdb/internal/config"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 )
 
 func init() {

@@ -700,9 +700,9 @@ registration:
 
 ```go
 import (
-    _ "github.com/ptu/wealthdb/internal/silver/schwab"
-    _ "github.com/ptu/wealthdb/internal/silver/ubs"
-    _ "github.com/ptu/wealthdb/internal/silver/swissquote"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
 )
 ```
 

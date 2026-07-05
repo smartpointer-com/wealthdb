@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // Historical-snapshot reader for the schwab-web silver

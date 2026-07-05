@@ -1,6 +1,6 @@
 package swissquote
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // kindFor maps Swissquote's `transactions.transaction_type` to
 // canonical TxKind values. See docs/adapters/swissquote.md §6.

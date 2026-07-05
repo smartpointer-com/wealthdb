@@ -1,6 +1,6 @@
 package swissquote
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // taxWrapperFor maps the silver-side `accounts.account_product`
 // label (Swissquote's per-account product designation, scraped

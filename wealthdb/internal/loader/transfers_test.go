@@ -7,8 +7,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
 func TestParseTransferLedger(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
 // setupReturnsGold seeds a synthetic gold DB file (a flow-complete brokerage, a

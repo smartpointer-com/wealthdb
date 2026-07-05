@@ -1,6 +1,6 @@
 package carta
 
-import "github.com/ptu/wealthdb/internal/returns"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 
 // init registers this source's co-located ReturnsPolicy. NAV-only: manual emits
 // no transactions; carta/equityzen emit synthetic balanced double-entries on a

@@ -3,10 +3,10 @@ package main
 import (
 	"database/sql"
 
-	"github.com/ptu/wealthdb/internal/config"
-	"github.com/ptu/wealthdb/internal/errs"
-	"github.com/ptu/wealthdb/internal/gold"
-	"github.com/ptu/wealthdb/internal/pathmode"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 // openGoldForRead opens the gold DB for a read-side subcommand

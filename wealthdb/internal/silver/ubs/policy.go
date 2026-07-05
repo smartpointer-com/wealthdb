@@ -1,8 +1,8 @@
 package ubs
 
 import (
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/returns"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 )
 
 // init registers this source's co-located ReturnsPolicy. UBS is a CONDUIT

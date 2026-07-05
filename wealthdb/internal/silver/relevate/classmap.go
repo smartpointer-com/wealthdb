@@ -1,6 +1,6 @@
 package relevate
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // assetClassFor maps Relevate's `positions.asset_class` string
 // (silver mirrors security.assetClass.name verbatim) to the

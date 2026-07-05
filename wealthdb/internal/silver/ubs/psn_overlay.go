@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // PSN-side overlay helpers. The orchestrator pre-fetches PSN

@@ -1,6 +1,6 @@
 package angellist
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // assetClassForKind maps the silver vehicles.kind ('spv' | 'fund', which
 // load.py derives from the AngelList investableGuid suffix) to the

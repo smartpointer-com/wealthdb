@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/output"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
 )
 
 func TestRedactAccountID(t *testing.T) {

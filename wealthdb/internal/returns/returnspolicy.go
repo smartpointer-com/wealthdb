@@ -3,7 +3,7 @@ package returns
 import (
 	"sync"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // ReturnsPolicy is the per-source superset container for the returns engine. It

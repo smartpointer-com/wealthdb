@@ -1,6 +1,6 @@
 package fidelity
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // kindFor maps fidelity-web's `transactions.kind` (the
 // first word of Fidelity's "Action" column, e.g. "BUY",

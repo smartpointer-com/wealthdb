@@ -4,7 +4,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // assetClassForInstrument classifies a PSN instrument using its

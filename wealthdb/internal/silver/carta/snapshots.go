@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 	"github.com/shopspring/decimal"
 )
 

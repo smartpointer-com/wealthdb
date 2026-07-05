@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // Writer wraps a *sql.Tx and inserts/upserts canonical *Change

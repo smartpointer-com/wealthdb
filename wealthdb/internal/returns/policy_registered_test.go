@@ -10,23 +10,23 @@ package returns_test
 import (
 	"testing"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/returns"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 
 	// Blank-import every silver adapter that registers a policy, mirroring
 	// cmd/wealthdb/main.go, so registration runs before the assertions.
-	_ "github.com/ptu/wealthdb/internal/silver/angellist"
-	_ "github.com/ptu/wealthdb/internal/silver/carta"
-	_ "github.com/ptu/wealthdb/internal/silver/cointracking"
-	_ "github.com/ptu/wealthdb/internal/silver/equityzen"
-	_ "github.com/ptu/wealthdb/internal/silver/fidelity"
-	_ "github.com/ptu/wealthdb/internal/silver/fred"
-	_ "github.com/ptu/wealthdb/internal/silver/manual"
-	_ "github.com/ptu/wealthdb/internal/silver/relevate"
-	_ "github.com/ptu/wealthdb/internal/silver/schwab"
-	_ "github.com/ptu/wealthdb/internal/silver/swissquote"
-	_ "github.com/ptu/wealthdb/internal/silver/ubs"
-	_ "github.com/ptu/wealthdb/internal/silver/viac"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/cointracking"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/equityzen"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fidelity"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fred"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/relevate"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/viac"
 )
 
 func TestRegisteredFlowPolicies(t *testing.T) {

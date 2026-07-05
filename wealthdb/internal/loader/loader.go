@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/gold"
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // SourceSpec identifies one silver source. Comes from the wealthdb

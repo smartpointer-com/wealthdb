@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/config"
-	"github.com/ptu/wealthdb/internal/errs"
-	"github.com/ptu/wealthdb/internal/gold"
-	"github.com/ptu/wealthdb/internal/output"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
 )
 
 // portfolioNamePrivacy picks the right redaction class for the

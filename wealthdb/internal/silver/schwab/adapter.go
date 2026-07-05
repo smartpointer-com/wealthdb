@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ptu/wealthdb/internal/silver"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // kindName is the silver-kind discriminator that appears in the

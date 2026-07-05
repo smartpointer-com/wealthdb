@@ -1,6 +1,6 @@
 package schwab
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // classMap maps Schwab's `instrument.assetType` value to the
 // canonical AssetClass. Unrecognised values fall through to

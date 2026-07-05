@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
 // transferIDPrefix marks the synthetic transaction_external_id of every

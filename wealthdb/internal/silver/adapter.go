@@ -11,7 +11,7 @@ package silver
 import (
 	"context"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // Adapter is the per-bank entry point. Each backend package

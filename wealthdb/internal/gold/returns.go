@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/ptu/wealthdb/internal/canonical"
-	"github.com/ptu/wealthdb/internal/returns"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 )
 
 // acctKey is the in-memory map key for an account: source id + a NUL separator

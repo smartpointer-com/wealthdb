@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // openMigrated returns a freshly opened, freshly migrated

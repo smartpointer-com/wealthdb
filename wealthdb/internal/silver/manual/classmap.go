@@ -1,6 +1,6 @@
 package manual
 
-import "github.com/ptu/wealthdb/internal/canonical"
+import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
 // assetClassFor maps a manual position `kind` to its canonical AssetClass.
 //

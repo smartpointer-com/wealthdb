@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ptu/wealthdb/internal/config"
-	"github.com/ptu/wealthdb/internal/errs"
-	"github.com/ptu/wealthdb/internal/gold"
-	"github.com/ptu/wealthdb/internal/output"
-	"github.com/ptu/wealthdb/internal/pathmode"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {

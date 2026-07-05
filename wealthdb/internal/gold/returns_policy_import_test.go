@@ -12,16 +12,16 @@ package gold
 // (the boundary documented in open.go). No import cycle: silver/<kind> imports
 // internal/returns, not internal/gold.
 import (
-	_ "github.com/ptu/wealthdb/internal/silver/angellist"
-	_ "github.com/ptu/wealthdb/internal/silver/carta"
-	_ "github.com/ptu/wealthdb/internal/silver/cointracking"
-	_ "github.com/ptu/wealthdb/internal/silver/equityzen"
-	_ "github.com/ptu/wealthdb/internal/silver/fidelity"
-	_ "github.com/ptu/wealthdb/internal/silver/fred"
-	_ "github.com/ptu/wealthdb/internal/silver/manual"
-	_ "github.com/ptu/wealthdb/internal/silver/relevate"
-	_ "github.com/ptu/wealthdb/internal/silver/schwab"
-	_ "github.com/ptu/wealthdb/internal/silver/swissquote"
-	_ "github.com/ptu/wealthdb/internal/silver/ubs"
-	_ "github.com/ptu/wealthdb/internal/silver/viac"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/cointracking"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/equityzen"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fidelity"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fred"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/relevate"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/viac"
 )

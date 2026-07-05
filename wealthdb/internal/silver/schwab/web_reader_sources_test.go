@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ptu/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // wtxAt builds a parsed web transaction at an explicit epoch-second timestamp

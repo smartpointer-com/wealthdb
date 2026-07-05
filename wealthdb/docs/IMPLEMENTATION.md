@@ -10,7 +10,7 @@ user-observable behaviour specified in DESIGN.md.
 
 ```
 wealthdb/
-├── go.mod                              module github.com/ptu/wealthdb
+├── go.mod                              module github.com/ptu-gh/wealthdb/wealthdb
 ├── go.sum
 ├── cmd/
 │   └── wealthdb/
@@ -183,10 +183,10 @@ forbidden by DESIGN.md §7.1.
 
 ```go
 import (
-    _ "github.com/ptu/wealthdb/internal/silver/schwab"
-    _ "github.com/ptu/wealthdb/internal/silver/ubs"
-    _ "github.com/ptu/wealthdb/internal/silver/swissquote"
-    _ "github.com/ptu/wealthdb/internal/silver/auto"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
+    _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/auto"
 )
 ```
 

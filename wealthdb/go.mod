@@ -1,4 +1,4 @@
-module github.com/ptu/wealthdb
+module github.com/ptu-gh/wealthdb/wealthdb
 
 go 1.25.0
 
