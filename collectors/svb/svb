@@ -15,8 +15,9 @@
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on `load`:
-#   --data-dir  DIR     statement-PDF dir (default $XDG_DATA_HOME/wealthdb/svb)
-#   --silver-db PATH    silver DB path    (default <data-dir>/svb.db)
+#   --data-dir  DIR     data dir; PDFs in <data-dir>/bronze/
+#                       (default $XDG_DATA_HOME/wealthdb/svb)
+#   --silver-db PATH    silver DB path (default <data-dir>/svb.db)
 # Extra `load` flags pass through to load.py (e.g. --closure-date, --signature).
 set -euo pipefail
 
@@ -31,23 +32,23 @@ cmd="${1:-load}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     download|login)
         cat >&2 <<'EOF'
 svb: no-op. This collector has no live source — the SVB Wealth Advisory
 statements are a fixed historical archive (SVB wound down in 2023). Drop the
-in-scope statement PDFs (+ an optional signature.txt page-1 guard) into the
-data dir (default $XDG_DATA_HOME/wealthdb/svb/), then run `./svb load` to
-rebuild svb.db from them.
+in-scope statement PDFs (+ an optional signature.txt page-1 guard) into
+<data-dir>/bronze/ (default $XDG_DATA_HOME/wealthdb/svb/bronze/), then run
+`./svb load` to rebuild svb.db from them.
 EOF
         exit 0
         ;;
     load)
         host_resolve_dirs "$@"
         py="$(host_python)"
-        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB" \
+        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR/bronze" --silver-db "$SILVER_DB" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     *)

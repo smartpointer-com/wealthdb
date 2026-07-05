@@ -15,8 +15,9 @@ carry-forward and closures are modelled.
 
 ```
 $XDG_DATA_HOME/wealthdb/svb/        # the data dir (override: --data-dir)
-├── <statement>.pdf  ...            # the in-scope statement PDFs (PII; git-ignored)
-├── signature.txt                   # optional page-1 guard substring (PII)
+├── bronze/                         # the statement archive
+│   ├── <statement>.pdf  ...        # the in-scope statement PDFs (PII)
+│   └── signature.txt               # optional page-1 guard substring (PII)
 └── svb.db                          # built silver (override: --silver-db)
 ```
 

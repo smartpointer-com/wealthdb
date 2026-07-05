@@ -204,12 +204,18 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
 
 def build(silver_db: Path, bronze_dir: Path, *, signature: str | None,
           closure_date: str, migrations_dir: Path) -> None:
+    # Validate the bronze BEFORE touching the existing silver: a mis-pointed
+    # --bronze-dir must fail loudly, not silently replace a good svb.db with
+    # an empty rebuild (which then zeroes the source out of gold).
+    pdfs = sorted(p for p in bronze_dir.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".pdf") if bronze_dir.is_dir() else []
+    if not pdfs:
+        raise SystemExit(
+            f"svb load: no statement PDFs in {bronze_dir} — refusing to "
+            f"rebuild {silver_db} from an empty bronze. Point --data-dir / "
+            f"--bronze-dir at the archive (PDFs live in <data-dir>/bronze/).")
     if silver_db.exists():
         silver_db.unlink()  # full rebuild — reproducible from bronze
-    pdfs = sorted(p for p in bronze_dir.iterdir()
-                  if p.is_file() and p.suffix.lower() == ".pdf")
-    if not pdfs:
-        log.warning("no PDFs in %s", bronze_dir)
     conn = sqlite3.connect(str(silver_db))
     try:
         apply_migrations(conn, migrations_dir)

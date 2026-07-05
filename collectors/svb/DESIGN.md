@@ -64,13 +64,17 @@ default cleanly and the overrides set the precise values.
 ## Rebuild
 
 Reproducible-from-bronze. Drop the in-scope statement PDFs (+ an optional
-`signature.txt` page-1 guard) into the data dir (default
-`$XDG_DATA_HOME/wealthdb/svb/`), then:
+`signature.txt` page-1 guard) into `<data-dir>/bronze/` (default
+`$XDG_DATA_HOME/wealthdb/svb/bronze/`), then:
 
 ```sh
-wealthdb-collect svb load   # rebuild svb.db from the PDFs in the data dir
+wealthdb-collect svb load   # rebuild svb.db from <data-dir>/bronze/
 wealthdb reload svb         # re-project into gold
 ```
+
+A bronze dir with no PDFs fails the load without touching the existing
+`svb.db` — a mis-pointed dir must never replace a good silver with an empty
+rebuild.
 
 The wrapper resolves `--data-dir` / `--silver-db` (CLI flag > `SVB_*` env >
 `WEALTHDB_*` env > default `<data-dir>/svb.db`) and forwards extra flags to

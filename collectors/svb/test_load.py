@@ -61,6 +61,25 @@ def test_migrations_lockstep_with_fidelity_web():
             f"{mig.name} drifted from fidelity-web/migrations — re-sync them")
 
 
+def test_empty_bronze_never_clobbers_existing_silver(tmp_path, monkeypatch):
+    """A mis-pointed / empty bronze dir must abort BEFORE touching the
+    existing svb.db (regression: --bronze-dir pointed at the data-dir root
+    replaced a good silver with an empty rebuild, zeroing the source out of
+    gold)."""
+    import pytest
+
+    conn = _build(tmp_path, monkeypatch)  # good silver from canned bronze
+    conn.close()
+    db = tmp_path / "svb.db"
+    before = db.read_bytes()
+    for bad in (tmp_path / "empty", tmp_path / "does-not-exist"):
+        (tmp_path / "empty").mkdir(exist_ok=True)
+        with pytest.raises(SystemExit, match="no statement PDFs"):
+            B.build(db, bad, signature=None, closure_date="2023-09-30",
+                    migrations_dir=MIGRATIONS)
+        assert db.read_bytes() == before, "existing silver was modified"
+
+
 def test_skip_empty_carries_forward(tmp_path, monkeypatch):
     conn = _build(tmp_path, monkeypatch)
     rows = conn.execute(
