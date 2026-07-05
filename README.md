@@ -142,3 +142,8 @@ their `--help`.
 - **[wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md)** — deep
   gold-engine design (schema, plugin contract, load semantics).
 - Per-component `README.md` / `DESIGN.md` under each directory.
+
+## License
+
+Released under the [MIT License](LICENSE).
+Copyright (c) 2026 SmartPointer AG.
