@@ -187,17 +187,22 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, err
 		}
 	}
+	var portfolioCutoff, accountCutoff map[string]int64
 	if c.web != nil {
 		var err error
 		cutoff, err = buildPSNStartByWebRel(ctx, c.psn, c.relationships)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web cutoff: %w", err)
 		}
+		portfolioCutoff, accountCutoff, err = c.web.buildHistoricalCutoffs(ctx, cutoff, c.psn, c.relationships)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web historical cutoff: %w", err)
+		}
 	}
 
 	streams := make([]silver.SnapshotStream, 0, 3)
 	if c.web != nil {
-		hist, err := c.web.snapshotsHistorical(ctx, w, safekeepingByPortfolio)
+		hist, err := c.web.snapshotsHistorical(ctx, w, safekeepingByPortfolio, portfolioCutoff, accountCutoff)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots (historical): %w", err)
 		}

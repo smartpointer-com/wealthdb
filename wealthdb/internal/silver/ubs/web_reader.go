@@ -657,6 +657,82 @@ func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []silver.Re
 	return out, nil
 }
 
+// buildHistoricalCutoffs projects the per-relationship PSN-start
+// cutoff onto the two key spaces the historical stream reads under.
+// The historical stream is the pre-PSN backfill; without a cutoff
+// its quarter-end rows collide with PSN's daily snapshot on the
+// gold (source, snapshot_at, safekeeping, isin) / cash PK once PSN
+// coverage laps a statement's period-end date.
+//
+// Portfolio side (historical_position_snapshots): the PDF row's
+// portfolio_external_id is the PSN-aligned 'BBBBAAAAAAAANN' form,
+// NOT the 4-char code that lives web uses ('RNNN' / 'NNNN'). PSN
+// silver's portfolios table owns that id space and its
+// relationship_id, so the mapping comes from psn — mapping through
+// live web's portfolios table (as an earlier version did) misses
+// every historical row because the two ID spaces don't overlap.
+//
+// Account side (historical_cash_balances): IBANs, which live web's
+// accounts table already keys on with banking_relationship_id
+// attached.
+func (r *webReader) buildHistoricalCutoffs(
+	ctx context.Context,
+	cutoffByWebRel map[string]int64,
+	psn *psnReader,
+	rels []silver.RelationshipPair,
+) (portfolioCutoff, accountCutoff map[string]int64, err error) {
+	portfolioCutoff = map[string]int64{}
+	accountCutoff = map[string]int64{}
+	if len(cutoffByWebRel) == 0 {
+		return portfolioCutoff, accountCutoff, nil
+	}
+	if psn != nil {
+		cutoffByPSNRel := make(map[string]int64, len(rels))
+		for _, p := range rels {
+			if p.PSNID == "" || p.WebID == "" {
+				continue
+			}
+			if c := cutoffByWebRel[p.WebID]; c > 0 {
+				cutoffByPSNRel[p.PSNID] = c
+			}
+		}
+		if err := populateCutoffMap(ctx, psn.db,
+			`SELECT DISTINCT portfolio_external_id, relationship_id
+			   FROM portfolios`,
+			cutoffByPSNRel, portfolioCutoff); err != nil {
+			return nil, nil, fmt.Errorf("historical cutoff (psn portfolios): %w", err)
+		}
+	}
+	if err := populateCutoffMap(ctx, r.db,
+		`SELECT account_external_id, banking_relationship_id FROM accounts
+		  WHERE banking_relationship_id IS NOT NULL`,
+		cutoffByWebRel, accountCutoff); err != nil {
+		return nil, nil, fmt.Errorf("historical cutoff (web accounts): %w", err)
+	}
+	return portfolioCutoff, accountCutoff, nil
+}
+
+func populateCutoffMap(
+	ctx context.Context, db *sql.DB, q string,
+	cutoffByRel map[string]int64, out map[string]int64,
+) error {
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, rel string
+		if err := rows.Scan(&id, &rel); err != nil {
+			return err
+		}
+		if c := cutoffByRel[rel]; c > 0 {
+			out[id] = c
+		}
+	}
+	return rows.Err()
+}
+
 // webKind maps the web silver's `description_kind` string plus
 // debit/credit indicators to a canonical.TxKind. Conservative —
 // unknown / ambiguous shapes route to TxKindOther so we never

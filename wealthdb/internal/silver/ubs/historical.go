@@ -41,10 +41,18 @@ import (
 // is just a defensive filter — it could equivalently read every
 // historical row. Filtering keeps the read cheap when the loader
 // is incrementally advancing past a single new dump_run.
+// portfolioCutoff and accountCutoff (both may be nil for a
+// single-subsource web-only load) hold the per-portfolio and
+// per-account PSN-start dates: historical rows on or after the
+// applicable cutoff are dropped so PSN's daily snapshots own the
+// overlap without colliding on the gold PK. See
+// webReader.buildHistoricalCutoffs.
 func (r *webReader) snapshotsHistorical(
 	ctx context.Context,
 	w canonical.Window,
 	safekeepingByPortfolio map[string]string,
+	portfolioCutoff map[string]int64,
+	accountCutoff map[string]int64,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -60,10 +68,10 @@ func (r *webReader) snapshotsHistorical(
 		return b
 	}
 
-	if err := r.appendHistoricalSecurities(ctx, w, getBatch, safekeepingByPortfolio); err != nil {
+	if err := r.appendHistoricalSecurities(ctx, w, getBatch, safekeepingByPortfolio, portfolioCutoff); err != nil {
 		return nil, err
 	}
-	if err := r.appendHistoricalCashBalances(ctx, w, getBatch); err != nil {
+	if err := r.appendHistoricalCashBalances(ctx, w, getBatch, accountCutoff); err != nil {
 		return nil, err
 	}
 	// Mortgages run LAST and peek at byTime directly (not getBatch)
@@ -114,6 +122,7 @@ func (r *webReader) appendHistoricalSecurities(
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
 	safekeepingByPortfolio map[string]string,
+	portfolioCutoff map[string]int64,
 ) error {
 	// Year-end Statements of Assets print a per-instrument gold-bar
 	// detail line for the precious-metals overlay portfolio that the
@@ -160,6 +169,14 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if err := rows.Scan(&asOf, &portID, &isin, &ccy, &units, &mv, &mvCcy,
 			&cost, &price, &accrued, &descr, &payload); err != nil {
 			return err
+		}
+		// Drop rows whose portfolio has crossed over to PSN
+		// coverage; without this the quarter-end PDF row collides
+		// with PSN's daily snapshot for the same safekeeping+ISIN
+		// on the gold PositionChange PK. Portfolios with no PSN
+		// counterpart (cutoff==0) pass through.
+		if cut := portfolioCutoff[portID]; cut > 0 && asOf >= cut {
+			continue
 		}
 		// Drop the year-end precious-metals detail line when its
 		// synthetic overview sibling is present for the same
@@ -325,6 +342,7 @@ func (r *webReader) appendHistoricalCashBalances(
 	ctx context.Context,
 	w canonical.Window,
 	getBatch func(int64) *canonical.SnapshotBatch,
+	accountCutoff map[string]int64,
 ) error {
 	const q = `
 SELECT period_end, period_start, account_external_id, currency_iso,
@@ -373,7 +391,14 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			})
 		}
 
-		if open.Valid && periodStart >= w.Start && periodStart <= w.End {
+		// Same PSN cutover as historical securities: once the IBAN
+		// is covered by PSN, PSN's daily cash rows own the (source,
+		// snapshot_at, account, kind) key; drop the historical row
+		// for that period. Accounts with no PSN counterpart pass
+		// through.
+		cut := accountCutoff[acctID]
+		if open.Valid && periodStart >= w.Start && periodStart <= w.End &&
+			(cut == 0 || periodStart < cut) {
 			emitAccount(periodStart)
 			getBatch(periodStart).CashBalances = append(getBatch(periodStart).CashBalances, canonical.CashBalanceChange{
 				SnapshotAt:        periodStart,
@@ -384,7 +409,8 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 				Payload:           json.RawMessage(payload),
 			})
 		}
-		if close.Valid && periodEnd >= w.Start && periodEnd <= w.End {
+		if close.Valid && periodEnd >= w.Start && periodEnd <= w.End &&
+			(cut == 0 || periodEnd < cut) {
 			emitAccount(periodEnd)
 			getBatch(periodEnd).CashBalances = append(getBatch(periodEnd).CashBalances, canonical.CashBalanceChange{
 				SnapshotAt:        periodEnd,

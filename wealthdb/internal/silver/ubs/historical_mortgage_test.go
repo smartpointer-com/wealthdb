@@ -72,7 +72,7 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil)
+	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestHistoricalSecuritiesSafekeepingRepointing(t *testing.T) {
 	mapping := map[string]string{"0999AAAAAAAA02": "0999 AAAAAAAA.MMM SK1"}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, mapping)
+	stream, err := r.snapshotsHistorical(ctx, w, mapping, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestHistoricalSyntheticISIN(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil)
+	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestHistoricalPreciousMetalsDedup(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil)
+	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
