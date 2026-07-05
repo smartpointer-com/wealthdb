@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -103,6 +104,15 @@ TRANSACTION_TYPES_ALL = [
     "SMA_ADJUSTMENT",
 ]
 
+# HTTP resilience. schwab-py sets a flat 30s timeout on its httpx client;
+# Schwab's /transactions and /instruments endpoints regularly take longer,
+# so we raise the read timeout and retry transient transport faults
+# (read/connect timeouts, dropped connections) with exponential backoff.
+# HTTP *status* errors are never retried — see schwab_get_json.
+DEFAULT_READ_TIMEOUT_S = 60.0
+MAX_TRANSIENT_RETRIES = 4
+RETRY_BASE_DELAY_S = 2.0
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
@@ -156,6 +166,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Connect, refresh tokens, list account hashes via "
              "/accounts/accountNumbers, and exit. Does not fetch positions "
              "or transactions and does not write artefacts.",
+    )
+    p.add_argument(
+        "--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Per-request read timeout in seconds (default: %(default)s). "
+             "schwab-py defaults to a flat 30s; Schwab's /transactions and "
+             "/instruments endpoints are often slower, so we raise it and "
+             "retry transient timeouts. Bump this if downloads keep hitting "
+             "read timeouts.",
     )
     p.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
@@ -241,9 +260,10 @@ def write_json(path: Path, payload) -> None:
 def schwab_get_json(response):
     """Validate a schwab-py HTTPX response and return its parsed JSON.
 
-    Raises a SystemExit on non-2xx; we deliberately do not retry here.
-    Rate-limit / transient handling belongs in a scheduler, not in a
-    one-shot CLI."""
+    Raises a SystemExit on non-2xx; we deliberately do not retry HTTP
+    *status* errors here (rate-limit / 5xx handling belongs in a
+    scheduler). Transient *transport* faults are retried a level up in
+    _request_json."""
     if response.status_code // 100 != 2:
         raise SystemExit(
             f"Schwab API returned HTTP {response.status_code}: "
@@ -252,19 +272,66 @@ def schwab_get_json(response):
     return response.json()
 
 
+def configure_timeout(client, read_timeout: float) -> None:
+    """Raise the schwab-py client's HTTP timeouts above its flat 30s
+    default. Reads get a generous window (Schwab's /transactions and
+    /instruments endpoints are slow); connect / pool stay short so an
+    unreachable host still fails fast rather than hanging."""
+    import httpx  # transitive schwab-py dep; import lazily like the rest
+    client.set_timeout(httpx.Timeout(
+        connect=10.0, read=read_timeout, write=30.0, pool=10.0,
+    ))
+
+
+def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES):
+    """Run a schwab-py request (`call` returns the HTTPX response), then
+    validate + parse it. Transient transport faults — read/connect
+    timeouts and dropped connections — are retried with exponential
+    backoff; every GET here is idempotent so a retry is safe. HTTP status
+    errors surface immediately via schwab_get_json (not retried)."""
+    import httpx
+    import httpcore
+    # Catch both layers: httpx normally maps httpcore faults to its own
+    # exceptions, but an un-mapped httpcore.ReadTimeout can still leak out.
+    retryable = (
+        httpx.TransportError,          # incl. httpx.TimeoutException
+        httpcore.TimeoutException,
+        httpcore.NetworkError,
+    )
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = call()
+            break
+        except retryable as e:
+            if attempt >= max_retries:
+                raise SystemExit(
+                    f"Schwab API {what} failed after {max_retries} attempt(s) "
+                    f"({type(e).__name__}: {e}). Schwab was slow or "
+                    f"unreachable — retry, or raise --read-timeout."
+                )
+            delay = RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+            log.warning(
+                "Schwab API %s: %s (attempt %d/%d); retrying in %.0fs",
+                what, type(e).__name__, attempt, max_retries, delay,
+            )
+            time.sleep(delay)
+    return schwab_get_json(response)
+
+
 def fetch_account_numbers(client) -> list[dict]:
     """GET /accounts/accountNumbers. Returns [{accountNumber, hashValue}, ...]."""
-    return schwab_get_json(client.get_account_numbers())
+    return _request_json("account numbers", client.get_account_numbers)
 
 
 def fetch_user_preference(client) -> dict:
-    return schwab_get_json(client.get_user_preferences())
+    return _request_json("user preferences", client.get_user_preferences)
 
 
 def fetch_accounts_with_positions(client) -> list[dict]:
     """GET /accounts?fields=positions. Returns one entry per linked account."""
     fields = client.Account.Fields.POSITIONS
-    return schwab_get_json(client.get_accounts(fields=fields))
+    return _request_json(
+        "accounts + positions", lambda: client.get_accounts(fields=fields))
 
 
 def iter_transaction_windows(since: date, until: date):
@@ -289,11 +356,12 @@ def fetch_open_orders(client, since: date, until: date) -> list[dict]:
     and produces the same final set."""
     start_dt = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
     end_dt = datetime.combine(until, datetime.max.time(), tzinfo=timezone.utc)
-    all_orders = schwab_get_json(
-        client.get_orders_for_all_linked_accounts(
+    all_orders = _request_json(
+        "open orders",
+        lambda: client.get_orders_for_all_linked_accounts(
             from_entered_datetime=start_dt,
             to_entered_datetime=end_dt,
-        )
+        ),
     )
     return [o for o in all_orders if o.get("status") in OPEN_ORDER_STATUSES]
 
@@ -353,8 +421,9 @@ def fetch_instruments(client, symbols: list[str]) -> dict:
             lookup.append(s.replace(".", "/"))
 
     proj = client.Instrument.Projection.SYMBOL_SEARCH
-    response = schwab_get_json(
-        client.get_instruments(symbols=lookup, projection=proj)
+    response = _request_json(
+        "instruments",
+        lambda: client.get_instruments(symbols=lookup, projection=proj),
     )
 
     # Normalise '/'  ->  '.' on returned symbols, and dedup in the rare
@@ -388,13 +457,14 @@ def fetch_transactions(client, account_hash: str, start: date, end: date) -> lis
     start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
     end_dt = datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc)
     types = [client.Transactions.TransactionType[t] for t in TRANSACTION_TYPES_ALL]
-    return schwab_get_json(
-        client.get_transactions(
+    return _request_json(
+        "transactions",
+        lambda: client.get_transactions(
             account_hash,
             start_date=start_dt,
             end_date=end_dt,
             transaction_types=types,
-        )
+        ),
     )
 
 
@@ -429,6 +499,7 @@ def run(args: argparse.Namespace) -> int:
             api_key=client_id,
             app_secret=client_secret,
         )
+        configure_timeout(client, args.read_timeout)
         log.info("Listing account hashes ...")
         account_numbers = fetch_account_numbers(client)
     except oauth_errors as e:

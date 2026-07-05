@@ -259,8 +259,14 @@ the dump layer; full order history is intentionally not captured.
   or calls any write endpoint. See [CLAUDE.md](CLAUDE.md) §1.
 - **All amounts USD.** The Schwab API does not return a currency field
   on positions or transactions; everything is implicitly USD.
-- **No retry / resume / scheduling.** Run from cron, launchd, or your
-  scheduler of choice.
+- **Transient-fault retry, but no resume / scheduling.** A request that
+  fails with a transport fault — a read/connect timeout or a dropped
+  connection — is retried a few times with exponential backoff (Schwab's
+  `/transactions` and `/instruments` endpoints are often slow, so the
+  read timeout is also raised above schwab-py's flat 30s; tune with
+  `--read-timeout`). HTTP *status* errors (rate limits, 5xx) are not
+  retried — surface them and let the scheduler decide. There's no
+  mid-dump resume; run from cron, launchd, or your scheduler of choice.
 
 ## load.py
 
