@@ -115,9 +115,11 @@ re-downloaded `documents/<deal-slug>/*.pdf` / `.zip` blobs of a complete
 dump are structurally out of scope, so silver stays reproducible.
 An in-flight guard (`--min-age-hours`, default 1, keyed on recent write
 activity) keeps it from removing a download that is still running.
-Unlike a host-venv collector, `prune` runs inside the container (like
-`load`), so the wrapper's single-writer guard refuses it while a
-`login` / `download` is live — run it between refreshes.
+`prune` runs host-side (a pure file walk needs none of the image's
+deps), so — unlike `download` / `load` — it bypasses the wrapper's
+single-writer guard and can reclaim disk while a `login` / `download`
+container is mid-flight; the container `entrypoint.sh` keeps a `prune)`
+arm too, for a direct `docker run`.
 
 ## Read-only
 

@@ -65,4 +65,17 @@ EOF
     exit 0
 fi
 
+# `prune [args...]` runs host-side (like fidelity-web), not in the
+# container: a pure file walk needs no image deps, and running host-side
+# bypasses the single-writer safety guard so prune can reclaim disk while
+# a download container is mid-flight (prune's own --min-age guard protects
+# an in-flight dump). --bronze-dir is passed first so an explicit flag in
+# [args...] overrides it (argparse last-wins); the container entrypoint
+# keeps a `prune)` arm too, for a direct `docker run`.
+if [[ "${1:-}" == "prune" ]]; then
+    shift
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+fi
+
 wrapper_main "$@"

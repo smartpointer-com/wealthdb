@@ -253,10 +253,13 @@ silver DB — both of which sit at the root, the silver DB defaulting to
 construction); an in-flight guard keyed on the newest mtime in the dir
 protects a long multi-portfolio walk (`--min-age-hours`, default 1); and
 a whole-dir deletion rechecks completeness + quiescence immediately
-before the `rmtree`. Because `load` runs in-container for cointracking
-(it needs DuckDB + the price clients), `prune` runs in-container too —
-`entrypoint.sh` has a browserless `prune)` arm and `./cointracking
-prune` passes straight through the wrapper to it.
+before the `rmtree`. `prune` runs host-side (like fidelity-web): a pure
+file walk needs none of `load`'s in-container deps (DuckDB + the price
+clients), and host-side execution bypasses the wrapper's single-writer
+guard so `./cointracking prune` can reclaim disk while a `login` /
+`download` container is mid-flight (its own age guard protects the
+in-flight dump). `entrypoint.sh` keeps a browserless `prune)` arm too,
+for a direct `docker run`.
 
 ### Other questions answered by the explore traces
 
