@@ -27,6 +27,14 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (crashed walks + --dry-run shells)
+        # from the bronze tree. REST-only, so no debug artefacts to
+        # reclaim and no browser/Xvfb needed. --dry-run prints the
+        # plan first. Also reachable host-side via the wrapper.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -53,6 +61,9 @@ Subcommands:
   load      Parse bronze into silver SQLite. Idempotent: skips
             dumps already loaded (tracked via dump_runs.snapshot_at).
             Default reads /data, writes /data/relevate.db.
+  prune     Delete non-complete dumps (crashed walks + --dry-run
+            shells) from the bronze tree. --dry-run prints the plan
+            first; --min-age-hours guards in-flight downloads.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.
 

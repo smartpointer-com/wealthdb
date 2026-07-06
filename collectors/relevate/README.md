@@ -121,7 +121,8 @@ for one-off year-explicit backfills.
 relevate/
 ├── relevate        # host wrapper around docker run
 ├── Dockerfile           # python:3.12-slim + requests
-├── entrypoint.sh        # login / download / load / sh dispatch
+├── entrypoint.sh        # login / download / load / prune / sh dispatch
+├── prune.py             # reclaim non-complete dumps (thin collectorkit.prune wrapper)
 ├── login.py             # Airlock auth: POST /b2c/access -> /password/check -> /mtan/otp/check
 ├── download.py          # GET /middlelayer/v2/{...} into bronze tree
 ├── load.py              # bronze -> silver SQLite, idempotent via dump_runs
@@ -178,10 +179,33 @@ for the shared env-file rules.
 | `build`    | Working |
 | `login`    | Working (use `--check` to probe without burning an mTAN) |
 | `download` | Working (use `--dry-run` to enumerate; `--mode` / `--limit-*` for iteration) |
-| `load`     | Working (applies migrations, ingests not-yet-loaded bronze runs into SQLite silver) |
+| `load`     | Working (applies migrations, ingests not-yet-loaded bronze runs into SQLite silver; skips a dump the walk never finished) |
+| `prune`    | Working (reclaims non-complete dumps from the bronze tree; `--dry-run` to preview) |
 | `sh`       | Working (interactive shell in the container) |
 
 `./relevate help` prints the canonical list.
+
+### Reclaiming disk
+
+```sh
+./relevate prune --dry-run   # print the deletion plan, delete nothing
+./relevate prune             # delete it
+```
+
+`prune` removes whole non-complete run dirs across the bronze tree: a
+walk that crashed before writing a terminal `run.json` status, and
+`--dry-run` shells. relevate is REST-only, so it writes no
+bronze-resident debug artefacts (no screenshots / DOM dumps / traces);
+there is nothing to reclaim from a *complete* dump, and its data —
+including the document PDFs read cross-dump for historical-snapshot and
+credit-note parsing — is never touched, so silver stays reproducible.
+Deleting a non-complete dump surfaces on the next `load --force`
+rebuild. An in-flight guard (`--min-age-hours`, default 1, keyed on
+recent write activity) keeps it from removing a download that is still
+running. A `download` is born with `run.json` `status: "in-progress"`
+and stamps `"complete"` / `"dry-run"` / `"incomplete"` at the end;
+`prune` keys on that field, with an unreadable or corrupt manifest left
+untouched (UNKNOWN, never deleted).
 
 ## Privacy
 

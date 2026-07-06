@@ -494,8 +494,28 @@ def list_pending_dumps(
         if snapshot_at in loaded:
             continue
         # Skip in-flight dumps that don't have a final run.json yet.
-        if not (d / "run.json").is_file():
+        run_json = d / "run.json"
+        if not run_json.is_file():
             logger.info("skipping %s — no run.json (still writing?)", d.name)
+            continue
+        # Since run.json is now written incrementally from run-dir
+        # creation (born status="in-progress"), its mere presence no
+        # longer means the dump finished. Skip a dump the walk never
+        # completed — a crashed walk left "in-progress", a --dry-run
+        # shell left "dry-run" — so a partial capture never lands in
+        # silver. A statusless manifest predates the status field and
+        # is loaded as before (backward compat).
+        try:
+            status = json.loads(
+                run_json.read_text(encoding="utf-8")).get("status")
+        except (OSError, json.JSONDecodeError):
+            # Unreadable/corrupt here is not proof of incompleteness;
+            # fall through and let load_one_dump surface any real error.
+            status = None
+        if status in ("in-progress", "dry-run"):
+            logger.info(
+                "skipping %s — run.json status=%r (not a complete dump)",
+                d.name, status)
             continue
         pending.append(d)
     return pending

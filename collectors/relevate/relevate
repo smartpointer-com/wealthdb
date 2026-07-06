@@ -52,8 +52,16 @@ Subcommands:
                         per-portfolio / per-document fetches; use
                         --mode + --limit-* for iteration-cheap
                         reruns.
-  load [args...]        Parse bronze into silver SQLite (NOT YET
-                        IMPLEMENTED).
+  load [args...]        Parse bronze into silver SQLite. Idempotent:
+                        skips dumps already loaded, and skips a dump
+                        the walk never finished (run.json status
+                        in-progress / dry-run).
+  prune [args...]       Delete non-complete dumps (crashed walks +
+                        --dry-run shells) from the bronze tree. No
+                        debug artefacts to reclaim (REST-only). Use
+                        --dry-run to print the plan first;
+                        --min-age-hours (default 1) guards a download
+                        still in flight.
   sh|bash               Open an interactive shell in the container.
   help                  Show this message.
 

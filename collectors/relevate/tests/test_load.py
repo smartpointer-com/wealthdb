@@ -102,3 +102,49 @@ def test_load_accounts_positions_cash(tmp_path):
     assert bals["securities"] == 1000.0
 
     assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+
+
+# ============================================================
+# list_pending_dumps: skip dumps the walk never finished
+# ============================================================
+
+def _dump_with_status(root: Path, slug: str, status) -> Path:
+    """A minimal bronze run dir carrying a run.json with the given
+    status (None = a statusless / pre-`status` manifest)."""
+    d = root / slug
+    manifest = {"tool": "relevate.download", "mode": "all", "dry_run": False}
+    if status is not None:
+        manifest["status"] = status
+    _write_json(d / "run.json", manifest)
+    _write_json(d / "accounts" / "investment-overview.json",
+                {"portfolios": []})
+    return d
+
+
+def test_list_pending_skips_in_progress_and_dry_run(tmp_path):
+    # A crashed walk (status="in-progress") and a --dry-run shell
+    # (status="dry-run") must NOT be selected for load — run.json is
+    # now present from run-dir creation, so its mere presence is not a
+    # completeness signal.
+    bronze = tmp_path / "bronze"
+    _dump_with_status(bronze, "20240101T000000Z", "in-progress")
+    _dump_with_status(bronze, "20240102T000000Z", "dry-run")
+    complete = _dump_with_status(bronze, "20240103T000000Z", "complete")
+    legacy = _dump_with_status(bronze, "20240104T000000Z", None)
+
+    conn, _ = _fresh_db(tmp_path)
+    pending = loader.list_pending_dumps(conn, bronze)
+
+    names = {p.name for p in pending}
+    # complete + statusless-legacy are loadable; the two unfinished
+    # dumps are skipped.
+    assert names == {complete.name, legacy.name}
+
+
+def test_list_pending_skips_dir_without_run_json(tmp_path):
+    bronze = tmp_path / "bronze"
+    d = bronze / "20240105T000000Z"
+    _write_json(d / "accounts" / "investment-overview.json",
+                {"portfolios": []})
+    conn, _ = _fresh_db(tmp_path)
+    assert loader.list_pending_dumps(conn, bronze) == []

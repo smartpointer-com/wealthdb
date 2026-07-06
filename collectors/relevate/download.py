@@ -208,6 +208,15 @@ class Manifest:
     """
     Incremental run.json writer. Flush after every successful fetch
     so a Ctrl-C run still leaves an inspectable manifest.
+
+    Carries the fleet-uniform ``status`` lifecycle: the manifest is
+    born ``"in-progress"`` (flushed at construction, so the marker
+    exists from the moment the run dir is created), and ``finish()``
+    overwrites it with the terminal ``"complete"`` / ``"dry-run"`` /
+    ``"incomplete"`` at the end. ``prune`` keys on that field to tell
+    a finished dump from a crashed walk; ``load`` skips a dump still
+    marked ``"in-progress"`` or ``"dry-run"``. The legacy ``ended_at``
+    / ``dry_run`` fields are kept for dumps that predate ``status``.
     """
 
     def __init__(self, run_dir: Path, mode: str, dry_run: bool) -> None:
@@ -216,6 +225,7 @@ class Manifest:
             "tool": "relevate.download",
             "schema_version": 1,
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": "in-progress",
             "ended_at": None,
             "mode": mode,
             "dry_run": dry_run,
@@ -234,6 +244,10 @@ class Manifest:
             "errors": [],
             "files": [],
         }
+        # Persist the "in-progress" marker immediately, so a run dir
+        # that crashes before any fetch still carries a status prune
+        # can classify (and load can skip) — not an empty dir.
+        self.flush()
 
     def set_state_minted_at(self, ts: str | None) -> None:
         self.data["state_minted_at"] = ts
@@ -272,7 +286,14 @@ class Manifest:
     def documents(self) -> dict[str, Any]:
         return self.data["documents"]
 
-    def finish(self) -> None:
+    def finish(self, status: str = "complete") -> None:
+        """Stamp the terminal ``status`` + ``ended_at`` and flush,
+        overwriting the ``"in-progress"`` marker set at construction.
+        ``status`` is ``"complete"`` for a finished real walk (set even
+        when some endpoints errored — the walk still ran and load
+        ingests dumps-with-errors), ``"dry-run"`` for a ``--dry-run``
+        shell, ``"incomplete"`` when the walk aborted early."""
+        self.data["status"] = status
         self.data["ended_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.flush()
 
@@ -761,7 +782,7 @@ def do_download(args: argparse.Namespace) -> int:
         rc = do_dry_run(session, run_dir, manifest,
                         documents_since=docs_since,
                         documents_until=docs_until)
-        manifest.finish()
+        manifest.finish(status="dry-run")
         return rc
 
     overview = None
@@ -771,7 +792,10 @@ def do_download(args: argparse.Namespace) -> int:
             skip_ancillary=(args.mode != "all"),
         )
         if overview is None:
-            manifest.finish()
+            # The master enumeration failed, so no portfolio/document
+            # work could run: mark the dump incomplete (prune reclaims
+            # it, load skips it) rather than leaving it "in-progress".
+            manifest.finish(status="incomplete")
             return 1
 
     if args.mode in ("all", "portfolios"):
@@ -794,7 +818,7 @@ def do_download(args: argparse.Namespace) -> int:
             documents_until=docs_until,
         )
 
-    manifest.finish()
+    manifest.finish(status="complete")
     n_errors = len(manifest.data["errors"])
     logger.info(
         "done. files=%d errors=%d  bronze=%s",
@@ -874,6 +898,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--limit-documents", type=int, default=None,
         help="Fetch at most N documents. For iteration.",
+    )
+    p.add_argument(
+        "--debug", action="store_true",
+        help=("Uniform fleet debug gate — the switch every collector's "
+              "`download` accepts to keep no debug artefact out of a "
+              "bronze run dir unless asked. relevate is REST-only "
+              "(no browser, so no screenshots / DOM dumps / traces), "
+              "so it writes no bronze-resident debug artefact and this "
+              "flag currently enables nothing beyond what -v/--verbose "
+              "already logs to stderr. It exists so the help is uniform "
+              "and `prune` has a consistent contract."),
     )
     p.add_argument(
         "-v", "--verbose", action="store_true",

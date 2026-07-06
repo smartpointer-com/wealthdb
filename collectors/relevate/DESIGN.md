@@ -330,8 +330,10 @@ browser-class consumer to Airlock:
 3. Probe `/auth/rest/protected/self-service/ui/configuration/portal`.
    Non-200 → exit; report that the session is dead.
 4. Create the run dir `/data/<UTC-ts>/`. Open the
-   `Manifest` (run.json writer); flush after every artefact so a
-   Ctrl-C run leaves an inspectable partial manifest.
+   `Manifest` (run.json writer); it is born `status: "in-progress"`
+   and flushed at construction, then flushed after every artefact so
+   a Ctrl-C run leaves an inspectable partial manifest. The terminal
+   status is stamped by `finish()` at the end.
 5. **Accounts phase** (run when `--mode` ∈ `{all, accounts,
    portfolios}`):
    - `GET /middlelayer/v2/portfolio/investment-overview` →
@@ -389,9 +391,23 @@ browser-class consumer to Airlock:
      `application/pdf` 200 → `documents/<id>.pdf`. Any other
      content-type → `documents/<id>.unexpected.<ext>`. Already-
      downloaded files are skipped (idempotent within a run).
-8. Final `run.json` flush. Exit 0 if no errors recorded, 2 if at
-   least one endpoint failed (the run dir is still usable; the
-   loader skips manifest entries flagged with errors).
+8. Final `run.json` flush via `finish()`, which stamps the terminal
+   `status`: `"complete"` for a finished walk (set even when some
+   endpoints errored), `"dry-run"` for a `--dry-run` shell,
+   `"incomplete"` when the master enumeration failed and no work
+   could run. Exit 0 if no errors recorded, 2 if at least one
+   endpoint failed (the run dir is still usable; the loader skips
+   manifest entries flagged with errors).
+
+The `status` field is the fleet-uniform completeness signal: a run
+dir is a *complete* dump (`status == "complete"`), or a *non-complete*
+one (an `"in-progress"` marker from a crashed walk, a `"dry-run"`
+shell, an `"incomplete"` abort, or no `run.json` at all). `load` skips
+a dump still marked `"in-progress"` / `"dry-run"` so a partial capture
+never reaches silver; `prune` reclaims non-complete run dirs (§6). The
+legacy `ended_at` / `dry_run` fields are retained so a dump that
+predates `status` is still classified correctly (complete iff
+`ended_at` was stamped on a non-`dry_run` run).
 
 Manifest shape (as written):
 
@@ -399,7 +415,7 @@ Manifest shape (as written):
 {
   "tool": "relevate.download",
   "schema_version": 1,
-  "started_at": "...", "ended_at": "...",
+  "started_at": "...", "status": "complete", "ended_at": "...",
   "mode": "all", "dry_run": false,
   "state_minted_at": "...",
   "accounts": [
@@ -537,7 +553,29 @@ Path conventions:
 - **Document filenames key on Relevate's own document `id`**
   (small integer). Stable across runs; idempotent fetch.
 - **`run.json`** is written incrementally so a SIGINT-killed
-  run still leaves a partial manifest for inspection.
+  run still leaves a partial manifest for inspection. Because it is
+  flushed from run-dir creation (born `status: "in-progress"`), its
+  mere *presence* does not mean the walk finished — the completeness
+  signal is `status == "complete"` (or, for a pre-`status` dump,
+  `ended_at` stamped on a non-`dry_run` run).
+
+**Pruning.** `prune` (a thin wrapper over the shared, unit-tested
+`collectorkit.prune` engine) reclaims whole **non-complete** run dirs
+— crashed walks and `--dry-run` shells — across the bronze tree.
+relevate writes no bronze-resident debug artefacts (REST-only: no
+browser, no screenshots / DOM dumps / traces), so its `debug_subdirs`
+is empty and nothing inside a *complete* dump is ever removed: the
+JSON payloads and document PDFs (the latter read cross-dump by
+`load_historical_snapshots` and `load_credit_note_transactions` via
+`documents.bronze_path`) are faithful bronze captures and load inputs,
+never prune targets. Non-run entries at the bronze root (`manual/`,
+`relevate.db`) and symlinks are never touched, and an unreadable or
+corrupt `run.json` is UNKNOWN and skipped. An in-flight guard
+(`--min-age-hours`, default 1, keyed on the newest write in the dir)
+protects a long backfill whose slug is old but whose files are fresh;
+a whole-dir deletion rechecks completeness + quiescence immediately
+before `rmtree`. Deleting a non-complete dump surfaces on the next
+`load --force` rebuild.
 
 ## 7. Silver schema
 
@@ -685,6 +723,7 @@ build       Build the Docker image.
 login       login.py — mint or refresh the cookie jar.
 download    download.py — fetch bronze from /middlelayer/v2/.
 load        load.py — parse bronze into silver SQLite.
+prune       prune.py — reclaim non-complete dumps from the bronze tree.
 sh|bash     Interactive shell in the container.
 help        Show usage.
 ```
