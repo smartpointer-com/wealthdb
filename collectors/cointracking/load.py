@@ -204,9 +204,32 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
     ).fetchone()[0]
 
 
+# run.json status values that mark a run dir as NOT a finished dump:
+# an "in-progress" marker left by a crashed walk, or a "dry-run" shell.
+# A run whose status is any of these is kept out of the silver load so
+# partial captures never reach gold; `prune` reclaims such dirs.
+NON_COMPLETE_STATUSES = ("in-progress", "dry-run")
+
+
+def _snapshot_status(run_json: Path) -> str | None:
+    """Read the run.json ``status`` field, or ``None`` when the manifest
+    is unreadable/corrupt or predates the field (statusless). A
+    statusless manifest is treated as loadable for backward
+    compatibility — the walk historically wrote run.json only once, at
+    the end, so its presence meant the dump finished."""
+    try:
+        meta = json.loads(run_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta.get("status") if isinstance(meta, dict) else None
+
+
 def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
-    """Return the timestamped subdirs of bronze_dir that contain a
-    run.json (chronological)."""
+    """Return the timestamped subdirs of bronze_dir that hold a
+    completed run.json (chronological). A run.json whose ``status`` is
+    ``"in-progress"`` (a crashed walk) or ``"dry-run"`` is skipped so a
+    partial dump never reaches silver; a statusless manifest (a dump
+    predating the status lifecycle) stays loadable."""
     if not bronze_dir.is_dir():
         return []
     snapshots = []
@@ -215,7 +238,11 @@ def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
             continue
         if not re.match(r"\d{8}T\d{6}Z$", p.name):
             continue
-        if not (p / "run.json").is_file():
+        run_json = p / "run.json"
+        if not run_json.is_file():
+            continue
+        if _snapshot_status(run_json) in NON_COMPLETE_STATUSES:
+            log.info("skipping %s (run.json status not complete)", p.name)
             continue
         snapshots.append(p)
     return snapshots

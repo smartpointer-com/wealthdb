@@ -39,7 +39,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 log = logging.getLogger("cointracking.download")
 
@@ -360,6 +360,11 @@ def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
     portfolios that were attempted but didn't complete (for
     visibility; the silver loader ignores this block)."""
     manifest = {
+        # Terminal completeness signal: the walk reached the end and
+        # finalised. Written atomically, overwriting the "in-progress"
+        # marker dropped at run-dir creation. `load` skips a run dir
+        # whose status is not "complete"; `prune` reclaims one.
+        "status": "complete",
         "snapshot_at": snapshot_at,
         "utc": ts,
         "schema": 1,
@@ -374,8 +379,7 @@ def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
     }
     if failures:
         manifest["failures"] = failures
-    (run_dir / "run.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8")
+    bronze.atomic_write_json(run_dir / "run.json", manifest)
     log.info("wrote run.json (%d portfolios)%s",
              len(portfolios),
              f"; {len(failures)} failure(s)" if failures else "")
@@ -404,6 +408,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "Use to verify selectors + portfolio discovery "
               "without burning bandwidth or cluttering /data."),
     )
+    p.add_argument(
+        "--debug", action="store_true",
+        help=("Retain diagnostic artefacts (screenshots / DOM / trace "
+              "captures) inside the bronze run dir for troubleshooting. "
+              "Off by default so a routine dump holds only what `load` "
+              "reads. cointracking's download currently writes no "
+              "bronze-resident debug artefact, so this gates nothing "
+              "new today; the flag exists for a uniform CLI and to keep "
+              "any future capture behind an explicit opt-in — external "
+              "discovery diagnostics live in explore.py's /debug mount, "
+              "never in a bronze run dir."),
+    )
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -411,11 +427,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    if args.debug:
+        log.debug("--debug set; cointracking's download writes no "
+                  "bronze-resident debug artefacts, so no extra capture "
+                  "is retained")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.bronze_dir / ts
     if not args.dry_run:
         run_dir.mkdir(parents=True, exist_ok=True)
+        # In-progress marker: a crash before write_manifest leaves a
+        # run.json carrying status="in-progress", which `load` skips
+        # (so a partial dump never reaches silver) and `prune`
+        # reclaims once quiescent. write_manifest atomically
+        # overwrites it with status="complete" at the end.
+        bronze.atomic_write_json(run_dir / "run.json",
+                                 {"status": "in-progress"})
     snapshot_at = int(time.time())
 
     from playwright.sync_api import sync_playwright

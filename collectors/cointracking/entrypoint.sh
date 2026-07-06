@@ -108,6 +108,14 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (crashed / in-progress) from the
+        # bronze tree. No browser, no Xvfb. cointracking writes no
+        # bronze-resident debug artefacts, so a complete dump is left
+        # entirely intact.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     fetch-prices)
         # USDT-denominated price backfill from Binance public spot
         # API. --missing for gap-fill (same set as `load --fetch-
@@ -164,6 +172,9 @@ Subcommands:
               snapshot from a previous run gets upgraded to the
               close price. Stablecoins (USDT, USDC, DAI, …) emit
               synthetic 1.0 USD prices.
+  prune       Delete non-complete dumps (crashed / in-progress) from
+              the bronze tree; complete dumps and their load inputs
+              are kept intact. --dry-run prints the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

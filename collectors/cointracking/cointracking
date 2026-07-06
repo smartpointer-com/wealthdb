@@ -70,6 +70,14 @@ Subcommands:
                       DAI, …) emit synthetic 1.0 USD prices.
                       Optional BINANCE_API_KEY env raises the
                       rate-limit ceiling.
+  prune [args...]     Reclaim bronze disk: delete whole non-complete
+                      dumps (a crashed / in-progress walk) from the
+                      data dir (\$HOST_DATA). Complete dumps and their
+                      load inputs are untouched; cointracking writes no
+                      bronze-resident debug artefacts. Runs in-container
+                      (no browser). --dry-run prints the plan;
+                      --min-age-hours N (default 1) protects a walk
+                      still in flight.
   explore [args...]   Re-discovery harness for when cointracking
                       changes a selector. Launches Camoufox in the
                       container's Xvfb display and exposes a VNC port

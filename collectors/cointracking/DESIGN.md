@@ -142,14 +142,36 @@ pulls the complete transaction list per portfolio.
    portfolio for the balance view.
 5. Click Export → exact-text "CSV". Save the blob.
 
-Files land in `<bronze-dir>/<UTC-ts>/cu_<id>/{trades,balance}.csv`.
-After all portfolios are processed, write `run.json` to the
-snapshot dir as the silver loader's manifest.
+Files land in `<bronze-dir>/<UTC-ts>/cu_<id>/{trades,balance,overview}.csv`.
+
+**`run.json` status lifecycle.** At run-dir creation the walk writes
+`run.json` carrying `{"status": "in-progress"}` (via
+`bronze.atomic_write_json`). After all portfolios are processed it
+atomically overwrites `run.json` with the full manifest — the silver
+loader's portfolio list + file map — now carrying
+`"status": "complete"`. So a run dir is a **complete** dump
+(`status == "complete"`), or a **non-complete** one: a crash before the
+end leaves either the `in-progress` marker or (if it died before
+`mkdir`) no `run.json` at all. `load.discover_bronze_snapshots` skips a
+run dir whose `status` is not complete, so a crashed dump never reaches
+silver; `prune` reclaims it. A `run.json` with no `status` key predates
+this lifecycle — the walk historically wrote it only once, at the end,
+so its presence means the dump finished, and both `load` and `prune`
+treat a statusless-but-readable manifest as complete.
 
 `--dry-run` walks the navigation and prints what it would do but
-skips every export-button click — no downloads fire, no bronze
-tree materialises. Use to verify portfolio discovery + selector
+skips every export-button click — no downloads fire, and **no run dir
+is materialised at all** (both the `mkdir` and the manifest write are
+gated on the non-dry-run path), so there is no `dry-run` shell for
+`prune` to reclaim. Use to verify portfolio discovery + selector
 correctness without burning bandwidth.
+
+`--debug` is accepted for a uniform CLI across collectors: it opts a run
+into retaining bronze-resident diagnostic artefacts. cointracking's
+download writes none today (discovery diagnostics live in `explore.py`'s
+external `/debug` mount, never in a bronze run dir), so the flag
+currently gates nothing — it reserves the discipline that any future
+capture lands only under an explicit `--debug` run.
 
 ### load — DuckDB silver with incremental positions_daily upsert
 
@@ -200,6 +222,41 @@ rules.
 `--force` re-loads snapshots already in `dump_runs`. Useful for
 re-validating after a load.py change without manually clearing
 the table.
+
+### prune — reclaiming bronze disk
+
+`prune.py` is a thin wrapper over the shared
+`collectorkit.prune` engine (the one reviewed, unit-tested place that
+owns the irreversible `rmtree` of a bronze path). It deletes, across
+every `<UTC-ts>/` run dir under the data root, whole run dirs that are
+**not complete dumps** — the same non-complete set `load` skips: no
+`run.json` (crash before the in-progress marker), or a `run.json` whose
+`status` is anything other than `"complete"` (the `in-progress` marker
+from a crashed walk). The completeness predicate delegates to
+`prune.status_classification` with a legacy fallback of `m is not None`
+(a statusless-but-readable manifest is a pre-lifecycle complete dump).
+
+cointracking nominates an **empty `debug_subdirs`**: every file a run
+writes — `run.json` and each `cu_<id>/{trades,balance,overview}.csv` —
+is a `load` input, and the discovery harness's traces go to an external
+`/debug` mount rather than into a run dir, so a complete dump has
+nothing prunable inside it. Only the whole-non-complete-dump category
+applies.
+
+Safety comes entirely from the shared engine and is identical to every
+other collector: a `load` input is never deleted; an unreadable/corrupt
+`run.json` is UNKNOWN and skipped; symlinks are never followed; nothing
+at the data root that isn't a `<UTC-ts>/` dir is touched (so the
+`known_portfolios.json` scrape cache and the `cointracking.duckdb`
+silver DB — both of which sit at the root, the silver DB defaulting to
+`/data`, the same dir as the bronze root — are out of scope by
+construction); an in-flight guard keyed on the newest mtime in the dir
+protects a long multi-portfolio walk (`--min-age-hours`, default 1); and
+a whole-dir deletion rechecks completeness + quiescence immediately
+before the `rmtree`. Because `load` runs in-container for cointracking
+(it needs DuckDB + the price clients), `prune` runs in-container too —
+`entrypoint.sh` has a browserless `prune)` arm and `./cointracking
+prune` passes straight through the wrapper to it.
 
 ### Other questions answered by the explore traces
 

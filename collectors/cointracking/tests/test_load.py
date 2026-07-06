@@ -8,6 +8,7 @@ only.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -73,6 +74,34 @@ def test_ingest_transactions(tmp_path):
     assert sell_ccy == "USD"
     assert float(fee) == 10.0
     assert fee_ccy == "USD"
+
+
+def _seed_run(root: Path, slug: str, status: str | None) -> Path:
+    """Materialise a run dir with a run.json carrying `status`
+    (omitted entirely when None) plus a cu_<id>/ so it looks real."""
+    run_dir = root / slug
+    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
+    meta: dict = {"portfolios": [{"id": CU, "name": "test"}]}
+    if status is not None:
+        meta["status"] = status
+    (run_dir / "run.json").write_text(json.dumps(meta), encoding="utf-8")
+    return run_dir
+
+
+def test_discover_skips_in_progress_keeps_complete_and_legacy(tmp_path):
+    # The load-guard paired with the in-progress marker: a crashed walk
+    # leaves run.json={"status":"in-progress"}, which discover_bronze_
+    # snapshots must skip so a partial dump never reaches silver. A
+    # complete dump and a statusless (pre-lifecycle) manifest stay
+    # loadable.
+    bronze = tmp_path / "bronze"
+    _seed_run(bronze, "20240114T100000Z", status=None)          # legacy
+    _seed_run(bronze, "20240115T100000Z", status="complete")    # complete
+    _seed_run(bronze, "20240116T100000Z", status="in-progress")  # crashed
+    _seed_run(bronze, "20240117T100000Z", status="dry-run")      # shell
+
+    names = {p.name for p in loader.discover_bronze_snapshots(bronze)}
+    assert names == {"20240114T100000Z", "20240115T100000Z"}
 
 
 def test_ingest_replaces_per_portfolio(tmp_path):

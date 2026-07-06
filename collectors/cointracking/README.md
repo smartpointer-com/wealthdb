@@ -25,6 +25,7 @@ shared collector conventions.
 | `download` | implemented | Per-portfolio SPA loop, 19-column trade CSV + balance CSV per portfolio. |
 | `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
 | `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
+| `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks). No debug artefacts to reclaim; a complete dump's load inputs are left intact. |
 | `explore`  | implemented | Discovery harness (Camoufox + VNC + HAR + trace + click log). Kept around for re-discovery if cointracking changes their UI. |
 
 The device-trust cookie is multi-year, so once
@@ -142,6 +143,42 @@ flushes everything to disk.
 
 Override host mounts via env: `COINTRACKING_SECRETS_DIR`,
 `COINTRACKING_DATA_DIR`, `COINTRACKING_DEBUG_DIR`.
+
+## Reclaiming disk
+
+`prune` deletes, across every timestamped run dir under the data dir,
+whole run dirs that are **not complete dumps** — a walk that crashed
+before finalising (`run.json` absent, or carrying the
+`status: "in-progress"` marker it drops at run-dir creation). A finished
+dump atomically overwrites that marker with `status: "complete"`, so
+its `run.json` + `cu_<id>/{trades,balance,overview}.csv` are load inputs
+and stay untouched. cointracking writes no bronze-resident debug
+artefacts (the `explore` harness records HAR/trace/click logs to an
+external `/debug` mount, never into a bronze run dir), so there is
+nothing else to reclaim — only whole crashed dumps.
+
+```sh
+./cointracking prune --dry-run    # print the plan, delete nothing
+./cointracking prune              # reclaim non-complete dumps
+./cointracking prune --min-age-hours 6   # protect anything touched in the last 6h
+```
+
+An in-flight guard keeps a download that is still writing safe: a
+non-complete dir is a deletion candidate only once nothing under it has
+been written for `--min-age-hours` (default 1), keyed on the newest
+mtime in the dir, so a multi-portfolio walk whose slug is old but whose
+files are fresh is never mistaken for abandoned. `run.json` that is
+unreadable or corrupt is left alone, and non-run-dir entries at the data
+root (`known_portfolios.json`, the silver `cointracking.duckdb`) are
+never touched. A statusless `run.json` from a dump that predates the
+status lifecycle is treated as complete (the walk historically wrote it
+only once, at the end) and kept. Deleting a non-complete dump does not
+touch silver — rows already loaded from it persist until the next
+`load --force` rebuild.
+
+The persistent scrape-union cache and the DuckDB silver both live at the
+data root alongside the run dirs; `prune` matches only `<UTC-ts>/`
+timestamp dirs, so neither is ever in scope.
 
 ## Read-only
 
