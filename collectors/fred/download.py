@@ -88,6 +88,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--dry-run", action="store_true",
         help="Fetch and report row counts but write no bronze.",
     )
+    p.add_argument(
+        "--debug", action="store_true",
+        help="Uniform debug-capture gate (default off). fred is a pure "
+             "REST/JSON collector and writes no bronze-resident debug "
+             "artefacts, so this currently gates nothing extra; it exists "
+             "so every collector's `download` shares the flag. See "
+             "collectors/README.md.",
+    )
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -148,6 +156,16 @@ def main(argv: list[str] | None = None) -> int:
         "series": {},
     }
 
+    # Drop an "in-progress" manifest up front — this lazily creates the run
+    # dir and makes the run's state legible before the fetch loop starts.
+    # A walk that crashes mid-fetch thus leaves status="in-progress": load
+    # skips such a dump rather than ingesting its partial series, and prune
+    # reclaims it as a non-complete dump once quiescent. The terminal write
+    # below atomically overwrites this marker with status="complete".
+    if run is not None:
+        manifest["status"] = "in-progress"
+        bronze.atomic_write_json(run / "run.json", manifest)
+
     total = failures = 0
     for sid in series_ids:
         base, quote = FX_SERIES[sid]
@@ -174,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                  "(nothing written)", total, len(manifest["series"]), failures)
         return 0
 
+    manifest["status"] = "complete"
     bronze.atomic_write_json(run / "run.json", manifest)
     log.info("wrote %d series (%d rates, %d failures) to %s",
              len(manifest["series"]), total, failures, run)

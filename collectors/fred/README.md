@@ -17,6 +17,7 @@ through EUR — so USD-base deployments need no conversion.
 | --- | --- |
 | [`download.py`](download.py) | Fetch each currency's FRED series for the requested window into bronze (raw JSON + a `run.json` manifest). Read-only. |
 | [`load.py`](load.py) | Parse bronze into the silver `fx_rates` table. Rates upsert by date (so a re-fetch overwrites FRED revisions); already-loaded runs are skipped. |
+| [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed / in-flight) run dirs. Complete dumps are never touched. |
 
 There is **no `login`** — FRED authenticates with an API key, not a
 session.
@@ -52,12 +53,42 @@ KRW, `DEXINUS` INR, `DEXSFUS` ZAR — verify the quote direction) to
 ./fred download --lookback all        # full history (1971→, per series)
 ./fred download --since 2010-01-01    # explicit backfill start
 ./fred load
+./fred prune --dry-run                # preview reclaimable bronze
 ```
 
 `download` accepts the shared `--since` / `--until` / `--lookback`
 window flags; FRED clamps to each series' own start date. The directory
 overrides (`--secrets-dir` / `--data-dir` / `--silver-db`) follow the
 [shared contract](../README.md#anatomy-of-a-collector).
+
+Each `download` mints one UTC-timestamped bronze run dir holding a
+`run.json` manifest plus one `<series_id>.json` per fetched series. The
+manifest carries a `status` field: `"in-progress"` while the walk runs,
+atomically overwritten with `"complete"` at the end. A crashed walk thus
+leaves `status: "in-progress"`, which `load` skips (no partial rates leak
+into silver) and `prune` reclaims. fred writes no debug artefacts, so the
+uniform `--debug` flag exists for cross-collector consistency but
+currently gates nothing.
+
+### Reclaiming disk
+
+```sh
+./fred prune --dry-run   # print the deletion plan, delete nothing
+./fred prune             # delete it
+```
+
+`prune` removes whole non-complete run dirs across the bronze tree — a
+walk that crashed before writing a terminal `run.json`, or one that
+carries `status: "in-progress"`. A complete dump is never touched: every
+file in it (`run.json` and each `<series_id>.json`) is a `load` input, so
+fred nominates no debug artefacts to reclaim and silver stays reproducible
+from bronze alone. Deleting a non-complete dump surfaces on the next
+`load --force` rebuild. `prune` runs host-side like `load`, and an
+in-flight guard (`--min-age-hours`, default 1, keyed on the newest write
+in the dir) keeps it from removing a long `--lookback all` backfill that
+is still running. An unreadable or corrupt `run.json` is left alone, as is
+the silver `fred.db` and anything else at the bronze root that is not a
+timestamped run dir.
 
 **Credentials:** put your key in `~/.secrets/fred.env` as
 `FRED_API_KEY=...` (the wrapper sources it automatically). Get a free key

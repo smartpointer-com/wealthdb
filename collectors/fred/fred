@@ -11,6 +11,8 @@
 #                       `--lookback all` or `--since 1971-01-01` for a full
 #                       historic backfill).
 #   load [args...]      Parse bronze into the silver SQLite DB.
+#   prune [args...]     Delete non-complete (crashed / in-flight) bronze run
+#                       dirs; complete dumps are kept. --dry-run to preview.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
@@ -32,7 +34,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     login)
@@ -59,8 +61,12 @@ case "$cmd" in
             --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
+    prune)
+        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
     *)
-        echo "fred: unknown command '$cmd' (expected: login|download|load)" >&2
+        echo "fred: unknown command '$cmd' (expected: login|download|load|prune)" >&2
         exit 2
         ;;
 esac

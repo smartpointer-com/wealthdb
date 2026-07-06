@@ -34,6 +34,24 @@ MIGRATIONS = HERE / "migrations"
 NO_DATA = {".", None, ""}
 
 
+def run_status(run_dir: Path) -> str | None:
+    """The ``run.json`` ``status`` field for a bronze run, or ``None`` when
+    there is no ``run.json`` (or it carries no ``status``).
+
+    A statusless or absent manifest predates the status lifecycle and stays
+    loadable (legacy: download historically wrote ``run.json`` only at the
+    end, so its presence meant the walk finished). A present, non-
+    ``"complete"`` status marks a crashed, still-running, or dry-run dump
+    whose partial series ``load`` must not ingest — the download now drops a
+    ``status="in-progress"`` marker at run-dir creation, so a manifest can
+    exist while the walk is unfinished."""
+    try:
+        meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta.get("status") if isinstance(meta, dict) else None
+
+
 def date_to_epoch(s: str) -> int:
     """An observation date 'YYYY-MM-DD' -> Unix seconds at 00:00 UTC."""
     return int(datetime.strptime(s, "%Y-%m-%d")
@@ -97,6 +115,16 @@ def main(argv: list[str] | None = None) -> int:
         run_ts = bronze.parse_run_ts(run_dir.name)
         if run_ts in loaded:
             log.debug("run %s already loaded; skipping", run_dir.name)
+            continue
+        status = run_status(run_dir)
+        if status is not None and status != "complete":
+            # A crashed / in-flight / dry-run dump (status="in-progress" or
+            # similar). Skip it WITHOUT recording it in dump_runs so that if
+            # the walk later finalises to status="complete" a subsequent
+            # load still picks it up. A statusless manifest is legacy and
+            # loads as before.
+            log.info("run %s: status=%s — not a complete dump; skipping",
+                     run_dir.name, status)
             continue
         conn.execute("BEGIN")
         try:

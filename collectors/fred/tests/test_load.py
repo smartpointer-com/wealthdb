@@ -122,6 +122,29 @@ def test_force_reloads_and_upserts(tmp_path):
     assert revised[0]["mid"] == "0.9050"
 
 
+def test_in_progress_dump_not_loaded_then_loads_on_completion(tmp_path):
+    bronze = tmp_path / "bronze"
+    run = _seed_bronze(bronze)
+    # Mark the run as an in-flight / crashed walk (the marker download.py
+    # now drops at run-dir creation). load must skip it — no partial rows
+    # leak — and must NOT record it in dump_runs, so a later completion
+    # still loads.
+    manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    manifest["status"] = "in-progress"
+    (run / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    db = tmp_path / "fred.db"
+    assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0
+    assert _rows(db) == []
+
+    # The walk finalises; the same run now loads on the next (non-force)
+    # pass because it was never marked loaded.
+    manifest["status"] = "complete"
+    (run / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)]) == 0
+    assert len(_rows(db)) == 4
+
+
 def test_schema_meta_version(tmp_path):
     db = tmp_path / "fred.db"
     loader.main(["--silver-db", str(db), "--bronze-dir", str(tmp_path / "empty")])
