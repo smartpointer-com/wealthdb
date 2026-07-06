@@ -53,6 +53,17 @@ timestamped bronze run-dirs and no per-dump idempotency gate — the model
 that fits a remote source that emits successive dumps doesn't apply to a
 hand-edited spreadsheet.
 
+The fleet-wide **`prune`** verb follows from this shape: with no run-dirs and no
+debug/diagnostic artefacts (nothing writes a screenshot, trace, or DOM dump into
+bronze), there is nothing for it to reclaim. The shared prune engine
+([`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)) walks
+only timestamped run-dirs, so it would be permanently empty-handed here; a
+bespoke root-file sweeper is expressly ruled out because the two CSVs are the
+irreplaceable source of truth (§2, [CLAUDE.md](CLAUDE.md) §1–2). So `manual`
+accepts `prune` — the `wealthdb-collect` dispatcher forwards it, so the wrapper
+must not crash on it — as a **documented no-op**: it explains why nothing is
+reclaimed and exits 0, never touching the CSVs or the derived silver DB.
+
 ## 2. Bronze: the CSV schema
 
 Two CSVs, one row per thing. The **stable columns are the same across all

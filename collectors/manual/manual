@@ -10,6 +10,8 @@
 # Subcommands:
 #   load [args...]      Validate the CSVs and rebuild the silver DB.
 #   download | login    No-op (explains the manual model).
+#   prune [args...]     No-op: manual keeps no bronze run-dirs and writes no
+#                       debug artefacts, so there is nothing to reclaim.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on `load`:
@@ -28,7 +30,10 @@ cmd="${1:-load}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        # Print the leading comment banner (everything after the shebang up
+        # to the first line of code) as help — same idiom as
+        # bin/wealthdb-collect, and robust to the banner's line count.
+        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
     download|login)
@@ -40,6 +45,21 @@ $XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv — then run
 EOF
         exit 0
         ;;
+    prune)
+        # The fleet-wide `prune` verb (forwarded by the wealthdb-collect
+        # dispatcher) is a documented no-op here: manual is load-only, so
+        # there is nothing to reclaim. See README.md / DESIGN.md §1.
+        cat >&2 <<'EOF'
+manual: prune is a no-op — nothing to reclaim. This collector is load-only:
+it has no timestamped bronze run-dirs and writes no debug or diagnostic
+artefacts (no download, no browser, no capture surface). Bronze is just the
+two hand-maintained CSVs (positions.csv, valuations.csv) sitting flat in the
+data dir — they are load's only input and the collector's source of truth, so
+they are never deleted. The silver DB (manual.db) is rebuilt from them by
+`load` (delete it by hand to reclaim its space).
+EOF
+        exit 0
+        ;;
     load)
         host_resolve_dirs "$@"
         py="$(host_python)"
@@ -47,7 +67,7 @@ EOF
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     *)
-        echo "manual: unknown command '$cmd' (expected: load)" >&2
+        echo "manual: unknown command '$cmd' (expected: load | download | login | prune | help)" >&2
         exit 2
         ;;
 esac

@@ -1,10 +1,15 @@
 # manual collector — host-venv runtime.
 #
-# There is NO third-party runtime dependency: the silver store is SQLite
+# There is NO third-party *runtime* dependency: the silver store is SQLite
 # (stdlib `sqlite3`) and CSV parsing + validation use the stdlib `csv`
 # module so the loader can report precise file:row:column errors.
 #
-# The only thing to install is the shared helper package, editable:
+# The shared helper package is installed separately, editable:
 #   pip install -e ../../shared/collectorkit
 # (kept out of this file because it's a local editable path, not a PyPI
-# pin — see README.md's quick-start.) pytest is needed only for tests/.
+# pin — see README.md's quick-start.)
+#
+# pytest is the one bundled dependency, so `make test-manual` can build the
+# host venv and run tests/ with no extra toolchain (mirrors schwab-api /
+# ubs-psn).
+pytest>=8,<9

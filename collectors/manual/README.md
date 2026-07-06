@@ -134,6 +134,23 @@ that references a position not in `positions.csv`; malformed JSON `payload`;
 an unexpected/typo'd column. It warns (but loads) when a valuation
 predates the position's `acquired_at`.
 
+## Reclaiming disk (`prune`)
+
+`prune` is a **documented no-op** for `manual`. On the scraping collectors the
+fleet-wide verb deletes debug captures and crashed run dirs from the bronze
+tree; here it has nothing to act on. `manual` is load-only — no timestamped
+bronze run-dirs, and no debug or diagnostic artefacts (there is no download, no
+browser, no capture surface to leave anything behind). Bronze is just the two
+hand-maintained CSVs sitting flat in the data dir; they are `load`'s only input
+and the collector's source of truth, so they are never a prune target. The
+shared prune engine walks only timestamped run-dirs, so wiring it here would
+leave it permanently empty-handed, and a bespoke root-file sweeper is ruled out
+because deleting those CSVs would be unrecoverable — hence the no-op rather than
+a real `prune.py`. `./manual prune` prints that explanation and exits 0 (the
+`wealthdb-collect` dispatcher forwards the verb, so it must not fail). The
+silver `manual.db` is rebuilt from the CSVs by `load` and can be deleted by
+hand to reclaim its space.
+
 ## Tests
 
 ```bash
