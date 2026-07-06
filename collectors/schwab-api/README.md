@@ -14,6 +14,7 @@ raw JSON into a queryable SQLite silver database.
 | [`login.py`](login.py) | implemented | Interactive OAuth login flow; mints the token file that `download.py` consumes. Required once initially and once per 7-day refresh window thereafter. |
 | [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
 | [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
+| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree. Host-side, like `load`. `--dry-run` previews the plan. |
 
 See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
 (semi-relational silver schema, temporal model, why each script
@@ -26,6 +27,7 @@ The toolkit assumes a directory layout like:
 ```
 <bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/schwab-api/
 ├── 20260512T104753Z/               one bronze dump per run
+│   ├── run.json                    status manifest (in-progress → complete)
 │   ├── account_numbers.json
 │   ├── user_preference.json
 │   ├── accounts_positions.json
@@ -216,6 +218,7 @@ Files land in `./data/<UTC-timestamp>/`:
 
 | File | Source endpoint |
 | --- | --- |
+| `run.json` | _(local)_ — per-run status manifest (`in-progress` at run-dir creation, atomically overwritten with `complete` at the end). Read by `prune` to tell a finished dump from a crashed one; never read by `load`. |
 | `account_numbers.json` | `/accounts/accountNumbers` |
 | `user_preference.json` | `/userPreference` |
 | `accounts_positions.json` | `/accounts?fields=positions` |
@@ -244,7 +247,8 @@ the dump layer; full order history is intentionally not captured.
 | `--until` | _today (UTC)_ | Latest transaction date (YYYY-MM-DD, inclusive). |
 | `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` to `until − X`; overridden by an explicit `--since`. |
 | `--with-instruments` | off | After positions and transactions, look up metadata for every symbol seen and write a separate `instruments.json` artefact. Schwab omits `description` on equity positions/transactions; this fills the gap consistently across asset classes. Intended for reduced-schedule runs (instrument metadata changes rarely). |
-| `--dry-run` | off | Skip data fetch; only validate auth and list accounts. |
+| `--dry-run` | off | Skip data fetch; only validate auth and list accounts. Creates no bronze run dir. |
+| `--debug` | off | Fleet-wide debug-artefact gate. This is a pure REST collector that writes no bronze-resident debug artefacts (browser-flow captures belong to `login.py` and land outside bronze), so the flag currently gates nothing — it exists for help-text parity across collectors. Use `--verbose` for DEBUG-level logging. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Caveats
@@ -337,3 +341,46 @@ Each file:
 The loader executes each new migration in numeric order and commits
 between files. Silver databases must always be at the latest schema —
 never write code that handles "if column X exists".
+
+## prune.py
+
+### How it works
+
+`prune.py` reclaims disk from the bronze tree, running host-side like
+`load` (a pure file walk — no container, no network). It is a thin
+wrapper over the shared, unit-tested prune engine in
+[`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py).
+
+```sh
+./schwab-api prune --dry-run   # print the deletion plan, delete nothing
+./schwab-api prune             # delete it
+```
+
+Unlike the browser-driven collectors, schwab-api has no bronze-resident
+debug artefacts to sweep: a run dir is a flat set of JSON load inputs,
+and the browser-flow page captures / traces belong to `login.py` and
+land in a separate debug dir outside bronze. So `prune`'s only effect is
+removing whole run dirs that are **not complete dumps** — a download that
+crashed or was interrupted before it finished. Such a dir may still hold
+a partial `account_numbers.json` (and some transactions), which `load`
+would otherwise ingest as a truncated snapshot; after pruning one, the
+next `load --force` rebuild reflects the removal.
+
+Completeness is read from each dump's `run.json` status: `in-progress`
+(a crashed walk) is non-complete, `complete` is kept. Dumps that predate
+the manifest carry no `run.json`; for those the fallback signal is the
+presence of `open_orders.json` — the last artefact a complete run writes
+unconditionally. An unreadable or corrupt `run.json` is left alone
+(never taken as proof a dump is partial). Load inputs of complete dumps,
+and non-run entries at the bronze root (the silver `schwab-api.db`), are
+never touched, so silver stays reproducible. An in-flight guard
+(`--min-age-hours`, default 1, keyed on recent write activity) keeps
+`prune` from removing a long transaction backfill that is still running.
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root (the wrapper passes the resolved data dir). |
+| `--dry-run` | off | Print the deletion plan; remove nothing. |
+| `--min-age-hours` | `1` | Leave non-complete dumps touched within this window alone (protects an in-flight download). |

@@ -46,6 +46,14 @@ ARTIFACT_TRANSACTIONS_TEMPLATE = "transactions_{n:03d}.json"
 ARTIFACT_OPEN_ORDERS = "open_orders.json"
 ARTIFACT_INSTRUMENTS = "instruments.json"
 
+# Per-run manifest carrying the normalized status lifecycle
+# ("in-progress" at run-dir creation, atomically overwritten with
+# "complete" at the end). It is the forward completeness signal `prune`
+# keys on; `load` never reads it (its artefact set is
+# account_numbers/user_preference/accounts_positions/transactions_*/
+# open_orders/instruments), so adding it is inert to silver.
+RUN_MANIFEST = "run.json"
+
 # Schwab caps the transactions endpoint window at 1 year per request. We
 # chunk longer ranges into successive sub-ranges to stay within the cap.
 TRANSACTION_WINDOW_DAYS = 365
@@ -175,6 +183,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "/instruments endpoints are often slower, so we raise it and "
              "retry transient timeouts. Bump this if downloads keep hitting "
              "read timeouts.",
+    )
+    p.add_argument(
+        "--debug", action="store_true",
+        help="Gate bronze-resident debug artefacts, for parity with the "
+             "fleet-wide debug convention. This is a pure REST collector "
+             "that writes none — the browser-flow page captures / traces "
+             "belong to login.py and land outside the bronze tree — so the "
+             "flag currently gates nothing. Off by default. (Use --verbose "
+             "for DEBUG-level logging.)",
     )
     p.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
@@ -527,6 +544,14 @@ def run(args: argparse.Namespace) -> int:
     run_dir = args.dest / ts
     log.info("Writing artefacts to %s", run_dir)
 
+    # Drop an "in-progress" manifest up front and overwrite it with the
+    # terminal status at the end. This makes the run's state legible to
+    # `prune` while the walk is still running (a crashed walk leaves
+    # status="in-progress" — a non-complete dump prune can reclaim once
+    # it goes quiescent) and closes the ambiguity of a run dir with no
+    # manifest at all. The first write also mkdirs the run dir.
+    write_json(run_dir / RUN_MANIFEST, {"status": "in-progress"})
+
     write_json(run_dir / ARTIFACT_ACCOUNT_NUMBERS, account_numbers)
 
     user_pref = fetch_user_preference(client)
@@ -586,6 +611,18 @@ def run(args: argparse.Namespace) -> int:
         write_json(run_dir / ARTIFACT_INSTRUMENTS, instruments_response)
         instruments_count = len(instruments_response.get("instruments") or [])
         log.info("Instruments: %d returned", instruments_count)
+
+    # Terminal manifest: overwrite the in-progress marker with the
+    # finished status + a few counts (no account identifiers). This
+    # atomic overwrite is what `prune` reads to classify the dump
+    # COMPLETE and keep its load inputs.
+    write_json(run_dir / RUN_MANIFEST, {
+        "status": "complete",
+        "accounts": len(account_numbers),
+        "transaction_windows": n,
+        "open_orders": len(open_orders),
+        "instruments": instruments_count,
+    })
 
     summary = (
         f"Done. Wrote {n} transaction window(s) across "

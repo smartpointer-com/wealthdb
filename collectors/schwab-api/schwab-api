@@ -17,6 +17,9 @@
 #                      over VNC (use if `login`'s selectors drift).
 #   download [args...] Fetch accounts / positions / transactions to bronze.
 #   load [args...]     Parse bronze into the silver SQLite DB.
+#   prune [args...]    Delete non-complete dumps (crashed / interrupted
+#                      downloads) from the bronze tree. Host-side;
+#                      --dry-run prints the plan without deleting.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
@@ -36,7 +39,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     build)
@@ -64,8 +67,14 @@ case "$cmd" in
         wrapper_init
         wrapper_main "$@"   # the sub ($1) → entrypoint dispatches it
         ;;
-    download|load)
-        # Host venv (schwab-py REST + SQLite).
+    download|load|prune)
+        # Host venv (schwab-py REST + SQLite). `prune` is a sibling of
+        # `load`: a pure file walk over bronze, no container, run under
+        # the same venv (collectorkit is editable-installed there, so
+        # `from collectorkit import prune` resolves with no PYTHONPATH
+        # hack). The default --bronze-dir comes first so an explicit flag
+        # in the forwarded args overrides it (argparse last-wins); the
+        # in-flight dump is protected by prune's own age guard.
         # shellcheck disable=SC1091
         source "$HERE/../../shared/wrappers/host-lib.sh"
         shift
@@ -84,10 +93,14 @@ case "$cmd" in
                     --bronze-dir "$DATA_DIR" \
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
+            prune)
+                exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
         esac
         ;;
     *)
-        echo "schwab-api: unknown command '$cmd' (expected: build|login|vnc-login|download|load)" >&2
+        echo "schwab-api: unknown command '$cmd' (expected: build|login|vnc-login|download|load|prune)" >&2
         exit 2
         ;;
 esac

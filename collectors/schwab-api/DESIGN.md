@@ -65,6 +65,12 @@ Schwab specifics:
 - Writes one JSON file per (artefact kind, account, window) into a
   `<dest>/<UTC-timestamp>/` directory. Timestamp is the run-start
   time; subsequent runs get a new directory, never overwrite.
+- Drops a `run.json` status manifest into the run dir: `in-progress`
+  at run-dir creation, atomically overwritten with `complete` (plus a
+  few counts, no identifiers) once every artefact is written. It is the
+  forward completeness signal `prune` keys on; `load` never reads it.
+  `--dry-run` returns before the run dir exists, so it leaves no shell
+  and no manifest.
 - Never imports or calls write endpoints (`place_order`, etc.).
   This is enforced by code review, documented in `CLAUDE.md`, and
   reinforced by registering the Schwab app with order rate-limit 0.
@@ -118,6 +124,33 @@ Three discipline points:
 The loader is also where minor "cleanup-on-the-way-in" lives —
 specifically, stripping per-request noise fields that would otherwise
 defeat content-based dedup (see §4.7).
+
+### 3.4 `prune.py` — reclaiming bronze
+
+Owns "delete run dirs that are not complete dumps". A thin wrapper over
+the shared `collectorkit.prune` engine (frozen, unit-tested), it runs
+host-side like `load`.
+
+schwab-api is a pure REST collector, so a run dir holds only JSON load
+inputs plus the `run.json` manifest — there are **no bronze-resident
+debug artefacts** to sweep (the browser-flow captures / traces belong to
+`login.py` and land in a separate debug dir outside bronze). So the
+engine's `debug_subdirs` is empty and `prune`'s only category is whole
+non-complete run dirs: a `download` that crashed or was interrupted
+before finishing.
+
+Completeness comes from the `run.json` status (`in-progress` ⇒
+non-complete, `complete` ⇒ keep). A dump with no `run.json` predates the
+manifest; its legacy terminal signal is the presence of
+`open_orders.json`, the last unconditional artefact a complete run
+writes. The safety envelope is the engine's: an unreadable/corrupt
+manifest is UNKNOWN and never deleted; a complete dump's load inputs are
+never touched; symlinks and non-run entries at the bronze root (the
+silver DB) are skipped; and an in-flight guard keyed on recent write
+activity (`--min-age-hours`, default 1) protects a long transaction
+backfill that is still writing `transactions_NNN.json`. Deleting a
+non-complete dump only removes bronze — silver rows already sourced from
+it persist until the next `load --force` rebuild.
 
 ## 4. Silver schema design
 
