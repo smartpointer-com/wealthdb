@@ -88,6 +88,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "but visit no per-offering pages and write no bronze. Read-only smoke test.")
     p.add_argument("--timeout", type=int, default=45,
                    help="Per-page GraphQL-capture timeout in seconds. Default: %(default)s.")
+    p.add_argument("--debug", action="store_true",
+                   help="Uniform debug gate: keep any debug artefact out of a bronze run "
+                        "dir unless set. download.py writes none today — its diagnostics "
+                        "live externally (`login --debug-dir` screenshots and `explore`'s "
+                        "/debug HAR/trace/click log, never the bronze tree) — so this flag "
+                        "currently gates nothing bronze-resident; it exists so the gate is "
+                        "uniform across collectors and any future capture stays off by default.")
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -122,6 +129,10 @@ def _deal_ids_from(body: dict) -> list[str]:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    if args.debug:
+        log.info("--debug: download writes no bronze-resident debug artefacts; "
+                 "external diagnostics live under `login --debug-dir` and "
+                 "`explore`'s /debug.")
     timeout_ms = args.timeout * 1000
 
     envfile.source_env_file(args.env_file)  # aligns mounts; no creds used here
@@ -210,6 +221,13 @@ def main(argv: list[str]) -> int:
             log.info("--dry-run: no bronze written")
             return 0
 
+        # First on-disk artefact of a real walk: drop an in-progress marker so
+        # a crash here leaves a run.json whose status flags the dump
+        # non-complete (prune reclaims it once quiescent). The terminal manifest
+        # write below atomically overwrites it with status="complete".
+        # --dry-run returned above without ever creating the run dir, so there
+        # is no shell to mark.
+        bronze.atomic_write_json(run / "run.json", {"status": "in-progress"})
         bronze.atomic_write_json(run / "investments.json", stage_bodies)
 
         # Authenticated blob fetch for a document's downloadUrl → bronze.
@@ -263,8 +281,11 @@ def main(argv: list[str]) -> int:
                 log.info("  offering %s: fetched %d/%d document blob(s)", slug, n_blobs, len(docs))
             offerings_meta.append({"slug": slug, "detail": True, "doc_blobs": n_blobs})
 
-        # 4) Manifest — slugs + counts only.
+        # 4) Manifest — slugs + counts only. `status` is the completeness
+        # signal prune keys on: this terminal write atomically overwrites the
+        # in-progress marker dropped at run-dir creation.
         manifest = {
+            "status": "complete",
             "source": "equityzen", "snapshot_at": snapshot_at,
             "scope": "offerings+positions+cash_flows" + ("+documents" if args.documents else ""),
             "stage_counts": {s: len(_deal_ids_from(b)) for s, b in stage_bodies.items()},

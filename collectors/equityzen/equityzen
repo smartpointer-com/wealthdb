@@ -64,6 +64,13 @@ Subcommands:
   load [args...]      Ingest bronze snapshots into the SQLite silver:
                       offerings, positions, cash_flows, tax_documents.
                       --force re-loads snapshots already in dump_runs.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps
+                      (crashed downloads with no terminal run.json). No
+                      bronze-resident debug artefacts exist, so that is the
+                      only target. --dry-run prints the plan; --min-age-hours
+                      (default 1) protects an in-flight download. Runs in the
+                      container like \`load\`, so the single-writer guard
+                      refuses it while a \`login\` / \`download\` is live.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 

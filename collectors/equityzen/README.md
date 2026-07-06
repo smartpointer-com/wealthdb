@@ -42,6 +42,7 @@ target and a `wealthdb.cfg` `silver_sources` entry.
 | `login`    | **implemented** | Headless CLI flow: headed Camoufox under Xvfb (no VNC), email/password (`submitLogIn`) + stdin TOTP prompt → Submit-button click (`loginTotp`), persistent profile. Renews silently if the session is still valid. Verified end-to-end. |
 | `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; `--documents` fetches each offering's document PDF blobs (capital-account statements, K-1s) via the session. |
 | `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` re-loads). |
+| `prune`    | **implemented** | Reclaims bronze disk via the shared `collectorkit.prune` engine. Deletes non-complete dumps (crashed downloads with no terminal `run.json`); keeps every load input. No bronze-resident debug artefacts exist, so that is the sole target. `--dry-run` previews; `--min-age-hours` guards an in-flight download. |
 
 The gold adapter projects this silver into the canonical
 `accounts` / `instruments` / `positions` / `transactions` tables; see
@@ -91,6 +92,32 @@ Override host mounts via env: `EQUITYZEN_SECRETS_DIR`,
 `EQUITYZEN_DATA_DIR`, `EQUITYZEN_DEBUG_DIR`. EquityZen marks update on
 new-round cadence (FMV is not daily), so a weekly/monthly run is plenty;
 same-day re-runs add nothing.
+
+### Reclaiming disk
+
+```sh
+./equityzen prune --dry-run   # print the deletion plan, delete nothing
+./equityzen prune             # delete it
+```
+
+`prune` removes whole non-complete run dirs across the bronze tree — a
+walk that crashed before writing its terminal `run.json` (its
+`status` is `"in-progress"`, or the manifest is absent entirely).
+`load` would otherwise keep re-ingesting the partial `investments.json`
+/ `offerings/` such a dir holds; deleting one surfaces on the next
+`load --force` rebuild. There is nothing else to reclaim: `download`
+writes **no** bronze-resident debug artefact (its diagnostics live
+externally — `login --debug-dir` screenshots and the `explore` verb's
+`/debug` HAR/trace/click log), so `debug_subdirs` is empty and a
+complete dump has nothing pruned. Every load input is therefore
+untouched — the `investments.json`, `offerings/*/detail.json`, and the
+re-downloaded `documents/<deal-slug>/*.pdf` / `.zip` blobs of a complete
+dump are structurally out of scope, so silver stays reproducible.
+An in-flight guard (`--min-age-hours`, default 1, keyed on recent write
+activity) keeps it from removing a download that is still running.
+Unlike a host-venv collector, `prune` runs inside the container (like
+`load`), so the wrapper's single-writer guard refuses it while a
+`login` / `download` is live — run it between refreshes.
 
 ## Read-only
 

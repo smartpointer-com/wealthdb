@@ -101,6 +101,15 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (a crashed download with no terminal
+        # run.json) from the bronze tree. equityzen writes no
+        # bronze-resident debug artefacts, so there is nothing else to
+        # reclaim. Pure file walk — no browser, no display. --dry-run
+        # prints the plan first.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -131,6 +140,10 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: offerings,
               positions, cash_flows, tax_documents. Pass --force to
               re-load snapshots already recorded in dump_runs.
+  prune       Delete non-complete dumps (crashed downloads with no
+              terminal run.json) from the bronze tree. equityzen writes
+              no bronze-resident debug artefacts, so that is the only
+              reclaim target. --dry-run prints the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

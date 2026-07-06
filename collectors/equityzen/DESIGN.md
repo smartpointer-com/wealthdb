@@ -236,6 +236,25 @@ company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts
 across all stages, logs what it would fetch, and writes nothing
 (CLAUDE.md-sanctioned read-only smoke test).
 
+#### run.json status lifecycle + prune
+
+`run.json` carries a `status` field: `download` drops
+`{"status": "in-progress"}` as the run dir's first on-disk artefact (right
+before `investments.json`), then atomically overwrites it with the terminal
+manifest carrying `"status": "complete"` at the very end. A crashed walk
+therefore leaves a run dir whose `status` is `"in-progress"` (or, if it died
+before even that first write, no `run.json` at all) — either way a
+**non-complete** dump. `--dry-run` returns before creating the run dir, so it
+leaves no shell. The `prune` verb (shared `collectorkit.prune` engine, thin
+`prune.py`) reclaims those non-complete dumps once they are quiescent past
+`--min-age-hours`; a **complete** dump keeps every load input, and a
+statusless legacy manifest (written only at the end pre-change) is treated as
+complete. There are **no** bronze-resident debug artefacts to prune —
+`download` writes none, and the uniform `--debug` gate (default off) exists
+only to keep it that way; all diagnostics live externally under
+`login --debug-dir` and the `explore` verb's `/debug/<UTC-ts>/`, never in a
+`<UTC-ts>/` bronze run dir.
+
 #### Why no `/equity/<uuid>/` capture (investigated, then removed)
 
 The per-company equity pages (`/equity/<uuid>/`, enumerated via the
