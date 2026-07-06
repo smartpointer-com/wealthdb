@@ -418,6 +418,22 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     with manifest_path.open("r", encoding="utf-8") as fh:
         manifest = json.load(fh)
 
+    # Skip non-complete dumps. download.walk() writes run.json
+    # incrementally with status="in-progress", flipping it to
+    # "complete" (or "dry-run") only at the end — so a crashed walk
+    # or a --dry-run shell leaves a partial manifest present that we
+    # must NOT ingest (partial balances would leak into gold as a
+    # snapshot; a dry-run's tx-history exports still fire). A
+    # statusless manifest predates the status field and is treated as
+    # loadable for backward compat.
+    status = manifest.get("status")
+    if status in ("in-progress", "dry-run"):
+        log.warning(
+            "run.json in %s has status=%r; skipping (not a complete dump)",
+            run_dir, status,
+        )
+        return stats
+
     _insert_dump_run(conn, snapshot_at, run_dir)
 
     statements_dir = run_dir / "statements"

@@ -1108,12 +1108,15 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
 def capture_transactions(page, account: dict, dest_dir: Path,
                          screenshot_dir: Path | None,
                          date_range: str,
-                         with_more_detail: bool = False) -> dict:
+                         with_more_detail: bool = False,
+                         debug: bool = False) -> dict:
     """Per-account: select the account, set the date-range
     filter, click Search, then drive the Export modal to save
     CSV + JSON + XML of the full filtered transaction set under
-    <dest>/transactions/<suffix>/. Also captures one HTML
-    snapshot of the rendered landing page as a debug baseline.
+    <dest>/transactions/<suffix>/. With ``debug``, also captures
+    one HTML snapshot of the rendered landing page as a debug
+    baseline under <dest>/screenshots/ (never read by load;
+    reclaimed by `prune`).
 
     When `with_more_detail=True`, additionally walks every
     pagination page, scrolls the virtualised table to force-load
@@ -1195,17 +1198,24 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     # the opt-in `with_more_detail` scrape below.
     exports = _export_tx_history(page, account["suffix"], out_dir)
 
-    # Also capture one HTML snapshot of the search-results
+    # Optionally capture one HTML snapshot of the search-results
     # landing page as a debug baseline — useful for diffing
     # against the structured exports if any field looks missing.
+    # Opt-in (`--debug`): it is never read by `load`, so it stays
+    # out of the bronze tree by default. It lands under
+    # <run>/screenshots/ (NOT the transactions/<suffix>/ load-input
+    # dir) so `prune` can reclaim it wholesale from a complete dump.
     html_pages = 0
-    try:
-        html_path = out_dir / "page-001.html"
-        html_path.write_text(page.content(), encoding="utf-8")
-        html_pages = 1
-    except Exception as e:
-        log.warning("tx-history …%s: landing HTML capture failed: %s",
-                    account["suffix"], e)
+    if debug:
+        try:
+            shots_dir = dest_dir / "screenshots"
+            shots_dir.mkdir(parents=True, exist_ok=True)
+            html_path = shots_dir / f"tx-{account['suffix']}-landing.html"
+            html_path.write_text(page.content(), encoding="utf-8")
+            html_pages = 1
+        except Exception as e:
+            log.warning("tx-history …%s: landing HTML capture failed: %s",
+                        account["suffix"], e)
 
     more_details_count = 0
     if with_more_detail:
@@ -1243,7 +1253,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
 def run_transactions(page, accounts: list[dict], dest_dir: Path,
                      screenshot_dir: Path | None,
                      date_range: str,
-                     with_more_detail: bool = False) -> list[dict]:
+                     with_more_detail: bool = False,
+                     debug: bool = False) -> list[dict]:
     """Navigate to the Transaction History page, then capture per
     account. Returns the per-account list to merge into the
     run.json manifest."""
@@ -1262,7 +1273,7 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
         try:
             entry = capture_transactions(
                 page, acct, dest_dir, screenshot_dir, date_range,
-                with_more_detail=with_more_detail,
+                with_more_detail=with_more_detail, debug=debug,
             )
         except Exception as e:
             log.error(
@@ -1285,7 +1296,8 @@ def walk(page, dest_root: Path, *, mode: str = "both",
          dry_run: bool = False,
          screenshot_dir: Path | None = None,
          date_range: str = schwab.DATE_RANGE_DEFAULT,
-         with_more_detail: bool = False) -> dict:
+         with_more_detail: bool = False,
+         debug: bool = False) -> dict:
     """Run the configured scrape against an already-authenticated
     page. Returns the manifest dict.
 
@@ -1298,11 +1310,19 @@ def walk(page, dest_root: Path, *, mode: str = "both",
     PDFs + a `run.json` manifest. The manifest is persisted
     incrementally so a crash mid-walk preserves whatever was
     downloaded.
+
+    The manifest carries a `status` field: `"in-progress"` from
+    run-dir creation, atomically overwritten with `"complete"`
+    (or `"dry-run"`) once the walk finishes. That is the forward
+    signal `prune` keys on to tell a finished dump from a
+    crashed/interrupted one, and the signal `load` checks to keep
+    a partial or dry-run dump out of silver.
     """
     run_ts = bronze.ts_slug()
     run_dir = dest_root / run_ts
     run_dir.mkdir(parents=True, exist_ok=True)
-    log.info("bronze run dir: %s", run_dir)
+    log.info("bronze run dir: %s%s", run_dir,
+             " (debug captures on)" if debug else "")
 
     run_summary = {
         "run_ts": run_ts,
@@ -1310,6 +1330,10 @@ def walk(page, dest_root: Path, *, mode: str = "both",
         "mode": mode,
         "dry_run": dry_run,
         "date_range": date_range,
+        # `"in-progress"` until the terminal write below flips it.
+        # A crash before that flip leaves this marker in place, so a
+        # non-complete dump is legible to both `prune` and `load`.
+        "status": "in-progress",
         "doc_types_wanted": sorted(schwab.DOC_TYPES_WANTED),
         "doc_types_unwanted": [
             label for label, _ in schwab.DOC_TYPES
@@ -1318,6 +1342,11 @@ def walk(page, dest_root: Path, *, mode: str = "both",
         "statements": [],
         "transactions": [],
     }
+    # Drop the in-progress marker up front (belt-and-suspenders) so a
+    # crash during account enumeration — before the first incremental
+    # manifest write below — still leaves a status marker rather than
+    # a run dir with no run.json at all.
+    _write_manifest(run_dir, run_summary)
 
     # Enumerate accounts via the Statements page — the selector
     # is global to the SPA so navigating away later doesn't lose
@@ -1366,10 +1395,18 @@ def walk(page, dest_root: Path, *, mode: str = "both",
     if mode in ("transactions", "both"):
         tx_entries = run_transactions(
             page, accounts, run_dir, screenshot_dir, date_range,
-            with_more_detail=with_more_detail,
+            with_more_detail=with_more_detail, debug=debug,
         )
         run_summary["transactions"] = tx_entries
         _write_manifest(run_dir, run_summary)
+
+    # Terminal status flip: `_write_manifest` is tmp+os.replace, so
+    # this atomically overwrites the in-progress marker. A `--dry-run`
+    # is recorded as `"dry-run"` (a non-complete shell — its tx-history
+    # exports still fire, so prune/load must not treat it as a real
+    # dump); everything else is `"complete"`.
+    run_summary["status"] = "dry-run" if dry_run else "complete"
+    _write_manifest(run_dir, run_summary)
 
     log.info("scrape complete; manifest at %s/run.json", run_dir)
     return run_summary

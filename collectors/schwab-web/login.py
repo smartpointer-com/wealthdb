@@ -175,10 +175,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "stay under the deadline. Exits with rc=7 on timeout."),
     )
     p.add_argument(
+        "--debug", action="store_true",
+        help=("Save opt-in debug captures INSIDE the bronze run dir "
+              "under <run>/screenshots/ (the tx-history landing-page "
+              "HTML baseline). Off by default — the capture is never "
+              "read by load, and `prune` reclaims <run>/screenshots/ "
+              "from complete dumps. Distinct from --screenshot-dir, "
+              "which writes login/landmark captures OUTSIDE bronze."),
+    )
+    p.add_argument(
         "--screenshot-dir", default=None, type=Path,
         help=("If set, write a screenshot + HTML capture at each "
-              "navigation landmark. Useful for debugging. NEVER "
-              "commit these — see CLAUDE.md §4."),
+              "navigation landmark to this host path (OUTSIDE the "
+              "bronze tree, e.g. the /debug mount). Useful for "
+              "debugging the login / landmark flow. NEVER commit "
+              "these — see CLAUDE.md §4."),
     )
     p.add_argument(
         "--trace", action="store_true",
@@ -530,7 +541,8 @@ def run_manual(profile_dir: Path,
                date_range: str = schwab.DATE_RANGE_DEFAULT,
                with_more_detail: bool = False,
                cli_mfa: bool = True,
-               post_auth_timeout_s: int = 600) -> int:
+               post_auth_timeout_s: int = 600,
+               debug: bool = False) -> int:
     """One-shot: CLI-MFA login → scrape → exit.
 
     Schwab invalidates the persistent profile's session within
@@ -637,6 +649,7 @@ def run_manual(profile_dir: Path,
                     screenshot_dir=screenshot_dir,
                     date_range=date_range,
                     with_more_detail=with_more_detail,
+                    debug=debug,
                 )
                 log.info(
                     "scrape complete: %d statement entries, %d tx entries",
@@ -1137,6 +1150,7 @@ def main(argv: list[str]) -> int:
         with_more_detail=args.with_more_detail,
         cli_mfa=args.cli_mfa,
         post_auth_timeout_s=args.post_auth_timeout,
+        debug=args.debug,
     )
 
 

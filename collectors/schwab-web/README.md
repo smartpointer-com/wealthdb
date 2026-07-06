@@ -78,7 +78,7 @@ template; subcommand names and roles are the same:
 | Script | Status | Purpose |
 | --- | --- | --- |
 | [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` keeps the legacy VNC-driven flow where the operator drives Log In + 2FA. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
-| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally. `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`, plus one landing HTML capture for debug. `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<dest>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions, positions, cash) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
@@ -172,9 +172,11 @@ Tool-specific notes only:
   `requirements.txt`, version-pinned to match the base-image tag —
   bump both in lockstep.
 - **Extra `/debug` mount** (`~/.cache/schwab-web-debug` by default):
-  opt-in screenshots / Playwright traces. Pass any debug-flag value
-  as `/debug/...` so debug artefacts stay out of the bronze/silver
-  tree.
+  opt-in login/landmark screenshots + Playwright traces. Point
+  `--screenshot-dir` / `--trace` at `/debug/...` so those diagnostics
+  stay OUTSIDE the bronze/silver tree. (Distinct from `--debug`,
+  which saves a tx-history landing HTML baseline INSIDE the run dir
+  under `<run>/screenshots/` — off by default, reclaimed by `prune`.)
 - **Path overrides:** `SCHWAB_WEB_SECRETS_DIR`, `SCHWAB_WEB_DATA_DIR`,
   `SCHWAB_WEB_DEBUG_DIR`.
 
@@ -193,8 +195,10 @@ cd collectors/schwab-web
 ./schwab-web download --lookback all --with-more-detail  # full backfill via shared shortcut
 ./schwab-web download --range Last10Years              # explicit preset (escape hatch)
 ./schwab-web download --dry-run --screenshot-dir /debug/download
+./schwab-web download --debug                          # + tx-history landing HTML baseline under <run>/screenshots/
 ./schwab-web vnc-login                                 # VNC fallback
 ./schwab-web load                                      # defaults under the /data mount
+./schwab-web prune --dry-run                           # preview bronze reclaim (debug artefacts + non-complete dumps)
 ```
 
 ### Credentials
@@ -254,11 +258,16 @@ challenge.
 │   │       ├── …_Transactions_…csv        Schwab "Export Transactions Data"
 │   │       ├── …_Transactions_…json       CSV / JSON / XML of the
 │   │       ├── …_Transactions_…xml        full filtered tx set
-│   │       ├── page-001.html              one debug snapshot
 │   │       └── more-details.json          optional sidecar with per-row
 │   │                                       "More"-modal data (only when
 │   │                                       --with-more-detail is set)
-│   └── run.json                           manifest written by download.walk()
+│   ├── screenshots/                       debug-only (download --debug):
+│   │   └── tx-<suffix>-landing.html        tx-history landing HTML baseline.
+│   │                                       Never read by load; `prune`
+│   │                                       reclaims it. Absent without --debug.
+│   └── run.json                           manifest written by download.walk();
+│                                           carries a `status` field
+│                                           (in-progress → complete / dry-run)
 ├── 20260521T120000Z/
 │   └── …
 └── schwab-web.db                          silver SQLite database (default)
@@ -267,6 +276,42 @@ challenge.
 Bronze and silver paths are independently configurable. Trade
 Confirmations are deliberately skipped at the chip-filter step
 (low signal, high volume — see [CLAUDE.md](CLAUDE.md) §1).
+
+## Reclaiming disk (`prune`)
+
+`prune` deletes two categories from the bronze tree, across every
+timestamped run dir, and never touches a `load` input:
+
+- **`<run>/screenshots/` from complete dumps** — the tx-history
+  landing HTML baselines `download --debug` writes. `load` never
+  reads them, so removing them leaves silver byte-identical.
+- **whole non-complete dumps** — a run whose `run.json` is missing
+  (the walk crashed before its first manifest write) or whose
+  `status` is anything other than `"complete"` (an `"in-progress"`
+  marker from a crashed walk, or a `"dry-run"` shell whose
+  tx-history exports still fired). `load` skips these too; after
+  pruning one, the next `load --force` rebuild reflects the removal.
+
+Completeness comes from the `run.json` `status` field
+(`"in-progress"` at run-dir creation, atomically overwritten with
+`"complete"` / `"dry-run"` at the end). A dump that predates the
+field carries a statusless manifest; because `download` wrote
+`run.json` incrementally, presence alone is not proof of
+completion, so the legacy fallback keeps a real dump (`dry_run`
+false) and prunes a `--dry-run` shell (`dry_run` true). An
+unreadable or corrupt `run.json` is left untouched. An in-flight
+guard (`--min-age-hours`, default 1, keyed on the newest write in
+the dir) protects a long backfill still in progress.
+
+```sh
+./schwab-web prune --dry-run     # preview; deletes nothing
+./schwab-web prune               # reclaim debug artefacts + non-complete dumps
+```
+
+`prune` runs host-side (a pure-stdlib file walk needs no
+container), so it bypasses the single-writer safety guard and can
+reclaim disk while a `download` is mid-flight — the in-flight dump
+is protected by the age guard.
 
 ## Relationship to schwab-api
 

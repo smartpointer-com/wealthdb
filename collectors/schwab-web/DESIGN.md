@@ -249,23 +249,39 @@ silver doesn't strictly need any of them.
 ```
 <bronze-root>/
 └── <UTC-timestamp>/                e.g. 20260520T120000Z/
-    ├── run.json                    manifest written by download.walk()
+    ├── run.json                    manifest written by download.walk();
+    │                               carries a `status` field
+    │                               (in-progress → complete / dry-run)
     ├── statements/
     │   └── <suffix>/
     │       ├── Brokerage-Statement_2026-04-30_<suffix>.PDF
     │       ├── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.PDF
     │       ├── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.XML
     │       └── 1099-Composite-and-Year-End-Summary_2026-02-21_<suffix>.CSV
-    └── transactions/
-        └── <suffix>/
-            ├── <Nick>_XXX<suffix>_Transactions_<ts>.csv
-            ├── <Nick>_XXX<suffix>_Transactions_<ts>.json   ← row source
-            ├── <Nick>_XXX<suffix>_Transactions_<ts>.xml
-            ├── page-001.html       debug snapshot of the landing view
-            └── more-details.json   optional: per-row "More"-modal
-                                    contents when `download` was
-                                    invoked with --with-more-detail
+    ├── transactions/
+    │   └── <suffix>/
+    │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.csv
+    │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.json   ← row source
+    │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.xml
+    │       └── more-details.json   optional: per-row "More"-modal
+    │                               contents when `download` was
+    │                               invoked with --with-more-detail
+    └── screenshots/                debug-only (download --debug):
+        └── tx-<suffix>-landing.html   landing-view HTML baseline. Never
+                                    read by load; `prune` reclaims the
+                                    whole screenshots/ dir from a
+                                    complete dump. Absent without --debug.
 ```
+
+The `status` field is the completeness signal `prune` and `load`
+key on: `download.walk()` writes `"in-progress"` at run-dir
+creation and atomically overwrites it with `"complete"` (or
+`"dry-run"` for a `--dry-run`, whose tx-history exports still fire)
+at the end. `load` skips a dump whose `status` is `"in-progress"`
+or `"dry-run"` (a statusless legacy manifest stays loadable); `prune`
+deletes whole non-complete dumps plus `<run>/screenshots/` from
+complete ones, and never a `load` input (`statements/`,
+`transactions/`, `run.json`).
 
 The silver loader reads `run.json` for the document inventory and,
 per document kind, parses these into `transactions`:

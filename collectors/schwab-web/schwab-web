@@ -5,7 +5,9 @@
 # in single-writer mode (named container, refuse-to-clobber-running
 # safety guard) because Schwab's Firefox profile + 2FA prompts can't
 # tolerate concurrent invocations. `vnc-login` forwards a 5900-6000
-# host port so the operator can drive the live browser.
+# host port so the operator can drive the live browser. `prune` runs
+# host-side (pure-stdlib file walk) so it bypasses the safety guard
+# and reclaims bronze disk even while a download is mid-flight.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -42,6 +44,13 @@ Subcommands:
                         (override with --range; --range Last10Years
                         for a full backfill). Stdin must be a TTY.
   load [args...]        Parse bronze into the silver SQLite DB.
+  prune [args...]       Delete debug artefacts (<run>/screenshots/,
+                        written only by download --debug) and
+                        non-complete dumps from the bronze tree.
+                        Runs host-side (pure stdlib Python; no
+                        Docker spawn), so it reclaims disk even
+                        while a download container is mid-flight.
+                        --dry-run prints the plan without deleting.
   vnc-login [args...]   Fallback to a VNC-driven login + scrape
                         when the CLI-MFA selectors drift or a
                         non-code challenge is required. Starts
@@ -74,6 +83,25 @@ Credentials:
   interactively at \`login\` time.
 EOF
     exit 0
+fi
+
+# `./schwab-web prune [args...]` → host-side python invocation.
+#
+# The prune engine (collectorkit.prune) is a pure-stdlib file walk —
+# no Camoufox / Playwright / container needed (unlike `load`, which
+# needs the in-container pypdfium2 for statement-PDF text extraction
+# and so stays containerised). Running prune host-side skips the
+# docker-spin overhead and, crucially, bypasses the single-writer
+# safety guard so it can reclaim disk while a `download`/`vnc-login`
+# container is mid-flight (the in-flight dump is protected by prune's
+# own age guard). The container `prune` arm in entrypoint.sh remains
+# for a direct `docker run schwab-web prune`. The default
+# --bronze-dir comes first so an explicit flag in [args...] overrides
+# it (argparse last-wins).
+if [[ "${1:-}" == "prune" ]]; then
+    shift
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
 fi
 
 wrapper_main "$@"

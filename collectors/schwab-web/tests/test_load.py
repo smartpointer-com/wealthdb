@@ -409,6 +409,70 @@ class TestLoadRun:
         assert load.already_loaded(migrated, sa) is True
 
 
+def _set_manifest_status(run_dir: Path, status: str | None) -> None:
+    """Rewrite run.json's `status` field (drop it when None) to
+    exercise the load-time non-complete guard."""
+    manifest = json.loads((run_dir / "run.json").read_text())
+    if status is None:
+        manifest.pop("status", None)
+    else:
+        manifest["status"] = status
+    (run_dir / "run.json").write_text(json.dumps(manifest))
+
+
+class TestStatusGuard:
+    """download.walk() writes run.json incrementally with
+    status="in-progress", flipping to "complete"/"dry-run" only at
+    the end. load must skip non-complete dumps so a crashed walk or a
+    --dry-run shell never leaks partial rows into silver."""
+
+    def _docs_run(self, tmp_path, ts):
+        return _make_bronze_run(tmp_path, ts, [
+            {"suffix": "000", "label": "Demo …000",
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement",
+                  "filename": "Brokerage-Statement_2026-02-28_000.PDF"},
+             ]},
+        ])
+
+    def test_in_progress_dump_skipped(self, migrated, tmp_path):
+        run = self._docs_run(tmp_path, "20260520T120000Z")
+        _set_manifest_status(run, "in-progress")
+        stats = load.load_run(migrated, run)
+        migrated.commit()
+        assert stats["documents_new"] == 0
+        sa = load.parse_snapshot_at("20260520T120000Z")
+        assert load.already_loaded(migrated, sa) is False
+
+    def test_dry_run_status_dump_skipped(self, migrated, tmp_path):
+        run = self._docs_run(tmp_path, "20260520T120000Z")
+        _set_manifest_status(run, "dry-run")
+        stats = load.load_run(migrated, run)
+        migrated.commit()
+        assert stats["documents_new"] == 0
+        sa = load.parse_snapshot_at("20260520T120000Z")
+        assert load.already_loaded(migrated, sa) is False
+
+    def test_complete_status_dump_loads(self, migrated, tmp_path):
+        run = self._docs_run(tmp_path, "20260520T120000Z")
+        _set_manifest_status(run, "complete")
+        stats = load.load_run(migrated, run)
+        migrated.commit()
+        assert stats["documents_new"] == 1
+        sa = load.parse_snapshot_at("20260520T120000Z")
+        assert load.already_loaded(migrated, sa) is True
+
+    def test_statusless_dump_still_loads(self, migrated, tmp_path):
+        # Backward compat: pre-`status` manifests carry no status key
+        # and must remain loadable.
+        run = self._docs_run(tmp_path, "20260520T120000Z")
+        _set_manifest_status(run, None)
+        stats = load.load_run(migrated, run)
+        migrated.commit()
+        assert stats["documents_new"] == 1
+
+
 # ============================================================
 # Money parser
 # ============================================================

@@ -99,6 +99,13 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete debug artefacts (<run>/screenshots/) and
+        # non-complete dumps from the bronze tree. No browser, no
+        # Xvfb. Also reachable host-side via the wrapper.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -119,6 +126,9 @@ Subcommands:
               months (override with --range; --range Last10Years
               for a full backfill). Stdin must be a TTY.
   load        Parse bronze into the silver SQLite database.
+  prune       Delete debug artefacts (<run>/screenshots/) and
+              non-complete dumps from the bronze tree. --dry-run
+              prints the plan first.
   vnc-login   Fallback to a VNC-driven login + scrape when the
               CLI-MFA selectors drift or a non-code challenge is
               required. Starts x11vnc on 127.0.0.1:5900; tunnel
