@@ -11,14 +11,10 @@ RUN pip install -r requirements.txt
 # Copy scripts last. Listed explicitly so accidentally-present
 # host artefacts (.venv, real-credential JSONs, recorded Playwright
 # traces) never make it into the image even if .dockerignore is
-# incomplete.
-#
-# Only login.py + landmarks.py exist today; download.py / load.py /
-# migrations/ will be added in subsequent commits. Until then the
-# entrypoint dispatches `download` / `load` subcommands to scripts
-# that do not exist, which is fine — running them produces a clear
-# "no such file" error rather than a silent failure.
-COPY login.py download.py load.py landmarks.py pdf_parsers.py /app/
+# incomplete. login.py mints the session; download.py exports bronze;
+# load.py is the silver loader; prune.py is the bronze
+# non-complete-dump cleaner (also reachable host-side via the wrapper).
+COPY login.py download.py load.py prune.py landmarks.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

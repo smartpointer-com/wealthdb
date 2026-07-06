@@ -107,7 +107,7 @@ below `WINDOW_MIN_DAYS = 1`.
 ```
 <dest>/
 └── 20260518T220332Z/                                              one run = one UTC-timestamped dir
-    ├── run.json                                                   manifest (accounts, windows, file inventory)
+    ├── run.json                                                   manifest (status, accounts, windows, file inventory)
     ├── transactions/
     │   ├── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.csv         one per account per window
     │   └── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940       one or more per cash account
@@ -118,6 +118,15 @@ below `WINDOW_MIN_DAYS = 1`.
 The `<sha256-prefix>` collapses the opaque UBS account-id token to
 16 hex chars. UBS account-ids all share a ~34-char per-customer
 prefix, so a naive slice would collide silently — hashing avoids it.
+
+`download` writes `run.json` twice: `{"status": "in-progress"}` when
+it creates the run dir, then an atomic overwrite with the terminal
+manifest carrying `"status": "complete"` (or `"dry-run"`) once the
+walk finishes. A run dir left with `status: "in-progress"` (or none at
+all) is therefore a crashed walk, and a `dry-run` shell is a
+`--dry-run`; `prune` reclaims both. Dumps that predate this field are
+statusless but complete iff their manifest is present and not a
+`--dry-run` shell (`dry_run: false`).
 
 ### Silver schema and gold-merge contract
 
@@ -197,10 +206,29 @@ out of the bronze/silver tree.
 ./ubs-web download --dry-run --screenshot-dir /debug/download
 ./ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
 ./ubs-web load                          # defaults under the /data mount
+./ubs-web prune --dry-run               # print the deletion plan, delete nothing
+./ubs-web prune                         # reclaim non-complete dumps
 ```
 
 Override any of the host paths via env vars:
 `UBS_WEB_SECRETS_DIR`, `UBS_WEB_DATA_DIR`, `UBS_WEB_DEBUG_DIR`.
+
+#### Reclaiming disk
+
+`prune` removes whole run dirs that are **not** complete dumps: a
+`--dry-run` shell (a manifest and no exports), or a walk that crashed
+before finalising (an `in-progress` marker, or no `run.json` at all).
+ubs-web writes no debug artefact inside a bronze run dir — its
+screenshots, Playwright traces and QR PNGs land in the external
+`--screenshot-dir` / `--trace` / `--qr-png` outputs (the `/debug`
+mount), never in bronze — so there is nothing to prune from a complete
+dump; its load inputs (`positions/`, `transactions/`, `documents/`,
+`run.json`) are always kept and silver stays reproducible. Deleting a
+non-complete dump surfaces on the next `load --force` rebuild. An
+in-flight guard (`--min-age-hours`, default 1, keyed on recent write
+activity) keeps it from removing a multi-window backfill that is still
+running. `--debug` is accepted on `download` for a uniform CLI surface
+but gates nothing bronze-resident here.
 
 ### Headless remote host
 

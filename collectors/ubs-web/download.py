@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import re
 import sys
@@ -99,6 +98,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Capture a Playwright trace bundle. Requires "
                         "--screenshot-dir; the bundle lands there alongside "
                         "screenshots.")
+    p.add_argument("--debug", action="store_true",
+                   help="Uniform debug gate. ubs-web writes no debug artefact "
+                        "into the bronze run dir — its troubleshooting "
+                        "diagnostics (per-landmark screenshots, the Playwright "
+                        "trace bundle) are the external --screenshot-dir / "
+                        "--trace outputs, which land in the /debug mount, not "
+                        "in bronze. This flag is accepted so the CLI surface "
+                        "matches the other collectors; it currently gates "
+                        "nothing bronze-resident.")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     return p.parse_args(argv)
@@ -1007,6 +1015,14 @@ def write_run_json(run_dir: Path, since: date, until: date,
                    dry_run: bool) -> None:
     payload = {
         "dump_started_at": bronze.ts_slug(),
+        # Terminal status for the run.json lifecycle: this function is
+        # only reached after the walk body, so a real run finalises as
+        # "complete" and a --dry-run walk as "dry-run". The atomic write
+        # below overwrites the "in-progress" marker dropped at run-dir
+        # creation. `prune` keys on this field; the legacy `dry_run`
+        # bool is kept for backward compatibility with the statusless
+        # classification of pre-change dumps.
+        "status": "dry-run" if dry_run else "complete",
         "dry_run": dry_run,
         "transactions": {
             "since": since.isoformat(),
@@ -1025,9 +1041,7 @@ def write_run_json(run_dir: Path, since: date, until: date,
             "items": positions,
         },
     }
-    (run_dir / "run.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8",
-    )
+    bronze.atomic_write_json(run_dir / "run.json", payload)
 
 
 # ============================================================
@@ -1200,6 +1214,13 @@ def main(argv: list[str]) -> int:
     run_dir = args.dest / bronze.ts_slug()
     run_dir.mkdir(parents=True, exist_ok=False)
     log.info("bronze dir: %s", run_dir)
+    # Drop an "in-progress" manifest up front and atomically overwrite it
+    # with the terminal status at the end (write_run_json). This makes a
+    # crashed walk — which never reaches write_run_json — legible to
+    # `prune` (status="in-progress" ⇒ non-complete dump, reclaimed whole
+    # once quiescent) instead of leaving an empty run dir, and closes the
+    # window where a run dir carries no run.json at all.
+    bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
 
     from playwright.sync_api import sync_playwright
 

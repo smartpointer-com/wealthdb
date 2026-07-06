@@ -367,6 +367,29 @@ wins per date) is owned by the wealthdb UBS adapter — see
 - **Atomicity.** One transaction per dump-run. Roll back on any
   parsing failure; re-run after fixing.
 
+- **Run status + pruning.** `download` writes `run.json` twice: a
+  `{"status": "in-progress"}` marker the moment it creates the run
+  dir, then an atomic overwrite with the terminal manifest carrying
+  `"status": "complete"` (or `"dry-run"`, alongside the legacy
+  `dry_run` bool) once the walk finishes. This makes a crashed walk —
+  which never reaches `write_run_json` — legible without leaving an
+  empty run dir. `load` is unaffected: `scan_bronze` selects every
+  timestamped subdir regardless of `run.json`, and `_read_run_json`
+  tolerates a missing manifest, so no dump-selection guard is needed.
+  `prune.py` (a thin wrapper over the shared `collectorkit.prune`
+  engine) uses the status field to reclaim disk: it deletes whole run
+  dirs that are non-complete — `in-progress` / `dry-run` / no
+  `run.json` — and keeps every complete dump's load inputs untouched.
+  `debug_subdirs` is empty because ubs-web writes no debug artefact
+  inside bronze: screenshots, Playwright traces and QR PNGs all go to
+  the external `--screenshot-dir` / `--trace` / `--qr-png` outputs (the
+  `/debug` mount). Because the sole deletion path is a whole
+  non-complete dir, the one classification that must be exact is the
+  legacy (statusless) fallback: a pre-change `--dry-run` shell carries
+  a full-looking manifest with `dry_run: true`, so completeness there
+  is `manifest present AND not dry_run`, not the bare manifest-presence
+  fidelity-web uses.
+
 ## 5. Feed-coverage gaps the adapter must reckon with
 
 These are source-specific limits of what the silvers carry. How the

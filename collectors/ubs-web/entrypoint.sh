@@ -17,6 +17,13 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (crashed walks, --dry-run shells)
+        # from the bronze tree. No browser, no Xvfb — a pure file walk
+        # over the /data mount.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -32,6 +39,8 @@ Subcommands:
   login     Mint or refresh the Playwright session state.
   download  Export bronze artefacts from the netbanking UI.
   load      Parse bronze into the silver SQLite database.
+  prune     Delete non-complete dumps from the bronze tree.
+            --dry-run prints the plan first.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.
 
