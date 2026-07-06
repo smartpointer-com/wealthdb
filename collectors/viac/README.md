@@ -25,6 +25,7 @@ Airlock-shaped auth stack); this collector's own
 | Persistent session minting | `login` | implemented (pure httpx) |
 | Bronze scrape | `download` | implemented (pure httpx) |
 | Silver loader | `load` | implemented |
+| Reclaim bronze disk | `prune` | implemented (non-complete dumps) |
 
 Phase 1 discovery (mapping the SPA's REST surface) ran via a
 short-lived VNC-driven Playwright harness; that scaffolding has
@@ -100,6 +101,8 @@ CSRF metadata) at `/secrets`, and bronze artefacts + silver DB at
 ./viac download --with-transaction-documents  # also pull the per-event TRANSACTION PDFs
 ./viac download --lookback 1y              # wider window (also: 1w/4w/3m/6m/2y/5y/all)
 ./viac load                                # parse bronze → silver SQLite
+./viac prune --dry-run                     # preview which non-complete dumps would be reclaimed
+./viac prune                               # delete crashed/in-progress walks + --dry-run shells
 ```
 
 The shared `--since` / `--until` / `--documents-since` /
@@ -132,7 +135,7 @@ for the shared env-file rules.
 ```
 <bronze-dir>/                            e.g. $XDG_DATA_HOME/wealthdb/viac/
 ├── 20260527T150000Z/                    one bronze dump per run
-│   ├── run.json                         manifest: timestamp, flags, document counts
+│   ├── run.json                         manifest: status, timestamp, flags, document counts
 │   ├── customer.json                    /rest/web/customer/current/<N-N>
 │   ├── wealth/
 │   │   ├── portfolio-inventory.json     master list (p3a + pvb + inv)
@@ -164,6 +167,41 @@ for the shared env-file rules.
 **Cross-run dedup** — PDFs are hard-linked from prior bronze
 runs when the document number matches, so a re-run only fetches
 genuinely-new documents.
+
+## Reclaiming disk
+
+`download` stamps each run's `run.json` with a `status`:
+`"in-progress"` when the run dir is created, atomically overwritten
+with `"complete"` (or `"dry-run"` for a `--dry-run` walk) once the walk
+finishes. A dump is **complete** when `status == "complete"`;
+everything else — an `in-progress` marker a crashed walk left behind, a
+`dry-run` shell, or no `run.json` at all — is **non-complete**. Dumps
+that predate the field carry a statusless manifest and are treated as
+complete (the walk historically wrote `run.json` only at the end),
+except a legacy `dry_run: true` shell, which stays non-complete.
+
+`prune` deletes whole non-complete dumps from the bronze tree. viac is
+REST-only and writes no bronze-resident debug artefacts, so a complete
+dump is never touched — there is nothing inside one to reclaim; the
+verb exists to clear crashed/aborted walks and `--dry-run` shells.
+
+```sh
+./viac prune --dry-run          # print the plan; remove nothing
+./viac prune                    # delete non-complete dumps
+./viac prune --min-age-hours 6  # protect anything written in the last 6h
+```
+
+`load` skips a non-complete dump too (it keys on the same `status`), so
+a crashed walk never leaks a partial snapshot into silver. The in-flight
+guard keeps `prune` from deleting a download still in progress: it keys
+on the newest write in the dir (default 1h via `--min-age-hours`), so a
+multi-hour backfill whose slug is old but whose files are fresh is
+protected. A complete dump's load inputs, an unreadable/corrupt
+`run.json` (skipped as UNKNOWN), symlinks, and non-run entries at the
+bronze root (the silver `viac.db`) are never touched. Document PDFs are
+hard-linked across dumps, so deleting a non-complete dump that holds a
+link is safe — the inode survives while any complete dump still links it.
+After a prune, the next `load --force` rebuild reflects the removal.
 
 ## Read-only
 

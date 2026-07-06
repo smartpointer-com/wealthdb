@@ -180,7 +180,7 @@ code would need to change beyond the underlying HTTP client.
 ```
 <bronze-dir>/                          e.g. $XDG_DATA_HOME/wealthdb/viac/
 ├── <YYYYMMDDTHHMMSSZ>/                one bronze dump per run
-│   ├── run.json                       manifest (timestamp, flags, doc counts)
+│   ├── run.json                       manifest (status, timestamp, flags, doc counts)
 │   ├── customer.json                  /rest/web/customer/current/<N-N>
 │   ├── wealth/
 │   │   ├── portfolio-inventory.json   master list (p3a + pvb + inv)
@@ -253,6 +253,41 @@ only historically (e.g. the pre-2024-fusion CS/iShares funds, no
 longer in the live holdings) enter the `instruments` catalogue
 through this path, and live instruments gain an earlier
 `first_seen_at`.
+
+## 5.2 Run status + reclaiming disk
+
+`download.py` records a `status` in `run.json`: `"in-progress"` when
+it creates the run dir (written via `bronze.atomic_write_json` right
+after `mkdir`), then atomically overwritten with `"complete"` — or
+`"dry-run"` for a `--dry-run` walk — once the walk returns. A crash
+mid-walk therefore leaves `status = "in-progress"`, a stronger "this
+dump is partial" signal than the older "no `run.json` = incomplete"
+heuristic, which a partial manifest write could defeat.
+
+`load.py` keys on it: `list_pending_dumps` skips a dump whose status is
+`"in-progress"` or `"dry-run"`, so a crashed walk never leaks a partial
+snapshot into silver. A statusless manifest predates the field and
+stays loadable (the walk historically wrote `run.json` only at the end,
+so its presence meant completion) — backward-compatible with existing
+bronze.
+
+`prune.py` — a thin wrapper over the shared, unit-tested
+[`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)
+engine — reclaims whole **non-complete** dumps (`status != "complete"`,
+or a legacy statusless `dry_run: true` shell, or no `run.json`). Its
+`PruneConfig.debug_subdirs` is empty: viac is REST-only and writes no
+bronze-resident debug artefacts, so a complete dump has nothing inside
+it to reclaim and is left untouched. The engine guarantees a `load`
+input is never deleted, an unreadable/corrupt manifest is skipped as
+UNKNOWN, symlinks and non-run-dir root entries (the silver `viac.db`)
+are never touched, and an in-flight download is protected by a
+newest-mtime age guard (`--min-age-hours`, default 1) plus a
+recheck immediately before deletion. Document PDFs are hard-linked
+across dumps (§5, cross-run dedup), so deleting a non-complete dump
+that holds a link is safe — the inode survives while any complete dump
+still links it, and `documents/<docid>.pdf` (a `load` input parsed
+cross-dump by the historical-reports phase) is never lost. `prune`
+runs in-container via the same `entrypoint.sh` dispatch as `load`.
 
 ## 6. Silver schema
 

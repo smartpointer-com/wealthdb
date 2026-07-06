@@ -11,7 +11,7 @@ RUN pip install -r requirements.txt
 # host artefacts (.venv, real-credential env files, bronze
 # downloads) never make it into the image even if .dockerignore
 # is incomplete.
-COPY login.py download.py load.py viac_client.py pdf_parsers.py /app/
+COPY login.py download.py load.py prune.py viac_client.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

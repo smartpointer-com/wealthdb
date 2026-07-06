@@ -37,6 +37,10 @@ Subcommands:
                       the per-event TRANSACTION PDFs (adds ~950
                       docs to the run).
   load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete dumps (crashed/in-progress
+                      walks and --dry-run shells) from the bronze
+                      tree. --dry-run previews; --min-age-hours N
+                      protects an in-flight download (default 1).
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 

@@ -877,6 +877,22 @@ def load_one_dump(
 # Orchestration
 # ============================================================
 
+def _run_status(run_json_path: Path) -> str | None:
+    """Read the `status` field from a bronze run.json, or None when the
+    file is unreadable/unparseable or carries no `status` key.
+
+    A statusless manifest predates download.py's status lifecycle and is
+    treated as loadable (its mere presence historically meant the walk
+    finished). An unreadable/corrupt manifest also returns None so it
+    stays in the pending set and load_one_dump surfaces the error, rather
+    than being silently skipped here."""
+    try:
+        meta = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta.get("status") if isinstance(meta, dict) else None
+
+
 def list_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
@@ -895,8 +911,18 @@ def list_pending_dumps(
         snapshot_at = ts_from_run_dir(d.name)
         if snapshot_at in loaded:
             continue
-        if not (d / "run.json").is_file():
+        run_json_path = d / "run.json"
+        if not run_json_path.is_file():
             logger.info("skipping %s — no run.json (still writing?)", d.name)
+            continue
+        # download.py now stamps run.json with a status ("in-progress" at
+        # run-dir creation, "complete"/"dry-run" at the end), so a run.json
+        # alone no longer proves the walk finished. Skip a crashed/aborted
+        # walk ("in-progress") or a --dry-run shell ("dry-run"); a
+        # statusless manifest predates the lifecycle and stays loadable.
+        status = _run_status(run_json_path)
+        if status in ("in-progress", "dry-run"):
+            logger.info("skipping %s — run.json status=%s", d.name, status)
             continue
         pending.append(d)
     return pending

@@ -126,3 +126,55 @@ def test_parse_account_id_product_split(tmp_path):
     code, index = loader.parse_account_id(PORT)
     assert code == "3"
     assert index == "01"
+
+
+# ============================================================
+# Dump selection: run.json status gate (list_pending_dumps)
+# ============================================================
+
+def _seed_manifest(root: Path, slug: str, manifest: dict) -> Path:
+    """Write only a run.json under <root>/<slug> — enough for
+    list_pending_dumps to classify the dump."""
+    d = root / slug
+    _write_json(d / "run.json", manifest)
+    return d
+
+
+def _pending_names(root: Path, conn) -> set[str]:
+    return {d.name for d in loader.list_pending_dumps(conn, root)}
+
+
+def test_list_pending_skips_in_progress_and_dry_run(tmp_path):
+    # download.py stamps run.json with a status; a crashed walk
+    # ("in-progress") or a --dry-run shell ("dry-run") must NOT be loaded
+    # — a run.json alone no longer proves the walk finished.
+    bronze = tmp_path / "bronze"
+    _seed_manifest(bronze, "20240101T000000Z", {"status": "in-progress"})
+    _seed_manifest(bronze, "20240102T000000Z", {"status": "dry-run",
+                                                 "dry_run": True})
+    conn, _ = _fresh_db(tmp_path)
+    assert _pending_names(bronze, conn) == set()
+
+
+def test_list_pending_loads_complete_and_legacy_statusless(tmp_path):
+    # status="complete" loads; a statusless manifest predates the
+    # lifecycle and stays loadable (backward compat) — even one carrying
+    # dry_run:true, which the old loader also ingested.
+    bronze = tmp_path / "bronze"
+    complete = _seed_manifest(bronze, "20240103T000000Z",
+                              {"status": "complete"})
+    legacy = _seed_manifest(bronze, "20240104T000000Z", {"utc": "x"})
+    legacy_dry = _seed_manifest(bronze, "20240105T000000Z",
+                                {"dry_run": True})
+    conn, _ = _fresh_db(tmp_path)
+    assert _pending_names(bronze, conn) == {
+        complete.name, legacy.name, legacy_dry.name}
+
+
+def test_list_pending_skips_run_dir_without_manifest(tmp_path):
+    # No run.json at all (still-writing / crashed before the marker) is
+    # skipped, as before.
+    bronze = tmp_path / "bronze"
+    (bronze / "20240106T000000Z").mkdir(parents=True)
+    conn, _ = _fresh_db(tmp_path)
+    assert _pending_names(bronze, conn) == set()

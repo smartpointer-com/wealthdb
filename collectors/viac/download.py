@@ -61,7 +61,6 @@ Read-only — see CLAUDE.md §1. Never invokes a write-state endpoint.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -71,7 +70,7 @@ from pathlib import Path
 
 import httpx
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 from viac_client import ViacClient
 
 log = logging.getLogger("viac.download")
@@ -179,6 +178,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--dry-run", action="store_true",
         help=("Walk the REST API and write the JSON artefacts but "
               "skip PDF binaries. Useful for landmark checks."),
+    )
+    p.add_argument(
+        "--debug", action="store_true",
+        help=("Uniform debug-artefact gate shared across the collectors. "
+              "viac is REST-only (pure httpx, no browser) and writes no "
+              "bronze-resident debug artefacts, so this currently gates "
+              "nothing; use -v/--verbose for DEBUG logging to stderr. The "
+              "flag exists so `--debug` means the same thing everywhere."),
     )
     p.add_argument(
         "-v", "--verbose", action="store_true",
@@ -307,6 +314,7 @@ def walk(client: ViacClient, dest_root: Path, *,
 
     manifest: dict = {
         "timestamp": ts,
+        "status": "in-progress",
         "dry_run": dry_run,
         "with_transaction_documents": with_tx_docs,
         "windows": {
@@ -319,6 +327,13 @@ def walk(client: ViacClient, dest_root: Path, *,
         "portfolios": [],
         "documents": {"total": 0, "fetched": 0, "linked": 0, "skipped": 0},
     }
+    # Drop an "in-progress" manifest up front; main() overwrites it with
+    # the terminal status once the walk returns. A crash mid-walk leaves
+    # status="in-progress", which load skips (only "complete" and legacy
+    # statusless dumps load) and prune reclaims once quiescent — a
+    # stronger signal than the older "no run.json = incomplete" heuristic,
+    # which a partial run.json write could defeat.
+    bronze.atomic_write_json(bronze_dir / "run.json", manifest)
 
     def get(path: str, rel: str) -> dict | list:
         manifest["endpoints"].append(path)
@@ -436,10 +451,15 @@ def main(argv: list[str]) -> int:
         log.error("HTTP error during walk: %s", e)
         return 2
 
-    # Write the manifest last so a partial bronze dir is detectable
-    # (no run.json = incomplete).
+    # Stamp the terminal status and atomically (tmp + rename) overwrite
+    # the in-progress marker, so a prune racing the finalisation never
+    # reads a half-written manifest and the run's state is legible
+    # throughout. status="complete" is the forward signal load and prune
+    # key on; a --dry-run shell carries "dry-run" so both treat it as
+    # non-complete.
+    manifest["status"] = "dry-run" if manifest.get("dry_run") else "complete"
     bronze_dir = args.dest / manifest["timestamp"]
-    (bronze_dir / "run.json").write_text(json.dumps(manifest, indent=2))
+    bronze.atomic_write_json(bronze_dir / "run.json", manifest)
     log.info(
         "done. documents: total=%d fetched=%d linked=%d skipped=%d",
         manifest["documents"]["total"],

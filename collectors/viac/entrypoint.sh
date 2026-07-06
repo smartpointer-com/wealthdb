@@ -31,6 +31,14 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (crashed/in-progress walks and
+        # --dry-run shells) from the bronze tree. viac is REST-only and
+        # writes no bronze-resident debug artefacts, so complete dumps
+        # are left untouched. No browser, no Xvfb. --dry-run previews.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -55,6 +63,9 @@ Subcommands:
             the per-event TRANSACTION PDFs.
   load      Parse bronze into silver SQLite. Idempotent:
             skips dumps already loaded.
+  prune     Delete non-complete dumps (crashed/in-progress
+            walks and --dry-run shells) from the bronze tree.
+            --dry-run prints the plan first.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.
 
