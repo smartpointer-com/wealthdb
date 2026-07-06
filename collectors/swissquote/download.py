@@ -36,7 +36,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 log = logging.getLogger("swissquote.download")
 
@@ -89,6 +89,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Capture a Playwright trace bundle. Requires "
                         "--screenshot-dir; the bundle is written there "
                         "alongside screenshots.")
+    p.add_argument("--debug", action="store_true",
+                   help="Uniform debug gate (default off). No debug "
+                        "artefact ever lands in a bronze run dir unless "
+                        "this is set. Swissquote's diagnostics "
+                        "(screenshots, HTML dumps, the SmartL3 feedback "
+                        "log, trace bundles) already write OUTSIDE bronze, "
+                        "gated on --screenshot-dir / --trace, so today "
+                        "this flag gates nothing new — it exists so the "
+                        "flag is uniform across collectors and so any "
+                        "future bronze-resident capture is opt-in.")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     return p.parse_args(argv)
@@ -641,16 +651,57 @@ def fetch_document(context, doc: dict, target: Path) -> None:
 # Orchestration
 # ============================================================
 
-def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
-    """Remove a partial dump dir that has no run.json completion marker.
+def dump_is_complete(run_dir: Path) -> bool:
+    """Whether ``run_dir`` holds a completed dump, per the run.json
+    status lifecycle.
 
-    Called from the download crash-cleanup trap. Guarded on the
-    marker's absence so a completed dir is never touched, and on dir
-    existence so a failure before mkdir (or a dry run) is a no-op.
-    Uses ignore_errors so a cleanup hiccup never masks the original
-    exception. Returns True if a dir was removed.
+    A successful walk writes ``{"status": "in-progress"}`` when it
+    creates the run dir, then atomically overwrites run.json with the
+    terminal manifest carrying ``status == "complete"``. So:
+
+    * ``status == "complete"``            -> complete;
+    * any other status (``"in-progress"``) -> not complete (a crashed
+      or still-running walk);
+    * a statusless run.json                -> complete (a legacy dump:
+      download.py historically wrote run.json only once, at the very
+      end, so its mere presence meant the walk finished);
+    * no run.json / unreadable / corrupt   -> not complete.
+
+    Both the crash-cleanup trap and load's dump selection key on this
+    so an in-progress or crashed dump is never mistaken for a finished
+    one. It mirrors the legacy fallback ``prune`` uses
+    (``legacy_complete = lambda rd, m: m is not None``).
     """
-    if run_dir.exists() and not (run_dir / "run.json").is_file():
+    try:
+        raw = (run_dir / "run.json").read_text(encoding="utf-8")
+    except OSError:
+        return False  # absent, or unreadable (e.g. run.json is a dir)
+    try:
+        meta = json.loads(raw)
+    except ValueError:
+        return False  # corrupt bytes — not evidence of completeness
+    if not isinstance(meta, dict):
+        return False
+    status = meta.get("status")
+    if status is None:
+        return True  # legacy statusless manifest == complete
+    return status == "complete"
+
+
+def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
+    """Remove a partial dump dir that is not a completed dump.
+
+    Called from the download crash-cleanup trap. A dump is complete
+    only once run.json carries ``status == "complete"`` (or, for a
+    legacy dump, a statusless run.json is present). A run dir with no
+    run.json, or one still carrying the ``{"status": "in-progress"}``
+    marker this walk drops at creation, is a crashed/interrupted
+    download and is removed so orphans don't accumulate in bronze.
+    Guarded on dir existence so a failure before mkdir (or a dry run)
+    is a no-op. Uses ignore_errors so a cleanup hiccup never masks the
+    original exception. Returns True if a dir was removed.
+    """
+    if run_dir.exists() and not dump_is_complete(run_dir):
         shutil.rmtree(run_dir, ignore_errors=True)
         log.warning(
             "Removed incomplete dump dir %s after failure", run_dir.name,
@@ -709,6 +760,15 @@ def run(args: argparse.Namespace) -> int:
                 return 0
 
             run_dir.mkdir(parents=True, exist_ok=False)
+            # Drop an in-progress marker the moment the run dir exists,
+            # overwritten atomically with the terminal manifest at the
+            # end. A crashed walk therefore leaves run.json with
+            # status="in-progress" rather than no manifest at all —
+            # which the crash-cleanup trap and `prune` both key on to
+            # tell a partial dump from a finished one. Written atomically
+            # so a concurrent `prune` never reads a half-written file.
+            bronze.atomic_write_json(
+                run_dir / "run.json", {"status": "in-progress"})
             log.info("Writing artefacts to %s", run_dir)
 
             # --- Accounts list (informal type per account) -----------
@@ -789,6 +849,7 @@ def run(args: argparse.Namespace) -> int:
 
             # --- run.json --------------------------------------------
             run_meta = {
+                "status": "complete",
                 "timestamp": run_ts_str,
                 "customer_id": customer_id,
                 "accounts": {"file": "accounts.json", "entries": accounts},
@@ -806,10 +867,10 @@ def run(args: argparse.Namespace) -> int:
                 "list_of_assets": {"file": "list_of_assets.xls"},
                 "account_overview": {"file": "account_overview.pdf"},
             }
-            (run_dir / "run.json").write_text(
-                json.dumps(run_meta, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            # Atomic (tmp + rename) so the in-progress marker is
+            # replaced in a single step and a `prune` racing the
+            # finalisation never reads a half-written manifest.
+            bronze.atomic_write_json(run_dir / "run.json", run_meta)
             log.info(
                 "Done. %d transaction window(s); %d new document(s).",
                 len(txn_entries), len(doc_entries),

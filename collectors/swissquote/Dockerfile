@@ -12,7 +12,7 @@ RUN pip install -r requirements.txt
 # present host artefacts (.venv, real-credential JSONs, recorded
 # Playwright traces) never make it into the image even if
 # .dockerignore is incomplete.
-COPY login.py download.py load.py landmarks.py /app/
+COPY login.py download.py load.py landmarks.py prune.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

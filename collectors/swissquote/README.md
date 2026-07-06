@@ -80,6 +80,7 @@ mount/wrapper conventions (`~/.secrets → /secrets`,
 ./swissquote login --check
 ./swissquote download --dry-run
 ./swissquote load                  # defaults: --silver-db /data/swissquote.db --bronze-dir /data
+./swissquote prune --dry-run       # preview bronze disk reclaim (see "Reclaiming disk")
 ```
 
 ### Headless remote host
@@ -114,7 +115,7 @@ port-forwarding), then run scripted afterwards.
 │   ├── documents/
 │   │   ├── <docid>.pdf             eDocuments (trade confirms, statements, tax statements, fee notes, ...)
 │   │   └── ...
-│   └── run.json                    metadata: customer ID, accounts entries, transaction + documents windows, per-doc metadata
+│   └── run.json                    metadata + status: written "in-progress" at run-dir creation, atomically overwritten "complete" at the end
 ├── 20260514T210105Z/
 │   └── ...
 ├── manual/                         user-uploaded bronze artefacts
@@ -269,6 +270,17 @@ Per run, the script:
    transaction window bounds, documents window bounds, and per-document
    metadata.
 
+The run dir carries a `run.json` **status** through its life: a
+`{"status": "in-progress"}` marker is dropped the moment the dir is
+created, and the terminal manifest (`"status": "complete"`) atomically
+overwrites it as the final step. A crash therefore leaves the marker
+behind rather than a bare run dir. `load` ingests only
+`status == "complete"` dumps (a statusless manifest from a pre-status
+dump counts too); a crashed dump's partial artefacts are skipped
+instead of leaking a partial snapshot into silver, the download
+crash-cleanup trap removes it, and `prune` can reclaim any that slip
+past the trap (see [Reclaiming disk](#reclaiming-disk)).
+
 Every response is written to disk verbatim — no parsing, no
 normalisation, no filtering happens at this stage. That's silver's
 job.
@@ -333,9 +345,10 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` (and `--documents-since` if unset) to `until − X`; overridden by explicit `--since` / `--documents-since`. |
 | `--documents-since` | _same as `--since`_ | Earliest document date (YYYY-MM-DD). Content-sha256 dedup means re-runs don't re-download already-captured PDFs. |
 | `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
-| `--dry-run` | off | Skip exports; only validate session and selectors. |
-| `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. |
+| `--dry-run` | off | Skip exports; only validate session and selectors. Returns before creating a run dir, so a dry run leaves no bronze artefacts (and no `run.json`) behind. |
+| `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. Writes outside bronze (the `/debug` mount). |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. |
+| `--debug` | off | Uniform debug gate: no debug artefact ever lands in a bronze run dir unless set. Swissquote's diagnostics already write outside bronze (gated on `--screenshot-dir` / `--trace`), so today this flag gates nothing new — it keeps the flag uniform across collectors and keeps any future bronze-resident capture opt-in. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Caveats
@@ -461,6 +474,37 @@ migration. Each file:
 The loader executes each new migration in numeric order and commits
 between files. Silver databases must always be at the latest schema —
 never write code that handles "if column X exists".
+
+## Reclaiming disk
+
+```sh
+./swissquote prune --dry-run   # print the deletion plan, delete nothing
+./swissquote prune             # delete it
+```
+
+`prune` removes whole non-complete run dirs across the bronze tree —
+a run dir with no `run.json`, or one whose `status` is anything other
+than `"complete"` (an `"in-progress"` marker from a walk that crashed
+past the download's own cleanup trap — a hard kill, OOM, or power
+loss). Swissquote writes no bronze-resident debug artefacts (its
+screenshots, DOM dumps, and trace bundles all land in the external
+`--screenshot-dir` / `/debug` mount), so unlike some collectors there
+is no `screenshots/`-style category to reclaim; only whole
+non-complete dumps.
+
+Load inputs of complete dumps — `run.json`, `accounts.json`,
+`positions.xls`, `position_details.json`, `list_of_assets.xls`, the
+transactions CSVs, and the whole `documents/` tree (its
+Portfolio-Performance PDFs are re-parsed into positions on later
+loads) — are never touched, so silver stays reproducible; deleting a
+non-complete dump surfaces on the next `load --force` rebuild. The
+non-run entries at the bronze root (`manual/`, the silver
+`swissquote.db`) are out of scope by construction. `prune` runs in the
+container like the other verbs, and an in-flight guard
+(`--min-age-hours`, default 1, keyed on recent write activity) keeps
+it from removing a download that is still running. A `run.json` that
+can't be read or parsed is left alone rather than treated as
+incomplete.
 
 ## Silver: `accounts.account_product`
 

@@ -32,6 +32,9 @@ Subcommands:
   login [args...]     Mint or refresh the session state file.
   download [args...]  Export bronze artefacts from e-banking.
   load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps
+                      (--dry-run previews the plan; --min-age-hours N
+                      guards a download still in flight).
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 

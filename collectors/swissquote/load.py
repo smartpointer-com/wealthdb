@@ -88,18 +88,59 @@ def canonical_json(obj) -> str:
 # Bronze scanner
 # ============================================================
 
+def _dump_is_complete(run_dir: Path) -> bool:
+    """Whether ``run_dir`` holds a completed dump, per download.py's
+    run.json status lifecycle.
+
+    download.py writes ``{"status": "in-progress"}`` when it creates
+    the run dir and atomically overwrites run.json with the terminal
+    manifest carrying ``status == "complete"`` at the end. So:
+
+    * ``status == "complete"``             -> complete (load it);
+    * any other status (``"in-progress"``,
+      ``"dry-run"``)                        -> not complete (a crashed
+      or still-running walk — do NOT ingest its partial artefacts);
+    * a statusless run.json                 -> complete (a legacy dump:
+      download.py historically wrote run.json only once, at the end,
+      so its presence meant the walk finished);
+    * no run.json / unreadable / corrupt    -> not complete.
+
+    Kept in lockstep with download.dump_is_complete and the legacy
+    fallback ``prune`` uses (``legacy_complete = lambda rd, m: m is not
+    None``): before the status field existed, a present run.json was
+    the completion marker.
+    """
+    try:
+        raw = (run_dir / "run.json").read_text(encoding="utf-8")
+    except OSError:
+        return False  # absent, or unreadable (e.g. run.json is a dir)
+    try:
+        meta = json.loads(raw)
+    except ValueError:
+        return False  # corrupt bytes — not evidence of completeness
+    if not isinstance(meta, dict):
+        return False
+    status = meta.get("status")
+    if status is None:
+        return True  # legacy statusless manifest == complete
+    return status == "complete"
+
+
 def find_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
     """Return complete run-dirs in bronze not yet recorded in dump_runs.
 
-    `run.json` is download.py's completion marker — it is written as
-    the final step of a dump. A timestamp-named dir without it is an
-    orphaned partial dump from a crashed/interrupted download (it may
-    hold a stray accounts.json etc. but no usable metadata). Such
-    dirs are skipped with a warning rather than aborting the whole
-    load, so one bad download never blocks loading the good dumps
-    around it.
+    A dump is complete only once its run.json carries
+    ``status == "complete"`` — the terminal manifest download.py writes
+    atomically at the end of a successful walk (a legacy statusless
+    run.json counts too; see `_dump_is_complete`). A timestamp-named
+    dir with no run.json, or one still carrying the in-progress marker
+    download.py drops at run-dir creation, is a crashed/interrupted or
+    still-running download; ingesting its partial artefacts would leak
+    a partial balance snapshot into silver (and thence gold). Such dirs
+    are skipped with a warning rather than aborting the whole load, so
+    one bad download never blocks loading the good dumps around it.
     """
     loaded = {
         row["snapshot_at"]
@@ -114,10 +155,11 @@ def find_pending_dumps(
         ts = _run_dir_to_epoch(child.name)
         if ts in loaded:
             continue
-        if not (child / "run.json").is_file():
+        if not _dump_is_complete(child):
             log.warning(
-                "Skipping incomplete dump %s (no run.json — likely a "
-                "crashed/interrupted download)", child.name,
+                "Skipping incomplete dump %s (run.json absent or "
+                "status != 'complete' — likely a crashed, interrupted, "
+                "or still-running download)", child.name,
             )
             continue
         out.append(child)

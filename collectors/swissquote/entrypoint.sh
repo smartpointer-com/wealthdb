@@ -17,6 +17,12 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps from the bronze tree (swissquote
+        # writes no bronze-resident debug artefacts). No browser needed.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -32,6 +38,8 @@ Subcommands:
   login     Mint or refresh the Playwright session state.
   download  Export bronze artefacts from the e-banking UI.
   load      Parse bronze into the silver SQLite database.
+  prune     Delete non-complete dumps from the bronze tree.
+            --dry-run prints the plan first.
   sh|bash   Open an interactive shell inside the container.
   help      Show this message.
 
