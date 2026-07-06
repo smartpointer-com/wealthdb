@@ -36,7 +36,11 @@ Bronze layout (collectorkit.bronze conventions):
     viewer.json        currentUser (identity; PII stays out of the repo)
     captures.jsonl     one line per captured GraphQL exchange:
                        {"op","variables","data"}
-    run.json           manifest (accounts, ops + counts)
+    run.json           manifest (status, ops + counts), written LAST —
+                       "in-progress" while artefacts serialise, atomically
+                       overwritten with "complete" at the end. That
+                       terminal status is the signal `prune` keys on to
+                       tell a finished dump from a crashed one.
 
 Read-only (CLAUDE.md): navigation + passive capture only. We never click
 an invest/commit/fund/settings control, and stay off any lead/admin
@@ -205,6 +209,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "GraphQL to fire. Default: %(default)s.")
     p.add_argument("--dry-run", action="store_true",
                    help="Navigate + capture but write no bronze (smoke test).")
+    p.add_argument("--debug", action="store_true",
+                   help="Uniform debug-artefact gate (default off). download "
+                        "writes NO bronze-resident debug artefact today — the "
+                        "browser-diagnostic capture (HAR, Playwright trace, "
+                        "click log, saved blobs) lives in the separate "
+                        "`explore` verb, which writes OUTSIDE bronze (a /debug "
+                        "mount) — so this flag currently gates nothing here. It "
+                        "exists so the flag surface is uniform across "
+                        "collectors and reserves the name for any future "
+                        "bronze-resident diagnostic.")
     p.add_argument("--check-session", action="store_true",
                    help="Probe only whether the BYO session is still accepted by "
                         "the server (bootstrap identity, navigate nothing else, "
@@ -428,6 +442,15 @@ def main(argv: list[str]) -> int:
 
     run_dir = bronze.run_dir(args.dest)
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Drop an "in-progress" marker before serialising artefacts, to be
+    # atomically overwritten with the terminal manifest below. All GraphQL
+    # capture completes in-memory (the `captures` list) before this point,
+    # so the in-progress window is brief — it guards a crash during the
+    # captures.jsonl write loop: such a dir carries status="in-progress",
+    # which `prune` reclaims once quiescent instead of `load` re-ingesting
+    # a partial dump. (--dry-run returned above, so it never reaches here
+    # and leaves no prunable shell — no status="dry-run" is needed.)
+    bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
     # viewer.json for identity convenience
     if "ViewerQuery" in latest_by_op:
         bronze.atomic_write_json(run_dir / "viewer.json",
@@ -436,7 +459,13 @@ def main(argv: list[str]) -> int:
     with open(run_dir / "captures.jsonl", "w", encoding="utf-8") as fp:
         for c in captures:
             fp.write(bronze.canonical_json(c) + "\n")
+    # Terminal manifest: written LAST, atomically overwriting the
+    # in-progress marker in a single rename. status="complete" is the
+    # forward signal `prune` keys on. `had_errors` does NOT gate
+    # completeness — a dump with GraphQL errors still finished capturing
+    # and is a complete dump.
     bronze.atomic_write_json(run_dir / "run.json", {
+        "status": "complete",
         "source": "angellist",
         "venture_host": VENTURE,
         "captured_at": run_dir.name,

@@ -83,9 +83,41 @@ Routes + operations captured (per invest account):
 `download` writes, under `$XDG_DATA_HOME/wealthdb/angellist/<UTC-ts>/`:
 
 - `captures.jsonl` — one line per captured GraphQL exchange:
-  `{op, variables, data}`. The full source payload, untouched.
-- `viewer.json` — `currentUser` (identity convenience).
-- `run.json` — manifest (ops + counts).
+  `{op, variables, data}`. The full source payload, untouched. The
+  primary `load` input.
+- `viewer.json` — `currentUser` (identity convenience; not a `load`
+  input). Holds PII, so it stays out of the repo.
+- `run.json` — manifest (`status`, ops + counts), written LAST. A
+  `status: "in-progress"` marker is dropped when the run dir is created
+  and atomically overwritten with `status: "complete"` at the end (all
+  GraphQL capture completes in-memory first, so the in-progress window is
+  the captures.jsonl write loop only). That terminal `status` is the
+  signal `prune` keys on; `had_errors` does not gate completeness (a dump
+  with GraphQL errors still finished). Dumps that predate the `status`
+  field carry a statusless-but-present manifest — the walk wrote it only
+  at the end, so its presence still means COMPLETE. `run.json` is also a
+  `load` input (stored into `dump_runs.payload`).
+
+The tax documents do NOT live in the run dir: `download` (and the manual
+`login` grab) save the K-1 CSV/PDF and financial statements to a
+bronze-ROOT sibling `angellist-documents/`, and the silver DB is
+`angellist.db` at the same level. Neither is a timestamped run dir.
+
+### Pruning bronze
+
+`prune` (`prune.py`, a thin wrapper over the shared
+`collectorkit.prune` engine) reclaims disk by deleting whole
+**non-complete** run dirs — a `download` that crashed before writing its
+terminal `run.json` (`status: "in-progress"`, or no manifest). It keys on
+the `run.json` `status` above; an in-flight guard (`--min-age-hours`,
+keyed on the newest write in the dir) protects a long download still in
+flight, and a corrupt/unreadable manifest is UNKNOWN and never deleted.
+`debug_subdirs` is empty — angellist writes no bronze-resident debug
+artefact (the `explore` harness's HAR/trace/click-log land under `/debug`,
+outside bronze) — so a *complete* dump keeps every file, and the engine
+only ever iterates timestamped run dirs, leaving the `angellist-documents/`
+sibling and `angellist.db` untouched. It runs host-side (a file walk needs
+no container), so it can reclaim disk while a `download` is mid-flight.
 
 ## Silver
 

@@ -42,3 +42,11 @@ def test_check_session_flag():
     # probe (a cookie can be unexpired yet server-rejected).
     assert download.parse_args(["--check-session"]).check_session is True
     assert download.parse_args([]).check_session is False
+
+
+def test_debug_flag():
+    # The uniform --debug gate (default off). download writes no
+    # bronze-resident debug artefact today, so the flag currently gates
+    # nothing — it exists so the flag surface is uniform across collectors.
+    assert download.parse_args(["--debug"]).debug is True
+    assert download.parse_args([]).debug is False

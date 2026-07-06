@@ -75,6 +75,13 @@ Subcommands:
                       funding_accounts + funding_transactions,
                       k1_capital_accounts, tax_documents.
                       --force re-loads snapshots already in dump_runs.
+  prune [args...]     Delete non-complete dumps (crashed / interrupted
+                      downloads that never wrote a terminal run.json)
+                      from the bronze tree. Runs host-side (pure stdlib;
+                      no Docker spawn), so it can reclaim disk while a
+                      download is mid-flight — the in-flight dump is
+                      protected by prune's own age guard. --dry-run prints
+                      the plan without deleting anything.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 
@@ -96,6 +103,24 @@ Credentials:
   ANGELLIST_PASSWORD in /secrets/angellist.env.
 EOF
     exit 0
+fi
+
+# `./angellist prune [args...]` → host-side python invocation.
+#
+# Like fidelity-web's `load`/`prune`: a pure file walk needs no
+# container, and running it host-side bypasses the single-writer safety
+# guard so it can reclaim disk while a `download` container is mid-flight
+# (the in-flight dump is protected by prune's own age guard). prune.py +
+# collectorkit.prune/bronze are pure stdlib. The default --bronze-dir
+# comes first so an explicit flag in [args...] overrides it (argparse
+# last-wins). --bronze-dir points at the bronze ROOT ($HOST_DATA); the
+# engine iterates only timestamped run dirs, so the sibling
+# angellist-documents/ tree and the silver angellist.db are never
+# touched.
+if [[ "${1:-}" == "prune" ]]; then
+    shift
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
 fi
 
 wrapper_main "$@"

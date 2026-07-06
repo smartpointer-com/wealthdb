@@ -183,6 +183,13 @@ PREFS
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (crashed / interrupted downloads)
+        # from the bronze tree. Pure file walk, no browser, no display.
+        # Also reachable host-side via the wrapper (the preferred route).
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -217,6 +224,9 @@ Subcommands:
               tax_documents, portfolio_summary / timeseries, commitments,
               funding_accounts + funding_transactions. Pass --force to
               re-load snapshots already in dump_runs.
+  prune       Delete non-complete dumps (crashed / interrupted downloads
+              that never wrote a terminal run.json) from the bronze tree.
+              --dry-run prints the plan first.
   explore     Discovery harness: Camoufox under VNC with HAR + Playwright
               trace + click log under /debug (route mapping; --cookies loads
               the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
