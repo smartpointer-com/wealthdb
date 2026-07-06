@@ -140,11 +140,18 @@ def test_in_progress_status_dump_deleted_when_stale(tmp_path):
     assert not d.exists()
 
 
-def test_status_missing_key_dump_deleted(tmp_path):
-    d = make_dump(tmp_path, OLD_TS, status=None, screenshots=False,
+def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
+    # A run.json with no `status` key predates the status lifecycle. The
+    # walk historically wrote run.json only once (at the end), so its
+    # presence means the dump finished: classify COMPLETE, keep its load
+    # inputs, prune only its debug captures. (New walks always carry a
+    # status key, so this branch only ever sees pre-change dumps.)
+    d = make_dump(tmp_path, OLD_TS, status=None, screenshots=True,
                   age_s=STALE_S)
     run_main(tmp_path)
-    assert not d.exists()
+    assert d.exists()
+    assert not (d / "screenshots").exists()
+    assert (d / "positions" / "positions_summary.csv").exists()
 
 
 # ============================================================

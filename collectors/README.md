@@ -21,6 +21,7 @@ Every collector exposes the same three steps:
 | `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. (Omitted where the runtime mints the session inside `download` — see each tool.) |
 | `download` | **bronze** under `$XDG_DATA_HOME/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
 | `load` | **silver** `$XDG_DATA_HOME/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
+| `prune` | reclaimed bronze disk | Delete debug artefacts from complete dumps + whole non-complete dumps. Never touches a `load` input. See [Debug artefacts, run status, and pruning bronze](#debug-artefacts-run-status-and-pruning-bronze). |
 
 Bronze is immutable raw capture; silver is the parsed, queryable
 form and the **input contract** to gold. One silver DB per source.
@@ -122,11 +123,13 @@ collectors/<name>/
 `wealthdb-collect list` when `collectors/<name>/<name>` is executable.
 The wrapper therefore:
 
-- accepts the verbs **`login`**, **`download`**, **`load`** (plus
-  `build` and `help`; Docker wrappers also `sh`). `login` may be a no-op
-  ([`ubs-psn`](ubs-psn/), key-based) or fold into `download` (one-shot
-  scrapers), but the verb is still accepted so an orchestrator's
-  `login → download → load` never trips.
+- accepts the verbs **`login`**, **`download`**, **`load`**, **`prune`**
+  (plus `build` and `help`; Docker wrappers also `sh`). `login` may be a
+  no-op ([`ubs-psn`](ubs-psn/), key-based) or fold into `download`
+  (one-shot scrapers), but the verb is still accepted so an
+  orchestrator's `login → download → load` never trips. `prune` runs
+  host-side like `load` (a file walk needs no container), so it can
+  reclaim disk while a `download` is mid-flight.
 - honours the **uniform directory-override flags** on every verb, with
   this precedence (highest first):
 
@@ -205,6 +208,66 @@ each ending by inserting its own version into `schema_meta`
 (`silver_schema_version`). Silver is the **input contract to gold**: its
 columns follow the source's shape, not gold's, and are documented in the
 collector README.
+
+### Debug artefacts, run status, and pruning bronze
+
+A bronze run dir holds **only what `load` reads**. Diagnostics a run
+writes for troubleshooting — screenshots, HTML/DOM dumps, Playwright
+traces, failure captures — are not `load` inputs and are governed by one
+uniform convention:
+
+- **`--debug` (default off).** No debug artefact lands in a bronze run
+  dir unless `download` (or `login`) is passed `--debug`. Left on for
+  every nightly run, per-landmark captures dwarf the structured data and
+  become the bulk of the tree; off by default, a routine dump writes only
+  what `load` reads. A collector's `--explore` (where it has one) implies
+  `--debug`. External diagnostics that already write **outside** bronze
+  (`--screenshot-dir`, `--trace` into a `/debug` mount) are unchanged —
+  the invariant is only that nothing debug-related lands in a bronze run
+  dir uninvited.
+
+- **`run.json` `status` lifecycle.** A `download` writes
+  `{"status": "in-progress"}` when it creates the run dir, then
+  atomically overwrites `run.json` with the terminal manifest carrying
+  `"status": "complete"` (or `"dry-run"`) at the end. So a run dir is a
+  **complete** dump (`status == "complete"`), a **non-complete** one (an
+  `in-progress` marker from a crashed walk, a `dry-run` shell, or no
+  `run.json` at all), or — for a dump that predates this field — a
+  statusless manifest that each collector classifies from its original
+  terminal signal (the presence of the manifest, or of a terminal
+  artefact for collectors that never wrote a `run.json`).
+
+- **`prune`** deletes, across every timestamped run dir under the bronze
+  root: the collector's nominated **debug-artefact subdirs from complete
+  dumps**, and **whole non-complete dumps**. It runs host-side (like
+  `load`), previews with `--dry-run`, and guards in-flight downloads with
+  `--min-age-hours` (default 1) keyed on the newest write in the dir, so a
+  multi-hour backfill whose slug is old but whose files are fresh is
+  protected.
+
+The safety envelope is **identical everywhere** because it lives in one
+place — [`collectorkit.prune`](../shared/collectorkit/collectorkit/prune.py),
+a reviewed, unit-tested engine. Each collector ships a **thin `prune.py`**
+that hands the engine a `PruneConfig`: the `debug_subdirs` to reclaim
+(empty for collectors that write none) and an `is_complete(run_dir, meta)`
+predicate (most delegate to `prune.status_classification`, which encodes
+the `status` lifecycle plus a per-collector legacy fallback). The engine
+guarantees, for every collector:
+
+- a **`load` input is never deleted** — the only paths removed are the
+  configured debug subdirs of *complete* dumps and whole *non-complete*
+  run dirs; a complete dump's data is out of scope by construction;
+- an **unreadable or corrupt manifest is UNKNOWN and never deleted** — an
+  I/O error or corrupt bytes is an environmental failure, not proof of
+  incompleteness, so it is skipped before the collector predicate runs;
+- **symlinks are never followed or deleted**, and nothing at the bronze
+  root that isn't a timestamped run dir (a silver `.db`, a shared
+  `manual/` tree) is ever touched;
+- a whole-dir deletion **rechecks completeness + quiescence immediately
+  before `rmtree`**, closing the window between planning and deletion.
+
+Load-only collectors with no `<UTC-ts>/` run-dir layout ([`manual`](manual/),
+[`svb`](svb/)) document a scoped `prune` or a justified no-op instead.
 
 ### Build scaffolding
 
