@@ -2,25 +2,34 @@
 # wealthdb-collect — collect your account data from one bank or broker
 #
 # usage:
-#   wealthdb-collect <source> <login|download|load> [flags]
+#   wealthdb-collect <source> <login|download|load|prune> [flags]
 #   wealthdb-collect list
 #
 # subcommands:
 #   login      sign in to the source (prompts for 2FA)
 #   download   download the latest accounts + holdings
 #   load       load that download into the database
+#   prune      reclaim bronze disk: delete debug artefacts from complete
+#              dumps + whole non-complete (crashed/dry-run) dumps. Never
+#              touches a load input. Preview with --dry-run.
 #   list       list the sources you can collect from
 #
 # flags:
 #   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
 #   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>)
 #   --silver-db <path>    the database file to build (default <data-dir>/<source>.db)
+#   --debug               (download) also write diagnostic captures into the
+#                         bronze dump; off by default so a routine dump holds
+#                         only what load reads. prune reclaims what it writes.
+#   --dry-run             (prune) print the deletion plan without removing
+#                         anything; (download) walk without exporting.
 #
 # Flags are accepted on any subcommand (or set the matching env var — see
 # the README). Run login -> download -> load in order the first time, then
 # download + load to refresh. Narrow a download with --since / --until or
-# --lookback (1w 4w 3m 6m 1y 2y 5y all; default ~90 days); for a source's
-# own options, run `wealthdb-collect <source> --help`.
+# --lookback (1w 4w 3m 6m 1y 2y 5y all; default ~90 days); reclaim disk
+# afterward with prune (--dry-run first). For a source's own options, run
+# `wealthdb-collect <source> --help`.
 set -euo pipefail
 
 # Find the repo this script lives in, following symlinks (macOS has no
