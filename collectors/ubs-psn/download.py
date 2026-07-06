@@ -28,13 +28,14 @@ import base64
 import hashlib
 import logging
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paramiko
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 # Trusted host-key SHA-256 fingerprints are loaded from a sibling file
 # rather than embedded in the source, so updates to UBS's published keys
@@ -138,6 +139,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                    help="Connect, authenticate and verify host key, then "
                         "exit without touching any files.")
+    p.add_argument("--debug", action="store_true",
+                   help="Capture debug artefacts into the bronze run dir. "
+                        "An SFTP pull produces none, so today this gates "
+                        "nothing; the flag exists so the fleet's `--debug` "
+                        "convention is uniform. (For wire-level tracing use "
+                        "-v/--verbose, which writes to stderr, not bronze.)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="Enable DEBUG logging (incl. paramiko transport).")
     return p.parse_args()
@@ -239,12 +246,26 @@ def main() -> int:
         run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_dir = args.dest / run_ts
         run_dir.mkdir(parents=True, exist_ok=False)
+        # Forward status marker (fleet convention): "in-progress" at run-dir
+        # creation, atomically overwritten with "complete" once the pull
+        # finishes. This is additive metadata only — it never gates the
+        # sftp.get data path, and prune's has-zip guard, not this field, is
+        # what protects a crashed-but-non-empty dump from deletion.
+        bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
 
         downloaded, empty = download_all(sftp, run_dir, verbose=args.verbose)
         log.info("Done. %d zip(s) downloaded, %d order type(s) had nothing.",
                  downloaded, empty)
         if downloaded == 0:
-            run_dir.rmdir()
+            # Nothing was queued: the run dir holds only the in-progress
+            # marker (no irreplaceable data), so discard the whole shell.
+            # rmtree, not rmdir — the run.json makes the dir non-empty.
+            shutil.rmtree(run_dir)
+        else:
+            bronze.atomic_write_json(
+                run_dir / "run.json",
+                {"status": "complete", "downloaded": downloaded, "empty": empty},
+            )
         return 0
     finally:
         client.close()

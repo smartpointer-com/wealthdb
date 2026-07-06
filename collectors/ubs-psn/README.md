@@ -17,6 +17,7 @@ source-specific design notes.
 | --- | --- |
 | [`download.py`](download.py) | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
 | [`load.py`](load.py) | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
+| [`prune.py`](prune.py) | Reclaims bronze disk by removing zip-less crash shells. Safety-scoped: a run dir holding any zip is never a deletion candidate, because the PSN zips are irreplaceable. See [Reclaiming disk](#reclaiming-disk). |
 
 ## download.py
 
@@ -88,8 +89,11 @@ Real download:
 (Both read `UBS_PSN_CLIENT_ID` from `~/.secrets/ubs-psn.env`; append
 `--client-id CHxxxxxx` to override.)
 
-Files land in `./data/<UTC-timestamp>/<ORDERTYPE>.zip`. If the run
-downloaded nothing, the timestamped directory is removed.
+Files land in `./data/<UTC-timestamp>/<ORDERTYPE>.zip`. A `run.json`
+carrying `{"status": "in-progress"}` is written when the run dir is
+created and atomically overwritten with `{"status": "complete", …}`
+once the pull finishes. If the run downloaded nothing, the timestamped
+directory (marker and all) is removed.
 
 #### Flags
 
@@ -102,6 +106,7 @@ downloaded nothing, the timestamped directory is removed.
 | `--key` | `~/.secrets/ubs_psn_key` | Private RSA key path |
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
 | `--dry-run` | off | Skip downloads |
+| `--debug` | off | Capture debug artefacts into the bronze run dir. An SFTP pull produces none, so today this gates nothing; present so the fleet's `--debug` convention is uniform. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
 | `-v`, `--verbose` | off | DEBUG-level logging |
 
 ### Caveats
@@ -233,3 +238,27 @@ never write code that handles "if column X exists".
 - **Some "static" UBS XML feeds (SDCA, SDSA) carry daily-varying
   fields** (book balance, accrued interest, market value). Content
   dedup correctly captures these as new rows on each batch.
+
+## Reclaiming disk
+
+```sh
+./ubs-psn prune --dry-run   # print the deletion plan, delete nothing
+./ubs-psn prune             # delete it
+```
+
+`prune` shares the fleet-wide bronze-prune engine but is deliberately
+narrow here. The PSN zips are irreplaceable — UBS deletes each file
+server-side the moment it is downloaded, and `load` ingests whatever
+zips are present regardless of whether the dump finished — so a run
+dir holding *any* zip is classified complete and never a deletion
+candidate, even if a crash left `run.json` at `"in-progress"` or wrote
+no manifest at all. There are no debug artefacts to reclaim from a
+finished dump, so the only thing `prune` can ever remove is a zip-less
+crash shell: a run dir minted before the first file arrived and then
+abandoned. In practice this is a near-no-op (`download.py` already
+removes a run dir that fetched nothing, and `--dry-run` creates none),
+so its real value is the guarantee that a fleet-wide prune never
+deletes a ubs-psn load input. Runs host-side like `load`; an unreadable
+or corrupt `run.json` is left untouched, and an in-flight guard
+(`--min-age-hours`, default 1, keyed on recent write activity) keeps
+it from removing a download that is still running.

@@ -9,6 +9,9 @@
 #   download [args...]  Pull the nightly PSN files over SFTP into bronze.
 #                       (UBS deletes each file server-side on success.)
 #   load [args...]      Parse bronze into the silver SQLite DB.
+#   prune [args...]     Reclaim bronze disk. Safety-scoped: the PSN zips are
+#                       irreplaceable, so it only ever removes a zip-less
+#                       crash shell, never a load input. --dry-run to preview.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
@@ -30,7 +33,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     login)
@@ -61,8 +64,13 @@ case "$cmd" in
         exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
+    prune)
+        # --bronze-dir first so a user-supplied override in FORWARD_ARGS wins.
+        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        ;;
     *)
-        echo "ubs-psn: unknown command '$cmd' (expected: download|load)" >&2
+        echo "ubs-psn: unknown command '$cmd' (expected: download|load|prune)" >&2
         exit 2
         ;;
 esac

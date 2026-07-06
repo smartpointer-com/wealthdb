@@ -125,3 +125,41 @@ the operationally-correct response is:
 `dump_runs.snapshot_at` (= the dump-directory timestamp) provides
 idempotency on re-runs that don't change loader semantics, but for
 loader-semantics changes a wipe is the only consistent path.
+
+## 7. Bronze layout and pruning
+
+```
+<bronze-root>/
+├── 20260524T120000Z/
+│   ├── run.json                      status marker: "in-progress" at
+│   │                                 run-dir creation, "complete" once
+│   │                                 the pull finishes
+│   ├── ZMD.zip                       PSN XML master data (SDCL/SDCA/SDSA/…)
+│   ├── ZME.zip                       PSN XML rates / contracts (TDFXR/…)
+│   ├── ZAH.zip                       MT535 holdings
+│   ├── Z40.zip                       MT940 cash balances + movements
+│   ├── …                             one <ORDERTYPE>.zip per queued type
+│   └── HAC.zip / PTK.zip             EBICS admin zips (raw bronze; not
+│                                     load inputs, but never debug artefacts)
+├── 20260525T120000Z/
+│   └── …
+└── ubs-psn.db                        silver SQLite (default location)
+```
+
+A run dir is a flat set of `<ORDERTYPE>.zip` files — no subdirs, no
+debug artefacts. Every `Z*.zip` is a `load` input (the loader globs
+`Z*.zip` for both its XML and MT passes); the non-`Z` admin zips
+(`HAC`/`PTK`) are raw bronze the loader ignores but that `prune` still
+keeps. The PSN zips are irreplaceable: UBS deletes each file
+server-side on a successful download, so a re-run cannot recover it.
+
+`prune` therefore treats any run dir containing a zip as complete and
+untouchable — the has-zip check short-circuits *before* the `run.json`
+`status` field is consulted, so even a crash that left `status` at
+`"in-progress"` alongside already-fetched zips is kept whole. With no
+debug artefacts to reclaim, the only path `prune` can ever delete is a
+zip-less crash shell (a run dir minted before the first `sftp.get`),
+and only once it is quiescent. `download.py` already removes a run dir
+that fetched nothing, so in practice the verb is a safety-first
+near-no-op whose value is guaranteeing a fleet-wide prune never deletes
+a load input.
