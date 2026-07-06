@@ -103,13 +103,27 @@ bronze subdirectory holds documents that arrive out-of-band.
 │   ├── performance/
 │   │   └── performance.html                    full-page DOM (no structured export;
 │   │                                           return % surface only via rendered text)
-│   └── screenshots/
+│   └── screenshots/                            only with `download --debug` / `--explore`
 │       └── <ts>-<label>.{html,png}             per-landmark diagnostics for selector drift
+│                                               (+ <ts>-<label>.dominv.json with --explore)
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                     user-uploaded artefacts (documents that arrive out-of-band)
 └── fidelity-web.db                             silver SQLite (default location)
 ```
+
+Everything in a run dir except `screenshots/` is a `load` input.
+The captures are diagnostic-only and opt-in (`--debug`, implied by
+`--explore`): a full-page DOM dump plus PNG at every navigation
+landmark is far larger than the structured load inputs of the same
+run, so leaving them on for every nightly run makes the debug
+artefacts, not the data, the bulk of the bronze tree. The `prune`
+verb deletes them wholesale, along with non-complete dumps
+(missing/unreadable `run.json`, or `status` ≠ `complete`, e.g.
+`--dry-run` shells and crashed walks) older than an in-flight guard
+window; `--dry-run` prints the plan first. Pruning captures leaves
+silver byte-identical; pruning non-complete dumps surfaces in
+silver on the next `load --force` rebuild.
 
 Filename conventions:
 
@@ -309,7 +323,7 @@ Symbol shape into a small enum:
 | --- | --- | --- |
 | `money_market` | `is_core_position = 1`                           | `CORE_X`          |
 | `plan_fund`    | `[A-Z]{3}[0-9]{6}` (529 plan investment option)  | (3-letter prefix + 6-digit code) |
-| `bond`         | 9-char alphanumeric, trailing digit (CUSIP-9)    | `000000AA0`      |
+| `bond`         | 9-char alphanumeric, trailing digit (CUSIP-9)    | (8-char base + check digit) |
 | `mutual_fund`  | 5-char ticker ending in `X` (industry convention) | `FXAIX`         |
 | `equity`       | default fall-through (stocks, ETFs, ADRs)         | `AAPL`, `SPY`   |
 
@@ -708,7 +722,9 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into ≤93-day windows) | done |
 | `download.py` — documents: statements + tax forms via the Enterprise Document Center (rail-link type switch, year filter, row click → `financial-documents/download` JSON → base64 PDF; content-hash dedup) | done — see §8.5 |
 | `download.py` — `--explore`: shadow-/iframe-piercing DOM inventory for doc-center UI-drift debugging | done |
+| `download.py` — `--debug` gate on walk-phase captures (off by default; `--explore` implies it) | done |
 | `download.py` — balances + performance HTML capture (no structured export available on either surface) | done |
+| `prune.py` — delete debug captures + non-complete dumps from bronze (`--dry-run` plan mode, in-flight age guard) | done |
 | `migrations/0001_initial.sql` + `load.py` (positions, transactions, portfolios, accounts, documents; validation pass) | done |
 | `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
 | Statement-PDF parser (529 historical reconstruction) | done — `pdf_parsers.py` + migration 0004 populate `historical_position_snapshots` |

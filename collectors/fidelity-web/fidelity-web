@@ -52,6 +52,11 @@ Subcommands:
   load [args...]        Parse bronze into the silver SQLite DB.
                         Runs host-side (pure stdlib Python; no
                         Docker spawn).
+  prune [args...]       Delete debug artefacts (<run>/screenshots/,
+                        written only by download --debug/--explore)
+                        and non-complete dumps from the bronze tree.
+                        Runs host-side. --dry-run prints the plan
+                        without deleting anything.
   vnc-login [args...]   First-time profile-dir seed: pre-fills
                         credentials, hands off to a VNC client for
                         the human-driven click + 2FA, then runs the
@@ -133,6 +138,19 @@ EOH
         --silver-db "$SILVER_DB" \
         --bronze-dir "$BRONZE_DIR" \
         ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+fi
+
+# `./fidelity-web prune [args...]` → host-side python invocation.
+# Same rationale as `load`: a pure file walk needs no container,
+# and host-side execution bypasses the single-writer safety guard
+# so it can run while a `download` container is mid-flight (the
+# in-flight dump is protected by prune's own age guard). The
+# default --bronze-dir comes first so an explicit flag in [args...]
+# overrides it (argparse last-wins).
+if [[ "${1:-}" == "prune" ]]; then
+    shift
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
 fi
 
 wrapper_main "$@"

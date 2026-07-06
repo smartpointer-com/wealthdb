@@ -169,6 +169,9 @@ Once the profile dir is seeded, every run is one-shot:
                                           # also widens --documents-since (stmts + tax-forms)
 ./fidelity-web download --dry-run      # walk + enumerate, no artefact writes
 ./fidelity-web download --check        # validate session, no walk
+./fidelity-web download --debug        # also save per-landmark HTML+PNG captures
+                                        # under <run>/screenshots/ (off by default;
+                                        # diagnostic-only, prunable; --explore implies it)
 ```
 
 Each invocation spins up Camoufox, logs in (auto-MFA-skip via the
@@ -194,6 +197,24 @@ it can execute in parallel with a `download` container if
 needed. After every run the loader validates that positions and
 non-cash transactions have a ticker and
 logs how many accounts each classified portfolio holds; failures are logged as warnings.
+
+#### Reclaiming disk
+
+```sh
+./fidelity-web prune --dry-run   # print the deletion plan, delete nothing
+./fidelity-web prune             # delete it
+```
+
+`prune` removes two things across the bronze tree: `screenshots/`
+from complete dumps (debug captures, written only by
+`download --debug` / `--explore`; never a load input), and whole
+non-complete run dirs (a `--dry-run` shell, or a walk that crashed
+before writing a terminal `run.json`). Load inputs of complete
+dumps are never touched, so silver stays reproducible; deleting a
+non-complete dump surfaces on the next `load --force` rebuild.
+Runs host-side like `load`, and an in-flight guard
+(`--min-age-hours`, default 1, keyed on recent write activity)
+keeps it from removing a download that is still running.
 
 ### Credentials
 
@@ -243,8 +264,8 @@ for the shared env-file rules.
 │   │   └── balances.html                  full-page DOM (no CSV export)
 │   ├── performance/
 │   │   └── performance.html               full-page DOM (no CSV export)
-│   └── screenshots/
-│       └── <ts>-<label>.{html,png}        per-landmark diagnostics
+│   └── screenshots/                       only with download --debug / --explore
+│       └── <ts>-<label>.{html,png}        per-landmark diagnostics (prunable)
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                user-uploaded artefacts (documents that arrive out-of-band)

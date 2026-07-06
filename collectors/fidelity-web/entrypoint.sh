@@ -90,6 +90,13 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete debug artefacts (<run>/screenshots/) and
+        # non-complete dumps from the bronze tree. No browser, no
+        # Xvfb. Also reachable host-side via the wrapper.
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -113,6 +120,8 @@ Subcommands:
               wrapper picks; printed at handoff). Pass `--mode none`
               to skip the walk and just seed cookies.
   load        Parse bronze into the silver SQLite database.
+  prune       Delete debug artefacts and non-complete dumps from
+              the bronze tree. --dry-run prints the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

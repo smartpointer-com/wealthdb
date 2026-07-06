@@ -67,8 +67,15 @@ Usage:
                 [--since YYYY-MM-DD] [--until YYYY-MM-DD]
                 [--exclude-accounts <a,b>]
                 [--dry-run]
+                [--debug]
                 [--screenshot-dir /debug/<dir>]
                 [-v]
+
+Diagnostics are opt-in: ``--debug`` saves walk-phase captures
+(HTML DOM dump + PNG per landmark) under ``<run>/screenshots/``;
+``--screenshot-dir`` does the same for the pre-walk login /
+session phases into an explicit host path. Neither is a load
+input; ``prune`` deletes the former wholesale.
 """
 
 from __future__ import annotations
@@ -1780,12 +1787,13 @@ def scrape_performance(page, bronze_dir, capture_dir):
     data export — no CSV, no PDF, no kebab/menu Download item.
     The data surfaces as a Highcharts SVG + a column of
     collapsible info tiles (return percentages by period,
-    benchmark deltas). The HTML capture under
-    ``screenshots/performance-landed.html`` is the bronze
-    artefact for this surface; downstream silver work either
-    scrapes return percentages from the DOM text or accepts the
-    gap (most return metrics are derivable from positions +
-    activity time-series anyway).
+    benchmark deltas). The load input for this surface is
+    ``performance/performance.html`` (persisted unconditionally
+    below); downstream silver work either scrapes return
+    percentages from that DOM text or accepts the gap (most return
+    metrics are derivable from positions + activity time-series
+    anyway). The separate ``screenshots/performance-landed`` HTML +
+    PNG is an opt-in ``--debug`` diagnostic that ``prune`` deletes.
 
     Returns a result dict with ``status: 'explored-no-export'``
     so run.json captures the (intentional) gap. Compare to
@@ -1844,8 +1852,23 @@ def walk(context, page, config):
     dest_root = Path(config.get("dest") or "/data")
     bronze_dir = dest_root / bronze.ts_slug()
     bronze_dir.mkdir(parents=True, exist_ok=True)
-    capture_dir = bronze_dir / "screenshots"
-    log.info("walk: bronze dir %s", bronze_dir)
+    # Drop an "in-progress" manifest up front and overwrite it with
+    # the terminal status at the end. This makes the run's state
+    # legible to `prune` while the walk is still running (a crashed
+    # walk leaves status="in-progress" — a non-complete dump prune
+    # can reclaim once it goes quiescent), and closes the ambiguity
+    # of a run dir that has no run.json at all.
+    bronze.atomic_write_json(
+        bronze_dir / "run.json", {"status": "in-progress"})
+    # Debug captures (HTML DOM dump + PNG per landmark, plus the
+    # --explore DOM inventories) are opt-in: they are never read by
+    # `load`, and at every-landmark granularity they dwarf the
+    # actual load inputs. `prune` deletes <run>/screenshots/
+    # wholesale on that basis.
+    debug = config.get("debug", "false").lower() == "true"
+    capture_dir = (bronze_dir / "screenshots") if debug else None
+    log.info("walk: bronze dir %s%s", bronze_dir,
+             " (debug captures on)" if debug else "")
 
     # Ensure we're on a portfolio surface where the account
     # selector renders.
@@ -1996,8 +2019,11 @@ def walk(context, page, config):
             )
         run_json["status"] = "complete"
 
+    # Atomic (tmp + rename) so a prune racing the finalisation never
+    # reads a half-written manifest, and the in-progress marker is
+    # replaced in one step.
     run_path = bronze_dir / "run.json"
-    run_path.write_text(json.dumps(run_json, indent=2, sort_keys=True))
+    bronze.atomic_write_json(run_path, run_json)
     log.info("walk: wrote %s", run_path)
 
 
@@ -2155,11 +2181,12 @@ def maybe_capture(page, screenshot_dir, label):
     """Save HTML + PNG at a navigation landmark. Never raises.
 
     Differs from ``capture(page, capture_dir, label)`` above (used by
-    the walk phases): this is the login-flow variant that writes to
-    a user-supplied ``--screenshot-dir`` rather than the bronze
-    dir's ``screenshots/`` subdir. Both exist because the bronze
-    capture path is implicit (every walk run) while the login path
-    is opt-in (only when --screenshot-dir is passed)."""
+    the walk phases): this is the login-/session-flow variant that
+    writes to a user-supplied ``--screenshot-dir`` rather than the
+    bronze dir's ``screenshots/`` subdir. Both are opt-in and cover
+    disjoint phases — the walk captures via ``--debug`` into
+    ``<run>/screenshots/``, the pre-walk login / MFA / ``--check`` /
+    logout captures via ``--screenshot-dir`` into that host path."""
     if screenshot_dir is None:
         return
     try:
@@ -2643,6 +2670,12 @@ def run_oneshot(args):
                 "mode": args.mode,
                 "dry_run": "true" if args.dry_run else "false",
                 "explore": "true" if args.explore else "false",
+                # --explore implies debug captures: the DOM
+                # inventories it exists for land in the same
+                # capture dir.
+                "debug": (
+                    "true" if (args.debug or args.explore) else "false"
+                ),
                 "since": since.isoformat(),
                 "until": until.isoformat(),
                 "documents_since": docs_since.isoformat(),
@@ -2747,13 +2780,26 @@ def parse_args(argv):
         help=("Diagnostic: at each document-center landmark, also "
               "write a shadow-DOM- and iframe-piercing element "
               "inventory (<ts>-<label>.dominv.json) for adapting "
-              "scrapers to UI drift. Read-only; no extra exports."),
+              "scrapers to UI drift. Read-only; no extra exports. "
+              "Implies --debug."),
     )
     # --- Diagnostics ---
     p.add_argument(
+        "--debug", action="store_true",
+        help=("Save debug captures during the walk: a full-page "
+              "HTML DOM dump + PNG screenshot at each navigation "
+              "landmark, under <run>/screenshots/. Off by default "
+              "— captures are diagnostic-only (load never reads "
+              "them) and dominate bronze disk usage when left on. "
+              "`prune` deletes them."),
+    )
+    p.add_argument(
         "--screenshot-dir", type=Path, default=None,
-        help=("If set, save HTML + PNG at each navigation landmark. "
-              "Never defaults under /secrets."),
+        help=("If set, save HTML + PNG diagnostics for the pre-walk "
+              "login / session phases (login form, MFA, --check "
+              "probe, logout) into this host path. Walk-phase "
+              "captures are governed by --debug instead. Never "
+              "defaults under /secrets."),
     )
     p.add_argument(
         "--trace", action="store_true",

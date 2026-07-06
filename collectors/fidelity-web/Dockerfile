@@ -17,9 +17,10 @@ RUN pip install -r requirements.txt
 # host artefacts (.venv, real-credential JSONs, recorded Playwright
 # traces) never make it into the image even if .dockerignore is
 # incomplete. download.py is the one-shot CLI (login → walk →
-# logout); load.py is the silver loader (also reachable host-side
-# via the wrapper).
-COPY download.py load.py pdf_parsers.py pdf_parsers_supplied.py /app/
+# logout); load.py is the silver loader and prune.py the bronze
+# debug-artefact/incomplete-dump cleaner (both also reachable
+# host-side via the wrapper).
+COPY download.py load.py prune.py pdf_parsers.py pdf_parsers_supplied.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
