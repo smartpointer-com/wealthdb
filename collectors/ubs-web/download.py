@@ -1044,6 +1044,31 @@ def write_run_json(run_dir: Path, since: date, until: date,
     bronze.atomic_write_json(run_dir / "run.json", payload)
 
 
+def _prepare_run_dir(dest: Path, dry_run: bool) -> Path | None:
+    """Create the bronze run dir and drop the "in-progress" marker.
+
+    Real run: make `dest`, create a fresh UTC-timestamped run dir under
+    it, and atomically write ``run.json`` with ``status="in-progress"``
+    up front — so a walk that crashes before ``write_run_json`` leaves a
+    non-complete dump that `prune` reclaims and `load` can classify.
+
+    Dry-run: create NOTHING under `dest` and return ``None``. A dry-run
+    is the read-only walk (CLAUDE.md §2) and must persist nothing to
+    bronze — not even a `run.json` shell, since `load`'s `scan_bronze`
+    has no status guard and would otherwise ingest it as a dump run.
+    """
+    if dry_run:
+        log.info("dry-run: nothing written to bronze (--dest %s untouched)",
+                 dest)
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    run_dir = dest / bronze.ts_slug()
+    run_dir.mkdir(parents=True, exist_ok=False)
+    log.info("bronze dir: %s", run_dir)
+    bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
+    return run_dir
+
+
 # ============================================================
 # Positions snapshot
 # ============================================================
@@ -1210,17 +1235,15 @@ def main(argv: list[str]) -> int:
     log.info("transactions window: [%s..%s]; documents window: [%s..%s]",
              since, until, docs_since, docs_until)
 
-    args.dest.mkdir(parents=True, exist_ok=True)
-    run_dir = args.dest / bronze.ts_slug()
-    run_dir.mkdir(parents=True, exist_ok=False)
-    log.info("bronze dir: %s", run_dir)
-    # Drop an "in-progress" manifest up front and atomically overwrite it
-    # with the terminal status at the end (write_run_json). This makes a
-    # crashed walk — which never reaches write_run_json — legible to
-    # `prune` (status="in-progress" ⇒ non-complete dump, reclaimed whole
-    # once quiescent) instead of leaving an empty run dir, and closes the
-    # window where a run dir carries no run.json at all.
-    bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
+    # A real run gets a bronze run dir plus an "in-progress" manifest,
+    # atomically overwritten with the terminal status by write_run_json.
+    # This makes a crashed walk — which never reaches write_run_json —
+    # legible to `prune` (status="in-progress" ⇒ non-complete dump,
+    # reclaimed whole once quiescent) instead of leaving an empty run
+    # dir, and closes the window where a run dir carries no run.json at
+    # all. A --dry-run persists nothing to bronze, so run_dir is None and
+    # every export (and write_run_json) is skipped below.
+    run_dir = _prepare_run_dir(args.dest, args.dry_run)
 
     from playwright.sync_api import sync_playwright
 
@@ -1239,7 +1262,16 @@ def main(argv: list[str]) -> int:
                 doc_results: list[dict] = []
                 positions_meta: list[dict] = []
                 if args.dry_run:
+                    # Read-only walk: session verified and accounts
+                    # enumerated above. Log the plan (what a real run
+                    # would fetch) but write nothing — run_dir is None,
+                    # so there is no bronze dump and load never sees one.
                     log.info("--dry-run set; skipping exports")
+                    log.info("dry-run plan: would export positions + "
+                             "transactions for %d account(s) in [%s..%s]; "
+                             "documents in [%s..%s]",
+                             len(accounts), since, until,
+                             docs_since, docs_until)
                     txn_results = accounts  # echo discovery only
                 else:
                     positions_meta = export_positions(
@@ -1263,9 +1295,9 @@ def main(argv: list[str]) -> int:
                         page, docs_since, docs_until, run_dir,
                         context, args.screenshot_dir,
                     )
-                write_run_json(run_dir, since, until, docs_since, docs_until,
-                               txn_results, doc_results, positions_meta,
-                               args.dry_run)
+                    write_run_json(run_dir, since, until, docs_since,
+                                   docs_until, txn_results, doc_results,
+                                   positions_meta, args.dry_run)
             finally:
                 if args.trace:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)

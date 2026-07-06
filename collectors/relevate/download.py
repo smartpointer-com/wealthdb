@@ -45,6 +45,7 @@ import hashlib
 import json
 import logging
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -768,6 +769,32 @@ def do_download(args: argparse.Namespace) -> int:
     session = sess  # restore local name for the rest of the function
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    if args.dry_run:
+        # Root CLAUDE.md §2: `download --dry-run` must export NOTHING.
+        # Run the read-only walk (verify the session, enumerate the
+        # investment-overview + document index, log the plan/counts) but
+        # point the run dir at a throwaway temp dir instead of a bronze
+        # one. TemporaryDirectory removes it on exit — even on a crash,
+        # via the context manager — so nothing is ever persisted under
+        # --dest and `load` never picks up a dry-run shell. The walk +
+        # manifest code is otherwise identical to a real run; only the
+        # output target differs.
+        with tempfile.TemporaryDirectory(prefix="relevate-dryrun-") as scratch:
+            run_dir = Path(scratch) / ts
+            run_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("dry-run: nothing written to bronze")
+            manifest = Manifest(run_dir, mode=args.mode, dry_run=True)
+            manifest.set_state_minted_at(state_minted_at)
+            manifest.set_windows(since=since, until=until,
+                                 documents_since=docs_since,
+                                 documents_until=docs_until)
+            rc = do_dry_run(session, run_dir, manifest,
+                            documents_since=docs_since,
+                            documents_until=docs_until)
+            manifest.finish(status="dry-run")
+            return rc
+
     run_dir = args.dest / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("bronze run dir: %s", run_dir)
@@ -777,13 +804,6 @@ def do_download(args: argparse.Namespace) -> int:
     manifest.set_windows(since=since, until=until,
                          documents_since=docs_since,
                          documents_until=docs_until)
-
-    if args.dry_run:
-        rc = do_dry_run(session, run_dir, manifest,
-                        documents_since=docs_since,
-                        documents_until=docs_until)
-        manifest.finish(status="dry-run")
-        return rc
 
     overview = None
     if args.mode in ("all", "accounts", "portfolios"):

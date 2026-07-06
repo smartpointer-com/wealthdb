@@ -1850,25 +1850,43 @@ def walk(context, page, config):
     try/except inside its dispatcher; a failure in one phase does
     not block the others."""
     dest_root = Path(config.get("dest") or "/data")
-    bronze_dir = dest_root / bronze.ts_slug()
-    bronze_dir.mkdir(parents=True, exist_ok=True)
-    # Drop an "in-progress" manifest up front and overwrite it with
-    # the terminal status at the end. This makes the run's state
-    # legible to `prune` while the walk is still running (a crashed
-    # walk leaves status="in-progress" — a non-complete dump prune
-    # can reclaim once it goes quiescent), and closes the ambiguity
-    # of a run dir that has no run.json at all.
-    bronze.atomic_write_json(
-        bronze_dir / "run.json", {"status": "in-progress"})
-    # Debug captures (HTML DOM dump + PNG per landmark, plus the
-    # --explore DOM inventories) are opt-in: they are never read by
-    # `load`, and at every-landmark granularity they dwarf the
-    # actual load inputs. `prune` deletes <run>/screenshots/
-    # wholesale on that basis.
+    dry_run = config.get("dry_run", "false").lower() == "true"
     debug = config.get("debug", "false").lower() == "true"
-    capture_dir = (bronze_dir / "screenshots") if debug else None
-    log.info("walk: bronze dir %s%s", bronze_dir,
-             " (debug captures on)" if debug else "")
+    slug = bronze.ts_slug()
+    if dry_run:
+        # A dry-run is a read-only walk: reach the export surfaces,
+        # enumerate account_dimensions, and log the plan — but persist
+        # NOTHING under the bronze dest (root CLAUDE.md §2 "export
+        # nothing"). Crucially we do NOT create the run dir or write
+        # run.json: even a run.json-only shell is a dump that `load`
+        # would ingest, and fidelity-web's `load._load_master` reads
+        # account_dimensions from run.json with no dry-run guard — so a
+        # persisted dry-run manifest would silently populate silver
+        # portfolios/accounts. No dir means `load` never sees one.
+        bronze_dir = None
+        capture_dir = None
+        log.info(
+            "walk: dry-run — read-only enumeration only; nothing will "
+            "be written to bronze under %s", dest_root)
+    else:
+        bronze_dir = dest_root / slug
+        bronze_dir.mkdir(parents=True, exist_ok=True)
+        # Drop an "in-progress" manifest up front and overwrite it with
+        # the terminal status at the end. This makes the run's state
+        # legible to `prune` while the walk is still running (a crashed
+        # walk leaves status="in-progress" — a non-complete dump prune
+        # can reclaim once it goes quiescent), and closes the ambiguity
+        # of a run dir that has no run.json at all.
+        bronze.atomic_write_json(
+            bronze_dir / "run.json", {"status": "in-progress"})
+        # Debug captures (HTML DOM dump + PNG per landmark, plus the
+        # --explore DOM inventories) are opt-in: they are never read by
+        # `load`, and at every-landmark granularity they dwarf the
+        # actual load inputs. `prune` deletes <run>/screenshots/
+        # wholesale on that basis.
+        capture_dir = (bronze_dir / "screenshots") if debug else None
+        log.info("walk: bronze dir %s%s", bronze_dir,
+                 " (debug captures on)" if debug else "")
 
     # Ensure we're on a portfolio surface where the account
     # selector renders.
@@ -1945,7 +1963,6 @@ def walk(context, page, config):
         }
 
     mode = config.get("mode", "all")
-    dry_run = config.get("dry_run", "false").lower() == "true"
     since_date = parse_iso_date(config.get("since"))
     until_date = parse_iso_date(config.get("until"))
     if since_date is not None and until_date is None:
@@ -1969,7 +1986,7 @@ def walk(context, page, config):
     docs_target_days = max(1, (documents_until - documents_since).days)
 
     run_json = {
-        "snapshot_at": bronze_dir.name,
+        "snapshot_at": slug,
         "cli_config": config,
         "accounts_enumerated": all_accounts,
         "accounts_auto_excluded": sorted(auto_excluded),
@@ -1990,34 +2007,46 @@ def walk(context, page, config):
     }
 
     if dry_run:
-        log.info("dry_run=true; skipping all artefact downloads")
-        run_json["status"] = "dry-run"
-    else:
-        if mode in ("all", "positions"):
-            run_json["positions_results"] = scrape_positions(
-                page, bronze_dir, capture_dir,
-            )
-        if mode in ("all", "activity"):
-            run_json["activity_results"] = scrape_activity(
-                page, since_date, until_date,
-                bronze_dir, capture_dir,
-            )
-        if mode in ("all", "documents"):
-            run_json["documents_results"] = scrape_documents(
-                page, context, bronze_dir, capture_dir,
-                min_year=docs_min_year,
-                target_days=docs_target_days,
-                explore=config.get("explore", "false").lower() == "true",
-            )
-        if mode in ("all", "balances"):
-            run_json["balances_results"] = scrape_balances(
-                page, bronze_dir, capture_dir,
-            )
-        if mode in ("all", "performance"):
-            run_json["performance_results"] = scrape_performance(
-                page, bronze_dir, capture_dir,
-            )
-        run_json["status"] = "complete"
+        # Log the plan (what a real run WOULD fetch: counts, scope,
+        # windows) and stop. No run dir was created and no run.json is
+        # written — the dry-run persists nothing under the bronze dest.
+        # (run_json above is built solely to shape this plan log.)
+        log.info(
+            "dry-run: enumerated %d account(s), %d in scope; "
+            "phases=%s activity_window=%s documents_since=%s. "
+            "Skipping all artefact downloads — nothing written to "
+            "bronze under %s.",
+            len(all_accounts), len(in_scope), mode,
+            run_json["activity_window"], documents_since.isoformat(),
+            dest_root,
+        )
+        return
+
+    if mode in ("all", "positions"):
+        run_json["positions_results"] = scrape_positions(
+            page, bronze_dir, capture_dir,
+        )
+    if mode in ("all", "activity"):
+        run_json["activity_results"] = scrape_activity(
+            page, since_date, until_date,
+            bronze_dir, capture_dir,
+        )
+    if mode in ("all", "documents"):
+        run_json["documents_results"] = scrape_documents(
+            page, context, bronze_dir, capture_dir,
+            min_year=docs_min_year,
+            target_days=docs_target_days,
+            explore=config.get("explore", "false").lower() == "true",
+        )
+    if mode in ("all", "balances"):
+        run_json["balances_results"] = scrape_balances(
+            page, bronze_dir, capture_dir,
+        )
+    if mode in ("all", "performance"):
+        run_json["performance_results"] = scrape_performance(
+            page, bronze_dir, capture_dir,
+        )
+    run_json["status"] = "complete"
 
     # Atomic (tmp + rename) so a prune racing the finalisation never
     # reads a half-written manifest, and the in-progress marker is

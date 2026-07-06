@@ -46,9 +46,11 @@ small JSON; keeping it complete preserves bronze faithfulness). The
 window is recorded in run.json's `windows` block so the silver
 loader can re-apply it without taking its own CLI args.
 
-`--dry-run` walks every URL and writes the JSON artefacts but
-skips PDF binaries — useful for checking that selectors/endpoints
-still match landmarks without the bandwidth cost.
+`--dry-run` walks every URL (verifying the session and enumerating
+the export surfaces) and logs the plan, but persists NOTHING under
+`--dest`: no run dir, no manifest, no JSON, no PDFs. It leaves no
+bronze dump for load/prune to see — useful for checking that
+selectors/endpoints still match landmarks without touching bronze.
 
 PDFs are deduplicated across prior bronze runs by document number:
 if `<dest>/*/documents/<docid>.pdf` already exists, we hard-link
@@ -176,8 +178,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     cli.add_lookback_args(p)
     p.add_argument(
         "--dry-run", action="store_true",
-        help=("Walk the REST API and write the JSON artefacts but "
-              "skip PDF binaries. Useful for landmark checks."),
+        help=("Walk the REST API (verify the session, enumerate the "
+              "surfaces, log the plan) but persist NOTHING under --dest "
+              "— no run dir, manifest, JSON, or PDFs. Useful for landmark "
+              "checks without touching bronze."),
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -194,10 +198,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def fetch_json(client: ViacClient, path: str, dest_file: Path) -> dict | list:
+def fetch_json(client: ViacClient, path: str, dest_file: Path,
+               *, persist: bool = True) -> dict | list:
     """GET `path` (with retry on transient errors), save the
     response body to `dest_file`, return the parsed JSON.
-    Raises on non-2xx."""
+    Raises on non-2xx.
+
+    With `persist=False` (the dry-run walk) the GET + status check +
+    parse still run — that's the point of a dry-run: verify the session
+    and enumerate the export surfaces — but nothing is written to disk
+    (no `dest_file`, no parent dir), so the bronze root stays untouched."""
     log.debug("GET %s", path)
     resp = with_retry(lambda: client.get(path), label=f"GET {path}")
     if resp.status_code != 200:
@@ -205,8 +215,9 @@ def fetch_json(client: ViacClient, path: str, dest_file: Path) -> dict | list:
             f"GET {path}: HTTP {resp.status_code} (expected 200) — "
             f"if a /N-N suffix changed, re-discover from a fresh "
             f"login capture (see DESIGN.md §2.2).")
-    dest_file.parent.mkdir(parents=True, exist_ok=True)
-    dest_file.write_bytes(resp.content)
+    if persist:
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        dest_file.write_bytes(resp.content)
     return resp.json()
 
 
@@ -309,8 +320,16 @@ def walk(client: ViacClient, dest_root: Path, *,
     keeping it complete preserves bronze faithfulness)."""
     ts = utc_ts()
     bronze_dir = dest_root / ts
-    bronze_dir.mkdir(parents=True)
-    log.info("bronze: %s", bronze_dir)
+    if dry_run:
+        # Export-nothing dry-run (root CLAUDE.md §2): still walk every
+        # endpoint (verify the session, enumerate the surfaces, log the
+        # plan) but persist nothing under --dest — no run dir, no
+        # in-progress marker, no JSON. A dry-run therefore leaves NO
+        # bronze dump for load/prune to pick up.
+        log.info("dry-run: walking endpoints, nothing written to bronze")
+    else:
+        bronze_dir.mkdir(parents=True)
+        log.info("bronze: %s", bronze_dir)
 
     manifest: dict = {
         "timestamp": ts,
@@ -332,12 +351,14 @@ def walk(client: ViacClient, dest_root: Path, *,
     # status="in-progress", which load skips (only "complete" and legacy
     # statusless dumps load) and prune reclaims once quiescent — a
     # stronger signal than the older "no run.json = incomplete" heuristic,
-    # which a partial run.json write could defeat.
-    bronze.atomic_write_json(bronze_dir / "run.json", manifest)
+    # which a partial run.json write could defeat. Skipped on a dry-run:
+    # that path writes nothing at all.
+    if not dry_run:
+        bronze.atomic_write_json(bronze_dir / "run.json", manifest)
 
     def get(path: str, rel: str) -> dict | list:
         manifest["endpoints"].append(path)
-        return fetch_json(client, path, bronze_dir / rel)
+        return fetch_json(client, path, bronze_dir / rel, persist=not dry_run)
 
     # Customer.
     get(f"/rest/web/customer/current/{ENDPOINT_SUFFIXES['customer/current']}",
@@ -455,9 +476,16 @@ def main(argv: list[str]) -> int:
     # the in-progress marker, so a prune racing the finalisation never
     # reads a half-written manifest and the run's state is legible
     # throughout. status="complete" is the forward signal load and prune
-    # key on; a --dry-run shell carries "dry-run" so both treat it as
-    # non-complete.
-    manifest["status"] = "dry-run" if manifest.get("dry_run") else "complete"
+    # key on. A --dry-run persists NOTHING under --dest (root CLAUDE.md
+    # §2 "export nothing"): the walk left no run dir, so there is no
+    # in-progress marker to finalise — skip the terminal write entirely
+    # rather than resurrect a "dry-run" shell that load/prune would then
+    # have to reason about.
+    if args.dry_run:
+        log.info("dry-run complete: nothing written to bronze under %s",
+                 args.dest)
+        return 0
+    manifest["status"] = "complete"
     bronze_dir = args.dest / manifest["timestamp"]
     bronze.atomic_write_json(bronze_dir / "run.json", manifest)
     log.info(

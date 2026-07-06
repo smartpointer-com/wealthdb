@@ -29,11 +29,13 @@ under statements/<account>/ plus a run.json manifest.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
+import tempfile
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1292,6 +1294,33 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
 # Main flow
 # ============================================================
 
+@contextlib.contextmanager
+def _open_run_dir(dest_root: Path, run_ts: str, *, dry_run: bool):
+    """Yield the directory the walk persists its bronze artefacts into.
+
+    Real run:  ``<dest_root>/<run_ts>/`` — created under the caller's
+    bronze root and left in place for `load` / `prune`.
+
+    Dry run:   a throwaway ``TemporaryDirectory`` that is NOT under
+    ``dest_root``. The read-only walk still runs and still fires its
+    manifest + tx-export writes (so the session and the export surfaces
+    get verified), but nothing lands under the bronze root — honouring
+    the repo-wide "``download --dry-run`` persists nothing to bronze"
+    contract (root CLAUDE.md §2). The scratch tree is removed on exit,
+    even on crash, by the context manager. Because a dry-run never
+    writes under ``dest_root``, `load` simply never sees a dump to skip
+    — the status guard still matters only for a crashed *real* run.
+    """
+    if dry_run:
+        with tempfile.TemporaryDirectory(prefix="schwab-web-dryrun-") as scratch:
+            run_dir = Path(scratch) / run_ts
+            run_dir.mkdir(parents=True, exist_ok=True)
+            yield run_dir
+    else:
+        run_dir = dest_root / run_ts
+        run_dir.mkdir(parents=True, exist_ok=True)
+        yield run_dir
+
 def walk(page, dest_root: Path, *, mode: str = "both",
          dry_run: bool = False,
          screenshot_dir: Path | None = None,
@@ -1306,110 +1335,122 @@ def walk(page, dest_root: Path, *, mode: str = "both",
       - keeping the Playwright context alive for the duration,
       - closing the context afterwards.
 
-    Side effects: creates `<dest_root>/<UTC-ts>/`, writes bronze
-    PDFs + a `run.json` manifest. The manifest is persisted
-    incrementally so a crash mid-walk preserves whatever was
-    downloaded.
+    Side effects: on a real run, creates `<dest_root>/<UTC-ts>/` and
+    writes bronze PDFs + a `run.json` manifest. The manifest is
+    persisted incrementally so a crash mid-walk preserves whatever was
+    downloaded. A `--dry-run` persists NOTHING under `dest_root`: it
+    walks the same read-only surfaces into a throwaway temp dir that is
+    reclaimed on exit (see `_open_run_dir`), so a dry-run never leaves a
+    dump for `load`/`prune` to reason about.
 
     The manifest carries a `status` field: `"in-progress"` from
     run-dir creation, atomically overwritten with `"complete"`
     (or `"dry-run"`) once the walk finishes. That is the forward
     signal `prune` keys on to tell a finished dump from a
     crashed/interrupted one, and the signal `load` checks to keep
-    a partial or dry-run dump out of silver.
+    a partial dump out of silver.
     """
     run_ts = bronze.ts_slug()
-    run_dir = dest_root / run_ts
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log.info("bronze run dir: %s%s", run_dir,
-             " (debug captures on)" if debug else "")
+    # A `--dry-run` walks the same read-only surfaces but must persist
+    # nothing under the bronze root (root CLAUDE.md §2): `_open_run_dir`
+    # hands it a throwaway temp dir instead of `<dest_root>/<run_ts>/`,
+    # so the manifest + any fired tx exports land in scratch and are
+    # reclaimed on exit. A real run gets the bronze run dir as before.
+    with _open_run_dir(dest_root, run_ts, dry_run=dry_run) as run_dir:
+        if dry_run:
+            log.info("dry-run: nothing written to bronze "
+                     "(scratch run dir %s)", run_dir)
+        else:
+            log.info("bronze run dir: %s%s", run_dir,
+                     " (debug captures on)" if debug else "")
 
-    run_summary = {
-        "run_ts": run_ts,
-        "dest": str(run_dir),
-        "mode": mode,
-        "dry_run": dry_run,
-        "date_range": date_range,
-        # `"in-progress"` until the terminal write below flips it.
-        # A crash before that flip leaves this marker in place, so a
-        # non-complete dump is legible to both `prune` and `load`.
-        "status": "in-progress",
-        "doc_types_wanted": sorted(schwab.DOC_TYPES_WANTED),
-        "doc_types_unwanted": [
-            label for label, _ in schwab.DOC_TYPES
-            if label not in schwab.DOC_TYPES_WANTED
-        ],
-        "statements": [],
-        "transactions": [],
-    }
-    # Drop the in-progress marker up front (belt-and-suspenders) so a
-    # crash during account enumeration — before the first incremental
-    # manifest write below — still leaves a status marker rather than
-    # a run dir with no run.json at all.
-    _write_manifest(run_dir, run_summary)
-
-    # Enumerate accounts via the Statements page — the selector
-    # is global to the SPA so navigating away later doesn't lose
-    # the inventory.
-    log.info("navigating to %s", schwab.STATEMENTS_URL)
-    page.goto(
-        schwab.STATEMENTS_URL,
-        wait_until="domcontentloaded",
-        timeout=NAV_TIMEOUT_MS,
-    )
-    page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-    page.wait_for_timeout(2000)
-    maybe_screenshot(page, screenshot_dir, "statements-landed")
-
-    accounts = enumerate_accounts(page)
-    if not accounts:
-        log.error("no accounts enumerated")
-        maybe_screenshot(page, screenshot_dir, "no-accounts")
+        run_summary = {
+            "run_ts": run_ts,
+            "dest": str(run_dir),
+            "mode": mode,
+            "dry_run": dry_run,
+            "date_range": date_range,
+            # `"in-progress"` until the terminal write below flips it.
+            # A crash before that flip leaves this marker in place, so a
+            # non-complete dump is legible to both `prune` and `load`.
+            "status": "in-progress",
+            "doc_types_wanted": sorted(schwab.DOC_TYPES_WANTED),
+            "doc_types_unwanted": [
+                label for label, _ in schwab.DOC_TYPES
+                if label not in schwab.DOC_TYPES_WANTED
+            ],
+            "statements": [],
+            "transactions": [],
+        }
+        # Drop the in-progress marker up front (belt-and-suspenders) so
+        # a crash during account enumeration — before the first
+        # incremental manifest write below — still leaves a status
+        # marker rather than a run dir with no run.json at all. On a
+        # dry-run this (and every write below) lands in the scratch dir.
         _write_manifest(run_dir, run_summary)
-        return run_summary
 
-    if mode in ("statements", "both"):
-        for acct in accounts:
-            try:
-                per_acct = download_account(
-                    page, acct, run_dir, dry_run, screenshot_dir,
-                    date_range,
-                )
-            except Exception as e:
-                log.error(
-                    "account walk failed for …%s: %s",
-                    acct["suffix"], e,
-                )
-                maybe_screenshot(
-                    page, screenshot_dir,
-                    f"statements-{acct['suffix']}-failure",
-                )
-                per_acct = {
-                    "label": acct["label"],
-                    "suffix": acct["suffix"],
-                    "error": str(e),
-                }
-            run_summary["statements"].append(per_acct)
+        # Enumerate accounts via the Statements page — the selector
+        # is global to the SPA so navigating away later doesn't lose
+        # the inventory.
+        log.info("navigating to %s", schwab.STATEMENTS_URL)
+        page.goto(
+            schwab.STATEMENTS_URL,
+            wait_until="domcontentloaded",
+            timeout=NAV_TIMEOUT_MS,
+        )
+        page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.wait_for_timeout(2000)
+        maybe_screenshot(page, screenshot_dir, "statements-landed")
+
+        accounts = enumerate_accounts(page)
+        if not accounts:
+            log.error("no accounts enumerated")
+            maybe_screenshot(page, screenshot_dir, "no-accounts")
+            _write_manifest(run_dir, run_summary)
+            return run_summary
+
+        if mode in ("statements", "both"):
+            for acct in accounts:
+                try:
+                    per_acct = download_account(
+                        page, acct, run_dir, dry_run, screenshot_dir,
+                        date_range,
+                    )
+                except Exception as e:
+                    log.error(
+                        "account walk failed for …%s: %s",
+                        acct["suffix"], e,
+                    )
+                    maybe_screenshot(
+                        page, screenshot_dir,
+                        f"statements-{acct['suffix']}-failure",
+                    )
+                    per_acct = {
+                        "label": acct["label"],
+                        "suffix": acct["suffix"],
+                        "error": str(e),
+                    }
+                run_summary["statements"].append(per_acct)
+                _write_manifest(run_dir, run_summary)
+
+        if mode in ("transactions", "both"):
+            tx_entries = run_transactions(
+                page, accounts, run_dir, screenshot_dir, date_range,
+                with_more_detail=with_more_detail, debug=debug,
+            )
+            run_summary["transactions"] = tx_entries
             _write_manifest(run_dir, run_summary)
 
-    if mode in ("transactions", "both"):
-        tx_entries = run_transactions(
-            page, accounts, run_dir, screenshot_dir, date_range,
-            with_more_detail=with_more_detail, debug=debug,
-        )
-        run_summary["transactions"] = tx_entries
+        # Terminal status flip: `_write_manifest` is tmp+os.replace, so
+        # this atomically overwrites the in-progress marker. A
+        # `--dry-run` is recorded as `"dry-run"` (a non-complete shell);
+        # everything else is `"complete"`. On a dry-run the whole
+        # manifest lives in scratch, so `load`/`prune` never meet it.
+        run_summary["status"] = "dry-run" if dry_run else "complete"
         _write_manifest(run_dir, run_summary)
 
-    # Terminal status flip: `_write_manifest` is tmp+os.replace, so
-    # this atomically overwrites the in-progress marker. A `--dry-run`
-    # is recorded as `"dry-run"` (a non-complete shell — its tx-history
-    # exports still fire, so prune/load must not treat it as a real
-    # dump); everything else is `"complete"`.
-    run_summary["status"] = "dry-run" if dry_run else "complete"
-    _write_manifest(run_dir, run_summary)
-
-    log.info("scrape complete; manifest at %s/run.json", run_dir)
-    return run_summary
+        log.info("scrape complete; manifest at %s/run.json", run_dir)
+        return run_summary
 
 def _write_manifest(run_dir: Path, summary: dict) -> None:
     path = run_dir / "run.json"
