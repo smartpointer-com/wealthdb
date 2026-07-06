@@ -6,9 +6,9 @@ the per-portfolio loop:
 
   1. Discover the linked-account portfolio list:
        - master account ID from the `ctfa<id>` session cookie
-       - 4 linked-account IDs + display names from the in-page
+       - the linked-account IDs + display names from the in-page
          `<a href*="change_user=N">` anchors on /enter_coins.php
-       Union of the two = full list of 5 portfolios.
+       Union of the two = the full list of linked portfolios.
 
   2. For each portfolio (cu_<id>):
        a. GET /enter_coins.php?change_user=<id>      → activates portfolio

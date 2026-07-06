@@ -118,7 +118,7 @@ double-submit-cookie machinery.
 | `/rest/web/p3a/portfolio/<num>/assetsOverview` | per-fund holdings + cost basis |
 | `/rest/web/p3a/portfolio/<num>/fees-<N>` | fee config |
 | `/rest/web/p3a/portfolio/transactions` | all transactions, keyed by portfolio number |
-| `/rest/web/document/<N-N>` | document index (~1000+ entries) |
+| `/rest/web/document/<N-N>` | document index (one entry per document) |
 | `/files/document/<docid>` | PDF binary |
 
 Several endpoints carry build-bound `/N-N` version suffixes
@@ -280,17 +280,10 @@ always add a new file.
 ### 6.1 Validation against the first real load
 
 Two bronze dumps (one full, one re-fetch of a single missed PDF)
-loaded into silver:
-
-| Table | Count |
-| --- | --- |
-| `accounts` | 14 (7 portfolios × 2 snapshots) |
-| `cash_balances` | 10 |
-| `positions` | 80 (8 funds × 5 p3a × 2 snapshots) |
-| `instruments` | 16 (distinct ISINs) |
-| `transactions` | 972 (4 collapsed; see §9 open Q5) |
-| `wealth_history` | 3284 (1642 daily × 2 snapshots) |
-| `documents` | 1019 (content-dedup'd; 1018 in both, 1 only in second) |
+loaded cleanly into silver. Per-portfolio reconstructed rows
+reconcile to the cent against each report's printed Balance in
+CHF, ISIN-keyed instrument master upserts dedupe as expected, and
+content-dedup collapses identical PDFs across snapshots.
 
 Re-running `load` is a no-op (`dump_runs.snapshot_at` is the
 idempotency anchor).
@@ -363,13 +356,13 @@ Outstanding work — currently neither implemented nor blocking:
    `inv[]` array is in the inventory schema. Mapping to
    wealthdb `tax_wrapper='taxable_personal'` is speculative
    until we see one.
-5. **Transaction collision rate.** 4/976 source rows collapsed
-   in silver on identical-to-16-decimals (account, type, date,
-   amount, doc) keys — most likely duplicate reports of the
+5. **Transaction collision rate.** A small number of source rows
+   collapse in silver on identical-to-16-decimals (account, type,
+   date, amount, doc) keys — most likely duplicate reports of the
    same dividend in VIAC's API rather than legitimately
    distinct events. Worth a follow-up if a future bronze dump
-   shows a higher collision rate, which would suggest the
-   synthesizer needs a row-index disambiguator.
+   shows a materially higher collision rate, which would suggest
+   the synthesizer needs a row-index disambiguator.
 6. **Transaction-document PDF body parsing.** TRADE / DIVIDEND
    / SECURITY_FUSION PDFs carry data not in the JSON
    (per-event ISIN, units, FX rate, old→new ISIN mapping for

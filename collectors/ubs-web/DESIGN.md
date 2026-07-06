@@ -19,7 +19,7 @@ The companion silvers, by path:
 
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
-| `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: ~28-month transactions + on-demand positions + 1.5k PDF document index. Historical tables: quarterly position snapshots back to 2022 + monthly cash balances back to late 2021, both reconstructed from the bronze PDF archive | `$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db` |
+| `ubs-web` | Web scrape via Playwright + PDF reconstruction | Live-fetch tables: recent transactions window + on-demand positions + a PDF document index. Historical tables: quarterly position snapshots and monthly cash balances reconstructed from the bronze PDF archive, back to the earliest statement available | `$XDG_DATA_HOME/wealthdb/ubs-web/ubs-web.db` |
 | `ubs-psn` | UBS PSN nightly SFTP feed | Forward-only daily snapshots + events, from agreement go-live date | `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` |
 
 ## 1. The two UBS feeds
@@ -161,8 +161,8 @@ and stores it as a parallel column, so both the IBAN and the
 #### Accounts PSN sees but web doesn't
 
 PSN can report internal UBS booking accounts that the customer UI
-does not expose. The web feed has no rows
-for them at all — they exist only on the PSN side.
+does not expose. The web feed has no rows for them at all —
+they exist only on the PSN side.
 
 ### 3.4 Safekeeping accounts (securities depots)
 
@@ -326,7 +326,8 @@ wins per date) is owned by the wealthdb UBS adapter — see
   header / footer rows (present in essentially every statement),
   while `total_credits` / `total_debits` come from the "Your
   account at a glance" summary block (only emitted for statements
-  with non-trivial activity — empirically ~37% of the corpus).
+  with non-trivial activity, so it is present on only a subset of
+  statements).
   Treat NULL as "the source PDF did not print that line" rather
   than as 0.0.
 

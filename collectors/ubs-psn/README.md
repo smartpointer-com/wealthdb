@@ -186,7 +186,8 @@ Identifier canonicalisation (since migration 0002):
 - `cash_accounts.portfolio_external_id` and
   `safekeeping_accounts.portfolio_external_id` are nullable promoted
   columns — UBS legitimately omits portfolio linkage on standalone
-  bank accounts (~5% of cash accounts in observed data).
+  bank accounts (e.g. plain current/savings accounts not enrolled in
+  a wealth-management portfolio).
 - `portfolios.base_currency` is the portfolio's UBS reporting
   currency (`PrtflCcyIsoCd`).
 

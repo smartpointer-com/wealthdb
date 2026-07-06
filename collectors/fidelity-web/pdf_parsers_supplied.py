@@ -215,7 +215,6 @@ _NONDATA_LINE_PREFIXES = (
     "Holdings",
     "INVESTMENT REPORT",
     "Account #",
-    "EXAMPLE REGISTRATION",
     "Separate Account Manager",
 )
 
@@ -238,7 +237,7 @@ class TrustHoldingRow:
     unrealized_gain: float | None     # USD
 
 
-def parse_holdings_block(account_text):
+def parse_holdings_block(account_text, *, expected_signature=None):
     """Extract every holdings row from a per-account section.
 
     Algorithm:
@@ -276,13 +275,15 @@ def parse_holdings_block(account_text):
         if not stripped:
             i += 1
             continue
-        if _is_boilerplate(stripped):
+        if _is_boilerplate(stripped, expected_signature):
             i += 1
             continue
         tokens = stripped.split()
         is_core = "not applicable not applicable" in stripped
         if is_core:
-            row, consumed = _parse_core_account_row(stripped, raw_lines, i)
+            row, consumed = _parse_core_account_row(
+                stripped, raw_lines, i, expected_signature,
+            )
             if row is not None:
                 rows.append(row)
             i += 1 + consumed
@@ -317,7 +318,7 @@ def parse_holdings_block(account_text):
             if not nxt:
                 consumed_extra += 1
                 continue
-            if _is_boilerplate(nxt):
+            if _is_boilerplate(nxt, expected_signature):
                 break
             if _trailing_numeric_count(nxt.split()) >= 5:
                 break
@@ -353,8 +354,14 @@ def parse_holdings_block(account_text):
     return rows
 
 
-def _is_boilerplate(line):
+def _is_boilerplate(line, signature=None):
     if line in _SECTION_HEADERS:
+        return True
+    # The per-account registrant header (the trust/registration
+    # name Fidelity re-stamps at every page break) can land inside
+    # a Holdings block. Skip it by matching the runtime
+    # ``expected_signature`` rather than embedding the name here.
+    if signature and line.startswith(signature):
         return True
     if any(line.startswith(p) for p in _NONDATA_LINE_PREFIXES):
         return True
@@ -365,7 +372,7 @@ def _is_boilerplate(line):
     return False
 
 
-def _parse_core_account_row(line, all_lines, idx):
+def _parse_core_account_row(line, all_lines, idx, signature=None):
     """Core Account row: ``DESC qty price mv N/A N/A eai ey%``,
     with ``not applicable not applicable`` as a literal in the
     middle. Returns ``(row, extra_lines_consumed)``."""
@@ -387,7 +394,7 @@ def _parse_core_account_row(line, all_lines, idx):
         if j >= len(all_lines):
             break
         nxt = all_lines[j].strip()
-        if not nxt or _is_boilerplate(nxt) or _trailing_numeric_count(nxt.split()):
+        if not nxt or _is_boilerplate(nxt, signature) or _trailing_numeric_count(nxt.split()):
             break
         desc = (desc + " " + nxt).strip()
         consumed += 1
@@ -469,7 +476,7 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
             ],
         }
 
-    ``expected_signature`` (e.g. ``"EXAMPLE REGISTRATION"``) is an
+    ``expected_signature`` (e.g. ``"EXAMPLE TRUST"``) is an
     optional string the page-1 text must contain for the PDF to
     parse. Defends against misfiled statements (a statement for a
     different person dropped into the supplied-statements directory
@@ -493,7 +500,9 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
     blocks = parse_account_blocks(text)
     accounts_out = []
     for block in blocks:
-        rows = parse_holdings_block(block.text)
+        rows = parse_holdings_block(
+            block.text, expected_signature=expected_signature,
+        )
         if not rows:
             continue
         accounts_out.append({

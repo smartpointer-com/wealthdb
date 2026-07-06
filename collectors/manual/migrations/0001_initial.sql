@@ -78,7 +78,7 @@ CREATE TABLE load_runs (
 -- early-stage note expected to convert to equity at the next round (or go to
 -- zero). `payload` carries the kind-specific fields, e.g.
 --   real_estate:      {"property_type":"residential","ownership_pct":100, ...}
---   convertible_note: {"principal":50000, "interest_rate":0, "cap":...,
+--   convertible_note: {"principal":..., "interest_rate":0, "cap":...,
 --                      "maturity_date":"YYYY-MM-DD", "conversion_terms":"...",
 --                      "counterparty":"..."}
 --   private_equity:   {"ownership_pct":10, "share_cnt":..., "fiduciary":"...",

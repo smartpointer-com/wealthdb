@@ -421,7 +421,7 @@ def test_asset_class_classifier_covers_known_shapes():
     assert load._classify_asset_class("CORE_X", "anything", 1) == "money_market"
     # CUSIP-shaped 9-char ticker → bond
     assert load._classify_asset_class(
-        "000000AA0", "EXAMPLE CITY BDS", 0,
+        "000000AA1", "PLACEHOLDER MUNI BOND", 0,
     ) == "bond"
     # 3-letter + 6-digit Fidelity 529 plan-fund code
     assert load._classify_asset_class(
@@ -435,7 +435,7 @@ def test_asset_class_classifier_covers_known_shapes():
     assert load._classify_asset_class("AAPL", "APPLE INC", 0) == "equity"
     # ADR — 5-char ending in Y, not X → equity
     assert load._classify_asset_class(
-        "AAGIY", "AIA GROUP ADR", 0,
+        "ABCDY", "PLACEHOLDER ADR", 0,
     ) == "equity"
     # ETF — 3-char alpha → equity (gold disambiguates further)
     assert load._classify_asset_class("SPY", "S&P 500 ETF", 0) == "equity"

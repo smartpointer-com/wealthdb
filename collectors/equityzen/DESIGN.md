@@ -111,8 +111,8 @@ explore session, no values retained):
   from company counts needed. Maps to silver `offerings.kind` (§5) and
   gold `asset_class` (§6.3).
 - **Distributions are in the structured API.**
-  `primaryTransaction.distributedTransactions[]` was populated (up to 6
-  entries on one investment), with a `type` enum of `{ACH, DISTRIBUTION}`.
+  `primaryTransaction.distributedTransactions[]` was populated (several
+  entries on some investments), with a `type` enum of `{ACH, DISTRIBUTION}`.
   So cash flows are derivable from GraphQL — a real distribution that
   arrived in a bank account with no obvious UI record *does* show up here.
   The K-1 / capital-account-statement PDFs corroborate but are not the
@@ -146,8 +146,9 @@ Camoufox profile carries the post-TOTP session between runs.
 The first real session confirmed the login form selectors (email is
 `input#email type=text` — no `name`, so id/placeholder are the only
 hooks; password is `input#password`), the GraphQL surface (§2), the page
-route map (§4), the cookie+CSRF auth, and the document set (131 PDF + 3
-zip downloaded across the document/tax centre).
+route map (§4), the cookie+CSRF auth, and the document set (statement +
+K-1-equivalent PDFs plus a few zip bundles, spanning the document/tax
+centre).
 
 ## 4. Phase 2: login + download
 
@@ -240,7 +241,7 @@ across all stages, logs what it would fetch, and writes nothing
 The per-company equity pages (`/equity/<uuid>/`, enumerated via the
 paginated `getEquityBlocks(buyerId)` off `/equity/`) were built and trialled
 as a price-signal source, then **deliberately removed**. What they carry,
-and why none of it is worth the ~10 extra navigations + pagination
+and why none of it is worth the extra per-company navigations + pagination
 machinery per run:
 
 - `getInvOpps(equityBlockUuid)` → the company's **open order-book asks**

@@ -113,26 +113,28 @@ auth POSTs require it; the middlelayer GETs do not.
 
 **Account taxonomy (observed):**
 
-- Three portfolios visible under one login, all FZ products
-  (vested benefits / Pillar 2 / Freizügigkeit):
-  - `product.key = FZPF` ("PensFree"). Two of three portfolios.
-  - `product.key = FZI` ("Independent"). One of three portfolios.
+- Multiple FZ portfolios (vested benefits / Pillar 2 /
+  Freizügigkeit) surface under one login. Both product keys are
+  observable:
+  - `product.key = FZPF` ("PensFree").
+  - `product.key = FZI` ("Independent").
   Both products surface the same interface, fees, and investment
   menu in the SPA — the holder picks from a small set of pre-
   built strategies in either case, and the foundation doesn't let
   the holder choose individual securities or funds. No human
   manager or advisor is in the loop (robo-advisor shape, not
   self-directed brokerage).
-- All three CHF-denominated, `isActive=true`,
+- All observed portfolios are CHF-denominated, `isActive=true`,
   `portfolioTypeId=0`, `portfolioStatusId=0`.
-- The URL `/dashboard/3a/depots` exists in the SPA, but
-  `/portfolio/investment-overview` returned no Pillar 3a
-  portfolios in the observed account. `download.py` still calls the
-  endpoint defensively — other Relevate users may have 3a.
+- The SPA exposes a `/dashboard/3a/depots` URL, but
+  `/portfolio/investment-overview` returns only the products a
+  given login actually holds and omits Pillar 3a for FZ-only
+  logins. `download.py` still probes `/dashboard/3a/depots`
+  defensively so it captures 3a for logins that have it.
 
 **Document corpus (observed):**
 
-- 26 documents in the index. Recognisable types from the
+- A few dozen documents in the index. Recognisable types from the
   fileName field: Quarterly Reports, Quarterly Fee Statements,
   FZ Credit Notes (contribution arrivals), Pension Agreement,
   Pension Plan, Investor Profile, Leaving Statement.
@@ -176,8 +178,8 @@ no VNC.
 Stack:
 
 - **Python `requests`** for HTTP. Synchronous; the workload is
-  read-only and modest (low tens of API calls per portfolio + 26
-  document GETs).
+  read-only and modest (low tens of API calls per portfolio + a
+  few dozen document GETs).
 - **`requests.cookies.RequestsCookieJar`** persisted as JSON for
   the Airlock cookies (`AL_SESS-S`, `AL_LoginFromNewDevice`,
   `CSRFT759-S`).
@@ -413,8 +415,8 @@ Manifest shape (as written):
     }
   ],
   "documents": {
-    "count_in_index": 26,
-    "fetched": 26, "skipped": 0,
+    "count_in_index": NN,
+    "fetched": NN, "skipped": 0,
     "unexpected_content_type": [],
     "files": [...]
   },
@@ -566,7 +568,7 @@ Storage conventions:
 | `cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | One row per (snapshot, account, currency, kind). `balance_kind` ∈ {cash, invested, current, securities, saving, investment, virtual, target_inv, target_sav} — derived from the matching `portfolios[i]` fields. |
 | `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | One row per (snapshot, account, modelportfolio position). **TARGET allocation**, not actual unit holdings. Promotes isin, asset_class, country_code, allocation, trading_price. |
 | `instruments` | `instrument_external_id` | Slow-changing master data; upsert advances `last_seen_at`. Cross-portfolio dedup'd on `security.id`. |
-| `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. ~219 points per portfolio per snapshot. `value_date` is Unix seconds at the day's midnight UTC. |
+| `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. One point per calendar day of the portfolio's history since inception. `value_date` is Unix seconds at the day's midnight UTC. |
 | `transactions` | `transaction_external_id` | Currently empty for FZ accounts; `/deposits` returns no rows. Schema present for forward compatibility — when credit-note PDFs are parsed by a future loader pass, events land here with `source='credit_note_pdf'`. |
 | `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not yet known; `doc_kind` is a best-effort label that returns `'other'` for production data). |
 
@@ -600,25 +602,27 @@ wealthdb relevate adapter — see [the canonical
 model](../../ARCHITECTURE.md) and the adapter source
 [`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
-### 7.2 Validation against the first real load
+### 7.2 Validation against a real load
 
-3 bronze dumps (1 dry-run + 2 real) loaded into silver:
+A mix of dry-run and real bronze dumps loaded cleanly into
+silver, and the projected row shape matched expectations:
 
-```
-dump_runs               3
-accounts                9    -- 3 portfolios × 3 snapshots
-cash_balances          63    -- 9 accounts × 7 populated kinds
-positions              44    -- 22 positions × 2 non-dry-run snapshots
-instruments            10    -- distinct securities across modelportfolios
-performance_points  1,330    -- 3 portfolios × ~219 points × 2 non-dry-run
-transactions            0    -- /deposits empty for FZ
-documents              26    -- content-deduped across the 3 dumps
-```
+- one `accounts` row per (portfolio, snapshot);
+- one `cash_balances` row per (account, populated balance kind);
+- one `positions` row per (modelportfolio position, non-dry-run
+  snapshot);
+- one `instruments` row per distinct security across the
+  modelportfolios;
+- ~N `performance_points` per (portfolio, non-dry-run snapshot);
+- `transactions` empty for FZ products (`/deposits` returns no
+  rows);
+- `documents` content-deduped across the dumps.
 
-Asset-class distribution across `positions`: `Stocks, Liquidity,
-Bonds, Real Estate, Alternatives` — all 100% ISIN-populated.
-Re-running `load` against the same bronze is a no-op (the
-`dump_runs.snapshot_at` PK is the idempotency anchor).
+Each `positions` row carries an `asset_class` label (from
+`security.assetClass.name`) and an ISIN, which was populated on
+every observed row. Re-running `load` against the same bronze is
+a no-op (the `dump_runs.snapshot_at` PK is the idempotency
+anchor).
 
 ### 7.3 What's deliberately NOT a table
 
@@ -652,7 +656,7 @@ model](../../ARCHITECTURE.md) and the adapter source
 ### 8.1 `account_external_id`
 
 **Use `portfolios[].externalId`** (the `NNNN.NNNNNN.N` form,
-e.g. `NNNN.NNNNNN.N`). It's the foundation-issued account number
+e.g. `1234.567890.0`). It's the foundation-issued account number
 and is stable across sessions. The `id` field is the
 foundation's internal DB key — fine as a join column but not
 appropriate as the canonical external identifier.
@@ -751,7 +755,8 @@ Resolved during the initial portal-mapping work:
   observed at the auth surface.
 - ✓ `account_external_id` shape — `portfolios[].externalId`
   (`NNNN.NNNNNN.N`).
-- ✓ Number of accounts — 3 (observed account, this session).
+- ✓ Number of accounts — a small handful of portfolios under one
+  login.
 - ✓ Export availability — REST API returns JSON for all
   observed pages; documents return `application/pdf` directly.
 - ✓ Document types — quarterly reports, fee statements, credit
@@ -779,9 +784,9 @@ follow-up:
    labels by correlating with fileName patterns, or look for a
    config endpoint that exposes the mapping.
 5. **Pillar 3a presence.** Endpoint `/dashboard/3a/depots`
-   exists; investment-overview returned no 3a entries for this
-   user. Confirm whether the absence is "user doesn't have
-   any" or "API filters them out unless explicitly requested
+   exists; investment-overview omits 3a entries for FZ-only
+   logins. Confirm whether the absence is "the login doesn't have
+   any" or "the API filters them out unless explicitly requested
    via a separate endpoint".
 6. **Actual unit holdings.** Modelportfolio gives target
    allocation; investment-overview gives total currentValue.

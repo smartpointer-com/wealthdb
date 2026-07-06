@@ -190,13 +190,7 @@ the byte level.
 
 The silver `documents` table is keyed on `sha256` — so it
 preserves every physical fetch (no data loss), but the
-LOGICAL document count is roughly half the row count. In the
-current snapshot:
-
-```
-total docs                                 929
-unique (account_external_id, doc_date, filename)   467
-```
+LOGICAL document count is roughly half the row count.
 
 **Silver mitigation (since migration 0004)**: the `transactions`
 table is now sha256-churn-safe. `activity_id` no longer includes
@@ -385,7 +379,7 @@ and with no extra system dependency).
   debit and are gold's to dedupe (INTEROP.md §8).
 - **`--with-more-detail` is implemented but not enabled by
   default** — it adds ~1 modal click per transaction, on the
-  order of an hour per ~5k-tx account. Use it for a one-off
+  order of an hour for a high-activity account. Use it for a one-off
   enrichment pass; routine runs should leave it off.
 
 ## 8. `account_registration` column (migration 0003)

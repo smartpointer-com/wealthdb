@@ -533,7 +533,7 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 
 	// Sample of unresolved candidates so the output shows WHAT
 	// didn't resolve and judge whether the input is even
-	// resolvable (e.g. "BANK INT 081624-091524" is not a security
+	// resolvable (e.g. "BANK INT 010100-020100" is not a security
 	// → expected to skip; "Reg.shs Foo Corp" without a ticker
 	// could be a real instrument the model couldn't place →
 	// worth re-running or checking). Stratified across
@@ -834,7 +834,7 @@ Output format:
 - symbol must be the security's commonly-listed ticker (uppercase letters/digits/dots/hyphens, no spaces, 1-12 characters).
 
 Skip any row you cannot confidently resolve. In particular skip:
-- cash interest credits like "BANK INT 081624-091524 SCHWAB BANK", "INTEREST 07/30THRU 08/28", "SCHWAB1 INT 07/30-08/28";
+- cash interest credits like "BANK INT 010100-020100 SCHWAB BANK", "INTEREST 01/01THRU 02/01", "SCHWAB1 INT 01/01-02/01";
 - bank journal / fee / tax rows with no security in the description;
 - descriptions so mangled that multiple unrelated tickers would plausibly fit.
 

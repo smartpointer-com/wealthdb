@@ -69,15 +69,15 @@ func kindFor(rawType string, netAmount canonical.Decimal, description string) ca
 // payload's description identifies it as interest rather than a
 // security dividend. Two families to catch:
 //
-//   - Cash-sweep interest: "BANK INT 011625-021525 SCHWAB BANK",
-//     "SCHWAB1 INT 03/28-04/28", "INTEREST 12/30THRU 01/29",
+//   - Cash-sweep interest: "BANK INT 010100-020100 SCHWAB BANK",
+//     "SCHWAB1 INT 01/01-02/01", "INTEREST 01/01THRU 02/01",
 //     "MARGIN INTEREST ...". These have stable, distinctive
 //     prefixes — the leading token is what Schwab assigns and
 //     never overlaps with a security name.
 //
 //   - Treasury coupon payments: descriptions like
-//     "US TREASU NT 0.625%05/30UST NOTE DUE 05/15/30" or
-//     "US TREASURY 1.25%05/50UST BOND DUE 05/15/50". The Schwab
+//     "US TREASU NT 9.999%01/99UST NOTE DUE 01/15/99" or
+//     "US TREASURY 9.999%01/99UST BOND DUE 01/15/99". The Schwab
 //     API drops the instrument leg for DIVIDEND_OR_INTEREST so
 //     assetType=TREASURY isn't available; we fall back to
 //     description substrings ("UST NOTE", "UST BOND") that only

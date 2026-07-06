@@ -144,7 +144,7 @@ for the shared env-file rules.
 │   │   └── fees.json                    fee config
 │   ├── transactions/all.json            every transaction keyed by portfolio
 │   ├── documents/
-│   │   ├── index.json                   document catalogue (~1019 entries)
+│   │   ├── index.json                   document catalogue (one entry per document)
 │   │   └── <docid>.pdf                  PDF binaries (gating below)
 │   └── (manual/ ... user-uploaded artefacts, ingested by load.py)
 └── viac.db                              silver SQLite (default name)
@@ -153,13 +153,13 @@ for the shared env-file rules.
 **Document gating** — `download.py` classifies the index by
 `type` and applies the `--with-transaction-documents` flag:
 
-- **Default**: download the ~58 non-TRANSACTION docs (statements,
+- **Default**: download the non-TRANSACTION docs (statements,
   Pillar-3a Bescheinigungen, contracts, investment profiles) plus
-  the ~9 `SECURITY_FUSION` TRANSACTION docs (the only place the
+  the `SECURITY_FUSION` TRANSACTION docs (the only place the
   old→new ISIN mapping lives).
-- **`--with-transaction-documents`**: also download the ~950
-  per-event TRANSACTION PDFs (TRADE_REPORT, DIVIDEND,
-  FEE_CHARGE, INTEREST, …).
+- **`--with-transaction-documents`**: also download the per-event
+  TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE, INTEREST,
+  …), which are the bulk of the archive.
 
 **Cross-run dedup** — PDFs are hard-linked from prior bronze
 runs when the document number matches, so a re-run only fetches

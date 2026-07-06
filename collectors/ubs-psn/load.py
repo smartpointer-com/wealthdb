@@ -61,7 +61,7 @@ SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
 # --------------------------------------------------------------------------
 
 def parse_snapshot_at(dump_dir_name: str) -> int:
-    """'20260513T191623Z' -> Unix seconds UTC."""
+    """'20200101T000000Z' -> Unix seconds UTC."""
     m = SNAPSHOT_DIR_RE.match(dump_dir_name)
     if not m:
         raise ValueError(f"Not a snapshot directory name: {dump_dir_name!r}")

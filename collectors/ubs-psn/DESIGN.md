@@ -15,23 +15,15 @@ those values do and don't reveal about pension assets. How gold
 interprets these columns is owned by the wealthdb UBS adapter — see
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
-### What we know vs. what we suspect
+### Why pension assets are unlikely to appear in PSN
 
-**Known empirically:** scanning every loaded payload across
-`cash_accounts`, `safekeeping_accounts`, and `portfolios` for
-`pension`, `vorsorge`, `pillar`, `bvg`, `lpp`, `säule`, `saule`,
-`freizüg`, `freizug`, `vested`, `retirement` returns zero matches.
-All observed `AcctTpCd` / `AcctTpDesc` values are non-pension UBS
-private-banking product codes.
-
-**But this evidence is weak**, because the customer producing this
-silver data holds no Swiss pension assets at UBS at all. The absence
-of pension accounts in PSN therefore tells us nothing about whether
-PSN *would* surface them if they existed.
-
-**Strong structural tendency (not proof):** Swiss pension assets
+PSN is a private-banking custody/cash feed. Swiss pension assets
 typically live in legally separate entities from a private-banking
-relationship:
+relationship, so they are structurally unlikely to surface in this
+feed regardless of a given customer's holdings. An absence of
+pension accounts in the loaded PSN data would not, on its own,
+establish that PSN *would* surface them if they existed — they may
+simply never fall within PSN's scope:
 
 - **Pillar 2 (BVG / LPP):** the employer's *Personalvorsorgekasse* /
   *Pensionskasse* — a foundation distinct from UBS AG.
@@ -42,8 +34,9 @@ relationship:
   Stiftung 3. Säule") or a 3a-licensed insurance product. Again
   legally separate.
 
-PSN is bound to a UBS AG banking relationship (`ClntId`, the
-`0230…` form). Those pension foundations have their own customer-
+PSN is bound to a UBS AG banking relationship (`ClntId`, a
+14-digit numeric relationship-number form, distinct from the IBAN
+and MT535 `AcctId`). Those pension foundations have their own customer-
 number and reporting plumbing. It is therefore *likely* — but not
 verified — that PSN does not deliver pension data even when a UBS
 customer has pension assets in a UBS-affiliated foundation. The
@@ -112,8 +105,9 @@ doesn't try to surface it:
 - **MT536, MT568, MT590, MT599, MT600, MT608, MT900/910, MT942,
   MT990.** Loader stubs not yet implemented — added when we have
   real samples. Bronze keeps every zip; silver simply skips.
-- **Empty XML containers** (`TDCAPI`, `TDOPT`, `TDMM`, `TDOTC` for
-  this customer; `TDPOPF` until UBS produces the monthly batch).
+- **Empty XML containers** (`TDCAPI`, `TDOPT`, `TDMM`, `TDOTC` when
+  the relationship is not provisioned for, or holds none of, those
+  product types; `TDPOPF` until UBS produces the monthly batch).
   Silver does not insert empty rows.
 - **Computed / derived columns.** No FX-converted values, no
   realised-PnL, no settled flags. Those live in the gold layer.

@@ -114,14 +114,14 @@ columns carry the full node. Schema in
   `valuation` (the current portal FMV at the portfolio **data date**, not
   the download time). `is_open` flips to 0 at a final K-1 (exit). **Holdings
   as-of a date** = each position's latest snapshot ≤ date, dropping the
-  is_open=0 ones. This mirrors the equityzen collector. ~67 positions / 227
-  events in the test account.
+  is_open=0 ones. This mirrors the equityzen collector — one row per
+  position per capital event.
 - **`portfolio_summary`** — per snapshot: totals (committed/contributed/
   invested/realized/unrealized/value) + `irr`/`tvpi`/`dpi` + counts. (The
   full summary, including insights, also rides in `payload`.)
 - **`portfolio_timeseries`** — the ~monthly NAV history AngelList computes
   back to the first investment (value / invested / realized / unrealized
-  per date; ~4.6y in the test account), promoted from
+  per date, spanning back to the account's first investment), promoted from
   `summary.timeSeries`. One row per `(invest_account_slug, as_of_date)`,
   upserted latest-snapshot-wins (past months get revised as valuations
   settle). Longer than our own snapshot history and not reconstructable
@@ -241,10 +241,10 @@ Consequence: `positions.market_value` summed in gold won't equal
 `portfolio_summary.totalValue` for the current date — AngelList reports no
 FMV for ~half the positions, so those carry cost as a proxy.
 
-Verified end-to-end (isolated gold load): **1 account / 1 portfolio, 67
-positions** today (reconstructing correctly for past dates, 4 → 67 across
-2021–2026), **246 funding transactions** (deposit / withdrawal / contribution
-/ distribution, summing to the funding balance) + the current cash balance;
+Verified end-to-end (isolated gold load): one account / one portfolio,
+positions reconstructing correctly for past dates (the book grows over
+time), and funding transactions (deposit / withdrawal / contribution /
+distribution) summing to the funding balance plus the current cash balance;
 `go build` + `go test ./...` green.
 
 ## Re-discovery

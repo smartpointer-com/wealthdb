@@ -186,7 +186,8 @@ Questions `explore` must answer before login/download can be written:
 
 ### Observed internal endpoints (2026-06-08 run)
 
-The first `explore` pass  answered the above. Findings, recorded so login/download can be
+The first `explore` pass — a single authenticated session — answered the
+above. Findings, recorded so login/download can be
 written against them. **All endpoints are cookie-session REST returning
 `application/json`** (no GraphQL); the scraper replays these GETs with the
 logged-in session via Playwright's request API. Internal field names are
@@ -400,15 +401,14 @@ exercise onward, but over-stating the count/value for earlier dates (the count
 grew through intervening exercises, at then-lower FMVs). To value the position
 *per date* a user may side-load a CSV named `<account_external_id>-valuations.csv`
 in the bronze root (e.g. `1234567-valuations.csv`) — rows of
-`YYYY-MM-DD,fmv_per_share_usd`, each
-carried forward to the next (`#` / blank lines ignored), built from 409A
-valuation reports and stock-price notification letters, which do not parse
-reliably. When
-found it **overrides** the Carta-derived value: each certificate is held from
-its issue date and re-valued at every FMV step, so the share count (from the
-certificate issue dates) and the per-share price both move correctly over time.
-The fund side, by contrast, *is* already a true per-quarter NAV series, so it
-needs no override.
+`YYYY-MM-DD,fmv_per_share_usd`, each carried forward to the next (`#` / blank
+lines ignored), built from 409A valuation reports and stock-price notification
+letters, which do not parse reliably. When found it **overrides** the
+Carta-derived value: each certificate is held from its issue date and
+re-valued at every FMV step, so the share count (from the certificate issue
+dates) and the per-share price both move correctly over time. The fund side,
+by contrast, *is* already a true per-quarter NAV series, so it needs no
+override.
 
 ### 5.2 Cash-flow ledger + the sentinel funding account (migration 0003)
 

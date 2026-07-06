@@ -9,7 +9,7 @@ Reserve's **H.10** release, pulled via the [FRED API](https://fred.stlouisfed.or
 It fills the gap left by `ubs-psn`, which supplies fresh (almost) daily
 FX rates but no deep history: FRED gives **USD-centric daily reference
 rates back to 1971** (1999 for EUR). USD-native — no triangulation
-through EUR — matching the portfolio's USD base currency.
+through EUR — so USD-base deployments need no conversion.
 
 ## Tools
 
@@ -23,7 +23,8 @@ session.
 
 ## Currencies
 
-The default series cover every currency in the portfolio. Each FRED
+The default series cover the major reserve/reference currencies against
+USD; add or trim `FX_SERIES` to match your own holdings. Each FRED
 series is one currency vs USD. The stored `(base, quote)` follows the
 canonical convention — `(base, quote, mid)` means "**1 quote = mid
 base**" — the same direction `ubs-psn` uses:

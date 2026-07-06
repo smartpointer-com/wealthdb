@@ -125,8 +125,8 @@ pulls the complete transaction list per portfolio.
 - Master account ID: from the `ctfa<id>` session cookie name.
 - Linked-account IDs + display names: from `<a href*="change_user=N">`
   anchors on /enter_coins.php (the in-page portfolio switcher
-  shows the 4 OTHER portfolios; the current/master is implicit).
-- Union of the two = full list of 5 portfolios.
+  shows the OTHER portfolios; the current/master is implicit).
+- Union of the two = full list of all portfolios.
 
 **Per-portfolio loop** (in `download_portfolio()`):
 1. `GET /enter_coins.php?change_user=<id>` activates the
@@ -160,9 +160,9 @@ snapshot not already in `dump_runs`. Per snapshot:
    `read_csv_auto(all_varchar=true)` and projected into the silver
    schema. `transaction_external_id` is synthesized as
    `cu_<id>:r<row_seq>:<Trade ID || Tx-ID || 'synth'>` because
-   neither CoinTracking column is globally unique (1779 distinct
-   Trade IDs out of 1801 populated; 1797 empty). Row order in the
-   CSV is deterministic so re-loads produce stable IDs.
+   neither CoinTracking column is globally unique — Trade IDs are
+   sparse and frequently blank, and many rows share or lack one.
+   Row order in the CSV is deterministic so re-loads produce stable IDs.
 
 2. **portfolios + wallets** — upserted from the run.json manifest +
    the loaded transactions' `Exchange` column.
@@ -276,9 +276,9 @@ next run upgrades it to the daily close once the day closes).
 
 Rate-limit posture: `RATE_LIMIT_DELAY_S = 0.1s` (~600 calls/min)
 sits comfortably below Binance's ~1,200/min IP weight ceiling. A
-new portfolio's first backfill (~25 coins, 8 years each in
-1,000-day chunks = ~80 API calls) completes in well under a
-minute. Optional `BINANCE_API_KEY` enables authenticated tiers
+new portfolio's first backfill (one chunked series of ~1,000-day
+API calls per held coin, back to its first trade) completes in
+well under a minute. Optional `BINANCE_API_KEY` enables authenticated tiers
 for higher rate limits — unused on the public endpoint.
 
 **Why coin_prices exists alongside portfolio_prices.** They serve
@@ -321,7 +321,8 @@ indistinguishable from a real kline.
 After fetching + FX + backfill, the remaining USD-derivability
 gap is entirely coins with no Binance kline history at all —
 niche staked-ETH derivatives, brand-new pre-listing windows,
-regulatory-purged delistings (XMR, DASH, NANO, …). A Yahoo
+regulatory-purged delistings (certain privacy coins and tokens
+delisted from major CEXes, …). A Yahoo
 Finance secondary-source fallback would close that tail; left as
 a follow-up — the gold-layer's forward-fill or "unpriced"
 sentinel can handle the residual.
@@ -363,7 +364,7 @@ recorded amount. They ride through to silver for tax-cost
 reporting; the balance equation never reads them.
 
 The CSV also contains dedicated **`Type = "Other Fee"`** rows
-(~8% of the dataset observed). These ARE real balance deltas: the
+(a small minority of rows). These ARE real balance deltas: the
 event itself is a fee being deducted from a wallet, recorded as a
 `-sell` on the wallet's currency. The replay applies them like a
 Withdrawal. The distinction matters: same column name (`Fee`),
@@ -388,8 +389,8 @@ outgoing tips). The `buy_amount IS NOT NULL` /
 `sell_amount IS NOT NULL` filters route each row to exactly one
 branch based on which CSV column is populated.
 
-After the type-handler set was completed, all 5 portfolios
-reconcile against the per-wallet balance.csv with zero
+After the type-handler set was completed, every portfolio
+reconciles against its per-wallet balance.csv with zero
 discrepancies beyond ±10⁻⁸ (the 8-decimal CSV export precision).
 
 **Silver is DuckDB, not SQLite — the exception in this repo.**
@@ -451,9 +452,9 @@ FROM daily_deltas
 
 The pre-aggregate stage matters: the window function then runs
 over one row per (portfolio, wallet, instrument, day) instead of
-one per raw transaction. At the current 3.5k-row scale that's a
-~10× cut; the order-of-magnitude factor only grows as the
-transaction history does. It also keeps the resulting query plan
+one per raw transaction. At typical transaction-history scales
+that's roughly an order-of-magnitude cut, and the factor only
+grows as the transaction history does. It also keeps the resulting query plan
 free of the row-discarding `QUALIFY` filter the naive version
 would need.
 

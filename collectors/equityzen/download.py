@@ -82,7 +82,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--documents", action="store_true",
                    help="Also fetch each offering's document PDF blobs (capital-account "
                         "statements, K-1s, etc.) via downloadUrl into bronze documents/. "
-                        "Heavy (~200 PDFs); off by default.")
+                        "Heavy (fetches every offering's document PDFs); off by default.")
     p.add_argument("--dry-run", action="store_true",
                    help="Capture the offerings list (all stages) and log what would be fetched, "
                         "but visit no per-offering pages and write no bronze. Read-only smoke test.")

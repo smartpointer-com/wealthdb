@@ -51,7 +51,7 @@ otherwise unattended.
 #    a 2FA push.
 ./cointracking login
 
-# 4. Pull a fresh bronze dump. ~15 s for 5 portfolios.
+# 4. Pull a fresh bronze dump (a few seconds per linked portfolio).
 ./cointracking download
 
 # 5. Ingest into the DuckDB silver. Computes daily holdings from the
@@ -97,8 +97,9 @@ public endpoint at api.binance.com.
 
 **Coverage gap (small in practice):** Binance retains pair
 metadata in `exchangeInfo` long after they purge kline history
-for delisted coins (`DASH`, `GAS`, `NANO`, `VET`, `XMR`, `ZRX`
-have all been observed). Impact is bounded by the architecture:
+for coins Binance has delisted and whose kline history it has
+since purged (e.g. some privacy coins and older altcoins dropped
+from the exchange). Impact is bounded by the architecture:
 `coin_prices` is only read by gold for non-USD portfolios (USD
 portfolios use `portfolio_prices` directly), and the non-USD
 non-USD portfolios in practice hold mostly major coins that
