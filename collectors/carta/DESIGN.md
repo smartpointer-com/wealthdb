@@ -317,6 +317,34 @@ and documents can be windowed via the shared `--since/--until` +
 `--documents-since/until` contract. `--dry-run` walks navigation without
 firing any export.
 
+### run.json status lifecycle + prune
+
+`download` stamps a run dir's `run.json` with `{"status": "in-progress"}`
+the moment it creates the dir, then atomically overwrites it with the
+terminal manifest carrying `"status": "complete"` (`write_json` = tmp +
+replace) as the last step of a successful walk. So a run dir is a **complete**
+dump (`status == "complete"`), a **non-complete** one (a crashed walk left
+`status == "in-progress"`, or a pre-status run left no `run.json`), or — for
+a dump that predates the field — a statusless manifest, which is treated as
+complete because carta historically wrote `run.json` only once, at the end of
+a successful walk. `--dry-run` creates no run dir, so it leaves no shell to
+classify or prune.
+
+`load` skips any dir whose `status` is not `complete` (a statusless manifest
+still loads, for backward compatibility), so a crashed walk's partial capture
+never becomes a silver snapshot. `prune` (a thin wrapper over the shared
+`collectorkit.prune` engine) reclaims those non-complete run dirs once they go
+quiescent. carta writes **no** bronze-resident debug artefact — the `explore`
+diagnostics (HAR, trace, click log) live under `/debug`, external to the
+bronze tree — so `prune`'s `debug_subdirs` is empty and a complete dump is
+never stripped; its inputs, the bronze-root override CSVs, and the silver DB
+are all out of scope by construction. `prune` runs host-side (a pure file walk
+needs no container, and `load`'s in-container residence is only because it
+needs `poppler-utils`), guarded by `--min-age-hours` (default 1, keyed on the
+newest write in the dir) so a long backfill in flight is protected. The
+`download --debug` flag exists for cross-collector uniformity and currently
+gates nothing extra.
+
 ## 5. Silver schema
 
 SQLite + JSON1, source-shaped, owned by `load.py` (via

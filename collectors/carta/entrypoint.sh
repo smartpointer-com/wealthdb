@@ -103,6 +103,16 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    prune)
+        # Delete non-complete dumps (a crashed walk left run.json
+        # status="in-progress", or a pre-status run left no run.json) from
+        # the bronze tree. Pure file walk — no browser, no Xvfb. carta
+        # writes no bronze-resident debug artefact, so prune reclaims only
+        # whole non-complete run dirs, never a complete dump's inputs.
+        # Also reachable host-side via the wrapper (the usual path).
+        shift
+        exec python3 /app/prune.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -133,6 +143,10 @@ Subcommands:
               issuers, securities, vesting_events, transactions,
               fair_market_values, tax_documents. Pass --force to re-load
               snapshots already recorded in dump_runs.
+  prune       Delete non-complete dumps (crashed walks) from the bronze
+              tree. carta writes no bronze-resident debug artefact, so
+              prune only reclaims whole non-complete run dirs. --dry-run
+              prints the plan first. Usually run host-side via the wrapper.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

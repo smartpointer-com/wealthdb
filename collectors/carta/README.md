@@ -88,6 +88,30 @@ Override host mounts via env: `CARTA_SECRETS_DIR`, `CARTA_DATA_DIR`,
 `CARTA_DEBUG_DIR`. Carta refreshes most data daily (~noon ET), so a nightly
 run after that is the right cadence; same-day re-runs add nothing.
 
+### Reclaiming disk
+
+```sh
+./carta prune --dry-run   # print the deletion plan, delete nothing
+./carta prune             # delete it
+```
+
+`prune` removes whole non-complete run dirs across the bronze tree: a walk
+that crashed leaves `run.json` with `status: "in-progress"` (a pre-status
+run left no `run.json` at all), and `load` skips such dirs, so `prune`
+reclaims them once quiescent. carta writes **no** bronze-resident debug
+artefact — its discovery diagnostics (HAR, Playwright trace, click log) go
+to `/debug` via `./carta explore`, never a run dir — so a complete dump has
+nothing to strip and is left whole. The `download --debug` flag exists for
+cross-collector uniformity and currently gates nothing extra. A complete
+dump's inputs (`entities/`, the document PDFs, `bootstrap/`, the manifest),
+the side-loaded `<eid>-valuations.csv` / `<eid>-transactions.csv` overrides,
+and the silver DB — all at the bronze root, not under a run dir — are never
+touched, so silver stays reproducible; deleting a non-complete dump surfaces
+on the next `load --force` rebuild. Runs host-side (a pure file walk needs no
+container), so it can reclaim disk while a `download` is mid-flight; an
+in-flight guard (`--min-age-hours`, default 1, keyed on recent write
+activity) keeps it from removing a download that is still running.
+
 ## Read-only
 
 See [CLAUDE.md](CLAUDE.md). The Carta holder UI exposes mutation surfaces

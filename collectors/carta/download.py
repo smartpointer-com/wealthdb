@@ -444,6 +444,11 @@ def run(context, args, run_dir: Path, snapshot_at: int) -> int:
         "schema": 1,
         "snapshot_at": snapshot_at,
         "utc": run_dir.name,
+        # Terminal status the prune/load lifecycle keys on. This atomic
+        # write (write_json = tmp + replace) overwrites the in-progress
+        # marker main() dropped at run-dir creation in one step. Reached
+        # only on a successful walk; a crash leaves status="in-progress".
+        "status": "complete",
         "dry_run": args.dry_run,
         "individual_id": iid,
         "firm_id": firm_id,
@@ -481,6 +486,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Bootstrap + list investments only; write just run_dir/bootstrap "
               "and log the work-list. No holdings/fund/document fetch."),
     )
+    p.add_argument(
+        "--debug", action="store_true",
+        help=("Uniform debug gate. carta's browser diagnostics (HAR, "
+              "Playwright trace, click log) are captured externally by "
+              "`./carta explore` under /debug, never in a bronze run dir, so "
+              "download writes no bronze-resident debug artefact and this flag "
+              "currently gates nothing extra. Present for cross-collector "
+              "help-text uniformity; `prune` therefore only reclaims whole "
+              "non-complete dumps, not per-run debug subdirs."),
+    )
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -489,10 +504,23 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    if args.debug:
+        log.info("--debug set: carta captures browser diagnostics externally "
+                 "via `./carta explore` (/debug); no additional "
+                 "bronze-resident debug artefacts are written this run.")
+
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.dest / ts
     if not args.dry_run:
         run_dir.mkdir(parents=True, exist_ok=True)
+        # Stamp the run dir in-progress from birth so its lifecycle is
+        # legible while the walk runs: a crash (a RuntimeError from
+        # land_and_get_individual_id / discover_firm_id, caught below)
+        # leaves status="in-progress", which `prune` reclaims once the dir
+        # goes quiescent and `load` skips. run() atomically overwrites this
+        # marker with the terminal status="complete" manifest when the walk
+        # finishes. --dry-run creates no run dir, so it leaves no marker.
+        write_json(run_dir / "run.json", {"status": "in-progress"})
     snapshot_at = int(time.time())
 
     from camoufox.sync_api import Camoufox

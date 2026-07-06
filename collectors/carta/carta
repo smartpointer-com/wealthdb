@@ -64,6 +64,15 @@ Subcommands:
                       portfolios, issuers, securities, vesting_events,
                       transactions, fair_market_values, tax_documents.
                       --force re-loads snapshots already in dump_runs.
+  prune [args...]     Delete non-complete dumps (a crashed walk left
+                      run.json status="in-progress", or a pre-status run
+                      left no run.json) from the bronze tree. Runs
+                      host-side (pure file walk; no container), so it can
+                      reclaim disk while a download is mid-flight.
+                      carta writes no bronze-resident debug artefact, so
+                      only whole non-complete run dirs are removed;
+                      complete dumps' inputs are never touched. --dry-run
+                      prints the plan without deleting anything.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 
@@ -83,6 +92,23 @@ Credentials:
   push (persistence lifetime to be confirmed during explore).
 EOF
     exit 0
+fi
+
+# `./carta prune [args...]` → host-side python invocation.
+#
+# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
+# poppler, no container. carta's `load` runs in-container ONLY because it
+# needs poppler-utils (pdftotext) to parse statement PDFs; prune has no such
+# dependency, so per the collectors/ prune convention it runs host-side.
+# Host-side execution also bypasses the single-writer safety guard, so disk
+# can be reclaimed while a `download`/`login` container is mid-2FA/mid-walk
+# (the in-flight dump is protected by prune's own --min-age-hours guard).
+# The default --bronze-dir comes first so an explicit flag in [args...]
+# overrides it (argparse last-wins).
+if [[ "${1:-}" == "prune" ]]; then
+    shift
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
 fi
 
 wrapper_main "$@"

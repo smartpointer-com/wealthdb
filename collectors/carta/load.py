@@ -829,6 +829,19 @@ def load_run(conn, run_dir: Path) -> bool:
     if not isinstance(manifest, dict):
         log.warning("skipping %s: no readable run.json", run_dir.name)
         return False
+    # run.json now carries a status lifecycle: download stamps
+    # "in-progress" at run-dir creation and atomically overwrites it with
+    # "complete" when the walk finishes. Skip anything that is not
+    # "complete" (a crashed walk left "in-progress") so a partial capture
+    # never reaches silver as a snapshot. A statusless manifest predates
+    # the field — carta historically wrote run.json only once, at the end,
+    # so its presence means the walk finished: treat it as loadable
+    # (backward compat).
+    status = manifest.get("status")
+    if status is not None and status != "complete":
+        log.info("skipping %s: run.json status=%r (partial/crashed dump)",
+                 run_dir.name, status)
+        return False
     if manifest.get("dry_run"):
         log.info("skipping %s: dry-run dump (bootstrap only, no holdings)",
                  run_dir.name)
