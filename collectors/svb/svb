@@ -12,6 +12,10 @@
 # Subcommands:
 #   load [args...]      Rebuild svb.db from the statement PDFs in the data dir.
 #   download | login    No-op (explains the sideload model).
+#   prune               No-op. The bronze is a flat archive of the load-input
+#                       statement PDFs — no timestamped run dirs and no debug
+#                       artefacts to reclaim — so there is nothing to prune and
+#                       the PDFs are never deleted.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on `load`:
@@ -32,7 +36,7 @@ cmd="${1:-load}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     download|login)
@@ -45,6 +49,26 @@ in-scope statement PDFs (+ an optional signature.txt page-1 guard) into
 EOF
         exit 0
         ;;
+    prune)
+        # No-op. Unlike the scraper collectors, svb's bronze is a FLAT archive:
+        # the SVB Wealth Advisory statement PDFs (+ an optional signature.txt)
+        # sit directly at the bronze root, with no timestamped run dirs and no
+        # download stage that could leave debug artefacts. Those PDFs ARE the
+        # load inputs — git-ignored, the only copy, irreplaceable — so there is
+        # nothing to reclaim and pruning would only risk deleting them. The
+        # shared collectorkit.prune engine would be inert here anyway (its
+        # iter_run_dirs matches only <UTC-ts>/ slugs and never touches
+        # bronze-root files), so no prune.py is shipped. The arm exists so the
+        # orchestrator can forward `prune` uniformly without erroring.
+        cat >&2 <<'EOF'
+svb: prune is a no-op. The bronze is a flat archive of the SVB Wealth Advisory
+statement PDFs (+ an optional signature.txt) — the load inputs themselves,
+git-ignored and the only copy. There are no timestamped run dirs, no download
+stage, and no debug artefacts to reclaim, so there is nothing to prune. The
+statement PDFs are never deleted.
+EOF
+        exit 0
+        ;;
     load)
         host_resolve_dirs "$@"
         py="$(host_python)"
@@ -52,7 +76,7 @@ EOF
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     *)
-        echo "svb: unknown command '$cmd' (expected: load)" >&2
+        echo "svb: unknown command '$cmd' (expected: load, download, login, prune, help)" >&2
         exit 2
         ;;
 esac

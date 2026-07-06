@@ -80,3 +80,28 @@ The wrapper resolves `--data-dir` / `--silver-db` (CLI flag > `SVB_*` env >
 `WEALTHDB_*` env > default `<data-dir>/svb.db`) and forwards extra flags to
 `load.py`, e.g. `wealthdb-collect svb load --closure-date 2023-09-30`. Running
 `load.py` directly works too: `collectors/svb/svb load`.
+
+## Bronze layout and `prune`
+
+The bronze is a **flat archive**, not a run tree: the statement PDFs (plus an
+optional `signature.txt`) sit directly at the bronze root. There are no
+timestamped `<UTC-ts>/` run dirs — svb has no `download.py`, the statements are
+hand-dropped — and no download stage that could leave a screenshot, trace, or
+other debug artefact. `build()` reads the PDFs with `bronze_dir.iterdir()` (files
+whose suffix is `.pdf`) and the guard from `<bronze>/signature.txt`.
+
+Because of that, `prune` is a **documented no-op**. The shared
+`collectorkit.prune` engine only reclaims debug subdirs of *complete* run dirs
+and whole *non-complete* run dirs; its `iter_run_dirs` matches only `<UTC-ts>/`
+slugs, so on this flat layout it yields nothing and never touches a bronze-root
+file. More to the point, the PDFs *are* the `load` inputs and the only copy, so
+there is no reclaimable disk here — only inputs that must be kept. The `svb
+prune` wrapper arm prints this and exits 0; no `prune.py` is shipped, since a
+wired engine would be inert. The same rule that makes `load` refuse an empty
+bronze (a mis-pointed dir must never replace a good silver) makes this collector
+refuse to delete: **the statement PDFs are never removed by `prune`.**
+
+Do not confuse the silver `dump_runs.run_dir = "svb-sleeves-build"` string — an
+internal marker *inside* `svb.db` so the Fidelity gold adapter's change-trigger
+fires on a historical-only build — with a bronze run dir. There is no bronze run
+dir and no bronze manifest, so `prune` has nothing to key off even in principle.

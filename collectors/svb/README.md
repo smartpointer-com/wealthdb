@@ -37,7 +37,22 @@ through to `load.py`, e.g.:
 collectors/svb/svb load --closure-date 2023-09-30 --signature "<page-1 substring>"
 ```
 
-`login` / `download` are no-ops (there is nothing to fetch).
+`login` / `download` are no-ops (there is nothing to fetch), and so is
+`prune` (see below).
+
+## Reclaiming disk (prune)
+
+`prune` is a **documented no-op** here. The scraper collectors keep timestamped
+`<UTC-ts>/` run dirs under bronze and let the shared `collectorkit.prune` engine
+reclaim their debug-artefact subdirs and abandoned partial dumps. svb has none of
+that: its bronze is a **flat archive** — the statement PDFs (plus an optional
+`signature.txt`) sit directly at the bronze root, there is no download stage that
+could leave a screenshot or trace, and no run dir ever exists. Those PDFs *are*
+the `load` inputs — git-ignored and the only copy — so there is nothing to
+reclaim and pruning could only put an irreplaceable input at risk. `prune`
+therefore prints an explanation and exits 0 without deleting anything; no
+`prune.py` is shipped (a wired engine would match no run dir and be inert). **The
+statement PDFs are never deleted.**
 
 ## Gold registration
 
