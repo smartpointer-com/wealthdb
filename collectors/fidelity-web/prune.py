@@ -36,6 +36,14 @@ removing anything. The only paths ever deleted are
 inputs of complete dumps and non-run entries at the bronze root
 (``manual/``, the silver DB) are never touched.
 
+Classification is status-based and unaffected by bronze compression:
+the HTML/CSV load inputs are now zstd-compressed (``balances.html.zst``,
+``positions_*.csv.zst``, ``activity_*.csv.zst``; plain in
+pre-compression dumps), but they are load inputs either way and stay
+untouched. Only ``screenshots/`` is debug (``debug_subdirs``); PDFs and
+``run.json`` are left raw. Converting the pre-compression backlog is the
+separate manual ``recompress`` verb's job, not ``prune``'s.
+
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
 """

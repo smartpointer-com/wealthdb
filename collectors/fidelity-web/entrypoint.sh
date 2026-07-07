@@ -97,6 +97,16 @@ case "${1:-help}" in
         shift
         exec python3 /app/prune.py "$@"
         ;;
+    recompress)
+        # One-time backlog sweep: replace plain HTML/CSV bronze
+        # (balances/performance HTML, positions/activity/statement CSV)
+        # inside complete dumps with verified .zst twins (the form
+        # download now writes). No browser, no Xvfb. Manual only —
+        # never schedule; review --dry-run first. Also reachable
+        # host-side via the wrapper.
+        shift
+        exec python3 /app/recompress.py "$@"
+        ;;
     sh|bash)
         shift
         exec /bin/bash "$@"
@@ -122,6 +132,10 @@ Subcommands:
   load        Parse bronze into the silver SQLite database.
   prune       Delete debug artefacts and non-complete dumps from
               the bronze tree. --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain HTML/CSV inside complete dumps with sha256-
+              verified .zst twins. Manual one-time sweep; --dry-run
+              prints the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

@@ -103,6 +103,13 @@ cd collectors/fidelity-web
                                 # patched Firefox binary fetch)
 ```
 
+fidelity-web is a **hybrid** collector: `download` / `vnc-login` run in
+the Docker image, while `load` / `prune` / `recompress` run on a host
+venv (they parse + decompress bronze in Python, no browser).
+`make build-fidelity-web` builds both halves — the image and the
+`.venv` (from `requirements.txt`, with `collectorkit` editable-
+installed). `make test-fidelity-web` runs the suite in that venv.
+
 Base image is `mcr.microsoft.com/playwright/python:v1.59.0-noble`
 (used for OS-level deps only; the bundled Playwright browsers are
 unused). Camoufox brings its own Firefox at
@@ -192,11 +199,17 @@ the `content_sha256` document key, so re-running converges.
 ./fidelity-web load -v                             # DEBUG logging
 ```
 
-Runs host-side (pure-stdlib Python; no Docker, no Camoufox), so
-it can execute in parallel with a `download` container if
-needed. After every run the loader validates that positions and
-non-cash transactions have a ticker and
-logs how many accounts each classified portfolio holds; failures are logged as warnings.
+Runs host-side on the collector's venv (no Docker, no Camoufox), so
+it can execute in parallel with a `download` container if needed. The
+venv (built by `./fidelity-web build` / `make build-fidelity-web`)
+carries `zstandard` — the loader decompresses the zstd-compressed
+HTML/CSV bronze in Python, since the SQLite silver has no engine to
+stream `.zst` natively — and `pdfplumber` for statement parsing. Bronze
+is resolved by on-disk variant, so a plain (pre-compression) tree and a
+`.zst` tree load to identical silver. After every run the loader
+validates that positions and non-cash transactions have a ticker and
+logs how many accounts each classified portfolio holds; failures are
+logged as warnings.
 
 #### Reclaiming disk
 
@@ -215,6 +228,27 @@ non-complete dump surfaces on the next `load --force` rebuild.
 Runs host-side like `load`, and an in-flight guard
 (`--min-age-hours`, default 1, keyed on recent write activity)
 keeps it from removing a download that is still running.
+
+#### Compressing the pre-compression backlog
+
+`download` zstd-compresses every HTML/CSV export as it lands
+(`balances.html.zst`, `positions_*.csv.zst`, `activity_*.csv.zst`),
+and `load` reads the `.zst` and plain forms alike (it decompresses in
+Python). Run dirs written before compression existed can be converted
+once with the `recompress` verb, which replaces each plain compressible
+file inside a **complete** dump with a compressed twin — the original is
+unlinked only after the twin has been decompressed and sha256-verified
+against it, and an interrupted sweep is safe to re-run. PDFs and
+`run.json` are left untouched. Unlike `prune` this rewrites load
+inputs, so it is strictly manual: never schedule it, review the plan
+first, and verify afterwards with `load --force` (silver must come out
+identical).
+
+```sh
+./fidelity-web recompress --dry-run   # print the sweep plan, rewrite nothing
+./fidelity-web recompress             # convert complete dumps, with byte accounting
+./fidelity-web load --force           # convergence check: silver must be unchanged
+```
 
 ### Credentials
 
@@ -249,28 +283,34 @@ for the shared env-file rules.
 ```
 <bronze-dir>/                              e.g. $XDG_DATA_HOME/wealthdb/fidelity-web/
 ├── 20260524T120000Z/                      one bronze dump per trigger
-│   ├── run.json                           manifest: accounts, per-phase results
+│   ├── run.json                           manifest: accounts, per-phase results (not compressed)
 │   ├── positions/
-│   │   ├── positions_summary.csv          Overview view (all accounts)
-│   │   └── positions_dividend.csv         DividendView (all accounts)
+│   │   ├── positions_summary.csv.zst      Overview view (all accounts)
+│   │   └── positions_dividend.csv.zst     DividendView (all accounts)
 │   ├── activity/
-│   │   └── activity_<since>__<until>.csv  one CSV per date-window
+│   │   └── activity_<since>__<until>.csv.zst  one CSV per date-window
 │   │                                       (consolidated across accounts;
 │   │                                       Account Number column inside)
 │   ├── documents/
-│   │   ├── <fidelity-supplied-filename>.pdf
+│   │   ├── <fidelity-supplied-filename>.pdf  (PDFs never compressed)
 │   │   └── …
 │   ├── balances/
-│   │   └── balances.html                  full-page DOM (no CSV export)
+│   │   └── balances.html.zst              full-page DOM (no CSV export)
 │   ├── performance/
-│   │   └── performance.html               full-page DOM (no CSV export)
+│   │   └── performance.html.zst           full-page DOM (no CSV export)
 │   └── screenshots/                       only with download --debug / --explore
-│       └── <ts>-<label>.{html,png}        per-landmark diagnostics (prunable)
+│       └── <ts>-<label>.{html,png}        per-landmark diagnostics (prunable, not compressed)
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                user-uploaded artefacts (documents that arrive out-of-band)
 └── fidelity-web.db                        silver SQLite (default location)
 ```
+
+HTML/CSV load inputs are zstd-compressed in place as they land
+(`.zst`; plain in pre-compression dumps — both forms load, and the
+loader decompresses in Python). PDFs and `run.json` stay raw. See
+[DESIGN.md](DESIGN.md) §2 for the compression + convergence contract
+and the manual `recompress` backlog sweep.
 
 `run.json` keys `account_dimensions` by `sha256(account_external_id)[:16]`,
 so `ls` of a bronze dir + a glance at the manifest does not

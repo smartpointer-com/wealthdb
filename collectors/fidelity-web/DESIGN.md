@@ -82,35 +82,76 @@ bronze subdirectory holds documents that arrive out-of-band.
 <bronze-root>/
 ├── 20260524T120000Z/
 │   ├── run.json                                manifest (CLI config,
-│   │                                           account_dimensions, per-phase results)
+│   │                                           account_dimensions, per-phase results) — NOT compressed
 │   ├── positions/
-│   │   ├── positions_summary.csv               Overview view (all accounts in one CSV)
-│   │   └── positions_dividend.csv              DividendView (ex-date, yield, est. annual income)
+│   │   ├── positions_summary.csv.zst           Overview view (all accounts in one CSV)
+│   │   └── positions_dividend.csv.zst          DividendView (ex-date, yield, est. annual income)
 │   ├── activity/
-│   │   └── activity_<YYYYMMDD>__<YYYYMMDD>.csv one CSV per date-window (Custom-range mode),
-│   │                                           or activity_past_90_days.csv (preset mode);
+│   │   └── activity_<YYYYMMDD>__<YYYYMMDD>.csv.zst one CSV per date-window (Custom-range mode),
+│   │                                           or activity_past_90_days.csv.zst (preset mode);
 │   │                                           consolidated across accounts, Account Number
 │   │                                           column inside.
 │   ├── documents/
 │   │   ├── <fidelity-supplied-filename>.pdf    statement PDFs (where served) +
 │   │   │                                       per-year, per-account tax-form PDFs
-│   │   │                                       (Consolidated 1099, 1099-Q, etc.)
+│   │   │                                       (Consolidated 1099, 1099-Q, etc.) — NOT compressed
 │   │   └── …
 │   ├── balances/
-│   │   └── balances.html                       full-page DOM (no CSV export available;
+│   │   └── balances.html.zst                   full-page DOM (no CSV export available;
 │   │                                           per-account totals in
 │   │                                           data-testid$='-totalaccountvalue-label')
 │   ├── performance/
-│   │   └── performance.html                    full-page DOM (no structured export;
+│   │   └── performance.html.zst                full-page DOM (no structured export;
 │   │                                           return % surface only via rendered text)
 │   └── screenshots/                            only with `download --debug` / `--explore`
 │       └── <ts>-<label>.{html,png}             per-landmark diagnostics for selector drift
-│                                               (+ <ts>-<label>.dominv.json with --explore)
+│                                               (+ <ts>-<label>.dominv.json with --explore) — NOT compressed
 ├── 20260525T120000Z/
 │   └── …
 ├── manual/                                     user-uploaded artefacts (documents that arrive out-of-band)
 └── fidelity-web.db                             silver SQLite (default location)
 ```
+
+(HTML/CSV shown as `.zst`; pre-compression dumps carry the plain
+names, and both forms load — see **Bronze compression** below.)
+
+**Bronze compression.** Each HTML/CSV artefact is zstd-compressed in
+place as it lands (`collectorkit.compress.compress_file`: atomic
+tmp+rename, decompress-and-sha256-verify before the plain file is
+unlinked, mtime carried over). HTML/CSV-shaped bronze compresses to a
+small fraction of its raw size. The list of compressed forms is exactly
+the load inputs that are text: `positions/*.csv`, `activity/*.csv`,
+`balances/balances.html`, `performance/performance.html`, and any
+`documents/Statement*.csv` companions. **PDFs are never compressed**
+(already internally compressed; excluding them avoids spending CPU to
+grow the file), nor is `run.json` (it must stay greppable — it is the
+status-lifecycle handshake `prune` keys on), nor the `--debug`
+`screenshots/` tree (debug artefacts `prune` owns).
+
+Compression failures downgrade to a warning and leave the plain file in
+place: every reader resolves the on-disk variant via
+`compress.resolve_variant` (plain wins when both forms coexist), so a
+half-adopted tree is a valid tree, not an error state.
+
+Unlike cointracking — whose DuckDB loader streams `.csv.zst` natively,
+so nothing is ever materialised — fidelity-web's silver is SQLite and
+the loader parses HTML/CSV **in Python**, so the loader itself
+decompresses (`compress.open_text`). That is why fidelity-web is a
+**hybrid** collector (Docker image for the Camoufox `download`; a host
+venv carrying `zstandard` for the host-side `load` / `recompress`; see
+§5). The convergence guarantee: a `documents` row is keyed on the
+DECOMPRESSED content (`content_sha256`, `size_bytes`) and the LOGICAL
+name (`balances.html`, never `balances.html.zst`), and the activity
+`source_sha256` is the decompressed hash — so `load --force` on a
+compressed tree yields byte-identical silver to `load --force` on the
+same tree uncompressed, and the `content_sha256` dedup still collapses
+the same artefact across runs regardless of compression state.
+
+Pre-compression run dirs are converted by the manual `recompress` verb
+(thin wrapper over `collectorkit.recompress`: prune-grade safety
+envelope, verify-then-unlink per file, byte accounting; reuses prune's
+completeness predicate; never scheduled) — after a sweep, a
+`load --force` rebuild must produce identical silver.
 
 Everything in a run dir except `screenshots/` is a `load` input.
 The captures are diagnostic-only and opt-in (`--debug`, implied by
@@ -494,6 +535,22 @@ host land in the next container spawn — no image rebuild during
 iteration. The device-trust cookie suppresses MFA across spawns
 for ~30 days, so iteration on the walk phases doesn't burn MFA
 pushes.
+
+**Hybrid: Docker `download`, host-venv `load` / `prune` /
+`recompress`.** `download` needs Camoufox + Xvfb, so it runs in the
+image. The file-only verbs are pure bronze walks that never touch a
+browser, and they run host-side on a venv the `.host-venv` marker tells
+the Makefile to build (from `requirements.txt`, with `collectorkit`
+editable-installed). Running host-side saves the docker-spin overhead
+and bypasses the single-writer safety guard, so a `load` can run while a
+`download` container is mid-flight. The host venv exists (rather than
+bare `python3`, as it did before bronze compression) because `load`
+decompresses zstd bronze **in Python** — fidelity-web's silver is
+SQLite, with no engine to stream `.csv.zst` natively the way
+cointracking's DuckDB does — so the host interpreter needs the
+`zstandard` package (and it already needed `pdfplumber` for the
+statement-PDF parsing). The wrapper runs these via `host_python`
+(`shared/wrappers/host-lib.sh`).
 
 ### 5.1 Session timeout
 

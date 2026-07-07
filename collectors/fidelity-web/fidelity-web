@@ -7,15 +7,24 @@
 # Camoufox profile and 2FA prompts can't tolerate concurrent
 # invocations.
 #
-# Two special host-side paths:
-#   * `load` runs the silver loader host-side via PYTHONPATH instead
-#     of through docker (pure-stdlib python; saves the docker-spin
-#     overhead and lets the loader run while a `download` container
-#     is mid-flight).
+# HYBRID collector (see .host-venv): the Camoufox `download` /
+# `vnc-login` run in the Docker image; the file-only verbs run on the
+# host venv (`make build-fidelity-web` builds it from requirements.txt
+# with collectorkit editable-installed):
+#   * `load` runs the silver loader host-side via the venv python
+#     (host_python) — the loader decompresses zstd bronze in Python
+#     (SQLite silver, no native .zst streaming) so the venv carries
+#     zstandard + pdfplumber. Running host-side saves the docker-spin
+#     overhead and lets the loader run while a `download` container is
+#     mid-flight.
+#   * `prune` / `recompress` are the same: pure bronze file walks, run
+#     under the venv, bypassing the single-writer safety guard (their
+#     own age guard protects an in-flight dump).
 #   * `vnc-login` forwards a free 5900-6000 host port for the
 #     human-driven first-time profile-seed.
 #
-# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh;
+# host_python comes from shared/wrappers/host-lib.sh.
 
 set -euo pipefail
 
@@ -30,6 +39,12 @@ HAS_VNC=1           # forward a free 5900-6000 port for vnc-login
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+# host-lib.sh provides host_python (the collector's .venv python, built
+# by `make build-fidelity-web`) for the file-only host-side verbs
+# (load / prune / recompress). It only defines functions; no globals
+# clash with wrapper-lib.sh.
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/host-lib.sh"
 wrapper_init
 
 if [[ "${1:-}" == "build" ]]; then
@@ -50,13 +65,21 @@ Subcommands:
                         Pass --check to validate the session without
                         scraping.
   load [args...]        Parse bronze into the silver SQLite DB.
-                        Runs host-side (pure stdlib Python; no
-                        Docker spawn).
+                        Runs host-side on the venv python (decompresses
+                        zstd bronze in Python; no Docker spawn).
   prune [args...]       Delete debug artefacts (<run>/screenshots/,
                         written only by download --debug/--explore)
                         and non-complete dumps from the bronze tree.
                         Runs host-side. --dry-run prints the plan
                         without deleting anything.
+  recompress [args...]  One-time backlog sweep: replace plain
+                        HTML/CSV bronze (balances/performance HTML,
+                        positions/activity/statement CSV) inside
+                        complete dumps with sha256-verified .zst
+                        twins — the form download now writes. Runs
+                        host-side. Manual only, never scheduled;
+                        review --dry-run first, verify with
+                        \`load --force\`.
   vnc-login [args...]   First-time profile-dir seed: pre-fills
                         credentials, hands off to a VNC client for
                         the human-driven click + 2FA, then runs the
@@ -91,13 +114,15 @@ EOF
     exit 0
 fi
 
-# `./fidelity-web load [args...]` → host-side python invocation.
+# `./fidelity-web load [args...]` → host-venv python invocation.
 #
-# The silver loader is pure-stdlib Python (sqlite3 + csv + json
-# + hashlib + re); no Camoufox / Playwright / container needed.
-# Running it host-side avoids docker-spin overhead for what's just
-# a file walk + SQLite writes, and bypasses the safety guard so it
-# can run while a `download` container is mid-flight.
+# The silver loader needs no Camoufox / Playwright / container, but it
+# DOES decompress zstd bronze in Python (SQLite silver — no native .zst
+# streaming), so it runs on the collector's .venv python via
+# host_python (zstandard + pdfplumber + collectorkit editable-installed;
+# no PYTHONPATH hack). Running host-side avoids docker-spin overhead for
+# a file walk + SQLite writes, and bypasses the safety guard so it can
+# run while a `download` container is mid-flight.
 #
 # Defaults match the container layout (silver under <data>/...,
 # bronze tree = <data>). Forward all flags through.
@@ -115,9 +140,9 @@ if [[ "${1:-}" == "load" ]]; then
                 cat <<EOH
 fidelity-web load — parse bronze into silver SQLite
 
-Runs host-side (pure stdlib Python). Default silver DB lives at
-\$HOST_DATA/fidelity-web.db; default bronze tree is \$HOST_DATA
-itself.
+Runs host-side on the venv python (decompresses zstd bronze in
+Python). Default silver DB lives at \$HOST_DATA/fidelity-web.db;
+default bronze tree is \$HOST_DATA itself.
 
 Flags:
   --silver-db <file>    SQLite path (default: \$HOST_DATA/fidelity-web.db)
@@ -130,17 +155,13 @@ EOH
         esac
         shift
     done
-    # load.py imports collectorkit (lives at <repo>/shared/collectorkit
-    # relative to this wrapper). Expose it on PYTHONPATH so the host
-    # python3 can find it with no separate install step.
-    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/load.py" \
+    exec "$(host_python)" "$HERE/load.py" \
         --silver-db "$SILVER_DB" \
         --bronze-dir "$BRONZE_DIR" \
         ${PASSTHRU[@]+"${PASSTHRU[@]}"}
 fi
 
-# `./fidelity-web prune [args...]` → host-side python invocation.
+# `./fidelity-web prune [args...]` → host-venv python invocation.
 # Same rationale as `load`: a pure file walk needs no container,
 # and host-side execution bypasses the single-writer safety guard
 # so it can run while a `download` container is mid-flight (the
@@ -149,8 +170,18 @@ fi
 # overrides it (argparse last-wins).
 if [[ "${1:-}" == "prune" ]]; then
     shift
-    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+    exec "$(host_python)" "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+fi
+
+# `./fidelity-web recompress [args...]` → host-venv python invocation.
+# One-time backlog sweep converting pre-compression HTML/CSV bronze to
+# the .zst form download now writes (verify-then-unlink per file, under
+# prune's completeness envelope). Same host-side rationale as prune; the
+# default --bronze-dir comes first so an explicit flag overrides it.
+# Manual only — never schedule; review --dry-run first.
+if [[ "${1:-}" == "recompress" ]]; then
+    shift
+    exec "$(host_python)" "$HERE/recompress.py" --bronze-dir "$HOST_DATA" "$@"
 fi
 
 wrapper_main "$@"

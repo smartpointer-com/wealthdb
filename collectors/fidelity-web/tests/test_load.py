@@ -480,3 +480,161 @@ def test_management_style_other_kind_is_null(migrated):
     silver loader doesn't guess for unknown group labels."""
     assert load.MANAGEMENT_STYLE_BY_KIND.get("other") is None
     assert load.MANAGEMENT_STYLE_BY_KIND.get(None) is None
+
+
+# ============================================================
+# Bronze compression convergence
+# ============================================================
+#
+# The hard invariant for zstd bronze compression: `load --force` on a
+# compressed bronze tree must produce byte-identical silver to
+# `load --force` on the same tree uncompressed. The loader keys the
+# `documents` row on the DECOMPRESSED content (content_sha256 +
+# size_bytes) and the LOGICAL name (`balances.html`, not
+# `balances.html.zst`); the activity `source_sha256` is likewise the
+# decompressed hash; positions/activity parse via a decompressing
+# reader. Synthetic HTML/CSV bodies only — never real Fidelity data.
+
+def _seed_convergence_dump(root: Path, ts: str) -> Path:
+    """A full bronze dump plus balances/performance HTML and a
+    documents/ statement-CSV companion, so every compressible path —
+    positions/activity CSV, balances/performance HTML, and the
+    documents/*.csv companion branch — is exercised."""
+    dump = _write_dump(root, ts)  # positions + activity CSV + PDFs
+    (dump / "balances").mkdir()
+    (dump / "balances" / "balances.html").write_text(
+        "<html><body><span data-testid='x-totalaccountvalue-label'>"
+        "$1,234.56</span></body></html>",
+        encoding="utf-8",
+    )
+    (dump / "performance").mkdir()
+    (dump / "performance" / "performance.html").write_text(
+        "<html><body><div>1yr +0.00%</div></body></html>",
+        encoding="utf-8",
+    )
+    # documents/ statement-CSV companion (Fidelity saves a CSV twin of
+    # some statement PDFs). Ingested as a document blob, not parsed —
+    # synthetic bytes suffice. The documents/ dir already exists from
+    # _write_dump.
+    (dump / "documents" / "Statement3312026.csv").write_text(
+        "Date,Description,Amount\n03/31/2026,PLACEHOLDER LINE,0.00\n",
+        encoding="utf-8",
+    )
+    return dump
+
+
+def _dump_tables(db_path: Path) -> dict:
+    c = sqlite3.connect(str(db_path))
+    try:
+        return {
+            t: c.execute(f"SELECT * FROM {t} ORDER BY 1, 2, 3").fetchall()
+            for t in ("documents", "positions", "transactions",
+                      "accounts", "portfolios",
+                      "historical_position_snapshots")
+        }
+    finally:
+        c.close()
+
+
+# The compressible artefacts inside the seeded dump, relative to it.
+_COMPRESSIBLE = (
+    "positions/positions_summary.csv",
+    "positions/positions_dividend.csv",
+    "activity/activity_20240501__20240730.csv",
+    "balances/balances.html",
+    "performance/performance.html",
+    "documents/Statement3312026.csv",
+)
+
+
+def test_compressed_bronze_converges_to_identical_silver(tmp_path):
+    from collectorkit import compress
+
+    bronze = tmp_path / "bronze"
+    dump = _seed_convergence_dump(bronze, "20260101T120000Z")
+
+    # 1) Load the plain tree.
+    db_plain = tmp_path / "plain.db"
+    load.main(["--silver-db", str(db_plain), "--bronze-dir", str(bronze)])
+    plain = _dump_tables(db_plain)
+
+    # 2) Compress every compressible artefact IN PLACE (same dir), so
+    #    file_path converges too — PDFs and run.json stay untouched.
+    for rel in _COMPRESSIBLE:
+        f = dump / rel
+        compress.compress_file(f)
+        assert not f.exists()
+        assert (f.with_name(f.name + ".zst")).is_file()
+
+    # 3) Load the now-compressed tree into a fresh DB.
+    db_zst = tmp_path / "zst.db"
+    load.main(["--silver-db", str(db_zst), "--bronze-dir", str(bronze)])
+    zst = _dump_tables(db_zst)
+
+    # Every table identical — proves decompressed-hash + logical-name.
+    assert zst == plain
+
+    # Explicit: the balances documents row carries the LOGICAL name and
+    # the DECOMPRESSED size, never the .zst name or the compressed size.
+    c = sqlite3.connect(str(db_zst))
+    try:
+        name, size = c.execute(
+            "SELECT file_name, size_bytes FROM documents "
+            "WHERE doc_kind = 'balances_html'"
+        ).fetchone()
+    finally:
+        c.close()
+    zst_path = dump / "balances" / "balances.html.zst"
+    _, decompressed_size = compress.decompressed_sha256(zst_path)
+    assert name == "balances.html"                 # logical, not .zst
+    assert size == decompressed_size               # decompressed length
+    assert size != zst_path.stat().st_size         # NOT the compressed size
+
+    # Same guarantee on the documents/*.csv companion branch (the one
+    # compressible documents sub-path): logical name + decompressed size.
+    c = sqlite3.connect(str(db_zst))
+    try:
+        csv_name, csv_size = c.execute(
+            "SELECT file_name, size_bytes FROM documents "
+            "WHERE doc_kind = 'statement' AND file_format = 'csv'"
+        ).fetchone()
+    finally:
+        c.close()
+    csv_zst = dump / "documents" / "Statement3312026.csv.zst"
+    _, csv_decompressed = compress.decompressed_sha256(csv_zst)
+    assert csv_name == "Statement3312026.csv"      # logical, not .zst
+    assert csv_size == csv_decompressed
+
+
+def test_activity_coexisting_plain_and_zst_ingests_once(migrated, tmp_path):
+    """A recompress interrupted between verify and unlink leaves a plain
+    activity CSV next to its .zst twin. The loader keys on the logical
+    name and resolves one variant (plain wins), so the transactions are
+    ingested exactly once — not doubled."""
+    from collectorkit import compress
+
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    csv = dump / "activity" / "activity_20240401__20240630.csv"
+    csv.write_text(_activity_csv(_div_row("06/01/2024", "12.50")))
+    # Keep the original so plain + .zst coexist.
+    compress.compress_file(csv, remove_original=False)
+    assert csv.exists()
+    assert csv.with_name(csv.name + ".zst").is_file()
+
+    load._load_transactions(migrated, 1, dump)
+    n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    assert n == 1
+
+
+def test_logical_bronze_path_strips_compression_suffix():
+    from pathlib import Path as _P
+    assert load._logical_bronze_path(
+        _P("a/balances.html.zst")) == _P("a/balances.html")
+    assert load._logical_bronze_path(
+        _P("a/x.csv.gz")) == _P("a/x.csv")
+    # Plain paths (and PDFs) pass through unchanged.
+    assert load._logical_bronze_path(
+        _P("a/x.csv")) == _P("a/x.csv")
+    assert load._logical_bronze_path(
+        _P("a/Statement.pdf")) == _P("a/Statement.pdf")

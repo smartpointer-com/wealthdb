@@ -14,7 +14,18 @@
 # the statement layout; revisit if perf matters later.
 pdfplumber>=0.11,<1
 
+# download.py zstd-compresses each HTML/CSV export as it lands
+# (balances.html → balances.html.zst, positions_*.csv → *.csv.zst,
+# activity_*.csv → *.csv.zst) via collectorkit.compress, and the
+# recompress verb converts the pre-compression backlog. Self-contained
+# wheel (bundles libzstd), no system deps. Unlike cointracking (whose
+# DuckDB loader streams .csv.zst natively), fidelity-web's load.py
+# decompresses IN Python — its silver is SQLite — so this package is a
+# host-venv `load`/`recompress` dependency too, not just a download one.
+zstandard>=0.22,<1
+
 # pytest is bundled in the image so tests can be run inside the
-# container with `./fidelity-web sh -c "cd /app && pytest"`,
-# no host-side Python toolchain required.
+# container with `./fidelity-web sh -c "cd /app && pytest"`;
+# the host venv (see .host-venv) also runs the suite via `make
+# test-fidelity-web`.
 pytest>=8,<9

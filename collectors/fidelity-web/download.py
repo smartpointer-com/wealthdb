@@ -8,6 +8,15 @@ walks whichever export phases were selected, attempts a clean
 logout, and exits. Bronze artefacts land in a timestamped
 ``<dest>/<UTC-ts>/`` directory.
 
+Each HTML/CSV artefact is zstd-compressed in place as it lands
+(``balances.html`` → ``balances.html.zst``, ``positions_*.csv`` /
+``activity_*.csv`` likewise), via ``collectorkit.compress`` with a
+decompress-and-verify pass before the plain file is removed.
+Compression is best-effort: on failure the plain file stays and the
+run still succeeds — ``load`` resolves either form. PDFs are left raw
+(already internally compressed); ``run.json`` and the ``--debug``
+``screenshots/`` tree are never compressed.
+
 Five export phases, gated by ``--mode`` (``all`` runs them in
 order, otherwise the named single phase):
 
@@ -94,10 +103,32 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, compress
 
 
 log = logging.getLogger("fidelity-web.download")
+
+
+def compress_export(path):
+    """Compress a freshly saved HTML/CSV bronze artefact in place
+    (`balances.html` → `balances.html.zst`), returning the on-disk path.
+
+    Best-effort by design: `load` resolves either form, so a compression
+    failure (disk full, missing codec) downgrades to a warning and the
+    plain file stays — never a lost artefact. `compress.compress_file`
+    decompress-and-sha256-verifies the twin before unlinking the
+    original, so the window in which data could be lost is nil. PDFs are
+    NEVER routed here — they are already internally compressed and are a
+    load input in raw form."""
+    try:
+        final = compress.compress_file(path)
+        log.info("  compressed %s → %s (%d bytes)", path.name,
+                 final.name, final.stat().st_size)
+        return final
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        log.warning("  could not compress %s (%s); keeping the plain file",
+                    path.name, exc)
+        return path
 
 
 # ---------------------------------------------------------------------------
@@ -646,9 +677,10 @@ def scrape_positions(page, bronze_dir, capture_dir):
                 "saved positions/positions_%s.csv (%d bytes)",
                 view_key, csv_path.stat().st_size,
             )
+            final = compress_export(csv_path)
             results.append({
                 "view": view_key,
-                "file": str(csv_path.relative_to(bronze_dir)),
+                "file": str(final.relative_to(bronze_dir)),
                 "ok": True,
             })
         except Exception as e:
@@ -1184,10 +1216,11 @@ def _activity_csv_for_window(page, since_date, until_date,
             "saved activity/%s (%d bytes, range=%s)",
             csv_path.name, csv_path.stat().st_size, range_tag,
         )
+        final = compress_export(csv_path)
         return {
             "window": [since_date.isoformat(),
                        until_date.isoformat()],
-            "file": str(csv_path.relative_to(bronze_dir)),
+            "file": str(final.relative_to(bronze_dir)),
             "ok": True,
         }
     except Exception as e:
@@ -1297,9 +1330,10 @@ def scrape_activity(page, since_date, until_date,
             "saved activity/%s (%d bytes, range=%r)",
             csv_path.name, csv_path.stat().st_size, selected_range,
         )
+        final = compress_export(csv_path)
         results.append({
             "timeperiod": selected_range or "default",
-            "file": str(csv_path.relative_to(bronze_dir)),
+            "file": str(final.relative_to(bronze_dir)),
             "ok": True,
         })
     except Exception as e:
@@ -1773,9 +1807,10 @@ def scrape_balances(page, bronze_dir, capture_dir):
         "per-account values in totalaccountvalue-label testids)",
         out_path.name, out_path.stat().st_size,
     )
+    final = compress_export(out_path)
     return {
         "status": "explored-no-export",
-        "file": str(out_path.relative_to(bronze_dir)),
+        "file": str(final.relative_to(bronze_dir)),
     }
 
 
@@ -1832,9 +1867,10 @@ def scrape_performance(page, bronze_dir, capture_dir):
         "available on this surface)",
         out_path.name, out_path.stat().st_size,
     )
+    final = compress_export(out_path)
     return {
         "status": "explored-no-export",
-        "file": str(out_path.relative_to(bronze_dir)),
+        "file": str(final.relative_to(bronze_dir)),
     }
 
 

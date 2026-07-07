@@ -50,13 +50,28 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, compress, silver
 
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) directly.
 apply_migrations = silver.apply_migrations
 
 log = logging.getLogger("fidelity-web.load")
+
+
+def _logical_bronze_path(path):
+    """Strip a compression suffix (`.zst` / `.gz`) so silver records the
+    LOGICAL (uncompressed) name/path of a bronze artefact.
+
+    download + recompress may write an HTML/CSV artefact as
+    `<name>.zst`; a `documents` row (and every other silver fact) must
+    be byte-identical whether the on-disk file is `balances.html` or
+    `balances.html.zst`, so the loader keys on the logical name. Plain
+    paths (and PDFs, never compressed) pass through unchanged."""
+    for suffix in compress.VARIANT_SUFFIXES:
+        if path.name.endswith(suffix):
+            return path.with_name(path.name[:-len(suffix)])
+    return path
 
 
 DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
@@ -445,8 +460,10 @@ def _load_positions(conn, snapshot_at, dump_dir):
     # land first; dividend-view columns merge over.
     merged = {}
     for view, fname in POSITIONS_FILES.items():
-        path = pos_dir / fname
-        if not path.exists():
+        # download / recompress may have written positions_<view>.csv
+        # as .csv.zst; resolve whichever variant is on disk (plain wins).
+        path = compress.resolve_variant(pos_dir / fname)
+        if path is None:
             continue
         for row in _iter_positions_rows(path):
             account_ext = row.get("Account Number", "").strip()
@@ -554,7 +571,10 @@ def _iter_positions_rows(csv_path):
     Some rows have a literal 'Pending Activity' or 'Account Total'
     in the Symbol column — skip those too."""
     SKIP_INSTRUMENTS = {"Pending Activity", "Account Total"}
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+    # csv_path may be plain .csv or a .csv.zst variant — open_text
+    # decompresses by suffix in memory. Keep utf-8-sig (BOM strip) +
+    # newline="" so a compressed load reads byte-identical rows.
+    with compress.open_text(csv_path, encoding="utf-8-sig", newline="") as f:
         # Read raw lines first so we can stop at the disclaimer.
         text = f.read()
     # Disclaimers start with 'Brokerage services' or '"The data...'.
@@ -588,20 +608,36 @@ def _load_transactions(conn, snapshot_at, dump_dir):
     act_dir = dump_dir / "activity"
     if not act_dir.is_dir():
         return 0
-    # Cache source-file sha256 per file (each activity CSV is
-    # potentially large; one hash per file, then reuse across rows).
-    inserted = 0
-    for path in sorted(act_dir.iterdir()):
-        if not ACTIVITY_FILE_RE.match(path.name):
+    # Collect LOGICAL activity names (strip any .zst/.gz), then resolve
+    # each to its on-disk variant — so a plain + .zst twin that coexist
+    # (a recompress interrupted between verify and unlink) ingest once,
+    # with the plain original winning. ACTIVITY_FILE_RE matches the
+    # logical `activity_*.csv` name.
+    logical_names = set()
+    for path in act_dir.iterdir():
+        if not path.is_file():
             continue
-        inserted += _ingest_activity_csv(conn, snapshot_at, path)
+        logical = _logical_bronze_path(path)
+        if ACTIVITY_FILE_RE.match(logical.name):
+            logical_names.add(logical.name)
+    inserted = 0
+    for name in sorted(logical_names):
+        resolved = compress.resolve_variant(act_dir / name)
+        if resolved is None:
+            continue
+        inserted += _ingest_activity_csv(conn, snapshot_at, resolved)
     return inserted
 
 
 def _ingest_activity_csv(conn, snapshot_at, csv_path):
-    src_sha = bronze.sha256_file(csv_path)[0]
+    # source_sha256 is the DECOMPRESSED content hash, not the on-disk
+    # file's hash: a .csv.zst and its plain twin must produce identical
+    # transactions rows (the convergence invariant), and source_sha256
+    # is a stored column. decompressed_sha256 hashes raw bytes for a
+    # plain file, so pre-compression dumps are unaffected.
+    src_sha = compress.decompressed_sha256(csv_path)[0]
     inserted = 0
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+    with compress.open_text(csv_path, encoding="utf-8-sig", newline="") as f:
         text = f.read()
     # Fidelity prefixes a BOM + blank line before the header on
     # every activity export. Skip everything up to the line that
@@ -757,30 +793,50 @@ def _load_documents(conn, snapshot_at, dump_dir, run_meta):
     # Statements + tax forms.
     docs_dir = dump_dir / "documents"
     if docs_dir.is_dir():
+        # PDFs are never compressed (already internally compressed) —
+        # hashed + sized by their raw bytes, unchanged.
         for pdf in sorted(docs_dir.glob("*.pdf")):
             inserted += _ingest_document(
                 conn, snapshot_at, pdf,
                 _classify_documents_pdf(pdf.name),
             )
-        for other in sorted(docs_dir.iterdir()):
-            if other.suffix.lower() == ".csv":
-                inserted += _ingest_document(
-                    conn, snapshot_at, other,
-                    {"doc_kind": "statement", "file_format": "csv"},
-                )
-    # Balances HTML.
-    bal = dump_dir / "balances" / "balances.html"
-    if bal.is_file():
+        # Statement CSV companions ARE compressible: a `.csv.zst` has
+        # suffix `.zst`, so match on the LOGICAL name (strip any
+        # .zst/.gz) and resolve the on-disk variant (plain wins). The
+        # decompressed-hash path keeps the documents row identical to a
+        # plain-CSV load.
+        csv_logical = set()
+        for other in docs_dir.iterdir():
+            if not other.is_file():
+                continue
+            logical = _logical_bronze_path(other)
+            if logical.suffix.lower() == ".csv":
+                csv_logical.add(logical.name)
+        for name in sorted(csv_logical):
+            resolved = compress.resolve_variant(docs_dir / name)
+            if resolved is None:
+                continue
+            inserted += _ingest_document(
+                conn, snapshot_at, resolved,
+                {"doc_kind": "statement", "file_format": "csv"},
+                compressible=True,
+            )
+    # Balances HTML (compressible: balances.html or balances.html.zst).
+    bal = compress.resolve_variant(dump_dir / "balances" / "balances.html")
+    if bal is not None:
         inserted += _ingest_document(
             conn, snapshot_at, bal,
             {"doc_kind": "balances_html", "file_format": "html"},
+            compressible=True,
         )
-    # Performance HTML.
-    perf = dump_dir / "performance" / "performance.html"
-    if perf.is_file():
+    # Performance HTML (compressible).
+    perf = compress.resolve_variant(
+        dump_dir / "performance" / "performance.html")
+    if perf is not None:
         inserted += _ingest_document(
             conn, snapshot_at, perf,
             {"doc_kind": "performance_html", "file_format": "html"},
+            compressible=True,
         )
     return inserted
 
@@ -809,10 +865,32 @@ def _classify_documents_pdf(filename):
     return info
 
 
-def _ingest_document(conn, snapshot_at, path, classification):
-    sha = bronze.sha256_file(path)[0]
+def _ingest_document(conn, snapshot_at, path, classification, *,
+                     compressible=False):
+    """Index one bronze artefact into the documents table.
+
+    PDFs (``compressible=False``, the default — PDFs are never
+    compressed) are hashed and sized by their raw on-disk bytes, exactly
+    as before.
+
+    Compressible artefacts (HTML / CSV, which download + recompress may
+    have written as ``<name>.zst``) are keyed on their DECOMPRESSED
+    content: content_sha256 + size_bytes are of the logical uncompressed
+    bytes, and file_path / file_name drop the compression suffix. That
+    makes a documents row byte-identical whether the file on disk is
+    ``balances.html`` or ``balances.html.zst`` — the convergence
+    invariant a ``load --force`` on a compressed vs plain bronze tree
+    relies on, and the reason the content_sha256 dedup still collapses
+    the same artefact across runs regardless of compression state."""
+    if compressible:
+        sha, size = compress.decompressed_sha256(path)
+        logical = _logical_bronze_path(path)
+    else:
+        sha = bronze.sha256_file(path)[0]
+        size = path.stat().st_size
+        logical = path
     info = dict(classification)
-    info.setdefault("file_format", path.suffix.lstrip(".").lower() or "bin")
+    info.setdefault("file_format", logical.suffix.lstrip(".").lower() or "bin")
     info.setdefault("doc_kind", "statement")
     try:
         conn.execute(
@@ -822,11 +900,11 @@ def _ingest_document(conn, snapshot_at, path, classification):
             "account_external_id, payload"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                sha, snapshot_at, str(path.resolve()), path.name,
-                path.stat().st_size, info["doc_kind"], info["file_format"],
+                sha, snapshot_at, str(logical.resolve()), logical.name,
+                size, info["doc_kind"], info["file_format"],
                 info.get("tax_year"),
                 info.get("account_external_id"),
-                normalize_payload({"filename": path.name, **info}),
+                normalize_payload({"filename": logical.name, **info}),
             ),
         )
         return 1

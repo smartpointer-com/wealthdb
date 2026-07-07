@@ -1,0 +1,12 @@
+# Marker: this is a HYBRID collector. It has a Dockerfile (the Camoufox
+# `download` / `vnc-login` image) AND needs a host venv (`load`,
+# `prune`, `recompress` run on the host). The Makefile builds/tests both
+# when this file is present; without it, a Dockerfile would make
+# build/test Docker-only.
+#
+# Why host-side load needs a venv (unlike a pure-stdlib loader): bronze
+# HTML/CSV artefacts are now zstd-compressed, and load.py decompresses
+# them IN Python (fidelity-web's silver is SQLite, not DuckDB — there is
+# no engine to stream .zst natively), so the host interpreter needs the
+# `zstandard` package. The venv also carries pdfplumber for the 529 /
+# trust statement-PDF parsing the loader does host-side.
