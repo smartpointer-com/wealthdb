@@ -17,7 +17,9 @@ import pytest
 _COLLECTOR_DIR = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize("script", ["download.py", "load.py", "prune.py"])
+@pytest.mark.parametrize("script",
+                         ["download.py", "load.py", "prune.py",
+                          "recompress.py"])
 def test_entrypoint_help_builds(script):
     path = _COLLECTOR_DIR / script
     if not path.exists():

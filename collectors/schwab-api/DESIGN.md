@@ -75,6 +75,32 @@ Schwab specifics:
   This is enforced by code review, documented in `CLAUDE.md`, and
   reinforced by registering the Schwab app with order rate-limit 0.
 
+**Bronze compression.** Each of the six data artefacts
+(`account_numbers.json`, `user_preference.json`,
+`accounts_positions.json`, every `transactions_NNN.json`,
+`open_orders.json`, and the optional `instruments.json`) is
+zstd-compressed in place as it lands
+(`collectorkit.compress.compress_file`: atomic tmp+rename,
+decompress-and-sha256-verify before the plain file is unlinked, mtime
+carried over), so the run dir fills with `.json.zst`. JSON payloads
+compress to a small fraction of their raw size. Compression is
+best-effort: a failure (disk full, missing codec) downgrades to a
+warning and leaves the plain `.json` in place — every reader resolves
+the on-disk variant via `compress.resolve_variant` (plain wins when
+both forms coexist), so a half-adopted tree is a valid tree, not an
+error state. `run.json` is **never** compressed: it is the
+status-lifecycle manifest `prune` and `load` read directly and must
+stay greppable. Because the loader runs host-side and parses the JSON
+in Python (SQLite silver, no engine to stream `.zst` natively), it
+decompresses via `compress.open_text` inside the single `read_json`
+funnel — a `.json.zst` and a plain `.json` yield the identical parsed
+object, so silver is byte-identical either way. Pre-compression run
+dirs are converted by the manual `recompress` verb (thin wrapper over
+`collectorkit.recompress`: prune-grade safety envelope,
+verify-then-unlink per file, reuses prune's completeness predicate,
+run.json excluded from its patterns; never scheduled) — after a sweep,
+a `load --force` rebuild must produce identical silver.
+
 **Portable principles:**
 
 - **Bronze is one timestamped directory per run, not a single mutable
@@ -125,6 +151,15 @@ The loader is also where minor "cleanup-on-the-way-in" lives —
 specifically, stripping per-request noise fields that would otherwise
 defeat content-based dedup (see §4.7).
 
+Every bronze read goes through the single `read_json` funnel, which
+resolves the on-disk variant (`compress.resolve_variant`: plain `.json`
+wins over `.json.zst`) and decompresses by suffix in memory. The two
+`transactions_*` enumerations resolve the same way (they strip any
+`.zst`/`.gz` suffix to recover the logical name, dedup, then resolve —
+so a plain + `.zst` twin that coexist ingest exactly once, plain
+winning). A compressed bronze tree therefore loads to byte-identical
+silver as its uncompressed form (§3.2).
+
 ### 3.4 `prune.py` — reclaiming bronze
 
 Owns "delete run dirs that are not complete dumps". A thin wrapper over
@@ -151,6 +186,19 @@ activity (`--min-age-hours`, default 1) protects a long transaction
 backfill that is still writing `transactions_NNN.json`. Deleting a
 non-complete dump only removes bronze — silver rows already sourced from
 it persist until the next `load --force` rebuild.
+
+Bronze compression is inert to `prune` for forward (manifest-bearing)
+dumps — classification is status-based, and the data artefacts are load
+inputs whether `.json` or `.json.zst`. The one interaction: a *legacy*
+dump (no `run.json`) is judged complete by the presence of its terminal
+data artefact `open_orders.json`, which a `recompress` sweep may leave as
+`open_orders.json.zst`. So `_is_complete`'s legacy fallback resolves the
+on-disk variant (plain **or** `.zst`), not a fixed `.json` name —
+otherwise a recompressed legacy dump would flip to NON_COMPLETE and be
+pruned. Converting the pre-compression backlog to the `.json.zst` form is
+the separate manual `recompress` verb's job — it rewrites load inputs
+(which `prune` never does), so it lives behind the same completeness
+envelope plus a verify-then-unlink rule and is never scheduled (§3.2).
 
 ## 4. Silver schema design
 

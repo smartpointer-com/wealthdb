@@ -15,6 +15,7 @@ raw JSON into a queryable SQLite silver database.
 | [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
 | [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
 | [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree. Host-side, like `load`. `--dry-run` previews the plan. |
+| [`recompress.py`](recompress.py) | implemented | One-time backlog sweep: replaces the plain data JSON inside pre-compression complete dumps with sha256-verified `.json.zst` twins — the form `download` now writes. `run.json` is never compressed. Host-side, manual only, never scheduled. `--dry-run` previews the plan. |
 
 See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
 (semi-relational silver schema, temporal model, why each script
@@ -27,16 +28,23 @@ The toolkit assumes a directory layout like:
 ```
 <bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/schwab-api/
 ├── 20260512T104753Z/               one bronze dump per run
-│   ├── run.json                    status manifest (in-progress → complete)
-│   ├── account_numbers.json
-│   ├── user_preference.json
-│   ├── accounts_positions.json
-│   ├── transactions_NNN.json
-│   └── open_orders.json
+│   ├── run.json                    status manifest (in-progress → complete) — NOT compressed
+│   ├── account_numbers.json.zst
+│   ├── user_preference.json.zst
+│   ├── accounts_positions.json.zst
+│   ├── transactions_NNN.json.zst
+│   └── open_orders.json.zst
 ├── 20260513T104753Z/
 │   └── ...
 └── schwab.db                       silver SQLite database (default name)
 ```
+
+The six data artefacts are zstd-compressed in place as they land
+(`.json.zst`; plain `.json` in pre-compression dumps — both forms load,
+and the loader decompresses in Python). `run.json` stays uncompressed:
+it is the status manifest `prune` and `load` read directly and must stay
+greppable. See [DESIGN.md](DESIGN.md) §3.2 for the compression +
+convergence contract and the manual `recompress` backlog sweep.
 
 Bronze and silver paths are independently configurable; the layout
 above is the path of least resistance for personal use.
@@ -218,13 +226,19 @@ Files land in `./data/<UTC-timestamp>/`:
 
 | File | Source endpoint |
 | --- | --- |
-| `run.json` | _(local)_ — per-run status manifest (`in-progress` at run-dir creation, atomically overwritten with `complete` at the end). Read by `prune` to tell a finished dump from a crashed one; never read by `load`. |
-| `account_numbers.json` | `/accounts/accountNumbers` |
-| `user_preference.json` | `/userPreference` |
-| `accounts_positions.json` | `/accounts?fields=positions` |
-| `transactions_NNN.json` | `/accounts/{hash}/transactions` (one file per account × window) |
-| `open_orders.json` | `/orders` (cross-account), filtered to non-terminal statuses |
-| `instruments.json` | `/marketdata/v1/instruments` (only when `--with-instruments` is passed) — basic metadata (symbol, cusip, description, exchange, type, assetType) for every symbol seen in positions and transactions |
+| `run.json` | _(local)_ — per-run status manifest (`in-progress` at run-dir creation, atomically overwritten with `complete` at the end). Read by `prune` to tell a finished dump from a crashed one; never read by `load`. **Never compressed.** |
+| `account_numbers.json.zst` | `/accounts/accountNumbers` |
+| `user_preference.json.zst` | `/userPreference` |
+| `accounts_positions.json.zst` | `/accounts?fields=positions` |
+| `transactions_NNN.json.zst` | `/accounts/{hash}/transactions` (one file per account × window) |
+| `open_orders.json.zst` | `/orders` (cross-account), filtered to non-terminal statuses |
+| `instruments.json.zst` | `/marketdata/v1/instruments` (only when `--with-instruments` is passed) — basic metadata (symbol, cusip, description, exchange, type, assetType) for every symbol seen in positions and transactions |
+
+Each data artefact is zstd-compressed in place the moment it lands
+(`.json.zst`), best-effort — a compression failure leaves the plain
+`.json` and the run still succeeds, since `load` resolves either form.
+Pre-compression dumps carry the plain names. `run.json` is the one file
+never compressed.
 
 Transaction files are numbered rather than tagged with the account hash
 so that `ls`ing a dump directory does not leak account identifiers. The
@@ -384,3 +398,39 @@ never touched, so silver stays reproducible. An in-flight guard
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root (the wrapper passes the resolved data dir). |
 | `--dry-run` | off | Print the deletion plan; remove nothing. |
 | `--min-age-hours` | `1` | Leave non-complete dumps touched within this window alone (protects an in-flight download). |
+
+## recompress.py
+
+### How it works
+
+`download` zstd-compresses every data artefact as it lands
+(`account_numbers.json.zst`, `transactions_NNN.json.zst`, …), and `load`
+reads the `.json.zst` and plain `.json` forms alike (it decompresses in
+Python). Run dirs written before compression existed can be converted
+once with the `recompress` verb — a thin wrapper over the shared,
+unit-tested [`collectorkit.recompress`](../../shared/collectorkit/collectorkit/recompress.py)
+engine that replaces each plain data JSON inside a **complete** dump with
+a compressed twin. The original is unlinked only after the twin has been
+decompressed and sha256-verified against it, and an interrupted sweep is
+safe to re-run. `run.json` is excluded from its patterns and never
+touched.
+
+Unlike `prune`, this rewrites load inputs, so it is strictly manual:
+never schedule it, review the plan first, and verify afterwards with
+`load --force` (silver must come out identical). It reuses prune's
+completeness predicate, so the two verbs can never disagree about a dump,
+and it runs host-side like `load` / `prune`.
+
+```sh
+./schwab-api recompress --dry-run   # print the sweep plan, rewrite nothing
+./schwab-api recompress             # convert complete dumps, with byte accounting
+./schwab-api load --force           # convergence check: silver must be unchanged
+```
+
+#### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root (the wrapper passes the resolved data dir). |
+| `--dry-run` | off | Print the sweep plan; rewrite nothing. |
+| `--min-age-hours` | `1` | Leave run dirs touched within this window alone (closes the race with a download that just finalised). |

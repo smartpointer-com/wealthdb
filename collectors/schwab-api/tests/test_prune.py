@@ -150,6 +150,33 @@ def test_statusless_manifest_with_open_orders_kept(tmp_path):
     assert _inputs_intact(d)
 
 
+def test_legacy_complete_dump_compressed_open_orders_kept(tmp_path):
+    # Regression: a pre-manifest (no run.json) dump whose terminal
+    # artefact open_orders.json was recompressed to open_orders.json.zst
+    # must still classify COMPLETE. _is_complete resolves the on-disk
+    # variant, so the `recompress` sweep does not turn a legacy complete
+    # dump into a prune target (which would silently delete its bronze).
+    from collectorkit import compress
+
+    d = make_dump(tmp_path, OLD_TS, run_json=False, open_orders=True,
+                  age_s=STALE_S)
+    compress.compress_file(d / "open_orders.json")   # → open_orders.json.zst
+    assert not (d / "open_orders.json").exists()
+    assert (d / "open_orders.json.zst").is_file()
+    # compress_file unlinks the plain file inside the dir, re-bumping the
+    # run-dir mtime to now — which trips prune's quiescence guard and skips
+    # the dir BEFORE _is_complete is ever consulted, masking a reverted
+    # fix. Re-backdate so the age guard passes and completeness is what
+    # actually decides this dump's fate (without this the test is vacuous:
+    # it stays green even with the legacy .exists() bug reintroduced).
+    backdate(d, STALE_S)
+
+    run_main(tmp_path)
+    assert d.exists()
+    assert (d / "account_numbers.json").exists()
+    assert (d / "open_orders.json.zst").is_file()
+
+
 # ============================================================
 # Non-complete dumps: deleted once quiescent
 # ============================================================

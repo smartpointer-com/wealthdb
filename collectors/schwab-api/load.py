@@ -27,12 +27,16 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, compress, silver
 
 log = logging.getLogger("schwab-load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
+# Logical name of a numbered transactions artefact — matched after any
+# compression suffix (.zst/.gz) is stripped, so the .json.zst form
+# download now writes resolves alongside the plain .json.
+TRANSACTIONS_FILE_RE = re.compile(r"^transactions_.*\.json$")
 
 # Balance kinds inside securitiesAccount, mapping silver-column value -> source key.
 SECURITIES_ACCOUNT_BALANCE_KINDS = (
@@ -87,8 +91,56 @@ def canonical_json(obj) -> str:
 
 
 def read_json(path: Path):
-    with path.open(encoding="utf-8") as f:
+    """Parse a bronze JSON artefact, resolving its on-disk variant.
+
+    `path` is the LOGICAL (uncompressed) name; download / recompress may
+    have written it as `<name>.zst`, so resolve the variant first (plain
+    wins over `.zst`) and decompress by suffix in memory. A `.zst` and a
+    plain `.json` load to the identical parsed object, so silver is
+    byte-identical either way. Callers that need a distinct signal for a
+    missing artefact front-run this with a `resolve_variant` guard; when
+    they don't, a truly absent artefact raises FileNotFoundError."""
+    resolved = compress.resolve_variant(path)
+    if resolved is None:
+        raise FileNotFoundError(path)
+    with compress.open_text(resolved) as f:
         return json.load(f)
+
+
+def _logical_bronze_path(path: Path) -> Path:
+    """Strip a compression suffix (`.zst` / `.gz`) to recover the LOGICAL
+    (uncompressed) bronze name. Plain paths pass through unchanged."""
+    for suffix in compress.VARIANT_SUFFIXES:
+        if path.name.endswith(suffix):
+            return path.with_name(path.name[:-len(suffix)])
+    return path
+
+
+def transaction_files(dump_dir: Path) -> list[Path]:
+    """On-disk `transactions_*.json` artefacts in a dump, resolving
+    compressed variants.
+
+    download / recompress may write each numbered transactions file as
+    `.json.zst`, which a plain `dump_dir.glob("transactions_*.json")`
+    would miss. Enumerate the LOGICAL names (strip any `.zst`/`.gz`)
+    matching `transactions_*.json`, dedup, then resolve each variant —
+    plain wins over a coexisting `.zst` twin (a recompress interrupted
+    between verify and unlink), so each window ingests exactly once.
+    Sorted by logical name for deterministic ordering (matching the
+    prior `sorted(glob(...))`)."""
+    logical_names: set[str] = set()
+    for entry in dump_dir.iterdir():
+        if not entry.is_file():
+            continue
+        logical = _logical_bronze_path(entry)
+        if TRANSACTIONS_FILE_RE.match(logical.name):
+            logical_names.add(logical.name)
+    resolved: list[Path] = []
+    for name in sorted(logical_names):
+        variant = compress.resolve_variant(dump_dir / name)
+        if variant is not None:
+            resolved.append(variant)
+    return resolved
 
 
 # --------------------------------------------------------------------------
@@ -200,7 +252,7 @@ def _strip_user_preference_noise(pref: dict) -> dict:
 
 def load_user_preference(conn, snapshot_at: int, dump_dir: Path) -> int:
     path = dump_dir / "user_preference.json"
-    if not path.exists():
+    if compress.resolve_variant(path) is None:
         log.warning("Missing artefact: %s", path)
         return 0
     payload = canonical_json(_strip_user_preference_noise(read_json(path)))
@@ -221,7 +273,7 @@ def load_accounts_positions(
 ) -> tuple[int, int]:
     """Returns (positions_inserted, balances_inserted)."""
     path = dump_dir / "accounts_positions.json"
-    if not path.exists():
+    if compress.resolve_variant(path) is None:
         log.warning("Missing artefact: %s", path)
         return 0, 0
 
@@ -292,7 +344,7 @@ def load_transactions(conn, dump_dir: Path) -> int:
     the exact activity_ids we're about to INSERT, which preserves the
     window-DELETE-as-removal-detection semantics for in-window rows and
     avoids the boundary collision."""
-    files = sorted(dump_dir.glob("transactions_*.json"))
+    files = transaction_files(dump_dir)
     total = 0
     for path in files:
         data = read_json(path)
@@ -349,7 +401,7 @@ def load_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
     canonical payload differs from the most recent row for that symbol.
     Direct text comparison, matches the accounts/user_preference pattern."""
     path = dump_dir / "instruments.json"
-    if not path.exists():
+    if compress.resolve_variant(path) is None:
         # Not a warning — this artefact is optional by design.
         return 0
     response = read_json(path)
@@ -463,14 +515,14 @@ def load_synthesized_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
     skip synthesising — Schwab's record is authoritative when available."""
     api_symbols: set[str] = set()
     inst_path = dump_dir / "instruments.json"
-    if inst_path.exists():
+    if compress.resolve_variant(inst_path) is not None:
         for inst in read_json(inst_path).get("instruments") or []:
             sym = inst.get("symbol")
             if sym:
                 api_symbols.add(sym)
 
     seen: dict[str, dict] = {}
-    for txn_path in sorted(dump_dir.glob("transactions_*.json")):
+    for txn_path in transaction_files(dump_dir):
         for txn in read_json(txn_path).get("transactions") or []:
             for item in txn.get("transferItems") or []:
                 inst = item.get("instrument") or {}
@@ -535,7 +587,7 @@ def load_open_orders(
     conn, snapshot_at: int, dump_dir: Path, acct_map: dict[str, str]
 ) -> int:
     path = dump_dir / "open_orders.json"
-    if not path.exists():
+    if compress.resolve_variant(path) is None:
         log.warning("Missing artefact: %s", path)
         return 0
     data = read_json(path)
@@ -585,7 +637,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     # accounts list is needed up-front to translate plaintext accountNumber
     # to hashValue for the other artefacts.
     accounts_path = dump_dir / "account_numbers.json"
-    if not accounts_path.exists():
+    if compress.resolve_variant(accounts_path) is None:
         raise FileNotFoundError(
             f"Required artefact missing: {accounts_path}. Cannot translate "
             f"plaintext account numbers to hashes."
@@ -595,11 +647,17 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
 
     # The accounts silver row is built from three sibling artefacts;
     # read the optional companions here so the merge in
-    # _build_account_metadata can include them when present.
+    # _build_account_metadata can include them when present. Each guard
+    # resolves the on-disk variant (plain or .zst) rather than probing a
+    # single fixed name.
     ap_path = dump_dir / "accounts_positions.json"
-    positions_wrappers = read_json(ap_path) if ap_path.exists() else None
+    positions_wrappers = (read_json(ap_path)
+                          if compress.resolve_variant(ap_path) is not None
+                          else None)
     up_path = dump_dir / "user_preference.json"
-    user_preference = read_json(up_path) if up_path.exists() else None
+    user_preference = (read_json(up_path)
+                       if compress.resolve_variant(up_path) is not None
+                       else None)
     merged_accounts = _build_account_metadata(
         accounts_data, positions_wrappers, user_preference,
     )

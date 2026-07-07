@@ -4,7 +4,9 @@ download.run() drops a ``{"status": "in-progress"}`` marker at run-dir
 creation and atomically overwrites it with ``{"status": "complete", ...}``
 at the end. These tests drive run() with the Schwab client and every
 network fetch stubbed (no network), asserting:
-  * a clean run leaves run.json status=complete + all load inputs
+  * a clean run leaves run.json status=complete + all load inputs, each
+    data artefact zstd-compressed in place (.json.zst) while run.json
+    itself stays uncompressed
   * a mid-walk crash leaves run.json status=in-progress (so prune can
     reclaim the dump once quiescent) and no terminal manifest
   * --dry-run creates no run dir at all (nothing for prune to see)
@@ -79,11 +81,22 @@ def test_complete_run_writes_status_complete(tmp_path, monkeypatch):
     meta = json.loads((run_dir / "run.json").read_text())
     assert meta["status"] == "complete"
     assert meta["accounts"] == 1
-    # All load inputs present; open_orders.json is the terminal artefact.
+    # Each data artefact is zstd-compressed in place as it lands: the
+    # .json.zst twin exists, the plain .json does not, and load resolves
+    # the on-disk variant transparently. open_orders.json is the terminal
+    # data artefact (last one a complete run writes unconditionally).
+    from collectorkit import compress
     for name in ("account_numbers.json", "user_preference.json",
                  "accounts_positions.json", "transactions_000.json",
                  "open_orders.json"):
-        assert (run_dir / name).exists()
+        assert (run_dir / (name + ".zst")).is_file()
+        assert not (run_dir / name).exists()
+        assert compress.resolve_variant(run_dir / name) == \
+            run_dir / (name + ".zst")
+    # run.json is NEVER compressed: the status-lifecycle manifest stays
+    # uncompressed + greppable for prune/load to read directly.
+    assert (run_dir / "run.json").is_file()
+    assert not (run_dir / "run.json.zst").exists()
 
 
 def test_crash_mid_walk_leaves_status_in_progress(tmp_path, monkeypatch):

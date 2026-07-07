@@ -4,3 +4,14 @@
 pytest>=8,<9
 
 schwab-py>=1.5
+
+# download.py zstd-compresses each bronze JSON artefact as it lands
+# (accounts_positions.json → accounts_positions.json.zst) via
+# collectorkit.compress, and the recompress verb converts the
+# pre-compression backlog. Self-contained wheel (bundles libzstd), no
+# system deps. schwab-api's load runs host-side and parses the JSON in
+# Python (SQLite silver, no engine to stream .zst natively), so load
+# decompresses via compress.open_text — this is a load/recompress
+# dependency too, not just a download one. Harmless in the login image
+# (which never loads bronze) where it is also installed.
+zstandard>=0.22,<1

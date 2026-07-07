@@ -6,6 +6,16 @@ Fetches account metadata, positions, and transactions from the Schwab
 Trader API and writes the raw JSON responses to disk, organised by UTC
 timestamp. Performs no write operations against the API.
 
+Each bronze DATA artefact is zstd-compressed in place as it lands
+(`accounts_positions.json` → `accounts_positions.json.zst`, and likewise
+for account_numbers / user_preference / transactions_NNN / open_orders /
+instruments), via `collectorkit.compress` with a decompress-and-verify
+pass before the plain file is removed. Compression is best-effort: on
+failure the plain file stays and the run still succeeds — `load`
+resolves either form. The `run.json` status-lifecycle manifest is
+NEVER compressed (it is the forward completeness signal `prune` and
+`load` read directly and must stay greppable).
+
 OAuth tokens are loaded from a local token file. Schwab refresh tokens
 expire 7 days after issue and cannot be renewed without an interactive
 browser login; run `login.py` to mint a fresh token when this script
@@ -29,7 +39,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import cli
+from collectorkit import cli, compress
 
 # schwab-py is a thin wrapper over the Schwab Trader API. We import it
 # inside main() so that --help works on a fresh checkout without the
@@ -274,6 +284,41 @@ def write_json(path: Path, payload) -> None:
     log.info("Wrote %s (%d bytes)", path, path.stat().st_size)
 
 
+def compress_export(path: Path) -> Path:
+    """Compress a freshly written bronze DATA artefact in place
+    (`accounts_positions.json` → `accounts_positions.json.zst`),
+    returning the on-disk path.
+
+    Best-effort by design: `load` resolves either form, so a compression
+    failure (disk full, missing codec) downgrades to a warning and the
+    plain file stays — never a lost artefact. `compress.compress_file`
+    decompress-and-sha256-verifies the twin before unlinking the
+    original, so the window in which data could be lost is nil.
+    `run.json` is NEVER routed here (see `write_data_artefact`): the
+    status-lifecycle manifest must stay uncompressed and greppable."""
+    try:
+        final = compress.compress_file(path)
+        log.info("Compressed %s → %s (%d bytes)", path.name, final.name,
+                 final.stat().st_size)
+        return final
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        log.warning("Could not compress %s (%s); keeping the plain file",
+                    path.name, exc)
+        return path
+
+
+def write_data_artefact(path: Path, payload) -> Path:
+    """Write a bronze DATA artefact as JSON, then zstd-compress it in
+    place (best-effort). Returns the on-disk path.
+
+    Deliberately distinct from `write_json`: the `run.json` manifest is
+    written via `write_json` directly and so is never compressed, while
+    every data artefact goes through here — the separation makes the
+    run.json exclusion self-evident rather than a per-call omission."""
+    write_json(path, payload)
+    return compress_export(path)
+
+
 def schwab_get_json(response):
     """Validate a schwab-py HTTPX response and return its parsed JSON.
 
@@ -383,18 +428,48 @@ def fetch_open_orders(client, since: date, until: date) -> list[dict]:
     return [o for o in all_orders if o.get("status") in OPEN_ORDER_STATUSES]
 
 
+def _resolve_transaction_artefacts(run_dir: Path) -> list[Path]:
+    """On-disk `transactions_*.json` artefacts in a run dir, resolving
+    compressed variants.
+
+    Each transactions file is zstd-compressed the moment it lands, so by
+    the time --with-instruments harvests symbols the artefacts are
+    already `.json.zst`; a plain glob would miss them. Enumerate the
+    LOGICAL names (strip any `.zst`/`.gz`), dedup, then resolve each
+    variant (plain wins). Mirrors load.py's `transaction_files`."""
+    logical_names: set[str] = set()
+    for entry in run_dir.iterdir():
+        if not entry.is_file():
+            continue
+        name = entry.name
+        for suffix in compress.VARIANT_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[:-len(suffix)]
+                break
+        if name.startswith("transactions_") and name.endswith(".json"):
+            logical_names.add(name)
+    resolved: list[Path] = []
+    for name in sorted(logical_names):
+        variant = compress.resolve_variant(run_dir / name)
+        if variant is not None:
+            resolved.append(variant)
+    return resolved
+
+
 def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
     """Scan the bronze artefacts in `run_dir` for every distinct symbol.
 
     Walks accounts_positions.json and every transactions_*.json file,
     extracting `instrument.symbol` from positions and from each
     transferItems entry. The result is the de-duplicated, sorted list of
-    symbols we will look up via /instruments."""
+    symbols we will look up via /instruments. Each artefact is resolved
+    to its on-disk variant and decompressed in memory — by the time this
+    runs the data artefacts are already zstd-compressed in place."""
     symbols: set[str] = set()
 
-    ap_path = run_dir / ARTIFACT_ACCOUNTS_POSITIONS
-    if ap_path.exists():
-        with ap_path.open(encoding="utf-8") as f:
+    ap_path = compress.resolve_variant(run_dir / ARTIFACT_ACCOUNTS_POSITIONS)
+    if ap_path is not None:
+        with compress.open_text(ap_path) as f:
             for wrapper in json.load(f):
                 sa = wrapper.get("securitiesAccount") or {}
                 for pos in sa.get("positions") or []:
@@ -402,8 +477,8 @@ def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
                     if sym:
                         symbols.add(sym)
 
-    for txn_path in sorted(run_dir.glob("transactions_*.json")):
-        with txn_path.open(encoding="utf-8") as f:
+    for txn_path in _resolve_transaction_artefacts(run_dir):
+        with compress.open_text(txn_path) as f:
             data = json.load(f)
             for txn in data.get("transactions") or []:
                 for item in txn.get("transferItems") or []:
@@ -552,13 +627,13 @@ def run(args: argparse.Namespace) -> int:
     # manifest at all. The first write also mkdirs the run dir.
     write_json(run_dir / RUN_MANIFEST, {"status": "in-progress"})
 
-    write_json(run_dir / ARTIFACT_ACCOUNT_NUMBERS, account_numbers)
+    write_data_artefact(run_dir / ARTIFACT_ACCOUNT_NUMBERS, account_numbers)
 
     user_pref = fetch_user_preference(client)
-    write_json(run_dir / ARTIFACT_USER_PREFERENCE, user_pref)
+    write_data_artefact(run_dir / ARTIFACT_USER_PREFERENCE, user_pref)
 
     positions = fetch_accounts_with_positions(client)
-    write_json(run_dir / ARTIFACT_ACCOUNTS_POSITIONS, positions)
+    write_data_artefact(run_dir / ARTIFACT_ACCOUNTS_POSITIONS, positions)
 
     # Transactions are fetched per account-hash, chunked into <=1y windows
     # to stay under Schwab's request-range cap. Filenames are numbered
@@ -577,7 +652,8 @@ def run(args: argparse.Namespace) -> int:
                 "window_end": end.isoformat(),
                 "transactions": txns,
             }
-            write_json(run_dir / ARTIFACT_TRANSACTIONS_TEMPLATE.format(n=n), payload)
+            write_data_artefact(
+                run_dir / ARTIFACT_TRANSACTIONS_TEMPLATE.format(n=n), payload)
             n += 1
 
     # Open orders are fetched once (cross-account, not per-account) and
@@ -593,7 +669,7 @@ def run(args: argparse.Namespace) -> int:
         "status_filter": sorted(OPEN_ORDER_STATUSES),
         "orders": open_orders,
     }
-    write_json(run_dir / ARTIFACT_OPEN_ORDERS, open_orders_payload)
+    write_data_artefact(run_dir / ARTIFACT_OPEN_ORDERS, open_orders_payload)
     log.info("Open orders: %d", len(open_orders))
 
     # Optional instrument-metadata fetch. Schwab omits `description` on
@@ -608,7 +684,7 @@ def run(args: argparse.Namespace) -> int:
         instruments_response = (
             fetch_instruments(client, symbols) if symbols else {"instruments": []}
         )
-        write_json(run_dir / ARTIFACT_INSTRUMENTS, instruments_response)
+        write_data_artefact(run_dir / ARTIFACT_INSTRUMENTS, instruments_response)
         instruments_count = len(instruments_response.get("instruments") or [])
         log.info("Instruments: %d returned", instruments_count)
 

@@ -20,6 +20,14 @@
 #   prune [args...]    Delete non-complete dumps (crashed / interrupted
 #                      downloads) from the bronze tree. Host-side;
 #                      --dry-run prints the plan without deleting.
+#   recompress [args]  One-time backlog sweep: replace plain data JSON
+#                      (account_numbers / user_preference /
+#                      accounts_positions / transactions_NNN /
+#                      open_orders / instruments) inside complete dumps
+#                      with sha256-verified .json.zst twins — the form
+#                      download now writes. run.json is never compressed.
+#                      Host-side; manual only, never scheduled; --dry-run
+#                      prints the plan first, verify with `load --force`.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:
@@ -39,7 +47,7 @@ cmd="${1:-help}"
 
 case "$cmd" in
     -h|--help|help)
-        sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     build)
@@ -67,14 +75,17 @@ case "$cmd" in
         wrapper_init
         wrapper_main "$@"   # the sub ($1) → entrypoint dispatches it
         ;;
-    download|load|prune)
-        # Host venv (schwab-py REST + SQLite). `prune` is a sibling of
-        # `load`: a pure file walk over bronze, no container, run under
-        # the same venv (collectorkit is editable-installed there, so
-        # `from collectorkit import prune` resolves with no PYTHONPATH
-        # hack). The default --bronze-dir comes first so an explicit flag
-        # in the forwarded args overrides it (argparse last-wins); the
-        # in-flight dump is protected by prune's own age guard.
+    download|load|prune|recompress)
+        # Host venv (schwab-py REST + SQLite). `prune` and `recompress`
+        # are siblings of `load`: pure file walks over bronze, no
+        # container, run under the same venv (collectorkit is
+        # editable-installed there, so `from collectorkit import prune`
+        # resolves with no PYTHONPATH hack). `recompress` is the one-time
+        # manual sweep converting the pre-compression backlog to the
+        # .json.zst form download now writes. The default --bronze-dir
+        # comes first so an explicit flag in the forwarded args overrides
+        # it (argparse last-wins); the in-flight dump is protected by the
+        # verb's own age guard.
         # shellcheck disable=SC1091
         source "$HERE/../../shared/wrappers/host-lib.sh"
         shift
@@ -97,10 +108,14 @@ case "$cmd" in
                 exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
+            recompress)
+                exec "$py" "$HERE/recompress.py" --bronze-dir "$DATA_DIR" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
         esac
         ;;
     *)
-        echo "schwab-api: unknown command '$cmd' (expected: build|login|vnc-login|download|load|prune)" >&2
+        echo "schwab-api: unknown command '$cmd' (expected: build|login|vnc-login|download|load|prune|recompress)" >&2
         exit 2
         ;;
 esac
