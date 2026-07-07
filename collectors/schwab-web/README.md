@@ -285,6 +285,13 @@ timestamped run dir, and never touches a `load` input:
 - **`<run>/screenshots/` from complete dumps** — the tx-history
   landing HTML baselines `download --debug` writes. `load` never
   reads them, so removing them leaves silver byte-identical.
+- **`<run>/transactions/*/page-*.html` legacy orphans from complete
+  dumps** — before the `--debug` gate, that same landing-page HTML was
+  written ungated into the `transactions/<suffix>/` load-input dir as
+  `page-001.html`. `load` never read them (the tx-history loader reads
+  only `more-details.json` and the manifest's `.csv`/`.json`/`.xml`
+  exports), so `prune` reclaims them with a file glob scoped to match
+  only `page-*.html` — never a load-input sibling.
 - **whole non-complete dumps** — a run whose `run.json` is missing
   (the walk crashed before its first manifest write) or whose
   `status` is anything other than `"complete"` (an `"in-progress"`

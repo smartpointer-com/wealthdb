@@ -84,6 +84,15 @@ CFG_MULTI = prune.PruneConfig(
     is_complete=_is_complete,
 )
 
+# A collector that also reclaims a deep-nested debug FILE via a glob two
+# levels down — mirrors schwab-web's legacy transactions/*/page-*.html
+# orphans, which a top-level debug_subdirs name cannot reach.
+CFG_GLOB = prune.PruneConfig(
+    debug_subdirs=("screenshots",),
+    debug_globs=("transactions/*/page-*.html",),
+    is_complete=_is_complete,
+)
+
 
 # ============================================================
 # Fixtures
@@ -128,6 +137,37 @@ def backdate(path: Path, age_s: float) -> None:
 
 def run_main(cfg, root: Path, *extra: str) -> int:
     return prune.main(cfg, ["--bronze-dir", str(root), *extra])
+
+
+# Synthetic account suffixes only — never a real one (repo CLAUDE.md §4).
+SUFFIX_A = "111"
+SUFFIX_B = "222"
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def add_tx_account(dump: Path, suffix: str, *, page_html: bool = True,
+                   siblings: bool = True) -> Path:
+    """Add a ``transactions/<suffix>/`` dir carrying a legacy
+    ``page-*.html`` orphan alongside the load-input siblings the
+    tx-history loader actually reads (``more-details.json`` + the
+    ``.csv``/``.json``/``.xml`` exports). Returns the account dir."""
+    acct = dump / "transactions" / suffix
+    acct.mkdir(parents=True)
+    if page_html:
+        (acct / "page-001.html").write_text("<html>legacy landing</html>")
+    if siblings:
+        (acct / "more-details.json").write_text('[{"row_key": "k"}]')
+        (acct / f"Acct_XXX{suffix}_Transactions_20260101.json").write_text(
+            '{"BrokerageTransactions": []}')
+        (acct / f"Acct_XXX{suffix}_Transactions_20260101.csv").write_text(
+            "Date,Amount\n")
+        (acct / f"Acct_XXX{suffix}_Transactions_20260101.xml").write_text(
+            "<txns/>")
+    return acct
 
 
 # ============================================================
@@ -417,3 +457,174 @@ def test_status_classification_legacy_fallback():
     still_nc = prune.status_classification(
         {"status": "dry-run"}, legacy_complete=lambda rd, m: True)
     assert still_nc[0] == prune.NON_COMPLETE
+
+
+# ============================================================
+# debug_globs: deep-nested debug FILES reclaimed from complete dumps
+# ============================================================
+
+def test_debug_glob_deletes_page_html_keeps_siblings(tmp_path):
+    d = make_dump(tmp_path, OLD_TS)
+    acct = add_tx_account(d, SUFFIX_A)
+    # Shasums of every load-input sibling in the SAME deep dir.
+    sib_shas = {p.name: _sha(p) for p in acct.iterdir()
+                if p.name != "page-001.html"}
+    run_json_sha = _sha(d / "run.json")
+    assert run_main(CFG_GLOB, tmp_path) == 0
+    # The orphan is gone …
+    assert not (acct / "page-001.html").exists()
+    # … while every load-input sibling next to it is byte-identical.
+    for name, sha in sib_shas.items():
+        assert (acct / name).exists(), name
+        assert _sha(acct / name) == sha, name
+    # run.json and the top-level debug-subdir handling are unaffected.
+    assert _sha(d / "run.json") == run_json_sha
+    assert not (d / "screenshots").exists()
+    assert (d / "positions" / "positions.csv").exists()
+
+
+def test_debug_glob_prunes_every_account(tmp_path):
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    a = add_tx_account(d, SUFFIX_A)
+    b = add_tx_account(d, SUFFIX_B)
+    run_main(CFG_GLOB, tmp_path)
+    assert not (a / "page-001.html").exists()
+    assert not (b / "page-001.html").exists()
+    assert (a / "more-details.json").exists()
+    assert (b / "more-details.json").exists()
+
+
+def test_debug_glob_dry_run_deletes_nothing(tmp_path):
+    d = make_dump(tmp_path, OLD_TS)
+    acct = add_tx_account(d, SUFFIX_A)
+    run_main(CFG_GLOB, tmp_path, "--dry-run")
+    assert (acct / "page-001.html").exists()
+    assert (d / "screenshots").exists()
+
+
+def test_debug_glob_symlink_not_deleted(tmp_path):
+    external = tmp_path / "external.html"
+    external.write_text("precious")
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    acct = add_tx_account(d, SUFFIX_A, page_html=False)
+    (acct / "page-001.html").symlink_to(external)
+    run_main(CFG_GLOB, tmp_path)
+    assert (acct / "page-001.html").is_symlink()
+    assert external.exists() and external.read_text() == "precious"
+
+
+def test_debug_glob_empty_default_leaves_page_html(tmp_path):
+    # Regression guard: the default (empty debug_globs) config must not
+    # touch a page-*.html file — every existing collector relies on this.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    acct = add_tx_account(d, SUFFIX_A)
+    run_main(CFG, tmp_path)
+    assert (acct / "page-001.html").exists()
+    assert (acct / "more-details.json").exists()
+
+
+def test_debug_glob_symlinked_intermediate_dir_not_followed(tmp_path):
+    # A `*` component of a debug glob must not follow a symlinked
+    # INTERMEDIATE directory: Path.glob would traverse it, but the file
+    # behind it lives outside the bronze tree, so deleting it would violate
+    # the never-follow-symlinks envelope. Here transactions/<suffix> is a
+    # symlink to an external dir that happens to contain a page-001.html.
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "page-001.html").write_text("precious external content")
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    (d / "transactions").mkdir()
+    (d / "transactions" / SUFFIX_A).symlink_to(
+        external, target_is_directory=True)
+
+    run_main(CFG_GLOB, tmp_path)
+
+    # The external file (reachable only through the symlinked dir) survives,
+    # and the symlink itself is untouched.
+    assert (external / "page-001.html").exists()
+    assert (external / "page-001.html").read_text() == "precious external content"
+    assert (d / "transactions" / SUFFIX_A).is_symlink()
+    # And validate_target refuses that path outright (belt-and-braces).
+    with pytest.raises(SystemExit):
+        prune.validate_target(
+            d / "transactions" / SUFFIX_A / "page-001.html", tmp_path, CFG_GLOB)
+
+
+def test_debug_glob_not_applied_to_unknown_dump(tmp_path):
+    # A corrupt-manifest dump is UNKNOWN → skipped wholesale; debug_globs
+    # only fire in the COMPLETE branch, so the orphan survives.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False, terminal=False,
+                  age_s=STALE_S)
+    (d / "run.json").write_text("{not valid json")
+    acct = add_tx_account(d, SUFFIX_A)
+    run_main(CFG_GLOB, tmp_path)
+    assert d.exists()
+    assert (acct / "page-001.html").exists()
+
+
+def test_debug_glob_non_complete_dump_removed_whole(tmp_path):
+    # A stale non-complete dump is removed whole (page files included) —
+    # debug_globs don't change that path. Backdate AFTER adding tx files
+    # so the write-activity guard sees an abandoned dump.
+    d = make_dump(tmp_path, OLD_TS, run_json=False, terminal=False,
+                  screenshots=False)
+    add_tx_account(d, SUFFIX_A)
+    backdate(d, STALE_S)
+    run_main(CFG_GLOB, tmp_path)
+    assert not d.exists()
+
+
+# ============================================================
+# validate_target: debug_globs branch (the irreversible-unlink gate)
+# ============================================================
+
+def test_validate_target_accepts_glob_matched_file(tmp_path):
+    acct = tmp_path / OLD_TS / "transactions" / SUFFIX_A
+    acct.mkdir(parents=True)
+    f = acct / "page-001.html"
+    f.write_text("<html/>")
+    prune.validate_target(f, tmp_path, CFG_GLOB)  # must not raise
+
+
+def test_validate_target_rejects_deep_non_glob_files(tmp_path):
+    acct = tmp_path / OLD_TS / "transactions" / SUFFIX_A
+    acct.mkdir(parents=True)
+    for name in ("more-details.json",
+                 f"Acct_XXX{SUFFIX_A}_Transactions_20260101.json",
+                 f"Acct_XXX{SUFFIX_A}_Transactions_20260101.csv",
+                 f"Acct_XXX{SUFFIX_A}_Transactions_20260101.xml"):
+        (acct / name).write_text("x")
+        with pytest.raises(SystemExit):
+            prune.validate_target(acct / name, tmp_path, CFG_GLOB)
+
+
+def test_validate_target_rejects_glob_named_symlink(tmp_path):
+    external = tmp_path / "ext.html"
+    external.write_text("precious")
+    acct = tmp_path / OLD_TS / "transactions" / SUFFIX_A
+    acct.mkdir(parents=True)
+    link = acct / "page-001.html"
+    link.symlink_to(external)
+    with pytest.raises(SystemExit):
+        prune.validate_target(link, tmp_path, CFG_GLOB)
+    assert external.exists()
+
+
+def test_validate_target_glob_cfg_still_accepts_subdir_and_run_dir(tmp_path):
+    # The restructure must not regress the debug-subdir / whole-run-dir
+    # shapes for a config that also carries debug_globs.
+    d = tmp_path / OLD_TS
+    (d / "screenshots").mkdir(parents=True)
+    prune.validate_target(d, tmp_path, CFG_GLOB)
+    prune.validate_target(d / "screenshots", tmp_path, CFG_GLOB)
+
+
+def test_validate_target_rejects_glob_file_outside_run_dir(tmp_path):
+    # A page-*.html whose ancestor is NOT a run-slug dir is refused even
+    # though its name matches the glob (no ancestor run dir under bronze).
+    stray = tmp_path / "notarun" / "transactions" / SUFFIX_A
+    stray.mkdir(parents=True)
+    f = stray / "page-001.html"
+    f.write_text("x")
+    with pytest.raises(SystemExit):
+        prune.validate_target(f, tmp_path, CFG_GLOB)

@@ -21,9 +21,12 @@ tmp_path bronze trees matching download.walk()'s layout. Covers:
 
 The debug_subdirs = ("screenshots",) config mirrors the
 tx-history landing HTML baseline download.walk() writes under
-<run>/screenshots/ only with --debug; the transactions/<suffix>/
-export dir it lives alongside is a load input and must NEVER be a
-prune target.
+<run>/screenshots/ only with --debug. debug_globs =
+("transactions/*/page-*.html",) additionally reclaims the LEGACY
+pre-5c3ffe4 orphans that ungated capture left inside the
+transactions/<suffix>/ load-input dir; every other file in that
+dir (the .csv/.json/.xml exports + more-details.json) is a load
+input and must NEVER be a prune target.
 """
 
 from __future__ import annotations
@@ -142,17 +145,55 @@ def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     assert not (d / "screenshots").exists()
 
 
-def test_transactions_dir_never_a_prune_target(tmp_path):
-    # The tx-history load-input dir must never be pruned — even the
-    # ungated landing HTML that legacy dumps put INSIDE it stays,
-    # because prune's debug_subdirs is ("screenshots",) not
-    # ("transactions",).
+def test_legacy_page_html_orphan_reclaimed_inputs_kept(tmp_path):
+    # Pre-5c3ffe4 dumps wrote the ungated landing HTML INSIDE the
+    # tx-history load-input dir as page-001.html. It is a debug orphan
+    # `load` never reads, reclaimed via debug_globs — while every
+    # load-input sibling in that SAME dir (the .json/.csv exports)
+    # stays byte-identical.
     d = make_dump(tmp_path, OLD_TS)
     legacy_html = d / "transactions" / SUFFIX / "page-001.html"
     legacy_html.write_text("<html>legacy landing</html>")
     run_main(tmp_path)
     assert not (d / "screenshots").exists()
+    assert not legacy_html.exists()          # the orphan is reclaimed
+    _load_inputs_intact(d)                    # its load-input siblings stay
+
+
+def test_non_page_html_sibling_in_transactions_kept(tmp_path):
+    # The glob is scoped to page-*.html; any other file in the
+    # tx-history dir (e.g. more-details.json) is a load input and must
+    # never be touched.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    sidecar = d / "transactions" / SUFFIX / "more-details.json"
+    sidecar.write_text('[{"row_key": "k"}]')
+    run_main(tmp_path)
+    assert sidecar.exists()
+    _load_inputs_intact(d)
+
+
+def test_legacy_page_html_kept_in_non_complete_dump_dir(tmp_path):
+    # In a non-complete dump the whole dir is the deletion unit; the
+    # glob only fires from complete dumps. A fresh (age-guarded)
+    # non-complete dump keeps everything, page-html included.
+    d = make_dump(tmp_path, fresh_slug(age_s=60), run_json=False)
+    legacy_html = d / "transactions" / SUFFIX / "page-001.html"
+    legacy_html.write_text("<html>legacy landing</html>")
+    run_main(tmp_path)
+    assert d.exists()
     assert legacy_html.exists()
+
+
+def test_page_html_symlink_in_transactions_not_deleted(tmp_path):
+    # A symlink whose name matches the glob is never a target.
+    external = tmp_path / "ext.html"
+    external.write_text("precious")
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    link = d / "transactions" / SUFFIX / "page-001.html"
+    link.symlink_to(external)
+    run_main(tmp_path)
+    assert link.is_symlink()
+    assert external.read_text() == "precious"
     _load_inputs_intact(d)
 
 

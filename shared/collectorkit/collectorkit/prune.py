@@ -11,11 +11,13 @@ bronze root:
 
 * **debug artefacts inside a complete dump** — the ``debug_subdirs``
   the collector nominates (e.g. ``screenshots/``, a Playwright
-  ``trace.zip``). These are diagnostics a run writes for
+  ``trace.zip``), plus any ``debug_globs`` *files* matched deeper in the
+  tree (e.g. a legacy per-account HTML capture stranded inside a
+  load-input dir). These are diagnostics a run writes for
   troubleshooting; ``load`` never reads them. Deleting them leaves
   silver byte-identical. Collectors that write no bronze-resident debug
-  artefact pass an empty ``debug_subdirs`` — then only the second
-  category applies.
+  artefact pass an empty ``debug_subdirs``/``debug_globs`` — then only
+  the second category applies.
 
 * **whole run dirs that are not complete dumps** — a crashed or
   interrupted download, or a ``--dry-run`` shell. ``load`` would
@@ -39,9 +41,12 @@ The safety envelope is non-negotiable and identical for every collector:
   completeness predicate is even consulted, so a stray EIO or a
   root-owned ``run.json`` never costs a complete dump its load inputs.
 
-* **Symlinks are never followed or deleted**, and nothing at the bronze
-  root that isn't a timestamped run dir (a silver ``.db``, a shared
-  ``manual/`` tree) is ever touched.
+* **Symlinks are never followed or deleted** — not the run dir, not a
+  ``debug_subdirs`` entry, not a ``debug_globs`` match, and not any
+  intermediate directory a deep ``debug_globs`` pattern traverses (a
+  symlinked component would let a match resolve outside the tree, so it is
+  refused). Nothing at the bronze root that isn't a timestamped run dir (a
+  silver ``.db``, a shared ``manual/`` tree) is ever touched.
 
 * **In-flight downloads are protected.** A running download mints its
   run-dir slug at the start but only writes a terminal manifest at the
@@ -85,10 +90,19 @@ Classification = tuple  # (state: str, reason: str)
 class PruneConfig:
     """Per-collector prune configuration.
 
-    ``debug_subdirs`` — names of entries inside a run dir that are debug
-    artefacts (dirs or files), deleted from *complete* dumps. Must never
-    include a ``load`` input. Empty for collectors that write no
+    ``debug_subdirs`` — names of *top-level* entries inside a run dir that
+    are debug artefacts (dirs or files), deleted from *complete* dumps.
+    Must never include a ``load`` input. Empty for collectors that write no
     bronze-resident debug artefact.
+
+    ``debug_globs`` — run-dir-relative glob patterns matching debug-artefact
+    *files* to delete from *complete* dumps, for artefacts that live deeper
+    than the top level a ``debug_subdirs`` name can address (e.g.
+    ``transactions/*/page-*.html`` — a legacy per-account capture stranded
+    inside a load-input dir). Only regular files are ever matched (a whole
+    subtree is ``debug_subdirs``' job); each pattern must be crafted so it
+    can NEVER match a ``load`` input sibling. Empty by default, so a
+    collector that declares none is byte-for-byte unaffected.
 
     ``is_complete`` — ``(run_dir, meta) -> (state, reason)`` where ``meta``
     is the parsed manifest dict (or ``None`` when the manifest file is
@@ -105,6 +119,7 @@ class PruneConfig:
     """
 
     debug_subdirs: tuple[str, ...] = ()
+    debug_globs: tuple[str, ...] = ()
     is_complete: Callable[[Path, dict | None], Classification] = None  # type: ignore[assignment]
     manifest_name: str | None = "run.json"
     # Human label for the kind of thing a non-complete whole-dir deletion
@@ -308,6 +323,18 @@ def plan_prune(bronze_dir: Path, config: PruneConfig, min_age_s: float,
                         "path": entry, "kind": "debug-artefacts",
                         "reason": reason, "files": files, "bytes": size,
                     })
+            # Deeper-nested debug FILES a top-level debug_subdirs name
+            # cannot address (e.g. transactions/*/page-*.html). Only
+            # regular files (never a whole subtree) and never a symlink.
+            for pattern in config.debug_globs:
+                for f in sorted(run_dir.glob(pattern)):
+                    if (f.is_file() and not f.is_symlink()
+                            and _no_symlinked_dir_between(run_dir, f)):
+                        files, size, _ = entry_stats(f)
+                        targets.append({
+                            "path": f, "kind": "debug-artefacts",
+                            "reason": reason, "files": files, "bytes": size,
+                        })
             continue
         if state == UNKNOWN:
             skipped.append({"path": run_dir, "reason": reason,
@@ -335,19 +362,63 @@ def plan_prune(bronze_dir: Path, config: PruneConfig, min_age_s: float,
     return targets, skipped
 
 
+def _ancestor_run_dir(path: Path, bronze_dir: Path) -> Path | None:
+    """The bronze run dir containing ``path`` — the ancestor directly under
+    ``bronze_dir`` whose name matches :data:`bronze.RUN_DIR_RE` — or
+    ``None`` when ``path`` is not nested inside one."""
+    for parent in path.parents:
+        if parent.parent == bronze_dir and bronze.RUN_DIR_RE.match(parent.name):
+            return parent
+    return None
+
+
+def _no_symlinked_dir_between(run_dir: Path, path: Path) -> bool:
+    """True iff no directory component strictly between ``run_dir`` and
+    ``path`` is a symlink (``run_dir`` and the leaf ``path`` are checked by
+    the caller). ``Path.glob`` follows a symlinked intermediate directory
+    when resolving a ``*`` component, so a ``debug_globs`` match could
+    otherwise resolve to — and delete — a file OUTSIDE the bronze tree
+    (e.g. ``<run>/transactions/999`` symlinked elsewhere), violating the
+    engine's never-follow-symlinks envelope. Walk the components and refuse
+    if any is a symlink."""
+    cur = run_dir
+    for part in path.relative_to(run_dir).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            return False
+    return True
+
+
 def validate_target(path: Path, bronze_dir: Path, config: PruneConfig) -> None:
-    """Refuse anything but ``<bronze>/<run>/<debug-subdir>`` or a whole
-    ``<bronze>/<run>`` dir, and never a symlink. Belt-and-braces against a
-    planner bug before an irreversible ``rmtree``.
+    """Refuse anything but ``<bronze>/<run>/<debug-subdir>``, a whole
+    ``<bronze>/<run>`` dir, or a ``debug_globs``-matched regular FILE nested
+    inside a ``<bronze>/<run>`` dir — and never a symlink. Belt-and-braces
+    against a planner bug before an irreversible delete.
     """
     if path.is_symlink():
         raise SystemExit(f"refusing to delete symlink: {path}")
+    # Whole run dir, or a top-level debug subdir of one.
     if path.name in config.debug_subdirs and path.parent.parent == bronze_dir:
         run_dir = path.parent
     else:
         run_dir = path
-    if run_dir.parent != bronze_dir or not bronze.RUN_DIR_RE.match(run_dir.name):
-        raise SystemExit(f"refusing to delete unexpected path: {path}")
+    if run_dir.parent == bronze_dir and bronze.RUN_DIR_RE.match(run_dir.name):
+        return
+    # A debug_globs-matched regular file, nested arbitrarily deep in a
+    # complete run dir. Re-derive the ancestor run dir and re-check the
+    # glob independently of the planner: a path is accepted here ONLY when
+    # it is a real (non-symlink) file whose run-dir-relative path STILL
+    # matches an explicit debug glob. Because every load input (a
+    # ``.json``/``.csv``/``.xml``/``more-details.json`` sibling) fails that
+    # glob by construction, a planner bug can never route one through here.
+    if config.debug_globs and path.is_file():
+        anc = _ancestor_run_dir(path, bronze_dir)
+        if (anc is not None and anc.is_dir() and not anc.is_symlink()
+                and _no_symlinked_dir_between(anc, path)):
+            rel = path.relative_to(anc)
+            if any(rel.match(pattern) for pattern in config.debug_globs):
+                return
+    raise SystemExit(f"refusing to delete unexpected path: {path}")
 
 
 def _recheck_target(target: dict, config: PruneConfig, min_age_s: float,
@@ -357,6 +428,10 @@ def _recheck_target(target: dict, config: PruneConfig, min_age_s: float,
     are always safe (never load inputs) and pass through. A non-complete
     dump is deleted only if it is STILL non-complete and STILL quiescent;
     if a walk finalised it or resumed writing since planning, skip it.
+
+    Debug artefacts — both ``debug_subdirs`` entries and ``debug_globs``
+    files — are never load inputs (``validate_target`` re-checks the glob
+    just before the unlink), so they pass through unconditionally.
     """
     if target["kind"] != "non-complete dump":
         return True

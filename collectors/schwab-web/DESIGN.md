@@ -283,6 +283,19 @@ deletes whole non-complete dumps plus `<run>/screenshots/` from
 complete ones, and never a `load` input (`statements/`,
 `transactions/`, `run.json`).
 
+A narrower reclaim also fires from complete dumps:
+`transactions/*/page-*.html`. Before the `--debug` gate landed, the
+per-account landing-page HTML was written ungated straight into the
+`transactions/<suffix>/` load-input dir as `page-001.html`; the gate
+relocated that capture to `<run>/screenshots/`, but run dirs written
+earlier still strand those orphans. `load` never read them — the
+tx-history loader consumes only `more-details.json` and the manifest's
+per-account `.csv`/`.json`/`.xml` exports — so `prune` reclaims them via
+an explicit file glob. The glob matches only names that both begin
+`page-` and end `.html`, which no load-input sibling can, and the shared
+engine re-checks that glob against the run-dir-relative path immediately
+before each unlink, so a load input can never be removed.
+
 The silver loader reads `run.json` for the document inventory and,
 per document kind, parses these into `transactions`:
 

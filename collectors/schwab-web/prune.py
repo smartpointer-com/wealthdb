@@ -4,13 +4,35 @@ Prune debug artefacts and non-complete dumps from the schwab-web
 bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with schwab-web's configuration. Two categories are
+prune engine) with schwab-web's configuration. Three categories are
 removed, across every timestamped run dir under ``--bronze-dir``:
 
 * ``<run>/screenshots/`` — debug captures (the per-account
   tx-history landing-page HTML baseline). Written only when
   ``download`` runs with ``--debug``; never read by ``load``.
   Deleting them leaves silver byte-identical.
+
+* ``<run>/transactions/*/page-*.html`` — LEGACY debug orphans.
+  Before commit ``5c3ffe4``, ``download`` wrote the same landing-page
+  HTML capture UNGATED to ``transactions/<suffix>/page-001.html``,
+  INSIDE the tx-history load-input dir; ``5c3ffe4`` moved that capture
+  behind ``--debug`` into ``<run>/screenshots/`` (reclaimed by the
+  ``screenshots`` debug_subdir above), but run dirs written before the
+  fix still carry these orphans. ``load`` has NEVER read them: the
+  tx-history loop reads only ``more-details.json`` and the per-account
+  export files the ``run.json`` manifest names (``.csv`` / ``.json`` /
+  ``.xml``) — never ``page-*.html``, which was never a manifest export.
+  This is expressed as ``debug_globs`` (a top-level ``debug_subdirs``
+  name cannot reach two levels deep). The glob is scoped as narrowly as
+  possible so it can match ONLY these orphans and never a load-input
+  sibling: every sibling is either ``more-details.json`` or an export
+  whose name ends ``.csv``/``.json``/``.xml`` — none can match
+  ``page-*.html`` (a name that both starts ``page-`` and ends
+  ``.html``). ``validate_target`` re-derives and re-checks the glob
+  against the run-dir-relative path immediately before the unlink, so a
+  planner bug can never delete a load input. There is no overlap with
+  the post-``5c3ffe4`` ``--debug`` captures, which live under
+  ``screenshots/`` and are handled separately.
 
 * whole run dirs that are not complete dumps: ``run.json`` is
   missing (the walk crashed before its first manifest write) or its
@@ -38,10 +60,11 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
 so a long backfill is protected. ``--dry-run`` prints the plan
 without removing anything. The only paths ever deleted are
-``<run>/screenshots/`` subtrees and whole non-complete run dirs;
-load inputs of complete dumps (``statements/``, ``transactions/``,
-``run.json``) and non-run entries at the bronze root (the silver DB)
-are never touched.
+``<run>/screenshots/`` subtrees, the ``<run>/transactions/*/page-*.html``
+legacy orphan files, and whole non-complete run dirs; the load inputs
+of complete dumps (``statements/``, ``transactions/`` CSV/JSON/XML +
+``more-details.json``, ``run.json``) and non-run entries at the bronze
+root (the silver DB) are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -54,6 +77,11 @@ import sys
 from collectorkit import prune
 
 SCREENSHOTS_DIR = "screenshots"
+# Legacy pre-5c3ffe4 per-account landing-HTML orphans stranded inside the
+# tx-history load-input dir. `load` never reads them; this glob matches
+# ONLY files named page-*.html two levels deep, never a load-input sibling
+# (all of which are more-details.json or .csv/.json/.xml exports).
+LEGACY_TX_PAGE_HTML_GLOB = "transactions/*/page-*.html"
 
 
 def _is_complete(run_dir, meta):
@@ -75,6 +103,7 @@ def _is_complete(run_dir, meta):
 
 CONFIG = prune.PruneConfig(
     debug_subdirs=(SCREENSHOTS_DIR,),
+    debug_globs=(LEGACY_TX_PAGE_HTML_GLOB,),
     is_complete=_is_complete,
 )
 
