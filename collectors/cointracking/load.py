@@ -71,30 +71,58 @@ RECONCILE_ABS_TOL = "0.00000001"
 COIN_VALUE_HEADER_RE = re.compile(r'^([A-Z0-9_]+) Value in ([A-Z]+)$')
 
 
-# Aggregate-then-window replay against the `transactions` table.
-# Bound parameter at the end is the snapshot_at for newly-written
-# rows.
+# Type handler vocabulary — the single source of truth for BOTH the
+# replay below AND the unhandled-type guard (warn_unhandled_
+# transaction_types). CoinTracking has accumulated a ~19-type
+# vocabulary over time; each row is routed by `type` to a buy leg
+# (`+buy_amount` on `buy_currency`), a sell leg (`-sell_amount` on
+# `sell_currency`), or — for the direction-ambiguous types (Trade,
+# Gift / Tip, Gift) — both, with the `buy_amount IS NOT NULL` /
+# `sell_amount IS NOT NULL` filter selecting the one populated leg.
 #
-# Type handler lists. CoinTracking has accumulated a ~16-type
-# vocabulary over time; the set below covers the full vocabulary
-# observed across loaded portfolios after running the
-# reconciliation against balance.csv. Several types are direction-ambiguous
-# (Gift / Tip, Gift) — they appear on both lists, with the
-# `buy_amount IS NOT NULL` / `sell_amount IS NOT NULL` filter
-# routing each row to exactly one branch based on which column is
-# populated.
-#
-#   BUY side (`+buy_amount` on `buy_currency`):
-#     Trade, Deposit, Staking, Reward / Bonus, Income (taxable + non),
-#     Airdrop (taxable + non), Gift / Tip, Gift
-#
-#   SELL side (`-sell_amount` on `sell_currency`):
-#     Trade, Withdrawal, Other Fee, Lost, Stolen, Spend, Donation,
-#     Gift / Tip, Gift, Expense (non taxable)
+# A `type` on NEITHER list contributes nothing, silently: an outgoing
+# type we forget to list leaves the replay's per-wallet balance too
+# high (the coins that left are never subtracted); an incoming one
+# leaves it too low. `Other Expense` is CoinTracking's generic
+# outgoing-balance type — observed as the sell leg of an exchange
+# dust sweep (a periodic conversion of tiny leftover balances, which
+# CoinTracking labels "Dust Sweeping" in the Comment column), where
+# each swept dust balance is booked as an `Other Expense` sell paired
+# with an `Income (non taxable)` buy of the consolidated proceeds.
+# That pairing is what first exposed the gap: the buy leg landed while
+# the dust never left, stranding each source balance at exactly the
+# swept amount. The lists are kept as data so the guard can warn on
+# any unrouted leg rather than drop it.
 #
 # Fee semantics: `fee_amount` on regular rows is informative only;
-# `Other Fee` rows ARE balance deltas (the fee IS the event).
-# See DESIGN.md.
+# `Other Fee` and `Other Expense` rows ARE balance deltas (the fee /
+# expense IS the event). See DESIGN.md.
+BUY_TYPES = (
+    "Trade", "Deposit", "Staking", "Reward / Bonus",
+    "Income", "Income (non taxable)",
+    "Airdrop", "Airdrop (non taxable)",
+    "Gift / Tip", "Gift",
+)
+SELL_TYPES = (
+    "Trade", "Withdrawal", "Other Fee", "Other Expense",
+    "Lost", "Stolen", "Spend", "Donation",
+    "Gift / Tip", "Gift", "Expense (non taxable)",
+)
+
+
+def _sql_str_list(values: tuple[str, ...]) -> str:
+    """Render string constants as a SQL IN-list body: ``'a', 'b'``.
+    These are internal constants, never user input; a stray apostrophe
+    would be a source-level typo, so we assert rather than escape."""
+    for v in values:
+        assert "'" not in v, f"type literal must not contain a quote: {v!r}"
+    return ", ".join(f"'{v}'" for v in values)
+
+
+# Aggregate-then-window replay against the `transactions` table.
+# The trailing bound `?` parameter is the snapshot_at stamped on
+# newly-written rows. The two `{…}` slots are filled once, at import,
+# from BUY_TYPES / SELL_TYPES — the SQL body carries no other braces.
 REPLAY_SQL_TEMPLATE = """
 WITH deltas AS (
     SELECT
@@ -106,11 +134,7 @@ WITH deltas AS (
     FROM transactions
     WHERE buy_amount IS NOT NULL
       AND buy_currency IS NOT NULL
-      AND type IN ('Trade', 'Deposit', 'Staking',
-                   'Reward / Bonus',
-                   'Income', 'Income (non taxable)',
-                   'Airdrop', 'Airdrop (non taxable)',
-                   'Gift / Tip', 'Gift')
+      AND type IN ({buy_types})
     UNION ALL
     SELECT
         portfolio_external_id,
@@ -121,10 +145,7 @@ WITH deltas AS (
     FROM transactions
     WHERE sell_amount IS NOT NULL
       AND sell_currency IS NOT NULL
-      AND type IN ('Trade', 'Withdrawal', 'Other Fee',
-                   'Lost', 'Stolen', 'Spend', 'Donation',
-                   'Gift / Tip', 'Gift',
-                   'Expense (non taxable)')
+      AND type IN ({sell_types})
 ),
 daily_deltas AS (
     SELECT
@@ -149,7 +170,10 @@ SELECT
     ) AS amount,
     ? AS snapshot_at
 FROM daily_deltas
-"""
+""".format(
+    buy_types=_sql_str_list(BUY_TYPES),
+    sell_types=_sql_str_list(SELL_TYPES),
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -606,6 +630,47 @@ def ingest_portfolio_prices(
                  fiats[0] if len(fiats) == 1 else fiats)
 
     conn.execute("DROP TABLE IF EXISTS raw_overview")
+
+
+def warn_unhandled_transaction_types(
+    conn: duckdb.DuckDBPyConnection,
+) -> list[tuple[str, int, int]]:
+    """Warn (loudly) about any transaction whose populated leg the
+    replay silently drops because its `type` is on neither BUY_TYPES
+    nor SELL_TYPES.
+
+    The replay routes rows by `type`; a leg whose type is unlisted
+    contributes nothing to positions_daily, so the affected wallet's
+    balance reads high (a dropped sell) or low (a dropped buy) with no
+    error raised — exactly how the `Other Expense` dust-sweep leg
+    slipped through before it was added to SELL_TYPES. CoinTracking
+    keeps growing its vocabulary (margin, lending, derivatives, …), so
+    this is a standing guard against the next unlisted type, not a
+    one-off. Returns the (type, dropped_buy_legs, dropped_sell_legs)
+    rows it warned on — empty when coverage is complete."""
+    rows = conn.execute(f"""
+        SELECT
+            type,
+            COUNT(*) FILTER (
+                WHERE buy_amount IS NOT NULL AND buy_currency IS NOT NULL
+                  AND type NOT IN ({_sql_str_list(BUY_TYPES)})
+            ) AS dropped_buy_legs,
+            COUNT(*) FILTER (
+                WHERE sell_amount IS NOT NULL AND sell_currency IS NOT NULL
+                  AND type NOT IN ({_sql_str_list(SELL_TYPES)})
+            ) AS dropped_sell_legs
+        FROM transactions
+        GROUP BY type
+        HAVING dropped_buy_legs > 0 OR dropped_sell_legs > 0
+        ORDER BY type
+    """).fetchall()
+    for typ, n_buy, n_sell in rows:
+        log.warning(
+            "unrouted transaction type %r: %d buy leg(s) + %d sell "
+            "leg(s) dropped from the replay — affected wallet balances "
+            "will read high/low until a handler is added to "
+            "BUY_TYPES / SELL_TYPES in load.py", typ, n_buy, n_sell)
+    return rows
 
 
 def reconcile_balances(
@@ -1137,6 +1202,8 @@ def process_snapshot(
 
     cutoff, n_rewritten = upsert_positions_daily(conn, snapshot_at)
 
+    warn_unhandled_transaction_types(conn)
+
     ingest_portfolio_prices(conn, manifest, run_dir, snapshot_at)
 
     reconcile_balances(conn, manifest, run_dir)
@@ -1175,6 +1242,7 @@ def main(argv: list[str]) -> int:
                 "SELECT COALESCE(MAX(snapshot_at), 0) FROM dump_runs"
             ).fetchone()[0]
             upsert_positions_daily(conn, snapshot_at)
+            warn_unhandled_transaction_types(conn)
             return 0
 
         snapshots = discover_bronze_snapshots(args.bronze_dir)

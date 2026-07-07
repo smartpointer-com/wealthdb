@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -49,6 +50,108 @@ def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
     conn = duckdb.connect(str(tmp_path / "cointracking.duckdb"))
     loader.apply_migrations(conn)
     return conn
+
+
+def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
+         fee_cur="", exchange="Kraken", comment="",
+         date="2024-01-15 10:00:00") -> str:
+    """One 19-column "Extended" trades.csv row (all fields quoted).
+    Positional layout matches TRADES_HEADER: Type, Buy, Cur.(buy),
+    Sell, Cur.(sell), Fee, Cur.(fee), Exchange, Group, Comment, Trade
+    ID, Imported From, Add Date, Date, then five address/hash fields."""
+    fields = [type_, buy, buy_cur, sell, sell_cur, fee, fee_cur,
+              exchange, "", comment, "", "", "", date, "", "", "", "", ""]
+    return ",".join(f'"{f}"' for f in fields)
+
+
+def _seed_bronze_rows(root: Path, rows: list[str]) -> tuple[Path, dict]:
+    """Materialise a bronze run whose cu_<CU> trades.csv holds `rows`."""
+    run_dir = root / "20240201T000000Z"
+    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
+    (run_dir / f"cu_{CU}" / "trades.csv").write_text(
+        TRADES_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    manifest = {"portfolios": [{"id": CU, "name": "test"}]}
+    return run_dir, manifest
+
+
+def _latest_positions(conn) -> dict[tuple[str, str], Decimal]:
+    """Latest (wallet, instrument) → amount from positions_daily."""
+    return {
+        (w, i): amt for w, i, amt in conn.execute("""
+            SELECT wallet, instrument, amount FROM (
+                SELECT
+                    SUBSTR(wallet_external_id,
+                           STRPOS(wallet_external_id, ':') + 1) AS wallet,
+                    instrument_external_id AS instrument,
+                    amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY wallet_external_id, instrument_external_id
+                        ORDER BY as_of_date DESC) AS rn
+                FROM positions_daily)
+            WHERE rn = 1
+        """).fetchall()
+    }
+
+
+def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
+    # An exchange dust sweep (CoinTracking labels it "Dust Sweeping")
+    # books an `Other Expense` sell of each swept dust balance paired
+    # with an `Income (non taxable)` buy of the consolidated proceeds.
+    # The sell leg is a real outgoing delta: if `Other Expense` is
+    # unrouted the dust never leaves and the replay's per-wallet
+    # balance stays stranded at the swept amount. Regression for that
+    # gap (the buy leg was always handled). Amounts are synthetic.
+    rows = [
+        _row("Deposit", buy="0.01230000", buy_cur="ETH",
+             date="2024-01-01 00:00:00"),
+        _row("Other Expense", sell="0.01230000", sell_cur="ETH",
+             comment="Dust Sweeping", date="2024-02-01 00:00:00"),
+        _row("Income (non taxable)", buy="0.50", buy_cur="USD",
+             comment="Dust Sweeping", date="2024-02-01 00:00:00"),
+    ]
+    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    conn = _fresh_db(tmp_path)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    loader.upsert_positions_daily(conn, snapshot_at=1706745600)
+
+    latest = _latest_positions(conn)
+    # Dust fully swept out — ETH back to zero, not stranded at 0.01230000.
+    assert latest[("Kraken", "ETH")] == 0
+    # Consolidated proceeds landed.
+    assert latest[("Kraken", "USD")] == Decimal("0.50")
+
+
+def test_warn_unhandled_types_flags_unrouted_leg(tmp_path):
+    # A populated leg whose type is on neither list must be reported,
+    # not silently dropped — this is the guard that would have caught
+    # the `Other Expense` gap at load time.
+    rows = [
+        _row("Trade", buy="0.5", buy_cur="BTC", sell="15000",
+             sell_cur="USD", date="2024-01-15 10:00:00"),
+        _row("Margin Trade", sell="1.0", sell_cur="BTC",
+             date="2024-01-16 10:00:00"),
+    ]
+    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    conn = _fresh_db(tmp_path)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800)
+    # (type, dropped_buy_legs, dropped_sell_legs)
+    assert loader.warn_unhandled_transaction_types(conn) == [
+        ("Margin Trade", 0, 1)]
+
+
+def test_warn_unhandled_types_silent_when_covered(tmp_path):
+    # Every type routed (incl. the dust-sweep pair) → no warnings.
+    # Amounts are synthetic.
+    rows = [
+        _row("Other Expense", sell="0.02000000", sell_cur="EUR",
+             comment="Dust Sweeping", date="2024-02-01 00:00:00"),
+        _row("Income (non taxable)", buy="0.05000000", buy_cur="USD",
+             comment="Dust Sweeping", date="2024-02-01 00:00:00"),
+    ]
+    run_dir, manifest = _seed_bronze_rows(tmp_path / "bronze", rows)
+    conn = _fresh_db(tmp_path)
+    loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1706745600)
+    assert loader.warn_unhandled_transaction_types(conn) == []
 
 
 def test_ingest_transactions(tmp_path):

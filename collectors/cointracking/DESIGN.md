@@ -450,17 +450,32 @@ Withdrawal. The distinction matters: same column name (`Fee`),
 two opposite semantics (informative on a regular row, balance-
 moving on an `Other Fee` row).
 
+**`Type = "Other Expense"`** is CoinTracking's generic outgoing-
+balance type and is likewise a real `-sell` delta. It surfaces as
+the sell leg of an exchange **dust sweep** — a periodic conversion
+of tiny leftover balances (CoinTracking labels it "Dust Sweeping"
+in the `Comment` column) that books each swept dust balance as an
+`Other Expense` sell and the consolidated proceeds as a single
+`Income (non taxable)` buy. The buy leg was always routed, so before
+`Other Expense` joined the sell side the proceeds landed while the
+dust never left, stranding each source balance (the fiat/coin swept
+away) at exactly the swept amount — a coin-sized mismatch for the
+larger dust and sub-10⁻⁸ replay-only residues for the rest. Both
+legs are now handled.
+
 **Type handler set (validated against captured balance.csv).**
-CoinTracking has accumulated a 16-type vocabulary over time;
-the replay routes each row by `type`:
+CoinTracking has accumulated a ~19-type vocabulary over time;
+the replay routes each row by `type`. The two lists live as the
+`BUY_TYPES` / `SELL_TYPES` constants in `load.py` — a single source
+of truth shared by the replay SQL and the unhandled-type guard:
 
   - **buy side** (`+buy_amount` on `buy_currency`):
     Trade, Deposit, Staking, Reward / Bonus, Income, Income
     (non taxable), Airdrop, Airdrop (non taxable), Gift / Tip,
     Gift
   - **sell side** (`-sell_amount` on `sell_currency`):
-    Trade, Withdrawal, Other Fee, Lost, Stolen, Spend,
-    Donation, Gift / Tip, Gift, Expense (non taxable)
+    Trade, Withdrawal, Other Fee, Other Expense, Lost, Stolen,
+    Spend, Donation, Gift / Tip, Gift, Expense (non taxable)
 
 `Gift / Tip` and `Gift` appear on both lists — they're
 direction-ambiguous (the same type covers incoming gifts and
@@ -468,9 +483,21 @@ outgoing tips). The `buy_amount IS NOT NULL` /
 `sell_amount IS NOT NULL` filters route each row to exactly one
 branch based on which CSV column is populated.
 
-After the type-handler set was completed, every portfolio
-reconciles against its per-wallet balance.csv with zero
-discrepancies beyond ±10⁻⁸ (the 8-decimal CSV export precision).
+**Unlisted types are silently dropped — so the loader makes it
+loud.** A `type` on neither list contributes nothing to the replay:
+an outgoing type left off the sell side leaves a wallet's balance
+too high, an incoming one too low, with no error. That is precisely
+how `Other Expense` escaped notice until reconciliation flagged it.
+Because CoinTracking keeps growing the vocabulary (margin, lending,
+derivatives, …), `warn_unhandled_transaction_types()` runs on every
+load and logs a WARNING naming any type whose populated leg the
+replay would drop, with the dropped buy/sell-leg counts. It is a
+standing tripwire for the next unlisted type — not a substitute for
+adding the handler.
+
+With the set above, every portfolio reconciles against its
+per-wallet balance.csv with zero discrepancies beyond ±10⁻⁸ (the
+8-decimal CSV export precision).
 
 **Silver is DuckDB, not SQLite — the exception in this repo.**
 Every other collector's silver is SQLite + JSON1; cointracking
@@ -501,8 +528,10 @@ Cost of the exception:
     one-file apply-migrations helper) live inline in load.py.
   - One more wheel in the image (`duckdb`, ~30 MB).
 
-**The replay** lives in `load.py` as the constant `REPLAY_QUERY`
-and runs against the latest `dump_runs.snapshot_at`. Shape:
+**The replay** lives in `load.py` as the constant
+`REPLAY_SQL_TEMPLATE` (the buy/sell `type` filters formatted in from
+`BUY_TYPES` / `SELL_TYPES`) and runs against the latest
+`dump_runs.snapshot_at`. Shape:
 
 ```
 WITH deltas AS (                              -- explode each row
@@ -511,10 +540,11 @@ WITH deltas AS (                              -- explode each row
     WHERE type IN ('Trade','Deposit','Staking','Income(*)','Airdrop(*)')
     UNION ALL
     -- sell side: -amount on sell_currency for types with a sell
-    -- (incl. "Other Fee" rows — see fee semantics above)
+    -- (incl. "Other Fee" + "Other Expense" rows — see fee semantics
+    --  above; abbreviated — SELL_TYPES in load.py is authoritative)
     SELECT … -sell_amount AS delta FROM transactions
-    WHERE type IN ('Trade','Withdrawal','Other Fee','Lost','Spend',
-                   'Gift / Tip','Expense (non taxable)')
+    WHERE type IN ('Trade','Withdrawal','Other Fee','Other Expense',
+                   'Lost','Spend','Gift / Tip','Expense (non taxable)')
 ),
 daily_deltas AS (                             -- pre-aggregate by day
     SELECT portfolio, wallet, instrument, as_of_date, SUM(delta)
