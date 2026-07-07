@@ -240,8 +240,15 @@ when the listing-row label contains a discoverable IBAN / portfolio
 code.
 
 The PDF binaries live on disk under
-`<bronze-root>/<dump-ts>/documents/` — the silver `documents`
-table only indexes them.
+`<bronze-root>/<dump-ts>/documents/`, named by their content hash
+(`<sha256>.pdf`) — the silver `documents` table only indexes them.
+Content-addressed naming means an unchanged document keeps the same
+filename across runs (UBS otherwise serves it under a fresh per-session
+token each time), so the tree stops accreting a new name per
+re-download and each document gains a stable cross-run identity
+(`content_sha256`, recorded in `run.json`) for later dedup tooling. The
+loader is filename-agnostic — it catalogs whatever `*.pdf` the manifest
+lists — so older token-named dumps keep loading unchanged.
 
 ### 3.8 Historical snapshots reconstructed from PDFs
 

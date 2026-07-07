@@ -112,7 +112,7 @@ below `WINDOW_MIN_DAYS = 1`.
     │   ├── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.csv         one per account per window
     │   └── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940       one or more per cash account
     └── documents/
-        └── <token-prefix>.pdf                                     content-addressable by UBS token
+        └── <sha256>.pdf                                           content-addressed by the PDF bytes
 ```
 
 The `<sha256-prefix>` collapses the opaque UBS account-id token to
@@ -255,7 +255,7 @@ run scripted afterwards.
 ├── 20260518T210504Z/               one bronze dump per run
 │   ├── transactions_<account>.csv  per-account transactions for --since..--until
 │   ├── documents/
-│   │   ├── <docid>.pdf             eDocuments (account/custody statements,
+│   │   ├── <sha256>.pdf            eDocuments (account/custody statements,
 │   │   │                           tax PDFs, trade confirms, fee notes, ...)
 │   │   └── ...
 │   └── run.json                    metadata: customer ID, window bounds,

@@ -100,3 +100,73 @@ def test_dry_run_download_persists_nothing_to_bronze(tmp_path, monkeypatch):
         assert list(dest.iterdir()) == []
     # Belt and suspenders: no UTC-timestamped dump dir anywhere below it.
     assert list(Path(dest).glob("*/run.json")) == []
+
+
+# --------------------------------------------------------------------
+# _fetch_document: content-addressed naming
+# --------------------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, body, ok=True, status=200):
+        self._body, self.ok, self.status = body, ok, status
+
+    def body(self):
+        return self._body
+
+
+class _FakeReqContext:
+    """A Playwright context whose request.get returns a fixed body."""
+
+    def __init__(self, body):
+        self._body = body
+
+        class _Req:
+            def get(_self, _href, timeout=None):
+                return _FakeResp(self._body)
+
+        self.request = _Req()
+
+
+def test_fetch_document_named_by_content_hash(tmp_path):
+    import hashlib
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    body = b"%PDF-1.4 synthetic statement bytes\n"
+    sha = hashlib.sha256(body).hexdigest()
+
+    meta = download._fetch_document(
+        _FakeReqContext(body),
+        "https://ubs.example/doc?apikey=TENANTSECRET&Accept=application/pdf",
+        "persessiontoken0000", "Account statement 01.02.2026", docs)
+
+    # Named by content, not by the per-session token.
+    assert meta["filename"] == f"{sha}.pdf"
+    assert "persessiontoken" not in meta["filename"]
+    assert (docs / f"{sha}.pdf").read_bytes() == body
+    assert meta["content_sha256"] == sha
+    assert meta["label"] == "Account statement 01.02.2026"
+    # The tenant apikey secret is never persisted in the recorded url.
+    assert "apikey" not in meta["url"] and "TENANTSECRET" not in meta["url"]
+
+
+def test_fetch_document_identical_bytes_collapse_to_one_file(tmp_path):
+    # Two different session tokens, identical bytes → one content-addressed
+    # file (the old token naming would have written two copies).
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    body = b"%PDF-1.4 same statement\n"
+    ctx = _FakeReqContext(body)
+    m1 = download._fetch_document(ctx, "https://u?apikey=K", "tokenAAAA", "L", docs)
+    m2 = download._fetch_document(ctx, "https://u?apikey=K", "tokenBBBB", "L", docs)
+    assert m1["filename"] == m2["filename"]
+    assert len(list(docs.glob("*.pdf"))) == 1
+
+
+def test_fetch_document_non_pdf_returns_none(tmp_path):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    meta = download._fetch_document(
+        _FakeReqContext(b"<html>login</html>"),
+        "https://u?apikey=K", "tok", "L", docs)
+    assert meta is None
+    assert list(docs.glob("*.pdf")) == []

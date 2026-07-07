@@ -952,22 +952,17 @@ def _read_doc_count(page) -> int | None:
 def _fetch_document(context, href: str, token: str,
                     label: str, docs_dir: Path) -> dict | None:
     """Fetch one PDF and persist it to bronze. Returns metadata or
-    None on failure.
+    None on failure. The PDF is stored under a content-addressed name
+    (`<sha256>.pdf`), so an unchanged document lands at the same filename
+    every run instead of accreting a fresh per-session-token name each
+    re-download. Its logical identity (`content_sha256` + `label`) is
+    recorded in the returned metadata for later dedup/skip tooling. The
+    caller already dedups by token before calling, and each run writes a
+    fresh dir, so there is no pre-fetch skip to preserve.
 
     The href is the per-row download URL, including a query
     `apikey=<tenant-key>` and `Accept=application/pdf`. Cookies are
     inherited from the Playwright context, so no auth gymnastics."""
-    out_path = docs_dir / f"{token[:32]}.pdf"
-    if out_path.exists() and out_path.stat().st_size > 0:
-        # Already pulled in a previous invocation; skip without
-        # re-hitting UBS.
-        return {
-            "token": token,
-            "filename": out_path.name,
-            "label": label,
-            "url": _strip_apikey(href),
-            "skipped_existing": True,
-        }
     try:
         resp = context.request.get(href, timeout=DOWNLOAD_TIMEOUT_MS)
     except Exception as e:
@@ -981,11 +976,18 @@ def _fetch_document(context, href: str, token: str,
         log.warning("doc fetch returned non-PDF for token %s… (%d bytes, "
                     "first 8: %r)", token[:12], len(body or b""), body[:8])
         return None
-    out_path.write_bytes(body)
+    sha = hashlib.sha256(body).hexdigest()
+    out_path = docs_dir / f"{sha}.pdf"
+    # Two rows in one run can resolve to identical bytes (the same
+    # statement reachable under two tokens): same bytes, same path, so a
+    # redundant write is a no-op we skip.
+    if not (out_path.exists() and out_path.stat().st_size == len(body)):
+        out_path.write_bytes(body)
     log.debug("wrote %s (%d bytes)", out_path.name, len(body))
     return {
         "token": token,
         "filename": out_path.name,
+        "content_sha256": sha,
         "label": label,
         "url": _strip_apikey(href),
         "size_bytes": len(body),
