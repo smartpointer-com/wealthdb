@@ -360,6 +360,22 @@ def _insert_security(conn, snap: int, entity_id, sectype: str, row: dict, *,
     return 1
 
 
+def _held_market_value(sectype: str, qty: float | None,
+                       price: float | None, row: dict) -> float:
+    """Market value of a HELD cap-table security lot: a share at
+    quantity x FMV; a SAFE / convertible note at its principal (the `cost` —
+    Carta surfaces no share-based FMV for a convertible, and it carries at par
+    until a priced round marks it or it converts); every other line
+    (unexercised options, warrants, ...) at 0, its value folded into the
+    shares/convertible it will become."""
+    if sectype == "share" and qty is not None and price is not None:
+        return qty * price
+    if sectype == "convertible":
+        cost = _f(row.get("cost"))
+        return cost if cost is not None else 0.0
+    return 0.0
+
+
 def load_securities(conn, snap: int, entity_id, edir: Path, *,
                     held: bool, val_price: float | None) -> int:
     """Carta-derived fallback (no valuation override): write the cap-table
@@ -377,8 +393,7 @@ def load_securities(conn, snap: int, entity_id, edir: Path, *,
             qty = _f(row.get("quantity"))
             if held:
                 canceled, pstatus = 0, "held"
-                mv = (qty * val_price) if (sectype == "share" and qty is not None
-                                           and val_price is not None) else 0.0
+                mv = _held_market_value(sectype, qty, val_price, row)
             else:
                 canceled, pstatus = _b(row.get("is_canceled")), "exited"
                 mv = 0.0
@@ -416,11 +431,8 @@ def load_securities_valued(conn, entity_id, edir: Path, *,
                          if issue_ts is not None and t > issue_ts
                          and (cancel_ts is None or t < cancel_ts))
             for t in sorted(d for d in dates if d is not None):
-                if sectype == "share" and qty is not None:
-                    fmv = _fmv_as_of(fmv_timeline, t)
-                    mv = qty * fmv if fmv is not None else 0.0
-                else:
-                    mv = 0.0
+                fmv = _fmv_as_of(fmv_timeline, t) if sectype == "share" else None
+                mv = _held_market_value(sectype, qty, fmv, row)
                 n += _insert_security(conn, t, entity_id, sectype, row,
                                       canceled=0, market_value=mv,
                                       position_status="held")
@@ -716,7 +728,9 @@ def _insert_cash_flow(conn, cfid: str, eid, snap: int, kind: str,
 def _captable_cash_flows(conn, eid, edir: Path, snap: int,
                          bronze_root: Path) -> int:
     """Cap-table cash flows: one `exercise` (deposit+buy in gold) per share
-    certificate — amount = quantity x strike (the cert cost), price the strike.
+    certificate — amount = quantity x strike (the cert cost), price the strike —
+    and one `convertible_purchase` (also deposit+buy, but no share lot) per
+    SAFE / convertible note at its principal (cost).
     The exit is either a side-loaded `<account_id>-transactions.csv` (explicit
     sale + withdrawals — canonical kinds the gold emits 1:1) or,
     absent that file, the auto-derived $0 exit at the cancellation date (Carta
@@ -737,6 +751,21 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int,
                                snap, "exercise", issue, cost, qty, price,
                                "share exercise / acquisition")
         held_shares += qty
+    # SAFEs / convertible notes: a cash purchase of the instrument (no shares
+    # until it converts), so one `convertible_purchase` event = deposit+buy in
+    # gold. amount = the principal (cost); no share lot, no exit auto-derived
+    # (a conversion or write-off would arrive as its own future delta).
+    cbody = _read_json(edir / "convertibles.json")
+    crows = cbody.get("rows") if isinstance(cbody, dict) else None
+    for row in crows or []:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        cost, issue = _f(row.get("cost")), _s(row.get("issue_date"))
+        if cost is None or issue is None:
+            continue
+        n += _insert_cash_flow(conn, f"convertible:{eid}:{row.get('id')}", eid,
+                               snap, "convertible_purchase", issue, cost,
+                               None, None, "SAFE / convertible purchase")
     # Exit: a side-loaded transactions CSV (explicit legs) overrides the
     # auto-derived $0 exit. Clear the superseded rows from any prior load
     # (INSERT OR REPLACE only overwrites rows the current path re-emits, so a

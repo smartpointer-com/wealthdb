@@ -168,12 +168,13 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 // batches).
 func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
-	active := make(map[int64]string) // entity id -> holdings currency
+	active := make(map[int64]string)                // entity id -> holdings currency
+	classes := make(map[int64]canonical.AssetClass) // entity id -> position asset class
 
-	if err := c.appendCapTableAt(ctx, t, acct, &batch, active); err != nil {
+	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classes); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, &batch, active); err != nil {
+	if err := c.appendFundAt(ctx, t, acct, &batch, active, classes); err != nil {
 		return batch, err
 	}
 	if len(active) == 0 {
@@ -188,8 +189,9 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 
 	// One account for the whole Carta portfolio. management_style is an
 	// account-level field (the canonical position carries none), so the
-	// GP-managed fund vs holder-controlled equity distinction rides on each
-	// position's asset_class (private_fund vs private_equity), not here; the
+	// GP-managed fund vs equity vs pre-conversion SAFE distinction rides on
+	// each position's asset_class (private_fund / private_equity /
+	// convertible_note), not here; the
 	// account is self-directed — the holder controls what the portfolio holds.
 	wrapper := canonical.TaxWrapperTaxablePersonal
 	style := canonical.ManagementStyleSelfDirected
@@ -225,7 +227,7 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		info := meta[eid]
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentID(eid),
-			AssetClass:           assetClassFor(info.isFund),
+			AssetClass:           classes[eid], // same class its position carries
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 			Payload:              json.RawMessage(info.payload),
@@ -260,7 +262,7 @@ type lot struct {
 // the payload). MarketValue / BookValue sum every held lot — the collector's
 // per-date FMV valuation (collector DESIGN.md §5.1) and the cost basis. The
 // per-lot detail rides in the position payload.
-func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string) error {
+func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass) error {
 	const q = `
 SELECT entity_external_id, security_type, security_external_id,
        COALESCE(currency, 'USD'), quantity, cost, market_value,
@@ -283,6 +285,7 @@ SELECT entity_external_id, security_type, security_external_id,
 		ccy                         string
 		shareQty, mv, cost          float64
 		hasShareQty, hasMV, hasCost bool
+		hasEquity                   bool // any non-convertible lot (share/option/…)
 		lots                        []lot
 	}
 	aggs := make(map[int64]*agg)
@@ -302,6 +305,9 @@ SELECT entity_external_id, security_type, security_external_id,
 			a = &agg{ccy: normCcy(ccy)}
 			aggs[entityID] = a
 			order = append(order, entityID)
+		}
+		if secType != "convertible" {
+			a.hasEquity = true // a SAFE/note is a convertible_note only until real equity appears
 		}
 		if secType == "share" && quantity.Valid {
 			a.shareQty += quantity.Float64
@@ -347,12 +353,13 @@ SELECT entity_external_id, security_type, security_external_id,
 			return fmt.Errorf("appendCapTableAt payload: %w", err)
 		}
 		instKey := instrumentID(eid)
+		class := capTableAssetClass(a.hasEquity)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(eid),
 			InstrumentExternalID: &instKey,
-			AssetClass:           canonical.AssetClassPrivateEquity,
+			AssetClass:           class,
 			Currency:             a.ccy,
 			Payload:              json.RawMessage(payload),
 		}
@@ -370,6 +377,7 @@ SELECT entity_external_id, security_type, security_external_id,
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[eid] = a.ccy
+		classes[eid] = class
 	}
 	return nil
 }
@@ -378,7 +386,7 @@ SELECT entity_external_id, security_type, security_external_id,
 // capital-account delta on/before t (one position per fund). MarketValue =
 // net_asset_value (the NAV at that quarter), BookValue = capital_contributed.
 // Money arrives as decimal strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string) error {
+func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass) error {
 	const q = `
 SELECT entity_external_id, COALESCE(currency, 'USD'),
        COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
@@ -419,6 +427,7 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[entityID] = ccy
+		classes[entityID] = canonical.AssetClassPrivateFund
 	}
 	return rows.Err()
 }

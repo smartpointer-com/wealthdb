@@ -29,21 +29,23 @@ const (
 	// cap-table stakes, AngelList SPV / fund LP interests) from
 	// listed securities. AssetClassPrivateEquity covers direct
 	// private-company equity and equity-comp (shares, options,
-	// RSUs/RSAs, SAFEs/notes, warrants); AssetClassSPV covers an LP
+	// RSUs/RSAs, warrants); AssetClassSPV covers an LP
 	// interest in a single-company special-purpose vehicle;
 	// AssetClassPrivateFund covers an LP interest in a multi-company
 	// venture/PE fund.
 	AssetClassPrivateEquity AssetClass = "private_equity"
 	AssetClassSPV           AssetClass = "spv"
 	AssetClassPrivateFund   AssetClass = "private_fund"
-	// Manual-collector private classes (hand-maintained holdings with no
+	// Further private classes (mostly manual, hand-maintained, no
 	// source UI — see collectors/manual). AssetClassRealEstate is a
 	// directly-held property. AssetClassConvertibleNote is an early-stage
-	// convertible loan / note (typically 0% interest, expected to convert to
-	// equity at the next round or be written to zero); kept distinct from the
-	// public-market `bond` and from `private_equity` until it actually
-	// converts. Other manual kinds reuse existing classes
-	// (private_equity / private_fund / spv) or fall through to `other`.
+	// convertible loan / note or SAFE (typically 0% interest, expected to
+	// convert to equity at the next round or be written to zero); kept
+	// distinct from the public-market `bond` and from `private_equity` until
+	// it converts. Emitted by the manual collector and by Carta (a
+	// pre-conversion SAFE / convertible holding). Other manual kinds reuse
+	// existing classes (private_equity / private_fund / spv) or fall through
+	// to `other`.
 	AssetClassRealEstate      AssetClass = "real_estate"
 	AssetClassConvertibleNote AssetClass = "convertible_note"
 	// AssetClassMortgage is a real-property-backed liability:

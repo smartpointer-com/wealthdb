@@ -2,22 +2,19 @@ package carta
 
 import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 
-// assetClassFor maps a carta entity to its canonical AssetClass.
-//
-// isFund discriminates the two holder families:
-//   - fund LP interest          → AssetClassPrivateFund
-//   - cap-table private equity  → AssetClassPrivateEquity
-//
-// Every cap-table security type (share, option, rsu, rsa, sar, piu,
-// equity_grant, warrant, convertible) folds into the single
-// private_equity bucket: they're all illiquid private-company
-// stakes, and separating, say, a private ESO from a private share
-// into the public-market `option` / `equity` classes would conflate
-// them with listed instruments in portfolio queries. The security
-// type stays queryable in the position payload.
-func assetClassFor(isFund bool) canonical.AssetClass {
-	if isFund {
-		return canonical.AssetClassPrivateFund
+// capTableAssetClass classifies a cap-table position from the security types it
+// aggregates. A holding that is PURELY convertible instruments (SAFEs /
+// convertible notes still pre-conversion) is a convertible_note — carried at
+// principal and kept distinct from equity until it converts, mirroring the
+// manual collector's convertible notes. Anything with real equity (shares,
+// options, RSUs/RSAs, SARs, PIUs, warrants, equity grants) — including a
+// convertible that has partly converted into shares — is private_equity: all
+// illiquid private-company stakes in one bucket, the security type staying
+// queryable in the position payload. Fund LP interests are classified
+// separately (private_fund), off the fund path.
+func capTableAssetClass(hasEquity bool) canonical.AssetClass {
+	if hasEquity {
+		return canonical.AssetClassPrivateEquity
 	}
-	return canonical.AssetClassPrivateEquity
+	return canonical.AssetClassConvertibleNote
 }

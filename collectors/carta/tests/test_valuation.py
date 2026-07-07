@@ -68,6 +68,19 @@ def test_fmv_as_of_carries_forward():
     assert load._fmv_as_of(tl, _ts("2022-06-30")) == 3.00    # latest
 
 
+def test_held_market_value_convertible_at_principal():
+    # A SAFE / convertible note carries at its principal (cost), independent of
+    # any share FMV — it has no shares until it converts.
+    note = {"cost": 100000.0}
+    assert load._held_market_value("convertible", None, None, note) == 100000.0
+    assert load._held_market_value("convertible", 0.0, 2.5, note) == 100000.0  # price ignored
+    assert load._held_market_value("convertible", None, None, {}) == 0.0       # missing cost → 0
+    # A share is quantity x FMV; every other line (options, warrants, …) is 0.
+    assert load._held_market_value("share", 100.0, 2.5, {"cost": 9}) == 250.0
+    assert load._held_market_value("share", 100.0, None, {}) == 0.0            # no FMV as-of
+    assert load._held_market_value("option", 100.0, 2.5, {}) == 0.0
+
+
 # ---- load_securities_valued: count + price move over time ------------------
 
 def _synthetic_edir(tmp_path: Path) -> Path:

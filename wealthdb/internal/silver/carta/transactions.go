@@ -55,10 +55,11 @@ func realPtr(n sql.NullFloat64) *canonical.Decimal {
 // always exactly 0. Every leg links to the company's instrument; the buy/sell
 // legs additionally carry the share lot + price.
 //
-//	exercise      deposit (+) + buy          (−)   shares acquired
-//	capital_call  deposit (+) + contribution (−)   capital into a fund
-//	exit          sell    (+) + withdrawal   (−)   shares realized
-//	distribution  distribution (+) + withdrawal (−) fund cash returned
+//	exercise             deposit (+) + buy          (−)   shares acquired
+//	convertible_purchase deposit (+) + buy          (−)   SAFE / note (no lot)
+//	capital_call         deposit (+) + contribution (−)   capital into a fund
+//	exit                 sell    (+) + withdrawal   (−)   shares realized
+//	distribution         distribution (+) + withdrawal (−) fund cash returned
 //
 // A $0 exit (no recorded proceeds — Carta purges the payout) emits the $0 sell
 // and omits the meaningless $0 withdrawal, still a net-0 event. Amounts are
@@ -126,6 +127,9 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		case "exercise":
 			emit(canonical.TxKindDeposit, false) // cash in to fund the exercise
 			emit(canonical.TxKindBuy, true)      // cash out to acquire the shares
+		case "convertible_purchase":
+			emit(canonical.TxKindDeposit, false) // cash in to fund the purchase
+			emit(canonical.TxKindBuy, false)     // cash out to acquire the SAFE / note (no share lot yet)
 		case "capital_call":
 			emit(canonical.TxKindDeposit, false)      // cash in to fund the call
 			emit(canonical.TxKindContribution, false) // capital contributed to the fund

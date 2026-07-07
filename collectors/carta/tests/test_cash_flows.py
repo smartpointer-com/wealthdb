@@ -114,6 +114,22 @@ def test_captable_exit_zero_proceeds(migrated, tmp_path):
     ).fetchone() == ("exit", "03/03/2099", 0.0, 1500.0)
 
 
+def test_captable_convertible_purchase(migrated, tmp_path):
+    # A SAFE / convertible note is a cash purchase (no shares), emitted as one
+    # `convertible_purchase` event = deposit+buy in gold, at its principal.
+    edir = _captable_edir(tmp_path)  # 2 share certs -> 2 exercises
+    (edir / "convertibles.json").write_text(json.dumps({"rows": [
+        {"id": 9, "cost": 100000.0, "issue_date": "06/30/2026", "quantity": 0},
+    ]}))
+    n = load._captable_cash_flows(migrated, 7, edir, 1_700_000_000, tmp_path)
+    assert n == 3  # 2 exercises + 1 convertible_purchase
+    assert migrated.execute(
+        "SELECT kind, flow_date, amount, shares, price_per_share, description "
+        "FROM cash_flows WHERE kind='convertible_purchase'").fetchone() == (
+        "convertible_purchase", "06/30/2026", 100000.0, None, None,
+        "SAFE / convertible purchase")
+
+
 # ---- side-loaded transactions (the final sale + withdrawals) ----------------
 
 def test_read_transactions_csv(tmp_path):

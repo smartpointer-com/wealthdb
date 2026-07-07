@@ -312,3 +312,145 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 		}
 	}
 }
+
+// TestConvertibleNotePosition verifies a purely-convertible holding (a SAFE)
+// becomes a convertible_note position carried at its principal (book == market
+// == cost, no share quantity), that BOTH the position and its instrument carry
+// that class, and that an equity holding in the same book stays private_equity.
+func TestConvertibleNotePosition(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	d := unixDate(t, "2026-06-30")
+	if _, err := db.Exec(fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload) VALUES
+    (%d, 100, 'IND1', 0, 'ACME Inc', '{}'),
+    (%d, 300, 'IND1', 0, 'SAFE Co',  '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload) VALUES
+    (%d, 100, 'share',       1, 1000,    500,   5000, 'held', '$', '{}'),
+    (%d, 300, 'convertible', 9,    0, 100000, 100000, 'held', '$', '{}');`,
+		d, d, d, d)); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	posByKey := map[string]canonical.PositionChange{}
+	instByID := map[string]canonical.InstrumentChange{}
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range b.Positions {
+			posByKey[p.PositionKey] = p
+		}
+		for _, i := range b.Instruments {
+			instByID[i.InstrumentExternalID] = i
+		}
+		if !more {
+			break
+		}
+	}
+
+	// The SAFE: convertible_note, carried at principal — book == market == cost,
+	// and no share quantity (it has no shares until it converts).
+	safe, ok := posByKey["entity:300"]
+	if !ok {
+		t.Fatal("no position for the SAFE (entity:300)")
+	}
+	if safe.AssetClass != canonical.AssetClassConvertibleNote {
+		t.Errorf("SAFE asset_class = %q, want convertible_note", safe.AssetClass)
+	}
+	if safe.BookValue == nil || safe.BookValue.StringFixed(2) != "100000.00" {
+		t.Errorf("SAFE book_value = %v, want 100000.00", safe.BookValue)
+	}
+	if safe.MarketValue == nil || safe.MarketValue.StringFixed(2) != "100000.00" {
+		t.Errorf("SAFE market_value = %v, want 100000.00", safe.MarketValue)
+	}
+	if safe.Quantity != nil {
+		t.Errorf("SAFE quantity = %v, want nil (no shares pre-conversion)", safe.Quantity)
+	}
+	if inst, ok := instByID["entity:300"]; !ok || inst.AssetClass != canonical.AssetClassConvertibleNote {
+		t.Errorf("SAFE instrument asset_class = %q (ok=%v), want convertible_note", inst.AssetClass, ok)
+	}
+	// Regression: an equity holding is unaffected by the convertible split.
+	if eq, ok := posByKey["entity:100"]; !ok || eq.AssetClass != canonical.AssetClassPrivateEquity {
+		t.Errorf("share asset_class = %q (ok=%v), want private_equity", eq.AssetClass, ok)
+	}
+}
+
+// TestConvertiblePurchasePair verifies a `convertible_purchase` cash flow
+// projects to a balanced deposit+buy pair on the funding account, where the buy
+// carries NO share lot (a SAFE has no shares yet) and the pair nets to 0.
+func TestConvertiblePurchasePair(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	d := unixDate(t, "2026-06-30")
+	if _, err := db.Exec(fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload)
+    VALUES (%d, 300, 'IND1', 0, 'SAFE Co', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload)
+    VALUES (%d, 300, 'convertible', 9, 0, 100000, 100000, 'held', '$', '{}');
+INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
+    flow_date, amount, shares, price_per_share, currency, description, payload) VALUES
+    ('convertible:300:9', '300', 1700000000, 'convertible_purchase', '06/30/2026', 100000, NULL, NULL, 'USD', 'SAFE / convertible purchase', '{}');`,
+		d, d)); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(batch.Transactions) != 2 {
+		t.Fatalf("transactions = %d, want 2 (deposit + buy)", len(batch.Transactions))
+	}
+	byID := map[string]canonical.TransactionChange{}
+	sum := canonical.NewDecimalFromInt(0)
+	for _, tx := range batch.Transactions {
+		byID[tx.TransactionExternalID] = tx
+		if tx.AccountExternalID != fundingAccountKey {
+			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		}
+		if tx.NetAmount != nil {
+			sum = sum.Add(*tx.NetAmount)
+		}
+	}
+	if !sum.IsZero() {
+		t.Errorf("convertible_purchase pair nets to %s, want 0.00", sum.StringFixed(2))
+	}
+	if dep, ok := byID["convertible:300:9:deposit"]; !ok || dep.Kind != canonical.TxKindDeposit ||
+		dep.NetAmount == nil || dep.NetAmount.StringFixed(2) != "100000.00" {
+		t.Errorf("deposit leg = %+v, want deposit +100000.00", dep)
+	}
+	buy, ok := byID["convertible:300:9:buy"]
+	if !ok || buy.Kind != canonical.TxKindBuy || buy.NetAmount == nil || buy.NetAmount.StringFixed(2) != "-100000.00" {
+		t.Errorf("buy leg = %+v, want buy -100000.00", buy)
+	}
+	// No share lot on the buy — a SAFE has no shares yet — but it still links to
+	// the company instrument.
+	if buy.Quantity != nil || buy.Price != nil {
+		t.Errorf("buy lot = %v/%v, want nil/nil (no shares pre-conversion)", buy.Quantity, buy.Price)
+	}
+	if buy.InstrumentExternalID == nil || *buy.InstrumentExternalID != "entity:300" {
+		t.Errorf("buy instrument = %v, want entity:300", buy.InstrumentExternalID)
+	}
+}
