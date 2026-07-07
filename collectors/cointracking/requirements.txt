@@ -17,6 +17,13 @@ pytest>=8,<9
 # Camoufox base image.
 duckdb>=1.0,<2
 
+# download.py zstd-compresses each CSV export as it lands
+# (trades.csv → trades.csv.zst) via collectorkit.compress, and the
+# recompress verb converts the pre-compression backlog. Self-contained
+# wheel (bundles libzstd), no system deps. load.py does NOT need it:
+# DuckDB decompresses .csv.zst natively inside read_csv_auto.
+zstandard>=0.22,<1
+
 # login.py + download.py use vanilla Playwright Firefox (headless)
 # rather than Camoufox. The Playwright Python package is already
 # installed in the base-camoufox image; the Firefox browser binary

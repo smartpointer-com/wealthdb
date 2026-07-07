@@ -142,7 +142,25 @@ pulls the complete transaction list per portfolio.
    portfolio for the balance view.
 5. Click Export → exact-text "CSV". Save the blob.
 
-Files land in `<bronze-dir>/<UTC-ts>/cu_<id>/{trades,balance,overview}.csv`.
+Files land in `<bronze-dir>/<UTC-ts>/cu_<id>/{trades,balance,overview}.csv.zst`.
+
+**Bronze compression.** Each CSV export is zstd-compressed in place as
+it lands (`collectorkit.compress.compress_file`: atomic tmp+rename,
+decompress-and-sha256-verify before the plain file is unlinked, mtime
+carried over). CSV-shaped bronze compresses to a small fraction of its
+raw size, and this collector is the only nightly-growing bronze tree,
+so at-rest weight and backup traffic shrink by roughly an order of
+magnitude. The read side is free: DuckDB's `read_csv_auto` decompresses
+`.csv.zst` (and `.csv.gz`) natively by extension, so `load` never
+materialises an uncompressed file — it only resolves the on-disk
+variant via `compress.resolve_variant` (plain `.csv` wins when both
+forms coexist). Compression failures downgrade to a warning and leave
+the plain CSV in place: every reader accepts both forms, so a
+half-adopted tree is a valid tree, not an error state. Pre-compression
+run dirs are converted by the manual `recompress` verb (thin wrapper
+over `collectorkit.recompress`, prune-grade safety envelope,
+verify-then-unlink per file, byte accounting; never scheduled) —
+after a sweep, a `load --force` rebuild must produce identical silver.
 
 **`run.json` status lifecycle.** At run-dir creation the walk writes
 `run.json` carrying `{"status": "in-progress"}` (via
@@ -237,8 +255,9 @@ from a crashed walk). The completeness predicate delegates to
 (a statusless-but-readable manifest is a pre-lifecycle complete dump).
 
 cointracking nominates an **empty `debug_subdirs`**: every file a run
-writes — `run.json` and each `cu_<id>/{trades,balance,overview}.csv` —
-is a `load` input, and the discovery harness's traces go to an external
+writes — `run.json` and each `cu_<id>/{trades,balance,overview}.csv.zst`
+(plain `.csv` in pre-compression dumps) — is a `load` input, and the
+discovery harness's traces go to an external
 `/debug` mount rather than into a run dir, so a complete dump has
 nothing prunable inside it. Only the whole-non-complete-dump category
 applies.

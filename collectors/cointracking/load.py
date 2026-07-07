@@ -2,8 +2,10 @@
 """cointracking silver loader.
 
 Reads the bronze tree under --bronze-dir (one snapshot dir per
-download run, each containing run.json + cu_<id>/trades.csv +
-cu_<id>/balance.csv) and ingests into the DuckDB silver layer:
+download run, each containing run.json + cu_<id>/trades.csv.zst +
+cu_<id>/balance.csv.zst — plain .csv in pre-compression dumps; both
+forms resolve, and DuckDB decompresses .csv.zst natively inside
+read_csv_auto) and ingests into the DuckDB silver layer:
 
   - `transactions` is fully replaced with the rows from the latest
     processed snapshot. (Every download is a complete dump; we
@@ -41,7 +43,7 @@ from pathlib import Path
 
 import duckdb
 
-from collectorkit import cli
+from collectorkit import cli, compress
 
 from binance import (
     BinanceClient, build_mapping, get_api_key, PROVIDER as PRICE_PROVIDER,
@@ -163,7 +165,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--bronze-dir", type=Path, default=Path("/data"),
         help=("Bronze tree root. Snapshots are UTC-timestamped "
-              "subdirs containing run.json + cu_<id>/{trades,balance,overview}.csv. "
+              "subdirs containing run.json + "
+              "cu_<id>/{trades,balance,overview}.csv[.zst]. "
               "Default: %(default)s."),
     )
     p.add_argument(
@@ -301,6 +304,16 @@ def ingest_portfolios_and_wallets(
     """, [snapshot_at])
 
 
+def _bronze_csv(run_dir: Path, cu_id: str, kind: str) -> Path | None:
+    """On-disk path of a portfolio's `<kind>.csv`, resolving the
+    compressed form download writes (`.csv.zst`; plain `.csv` in
+    pre-compression runs or after a compression fallback; `.csv.gz`
+    for completeness). DuckDB's read_csv_auto decompresses by file
+    extension, so the resolved path feeds straight into the staging
+    queries. None when no variant exists."""
+    return compress.resolve_variant(run_dir / f"cu_{cu_id}" / f"{kind}.csv")
+
+
 def ingest_transactions(
     conn: duckdb.DuckDBPyConnection,
     manifest: dict, run_dir: Path, snapshot_at: int,
@@ -324,8 +337,8 @@ def ingest_transactions(
     total = 0
     for portfolio in manifest["portfolios"]:
         cu_id = portfolio["id"]
-        trades_csv = run_dir / f"cu_{cu_id}" / "trades.csv"
-        if not trades_csv.is_file():
+        trades_csv = _bronze_csv(run_dir, cu_id, "trades")
+        if trades_csv is None:
             log.warning("no trades.csv for cu_%s — skipping", cu_id)
             continue
 
@@ -496,8 +509,8 @@ def ingest_portfolio_prices(
     for portfolio in manifest["portfolios"]:
         cu_id = portfolio["id"]
         portfolio_id = f"cu_{cu_id}"
-        overview_csv = run_dir / f"cu_{cu_id}" / "overview.csv"
-        if not overview_csv.is_file():
+        overview_csv = _bronze_csv(run_dir, cu_id, "overview")
+        if overview_csv is None:
             log.warning("cu_%s: no overview.csv to ingest", cu_id)
             continue
 
@@ -613,8 +626,8 @@ def reconcile_balances(
         position (warn); zero rows only in mine are fine."""
     for portfolio in manifest["portfolios"]:
         cu_id = portfolio["id"]
-        balance_csv = run_dir / f"cu_{cu_id}" / "balance.csv"
-        if not balance_csv.is_file():
+        balance_csv = _bronze_csv(run_dir, cu_id, "balance")
+        if balance_csv is None:
             log.warning("cu_%s: no balance.csv to reconcile against", cu_id)
             continue
 

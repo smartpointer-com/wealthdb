@@ -14,8 +14,9 @@ timestamped run dir under ``--bronze-dir``, ``prune`` removes:
   next ``load --force`` rebuild reflects the removal.
 
 cointracking's download writes **no** bronze-resident debug artefacts —
-only ``run.json`` and one ``cu_<id>/{trades,balance,overview}.csv`` set
-per portfolio, all of which are ``load`` inputs — so ``debug_subdirs``
+only ``run.json`` and one ``cu_<id>/{trades,balance,overview}.csv.zst``
+set per portfolio (plain ``.csv`` in pre-compression dumps), all of
+which are ``load`` inputs — so ``debug_subdirs``
 is empty and only the whole-non-complete-dump category applies. (The
 discovery harness ``explore.py`` writes traces to an external ``/debug``
 mount, never into a bronze run dir; a ``download --debug`` opt-in
@@ -36,9 +37,9 @@ An in-flight guard skips non-complete dumps written within
 a long multi-portfolio walk is protected. ``--dry-run`` prints the plan
 without removing anything. The only paths ever deleted are whole
 non-complete run dirs; complete dumps' load inputs
-(``run.json`` + ``cu_<id>/{trades,balance,overview}.csv``) and non-run
-entries at the bronze root (``known_portfolios.json``, the silver
-``cointracking.duckdb``) are never touched.
+(``run.json`` + ``cu_<id>/{trades,balance,overview}.csv[.zst]``) and
+non-run entries at the bronze root (``known_portfolios.json``, the
+silver ``cointracking.duckdb``) are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]

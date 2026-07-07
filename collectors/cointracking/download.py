@@ -24,6 +24,13 @@ the per-portfolio loop:
 
   3. Write run.json manifest under the bronze run dir.
 
+Each saved CSV export is zstd-compressed in place as it lands
+(`trades.csv` → `trades.csv.zst`, via collectorkit.compress with a
+decompress-and-verify pass before the plain file is removed).
+Compression is best-effort: on failure the plain CSV stays and the
+run still succeeds — load.py resolves either form, and DuckDB reads
+.csv.zst natively.
+
 The persistent profile dir is shared with login.py + explore.py.
 --dry-run does the navigation + portfolio discovery but skips the
 export-button clicks (no downloads fire, no bandwidth spent).
@@ -39,7 +46,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, compress
 
 log = logging.getLogger("cointracking.download")
 
@@ -262,12 +269,32 @@ def set_table_mode_extended_plus(page) -> None:
                              force=True, timeout=10_000)
 
 
+def compress_export(out_path: Path) -> Path:
+    """Compress a freshly saved CSV export in place (`trades.csv` →
+    `trades.csv.zst`), best-effort: `load` resolves either form, so a
+    compression failure (disk full, missing codec) downgrades to a
+    warning and the plain CSV stays — never a lost download. The
+    window in which the uncompressed file exists is the compression
+    itself; a crash inside it leaves a run dir whose run.json still
+    says "in-progress", which `load` skips and `prune` reclaims."""
+    try:
+        final = compress.compress_file(out_path)
+        log.info("  compressed %s → %s (%d bytes)", out_path.name,
+                 final.name, final.stat().st_size)
+        return final
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        log.warning("  could not compress %s (%s); keeping the plain CSV",
+                    out_path.name, exc)
+        return out_path
+
+
 def trigger_export(page, item_selector: str, out_path: Path,
                    dry_run: bool) -> Path | None:
     """Open the Export menu, click `item_selector`, save_as the
-    download. Returns the saved path (None on --dry-run). The
-    Export menu items are rendered into the DOM at click-time —
-    wait for the menu item to become visible before clicking it."""
+    download, compress the saved file. Returns the on-disk path
+    (None on --dry-run). The Export menu items are rendered into the
+    DOM at click-time — wait for the menu item to become visible
+    before clicking it."""
     if dry_run:
         log.info("(dry-run) would click Export → %s → save to %s",
                  item_selector, out_path)
@@ -282,7 +309,7 @@ def trigger_export(page, item_selector: str, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     download.save_as(str(out_path))
     log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
-    return out_path
+    return compress_export(out_path)
 
 
 def trigger_overview_csv_export(page, out_path: Path,
@@ -307,7 +334,7 @@ def trigger_overview_csv_export(page, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     download.save_as(str(out_path))
     log.info("  saved %s (%d bytes)", out_path.name, out_path.stat().st_size)
-    return out_path
+    return compress_export(out_path)
 
 
 def download_portfolio(page, portfolio: dict, run_dir: Path,
@@ -350,6 +377,17 @@ def download_portfolio(page, portfolio: dict, run_dir: Path,
                                 dry_run)
 
 
+def _saved_name(run_dir: Path, cu_id: str, kind: str) -> str:
+    """Run-dir-relative name of an export as it actually landed on
+    disk (`cu_<id>/trades.csv.zst` normally; `…csv` when compression
+    fell back). The loader re-resolves via compress.resolve_variant
+    rather than trusting this, but the manifest should record what
+    the run really wrote."""
+    logical = run_dir / f"cu_{cu_id}" / f"{kind}.csv"
+    actual = compress.resolve_variant(logical) or logical
+    return str(actual.relative_to(run_dir))
+
+
 def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
                    snapshot_at: int,
                    failures: list[dict] | None = None) -> None:
@@ -371,8 +409,8 @@ def write_manifest(run_dir: Path, portfolios: list[dict], ts: str,
         "portfolios": portfolios,
         "files": {
             f"cu_{p['id']}": {
-                "trades": f"cu_{p['id']}/trades.csv",
-                "balance": f"cu_{p['id']}/balance.csv",
+                kind: _saved_name(run_dir, p["id"], kind)
+                for kind in ("trades", "balance", "overview")
             }
             for p in portfolios
         },

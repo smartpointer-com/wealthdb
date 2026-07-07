@@ -116,6 +116,14 @@ case "${1:-help}" in
         shift
         exec python3 /app/prune.py "$@"
         ;;
+    recompress)
+        # One-time backlog sweep: replace plain cu_<id>/*.csv in
+        # complete dumps with verified .csv.zst twins (the form
+        # download now writes). No browser, no Xvfb. Manual only —
+        # never schedule; review --dry-run first.
+        shift
+        exec python3 /app/recompress.py "$@"
+        ;;
     fetch-prices)
         # USDT-denominated price backfill from Binance public spot
         # API. --missing for gap-fill (same set as `load --fetch-
@@ -152,8 +160,9 @@ Subcommands:
   download    Headless Firefox per-portfolio loop: trade history
               (Extended-with-additional-columns blob CSV) + balance
               by exchange CSV per portfolio. Writes a UTC-timestamped
-              bronze subdir + run.json manifest. Pass --dry-run to
-              walk the navigation without firing exports.
+              bronze subdir + run.json manifest; each CSV export is
+              zstd-compressed in place as it lands (.csv.zst). Pass
+              --dry-run to walk the navigation without firing exports.
   load        Ingest bronze snapshots into DuckDB silver: refresh
               transactions table, incremental upsert of
               positions_daily (replays from genesis; rewrites
@@ -175,6 +184,10 @@ Subcommands:
   prune       Delete non-complete dumps (crashed / in-progress) from
               the bronze tree; complete dumps and their load inputs
               are kept intact. --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain cu_<id>/*.csv inside complete dumps with
+              sha256-verified .csv.zst twins. Manual one-time sweep;
+              --dry-run prints the plan first.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

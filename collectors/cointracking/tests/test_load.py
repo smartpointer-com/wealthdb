@@ -76,6 +76,54 @@ def test_ingest_transactions(tmp_path):
     assert fee_ccy == "USD"
 
 
+def _transactions(conn) -> list[tuple]:
+    return conn.execute(
+        "SELECT * FROM transactions ORDER BY transaction_external_id"
+    ).fetchall()
+
+
+def test_ingest_transactions_compressed_converges(tmp_path):
+    # Convergence gate for bronze compression: the same bronze content
+    # as trades.csv.zst (the form download now writes, and the form
+    # the recompress sweep leaves behind) must produce silver rows
+    # identical to the plain-CSV load. DuckDB decompresses .csv.zst
+    # natively inside read_csv_auto; load.py only resolves the path.
+    from collectorkit import compress
+
+    run_plain, manifest = _seed_bronze(tmp_path / "plain")
+    conn_plain = duckdb.connect(str(tmp_path / "plain.duckdb"))
+    loader.apply_migrations(conn_plain)
+    loader.ingest_transactions(conn_plain, manifest, run_plain,
+                               snapshot_at=1705312800)
+
+    run_zst, manifest = _seed_bronze(tmp_path / "zst")
+    compress.compress_file(run_zst / f"cu_{CU}" / "trades.csv")
+    assert not (run_zst / f"cu_{CU}" / "trades.csv").exists()
+    conn_zst = duckdb.connect(str(tmp_path / "zst.duckdb"))
+    loader.apply_migrations(conn_zst)
+    n = loader.ingest_transactions(conn_zst, manifest, run_zst,
+                                   snapshot_at=1705312800)
+
+    assert n == 1
+    assert _transactions(conn_zst) == _transactions(conn_plain)
+
+
+def test_bronze_csv_resolution_prefers_plain(tmp_path):
+    # When a compressed twin and the plain original coexist (a
+    # recompress sweep interrupted between verify and unlink), the
+    # original is authoritative.
+    from collectorkit import compress
+
+    run_dir, _ = _seed_bronze(tmp_path / "bronze")
+    plain = run_dir / f"cu_{CU}" / "trades.csv"
+    compress.compress_file(plain, remove_original=False)
+    assert loader._bronze_csv(run_dir, CU, "trades") == plain
+    plain.unlink()
+    assert loader._bronze_csv(run_dir, CU, "trades") == \
+        run_dir / f"cu_{CU}" / "trades.csv.zst"
+    assert loader._bronze_csv(run_dir, CU, "overview") is None
+
+
 def _seed_run(root: Path, slug: str, status: str | None) -> Path:
     """Materialise a run dir with a run.json carrying `status`
     (omitted entirely when None) plus a cu_<id>/ so it looks real."""

@@ -46,9 +46,10 @@ Subcommands:
                       19-column trade history CSV + per-wallet balance
                       CSV via the SPA Export blob. Writes a UTC-
                       timestamped subdir + run.json manifest under the
-                      data dir ($HOST_DATA). --dry-run skips the
-                      export-button clicks for a navigation-only smoke
-                      test.
+                      data dir ($HOST_DATA); each CSV export is zstd-
+                      compressed in place as it lands (.csv.zst).
+                      --dry-run skips the export-button clicks for a
+                      navigation-only smoke test.
   load [args...]      Ingest bronze snapshots into the DuckDB silver:
                       replaces \`transactions\`, runs the aggregate-
                       then-window holdings replay, incrementally
@@ -74,10 +75,18 @@ Subcommands:
                       dumps (a crashed / in-progress walk) from the
                       data dir (\$HOST_DATA). Complete dumps and their
                       load inputs are untouched; cointracking writes no
-                      bronze-resident debug artefacts. Runs in-container
-                      (no browser). --dry-run prints the plan;
+                      bronze-resident debug artefacts. Runs host-side
+                      (no image deps). --dry-run prints the plan;
                       --min-age-hours N (default 1) protects a walk
                       still in flight.
+  recompress [args..] One-time backlog sweep: replace plain
+                      cu_<id>/*.csv inside complete dumps with
+                      sha256-verified .csv.zst twins — the form
+                      download now writes. Runs in-container (needs
+                      the zstd codec; the single-writer guard keeps it
+                      from racing a live download). Manual only, never
+                      scheduled; review --dry-run first, then verify
+                      with \`load --force\`.
   explore [args...]   Re-discovery harness for when cointracking
                       changes a selector. Launches Camoufox in the
                       container's Xvfb display and exposes a VNC port

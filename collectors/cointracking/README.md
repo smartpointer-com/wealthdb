@@ -151,8 +151,8 @@ whole run dirs that are **not complete dumps** — a walk that crashed
 before finalising (`run.json` absent, or carrying the
 `status: "in-progress"` marker it drops at run-dir creation). A finished
 dump atomically overwrites that marker with `status: "complete"`, so
-its `run.json` + `cu_<id>/{trades,balance,overview}.csv` are load inputs
-and stay untouched. cointracking writes no bronze-resident debug
+its `run.json` + `cu_<id>/{trades,balance,overview}.csv.zst` are load
+inputs and stay untouched. cointracking writes no bronze-resident debug
 artefacts (the `explore` harness records HAR/trace/click logs to an
 external `/debug` mount, never into a bronze run dir), so there is
 nothing else to reclaim — only whole crashed dumps.
@@ -179,6 +179,25 @@ touch silver — rows already loaded from it persist until the next
 The persistent scrape-union cache and the DuckDB silver both live at the
 data root alongside the run dirs; `prune` matches only `<UTC-ts>/`
 timestamp dirs, so neither is ever in scope.
+
+### Compressing the pre-compression backlog
+
+`download` zstd-compresses every CSV export as it lands, and `load`
+reads `.csv.zst` and plain `.csv` alike (DuckDB decompresses natively).
+Run dirs written before compression existed can be converted once with
+the `recompress` verb, which replaces each plain `cu_<id>/*.csv` inside
+a **complete** dump with a compressed twin — the original is unlinked
+only after the twin has been decompressed and sha256-verified against
+it, and an interrupted sweep is safe to re-run. Unlike `prune` this
+rewrites load inputs, so it is strictly manual: never schedule it,
+review the plan first, and verify afterwards with `load --force`
+(silver must come out identical).
+
+```sh
+./cointracking recompress --dry-run   # print the sweep plan, rewrite nothing
+./cointracking recompress             # convert complete dumps, with byte accounting
+./cointracking load --force           # convergence check: silver must be unchanged
+```
 
 ## Read-only
 
