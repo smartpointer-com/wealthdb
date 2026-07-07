@@ -1,7 +1,7 @@
 [project]
 name = "collectorkit"
 version = "0.1.0"
-description = "Shared utilities for wealthdb silver collectors (env/credentials, SQLite migrations, bronze artifacts, CLI helpers)."
+description = "Shared utilities for wealthdb silver collectors (env/credentials, SQLite migrations, bronze artifacts, compression, prune/recompress engines, CLI helpers)."
 requires-python = ">=3.10"
 dependencies = []
 
