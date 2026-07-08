@@ -212,33 +212,16 @@ def extract_viac(run_dir, manifest):
                                   relpath=str(f.relative_to(run_dir)))
 
 
-# docdedup outcome -> run.json documents counter. EVERY outcome code the
-# walk can produce is mapped explicitly; an unmapped code is routed to
-# `other` by _tally (never silently folded into `fetched`). `skipped`
-# (gate/dry-run) and `total` are set by the walk, not by a docdedup outcome.
-_STATUS_KEY = {
-    docdedup.LINKED: "linked",       # immutable doc: prior copy hardlinked, fetch avoided
-    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
-    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked
-    docdedup.CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh bytes kept
-    docdedup.FETCH_FAILED: "errors",  # fetch produced no file
-}
-
-
+# The run.json documents audit block (shared docdedup counters). `skipped`
+# (a doc the should_download_pdf gate declined, or a dry-run) and `total` are
+# set by the walk itself, not by a docdedup outcome, so `skipped` is a viac
+# extra bucket alongside the standard ones.
 def _empty_doc_counts() -> dict:
-    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
-            "changed": 0, "skipped": 0, "errors": 0, "other": 0}
+    return docdedup.empty_audit("skipped")
 
 
 def _tally(counts: dict, status: str) -> None:
-    bucket = _STATUS_KEY.get(status)
-    if bucket is None:
-        # An outcome code the map does not know is a programming error, not a
-        # 'fetched' document — surface it in its own bucket rather than
-        # inflate the fetch count (and warn so it is not lost).
-        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
-        bucket = "other"
-    counts[bucket] += 1
+    docdedup.tally(counts, status)
 
 
 def utc_ts() -> str:
@@ -655,13 +638,8 @@ def main(argv: list[str]) -> int:
     manifest["status"] = "complete"
     bronze_dir = args.dest / manifest["timestamp"]
     bronze.atomic_write_json(bronze_dir / "run.json", manifest)
-    d = manifest["documents"]
-    log.info(
-        "done. documents: total=%d fetched=%d linked=%d verified=%d "
-        "changed=%d skipped=%d errors=%d other=%d",
-        d["total"], d["fetched"], d["linked"], d["verified"],
-        d["changed"], d["skipped"], d["errors"], d["other"],
-    )
+    log.info("done. documents: %s",
+             docdedup.audit_summary(manifest["documents"]))
     return 0
 
 

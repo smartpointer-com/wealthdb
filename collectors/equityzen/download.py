@@ -252,35 +252,17 @@ def extract_equityzen(run_dir, manifest):
 # records a null local_path for it, exactly as before. That is not a fetch
 # failure, so it gets its own outcome and is NOT counted among `errors`.
 NO_BLOB = "no-blob"
-
-# docdedup outcome -> per-offering / top-level manifest counter (mirrors viac's
-# {total, fetched, linked, skipped} audit block). EVERY outcome code the walk
-# can produce is mapped explicitly; an unmapped/unexpected code is routed to
-# `other` by _tally (never silently folded into `fetched`).
-_STATUS_KEY = {
-    docdedup.LINKED: "linked",       # legal doc: prior copy hardlinked, fetch avoided
-    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
-    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked (disk reclaimed)
-    docdedup.CHANGED: "changed",     # fetch-verify: restated under a stable id, fresh bytes kept
-    docdedup.FETCH_FAILED: "errors",  # a real fetch failure (URL present, GET failed)
-    NO_BLOB: "no_blob",              # no downloadUrl → no blob by design (not an error)
-}
+# A document node that carries no downloadUrl is a null-blob-by-design, not a
+# fetch failure — it gets its own audit bucket via the shared docdedup counters.
+_AUDIT_EXTRA = {NO_BLOB: "no_blob"}
 
 
 def _empty_doc_counts() -> dict:
-    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
-            "changed": 0, "errors": 0, "no_blob": 0, "other": 0}
+    return docdedup.empty_audit("no_blob")
 
 
 def _tally(counts: dict, status: str) -> None:
-    bucket = _STATUS_KEY.get(status)
-    if bucket is None:
-        # An outcome code the map does not know is a programming error, not a
-        # 'fetched' document — surface it in its own bucket rather than inflate
-        # the fetch count (and warn so it is not lost).
-        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
-        bucket = "other"
-    counts[bucket] += 1
+    docdedup.tally(counts, status, extra=_AUDIT_EXTRA)
 
 
 def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
@@ -476,12 +458,8 @@ def main(argv: list[str]) -> int:
                     _tally(doc_counts, status)
                 for k in document_blobs:
                     document_blobs[k] += doc_counts[k]
-                log.info("  offering %s: documents total=%d fetched=%d linked=%d "
-                         "verified=%d changed=%d no_blob=%d errors=%d other=%d",
-                         slug, doc_counts["total"], doc_counts["fetched"],
-                         doc_counts["linked"], doc_counts["verified"],
-                         doc_counts["changed"], doc_counts["no_blob"],
-                         doc_counts["errors"], doc_counts["other"])
+                log.info("  offering %s: documents %s", slug,
+                         docdedup.audit_summary(doc_counts))
             offerings_meta.append({"slug": slug, "detail": True,
                                    "documents": doc_counts})
 
@@ -500,12 +478,7 @@ def main(argv: list[str]) -> int:
         log.info("wrote bronze to %s (%d/%d offerings with detail)",
                  run, sum(1 for o in offerings_meta if o["detail"]), len(offerings_meta))
         if args.documents:
-            log.info("documents: total=%d fetched=%d linked=%d verified=%d "
-                     "changed=%d no_blob=%d errors=%d other=%d",
-                     document_blobs["total"], document_blobs["fetched"],
-                     document_blobs["linked"], document_blobs["verified"],
-                     document_blobs["changed"], document_blobs["no_blob"],
-                     document_blobs["errors"], document_blobs["other"])
+            log.info("documents: %s", docdedup.audit_summary(document_blobs))
         return 0
 
 

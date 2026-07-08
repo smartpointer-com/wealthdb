@@ -860,7 +860,14 @@ def load_one_dump(
                 1 if run_manifest.get("dry_run") else 0,
                 1 if run_manifest.get("with_transaction_documents") else 0,
                 int(docs_counts.get("total", 0)),
-                int(docs_counts.get("fetched", 0)),
+                # "fetched" column = every doc that hit the network: a plain
+                # fetch plus both fetch-verify outcomes (verified/changed also
+                # download, then dedup or keep). Only "linked" avoids the fetch.
+                # Old dumps carry no verified/changed, so this is unchanged for
+                # them. The full per-outcome breakdown lives in `payload`.
+                int(docs_counts.get("fetched", 0))
+                + int(docs_counts.get("verified", 0))
+                + int(docs_counts.get("changed", 0)),
                 int(docs_counts.get("linked", 0)),
                 int(docs_counts.get("skipped", 0)),
                 int(docs_counts.get("errors", 0)),

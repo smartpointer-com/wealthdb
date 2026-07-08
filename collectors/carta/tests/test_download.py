@@ -386,7 +386,23 @@ def test_within_run_guard_collapses_paginated_duplicate(tmp_path):
     assert n_index == 2                          # two index rows (a duplicate)
     assert counts["total"] == 1                  # one distinct document processed
     assert counts["fetched"] == 1                # fetched exactly once
-    assert n_pdf == 2                            # on disk under both index rows
+    assert n_pdf == 1                            # one PDF on disk (both rows → one file)
+
+
+def test_within_run_guard_no_url_row_not_re_tallied(tmp_path):
+    # A no-url row recurring across index pages resolves to no_blob ONCE — the
+    # seen-by-id guard processes each logical doc a single time, so the audit is
+    # not inflated per page (no url → no file on disk either).
+    run = _new_run(tmp_path)
+    row = {"id": STMT_ID, "document_type": "Distributions"}   # no document_url
+    api = _WalkApi(pages=[{"results": [row], "has_next": True},
+                          {"results": [row], "has_next": False}], binary=BODY)
+    n_index, n_pdf, counts = download.capture_documents(
+        api, "42", run / "documents", skip=_skip(tmp_path, run), force=False)
+    assert n_index == 2
+    assert counts["total"] == 1                  # counted once despite two rows
+    assert counts["no_blob"] == 1                # not inflated to 2
+    assert n_pdf == 0
 
 
 # ============================================================

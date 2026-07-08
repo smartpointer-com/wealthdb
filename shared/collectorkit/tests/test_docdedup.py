@@ -469,3 +469,43 @@ def test_mode_for_class_mapping():
     # Unknown / None → fetch-verify (the safe default), not a bare fetch.
     assert docdedup.mode_for_class(None) == docdedup.MODE_FETCH_VERIFY
     assert docdedup.mode_for_class("nonsense") == docdedup.MODE_FETCH_VERIFY
+
+
+# ============================================================
+# shared manifest audit counters (empty_audit / tally / audit_summary)
+# ============================================================
+
+def test_empty_audit_and_tally_buckets_outcomes():
+    counts = docdedup.empty_audit()
+    assert counts == {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
+                      "changed": 0, "errors": 0, "other": 0}
+    for o in (docdedup.LINKED, docdedup.LINKED, docdedup.FETCHED,
+              docdedup.VERIFIED, docdedup.CHANGED, docdedup.FETCH_FAILED):
+        docdedup.tally(counts, o)
+    assert counts == {"total": 0, "fetched": 1, "linked": 2, "verified": 1,
+                      "changed": 1, "errors": 1, "other": 0}
+
+
+def test_empty_audit_extra_bucket_and_collector_outcome():
+    counts = docdedup.empty_audit("no_blob")
+    assert counts["no_blob"] == 0
+    docdedup.tally(counts, "no-blob", extra={"no-blob": "no_blob"})
+    assert counts["no_blob"] == 1 and counts["errors"] == 0
+
+
+def test_tally_unmapped_outcome_goes_to_other_not_fetched():
+    counts = docdedup.empty_audit()
+    docdedup.tally(counts, "totally-unexpected-code")
+    assert counts["other"] == 1 and counts["fetched"] == 0
+
+
+def test_audit_summary_orders_buckets_and_skips_non_ints():
+    counts = docdedup.empty_audit("no_blob")
+    counts["fetched"] = 3
+    counts["count_in_window"] = 5          # a collector's integer extra
+    counts["files"] = ["a", "b"]           # a non-int entry must be skipped
+    s = docdedup.audit_summary(counts)
+    assert "fetched=3" in s and "no_blob=0" in s and "count_in_window=5" in s
+    assert "files" not in s
+    # standard buckets precede the collector extra
+    assert s.index("total=") < s.index("count_in_window=")

@@ -381,8 +381,12 @@ _TAX_KEYWORDS = frozenset({"k-1", "k1", "1042", "1099", "tax"})
 # → quarterly NAV; inception-to-date contributions/distributions → fund cash
 # flows) and are restatement-prone under a stable id, so they must always be
 # fetched and byte-compared — link-mode would risk feeding a superseded NAV into
-# the silver replay. The keyword mirrors load.py's own "apital account" match, so
-# every document load.py parses lands here, never in the link set below.
+# the silver replay. This case-folded "capital account" match is a deliberate
+# SUPERSET of load.py's case-sensitive "apital account" trigger (a match there
+# implies "capital account" once lower-cased), so every document load.py parses
+# is classified fetch-verify here and can never fall into the link set below —
+# the safe direction (a stray non-parsed statement fetch-verified only costs a
+# fetch, never a stale NAV).
 _STATEMENT_KEYWORDS = frozenset({"capital account"})
 
 # link (fetch-avoidance): executed-once archival notices/reports — quarterly &
@@ -452,34 +456,17 @@ def extract_carta(run_dir: Path, manifest):
 # is not a fetch failure, so it gets its own outcome and is NOT counted among
 # `errors`.
 NO_BLOB = "no-blob"
-
-# docdedup outcome → the per-run document audit block. EVERY outcome code the
-# walk can produce is mapped explicitly; an unmapped/unexpected code is routed to
-# `other` by _tally (never silently folded into `fetched`).
-_STATUS_KEY = {
-    docdedup.LINKED: "linked",       # archival notice: prior copy hardlinked, fetch avoided
-    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
-    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked (disk reclaimed)
-    docdedup.CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh bytes kept
-    docdedup.FETCH_FAILED: "errors",  # a real fetch failure (URL present, GET failed)
-    NO_BLOB: "no_blob",              # no document_url / id → no blob by design (not an error)
-}
+# A document row with no document_url / id is a null-blob-by-design, not a fetch
+# failure — its own audit bucket via the shared docdedup counters.
+_AUDIT_EXTRA = {NO_BLOB: "no_blob"}
 
 
 def _empty_doc_counts() -> dict:
-    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
-            "changed": 0, "errors": 0, "no_blob": 0, "other": 0}
+    return docdedup.empty_audit("no_blob")
 
 
 def _tally(counts: dict, status: str) -> None:
-    bucket = _STATUS_KEY.get(status)
-    if bucket is None:
-        # An outcome code the map does not know is a programming error, not a
-        # 'fetched' document — surface it in its own bucket rather than inflate
-        # the fetch count (and warn so it is not lost).
-        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
-        bucket = "other"
-    counts[bucket] += 1
+    docdedup.tally(counts, status, extra=_AUDIT_EXTRA)
 
 
 def _fetch_document(api: Api, url: str, out: Path) -> Path | None:
@@ -535,9 +522,9 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
     """Fetch the received-documents index (all pages) and download each PDF by
     its document_url. Returns (n_index, n_pdf, doc_counts).
 
-    Two dedup layers stack here. The within-run guard (``out.exists()``)
-    collapses the same document appearing on multiple index pages in ONE run — it
-    is fetched once. The orthogonal cross-run layer is ``collectorkit.docdedup``
+    Two dedup layers stack here. The within-run guard (a ``seen`` set of doc
+    ids) collapses the same document appearing on multiple index pages in ONE
+    run — it is processed once. The orthogonal cross-run layer is ``collectorkit.docdedup``
     (via :func:`_process_document`): a document identical to a prior COMPLETE run
     is deduped — an immutable, unparsed archival notice is hardlinked in and the
     fetch avoided; a parsed statement or tax doc is always re-fetched and
@@ -565,28 +552,27 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
 
     counts = _empty_doc_counts()
     n_pdf = 0
+    seen: set[str] = set()
     for row in all_rows:
         doc_id = row.get("id") or row.get("uuid")
-        url = row.get("document_url")
         # Within-run guard: the same document can appear on multiple index
-        # pages; once its blob is on disk this run, don't re-process it
-        # (orthogonal to the cross-run docdedup layer in _process_document).
-        if url and doc_id is not None:
-            out = docs_dir / f"doc_{doc_id}.pdf"
-            if out.exists():
-                n_pdf += 1
+        # pages; process each logical doc (by id) at most once per run — so a
+        # recurring no-url or failed row is not re-tallied. Orthogonal to the
+        # cross-run docdedup layer in _process_document. A row with no id can't
+        # be keyed (rare); it passes through and resolves to no_blob.
+        key = str(doc_id) if doc_id is not None else None
+        if key is not None:
+            if key in seen:
                 continue
+            seen.add(key)
         counts["total"] += 1
         status = _process_document(skip, api, row, docs_dir, force=force)
         _tally(counts, status)
         if status in (docdedup.LINKED, docdedup.FETCHED,
                       docdedup.VERIFIED, docdedup.CHANGED):
             n_pdf += 1
-    log.info("documents: %d indexed, %d PDF(s) on disk (fetched=%d linked=%d "
-             "verified=%d changed=%d no_blob=%d errors=%d other=%d)",
-             len(all_rows), n_pdf, counts["fetched"], counts["linked"],
-             counts["verified"], counts["changed"], counts["no_blob"],
-             counts["errors"], counts["other"])
+    log.info("documents: %d indexed, %d PDF(s) on disk (%s)",
+             len(all_rows), n_pdf, docdedup.audit_summary(counts))
     return len(all_rows), n_pdf, counts
 
 

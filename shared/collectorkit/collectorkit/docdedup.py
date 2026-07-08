@@ -102,6 +102,65 @@ FETCH_FAILED = "fetch-failed"  # fetch() produced no file (error/empty)
 # is reserved for it until it exists, so nothing here looks live but unreachable.
 
 
+# ---------------------------------------------------------------------------
+# Manifest audit counters — the {total, per-outcome} block every adopter writes
+# ---------------------------------------------------------------------------
+#
+# Every collector that adopts docdedup records the same per-document audit block
+# in its run.json (mirrors viac's original {total, fetched, linked, skipped}).
+# The outcome -> bucket mapping and the zero/increment helpers are identical
+# across adopters, so they live here rather than being copied per collector.
+
+# Maps a process() outcome to its manifest bucket. A collector extends this with
+# its own PRE-fetch sentinels (e.g. a no-download-URL doc) via ``tally(extra=)``.
+OUTCOME_BUCKET = {
+    LINKED: "linked",       # link-mode: fetch avoided, prior copy hardlinked in
+    FETCHED: "fetched",     # fresh bytes fetched and kept
+    VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked
+    CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh kept
+    FETCH_FAILED: "errors",  # a real fetch failure
+}
+_BASE_BUCKETS = ("total", "fetched", "linked", "verified", "changed",
+                 "errors", "other")
+
+
+def empty_audit(*extra_buckets: str) -> dict:
+    """A zeroed manifest audit block: ``total`` + one counter per outcome bucket,
+    plus any collector-specific ``extra_buckets`` (e.g. ``"no_blob"`` for a
+    document that carried no download URL)."""
+    return {b: 0 for b in (*_BASE_BUCKETS, *extra_buckets)}
+
+
+def tally(counts: dict, outcome: str, *, extra: dict | None = None) -> None:
+    """Increment ``counts`` for one document ``outcome``.
+
+    ``extra`` maps a collector's own pre-fetch sentinel codes to their bucket
+    (e.g. ``{NO_BLOB: "no_blob"}``). An outcome the map does not know goes to
+    ``"other"`` — never silently folded into ``"fetched"`` — with a warning,
+    since an unmapped code is a programming error, not a fetched document.
+    """
+    buckets = OUTCOME_BUCKET if not extra else {**OUTCOME_BUCKET, **extra}
+    bucket = buckets.get(outcome)
+    if bucket is None:
+        log.warning("unmapped docdedup outcome %r; counting as 'other'", outcome)
+        bucket = "other"
+    counts[bucket] = counts.get(bucket, 0) + 1
+
+
+def audit_summary(counts: dict) -> str:
+    """A stable ``key=value`` one-liner over an audit block, for a log line —
+    the standard buckets first in a fixed order, then any integer collector
+    extras. Non-integer entries (e.g. a collector's list of collected filenames)
+    are skipped, so this is safe to call on a richer audit dict."""
+    order = ["total", "fetched", "linked", "verified", "changed",
+             "no_blob", "errors", "other"]
+    def _num(k):
+        return k in counts and isinstance(counts[k], int)
+    keys = [k for k in order if _num(k)]
+    keys += [k for k in counts if k not in order and _num(k)]  # collector extras
+    return " ".join(f"{k}={counts[k]}" for k in keys)
+
+
 def mode_for_class(doc_class: str | None,
                    class_modes: dict[str, str] | None = None) -> str:
     """Resolve a document class to its docdedup mode.

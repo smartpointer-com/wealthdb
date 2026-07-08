@@ -239,7 +239,7 @@ def probe_session_alive(session: requests.Session) -> bool:
 def _empty_doc_counts() -> dict[str, Any]:
     """The documents audit block. ``count_in_*`` record the index/window split;
     the rest is the per-document download-avoidance audit (collectorkit.docdedup
-    outcomes; see _STATUS_KEY / _tally). ``total`` is the count of in-window docs
+    outcomes; see _tally / docdedup.tally). ``total`` is the count of in-window docs
     routed through the engine; the rest tally how each resolved: ``fetched``
     fresh bytes kept, ``linked`` an immutable prior copy hardlinked in (fetch
     avoided), ``verified`` fetch-verify byte-identical to prior (hardlinked,
@@ -250,13 +250,7 @@ def _empty_doc_counts() -> dict[str, Any]:
         "count_in_index": 0,
         "count_in_window": 0,
         "count_outside_window": 0,
-        "total": 0,
-        "fetched": 0,
-        "linked": 0,
-        "verified": 0,
-        "changed": 0,
-        "errors": 0,
-        "other": 0,
+        **docdedup.empty_audit(),   # total + per-outcome buckets
         "unexpected_content_type": [],
         "files": [],
     }
@@ -771,27 +765,12 @@ def extract_relevate(run_dir: Path, manifest: dict | None):
         )
 
 
-# docdedup outcome -> manifest documents audit counter. EVERY outcome the walk
-# can produce is mapped explicitly; an unmapped code is routed to ``other`` by
-# _tally (never silently folded into ``fetched``). A per-document fetch that
-# produced no PDF (non-200, network error, or a non-PDF body) surfaces as
-# FETCH_FAILED and is counted under ``errors``.
-_STATUS_KEY = {
-    docdedup.LINKED: "linked",
-    docdedup.FETCHED: "fetched",
-    docdedup.VERIFIED: "verified",
-    docdedup.CHANGED: "changed",
-    docdedup.FETCH_FAILED: "errors",
-}
-
-
+# Tally a docdedup outcome into the manifest audit block (shared counters). A
+# per-document fetch that produced no PDF (non-200, network error, or a non-PDF
+# body) surfaces as FETCH_FAILED and is counted under ``errors``; an unmapped
+# outcome goes to ``other``, never silently ``fetched``.
 def _tally(counts: dict, status: str) -> None:
-    bucket = _STATUS_KEY.get(status)
-    if bucket is None:
-        logger.warning("unmapped docdedup outcome %r; counting as 'other'",
-                       status)
-        bucket = "other"
-    counts[bucket] += 1
+    docdedup.tally(counts, status)
 
 
 def fetch_documents(
@@ -887,13 +866,7 @@ def fetch_documents(
         _tally(counts, status)
         manifest.flush()
 
-    logger.info(
-        "documents: total=%d fetched=%d linked=%d verified=%d changed=%d "
-        "errors=%d other=%d",
-        counts["total"], counts["fetched"], counts["linked"],
-        counts["verified"], counts["changed"], counts["errors"],
-        counts["other"],
-    )
+    logger.info("documents: %s", docdedup.audit_summary(counts))
 
 
 # ----------------------------------------------------------------------
