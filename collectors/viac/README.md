@@ -164,9 +164,24 @@ for the shared env-file rules.
   TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE, INTEREST,
   …), which are the bulk of the archive.
 
-**Cross-run dedup** — PDFs are hard-linked from prior bronze
-runs when the document number matches, so a re-run only fetches
-genuinely-new documents.
+**Cross-run download-avoidance** — in-gate PDF fetches run through
+the shared `collectorkit.docdedup` engine, keyed by document number
+and chosen per document class:
+
+- immutable, unparsed docs (contracts, investment profiles, credit
+  notes, communications, and the per-event TRANSACTION receipts) are
+  **hard-linked** from a prior run when the document number matches —
+  the fetch is skipped (any hardlink error falls through to a real
+  fetch, so a doc degrades to a fetch, never to a miss);
+- the parsed `INVESTMENT_REPORTING` statements, every `TAX`
+  Bescheinigung, and the data-bearing `SECURITY_FUSION` PDF are
+  **fetch-verified** — always re-fetched and content-compared, so a
+  byte-identical copy is deduped to a hardlink while a re-issue under a
+  stable document number keeps its fresh bytes (never served stale);
+  an unrecognised type fetch-verifies too (the safe default).
+
+`--documents-force` bypasses the index entirely (fetch every in-gate
+PDF, no hardlink reuse) — a first-run confidence check.
 
 ## Reclaiming disk
 

@@ -16,7 +16,7 @@ conventions. This document only covers what's VIAC-specific.
 | Verb | Status |
 | --- | --- |
 | `login.py` | implemented (pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600) |
-| `download.py` | implemented (pure httpx; `--with-transaction-documents` gate; hard-link dedup across prior bronze runs; h2-stream-drop retry) |
+| `download.py` | implemented (pure httpx; `--with-transaction-documents` gate; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry) |
 | `load.py` + `migrations/0001_initial.sql` | implemented (idempotent on `dump_runs.snapshot_at`) |
 
 What's NOT implemented: PVB (Pillar-2 vested-benefits) per-
@@ -208,9 +208,34 @@ code would need to change beyond the underlying HTTP client.
   event TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE,
   INTEREST, DIVIDEND_CANCELLATION).
 
-**Cross-run dedup** — PDFs are hard-linked from prior bronze
-runs when the document number matches, so a re-run only
-fetches genuinely-new documents.
+**Cross-run download-avoidance** — in-gate PDF fetches run
+through the shared [`collectorkit.docdedup`](../../shared/collectorkit/collectorkit/docdedup.py)
+engine, keyed by document number and chosen per document class so the
+fetch-avoidance never serves a stale figure:
+
+- **link** (fetch avoided) — the executed-once, immutable, unparsed
+  documents (`CONTRACT`, `INVESTMENT_PROFILE`, `CONTRIBUTION_CREDIT_NOTE`,
+  `GENERIC_COMMUNICATION`, and the per-event `TRANSACTION` receipts
+  `TRADE_REPORT` / `FEE_CHARGE` / `INTEREST` / `DIVIDEND` /
+  `DIVIDEND_CANCELLATION`) are hard-linked from a prior complete run when
+  the document number matches, and the fetch is skipped. A hardlink error
+  falls through to a real fetch — a document degrades to a fetch, never to
+  a miss.
+- **fetch-verify** (always fetched, then content-compared) — the
+  `INVESTMENT_REPORTING` / `MANUAL_INVESTMENT_REPORTING` statements
+  `load.py` parses (§5.1), every `TAX` document (the Pillar-3a
+  Bescheinigungen), and the data-bearing `SECURITY_FUSION` PDF are always
+  re-fetched and compared against the prior copy: a byte-identical one is
+  hardlinked (disk reclaimed), a changed one keeps its fresh bytes. This is
+  the one mode correct against a silent re-issue under a stable document
+  number — a restated statement or corrected certificate is never served
+  stale into silver. Any unrecognised type fetch-verifies too (the safe
+  default).
+
+Every run dir stays self-contained (a hardlink is a real in-run file), so
+`load.py` needs no cross-run fallback. `--documents-force` bypasses the
+index entirely (fetch every in-gate PDF, no hardlink reuse) — the first-run
+confidence check.
 
 ## 5.1 Historical positions from the Reporting PDFs
 

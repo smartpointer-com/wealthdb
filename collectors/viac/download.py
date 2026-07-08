@@ -52,10 +52,28 @@ the export surfaces) and logs the plan, but persists NOTHING under
 bronze dump for load/prune to see — useful for checking that
 selectors/endpoints still match landmarks without touching bronze.
 
-PDFs are deduplicated across prior bronze runs by document number:
-if `<dest>/*/documents/<docid>.pdf` already exists, we hard-link
-it into the current run rather than re-fetching. Saves time and
-bandwidth on re-runs; the loader keys on content hash anyway.
+PDF fetches are download-avoidant via the shared
+`collectorkit.docdedup` engine, keyed by document number and chosen
+per document class so the fetch-avoidance never serves a stale figure:
+  - PARSED / restatement-prone documents — the `INVESTMENT_REPORTING`
+    period-end statements load.py parses for historical holdings, every
+    `TAX` document (the Pillar-3a `Bescheinigung` certificates), and the
+    data-bearing `SECURITY_FUSION` PDF (its old→new ISIN map is slated for
+    a parser pass) — are ALWAYS fetched and content-compared against the
+    prior copy: a byte-identical one is hardlinked (disk reclaimed), a
+    changed one keeps its fresh bytes, so a re-issued/corrected statement
+    is never missed;
+  - executed-once, immutable, unparsed documents (contracts, investment
+    profiles, credit notes, communications, and the per-event transaction
+    receipts) are HARDLINKED from a prior complete run when the document
+    number matches, and the fetch is skipped — the fetch-avoidance win at
+    zero silver-correctness risk (any hardlink error falls through to a
+    real fetch, so a document degrades to a fetch, never to a miss);
+  - any unrecognised document type is fetch-verified too (the safe
+    default).
+Every run dir stays self-contained (a hardlink is a real in-run file),
+so load.py needs no cross-run fallback. --documents-force bypasses the
+download-avoidance index entirely.
 
 Read-only — see CLAUDE.md §1. Never invokes a write-state endpoint.
 """
@@ -64,7 +82,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -72,7 +89,7 @@ from pathlib import Path
 
 import httpx
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, docdedup
 from viac_client import ViacClient
 
 log = logging.getLogger("viac.download")
@@ -97,6 +114,131 @@ PORTFOLIO_FEES_SUFFIX = "70"  # /p3a/portfolio/<num>/fees-<this>
 # --with-transaction-documents flag (PDF content not derivable
 # from the JSON API).
 ALWAYS_DOWNLOAD_TX_SUBTYPES = frozenset({"SECURITY_FUSION"})
+
+
+# --- document (type, subType) → docdedup class (link vs fetch-verify) ------
+#
+# VIAC's document index carries a (type, subType) taxonomy (see
+# migrations/0001_initial.sql):
+#   TRANSACTION      TRADE_REPORT, FEE_CHARGE, INTEREST, DIVIDEND,
+#                    DIVIDEND_CANCELLATION, SECURITY_FUSION
+#   CONTRACT         PROVISION_CONTRACT, INVESTMENT_PROFILE
+#   REPORT           INVESTMENT_REPORTING, MANUAL_INVESTMENT_REPORTING
+#   TAX              TAX_REPORT (Pillar-3a Bescheinigungen)
+#   ACCOUNT_MOVEMENT CONTRIBUTION_CREDIT_NOTE
+#   COMMUNICATION    GENERIC_COMMUNICATION
+# docdedup's fetch-avoidance mode is a property of the document CLASS, and
+# fetch-verify is the safe default: only classes that are immutable-under-
+# their-docid AND never parsed for a silver figure are opted into link-mode.
+
+# fetch-verify (always re-read + content-compare): parsed / restatement-
+# prone documents. The REPORT statements are parsed by load.py's
+# load_historical_reports_phase (pdf_parsers) for historical holdings and
+# can be re-issued under a stable documentNumber, so link-mode would risk
+# feeding a superseded figure into the positions replay — a correctness bug.
+_REPORT_SUBTYPES = frozenset({
+    "INVESTMENT_REPORTING",
+    "MANUAL_INVESTMENT_REPORTING",
+})
+# The SECURITY_FUSION PDF is data-bearing — its old→new ISIN fusion map is
+# the ONLY copy (the JSON tx carries amountInChf:0) and a parser pass is
+# planned (DESIGN.md §9) — so it is fetch-verified, never linked. Aliased to
+# the gate's always-download set on purpose: a TRANSACTION subtype worth
+# fetching because its data lives only in the PDF is by that same token one
+# to fetch-verify, not to trust a link for.
+_FUSION_SUBTYPES = ALWAYS_DOWNLOAD_TX_SUBTYPES
+
+# link (fetch-avoidance): executed-once, immutable-under-docid, NOT parsed
+# for any silver figure — an explicit allow-list, never a default. The
+# per-event TRANSACTION receipts document a single settled event and are
+# recorded in silver only by sha256 + (type, subType) metadata (DESIGN.md
+# §8), so a prior identical copy is safe to hardlink in.
+_LINK_SUBTYPES = frozenset({
+    # CONTRACT
+    "PROVISION_CONTRACT", "INVESTMENT_PROFILE",
+    # ACCOUNT_MOVEMENT
+    "CONTRIBUTION_CREDIT_NOTE",
+    # COMMUNICATION
+    "GENERIC_COMMUNICATION",
+    # per-event TRANSACTION receipts (SECURITY_FUSION handled above)
+    "TRADE_REPORT", "FEE_CHARGE", "INTEREST", "DIVIDEND",
+    "DIVIDEND_CANCELLATION",
+})
+
+
+def _document_class(doc: dict) -> str | None:
+    """Map a VIAC document-index entry to a docdedup class (mode selection).
+
+    Parsed / restatement-prone documents resolve to fetch-verify: every
+    ``TAX`` document (the Pillar-3a ``Bescheinigung`` certificates) is
+    ``tax``, and the parsed ``REPORT`` statements plus the data-bearing
+    ``SECURITY_FUSION`` PDF are ``mutable`` — both fetch-verify-dedup, so a
+    re-issue under a stable documentNumber is caught rather than served
+    stale. The executed-once, immutable, unparsed documents
+    (``_LINK_SUBTYPES``) are ``immutable`` → link-mode. Anything else is
+    left unclassified → the engine fetch-verifies it (the safe default).
+    The safe classes trigger on ``type`` as well as ``subType`` so a
+    not-yet-catalogued tax/report subtype still fetch-verifies.
+    """
+    dtype = doc.get("type")
+    subtype = doc.get("subType")
+    if dtype == "TAX":
+        return docdedup.CLASS_TAX
+    if dtype == "REPORT" or subtype in _REPORT_SUBTYPES:
+        return docdedup.CLASS_MUTABLE
+    if subtype in _FUSION_SUBTYPES:
+        return docdedup.CLASS_MUTABLE
+    if subtype in _LINK_SUBTYPES:
+        return docdedup.CLASS_IMMUTABLE
+    return None
+
+
+def extract_viac(run_dir, manifest):
+    """docdedup extract hook (disk-driven): recover each prior run's document
+    identities from its ``documents/<docid>.pdf`` files. Key = ``(docid,)``,
+    the ``documentNumber`` the file is named after — collision-free, so the
+    same logical document lands at the same path every run (this is exactly
+    the identity the old ``find_existing_pdf`` glob keyed on). No reliable
+    pre-fetch issue date drives a freshness window here, so ``doc_date`` is
+    None. Enumerating on-disk files means a key counts only while its blob
+    still exists, so a pruned bronze self-heals. ``index.json`` and any
+    non-PDF stray under ``documents/`` are ignored."""
+    docs_root = run_dir / "documents"
+    if not docs_root.is_dir():
+        return
+    for f in docs_root.iterdir():
+        if f.is_file() and not f.is_symlink() and f.suffix == ".pdf":
+            yield docdedup.DocRef(key=(f.stem,), doc_date=None,
+                                  relpath=str(f.relative_to(run_dir)))
+
+
+# docdedup outcome -> run.json documents counter. EVERY outcome code the
+# walk can produce is mapped explicitly; an unmapped code is routed to
+# `other` by _tally (never silently folded into `fetched`). `skipped`
+# (gate/dry-run) and `total` are set by the walk, not by a docdedup outcome.
+_STATUS_KEY = {
+    docdedup.LINKED: "linked",       # immutable doc: prior copy hardlinked, fetch avoided
+    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
+    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked
+    docdedup.CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh bytes kept
+    docdedup.FETCH_FAILED: "errors",  # fetch produced no file
+}
+
+
+def _empty_doc_counts() -> dict:
+    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
+            "changed": 0, "skipped": 0, "errors": 0, "other": 0}
+
+
+def _tally(counts: dict, status: str) -> None:
+    bucket = _STATUS_KEY.get(status)
+    if bucket is None:
+        # An outcome code the map does not know is a programming error, not a
+        # 'fetched' document — surface it in its own bucket rather than
+        # inflate the fetch count (and warn so it is not lost).
+        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
+        bucket = "other"
+    counts[bucket] += 1
 
 
 def utc_ts() -> str:
@@ -163,6 +305,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "FEE_CHARGE, INTEREST, DIVIDEND, "
               "DIVIDEND_CANCELLATION). ~950 PDFs at present. "
               "SECURITY_FUSION is downloaded regardless of this flag."),
+    )
+    p.add_argument(
+        "--documents-force", action="store_true",
+        help=("Bypass the document download-avoidance index: fetch every "
+              "in-gate PDF even when a byte-identical copy exists in a prior "
+              "bronze run (no hardlink reuse). Use to re-establish ground "
+              "truth or as a first-run confidence check (run once with, once "
+              "without, diff silver under `load --force`)."),
     )
     # Shared date-window contract. VIAC's REST endpoints don't take
     # a date filter (the transactions and documents-index calls
@@ -256,31 +406,17 @@ def should_download_pdf(doc: dict, with_tx: bool,
     return with_tx
 
 
-def find_existing_pdf(dest_root: Path, docid: str) -> Path | None:
-    """Look across prior bronze runs for an already-downloaded PDF."""
-    # Pattern: <dest>/<any-ts>/documents/<docid>.pdf
-    for hit in dest_root.glob(f"*/documents/{docid}.pdf"):
-        if hit.is_file():
-            return hit
-    return None
-
-
-def fetch_pdf(client: ViacClient, docid: str, target: Path,
-              dest_root: Path) -> tuple[str, int]:
-    """Download a PDF, deduplicating against prior bronze runs via
-    hard-link. Returns (status, bytes) where status is one of
-    'fetched' / 'linked' / 'skipped'."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    existing = find_existing_pdf(dest_root, docid)
-    if existing is not None:
-        try:
-            os.link(existing, target)
-            return ("linked", target.stat().st_size)
-        except OSError as e:
-            log.debug("hardlink %s → %s failed: %s; falling through to fetch.",
-                      existing, target, e)
+def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
+              skip: docdedup.SkipSet, *, force: bool = False) -> str:
+    """Fetch a document PDF into `target`, routing the download-avoidance
+    decision through the shared `collectorkit.docdedup` engine by the
+    document's class (`_document_class`): the immutable, unparsed documents
+    are hardlinked from a prior identical copy (fetch avoided), while the
+    parsed / tax / fusion documents are always fetched and content-compared
+    so a re-issue is never served stale. Any hardlink error falls through to
+    a real fetch (degrade to a fetch, never to a miss). Returns a docdedup
+    outcome code (LINKED / FETCHED / VERIFIED / CHANGED / FETCH_FAILED)."""
     path = f"/files/document/{docid}"
-    log.debug("GET %s", path)
 
     def _stream_to_disk() -> int:
         # If a prior attempt wrote a partial file, drop it — we
@@ -301,12 +437,24 @@ def fetch_pdf(client: ViacClient, docid: str, target: Path,
                     n += len(chunk)
         return n
 
-    n_bytes = with_retry(_stream_to_disk, label=f"GET {path}")
-    return ("fetched", n_bytes)
+    def _fetch() -> Path:
+        # docdedup's fetch closure: stream the blob to `target` (with the
+        # transient-error retry) and return its path. A non-transient error
+        # (non-200, exhausted retries) propagates to the walk, which tallies
+        # it as a document error — same failure semantics as before docdedup.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        log.debug("GET %s", path)
+        with_retry(_stream_to_disk, label=f"GET {path}")
+        return target
+
+    return docdedup.process(
+        skip, key=(docid,), doc_class=_document_class(doc),
+        target_dir=target.parent, stem=docid,
+        fetch=_fetch, force=force)
 
 
 def walk(client: ViacClient, dest_root: Path, *,
-         with_tx_docs: bool, dry_run: bool,
+         with_tx_docs: bool, dry_run: bool, documents_force: bool = False,
          since: date, until: date,
          documents_since: date, documents_until: date) -> dict:
     """Run the full bronze fetch. Returns the manifest.
@@ -317,7 +465,11 @@ def walk(client: ViacClient, dest_root: Path, *,
     document PDFs are filtered AT FETCH (PDF binaries are big; don't
     download what we won't insert), but transactions are written
     full and filtered AT LOAD (the REST envelope is one small JSON;
-    keeping it complete preserves bronze faithfulness)."""
+    keeping it complete preserves bronze faithfulness).
+
+    In-gate document PDFs run through the `collectorkit.docdedup`
+    download-avoidance engine (link the immutable/unparsed docs, fetch-verify
+    the parsed/tax/fusion ones); `documents_force` bypasses that index."""
     ts = utc_ts()
     bronze_dir = dest_root / ts
     if dry_run:
@@ -344,7 +496,7 @@ def walk(client: ViacClient, dest_root: Path, *,
         },
         "endpoints": [],
         "portfolios": [],
-        "documents": {"total": 0, "fetched": 0, "linked": 0, "skipped": 0},
+        "documents": _empty_doc_counts(),
     }
     # Drop an "in-progress" manifest up front; main() overwrites it with
     # the terminal status once the walk returns. A crash mid-walk leaves
@@ -402,6 +554,20 @@ def walk(client: ViacClient, dest_root: Path, *,
     log.info("document index: %d entries", len(doc_index))
     manifest["documents"]["total"] = len(doc_index)
 
+    # Download-avoidance index (documents only): rebuilt statelessly from the
+    # COMPLETE prior runs' on-disk documents/<docid>.pdf files (extract_viac),
+    # keyed (docid,). link-mode reuses an identical prior copy for the
+    # immutable/unparsed docs; fetch-verify re-reads the parsed/tax/fusion
+    # ones. The current run (still status="in-progress") is excluded, so it
+    # never seeds itself. No freshness window: extract_viac has no reliable
+    # pre-fetch doc_date, and the parsed docs are guarded by fetch-verify, not
+    # by a window. Skipped on a dry-run (which fetches nothing).
+    skip = None
+    if not dry_run:
+        skip = docdedup.SkipSet.derive(
+            dest_root, extract_viac,
+            freshness_days=None, exclude_run=bronze_dir)
+
     for doc in doc_index:
         docid = doc.get("documentNumber")
         if not docid:
@@ -415,12 +581,12 @@ def walk(client: ViacClient, dest_root: Path, *,
             continue
         target = bronze_dir / "documents" / f"{docid}.pdf"
         try:
-            status, n_bytes = fetch_pdf(client, docid, target, dest_root)
-            manifest["documents"][status] += 1
-            log.debug("doc %s: %s (%d bytes)", docid, status, n_bytes)
+            status = fetch_pdf(client, doc, docid, target, skip,
+                               force=documents_force)
+            _tally(manifest["documents"], status)
+            log.debug("doc %s: %s", docid, status)
         except Exception as e:
             log.warning("doc %s: %s", docid, e)
-            manifest["documents"].setdefault("errors", 0)
             manifest["documents"]["errors"] += 1
 
     return manifest
@@ -464,6 +630,7 @@ def main(argv: list[str]) -> int:
                 client, args.dest,
                 with_tx_docs=args.with_transaction_documents,
                 dry_run=args.dry_run,
+                documents_force=args.documents_force,
                 since=since, until=until,
                 documents_since=docs_since,
                 documents_until=docs_until,
@@ -488,12 +655,12 @@ def main(argv: list[str]) -> int:
     manifest["status"] = "complete"
     bronze_dir = args.dest / manifest["timestamp"]
     bronze.atomic_write_json(bronze_dir / "run.json", manifest)
+    d = manifest["documents"]
     log.info(
-        "done. documents: total=%d fetched=%d linked=%d skipped=%d",
-        manifest["documents"]["total"],
-        manifest["documents"]["fetched"],
-        manifest["documents"]["linked"],
-        manifest["documents"]["skipped"],
+        "done. documents: total=%d fetched=%d linked=%d verified=%d "
+        "changed=%d skipped=%d errors=%d other=%d",
+        d["total"], d["fetched"], d["linked"], d["verified"],
+        d["changed"], d["skipped"], d["errors"], d["other"],
     )
     return 0
 
