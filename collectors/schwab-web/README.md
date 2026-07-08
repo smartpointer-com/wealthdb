@@ -320,6 +320,43 @@ container), so it bypasses the single-writer safety guard and can
 reclaim disk while a `download` is mid-flight — the in-flight dump
 is protected by the age guard.
 
+## Reclaiming disk (`dedup`)
+
+Schwab re-renders a statement PDF on **every** download, so the same
+logical statement comes back with fresh bytes each run and the
+`statements/` tree grows one full copy per run (see
+[DESIGN.md §4.4](DESIGN.md)). The byte-identical `collectorkit.dedup`
+sweep can't touch these — the bytes differ. `dedup` reclaims them by
+**parse-equivalence**: it parses each statement PDF exactly as `load`
+does and, within one logical statement across runs, hardlinks every
+copy whose parsed content is identical onto the oldest copy.
+
+It is **silver-safe but lossy at the byte level** — the re-rendered
+bytes of the newer copies are discarded (the oldest copy's bytes back
+them all). This is safe because `load` never re-reads a statement PDF's
+on-disk bytes against the manifest: it keys `documents` off the manifest
+sha256, finds the PDF by filename, and re-parses whatever bytes are
+there. `run.json` is never touched, and two copies collapse only when
+they parse **identically**, so `load --force` reproduces byte-identical
+silver. Copies of one logical statement that do NOT parse alike (a
+genuine restatement, or parser nondeterminism) are reported as
+**DIVERGENT** and left entirely alone.
+
+Unlike `prune`, `dedup` needs the image's PDF parser, so it runs
+in-container like `load`. It is a deliberate manual one-off (not wired
+into orchestration): run it once after a backlog of re-downloaded
+statements has built up.
+
+```sh
+./schwab-web dedup --dry-run     # evidence report; collapses nothing
+./schwab-web dedup               # collapse the parse-equivalent copies
+```
+
+`--dry-run` prints the per-group plan, any DIVERGENT groups, and the
+reclaimable bytes; `--min-age-hours` (default 1) guards an in-flight
+download; `--sample-text-diff K` additionally shows, for K groups, that
+the raw text layers of equivalent copies differ only in render metadata.
+
 ## Relationship to schwab-api
 
 Both toolkits land into Schwab-shaped silver databases that the

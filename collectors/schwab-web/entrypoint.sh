@@ -99,6 +99,15 @@ case "${1:-help}" in
         shift
         exec python3 /app/load.py "$@"
         ;;
+    dedup)
+        # Parse-equivalence dedup of the statement bronze: collapse
+        # re-rendered statement PDFs that parse identically onto the
+        # oldest copy. Needs the image's pypdfium2 for text extraction,
+        # so it runs in-container like `load` (no browser, no Xvfb).
+        # --dry-run emits the evidence report and collapses nothing.
+        shift
+        exec python3 /app/dedup.py "$@"
+        ;;
     prune)
         # Delete debug artefacts (<run>/screenshots/) and
         # non-complete dumps from the bronze tree. No browser, no
@@ -126,6 +135,10 @@ Subcommands:
               months (override with --range; --range Last10Years
               for a full backfill). Stdin must be a TTY.
   load        Parse bronze into the silver SQLite database.
+  dedup       Collapse re-rendered statement PDFs that parse
+              identically onto the oldest copy (reclaims the
+              per-download byte churn the byte-identical sweep
+              can't). --dry-run prints the evidence report first.
   prune       Delete debug artefacts (<run>/screenshots/) and
               non-complete dumps from the bronze tree. --dry-run
               prints the plan first.

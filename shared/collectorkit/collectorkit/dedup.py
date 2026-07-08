@@ -104,6 +104,7 @@ class _FileRef:
     size: int
     ino: int
     dev: int
+    mtime_ns: int = 0
 
 
 @dataclass
@@ -171,7 +172,7 @@ def _walk_files(run_dir: Path, min_size: int):
                     st = e.stat()
                     if st.st_size >= min_size:
                         yield _FileRef(Path(e.path), st.st_size,
-                                       st.st_ino, st.st_dev)
+                                       st.st_ino, st.st_dev, st.st_mtime_ns)
             except OSError:
                 continue
 
@@ -355,6 +356,170 @@ def run(bronze_dir: Path, *, dry_run: bool, strategy: str,
               f"{prune.human_size(reclaimed)} "
               f"({n_dups} duplicate file(s), {len(groups)} group(s), "
               f"strategy={strategy})")
+    return reclaimed, n_dups
+
+
+# ---------------------------------------------------------------------------
+# Equivalence dedup — collapse files that are EQUIVALENT under an injected key
+# (not necessarily byte-identical) onto the oldest copy, reusing the same
+# safety envelope as the byte sweep above (complete + quiescent dumps, symlink
+# refusal, atomic verified replace, per-inode accounting). Only the grouping
+# and the equivalence test are supplied by the caller. Built for a
+# collector-local verb whose "same content" test is semantic rather than
+# byte-level — e.g. schwab-web, where Schwab re-renders a statement PDF on
+# every download so the bytes differ run-to-run while the PARSED statement is
+# identical. HARDLINK ONLY: the point is to drop the redundant re-rendered
+# bytes, so a copy-on-write clone (which keeps distinct storage) would defeat
+# it, and it is LOSSY at the byte level (the canonical's exact bytes replace
+# each equivalent copy) — silver-safe only because no loader re-reads the
+# on-disk bytes against the manifest (it re-parses), which the caller asserts.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EquivGroup:
+    """Files sharing a logical identity AND an equivalence key. ``canonical``
+    (the oldest / smallest-path copy) keeps its inode; every entry in ``dups``
+    is re-backed onto it by a hardlink. ``reclaim`` is the logical bytes
+    freed — the sum of each DISTINCT duplicate inode's OWN size (members are
+    only equivalence-equal, not byte-equal, so their sizes can differ)."""
+    group_id: str
+    equiv_key: str
+    canonical: _FileRef
+    dups: list[_FileRef] = field(default_factory=list)
+    reclaim: int = 0
+
+
+@dataclass
+class DivergentGroup:
+    """A logical group whose copies did NOT all share one equivalence key — a
+    genuine restatement, a parse error, or parser nondeterminism. Never
+    collapsed; surfaced so a human can investigate before trusting the sweep."""
+    group_id: str
+    members: list[tuple]   # (path_str, key | None, error_repr | None)
+
+
+def _stat_matches(ref: _FileRef) -> bool:
+    """True iff ``ref.path`` still has the (inode, size, mtime) it had at plan
+    time — a cheap drift guard closing the plan→replace window (the quiescence
+    age check is the primary guard; this is belt-and-braces)."""
+    try:
+        st = ref.path.stat()
+    except OSError:
+        return False
+    return (st.st_ino == ref.ino and st.st_size == ref.size
+            and st.st_mtime_ns == ref.mtime_ns)
+
+
+def plan_equivalence(bronze_dir, *, group_of, key_of,
+                     min_age_s, min_size=1, now=None):
+    """Plan an equivalence-dedup sweep over one collector subtree.
+
+    ``group_of(run_dir, path) -> str | None`` assigns each eligible file to a
+    logical group (``None`` → out of scope, skipped). ``key_of(path) -> str``
+    computes the equivalence key; raising is taken as a divergent member (never
+    collapsed). A group collapses only when EVERY member shares one key; then
+    the oldest (smallest-path) copy per device is the canonical and the
+    distinct-inode rest are its dups. Returns
+    ``(equiv_groups, divergent_groups, skipped)``.
+    """
+    now = time.time() if now is None else now
+    skipped: list = []
+    by_group: dict[str, list[_FileRef]] = {}
+    for run_dir in _eligible_run_dirs(bronze_dir, min_age_s, now, skipped):
+        for ref in _walk_files(run_dir, min_size):
+            gid = group_of(run_dir, ref.path)
+            if gid is not None:
+                by_group.setdefault(gid, []).append(ref)
+
+    equiv_groups: list[EquivGroup] = []
+    divergent: list[DivergentGroup] = []
+    for gid, refs in by_group.items():
+        if len(refs) < 2:
+            continue  # a lone copy can't collapse — never parsed
+        members = []
+        for r in refs:
+            try:
+                members.append((r, key_of(r.path), None))
+            except Exception as e:  # noqa: BLE001 — a parse failure ⇒ divergent
+                members.append((r, None, repr(e)))
+        keys = {k for _r, k, _e in members}
+        if len(keys) != 1 or None in keys:
+            divergent.append(DivergentGroup(
+                gid, [(str(r.path), k, e) for r, k, e in members]))
+            continue
+        equiv_key = next(iter(keys))
+        # A hardlink can't cross devices, so collapse within each device.
+        by_dev: dict[int, list[_FileRef]] = {}
+        for r, _k, _e in members:
+            by_dev.setdefault(r.dev, []).append(r)
+        for drefs in by_dev.values():
+            if len(drefs) < 2:
+                continue
+            drefs.sort(key=lambda r: str(r.path))
+            canon = drefs[0]
+            dups: list[_FileRef] = []
+            inode_size: dict[int, int] = {}
+            for r in drefs[1:]:
+                if r.ino == canon.ino:
+                    continue  # already shares the canonical inode
+                dups.append(r)
+                inode_size[r.ino] = r.size  # freed once per distinct inode
+            if dups:
+                equiv_groups.append(EquivGroup(
+                    group_id=gid, equiv_key=equiv_key, canonical=canon,
+                    dups=dups, reclaim=sum(inode_size.values())))
+    equiv_groups.sort(key=lambda g: -g.reclaim)
+    return equiv_groups, divergent, skipped
+
+
+def collapse_equiv_groups(groups, bronze_dir, *, key_of=None):
+    """Execute an equivalence-dedup plan: hardlink each dup onto its group's
+    canonical, atomically and validated. Returns ``(reclaimed, n_dups)``.
+
+    Never raises on drift — a member whose path was swapped for a symlink,
+    whose (inode, size, mtime) changed since planning, or (when ``key_of`` is
+    supplied) that no longer shares the canonical's key is SKIPPED, leaving its
+    bytes intact. Passing ``key_of`` re-verifies equivalence at the last moment
+    before the irreversible replace (belt-and-braces beyond the quiescence
+    guard) at the cost of re-computing the key."""
+    reclaimed = 0
+    n_dups = 0
+    for g in groups:
+        _validate(g.canonical.path, bronze_dir)
+        if not _stat_matches(g.canonical):
+            print(f"  ...canonical changed since planning; skipping group "
+                  f"{g.group_id}")
+            continue
+        canon_key = None
+        if key_of is not None:
+            try:
+                canon_key = key_of(g.canonical.path)
+            except Exception:  # noqa: BLE001
+                print(f"  ...canonical no longer parses; skipping group "
+                      f"{g.group_id}")
+                continue
+        freed_inodes: set[int] = set()
+        for dup in g.dups:
+            _validate(dup.path, bronze_dir)
+            if not _stat_matches(dup):
+                print(f"  ...changed since planning; skipping {dup.path.name}")
+                continue
+            if key_of is not None:
+                try:
+                    if key_of(dup.path) != canon_key:
+                        print(f"  ...no longer equivalent; skipping "
+                              f"{dup.path.name}")
+                        continue
+                except Exception:  # noqa: BLE001
+                    print(f"  ...no longer parses; skipping {dup.path.name}")
+                    continue
+            before = dup.path.stat().st_ino
+            _relink(g.canonical.path, dup.path, "hardlink")
+            if dup.path.stat().st_ino != before:
+                n_dups += 1
+                if before not in freed_inodes:
+                    freed_inodes.add(before)
+                    reclaimed += dup.size
     return reclaimed, n_dups
 
 

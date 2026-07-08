@@ -44,6 +44,13 @@ Subcommands:
                         (override with --range; --range Last10Years
                         for a full backfill). Stdin must be a TTY.
   load [args...]        Parse bronze into the silver SQLite DB.
+  dedup [args...]       One-off reclaim of the statement-PDF bloat
+                        Schwab creates by re-rendering each statement
+                        on every download: collapse copies that parse
+                        identically onto the oldest. Runs in-container
+                        (needs the PDF parser). --dry-run prints the
+                        evidence report (per-group plan + any divergent
+                        groups) and collapses nothing.
   prune [args...]       Delete debug artefacts (<run>/screenshots/,
                         written only by download --debug) and
                         non-complete dumps from the bronze tree.

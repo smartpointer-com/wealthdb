@@ -208,6 +208,30 @@ representative row per logical doc (e.g. `MIN(snapshot_at)` —
 the first time we saw the logical doc). The `transactions` table
 is clean.
 
+**Bronze-disk mitigation (`dedup` verb)**: the per-download re-render
+also means the `statements/` tree grows one full PDF copy per run, and
+the byte-identical `collectorkit.dedup` sweep can never collapse them
+(the bytes differ). The [dedup](dedup.py) verb reclaims that: it parses
+each statement PDF exactly as `load` does and, within one logical
+statement across runs, hardlinks every copy whose parsed content is
+identical onto the oldest copy. This is **silver-safe but lossy at the
+byte level** — the re-rendered bytes are discarded, the oldest copy's
+bytes back them all. It is safe precisely because of §4.4's own
+observation that nothing re-reads a statement PDF's on-disk bytes
+against the manifest: `load` keys `documents` off the manifest sha256,
+finds the PDF by filename, and re-parses whatever bytes are there,
+gating on `logical_doc_key`. `run.json` is never touched, so the
+manifest-derived rows are unchanged; and because two copies collapse
+only when they parse **identically**, `load --force` reproduces
+byte-identical silver. Copies of one logical statement that do NOT
+parse alike (a genuine restatement, or parser nondeterminism) are
+reported as **DIVERGENT** and left entirely alone — never collapsed.
+The verb needs the image's PDF parser, so it runs in-container like
+`load` (not host-side like `prune`); `--dry-run` emits the evidence
+report (per-group plan + any divergences + reclaimable bytes) and
+collapses nothing. It is a deliberate manual one-off, not wired into
+orchestration.
+
 ### 4.5 Web position snapshots are statement-cadence, not live
 
 api silver has live position snapshots per dump run. Web silver
