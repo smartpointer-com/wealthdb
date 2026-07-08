@@ -30,6 +30,20 @@ artefacts in a versioned bronze tree:
 Read-only: only GETs against `/middlelayer/v2/`. No write
 surfaces, no `/change` URLs, no mutation flags accepted.
 
+Document fetches are download-avoidant via the shared
+`collectorkit.docdedup` engine, chosen per document kind (the
+fileName-derived label load.py parses on): executed-once immutable
+kinds not parsed by load (fee statements, pension agreements/plans,
+investor profiles, account-opening docs) hardlink an identical copy
+from a prior complete run instead of re-fetching (a hardlink error
+falls through to a real fetch — never a miss); parsed / tax-adjacent
+kinds (quarterly reports, credit notes, leaving statements) and any
+unrecognised kind are always fetched and content-compared (a
+byte-identical copy is still hardlinked to reclaim disk, a re-issue
+keeps its fresh bytes). Every run dir stays self-contained (a
+hardlink is a real in-run file), so the loader needs no cross-run
+fallback. --documents-force bypasses the index entirely.
+
 Iteration-cheap flags: --mode / --skip-documents /
 --limit-portfolios / --limit-documents let one section of the
 work be re-run without paying for the others. --dry-run hits
@@ -50,10 +64,27 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
-from requests.exceptions import RequestException
+try:
+    import requests
+    from requests.exceptions import RequestException
+except ModuleNotFoundError:  # pragma: no cover
+    # The HTTP stack drives the live REST walk, not the pure-Python
+    # download-avoidance helpers (docdedup wiring, class mapping, extract
+    # hook). Guarding the import lets that logic be imported and unit-tested
+    # host-side without the collector's full container deps, the same way the
+    # browser collectors defer their heavy imports into the run path.
+    requests = None  # type: ignore[assignment]
 
-from collectorkit import cli
+    class RequestException(Exception):  # type: ignore[no-redef]
+        """Fallback so ``except RequestException`` still resolves when the real
+        ``requests`` is absent (the HTTP paths are never entered then)."""
+
+from collectorkit import cli, docdedup
+
+# doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
+# on, so the download-avoidance mode is chosen off the exact label load reads
+# figures from (a parsed kind can never be mis-linked). See _document_class.
+from load import doc_kind_from_filename
 
 BASE = "https://portal.pens-expert.ch"
 PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
@@ -205,6 +236,32 @@ def probe_session_alive(session: requests.Session) -> bool:
 # ----------------------------------------------------------------------
 
 
+def _empty_doc_counts() -> dict[str, Any]:
+    """The documents audit block. ``count_in_*`` record the index/window split;
+    the rest is the per-document download-avoidance audit (collectorkit.docdedup
+    outcomes; see _STATUS_KEY / _tally). ``total`` is the count of in-window docs
+    routed through the engine; the rest tally how each resolved: ``fetched``
+    fresh bytes kept, ``linked`` an immutable prior copy hardlinked in (fetch
+    avoided), ``verified`` fetch-verify byte-identical to prior (hardlinked,
+    disk reclaimed), ``changed`` fetch-verify re-issue (fresh bytes kept),
+    ``errors`` a per-document fetch that produced no PDF (non-200, network
+    error, or a non-PDF body), ``other`` an unmapped outcome."""
+    return {
+        "count_in_index": 0,
+        "count_in_window": 0,
+        "count_outside_window": 0,
+        "total": 0,
+        "fetched": 0,
+        "linked": 0,
+        "verified": 0,
+        "changed": 0,
+        "errors": 0,
+        "other": 0,
+        "unexpected_content_type": [],
+        "files": [],
+    }
+
+
 class Manifest:
     """
     Incremental run.json writer. Flush after every successful fetch
@@ -233,15 +290,7 @@ class Manifest:
             "state_minted_at": None,
             "windows": None,
             "accounts": [],
-            "documents": {
-                "count_in_index": 0,
-                "count_in_window": 0,
-                "count_outside_window": 0,
-                "fetched": 0,
-                "skipped": 0,
-                "unexpected_content_type": [],
-                "files": [],
-            },
+            "documents": _empty_doc_counts(),
             "errors": [],
             "files": [],
         }
@@ -615,6 +664,136 @@ def _doc_create_date(entry: dict) -> date | None:
         return None
 
 
+# --- doc_kind -> docdedup class (download-avoidance mode selection) ---------
+#
+# The mode is a property of the (collector, document-kind) pair, keyed on the
+# SAME fileName-derived kind load.py parses on (doc_kind_from_filename), so the
+# safe direction is established off exactly what reaches silver: anything load
+# parses is fetch-verified, never linked. fetch-verify is the default; a kind is
+# opted into link only when a byte-identical prior copy is safe to serve in
+# place of a fresh fetch.
+
+# fetch-verify (always re-read + content-compare): parsed and/or tax-adjacent
+# kinds. quarterly_report feeds historical_position_snapshots and credit_note
+# feeds transactions — both parsed by load.py for figures, and either can be
+# re-issued/corrected under a stable Relevate document id, so link-mode would
+# risk serving a superseded figure into silver. leaving_statement is a payout /
+# tax-adjacent statement, fetch-verified for the same reason. fetch-verify still
+# hardlinks a byte-identical prior (disk reclaimed) while always catching a
+# re-issue (CHANGED -> fresh bytes kept).
+_FETCH_VERIFY_KINDS = frozenset({
+    "quarterly_report",   # Quartalsbericht — parsed for positions + cash
+    "credit_note",        # Gutschriftsanzeige — parsed for transactions
+    "leaving_statement",  # payout, tax-adjacent
+})
+
+# link (fetch-avoidance): executed-once documents that are immutable once
+# issued and are NOT parsed by load.py, so linking a prior identical copy
+# realizes the avoidance win at zero silver-correctness risk. An explicit
+# allow-list — anything not named here (incl. the catch-all 'other') is
+# fetch-verified, never linked.
+_LINK_KINDS = frozenset({
+    "quarterly_fee",       # Gebührenabrechnung / fee statement
+    "pension_agreement",   # Vorsorgevereinbarung
+    "pension_plan",
+    "investor_profile",    # Anlegerprofil
+    "account_opening",     # Eröffnung / Eintritt
+})
+
+
+def _document_class(entry: dict) -> str | None:
+    """Map a /middlelayer/v2/documents index entry to a docdedup class.
+
+    The kind is derived from the entry's ``fileName`` by
+    ``load.doc_kind_from_filename`` — the same label load.py parses on.
+    Parsed / tax-adjacent kinds (``_FETCH_VERIFY_KINDS``) resolve to
+    ``mutable`` / ``tax`` -> fetch-verify (always fetched and content-compared,
+    so a re-issue under a stable id is never linked to a stale copy). Executed-
+    once immutable kinds (``_LINK_KINDS``, an explicit allow-list) resolve to
+    ``immutable`` -> link (hardlink the prior identical copy, skip the fetch).
+    Any other kind (incl. the ``'other'`` catch-all) is left unclassified ->
+    the engine fetch-verifies it (the safe default: always fetched, a
+    byte-identical copy still deduped).
+    """
+    kind = doc_kind_from_filename(entry.get("fileName"))
+    if kind in _FETCH_VERIFY_KINDS:
+        return docdedup.CLASS_TAX if kind == "leaving_statement" \
+            else docdedup.CLASS_MUTABLE
+    if kind in _LINK_KINDS:
+        return docdedup.CLASS_IMMUTABLE
+    return None
+
+
+def extract_relevate(run_dir: Path, manifest: dict | None):
+    """docdedup extract hook (disk-driven): recover each prior run's document
+    identities from disk.
+
+    Key = ``(doc_id,)`` — the numeric Relevate id parsed from the ``<id>.pdf``
+    filename. One file per logical document, so the same document lands at the
+    same path every run (multiplicity 1) and the key is collision-free (no size
+    guard needed). ``doc_date`` is the entry's ``createDate`` from the same
+    run's ``documents/index.json`` when parseable (it drives the freshness
+    window); ``None`` when the index is absent or the date is unparseable — a
+    ``None`` doc_date never falls inside the window. Enumerating on-disk PDFs
+    means a key counts only while its blob still exists (pruned bronze
+    self-heals); the ``<id>.unexpected.<ext>`` shells left behind for a non-PDF
+    body are skipped."""
+    docs_dir = run_dir / "documents"
+    if not docs_dir.is_dir():
+        return
+    # createDate lives in the run's own index.json, not run.json; map id -> date
+    # so a prior doc carries the pre-fetch issue date the freshness window keys
+    # on.
+    dates: dict[int, date] = {}
+    try:
+        index = json.loads(
+            (docs_dir / "index.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        index = None
+    if isinstance(index, dict):
+        for entry in index.get("documents") or []:
+            doc_id = entry.get("id")
+            if isinstance(doc_id, int) and not isinstance(doc_id, bool):
+                d = _doc_create_date(entry)
+                if d is not None:
+                    dates[doc_id] = d
+    for f in sorted(docs_dir.glob("*.pdf")):
+        if ".unexpected." in f.name or f.is_symlink() or not f.is_file():
+            continue
+        try:
+            doc_id = int(f.stem)
+        except ValueError:
+            continue
+        yield docdedup.DocRef(
+            key=(doc_id,),
+            doc_date=dates.get(doc_id),
+            relpath=str(f.relative_to(run_dir)),
+        )
+
+
+# docdedup outcome -> manifest documents audit counter. EVERY outcome the walk
+# can produce is mapped explicitly; an unmapped code is routed to ``other`` by
+# _tally (never silently folded into ``fetched``). A per-document fetch that
+# produced no PDF (non-200, network error, or a non-PDF body) surfaces as
+# FETCH_FAILED and is counted under ``errors``.
+_STATUS_KEY = {
+    docdedup.LINKED: "linked",
+    docdedup.FETCHED: "fetched",
+    docdedup.VERIFIED: "verified",
+    docdedup.CHANGED: "changed",
+    docdedup.FETCH_FAILED: "errors",
+}
+
+
+def _tally(counts: dict, status: str) -> None:
+    bucket = _STATUS_KEY.get(status)
+    if bucket is None:
+        logger.warning("unmapped docdedup outcome %r; counting as 'other'",
+                       status)
+        bucket = "other"
+    counts[bucket] += 1
+
+
 def fetch_documents(
     session: requests.Session,
     run_dir: Path,
@@ -623,6 +802,7 @@ def fetch_documents(
     limit: int | None,
     documents_since: date,
     documents_until: date,
+    force: bool = False,
 ) -> None:
     docs_dir = run_dir / "documents"
     index = get_and_save_json(
@@ -663,28 +843,57 @@ def fetch_documents(
         docs = docs[:limit]
         logger.info("--limit-documents %d", limit)
 
-    for entry in docs:
-        doc_id = entry.get("id")
-        if doc_id is None:
-            continue
-        target = docs_dir / f"{doc_id}.pdf"
-        if target.exists():
-            logger.debug("document %s already present; skipping", doc_id)
-            manifest.documents()["skipped"] += 1
-            manifest.flush()
-            continue
+    # Download-avoidance index (documents only): rebuilt statelessly from the
+    # COMPLETE prior runs' on-disk PDFs (extract_relevate), keyed (doc_id,).
+    # The current run — still status="in-progress" from the marker Manifest
+    # wrote at construction — is excluded, so it never seeds itself. link-mode
+    # hardlinks an identical prior copy for the immutable kinds; fetch-verify
+    # re-reads everything parsed / tax-adjacent / unclassified. --documents-
+    # force bypasses the index (always fetch, no hardlink reuse).
+    skip = docdedup.SkipSet.derive(
+        run_dir.parent, extract_relevate, exclude_run=run_dir)
+
+    counts = manifest.documents()
+
+    def _fetch_blob(doc_id: int, target: Path):
+        """Fetch one document blob to ``<id>.pdf`` and return that path (the
+        docdedup fetch contract), or None. A non-PDF body is saved to
+        ``<id>.unexpected.<ext>`` by get_and_save_binary and noted here, and
+        yields no PDF -> None (the engine reports FETCH_FAILED)."""
         ct = get_and_save_binary(
             session, ep_document(doc_id),
             target, manifest, relative_to=run_dir,
             expected_content_type="application/pdf",
         )
         if ct == "application/pdf":
-            manifest.documents()["fetched"] += 1
-        elif ct is not None:
-            manifest.documents()["unexpected_content_type"].append({
-                "id": doc_id, "content_type": ct,
-            })
+            return target
+        if ct is not None:
+            counts["unexpected_content_type"].append(
+                {"id": doc_id, "content_type": ct})
+        return None
+
+    for entry in docs:
+        doc_id = entry.get("id")
+        if doc_id is None:
+            continue
+        counts["total"] += 1
+        target = docs_dir / f"{doc_id}.pdf"
+        status = docdedup.process(
+            skip, key=(doc_id,), doc_class=_document_class(entry),
+            target_dir=docs_dir, stem=str(doc_id),
+            fetch=(lambda d=doc_id, t=target: _fetch_blob(d, t)),
+            force=force,
+        )
+        _tally(counts, status)
         manifest.flush()
+
+    logger.info(
+        "documents: total=%d fetched=%d linked=%d verified=%d changed=%d "
+        "errors=%d other=%d",
+        counts["total"], counts["fetched"], counts["linked"],
+        counts["verified"], counts["changed"], counts["errors"],
+        counts["other"],
+    )
 
 
 # ----------------------------------------------------------------------
@@ -836,6 +1045,7 @@ def do_download(args: argparse.Namespace) -> int:
             limit=args.limit_documents,
             documents_since=docs_since,
             documents_until=docs_until,
+            force=args.documents_force,
         )
 
     manifest.finish(status="complete")
@@ -890,6 +1100,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--skip-documents", action="store_true",
         help="Even in --mode all, skip document PDFs.",
+    )
+    p.add_argument(
+        "--documents-force", action="store_true",
+        help=(
+            "Bypass the document download-avoidance index: fetch every PDF "
+            "even when a byte-identical copy exists in a prior complete "
+            "bronze run (no hardlink reuse). Use to re-establish ground "
+            "truth or as a first-run confidence check (run once with, once "
+            "without, and diff silver under `load --force`)."
+        ),
     )
     # Shared date-window contract — collector-fleet-wide flag set.
     # relevate's /deposits endpoint takes year-granularity only; the

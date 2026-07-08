@@ -95,6 +95,7 @@ Iteration-cheap reruns of `download` for one slice:
 ./relevate download --mode portfolios --limit-portfolios 1
 ./relevate download --mode documents --limit-documents 3
 ./relevate download --skip-documents                # everything except PDFs
+./relevate download --documents-force               # re-fetch every PDF (no hardlink reuse)
 ```
 
 Date-window flags (the shared collector-fleet contract):
@@ -114,6 +115,18 @@ whose `createDate` falls outside `[--documents-since,
 --documents-until]`, and writes the full index to bronze for
 traceability. The `--year-from` / `--year-to` escape hatches remain
 for one-off year-explicit backfills.
+
+In-window PDFs are download-avoidant across runs via the shared
+`collectorkit.docdedup` engine: an executed-once immutable doc `load`
+never parses (fee statement, pension agreement/plan, investor profile,
+account-opening doc) identical to a prior complete run is hardlinked
+in instead of re-fetched; every parsed / tax-adjacent doc (quarterly
+report, credit note, leaving statement) and any unrecognised kind is
+always fetched and content-compared (a byte-identical copy is still
+hardlinked to reclaim disk, a re-issue keeps its fresh bytes). The
+mode is chosen off the same `fileName`-derived kind `load.py` parses
+on, so a parsed doc is never mis-linked. `--documents-force` bypasses
+the index for a clean-slate re-fetch.
 
 ## Layout
 

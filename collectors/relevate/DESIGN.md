@@ -387,10 +387,31 @@ browser-class consumer to Airlock:
 7. **Documents phase** (run when `--mode` ∈ `{all, documents}` and
    not `--skip-documents`):
    - `GET /middlelayer/v2/documents` → `documents/index.json`.
-   - For each `documents[].id`, `GET /middlelayer/v2/document/{id}`.
+   - Each in-window `documents[].id` is routed through the shared
+     `collectorkit.docdedup` download-avoidance engine (keyed
+     `(doc_id,)`), chosen per document kind (the `fileName`-derived
+     label `load.py` parses on, so a parsed kind is never
+     mis-linked):
+     - executed-once immutable kinds `load` never parses (fee
+       statements, pension agreements/plans, investor profiles,
+       account-opening docs) → **link**: an identical PDF from a
+       prior complete run is hardlinked into this run dir and the
+       fetch is skipped (a hardlink error falls through to a real
+       fetch — a doc degrades to a fetch, never to a miss);
+     - parsed / tax-adjacent kinds (quarterly reports, credit notes,
+       leaving statements) and any unrecognised kind → **fetch-verify**
+       (the safe default): always `GET
+       /middlelayer/v2/document/{id}`, then content-compare to the
+       prior copy — a byte-identical one is hardlinked (disk
+       reclaimed), a re-issue keeps its fresh bytes.
      `application/pdf` 200 → `documents/<id>.pdf`. Any other
-     content-type → `documents/<id>.unexpected.<ext>`. Already-
-     downloaded files are skipped (idempotent within a run).
+     content-type → `documents/<id>.unexpected.<ext>` (yields no PDF;
+     counted as a per-document error). The index is rebuilt statelessly
+     from the COMPLETE prior runs' on-disk PDFs each run; the current
+     in-progress run is excluded so it never seeds itself.
+     `--documents-force` bypasses the index (always fetch, no hardlink
+     reuse). A hardlink is a real in-run file, so each run dir stays
+     self-contained and the loader needs no cross-run fallback.
 8. Final `run.json` flush via `finish()`, which stamps the terminal
    `status`: `"complete"` for a finished walk (set even when some
    endpoints errored), `"dry-run"` for a `--dry-run` shell,
@@ -432,7 +453,10 @@ Manifest shape (as written):
   ],
   "documents": {
     "count_in_index": NN,
-    "fetched": NN, "skipped": 0,
+    "count_in_window": NN, "count_outside_window": NN,
+    "total": NN,
+    "fetched": NN, "linked": NN, "verified": NN,
+    "changed": NN, "errors": NN, "other": 0,
     "unexpected_content_type": [],
     "files": [...]
   },
@@ -447,7 +471,7 @@ Manifest shape (as written):
 download.py [--state-path PATH] [--dest DIR]
             [--dry-run]
             [--mode {all, accounts, portfolios, documents}]
-            [--skip-documents]
+            [--skip-documents] [--documents-force]
             [--since YYYY-MM-DD] [--until YYYY-MM-DD]
             [--lookback {1w,4w,3m,6m,1y,2y,5y,all}]
             [--documents-since YYYY-MM-DD]
@@ -479,12 +503,20 @@ allows running this without user prompt.
 
 - The bronze run dir is timestamped per invocation — never
   rewritten across runs.
-- Within a run, per-document fetch skips if
-  `documents/<id>.pdf` already exists (defensive against a
-  re-invocation with the same `--dest` on the same timestamp,
-  which would only happen via an explicit `--dest` override).
-- Cross-run dedup is the silver loader's job (content-hash on
-  ingest).
+- Document fetches are download-avoidant across runs via the shared
+  `collectorkit.docdedup` engine (§4.1 step 7): an immutable,
+  unparsed doc identical to a prior complete run is hardlinked in
+  (fetch skipped); everything parsed / tax-adjacent / unrecognised
+  is fetch-verified (always fetched, a byte-identical copy still
+  hardlinked to reclaim disk). The mode is chosen off the same
+  `fileName`-derived kind `load.py` parses on, so a parsed doc is
+  never mis-linked; `--documents-force` bypasses the index. The
+  freshness window (default 35 days, keyed on `createDate`) holds a
+  just-issued immutable doc out of the index so a same-period
+  correction is re-fetched rather than linked.
+- Cross-run silver dedup is still the loader's job (content-hash on
+  ingest); the download-time hardlinking is a bronze-side disk +
+  fetch-avoidance win that leaves each run dir self-contained.
 
 ### 4.4 Errors + retry policy
 
