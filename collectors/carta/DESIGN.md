@@ -271,6 +271,23 @@ snake_case and differ from the public `/v1alpha1/` map of §2 — follow the
   distribution activity notices**. Prefer the structured index for idempotent
   per-doc capture; the bulk ZIP is a convenience fallback.
 
+  **Download-avoidance (`collectorkit.docdedup`).** Two orthogonal layers cover
+  the per-PDF fetch. The within-run guard fetches each `document_url` once even
+  when it recurs across index pages. The cross-run layer classifies each row by
+  `document_type` (case-folded substring, fetch-verify-first): a capital-account
+  statement (parsed by `load`) or a tax document (K-1 / 1042-S / 1099) is
+  restatement-prone under its stable doc id, so it is **always** re-fetched and
+  byte-compared — an unchanged copy is hardlinked to reclaim disk, a re-issue
+  keeps its fresh bytes; an executed-once archival notice/report (quarterly &
+  annual financials, capital-call & distribution notices) is immutable and
+  unparsed, so an identical copy from a prior complete run is **hardlinked in**
+  and the fetch skipped (any hardlink error falls through to a real fetch); any
+  other/unknown `document_type` is fetch-verified (the safe default). Because the
+  statement keyword mirrors `load`'s own `apital account` match, nothing `load`
+  parses can ever fall to link-mode. A hardlink is a real in-run file, so run
+  dirs stay self-contained and the loader is unchanged; `--documents-force`
+  bypasses the cross-run index (re-fetch everything).
+
 **Implication:** the "worst case, just scrape the PDFs" fallback is *not*
 needed for the numbers — holdings, grants, vesting, exercises, cap calls,
 and fund metrics are all clean JSON. PDFs (K-1 / statements / financials)

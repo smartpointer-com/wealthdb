@@ -32,6 +32,29 @@ quarterly financials, capital-call / distribution notices):
   * each row's document_url GET → JSON { url: signed-CDN }; that url GET →
     the PDF bytes, saved by document id.
 
+  Document fetches carry two orthogonal dedup layers. The within-run guard
+  (a doc already on disk this run is not re-fetched) collapses the same PDF
+  appearing on multiple index pages. The cross-run layer is the shared
+  ``collectorkit.docdedup`` engine, chosen per document class:
+    - parsed / restatement-prone documents — capital-account statements (load.py
+      parses their NAV + inception-to-date flows) and tax documents (K-1, 1042-S)
+      — can be re-issued/corrected under a stable Carta doc id, so they are
+      ALWAYS fetched and content-compared against the prior copy: an unchanged
+      (byte-identical) one is hardlinked (disk reclaimed), a changed one keeps
+      its fresh bytes (a re-issue is never missed). This is the correctness-safe
+      default for anything load.py reads for figures;
+    - executed-once archival notices/reports — quarterly & annual financials,
+      capital-call and distribution notices — are immutable under their doc id
+      and are not parsed, so an identical copy from a prior complete run is
+      HARDLINKED into the new run dir and the fetch is skipped (any hardlink
+      error falls through to a real fetch — a document degrades to a fetch,
+      never to a miss);
+    - any other / unrecognised document_type is fetch-verified too (the safe
+      default — always fetched, a byte-identical copy still deduped).
+  Every run dir stays self-contained (a hardlink is a real in-run file), so the
+  loader needs no cross-run fallback. --documents-force bypasses the cross-run
+  index entirely.
+
 Output layout (collectorkit.bronze; ids appear only in the gitignored
 bronze tree, never the repo):
 
@@ -69,7 +92,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli
+from collectorkit import cli, docdedup
 
 log = logging.getLogger("carta.download")
 
@@ -335,10 +358,191 @@ def capture_fund(api: Api, iid: str, entity_id: str, edir: Path) -> None:
 # Documents
 # --------------------------------------------------------------------------
 
-def capture_documents(api: Api, iid: str, docs_dir: Path) -> tuple[int, int]:
+# --- document_type → docdedup class (mode selection) ----------------------
+#
+# Carta's `document_type` is a free-text source label (e.g. 'Tax - Schedule
+# K-1', 'Capital account statement', 'Annual and quarterly report',
+# 'Distributions'), not a pinned enum, so the class is chosen by case-folded
+# substring — the same matching load.py already uses to find the statements it
+# parses ("apital account"). Matching is fetch-verify-first: a document is only
+# ever routed to link-mode once it is BOTH unparsed AND immutable under its id.
+#
+# The observed inventory (DESIGN.md §3): K-1, 1042-S, capital-account
+# statements, quarterly/annual (unaudited) financials, capital-call &
+# distribution activity notices.
+
+# fetch-verify (always re-read + content-compare). TAX documents — K-1, 1042-S,
+# 1099, and the generic Tax category — can be re-issued / corrected under a
+# stable Carta doc id, so link-mode would risk serving a superseded copy;
+# ALWAYS fetched (a byte-identical one is still hardlinked to reclaim disk).
+_TAX_KEYWORDS = frozenset({"k-1", "k1", "1042", "1099", "tax"})
+
+# fetch-verify. Capital-account statements are PARSED by load.py (ending balance
+# → quarterly NAV; inception-to-date contributions/distributions → fund cash
+# flows) and are restatement-prone under a stable id, so they must always be
+# fetched and byte-compared — link-mode would risk feeding a superseded NAV into
+# the silver replay. The keyword mirrors load.py's own "apital account" match, so
+# every document load.py parses lands here, never in the link set below.
+_STATEMENT_KEYWORDS = frozenset({"capital account"})
+
+# link (fetch-avoidance): executed-once archival notices/reports — quarterly &
+# annual financials, capital-call notices, distribution notices — immutable once
+# issued under their doc id and NOT parsed by load.py for any figure (fund calls
+# / distributions are differenced from the statements above, never these
+# notices). An identical copy from a prior complete run is hardlinked in and the
+# fetch skipped; any hardlink error falls through to a real fetch.
+_LINK_KEYWORDS = frozenset({
+    "capital call", "distribution", "quarterly", "annual", "financial",
+})
+
+
+def _document_class(doc: dict) -> str | None:
+    """Map a received-document index row to a docdedup class (mode selection).
+
+    Chosen by case-folded substring on `document_type`, fetch-verify-first so a
+    parsed or tax document can never fall through to link-mode:
+
+      * a TAX document (``_TAX_KEYWORDS``) → `tax` → fetch-verify (a corrected /
+        re-issued form under a stable id is caught, never linked stale);
+      * a capital-account STATEMENT (``_STATEMENT_KEYWORDS`` — the figures load.py
+        parses) → `mutable` → fetch-verify (a restatement is never missed);
+      * an executed-once archival notice/report (``_LINK_KEYWORDS``: quarterly /
+        annual financials, capital-call & distribution notices) → `immutable` →
+        link-mode (hardlink the prior identical copy, skip the fetch) — safe
+        because these are immutable under their id and never parsed;
+      * anything else / an absent type → unclassified → fetch-verify (the safe
+        default: always fetched, a byte-identical copy still deduped).
+    """
+    dtype = (doc.get("document_type") or "").lower()
+    if not dtype:
+        return None
+    if any(k in dtype for k in _TAX_KEYWORDS):
+        return docdedup.CLASS_TAX
+    if any(k in dtype for k in _STATEMENT_KEYWORDS):
+        return docdedup.CLASS_MUTABLE
+    if any(k in dtype for k in _LINK_KEYWORDS):
+        return docdedup.CLASS_IMMUTABLE
+    return None
+
+
+def extract_carta(run_dir: Path, manifest):
+    """docdedup extract hook (disk-driven): recover a prior run's document
+    identities from disk. Key = ``(doc_id,)`` parsed from each ``doc_<id>.pdf``
+    filename — the same surrogate id capture writes and the loader recomputes, so
+    the same logical document lands at the same path every run (multiplicity 1).
+    No reliable pre-fetch issue date exists on disk (document_date lives in
+    index.json, not the filename), so doc_date is None and the freshness window
+    does not apply. Enumerating on-disk files means a key naturally counts only
+    while its blob still exists (pruned bronze self-heals)."""
+    docs_dir = run_dir / "documents"
+    if not docs_dir.is_dir():
+        return
+    for f in docs_dir.glob("doc_*.pdf"):
+        if not f.is_file() or f.is_symlink():
+            continue
+        doc_id = f.stem[len("doc_"):]
+        if not doc_id:
+            continue
+        yield docdedup.DocRef(key=(doc_id,), doc_date=None,
+                              relpath=str(f.relative_to(run_dir)))
+
+
+# A received-document row with no document_url or no id was never going to yield
+# a blob BY DESIGN — the loader records nothing for it, exactly as before. That
+# is not a fetch failure, so it gets its own outcome and is NOT counted among
+# `errors`.
+NO_BLOB = "no-blob"
+
+# docdedup outcome → the per-run document audit block. EVERY outcome code the
+# walk can produce is mapped explicitly; an unmapped/unexpected code is routed to
+# `other` by _tally (never silently folded into `fetched`).
+_STATUS_KEY = {
+    docdedup.LINKED: "linked",       # archival notice: prior copy hardlinked, fetch avoided
+    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
+    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked (disk reclaimed)
+    docdedup.CHANGED: "changed",     # fetch-verify: re-issued under a stable id, fresh bytes kept
+    docdedup.FETCH_FAILED: "errors",  # a real fetch failure (URL present, GET failed)
+    NO_BLOB: "no_blob",              # no document_url / id → no blob by design (not an error)
+}
+
+
+def _empty_doc_counts() -> dict:
+    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
+            "changed": 0, "errors": 0, "no_blob": 0, "other": 0}
+
+
+def _tally(counts: dict, status: str) -> None:
+    bucket = _STATUS_KEY.get(status)
+    if bucket is None:
+        # An outcome code the map does not know is a programming error, not a
+        # 'fetched' document — surface it in its own bucket rather than inflate
+        # the fetch count (and warn so it is not lost).
+        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
+        bucket = "other"
+    counts[bucket] += 1
+
+
+def _fetch_document(api: Api, url: str, out: Path) -> Path | None:
+    """Follow a document_url envelope to its signed CDN url and write the PDF
+    bytes to `out`. Returns `out` on success, or None on any failure (no signed
+    url in the envelope, an empty body, or a JSON/HTML error page in place of the
+    binary) — which docdedup treats as a fetch failure. document_url returns a
+    JSON envelope { "url": <signed CDN url> }, NOT the PDF bytes, so it is
+    followed to documents.carta.com for the binary."""
+    _, env = api.get(url)
+    signed = env.get("url") if isinstance(env, dict) else None
+    if not signed:
+        log.warning("doc fetch: no signed url in envelope for %s", _short(url))
+        return None
+    _, data = api.get(signed, expect="bytes")
+    if not data or data[:1] in (b"{", b"<"):   # guard vs JSON/HTML error
+        log.warning("doc fetch: signed-url body empty / not a binary for %s",
+                    _short(url))
+        return None
+    write_bytes(out, data)
+    return out
+
+
+def _process_document(skip, api: Api, row: dict, docs_dir: Path, *,
+                      force: bool) -> str:
+    """Decide + execute one received-document's cross-run download-avoidance
+    outcome, returning a status code for :func:`_tally`.
+
+    A row with no document_url or no id was never going to yield a blob, so it
+    returns :data:`NO_BLOB` (a null-blob-by-design, NOT a fetch failure) without
+    touching the fetch/dedup path. Otherwise it dispatches to
+    :func:`docdedup.process` by the document's class: link-mode for the
+    executed-once archival notices, fetch-verify for the parsed statements / tax
+    docs / unknown types. ``force`` bypasses the cross-run index. The fetch
+    closure is :func:`_fetch_document`, so any hardlink failure falls straight
+    through to a real fetch."""
+    url = row.get("document_url")
+    doc_id = row.get("id") or row.get("uuid")
+    if not url or doc_id is None:
+        return NO_BLOB
+    doc_id = str(doc_id)
+    if not url.startswith("http"):
+        url = APP + url if url.startswith("/") else f"{APP}/{url}"
+    out = docs_dir / f"doc_{doc_id}.pdf"
+    return docdedup.process(
+        skip, key=(doc_id,), doc_class=_document_class(row),
+        target_dir=docs_dir, stem=f"doc_{doc_id}",
+        fetch=(lambda: _fetch_document(api, url, out)), force=force)
+
+
+def capture_documents(api: Api, iid: str, docs_dir: Path, *,
+                      skip, force: bool) -> tuple[int, int, dict]:
     """Fetch the received-documents index (all pages) and download each PDF by
-    its document_url. Returns (n_index, n_pdf). Idempotent within a run:
-    a PDF already on disk is not re-fetched."""
+    its document_url. Returns (n_index, n_pdf, doc_counts).
+
+    Two dedup layers stack here. The within-run guard (``out.exists()``)
+    collapses the same document appearing on multiple index pages in ONE run — it
+    is fetched once. The orthogonal cross-run layer is ``collectorkit.docdedup``
+    (via :func:`_process_document`): a document identical to a prior COMPLETE run
+    is deduped — an immutable, unparsed archival notice is hardlinked in and the
+    fetch avoided; a parsed statement or tax doc is always re-fetched and
+    byte-compared, so a re-issue is never missed. ``force`` bypasses the
+    cross-run index. ``doc_counts`` is the per-outcome audit block."""
     all_rows: list[dict] = []
     page_no = 1
     while True:
@@ -359,33 +563,31 @@ def capture_documents(api: Api, iid: str, docs_dir: Path) -> tuple[int, int]:
     write_json(docs_dir / "index.json",
                {"count": len(all_rows), "results": all_rows})
 
+    counts = _empty_doc_counts()
     n_pdf = 0
     for row in all_rows:
-        url = row.get("document_url")
         doc_id = row.get("id") or row.get("uuid")
-        if not url or doc_id is None:
-            continue
-        if not url.startswith("http"):
-            url = APP + url if url.startswith("/") else f"{APP}/{url}"
-        out = docs_dir / f"doc_{doc_id}.pdf"
-        if out.exists():
+        url = row.get("document_url")
+        # Within-run guard: the same document can appear on multiple index
+        # pages; once its blob is on disk this run, don't re-process it
+        # (orthogonal to the cross-run docdedup layer in _process_document).
+        if url and doc_id is not None:
+            out = docs_dir / f"doc_{doc_id}.pdf"
+            if out.exists():
+                n_pdf += 1
+                continue
+        counts["total"] += 1
+        status = _process_document(skip, api, row, docs_dir, force=force)
+        _tally(counts, status)
+        if status in (docdedup.LINKED, docdedup.FETCHED,
+                      docdedup.VERIFIED, docdedup.CHANGED):
             n_pdf += 1
-            continue
-        # document_url returns a JSON envelope { "url": <signed CDN url> },
-        # NOT the PDF bytes — follow it to documents.carta.com for the binary.
-        _, env = api.get(url)
-        signed = env.get("url") if isinstance(env, dict) else None
-        if not signed:
-            log.warning("doc %s: no signed url in envelope; skipping", doc_id)
-            continue
-        _, data = api.get(signed, expect="bytes")
-        if data and data[:1] not in (b"{", b"<"):   # guard vs JSON/HTML error
-            write_bytes(out, data)
-            n_pdf += 1
-        else:
-            log.warning("doc %s: signed-url fetch empty / not a binary", doc_id)
-    log.info("documents: %d indexed, %d PDF(s) on disk", len(all_rows), n_pdf)
-    return len(all_rows), n_pdf
+    log.info("documents: %d indexed, %d PDF(s) on disk (fetched=%d linked=%d "
+             "verified=%d changed=%d no_blob=%d errors=%d other=%d)",
+             len(all_rows), n_pdf, counts["fetched"], counts["linked"],
+             counts["verified"], counts["changed"], counts["no_blob"],
+             counts["errors"], counts["other"])
+    return len(all_rows), n_pdf, counts
 
 
 # --------------------------------------------------------------------------
@@ -438,7 +640,19 @@ def run(context, args, run_dir: Path, snapshot_at: int) -> int:
         else:
             capture_captable_summary(api, firm_id, str(corp_id), edir)
 
-    n_docs, n_pdf = capture_documents(api, iid, run_dir / "documents")
+    # Cross-run document download-avoidance index: rebuilt statelessly from the
+    # COMPLETE prior runs' on-disk PDFs (extract_carta), keyed (doc_id,). Built
+    # AFTER main() dropped this run's in-progress marker and excluding this run,
+    # so the in-flight dump never seeds itself. link-mode reuses an identical
+    # prior copy for immutable archival notices; fetch-verify re-reads statements
+    # / tax / unknown docs. See _document_class. --documents-force bypasses it.
+    skip = docdedup.SkipSet.derive(
+        run_dir.parent, extract_carta,
+        freshness_days=None,   # no reliable pre-fetch doc_date (extract_carta)
+        exclude_run=run_dir)
+    n_docs, n_pdf, doc_counts = capture_documents(
+        api, iid, run_dir / "documents",
+        skip=skip, force=args.documents_force)
 
     write_json(run_dir / "run.json", {
         "schema": 1,
@@ -459,11 +673,15 @@ def run(context, args, run_dir: Path, snapshot_at: int) -> int:
              "entity_type": e.get("entity_type")}
             for e in investments
         ],
-        "documents": {"indexed": n_docs, "pdf_on_disk": n_pdf},
+        # `indexed`/`pdf_on_disk` are the historical counts (load.py reads
+        # `indexed`); the merged docdedup audit block adds the per-outcome
+        # breakdown (total/fetched/linked/verified/changed/errors/no_blob/other).
+        "documents": {"indexed": n_docs, "pdf_on_disk": n_pdf, **doc_counts},
         "errors": api.errors,
     })
-    log.info("done → %s (%d entit(ies), %d doc(s), %d endpoint error(s))",
-             run_dir, len(investments), n_docs, len(api.errors))
+    log.info("done → %s (%d entit(ies), %d doc(s) indexed, %d PDF(s) on disk, "
+             "%d endpoint error(s))",
+             run_dir, len(investments), n_docs, n_pdf, len(api.errors))
     return 0
 
 
@@ -485,6 +703,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--dry-run", action="store_true",
         help=("Bootstrap + list investments only; write just run_dir/bootstrap "
               "and log the work-list. No holdings/fund/document fetch."),
+    )
+    p.add_argument(
+        "--documents-force", action="store_true",
+        help=("Bypass the cross-run document download-avoidance index: fetch "
+              "every PDF even when a byte-identical copy exists in a prior "
+              "bronze run (no hardlink reuse). Documents are always captured; "
+              "this only forces re-fetch. Use to re-establish ground truth or "
+              "as a first-run confidence check (run once with, once without, "
+              "then diff silver under `load --force`)."),
     )
     p.add_argument(
         "--debug", action="store_true",
