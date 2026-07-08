@@ -3,6 +3,7 @@
 #
 # usage:
 #   wealthdb-collect <source> <login|download|load|prune> [flags]
+#   wealthdb-collect dedup [--data-dir <root>] [--source <name>]
 #   wealthdb-collect list
 #
 # subcommands:
@@ -12,6 +13,13 @@
 #   prune      reclaim bronze disk: delete debug artefacts from complete
 #              dumps + whole non-complete (crashed/dry-run) dumps. Never
 #              touches a load input. Preview with --dry-run.
+#   dedup      (top-level, no source) reclaim disk by sharing byte-identical
+#              files across dumps — hardlink by default (portable across any
+#              hard-link filesystem), --strategy clone for copy-on-write
+#              reflinks where supported. Complete, quiescent dumps only;
+#              transparent to load. A manual one-off sweep, never scheduled.
+#              Sweeps every collector subtree under --data-dir (or one
+#              --source). Preview with --dry-run.
 #   list       list the sources you can collect from
 #
 # flags:
@@ -69,6 +77,16 @@ case "${1:-}" in
     list)
         list_collectors
         exit 0
+        ;;
+    dedup)
+        # Host-side sweep over every collector subtree. collectorkit lives at
+        # $REPO/shared/collectorkit; expose it on PYTHONPATH so host python3
+        # finds it with no install step (mirrors the wrappers' host-side
+        # prune invocation). The clone/hardlink operations act on the host
+        # filesystem, so this sweep never runs in a container.
+        shift
+        exec env PYTHONPATH="$REPO/shared/collectorkit:${PYTHONPATH:-}" \
+            python3 -m collectorkit.dedup "$@"
         ;;
 esac
 
