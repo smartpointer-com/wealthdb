@@ -69,7 +69,8 @@ subcommands:
   init                  initialise an empty gold DB at the configured gold_db path
   load <id> | -a        merge new silver snapshots into gold
   reset <id> | -a       purge a silver source's data from gold
-  reload <id> | -a      reset then load (use after upgrading wealthdb)
+  reload <id> | -a      reset then load (use after upgrading wealthdb; -a builds a fresh, compact file)
+  compact [--dry-run]   rewrite the gold DB into a fresh file to reclaim dead space
   holdings <view>       point-in-time portfolio views: positions, accounts, portfolios, sources, global
   returns <view>        TWR / MWR returns: accounts, portfolios, sources, global ('wealthdb returns <view> -h')
   transactions [flags]  print transactions over a date range (default past 30 days, oldest first)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	_ "modernc.org/sqlite"
 )
 

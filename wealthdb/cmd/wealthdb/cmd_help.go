@@ -19,6 +19,8 @@ var helpText = map[string]string{
 	"init":         "Initialise an empty gold DB at the configured gold_db path.",
 	"load":         "Merge new silver snapshots into gold (one source, or -a for all).",
 	"reset":        "Purge a silver source's data from gold (one source, or -a for all).",
+	"reload":       "Reset then load (one source, or -a for all; -a builds a fresh, compact gold file and swaps it in).",
+	"compact":      "Rewrite the gold DB into a fresh file to reclaim dead space (concurrent readers keep the old file until they close).",
 	"holdings":     "Point-in-time portfolio views: positions, accounts, portfolios, sources, global ('wealthdb holdings <view> -h').",
 	"returns":      "Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by accounts, portfolios, sources, global ('wealthdb returns <view> -h').",
 	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
