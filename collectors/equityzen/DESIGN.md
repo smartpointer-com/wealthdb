@@ -221,7 +221,47 @@ recorded so they are not re-litigated:
 - **Documents (optional, `--documents`)** — fetches each offering's document
   PDF blobs (capital-account statements, K-1s, …) via
   `node.documents[].downloadUrl` through the authenticated request API into
-  `documents/<deal-slug>/<doc-slug>.pdf`; load.py parses them (§5).
+  `documents/<deal-slug>/<doc-slug>.pdf`; load.py parses them (§5). Fetches are
+  download-avoidant via the shared `collectorkit.docdedup` engine, chosen per
+  **document class** (keyed `(deal-slug, doc-slug)`) — mode is a property of the
+  document *type*, not the collector:
+  - **fetch-verify** the parsed / restatement-prone classes —
+    `CAPITAL_ACCOUNT_STATEMENT`, `K1`, `QUARTERLY_REPORT`,
+    `ANNUAL_FINANCIAL_STATEMENTS`. These are parsed for figures and/or can be
+    **restated/corrected under a stable Relay `doc.id`** (Relay ids are entity
+    ids, not content-addressed), so they are **always fetched and
+    content-compared** against the prior copy: byte-identical → hardlinked to
+    reclaim disk, changed → the fresh bytes kept (a restatement is never
+    missed). Link-mode here would serve a stale figure into the NAV / positions
+    replay — a correctness bug, which is why link is *not* used for these.
+  - **link** the executed-once legal / offering classes — `SUB_AGT`,
+    `COUNTERSIGN_SUB_AGT`, `SERIES_SCHEDULE`, `SUITABILITY`, `SUMMARY_SHEET`,
+    `TERMSHEET`, `OFFERING_DOC`, `FUND_W_9`, `W_8`. These are immutable once
+    signed/issued and are **not parsed by load.py**, so an identical prior copy
+    is **hardlinked** in and the fetch skipped (any hardlink error falls through
+    to a real fetch), realizing the fetch-avoidance win at zero silver-
+    correctness risk. This is an explicit allow-list defined in
+    `_document_class`; it is **owner-confirmable** (the doc-type inventory is the
+    owner's call — Move 1 plan §8), and anything not on it is fetched, not
+    linked.
+  - **fetch-verify** (the default) any other / unrecognised `documentType`:
+    always fetched, and a byte-identical prior is still deduped. Deduping an
+    identical copy is always safe, so there is no reason to fetch a document
+    without verifying it — link is the only opt-in, everything else defaults
+    here.
+
+  fetch-verify reclaims exactly the same disk as link on an unchanged document
+  (both collapse to one hardlinked copy); it only pays the *fetch*. So the link
+  allow-list is purely a **fetch-cost** optimisation for documents load never
+  parses — it buys nothing for silver, and picking it wrong on a parsed doc
+  would cost correctness, which is why only the never-parsed executed-legal set
+  is opted in.
+
+  A hardlinked blob is a real in-run file, so each run dir stays self-contained
+  and load needs no cross-run fallback. A document node with **no `downloadUrl`**
+  yields no blob by design (load records a null local_path) — an audited outcome
+  distinct from a real fetch failure, not counted as an error.
+  `--documents-force` bypasses the index (fetch every blob, no dedup).
 
 Observed page routes: `/welcome/` (landing), `/portfolio/` (list, tabbed),
 `/portfolio/<N>/` (detail), `/equity/<uuid>/` (share lot — investigated then
@@ -467,7 +507,15 @@ implements:
 - **tax documents (implemented)** — `download --documents` fetches each
   offering's document PDF blobs; `load` parses capital-account statements
   (fund NAV → positions `statement` events) and K-1s (tax-basis capital) via
-  `statements.py`. See §5.
+  `statements.py`. See §5. Both parsed classes — **capital-account statements
+  and K-1s** — can be re-issued/restated/corrected under a stable Relay
+  `doc.id`, so `download` classifies them (with the financial reports) as
+  fetch-verify in `collectorkit.docdedup`: always re-fetched and
+  content-compared, so a byte-identical copy is hardlinked for disk reclaim but
+  a restatement is caught and its fresh bytes kept (never a hardlinked stale
+  copy fed into the NAV / positions replay). Only the executed-once,
+  never-parsed legal / offering documents are fetch-avoided by hardlink; see the
+  `_document_class` mapping in download.py.
 
 Still deferred:
 

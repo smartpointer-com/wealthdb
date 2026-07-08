@@ -21,6 +21,26 @@ and captures the investor GraphQL responses as raw bronze.
     through the authenticated request API. load.py parses the capital-account
     statements (fund NAV) and K-1s (tax-basis capital); see statements.py.
 
+    Document fetches are download-avoidant via the shared
+    ``collectorkit.docdedup`` engine, chosen per document class:
+      - parsed / restatement-prone documents — capital-account statements,
+        K-1s, and financial reports — can be re-issued/corrected under a stable
+        Relay doc.id, so they are ALWAYS fetched and content-compared against
+        the prior copy: an unchanged (byte-identical) one is hardlinked (disk
+        reclaimed), a changed one keeps its fresh bytes (a re-issue is never
+        missed). This is the correctness-safe default for anything load.py reads
+        for figures;
+      - executed-once legal / offering documents (an explicit, owner-confirmable
+        allow-list) are immutable once signed and are not parsed, so an
+        identical copy from a prior complete run is HARDLINKED into the new run
+        dir and the fetch is skipped (any hardlink error falls through to a real
+        fetch — a document degrades to a fetch, never to a miss);
+      - any other / unrecognised document type is fetch-verified too (the
+        safe default — always fetched, a byte-identical copy still deduped).
+    Every run dir stays self-contained (a hardlink is a real in-run file), so
+    the loader needs no cross-run fallback. --documents-force bypasses the
+    index entirely.
+
 The numeric `<N>` in /portfolio/<N>/ is decoded from
 deal.id = base64("DealNode:<N>").
 
@@ -49,7 +69,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, envfile
+from collectorkit import bronze, cli, docdedup, envfile
 
 from login import FIREFOX_PREFS, _authenticated
 
@@ -82,7 +102,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--documents", action="store_true",
                    help="Also fetch each offering's document PDF blobs (capital-account "
                         "statements, K-1s, etc.) via downloadUrl into bronze documents/. "
-                        "Heavy (fetches every offering's document PDFs); off by default.")
+                        "Heavy (fetches every offering's document PDFs); off by default. "
+                        "Download-avoidant: an executed-once legal/offering document "
+                        "identical to a prior run is hardlinked in rather than re-fetched; "
+                        "parsed / restatement-prone documents (statements, K-1s, reports) "
+                        "are always fetched and content-compared (see collectorkit.docdedup).")
+    p.add_argument("--documents-force", action="store_true",
+                   help="Bypass the document download-avoidance index: fetch every blob "
+                        "even when a byte-identical copy exists in a prior bronze run "
+                        "(no hardlink reuse). Use to re-establish ground truth or as the "
+                        "first-run confidence check (run once with, once without, diff "
+                        "silver under `load --force`).")
     p.add_argument("--dry-run", action="store_true",
                    help="Capture the offerings list (all stages) and log what would be fetched, "
                         "but visit no per-offering pages and write no bronze. Read-only smoke test.")
@@ -124,6 +154,157 @@ def _deal_ids_from(body: dict) -> list[str]:
         if did:
             out.append(did)
     return out
+
+
+# --- documentType → docdedup class (mode selection) ------------------------
+#
+# The observed EquityZen `documentType` inventory (names only — the pinned
+# vocabulary this mapping is built against):
+#   CAPITAL_ACCOUNT_STATEMENT, QUARTERLY_REPORT, ANNUAL_FINANCIAL_STATEMENTS,
+#   K1, COUNTERSIGN_SUB_AGT, SUB_AGT, SERIES_SCHEDULE, FUND_W_9, W_8,
+#   SUITABILITY, SUMMARY_SHEET, TERMSHEET, OFFERING_DOC.
+# Of these, only CAPITAL_ACCOUNT_STATEMENT and K1 are parsed by load.py for
+# figures; the rest are archival only, so mis-linking a non-parsed type has no
+# silver-correctness exposure.
+
+# fetch-verify (always re-read + content-compare): parsed and/or
+# restatement-prone documents. A capital-account statement or K-1 is parsed for
+# NAV / tax-basis figures and can be RESTATED/CORRECTED under a stable Relay
+# doc.id (Relay ids are entity ids, NOT content-addressed), so link-mode would
+# serve a stale figure into the positions/NAV replay — a correctness bug.
+# Financial reports can be restated the same way. fetch-verify always fetches,
+# so a restatement is caught (CHANGED → keep fresh bytes) while a byte-identical
+# unchanged copy is still hardlinked (disk dedup).
+_FETCH_VERIFY_TYPES = frozenset({
+    "CAPITAL_ACCOUNT_STATEMENT",
+    "K1",
+    "QUARTERLY_REPORT",
+    "ANNUAL_FINANCIAL_STATEMENTS",
+})
+
+# link (fetch-avoidance): executed-once legal / offering documents that are
+# immutable once signed/issued and are NOT parsed by load.py, so linking a prior
+# identical copy realizes the fetch-avoidance win at zero silver-correctness
+# risk. This allow-list is the OWNER-CONFIRMABLE set (Move 1 plan §8 doc-type
+# inventory is the owner's call) — an explicit allow-list, never a default:
+# anything not named here is fetched, not linked.
+_LINK_TYPES = frozenset({
+    "SUB_AGT",
+    "COUNTERSIGN_SUB_AGT",
+    "SERIES_SCHEDULE",
+    "SUITABILITY",
+    "SUMMARY_SHEET",
+    "TERMSHEET",
+    "OFFERING_DOC",
+    "FUND_W_9",
+    "W_8",
+})
+
+
+def _document_class(doc: dict) -> str | None:
+    """Map an EquityZen document node to a docdedup class (mode selection).
+
+    Parsed / restatement-prone types (capital-account statements, K-1s,
+    financial reports; ``_FETCH_VERIFY_TYPES``) are `mutable`/`tax` →
+    fetch-verify-dedup: always re-read and content-compare, because they can be
+    re-issued/corrected under a stable Relay doc.id and link-mode would risk
+    serving a superseded copy — a correctness bug. Executed-once legal / offering
+    documents (``_LINK_TYPES``, an explicit owner-confirmable allow-list) are
+    immutable and unparsed → `immutable` → link-mode (hardlink the prior
+    identical copy, skip the fetch). Any other / unrecognised type is left
+    unclassified → the helper fetch-verifies it (the safe default: always
+    fetched, a byte-identical copy still deduped).
+    """
+    dtype = doc.get("documentType")
+    if dtype == "K1":
+        return docdedup.CLASS_TAX
+    if dtype in _FETCH_VERIFY_TYPES:
+        return docdedup.CLASS_MUTABLE
+    if dtype in _LINK_TYPES:
+        return docdedup.CLASS_IMMUTABLE
+    return None
+
+
+def extract_equityzen(run_dir, manifest):
+    """docdedup extract hook (disk-driven): recover each prior run's document
+    identities from disk. Key = (deal-slug, doc-slug) = the two path components
+    under documents/, both sha256(id)[:16] of the Relay deal.id / doc.id, so the
+    same logical document lands at the same path every run (multiplicity 1). No
+    reliable pre-fetch issue date exists (period_end is parsed from the PDF only
+    AFTER the fetch; tax_year is K-1-only), so doc_date is None and the
+    freshness window does not apply. Enumerating on-disk files also means a key
+    naturally counts only when its blob still exists (pruned bronze
+    self-heals)."""
+    docs_root = run_dir / "documents"
+    if not docs_root.is_dir():
+        return
+    for deal_dir in docs_root.iterdir():
+        if deal_dir.is_symlink() or not deal_dir.is_dir():
+            continue
+        for f in deal_dir.iterdir():
+            if f.is_file() and not f.is_symlink():
+                yield docdedup.DocRef(key=(deal_dir.name, f.stem),
+                                      doc_date=None,
+                                      relpath=str(f.relative_to(run_dir)))
+
+
+# A document node that carries no downloadUrl yields no blob BY DESIGN — load
+# records a null local_path for it, exactly as before. That is not a fetch
+# failure, so it gets its own outcome and is NOT counted among `errors`.
+NO_BLOB = "no-blob"
+
+# docdedup outcome -> per-offering / top-level manifest counter (mirrors viac's
+# {total, fetched, linked, skipped} audit block). EVERY outcome code the walk
+# can produce is mapped explicitly; an unmapped/unexpected code is routed to
+# `other` by _tally (never silently folded into `fetched`).
+_STATUS_KEY = {
+    docdedup.LINKED: "linked",       # legal doc: prior copy hardlinked, fetch avoided
+    docdedup.FETCHED: "fetched",     # fresh bytes fetched and kept
+    docdedup.VERIFIED: "verified",   # fetch-verify: byte-identical to prior, hardlinked (disk reclaimed)
+    docdedup.CHANGED: "changed",     # fetch-verify: restated under a stable id, fresh bytes kept
+    docdedup.FETCH_FAILED: "errors",  # a real fetch failure (URL present, GET failed)
+    NO_BLOB: "no_blob",              # no downloadUrl → no blob by design (not an error)
+}
+
+
+def _empty_doc_counts() -> dict:
+    return {"total": 0, "fetched": 0, "linked": 0, "verified": 0,
+            "changed": 0, "errors": 0, "no_blob": 0, "other": 0}
+
+
+def _tally(counts: dict, status: str) -> None:
+    bucket = _STATUS_KEY.get(status)
+    if bucket is None:
+        # An outcome code the map does not know is a programming error, not a
+        # 'fetched' document — surface it in its own bucket rather than inflate
+        # the fetch count (and warn so it is not lost).
+        log.warning("unmapped docdedup outcome %r; counting as 'other'", status)
+        bucket = "other"
+    counts[bucket] += 1
+
+
+def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
+                      fetch_blob, force: bool = False) -> str:
+    """Decide and execute one document's download-avoidance outcome, returning a
+    status code for :func:`_tally`.
+
+    A node with no ``downloadUrl`` was never going to yield a blob, so it returns
+    :data:`NO_BLOB` (a null-blob-by-design — load records a null local_path for
+    it, exactly as before — NOT a fetch failure) without touching the
+    fetch/dedup path. Otherwise it dispatches to :func:`docdedup.process` by the
+    document's class: link-mode for the executed-once legal/offering docs,
+    fetch-verify for the parsed/restatement-prone docs, plain fetch for anything
+    unclassified. ``force`` bypasses the download-avoidance index. The fetch
+    closure is the collector's own ``fetch_blob``, so any hardlink failure falls
+    straight through to the real fetch."""
+    doc_slug = _slug(doc["id"])
+    if not doc.get("downloadUrl"):
+        return NO_BLOB
+    return docdedup.process(
+        skip, key=(deal_slug, doc_slug), doc_class=_document_class(doc),
+        target_dir=target_dir, stem=doc_slug,
+        fetch=(lambda: fetch_blob(doc.get("downloadUrl"), target_dir / doc_slug)),
+        force=force)
 
 
 def main(argv: list[str]) -> int:
@@ -230,6 +411,19 @@ def main(argv: list[str]) -> int:
         bronze.atomic_write_json(run / "run.json", {"status": "in-progress"})
         bronze.atomic_write_json(run / "investments.json", stage_bodies)
 
+        # Download-avoidance index (documents only): rebuilt statelessly from
+        # the COMPLETE prior runs' on-disk document files (extract_equityzen),
+        # keyed (deal-slug, doc-slug). link-mode reuses an identical prior copy
+        # for immutable docs; fetch-verify re-reads everything else. The current
+        # run (still status="in-progress") is excluded, so it never seeds itself.
+        skip = None
+        if args.documents:
+            skip = docdedup.SkipSet.derive(
+                run.parent, extract_equityzen,
+                freshness_days=None,   # no reliable pre-fetch doc_date (extract_equityzen)
+                exclude_run=run,
+            )
+
         # Authenticated blob fetch for a document's downloadUrl → bronze.
         # The blob is named by sha256(doc id) so the Relay id (which has /, +)
         # is filesystem-safe; load.py recomputes the same name to find it.
@@ -253,7 +447,7 @@ def main(argv: list[str]) -> int:
 
         # 2) Per-offering detail (positions + cash flows) + document blobs.
         offerings_meta = []
-        document_blobs = 0
+        document_blobs = _empty_doc_counts()
         for did in deal_ids:
             slug = _slug(did); n = _deal_numeric(did)
             if not n:
@@ -267,19 +461,29 @@ def main(argv: list[str]) -> int:
                 log.warning("offering %s: getMyInvestmentDetails did not fire; skipping", slug)
                 offerings_meta.append({"slug": slug, "detail": False}); continue
             bronze.atomic_write_json(run / "offerings" / slug / "detail.json", cap["body"])
-            n_blobs = 0
+            doc_counts = _empty_doc_counts()
             if args.documents:
                 edges = (((cap["body"] or {}).get("data") or {}).get("buyer") or {}) \
                     .get("buyerDeals", {}).get("edges") or []
                 node = edges[0].get("node") if edges else {}
                 docs = [d for d in (node.get("documents") or []) if d.get("id")]
+                doc_counts["total"] = len(docs)
                 for doc in docs:
-                    if fetch_blob(doc.get("downloadUrl"),
-                                  run / "documents" / slug / _slug(doc["id"])):
-                        n_blobs += 1
-                document_blobs += n_blobs
-                log.info("  offering %s: fetched %d/%d document blob(s)", slug, n_blobs, len(docs))
-            offerings_meta.append({"slug": slug, "detail": True, "doc_blobs": n_blobs})
+                    status = _process_document(
+                        skip, deal_slug=slug, doc=doc,
+                        target_dir=run / "documents" / slug,
+                        fetch_blob=fetch_blob, force=args.documents_force)
+                    _tally(doc_counts, status)
+                for k in document_blobs:
+                    document_blobs[k] += doc_counts[k]
+                log.info("  offering %s: documents total=%d fetched=%d linked=%d "
+                         "verified=%d changed=%d no_blob=%d errors=%d other=%d",
+                         slug, doc_counts["total"], doc_counts["fetched"],
+                         doc_counts["linked"], doc_counts["verified"],
+                         doc_counts["changed"], doc_counts["no_blob"],
+                         doc_counts["errors"], doc_counts["other"])
+            offerings_meta.append({"slug": slug, "detail": True,
+                                   "documents": doc_counts})
 
         # 4) Manifest — slugs + counts only. `status` is the completeness
         # signal prune keys on: this terminal write atomically overwrites the
@@ -295,6 +499,13 @@ def main(argv: list[str]) -> int:
         bronze.atomic_write_json(run / "run.json", manifest)
         log.info("wrote bronze to %s (%d/%d offerings with detail)",
                  run, sum(1 for o in offerings_meta if o["detail"]), len(offerings_meta))
+        if args.documents:
+            log.info("documents: total=%d fetched=%d linked=%d verified=%d "
+                     "changed=%d no_blob=%d errors=%d other=%d",
+                     document_blobs["total"], document_blobs["fetched"],
+                     document_blobs["linked"], document_blobs["verified"],
+                     document_blobs["changed"], document_blobs["no_blob"],
+                     document_blobs["errors"], document_blobs["other"])
         return 0
 
 
