@@ -23,6 +23,7 @@ CREATE TABLE positions (
     account_external_id    TEXT    NOT NULL,
     instrument_external_id TEXT    NOT NULL,
     isin                   TEXT,
+    instrument_name        TEXT,
     asset_class            TEXT,
     allocation             REAL,
     payload                TEXT    NOT NULL,

@@ -38,10 +38,20 @@ func RefineETFClass(name string) canonical.AssetClass {
 	switch {
 	case etfCryptoRe.MatchString(name):
 		return canonical.AssetClassCrypto
-	case etfMetalRe.MatchString(name) && !etfMinersRe.MatchString(name):
+	case NamesPhysicalMetal(name):
 		return canonical.AssetClassMetal
 	case etfBondRe.MatchString(name):
 		return canonical.AssetClassBondETF
 	}
 	return canonical.AssetClassETF
+}
+
+// NamesPhysicalMetal reports whether a security name reads as a
+// physical precious-metal holding — bullion, not the stocks of
+// companies that dig it up (the miners guard). Shared by the ETF
+// refinement above and by adapters whose source vocabulary is too
+// coarse for the distinction (e.g. an "Alternatives" sleeve that
+// is actually a physical-gold index fund).
+func NamesPhysicalMetal(name string) bool {
+	return etfMetalRe.MatchString(name) && !etfMinersRe.MatchString(name)
 }

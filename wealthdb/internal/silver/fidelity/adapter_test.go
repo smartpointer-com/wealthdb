@@ -168,3 +168,45 @@ func TestTransactions(t *testing.T) {
 		t.Errorf("act2 net_amount = %v, want -1250", v)
 	}
 }
+
+// classifyHistorical covers the statement-PDF shapes: statement rows
+// carry no structured type code, so the class comes from instrument-key and description
+// shapes alone.
+func TestClassifyHistorical(t *testing.T) {
+	cases := []struct {
+		key, desc string
+		want      canonical.AssetClass
+	}{
+		// Options: OCC key or CALL/PUT-prefixed description.
+		{"ABCD300118C100", "CALL (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassOption},
+		{"", "PUT (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassOption},
+		// Money-market sweeps + the svb net-cash sleeve.
+		{"SPAXX", "FIDELITY GOVERNMENT MONEY MARKET", canonical.AssetClassMoneyMarket},
+		{"FDRXX", "FIDELITY GOVERNMENT CASH RESERVES", canonical.AssetClassMoneyMarket},
+		{"", "NET CASH POSITION", canonical.AssetClassMoneyMarket},
+		// 529 plan sleeves, keyed and keyless.
+		{"ABC123456", "STATE PLAN 2030 (FIDELITY BLEND)", canonical.AssetClassFund},
+		{"", "STATE PLAN 2030 (FIDELITY FUNDS)", canonical.AssetClassFund},
+		// Bonds: CUSIP-9 key or coupon in the description.
+		{"000000AA1", "PLACEHOLDER MUNI GO BDS SER. 2021", canonical.AssetClassBond},
+		{"", "PLACEHOLDER CORP NOTE 04.12500% 01/15/2042", canonical.AssetClassBond},
+		{"", "PLACEHOLDER ST GO BDS 1,234.56 FIXED COUPON", canonical.AssetClassBond},
+		// ETFs refine by underlying exposure.
+		{"ABCD", "ISHARES TR PLACEHOLDER ETF", canonical.AssetClassETF},
+		{"IBIT", "iShares Bitcoin Trust ETF", canonical.AssetClassCrypto},
+		{"", "ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassBondETF},
+		// Mutual-fund ticker convention.
+		{"ABCDX", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassFund},
+		// The svb $0 closure marker carries no exposure.
+		{"", "Account closed — assets transferred", canonical.AssetClassOther},
+		// Fall-through: plain stock / ADR rows.
+		{"AAPL", "APPLE INC", canonical.AssetClassEquity},
+		{"", "PLACEHOLDER AG SPON ADR EACH REP 1 ORD SHS", canonical.AssetClassEquity},
+		{"NFLX", "NETFLIX INC", canonical.AssetClassEquity},
+	}
+	for _, c := range cases {
+		if got := classifyHistorical(c.key, c.desc); got != c.want {
+			t.Errorf("classifyHistorical(%q, %q) = %q, want %q", c.key, c.desc, got, c.want)
+		}
+	}
+}

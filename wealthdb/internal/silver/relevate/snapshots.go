@@ -224,7 +224,7 @@ SELECT instrument_external_id,
 		}
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: extID,
-			AssetClass:           assetClassFor(rawClass),
+			AssetClass:           assetClassFor(rawClass, name),
 			Currency:             &ccy,
 			FirstSeenAt:          firstSeen,
 			LastSeenAt:           lastSeen,
@@ -326,6 +326,7 @@ SELECT snapshot_at, account_external_id,
        instrument_external_id,
        COALESCE(isin, ''),
        COALESCE(asset_class, ''),
+       COALESCE(instrument_name, ''),
        allocation
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
@@ -336,11 +337,11 @@ SELECT snapshot_at, account_external_id,
 	defer prows.Close()
 	for prows.Next() {
 		var (
-			snap                            int64
-			acct, extID, isin, rawClass     string
-			allocation                      sql.NullFloat64
+			snap                              int64
+			acct, extID, isin, rawClass, name string
+			allocation                        sql.NullFloat64
 		)
-		if err := prows.Scan(&snap, &acct, &extID, &isin, &rawClass, &allocation); err != nil {
+		if err := prows.Scan(&snap, &acct, &extID, &isin, &rawClass, &name, &allocation); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -357,7 +358,7 @@ SELECT snapshot_at, account_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          key,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           assetClassFor(rawClass),
+			AssetClass:           assetClassFor(rawClass, name),
 		}
 		if bal, ok := securitiesByAcct[[2]any{snap, acct}]; ok {
 			change.Currency = bal.currency

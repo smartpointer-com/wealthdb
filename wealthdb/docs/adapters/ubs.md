@@ -67,7 +67,7 @@ one-letter switch is enough:
 | CFI first char | Gold `asset_class` |
 | --- | --- |
 | `E` | `equity` |
-| `C` | `fund` (Collective investment); the `CE` group (ISO 10962:2015 ETFs) maps to `etf` and is then refined by underlying exposure from the instrument name (`silver.RefineETFClass` — crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf`) |
+| `C` | `fund` (Collective investment); the `CE` group (ISO 10962:2015 ETFs) maps to `etf` and is then refined by underlying exposure from the instrument name (`silver.RefineETFClass` — crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf`), and a fund's `UacAsstClsCd` — UBS's own allocation bucket — sharpens the generic CFI: `0100` (Liquidity) → `money_market`, `0400` (Hedge funds & private markets) → `private_fund` |
 | `D` | `bond` (Debt) |
 | `O` | `option` |
 | `F` | `future` |

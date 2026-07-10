@@ -78,6 +78,10 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
              '{"InstrCtgyCFI":"CECIMX","InstrNm":"Euro Tracker","GacInstrRskCcyIsoCd":"EUR"}'),
             (1000, 'SFTPCHxx', 'XX0000000007',
              '{"InstrCtgyCFI":"CIOGMX","InstrNm":"Euro Fund","GacInstrRskCcyIsoCd":"EUR"}'),
+            (1000, 'SFTPCHxx', 'XX0000000008',
+             '{"InstrCtgyCFI":"CIOGMX","UacAsstClsCd":"0100","InstrNm":"MM Fund","GacInstrRskCcyIsoCd":"USD"}'),
+            (1000, 'SFTPCHxx', 'XX0000000009',
+             '{"InstrCtgyCFI":"CIMGMX","UacAsstClsCd":"0400","InstrNm":"PM Feeder","GacInstrRskCcyIsoCd":"CHF"}'),
             (1000, 'SFTPCHxx', 'XX0000000003',
              '{"InstrCtgyCFI":"","InstrNm":"No CFI","GacInstrRskCcyIsoCd":"USD"}'),
             (1000, 'SFTPCHxx', 'XX0000000004',
@@ -122,8 +126,8 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 		t.Errorf("portfolios = %+v, want one entry with PortfolioExternalID 'P1'", batch.Portfolios)
 	}
 
-	if len(batch.Instruments) != 7 {
-		t.Fatalf("instruments = %d, want 7", len(batch.Instruments))
+	if len(batch.Instruments) != 9 {
+		t.Fatalf("instruments = %d, want 9", len(batch.Instruments))
 	}
 	classes := map[string]canonical.AssetClass{}
 	for _, i := range batch.Instruments {
@@ -137,6 +141,12 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 	}
 	if classes["XX0000000007"] != canonical.AssetClassFund {
 		t.Errorf("CIOGMX (CFI standard-fund group) → %q, want fund", classes["XX0000000007"])
+	}
+	if classes["XX0000000008"] != canonical.AssetClassMoneyMarket {
+		t.Errorf("CIOGMX + UAC 0100 (Liquidity) → %q, want money_market", classes["XX0000000008"])
+	}
+	if classes["XX0000000009"] != canonical.AssetClassPrivateFund {
+		t.Errorf("CIMGMX + UAC 0400 (HF&PM) → %q, want private_fund", classes["XX0000000009"])
 	}
 	if classes["XX0000000003"] != canonical.AssetClassOther {
 		t.Errorf("empty CFI + empty UAC → %q, want other", classes["XX0000000003"])

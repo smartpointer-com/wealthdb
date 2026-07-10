@@ -24,6 +24,14 @@ import (
 // exposure from the instrument name — crypto / metal / bond ETFs
 // leave the `etf` bucket per the canonical taxonomy (see
 // silver.RefineETFClass).
+//
+// A fund's UAC code sharpens the CFI rather than merely
+// backstopping it: the CFI only says "standard investment fund"
+// (`CI…`) for a money-market SICAV and for a semi-liquid
+// private-markets feeder alike, but UBS's own asset-allocation
+// bucket pins the exposure — 0100 (Liquidity) is a money-market
+// fund, 0400 (Hedge funds & private markets) is a private-market
+// vehicle (private-equity, hedge-fund, or infrastructure).
 func assetClassForInstrument(cfi, uacAsstClsCd, name string) canonical.AssetClass {
 	var ac canonical.AssetClass
 	if cfi != "" {
@@ -31,8 +39,13 @@ func assetClassForInstrument(cfi, uacAsstClsCd, name string) canonical.AssetClas
 	} else {
 		ac = assetClassForUacAsstCls(uacAsstClsCd)
 	}
-	if ac == canonical.AssetClassETF {
+	switch {
+	case ac == canonical.AssetClassETF:
 		ac = silver.RefineETFClass(name)
+	case ac == canonical.AssetClassFund && uacAsstClsCd == "0100":
+		ac = canonical.AssetClassMoneyMarket
+	case ac == canonical.AssetClassFund && uacAsstClsCd == "0400":
+		ac = canonical.AssetClassPrivateFund
 	}
 	return ac
 }

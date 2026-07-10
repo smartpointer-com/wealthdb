@@ -181,10 +181,12 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 // PositionChange per row in `historical_position_snapshots`. The
 // silver schema is positions-only (no cash-balance counterpart
 // for the 529 historical path), so we never produce
-// CashBalanceChange rows from this source. asset_class defaults
-// to AssetClassOther (statement PDFs don't carry a structured
-// type code); the live-positions path will overwrite with the
-// real class whenever the same instrument_key reappears.
+// CashBalanceChange rows from this source. The statement PDFs
+// carry no structured type code, so asset_class comes from the
+// shape heuristics in classifyHistorical (instrument-key and
+// description shapes); the live-positions path still overwrites
+// the instrument dimension whenever the same instrument_key
+// reappears with a source-classified value.
 //
 // When the silver cross-walk to `instrument_key` missed (column
 // NULL), we synthesise a stable identity from the human-readable
@@ -223,6 +225,7 @@ SELECT as_of_date, account_external_id,
 		if !ok {
 			continue
 		}
+		assetClass := classifyHistorical(instrKey, desc)
 		if instrKey == "" {
 			instrKey = syntheticHistoricalInstrumentKey(desc)
 		}
@@ -231,7 +234,7 @@ SELECT as_of_date, account_external_id,
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrKey,
-			AssetClass:           canonical.AssetClassOther,
+			AssetClass:           assetClass,
 			Symbol:               &symbol,
 			Name:                 &name,
 			Currency:             &ccy,
@@ -245,7 +248,7 @@ SELECT as_of_date, account_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          instrKey,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           canonical.AssetClassOther,
+			AssetClass:           assetClass,
 			Currency:             currency,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),
