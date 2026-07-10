@@ -233,7 +233,7 @@ _provision() {
         (umask 077; printf '%s\n' "$pw" > "$pwfile")
         pwhint="generated, saved to $pwfile"
     fi
-    echo "web: provisioning Metabase (admin + gold database + report models)…" >&2
+    echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
     if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
          --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
          --default-currency "${DEFAULT_CCY:-USD}"; then
@@ -255,8 +255,10 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
 
   The gold DuckDB database is pre-added as a read-only snapshot, with
   report models mirroring the global / portfolios / accounts /
-  positions / transactions commands. Run 'wealthdb web refresh' after
-  each 'wealthdb load' to update the data.
+  positions / transactions commands, plus pre-defined metrics and the
+  Wealth Overview / Allocation / Data Freshness dashboards (in the
+  'wealthdb (pre-defined)' collection; duplicate before customizing).
+  Run 'wealthdb web refresh' after each 'wealthdb load' to update.
 EOF
 }
 

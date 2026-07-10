@@ -88,8 +88,13 @@ CLI's single-currency macros use and emit one value-column set per currency
 (USD/CHF/EUR), so the models track command output by construction and bake in
 no data. Two families, in a `wealthdb (pre-defined)` collection: the `_latest`
 snapshot reports (+ all-time `report_transactions`), and the daily `_history`
-reports (migration 0022) for time-series charts. Idempotent — re-running
-updates models in place and archives retired names. The admin password comes from
+reports (migration 0022) for time-series charts. On top of the models,
+provisioning creates pre-defined metrics, questions and three dashboards —
+**Wealth Overview** and **Allocation** carry dashboard-level filters (a time
+range resp. a required as-of day, plus a source picker), **Data Freshness** is
+deliberately unfiltered — all of them MBQL/definition-only, no data baked in.
+Idempotent — re-running updates cards and dashboards in place and archives
+retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
 generated once and saved chmod 600; `WEALTHDB_WEB_NO_PROVISION=1` opts
 back into the browser wizard.

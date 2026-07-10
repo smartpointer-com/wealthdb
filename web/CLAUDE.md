@@ -23,23 +23,37 @@ port-forward; auth is Metabase's own login.
 
 ## 3. No baked-in content; no secrets
 
-- Do **not** bake canned dashboards, saved questions, or source data
-  into the image or the repo. The user builds dashboards in the UI;
-  keeping the image content-free also keeps source data out of git.
-- The **one allowed exception** is the report models that `provision.py`
-  creates at runtime over the API, in a dedicated `wealthdb (pre-defined)`
-  collection: `report_{global,sources,portfolios,accounts,positions}_latest`,
-  `report_transactions`, and the daily-history `report_{global,sources,
-  portfolios,accounts,positions}_history`. They are content-free shims — each is just
-  `SELECT * FROM report_x_multi(…)` over the gold multi-currency report
-  macros (migration 0024; built on the same line bases the CLI's
-  single-currency `report_x(…)` macros use, so each `_<ccy>` column equals
-  the CLI's output for that currency by construction). Those macros emit one
-  value-column set per currency (USD/CHF/EUR) as DECIMAL, so the wrapper only
-  casts epoch columns to TIMESTAMP. They bake in no data. Provisioning is
-  idempotent (updates in place, archives retired names). The gold DuckDB
-  connection is likewise added at runtime by `provision.py`, never baked into
-  the image.
+- Do **not** bake canned content or source data into the image or the
+  repo. Keeping the image content-free also keeps source data out of git.
+- The **one allowed exception** is what `provision.py` creates at
+  runtime over the API, in a dedicated `wealthdb (pre-defined)`
+  collection — all of it content-free *definitions* (MBQL / SQL only,
+  no source data baked in):
+  - the report models `report_{global,sources,portfolios,accounts,
+    positions}_latest`, `report_transactions`, and the daily-history
+    `report_{global,sources,portfolios,accounts,positions}_history`.
+    Each is just `SELECT * FROM report_x_multi(…)` over the gold
+    multi-currency report macros (migration 0024; built on the same line
+    bases the CLI's single-currency `report_x(…)` macros use, so each
+    `_<ccy>` column equals the CLI's output for that currency by
+    construction). Those macros emit one value-column set per currency
+    (USD/CHF/EUR) as DECIMAL, so the wrapper only casts epoch columns to
+    TIMESTAMP.
+  - pre-defined metrics and questions over those models (net worth
+    current and over time, income and fees by month, allocation
+    breakdowns, source freshness), and three dashboards composing
+    them: **Wealth Overview** and **Allocation** (global filters: a
+    time range resp. a required as-of day, plus a source picker) and
+    **Data Freshness** (deliberately unfiltered, so stale sources
+    stay visible).
+  Provisioning is idempotent (updates in place, archives retired names)
+  and **converges the pre-defined collection to spec on every start** —
+  dashboards get their tile layout replaced wholesale. User content
+  elsewhere is never touched (card/dashboard matching is scoped to the
+  pre-defined collection); a user who wants to customize a pre-defined
+  card or dashboard must duplicate it into another collection first.
+  The gold DuckDB connection is likewise added at runtime by
+  `provision.py`, never baked into the image.
 - This component has **no credentials**. Don't add a `~/.secrets/*`
   mount or any secret env. Metabase manages its own admin account in
   its H2 metadata DB (under `$XDG_DATA_HOME`, outside the repo).
@@ -64,9 +78,10 @@ FROM positions` through the driver) and update the sha256.
 ## 5. Provisioning is API-based and idempotent
 
 `web/provision.py` skips the setup wizard by creating the admin, adding
-the gold DB, and creating the pre-defined report models over the OSS setup API.
-Keep it idempotent (safe on every start — it skips the admin, the DB,
-and any model that already exists by name). Do **not** switch to
+the gold DB, and creating the pre-defined report models, metrics,
+questions and dashboards over the OSS API. Keep it idempotent (safe on
+every start — it skips the admin and the DB, and updates any card or
+dashboard that already exists by name in place). Do **not** switch to
 Metabase's config-file provisioning — it's Pro/EE-only and a silent
 no-op on OSS. Never hard-code a password; take it from env or generate
 + save chmod 600.

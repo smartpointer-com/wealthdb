@@ -2,8 +2,8 @@
 """Provision a fresh Metabase over its loopback REST API: create the
 admin account (skipping the "tell us about yourself" setup wizard),
 pre-add the gold DuckDB database, and create the pre-defined report
-models. Idempotent — safe to run on every `wealthdb web start`.
-Standard library only.
+models, metrics, questions and dashboards. Idempotent — safe to run on
+every `wealthdb web start`. Standard library only.
 
 Called by web/web; not meant to be run by hand (but it can be).
 """
@@ -112,7 +112,14 @@ def main():
             return 1
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
-    return ensure_models(a.base, sid, db_id, coll_id)
+    by_name = pre_defined_cards(a.base, sid, coll_id)
+    model_ids = ensure_models(a.base, sid, db_id, coll_id, by_name)
+    if model_ids is None:
+        return 1
+    card_ids = ensure_cards(a.base, sid, db_id, coll_id, by_name, model_ids)
+    if card_ids is None:
+        return 1
+    return ensure_dashboards(a.base, sid, coll_id, card_ids, model_ids)
 
 
 # MAX_BIGINT as the as-of epoch means "latest snapshot" (the macros'
@@ -203,6 +210,301 @@ def report_models():
     }
 
 
+# ---- pre-defined metrics, questions and dashboards --------------------
+# Like the report models, everything below is a content-free definition —
+# MBQL over the models (referenced by card id) or native SQL over the gold
+# macros; no source data is baked in. Provisioning converges these to spec
+# on every start, so a user who wants to customize one should duplicate it
+# into another collection first.
+
+# Transaction kinds counted as investment income vs. carrying costs by the
+# monthly charts (net-amount sign convention: income is a credit > 0, fees
+# and withheld taxes are debits < 0).
+INCOME_KINDS = ["coupon", "distribution", "dividend", "interest", "staking"]
+COST_KINDS = ["fee", "tax"]
+
+# Metric names retired when the pre-defined cards switched from
+# identifier-style to prose names (dashboards and widgets read better as
+# prose); archived on provision so a re-run cleans them up.
+RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
+                      "net_worth_eur_current", "positions_value_usd_current",
+                      "cash_balance_usd_current", "net_worth_usd_daily"]
+
+# Dashboard names retired by renames ("Net Worth" undersold the income /
+# cost flow tiles); archived on provision so a re-run cleans them up.
+RETIRED_DASHBOARD_NAMES = ["Net Worth"]
+
+
+def _f(col, btype, unit=None):
+    """Legacy-MBQL field reference by column name (native-query models
+    expose no field ids)."""
+    opts = {"base-type": btype}
+    if unit:
+        opts["temporal-unit"] = unit
+    return ["field", col, opts]
+
+
+def _dec(col):
+    return _f(col, "type/Decimal")
+
+
+def _mbql(db_id, model_id, clauses):
+    q = {"source-table": f"card__{model_id}"}
+    q.update(clauses)
+    return {"type": "query", "database": db_id, "query": q}
+
+
+def metric_defs(db_id, mid):
+    """metric name -> (display, description, dataset_query). Kept to a
+    single aggregation so Metabase's metric editor can open them (charts
+    needing breakouts live in question_defs). Built on the per-source
+    reports rather than the global ones — summing across sources equals
+    the global report by construction, and it gives the dashboards'
+    source filter a silver_source_id dimension to land on."""
+    m = {}
+    for ccy in ("USD", "CHF", "EUR"):
+        m[f"Net worth ({ccy})"] = ("scalar",
+            f"Total net worth in {ccy} as of the latest snapshot "
+            "(cash + positions across all sources).",
+            _mbql(db_id, mid["report_sources_latest"],
+                  {"aggregation": [["sum", _dec(f"total_value_{ccy.lower()}")]]}))
+    m["Positions value (USD)"] = ("scalar",
+        "Market value of all positions in USD as of the latest snapshot.",
+        _mbql(db_id, mid["report_sources_latest"],
+              {"aggregation": [["sum", _dec("positions_value_usd")]]}))
+    m["Cash balance (USD)"] = ("scalar",
+        "Total cash balance in USD as of the latest snapshot.",
+        _mbql(db_id, mid["report_sources_latest"],
+              {"aggregation": [["sum", _dec("cash_balance_usd")]]}))
+    return m
+
+
+def question_defs(db_id, mid):
+    """question name -> (display, description, dataset_query, viz
+    settings). All MBQL (no native SQL) so the dashboards' filters can
+    map onto every card's dimensions."""
+    def kind_in(kinds):
+        return ["=", _f("kind", "type/Text")] + kinds
+
+    month = _f("occurred_at", "type/DateTime", "month")
+    days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
+                  ["now"], "day"]
+    return {
+        "Net worth — monthly trend (USD)": ("smartscalar",
+            "Average daily net worth (USD) of the latest month, with the "
+            "change vs the month before.",
+            _mbql(db_id, mid["report_sources_history"],
+                  {"aggregation": [["/",
+                       ["sum", _dec("total_value_usd")],
+                       ["distinct", _f("as_of_day", "type/DateTime")]]],
+                   "breakout": [_f("as_of_day", "type/DateTime", "month")]}),
+            {}),
+        "Net worth over time (USD)": ("area",
+            "Net worth in USD for every day since the first snapshot "
+            "(value carried forward between snapshots), stacked by "
+            "source; the envelope is total net worth.",
+            _mbql(db_id, mid["report_sources_history"],
+                  {"aggregation": [["sum", _dec("total_value_usd")]],
+                   "breakout": [_f("as_of_day", "type/DateTime", "day"),
+                                _f("silver_source_id", "type/Text")]}),
+            {"stackable.stack_type": "stacked"}),
+        "Cash vs positions over time (USD)": ("area",
+            "Daily cash balance and positions value (USD), stacked; the "
+            "envelope is total net worth.",
+            _mbql(db_id, mid["report_sources_history"],
+                  {"aggregation": [["sum", _dec("cash_balance_usd")],
+                                   ["sum", _dec("positions_value_usd")]],
+                   "breakout": [_f("as_of_day", "type/DateTime", "day")]}),
+            {"stackable.stack_type": "stacked"}),
+        "Income by month (USD)": ("bar",
+            "Investment income (dividends, interest, distributions, "
+            "coupons, staking) per month in USD, stacked by kind.",
+            _mbql(db_id, mid["report_transactions"],
+                  {"filter": kind_in(INCOME_KINDS),
+                   "aggregation": [["sum", _dec("value_usd")]],
+                   "breakout": [month, _f("kind", "type/Text")]}),
+            {"stackable.stack_type": "stacked"}),
+        "Fees & taxes by month (USD)": ("bar",
+            "Fees and withheld taxes per month in USD, stacked by kind; "
+            "debits are negated so costs read as positive bars.",
+            _mbql(db_id, mid["report_transactions"],
+                  {"filter": kind_in(COST_KINDS),
+                   "expressions": {"cost_usd": ["*", _dec("value_usd"), -1]},
+                   "aggregation": [["sum", ["expression", "cost_usd"]]],
+                   "breakout": [month, _f("kind", "type/Text")]}),
+            {"stackable.stack_type": "stacked"}),
+        # The five allocation questions run over the daily-history models
+        # so the Allocation dashboard can show holdings as of any chosen
+        # day (history@today equals the _latest reports by construction).
+        # The dashboard supplies the required as-of-day filter; opened
+        # standalone they sum one row per entity per DAY, so add an
+        # as_of_day filter first (the descriptions say so too).
+        "Allocation by asset class (USD)": ("pie",
+            "Positions value (USD) by asset class as of a day (cash not "
+            "included). Built for the Allocation dashboard, which supplies "
+            "the as-of day; opened standalone, filter as_of_day to a "
+            "single day first.",
+            _mbql(db_id, mid["report_positions_history"],
+                  {"aggregation": [["sum", _dec("value_usd")]],
+                   "breakout": [_f("asset_class", "type/Text")]}),
+            {}),
+        "Allocation by currency (USD)": ("row",
+            "Positions value (USD) by the position's native currency — the "
+            "FX exposure of the invested part (cash not included) as of a "
+            "day. Built for the Allocation dashboard, which supplies the "
+            "as-of day; opened standalone, filter as_of_day to a single "
+            "day first.",
+            _mbql(db_id, mid["report_positions_history"],
+                  {"aggregation": [["sum", _dec("value_usd")]],
+                   "breakout": [_f("currency", "type/Text")],
+                   "order-by": [["desc", ["aggregation", 0]]]}),
+            {}),
+        "Value by tax wrapper (USD)": ("pie",
+            "Total account value (USD, incl. cash) by tax wrapper as of a "
+            "day. Built for the Allocation dashboard, which supplies the "
+            "as-of day; opened standalone, filter as_of_day to a single "
+            "day first.",
+            _mbql(db_id, mid["report_accounts_history"],
+                  {"aggregation": [["sum", _dec("total_value_usd")]],
+                   "breakout": [_f("tax_wrapper", "type/Text")]}),
+            {}),
+        "Value by management style (USD)": ("row",
+            "Total account value (USD, incl. cash) by management style as "
+            "of a day. Built for the Allocation dashboard, which supplies "
+            "the as-of day; opened standalone, filter as_of_day to a "
+            "single day first.",
+            _mbql(db_id, mid["report_accounts_history"],
+                  {"aggregation": [["sum", _dec("total_value_usd")]],
+                   "breakout": [_f("management_style", "type/Text")],
+                   "order-by": [["desc", ["aggregation", 0]]]}),
+            {}),
+        "Top 10 positions (USD)": ("table",
+            "The ten largest positions by market value (USD) as of a day, "
+            "aggregated across accounts. Built for the Allocation "
+            "dashboard, which supplies the as-of day; opened standalone, "
+            "filter as_of_day to a single day first.",
+            _mbql(db_id, mid["report_positions_history"],
+                  {"aggregation": [["sum", _dec("value_usd")]],
+                   "breakout": [_f("symbol", "type/Text"),
+                                _f("name", "type/Text"),
+                                _f("asset_class", "type/Text")],
+                   "order-by": [["desc", ["aggregation", 0]]],
+                   "limit": 10}),
+            {}),
+        "Stalest source (days)": ("scalar",
+            "Days since the oldest source's latest snapshot — how out of "
+            "date the worst feed is.",
+            _mbql(db_id, mid["report_sources_latest"],
+                  {"expressions": {"days_stale": days_stale},
+                   "aggregation": [["max", ["expression", "days_stale"]]]}),
+            {}),
+        "Source freshness": ("table",
+            "Per source: latest snapshot, its age in days, and the value "
+            "riding on it (USD).",
+            _mbql(db_id, mid["report_sources_latest"],
+                  {"expressions": {"days_stale": days_stale},
+                   "fields": [_f("silver_source_id", "type/Text"),
+                              _f("snapshot_at", "type/DateTime"),
+                              ["expression", "days_stale"],
+                              _dec("total_value_usd")],
+                   "order-by": [["desc", ["expression", "days_stale"]]]}),
+            {}),
+    }
+
+
+# Dashboard-level filters, linked to every tile: a silver-source picker
+# (default: all values) plus either a time range over flows/history
+# (default: past 12 months) or a single as-of day over point-in-time
+# holdings (default: today). The parameter ids are arbitrary but must be
+# stable across runs so re-provisioning converges instead of
+# accumulating parameters.
+TIME_PARAM_ID = "aa5df100"
+SOURCE_PARAM_ID = "aa5df101"
+ASOF_PARAM_ID = "aa5df102"
+
+
+def dashboard_defs():
+    """dashboard name -> (description, filter mode, tiles). A tile is
+    (card name, row, col, size_x, size_y, time column) on Metabase's
+    24-column grid. The filter mode picks the global filters (see
+    dashboard_parameters): 'range' for flows/history dashboards, 'asof'
+    for point-in-time holdings dashboards, None for no filters. The time
+    filter lands on each card's time column (as_of_day for history cards,
+    occurred_at for transactions, snapshot_at for latest-snapshot cards);
+    the source filter always lands on silver_source_id. Data Freshness is
+    deliberately unfiltered — its job is to show every source, especially
+    the stale ones a time filter would hide."""
+    note = ("Pre-defined by wealthdb and converged to spec on every `web "
+            "start` — duplicate into another collection before customizing.")
+    return {
+        "Wealth Overview": (
+            "The whole picture over time, in USD: net worth, cash vs "
+            "positions, and income and cost flows. " + note, "range", [
+            ("Net worth — monthly trend (USD)", 0, 0, 8, 3, "as_of_day"),
+            ("Positions value (USD)", 0, 8, 8, 3, "snapshot_at"),
+            ("Cash balance (USD)", 0, 16, 8, 3, "snapshot_at"),
+            ("Net worth over time (USD)", 3, 0, 24, 6, "as_of_day"),
+            ("Cash vs positions over time (USD)", 9, 0, 24, 6, "as_of_day"),
+            ("Income by month (USD)", 15, 0, 12, 6, "occurred_at"),
+            ("Fees & taxes by month (USD)", 15, 12, 12, 6, "occurred_at"),
+        ]),
+        "Allocation": (
+            "Where the value sits — asset class, currency, tax wrapper, "
+            "management style and the largest positions — as of a chosen "
+            "day (default: today). " + note, "asof", [
+            ("Allocation by asset class (USD)", 0, 0, 12, 8, "as_of_day"),
+            ("Allocation by currency (USD)", 0, 12, 12, 8, "as_of_day"),
+            ("Value by tax wrapper (USD)", 8, 0, 12, 6, "as_of_day"),
+            ("Value by management style (USD)", 8, 12, 12, 6, "as_of_day"),
+            ("Top 10 positions (USD)", 14, 0, 24, 8, "as_of_day"),
+        ]),
+        "Data Freshness": (
+            "Age of each source's latest snapshot — which feeds need a "
+            "collector run. Unfiltered by design: it must show every "
+            "source, especially stale ones. " + note, None, [
+            ("Stalest source (days)", 0, 0, 8, 3, None),
+            ("Source freshness", 3, 0, 24, 10, None),
+        ]),
+    }
+
+
+def dashboard_parameters(model_ids, mode):
+    """The global filters a pre-defined dashboard carries, by mode:
+    'range' pairs the source picker with a time range (flows / history
+    dashboards), 'asof' pairs it with a single as-of day (point-in-time
+    holdings dashboards), None means no filters. The source picker draws
+    its dropdown values from the sources model."""
+    if mode is None:
+        return []
+    source = {"id": SOURCE_PARAM_ID, "name": "Source", "slug": "source",
+              "type": "string/=", "sectionId": "string", "isMultiSelect": True,
+              "values_source_type": "card",
+              "values_source_config": {
+                  "card_id": model_ids["report_sources_latest"],
+                  "value_field": ["field", "silver_source_id",
+                                  {"base-type": "type/Text"}]}}
+    if mode == "asof":
+        # Required + dynamic "today" default: the as-of cards sum daily
+        # history (one row per entity per day), so they must never run
+        # with the day filter cleared — a required parameter resets to
+        # its default instead of clearing.
+        return [{"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
+                 "type": "date/single", "sectionId": "date",
+                 "default": "thisday", "required": True},
+                source]
+    return [
+        # "past12months~": the trailing ~ means "include this month".
+        # Without it Metabase takes the previous 12 COMPLETE months, which
+        # silently drops every row stamped in the current partial month —
+        # for latest-snapshot cards that nulls out precisely the sources
+        # that are freshest (their snapshot_at is this month).
+        {"id": TIME_PARAM_ID, "name": "Time range", "slug": "time_range",
+         "type": "date/all-options", "sectionId": "date",
+         "default": "past12months~"},
+        source,
+    ]
+
+
 def ensure_collection(base, sid, name):
     """Return the id of the collection named `name`, creating it if absent."""
     _, cols = req(base, "/api/collection", session=sid)
@@ -219,55 +521,173 @@ def ensure_collection(base, sid, name):
     return None
 
 
-def ensure_models(base, sid, db_id, coll_id):
+def pre_defined_cards(base, sid, coll_id):
+    """name -> card, for the non-archived cards in the pre-defined
+    collection. Scoped to that collection so a user card that happens to
+    share a name is never touched."""
+    _, cards = req(base, "/api/card", session=sid)
+    return {c.get("name"): c for c in (cards if isinstance(cards, list) else [])
+            if c.get("collection_id") == coll_id and not c.get("archived")}
+
+
+def upsert_card(base, sid, by_name, name, payload):
+    """Create card `name` or update it in place. Returns (card id,
+    'created'|'updated') on success, (None, error text) on failure."""
+    existing = by_name.get(name)
+    if existing:
+        st, body = req(base, f"/api/card/{existing['id']}", "PUT", payload, session=sid)
+        if st in (200, 201):
+            return existing["id"], "updated"
+    else:
+        st, body = req(base, "/api/card", "POST", payload, session=sid)
+        if st in (200, 201) and body.get("id"):
+            return body["id"], "created"
+    return None, f"({st}): {body.get('message')}"
+
+
+def card_payload(coll_id, name, ctype, display, desc, query, viz):
+    """The full /api/card payload shared by models, metrics and questions."""
+    return {
+        "name": name,
+        "type": ctype,
+        "description": desc,
+        "collection_id": coll_id,
+        "display": display,
+        "visualization_settings": viz,
+        "dataset_query": query,
+    }
+
+
+def upsert_cards(base, sid, by_name, payloads, label):
+    """Create or update-in-place every card in `payloads` (name -> full
+    /api/card payload). Returns (name -> card id, #created, #updated), or
+    None on the first failure."""
+    ids, n = {}, {"created": 0, "updated": 0}
+    for name, payload in payloads.items():
+        cid, how = upsert_card(base, sid, by_name, name, payload)
+        if cid is None:
+            print(f"provision: failed to save {label} '{name}' {how}",
+                  file=sys.stderr)
+            return None
+        ids[name] = cid
+        n[how] += 1
+    return ids, n["created"], n["updated"]
+
+
+def archive_all(base, sid, kind, ids):
+    """Archive /api/<kind>/<id> for every id; returns how many succeeded."""
+    n = 0
+    for i in ids:
+        st, _ = req(base, f"/api/{kind}/{i}", "PUT", {"archived": True},
+                    session=sid)
+        n += st in (200, 201)
+    return n
+
+
+def ensure_models(base, sid, db_id, coll_id, by_name):
     """Create/refresh the pre-defined report models in `coll_id`, and
     archive any retired (renamed-away) ones. Idempotent: an existing model
     of the same name is updated in place; re-running converges. The models
     are content-free shims over the gold macros — no source data is baked
-    in."""
-    _, cards = req(base, "/api/card", session=sid)
-    by_name = {c.get("name"): c for c in cards} if isinstance(cards, list) else {}
+    in. Returns model name -> card id, or None on failure."""
+    payloads = {
+        name: card_payload(coll_id, name, "model", "table", desc,
+                           {"type": "native", "database": db_id,
+                            "native": {"query": query, "template-tags": {}}},
+                           {})
+        for name, (query, desc) in report_models().items()
+    }
+    saved = upsert_cards(base, sid, by_name, payloads, "model")
+    if saved is None:
+        return None
+    ids, created, updated = saved
+    archived = archive_all(base, sid, "card",
+                           [by_name[n]["id"] for n in RETIRED_MODEL_NAMES
+                            if n in by_name])
+    print(f"provision: report models (USD/CHF/EUR) — {created} created, "
+          f"{updated} updated, {archived} retired (collection '{COLLECTION_NAME}')")
+    return ids
 
-    created = updated = 0
-    for name, (query, desc) in report_models().items():
-        payload = {
-            "name": name,
-            "type": "model",
-            "description": desc,
-            "collection_id": coll_id,
-            "display": "table",
-            "visualization_settings": {},
-            "dataset_query": {
-                "type": "native",
-                "database": db_id,
-                "native": {"query": query, "template-tags": {}},
-            },
-        }
-        existing = by_name.get(name)
-        if existing and not existing.get("archived"):
-            st, body = req(base, f"/api/card/{existing['id']}", "PUT", payload, session=sid)
-            if st in (200, 201):
-                updated += 1
-                continue
+
+def ensure_cards(base, sid, db_id, coll_id, by_name, model_ids):
+    """Create/refresh the pre-defined metrics and questions over the models
+    in `model_ids`, and archive any retired (renamed-away) ones. Returns
+    card name -> id (the dashboards' tile lookup), or None on failure."""
+    payloads = {}
+    for name, (display, desc, query) in metric_defs(db_id, model_ids).items():
+        payloads[name] = card_payload(coll_id, name, "metric", display,
+                                      desc, query, {})
+    for name, (display, desc, query, viz) in question_defs(db_id, model_ids).items():
+        payloads[name] = card_payload(coll_id, name, "question", display,
+                                      desc, query, viz)
+    saved = upsert_cards(base, sid, by_name, payloads, "card")
+    if saved is None:
+        return None
+    ids, created, updated = saved
+    archived = archive_all(base, sid, "card",
+                           [by_name[n]["id"] for n in RETIRED_CARD_NAMES
+                            if n in by_name])
+    print(f"provision: metrics + questions — {created} created, "
+          f"{updated} updated, {archived} retired")
+    return ids
+
+
+def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
+    """Create/refresh the pre-defined dashboards with their global filters
+    (see dashboard_parameters) linked to every tile, and archive any
+    retired (renamed-away) ones. Parameters and the dashcard list are
+    replaced wholesale on every run, so the layout converges to spec (a
+    tile added by hand to a pre-defined dashboard does not survive — the
+    dashboard description says to duplicate before customizing)."""
+    coll = coll_id if coll_id is not None else "root"
+    _, items = req(base, f"/api/collection/{coll}/items?models=dashboard", session=sid)
+    existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
+
+    n = {"created": 0, "updated": 0}
+    for name, (desc, mode, tiles) in dashboard_defs().items():
+        parameters = dashboard_parameters(model_ids, mode)
+        tparam = ASOF_PARAM_ID if mode == "asof" else TIME_PARAM_ID
+        did = existing.get(name)
+        if did is None:
+            st, body = req(base, "/api/dashboard", "POST",
+                           {"name": name, "description": desc,
+                            "collection_id": coll_id}, session=sid)
+            if st not in (200, 201) or not body.get("id"):
+                print(f"provision: failed to create dashboard '{name}' ({st}): "
+                      f"{body.get('message')}", file=sys.stderr)
+                return 1
+            did = body["id"]
+            n["created"] += 1
         else:
-            st, body = req(base, "/api/card", "POST", payload, session=sid)
-            if st in (200, 201) and body.get("id"):
-                created += 1
-                continue
-        print(f"provision: failed to save model '{name}' ({st}): {body.get('message')}",
-              file=sys.stderr)
-        return 1
+            n["updated"] += 1
+        dashcards = [{"id": -(i + 1), "card_id": card_ids[card], "row": row,
+                      "col": col, "size_x": sx, "size_y": sy, "series": [],
+                      "visualization_settings": {},
+                      "parameter_mappings": [
+                          {"parameter_id": tparam,
+                           "card_id": card_ids[card],
+                           "target": ["dimension",
+                                      _f(tcol, "type/DateTime")]},
+                          {"parameter_id": SOURCE_PARAM_ID,
+                           "card_id": card_ids[card],
+                           "target": ["dimension",
+                                      _f("silver_source_id", "type/Text")]},
+                      ] if mode else []}
+                     for i, (card, row, col, sx, sy, tcol) in enumerate(tiles)]
+        st, body = req(base, f"/api/dashboard/{did}", "PUT",
+                       {"name": name, "description": desc,
+                        "parameters": parameters,
+                        "dashcards": dashcards}, session=sid)
+        if st not in (200, 201):
+            print(f"provision: failed to lay out dashboard '{name}' ({st}): "
+                  f"{body.get('message')}", file=sys.stderr)
+            return 1
 
-    archived = 0
-    for name in RETIRED_MODEL_NAMES:
-        c = by_name.get(name)
-        if c and not c.get("archived"):
-            st, _ = req(base, f"/api/card/{c['id']}", "PUT", {"archived": True}, session=sid)
-            if st in (200, 201):
-                archived += 1
-
-    print(f"provision: report models (USD/CHF/EUR) — {created} created, {updated} updated, "
-          f"{archived} retired (collection '{COLLECTION_NAME}')")
+    archived = archive_all(base, sid, "dashboard",
+                           [existing[name] for name in RETIRED_DASHBOARD_NAMES
+                            if existing.get(name) is not None])
+    print(f"provision: dashboards — {n['created']} created, {n['updated']} updated, "
+          f"{archived} retired")
     return 0
 
 
