@@ -454,6 +454,11 @@ Example config file:
             "1234567": {"nickname": "CHF trading", "category": "personal"}
         }
     },
+    "instrument_overrides": {
+        "schwab-retail": {
+            "78463V107": {"asset_class": "metal"}
+        }
+    },
     "web": { "enabled": true, "port": 3000 }
 }
 ```
@@ -482,6 +487,7 @@ Example config file:
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument `asset_class` (the only field today; required per entry, validated against the canonical enum). For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds. The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 
 ### 5.2 `kind: "auto"`
@@ -803,6 +809,18 @@ A few rules apply to every adapter regardless of bank:
 - **Unrecognised `asset_class` source codes fall through to
   `'other'`** with the raw code preserved in `payload`. Same
   rationale.
+- **ETFs classify by underlying exposure, not by the wrapper.**
+  Every adapter whose structured signal identifies an
+  exchange-traded fund (UBS CFI group `CE`, Schwab
+  `instrument.type = EXCHANGE_TRADED_FUND`, Swissquote's "ETFs"
+  section, fidelity-web's silver `etf` class) then refines the
+  class from the security name via the shared
+  `silver.RefineETFClass`: crypto ETFs/ETPs → `crypto`,
+  physical-metal ETFs/ETPs → `metal` (miners funds excluded —
+  they hold stocks), bond / fixed-income ETFs → `bond_etf`,
+  everything else stays `etf`. Products whose names don't give
+  away the exposure are pinned via the config's
+  `instrument_overrides` (§5.1, §13.9).
 - **Deferred silver tables** — silver tables not yet projected
   into gold by any adapter are catalogued per-bank in the adapter
   doc and globally in §13.7.
@@ -994,7 +1012,11 @@ CREATE TABLE portfolios (
 
 -- asset_class values (canonical taxonomy):
 --   'equity'              — common/preferred stock
---   'etf'                 — exchange-traded fund
+--   'etf'                 — exchange-traded fund (equity exposure;
+--                           crypto/metal ETFs classify as
+--                           'crypto'/'metal' by underlying, see §6.8)
+--   'bond_etf'            — bond / fixed-income ETF (kept out of
+--                           'bond': no maturity, rolls forever)
 --   'fund'                — mutual fund / structured product
 --   'bond'                — fixed income (govt, corp, conv)
 --   'option'              — listed option
@@ -2164,6 +2186,18 @@ own values, so the override takes precedence on overlap. This
 is the path for sharpening accounts the adapter can't classify
 on its own (e.g. a Schwab IRA whose wrapper isn't reachable
 from any silver-side field).
+
+The instrument dimension has the same escape hatch:
+`instrument_overrides`, keyed by `(silver_source_id,
+instrument_external_id)`, pins a per-instrument `asset_class`
+(validated against the canonical enum). The loader patches both
+the `instruments` row and every `positions` row referencing the
+instrument — the fact rows carry their own `asset_class` copy,
+so the two must move together. Use it where neither the source's
+structured signal nor the ETF name refinement (§6.8) gets the
+class right — the canonical example is an exchange-traded
+commodity trust whose security name never mentions the metal or
+the ETF-ness.
 
 Selectable columns: `wealthdb holdings accounts -C
 silver_source,account,account_kind,tax_wrapper,management_style,...`.

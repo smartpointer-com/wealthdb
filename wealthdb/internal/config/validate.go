@@ -161,6 +161,26 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// instrument_overrides: same shape rules as account_overrides
+	// but keyed by instrument_external_id. asset_class is the only
+	// dimension wired through today.
+	for sourceID, perInstrument := range c.InstrumentOverrides {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
+		}
+		for instrID, ov := range perInstrument {
+			if instrID == "" {
+				return fmt.Errorf("config: instrument_overrides[%q]: empty instrument_external_id key", sourceID)
+			}
+			if ov.AssetClass == "" {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class must be set", sourceID, instrID)
+			}
+			if !canonical.AssetClass(ov.AssetClass).Valid() {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class %q", sourceID, instrID, ov.AssetClass)
+			}
+		}
+	}
+
 	// inception_overrides: source ids must name a declared silver
 	// source (catches typos early); portfolio/account ids must be
 	// non-empty; every value must parse as YYYY-MM-DD. Portfolio /

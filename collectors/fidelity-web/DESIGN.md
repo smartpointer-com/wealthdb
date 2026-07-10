@@ -366,13 +366,18 @@ Symbol shape into a small enum:
 | `plan_fund`    | `[A-Z]{3}[0-9]{6}` (529 plan investment option)  | (3-letter prefix + 6-digit code) |
 | `bond`         | 9-char alphanumeric, trailing digit (CUSIP-9)    | (8-char base + check digit) |
 | `mutual_fund`  | 5-char ticker ending in `X` (industry convention) | `FXAIX`         |
-| `equity`       | default fall-through (stocks, ETFs, ADRs)         | `AAPL`, `SPY`   |
+| `etf`          | word-boundary `ETF` in the Description (Fidelity groups ETFs with stocks; the security name is the only signal — the boundary keeps N-ETF-LIX out) | `SPY` "S&P 500 ETF" |
+| `equity`       | default fall-through (stocks, ADRs, name-shy ETPs) | `AAPL`          |
 
 The classifier is order-sensitive: `plan_fund` is checked before
 `bond` because the plan-fund shape is a stricter subset of
 CUSIP-9. Anything Fidelity adds in the future that doesn't match
-the above falls into `equity` — gold can override via its own
-reference data.
+the above falls into `equity` — the wealthdb config's
+`instrument_overrides` pins the class of any holding the shapes
+misjudge (e.g. an exchange-traded commodity trust whose name
+never says "ETF"). The gold adapter further refines `etf` rows
+by underlying exposure (crypto / metal / bond ETFs leave the
+`etf` bucket — see wealthdb docs/DESIGN.md §6.8).
 
 The `Type` column on `positions` carries `Cash` / `Margin` — that's
 the account margin bucket, NOT an instrument category; it stays

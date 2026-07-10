@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -429,6 +430,51 @@ func TestAccountOverridesApplied(t *testing.T) {
 	for id, w := range want {
 		if g := got[id]; g != w {
 			t.Errorf("%s: nickname/category = %q/%q, want %q/%q", id, g[0], g[1], w[0], w[1])
+		}
+	}
+}
+
+func TestInstrumentOverridesApplied(t *testing.T) {
+	h := newHarness(t)
+
+	h.silverExec(t, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, 'ACC1', '{"hashValue":"ACC1"}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
+            (1000, 'ACC1', '000000AA1',
+             '{"longQuantity":10,"shortQuantity":0,"marketValue":1500.00,
+               "instrument":{"assetType":"COLLECTIVE_INVESTMENT","type":"EXCHANGE_TRADED_FUND",
+                             "cusip":"000000AA1","symbol":"AAAA","description":"PLACEHOLDER TR METAL SHS"}}'),
+            (1000, 'ACC1', '000000BB2',
+             '{"longQuantity":5,"shortQuantity":0,"marketValue":500.00,
+               "instrument":{"assetType":"EQUITY","cusip":"000000BB2","symbol":"BBBB"}}');
+    `)
+
+	_, err := h.loader.Load(context.Background(), loader.SourceSpec{
+		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
+		InstrumentOverrides: map[string]loader.InstrumentOverride{
+			// The adapter classifies this one etf (name-shy
+			// exchange-traded product); the config pins the
+			// underlying exposure.
+			"000000AA1": {AssetClass: "metal"},
+			"000000XX9": {AssetClass: "crypto"}, // no such instrument in batch
+		},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, q := range []struct{ table, id, want string }{
+		{"instruments", "000000AA1", "metal"},
+		{"instruments", "000000BB2", "equity"},
+		{"positions", "000000AA1", "metal"},
+		{"positions", "000000BB2", "equity"},
+	} {
+		got := h.goldScalar(t, fmt.Sprintf(
+			`SELECT asset_class FROM %s WHERE instrument_external_id = '%s'`, q.table, q.id))
+		if got != q.want {
+			t.Errorf("%s[%s].asset_class = %q, want %q", q.table, q.id, got, q.want)
 		}
 	}
 }

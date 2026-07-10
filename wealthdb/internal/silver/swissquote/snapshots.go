@@ -262,6 +262,9 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 			return fmt.Errorf("appendPositions row (snap=%d, %s@%s): %w", snap, symbol, currency, err)
 		}
 		ac := assetClassFor(p.AssetClass)
+		if ac == canonical.AssetClassETF {
+			ac = silver.RefineETFClass(name)
+		}
 
 		effectiveISIN := isin
 		if effectiveISIN == "" {

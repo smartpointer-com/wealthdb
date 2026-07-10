@@ -338,6 +338,13 @@ SELECT snapshot_at, account_external_id, instrument_key,
 		}
 
 		assetClass := assetClassFor(silverClass)
+		if assetClass == canonical.AssetClassETF {
+			// The silver classifier only detects ETF-ness (from the
+			// security name); the underlying-exposure refinement to
+			// crypto / metal / bond_etf happens here so the keyword
+			// taxonomy lives in one place (silver.RefineETFClass).
+			assetClass = silver.RefineETFClass(desc)
+		}
 		symbol := key
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{

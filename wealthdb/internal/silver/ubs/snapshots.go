@@ -388,7 +388,7 @@ SELECT snapshot_at, isin, payload
 		}
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
-		ac := assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd)
+		ac := assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
 		lookup[isin] = instrumentMeta{
 			AssetClass: ac,
 			Currency:   p.GacInstrRskCcyIsoCd,

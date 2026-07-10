@@ -48,6 +48,17 @@ type Config struct {
 	// individually would be churn. Per-account overrides still win
 	// over portfolio overrides on the same column.
 	PortfolioOverrides map[string]map[string]PortfolioOverride `json:"portfolio_overrides,omitempty"`
+	// InstrumentOverrides pins the `asset_class` of individual
+	// instruments, for holdings the adapters' structured signals
+	// and name heuristics misclassify — e.g. an exchange-traded
+	// commodity trust whose security name doesn't give away what
+	// it holds. Keyed by silver_source_id (outer) and then
+	// instrument_external_id (inner — copy it from the gold
+	// `instruments` table). The loader applies these AFTER the
+	// adapter has classified, to both the instrument dimension and
+	// every position row referencing it, so config wins on
+	// overlap. See docs/DESIGN.md §13.9.
+	InstrumentOverrides map[string]map[string]InstrumentOverride `json:"instrument_overrides,omitempty"`
 	// InceptionOverrides pins the returns-window START date per silver
 	// source, portfolio, or account, so an entity's track record can
 	// begin at its first real capital instead of a tiny pre-history
@@ -260,6 +271,14 @@ type AccountOverride struct {
 // can be added here if a use case emerges.
 type PortfolioOverride struct {
 	TaxWrapper string `json:"tax_wrapper,omitempty"`
+}
+
+// InstrumentOverride is one per-instrument override entry.
+// AssetClass is the only dimension wired through today; it must be
+// a valid canonical enum value (validated at config-load time).
+// Other columns (name, symbol) can be added if a use case emerges.
+type InstrumentOverride struct {
+	AssetClass string `json:"asset_class,omitempty"`
 }
 
 // InceptionOverrides is the `inception_overrides` block of wealthdb.cfg.

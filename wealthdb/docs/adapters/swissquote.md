@@ -40,7 +40,7 @@ headers ("ETFs", "Bonds", "Shares", "Funds", "Structured Products",
 | Swissquote section header | Gold `asset_class` |
 | --- | --- |
 | `Shares` / `Stocks` | `equity` |
-| `ETFs` | `etf` |
+| `ETFs` | `etf`, then refined by underlying exposure from the security name (`silver.RefineETFClass`): crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf` |
 | `Bonds` | `bond` |
 | `Funds` | `fund` |
 | `Structured Products` | `other` (refine if/when a richer category lands in gold) |

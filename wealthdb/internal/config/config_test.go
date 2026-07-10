@@ -290,6 +290,64 @@ func TestValidateRejectsEmptyOverride(t *testing.T) {
 	}
 }
 
+func TestInstrumentOverrides(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			GoldDB: "/x", DefaultCurrency: "USD",
+			SilverSources: []SilverSource{{ID: "a", Kind: "schwab", Path: "/x"}},
+		}
+	}
+	t.Run("accepts valid asset_class", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {AssetClass: "metal"}},
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+	t.Run("rejects orphan source", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"unknown-source": {"GLD": {AssetClass: "metal"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "unknown-source") {
+			t.Fatalf("err = %v, want orphan-source complaint", err)
+		}
+	})
+	t.Run("rejects empty asset_class", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "asset_class must be set") {
+			t.Fatalf("err = %v, want must-be-set complaint", err)
+		}
+	})
+	t.Run("rejects invalid asset_class", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {AssetClass: "bullion"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid asset_class") {
+			t.Fatalf("err = %v, want invalid-enum complaint", err)
+		}
+	})
+	t.Run("rejects empty instrument key", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"": {AssetClass: "metal"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "empty instrument_external_id") {
+			t.Fatalf("err = %v, want empty-key complaint", err)
+		}
+	})
+}
+
 func TestValidateSymbolOverrides(t *testing.T) {
 	base := func() *Config {
 		return &Config{

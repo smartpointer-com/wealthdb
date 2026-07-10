@@ -11,8 +11,19 @@ package canonical
 type AssetClass string
 
 const (
-	AssetClassEquity        AssetClass = "equity"
+	AssetClassEquity AssetClass = "equity"
+	// Exchange-traded funds. AssetClassETF is the equity-exposure
+	// default; ETFs whose underlying is another asset class are
+	// refined by what they hold, not the wrapper (see
+	// silver.RefineETFClass): crypto ETFs/ETPs → AssetClassCrypto,
+	// physical-metal ETFs/ETPs → AssetClassMetal, and bond /
+	// fixed-income ETFs → AssetClassBondETF. The bond case gets its
+	// own class (rather than folding into AssetClassBond) because a
+	// bond ETF has no maturity and rolls its duration forever —
+	// aggregating it with directly-held bonds would poison
+	// maturity-aware views of the `bond` bucket.
 	AssetClassETF           AssetClass = "etf"
+	AssetClassBondETF       AssetClass = "bond_etf"
 	AssetClassFund          AssetClass = "fund"
 	AssetClassBond          AssetClass = "bond"
 	AssetClassOption        AssetClass = "option"
@@ -58,7 +69,8 @@ const (
 )
 
 var assetClassValues = map[AssetClass]struct{}{
-	AssetClassEquity: {}, AssetClassETF: {}, AssetClassFund: {},
+	AssetClassEquity: {}, AssetClassETF: {}, AssetClassBondETF: {},
+	AssetClassFund: {},
 	AssetClassBond: {}, AssetClassOption: {}, AssetClassFuture: {},
 	AssetClassFxForward: {}, AssetClassFxOption: {},
 	AssetClassMoneyMarket: {}, AssetClassOTCDerivative: {},

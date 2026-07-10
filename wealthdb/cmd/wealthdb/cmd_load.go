@@ -53,7 +53,7 @@ load semantics.`)
 		return errs.Newf(2, "load: '-a' and a positional id are mutually exclusive")
 	case *all:
 		for _, s := range cfg.SilverSources {
-			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, ledger)
+			spec, err := buildSourceSpec(s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, ledger)
 			if err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ load semantics.`)
 		if !ok {
 			return fmt.Errorf("load: silver source %q not found in config", id)
 		}
-		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, ledger)
+		spec, err := buildSourceSpec(*s, cfg.AccountOverrides, cfg.PortfolioOverrides, cfg.InstrumentOverrides, ledger)
 		if err != nil {
 			return err
 		}
@@ -128,13 +128,14 @@ load semantics.`)
 // buildSourceSpec assembles a loader.SourceSpec for one configured
 // silver source: translates `path` / `subsources` / `relationships`
 // to their silver-package counterparts and folds in the per-source
-// account_overrides + portfolio_overrides slices. Returns an error
-// when the config can't be translated (e.g. invalid
-// psn_start_override date).
+// account_overrides + portfolio_overrides + instrument_overrides
+// slices. Returns an error when the config can't be translated
+// (e.g. invalid psn_start_override date).
 func buildSourceSpec(
 	s config.SilverSource,
 	accountOverrides map[string]map[string]config.AccountOverride,
 	portfolioOverrides map[string]map[string]config.PortfolioOverride,
+	instrumentOverrides map[string]map[string]config.InstrumentOverride,
 	transferLedger map[string][]loader.TransferEntry,
 ) (loader.SourceSpec, error) {
 	openSpec, err := s.ToSilverOpenSpec()
@@ -165,6 +166,14 @@ func buildSourceSpec(
 		for portfolioID, ov := range cfgOvr {
 			spec.PortfolioOverrides[portfolioID] = loader.PortfolioOverride{
 				TaxWrapper: ov.TaxWrapper,
+			}
+		}
+	}
+	if cfgOvr := instrumentOverrides[s.ID]; len(cfgOvr) > 0 {
+		spec.InstrumentOverrides = make(map[string]loader.InstrumentOverride, len(cfgOvr))
+		for instrID, ov := range cfgOvr {
+			spec.InstrumentOverrides[instrID] = loader.InstrumentOverride{
+				AssetClass: ov.AssetClass,
 			}
 		}
 	}

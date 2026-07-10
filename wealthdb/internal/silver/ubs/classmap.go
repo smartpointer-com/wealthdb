@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
 // assetClassForInstrument classifies a PSN instrument using its
@@ -18,11 +19,22 @@ import (
 // CFI takes precedence even when its first character is one we
 // don't recognise — a known CFI is the strongest classification
 // signal we have. Only fully-empty CFI falls through to UAC.
-func assetClassForInstrument(cfi, uacAsstClsCd string) canonical.AssetClass {
+//
+// ETFs (CFI group `CE`) are further refined by their underlying
+// exposure from the instrument name — crypto / metal / bond ETFs
+// leave the `etf` bucket per the canonical taxonomy (see
+// silver.RefineETFClass).
+func assetClassForInstrument(cfi, uacAsstClsCd, name string) canonical.AssetClass {
+	var ac canonical.AssetClass
 	if cfi != "" {
-		return assetClassForCFI(cfi)
+		ac = assetClassForCFI(cfi)
+	} else {
+		ac = assetClassForUacAsstCls(uacAsstClsCd)
 	}
-	return assetClassForUacAsstCls(uacAsstClsCd)
+	if ac == canonical.AssetClassETF {
+		ac = silver.RefineETFClass(name)
+	}
+	return ac
 }
 
 // assetClassForCFI maps an ISO 10962 CFI code's first character
@@ -30,13 +42,20 @@ func assetClassForInstrument(cfi, uacAsstClsCd string) canonical.AssetClass {
 // designates the asset category:
 //
 //	E - Equities                → equity
-//	C - Collective investment   → fund
+//	C - Collective investment   → fund (CE group → etf, see below)
 //	D - Debt instruments        → bond
 //	O - Options                 → option
 //	F - Futures                 → future
 //	M - Others (mostly MM)      → money_market
 //	T - Structured / cash collateral → other
 //	R - Entitlements (rights)   → other
+//
+// Within category C the second character (the CFI group) singles
+// out exchange-traded funds: `CE` is the ISO 10962:2015 ETF group,
+// while `CI` is the standard (vanilla) investment-fund group. Only
+// `CE` maps to `etf`; every other C group (incl. hedge funds `CH`,
+// REITs `CB`, funds-of-funds `CF`) stays in the coarse `fund`
+// bucket until a finer canonical class is warranted.
 //
 // Empty CFI is *not* this function's concern — callers should go
 // through assetClassForInstrument, which routes empty CFI to the
@@ -49,6 +68,9 @@ func assetClassForCFI(cfi string) canonical.AssetClass {
 	case 'E':
 		return canonical.AssetClassEquity
 	case 'C':
+		if len(cfi) >= 2 && cfi[1] == 'E' {
+			return canonical.AssetClassETF
+		}
 		return canonical.AssetClassFund
 	case 'D':
 		return canonical.AssetClassBond

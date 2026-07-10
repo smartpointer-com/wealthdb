@@ -154,7 +154,7 @@ func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instru
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
 		out[isin] = instrumentMeta{
-			AssetClass: assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd),
+			AssetClass: assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best()),
 			Currency:   p.GacInstrRskCcyIsoCd,
 		}
 	}

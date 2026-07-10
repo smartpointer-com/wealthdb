@@ -236,6 +236,7 @@ func canonicalBalanceKind(silverKind string) canonical.BalanceKind {
 // appears under both positions and transactions[].transferItems[].
 type schwabInstrument struct {
 	AssetType   string `json:"assetType"`
+	Type        string `json:"type"`
 	CUSIP       string `json:"cusip"`
 	Symbol      string `json:"symbol"`
 	Description string `json:"description"`
@@ -308,11 +309,14 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 
 		// Real security position.
 		instrExtID := posKey
-		ac := assetClassFor(pp.Instrument.AssetType)
+		ac := assetClassFor(pp.Instrument.AssetType, pp.Instrument.Type)
 
 		name := pp.Instrument.Description
 		if name == "" && pp.Instrument.Symbol != "" {
 			name = instrumentNames[pp.Instrument.Symbol]
+		}
+		if ac == canonical.AssetClassETF {
+			ac = silver.RefineETFClass(name)
 		}
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,

@@ -67,7 +67,7 @@ one-letter switch is enough:
 | CFI first char | Gold `asset_class` |
 | --- | --- |
 | `E` | `equity` |
-| `C` | `fund` (Collective investment) |
+| `C` | `fund` (Collective investment); the `CE` group (ISO 10962:2015 ETFs) maps to `etf` and is then refined by underlying exposure from the instrument name (`silver.RefineETFClass` — crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf`) |
 | `D` | `bond` (Debt) |
 | `O` | `option` |
 | `F` | `future` |

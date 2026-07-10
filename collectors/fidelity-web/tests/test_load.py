@@ -437,8 +437,21 @@ def test_asset_class_classifier_covers_known_shapes():
     assert load._classify_asset_class(
         "ABCDY", "PLACEHOLDER ADR", 0,
     ) == "equity"
-    # ETF — 3-char alpha → equity (gold disambiguates further)
-    assert load._classify_asset_class("SPY", "S&P 500 ETF", 0) == "equity"
+    # ETF — Fidelity groups ETFs with stocks, so the word "ETF" in
+    # the description is the only signal
+    assert load._classify_asset_class("SPY", "S&P 500 ETF", 0) == "etf"
+    assert load._classify_asset_class(
+        "ABCD", "ISHARES TR PLACEHOLDER ETF", 0,
+    ) == "etf"
+    # Word boundary: N-ETF-LIX must not match
+    assert load._classify_asset_class("NFLX", "NETFLIX INC", 0) == "equity"
+    # Name-shy exchange-traded products stay equity — that's what
+    # the gold config's instrument_overrides are for
+    assert load._classify_asset_class(
+        "ABCD", "PLACEHOLDER TR METAL SHS", 0,
+    ) == "equity"
+    # Missing description never crashes the ETF check
+    assert load._classify_asset_class("ABCD", None, 0) == "equity"
 
 
 def test_dump_runs_no_balances_or_performance_columns(migrated, tmp_path):

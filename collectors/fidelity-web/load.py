@@ -534,14 +534,20 @@ _CUSIP9_RE = re.compile(r"^[A-Z0-9]{8}[0-9]$")
 _PLAN_FUND_RE = re.compile(r"^[A-Z]{3}[0-9]{6}$")
 # Industry mutual-fund convention: 5-char ticker ending in 'X'.
 _MUTUAL_FUND_RE = re.compile(r"^[A-Z]{4}X$")
+# Word-boundary "ETF" in the Description field. Fidelity groups
+# ETFs with stocks (no structured signal), but the fund sponsors
+# put "ETF" in the security name itself. The word boundary
+# matters: a substring match would also catch N-ETF-LIX.
+_ETF_DESC_RE = re.compile(r"\bETF\b", re.IGNORECASE)
 
 
 def _classify_asset_class(instrument_key, description, is_core_position):
     """Heuristic asset-class derivation from the Fidelity Symbol +
     Description fields. Order matters — first match wins. Returns
     one of 'money_market' / 'bond' / 'plan_fund' / 'mutual_fund' /
-    'equity'. Gold can override via reference data; this populates
-    the column for the common cases."""
+    'etf' / 'equity'. Gold can override via the config's
+    instrument_overrides; this populates the column for the common
+    cases."""
     if is_core_position:
         return "money_market"
     if not instrument_key:
@@ -559,6 +565,13 @@ def _classify_asset_class(instrument_key, description, is_core_position):
         return "bond"
     if _MUTUAL_FUND_RE.match(instrument_key):
         return "mutual_fund"
+    if description and _ETF_DESC_RE.search(description):
+        # Exchange-traded funds trade like stocks and Fidelity
+        # groups them with equities; the security name is the only
+        # signal. Misses name-shy exchange-traded products (e.g. a
+        # commodity trust whose name says "SHS") — those are what
+        # the gold config's instrument_overrides are for.
+        return "etf"
     return "equity"
 
 

@@ -329,21 +329,27 @@ func TestSnapshotsCashRouting(t *testing.T) {
 
 func TestSnapshotsAssetClassMapping(t *testing.T) {
 	cases := []struct {
-		schwabType string
-		want       canonical.AssetClass
+		schwabType     string
+		instrumentType string
+		want           canonical.AssetClass
 	}{
-		{"EQUITY", canonical.AssetClassEquity},
-		{"ETF", canonical.AssetClassETF},
-		{"MUTUAL_FUND", canonical.AssetClassFund},
-		{"BOND", canonical.AssetClassBond},
-		{"OPTION", canonical.AssetClassOption},
-		{"FUTURE", canonical.AssetClassFuture},
-		{"INDEX", canonical.AssetClassOther},
-		{"NEW_TYPE_2030", canonical.AssetClassOther},
+		{"EQUITY", "", canonical.AssetClassEquity},
+		{"ETF", "", canonical.AssetClassETF},
+		{"MUTUAL_FUND", "", canonical.AssetClassFund},
+		// Real Trader API dumps type ETFs as COLLECTIVE_INVESTMENT
+		// with the ETF-ness one level down in instrument.type.
+		{"COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", canonical.AssetClassETF},
+		{"COLLECTIVE_INVESTMENT", "", canonical.AssetClassFund},
+		{"COLLECTIVE_INVESTMENT", "UNIT_INVESTMENT_TRUST", canonical.AssetClassFund},
+		{"BOND", "", canonical.AssetClassBond},
+		{"OPTION", "", canonical.AssetClassOption},
+		{"FUTURE", "", canonical.AssetClassFuture},
+		{"INDEX", "", canonical.AssetClassOther},
+		{"NEW_TYPE_2030", "", canonical.AssetClassOther},
 	}
 	for _, c := range cases {
-		if got := assetClassFor(c.schwabType); got != c.want {
-			t.Errorf("assetClassFor(%q) = %q, want %q", c.schwabType, got, c.want)
+		if got := assetClassFor(c.schwabType, c.instrumentType); got != c.want {
+			t.Errorf("assetClassFor(%q, %q) = %q, want %q", c.schwabType, c.instrumentType, got, c.want)
 		}
 	}
 }

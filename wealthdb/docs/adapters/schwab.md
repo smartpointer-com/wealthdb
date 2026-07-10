@@ -65,13 +65,20 @@ derived from `payload.instrument.assetType`:
 | Schwab `assetType` | Gold `asset_class` |
 | --- | --- |
 | `EQUITY` | `equity` |
-| `ETF` | `etf` |
+| `ETF` | `etf` (in the API's enum, but real dumps use `COLLECTIVE_INVESTMENT` below) |
 | `MUTUAL_FUND` | `fund` |
 | `BOND` / `FIXED_INCOME` | `bond` |
 | `OPTION` | `option` |
 | `FUTURE` | `future` |
-| `COLLECTIVE_INVESTMENT` | `fund` |
+| `COLLECTIVE_INVESTMENT` | `fund`; with `instrument.type = EXCHANGE_TRADED_FUND` → `etf` — this is how the Trader API actually types ETFs |
 | (unrecognised) | `other` (original `assetType` preserved in payload) |
+
+Instruments landing in `etf` are then refined by underlying
+exposure from `instrument.description` (`silver.RefineETFClass`):
+crypto ETFs → `crypto`, bullion ETFs → `metal` (miners funds stay
+`etf` — they hold stocks), bond / fixed-income ETFs → `bond_etf`.
+Name-shy exchange-traded products are pinned via the config's
+`instrument_overrides` (DESIGN.md §13.9).
 
 ### `instrument.name` is empty for EQUITY positions
 

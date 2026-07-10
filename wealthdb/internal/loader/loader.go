@@ -43,6 +43,12 @@ type SourceSpec struct {
 	// Overrides — so an account-level override always wins over
 	// a portfolio-level one on the same column.
 	PortfolioOverrides map[string]PortfolioOverride
+	// InstrumentOverrides is the per-instrument_external_id
+	// override map for this source — asset_class values from the
+	// config-file `instrument_overrides` block. Applied after the
+	// adapter has classified, to the instrument dimension and to
+	// every position row referencing the instrument.
+	InstrumentOverrides map[string]InstrumentOverride
 	// TransferLedger holds this source's rows from the optional
 	// equity-transfer ledger (config `equity_transfers`). The loader
 	// injects each as a canonical transfer_in/transfer_out transaction
@@ -68,6 +74,14 @@ type AccountOverride struct {
 // wired through today; empty = no override.
 type PortfolioOverride struct {
 	TaxWrapper string
+}
+
+// InstrumentOverride is the loader's view of one config-file
+// instrument_overrides entry. AssetClass must be a valid
+// canonical enum value when non-empty — config validation
+// catches bad values upstream.
+type InstrumentOverride struct {
+	AssetClass string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -179,7 +193,7 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 			return nil, fmt.Errorf("Load(%s): delete window: %w", spec.ID, err)
 		}
 
-		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides)
+		nSnap, err := applySnapshots(ctx, tx, spec.ID, conn, window, spec.Overrides, spec.PortfolioOverrides, spec.InstrumentOverrides)
 		if err != nil {
 			return nil, fmt.Errorf("Load(%s): apply snapshots: %w", spec.ID, err)
 		}
@@ -283,11 +297,13 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 
 // applySnapshots drains conn.Snapshots into the gold writer.
 // Returns the total count of snapshot-grain rows written. The
-// override maps (either may be nil) are applied to AccountChange
-// records after stamping; portfolio_overrides go first so per-
-// account overrides win on overlap. See applyAccountOverrides
-// and applyPortfolioOverrides.
-func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride) (int, error) {
+// override maps (any may be nil) are applied after stamping:
+// account/portfolio overrides to AccountChange records
+// (portfolio_overrides go first so per-account overrides win on
+// overlap), instrument overrides to InstrumentChange and
+// PositionChange records. See applyAccountOverrides,
+// applyPortfolioOverrides and applyInstrumentOverrides.
+func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silver.Connection, w canonical.Window, overrides map[string]AccountOverride, portfolioOverrides map[string]PortfolioOverride, instrumentOverrides map[string]InstrumentOverride) (int, error) {
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
 		return 0, err
@@ -310,6 +326,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		// the same column (narrower scope wins).
 		applyPortfolioOverrides(batch.Accounts, portfolioOverrides)
 		applyAccountOverrides(batch.Accounts, overrides)
+		applyInstrumentOverrides(batch.Instruments, batch.Positions, instrumentOverrides)
 
 		// Portfolios first so the FK semantics on
 		// accounts.portfolio_external_id are satisfied (though
@@ -491,5 +508,35 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 			s := canonical.ManagementStyle(ov.ManagementStyle)
 			accounts[i].ManagementStyle = &s
 		}
+	}
+}
+
+// applyInstrumentOverrides patches each InstrumentChange whose
+// instrument_external_id appears in the overrides map, and every
+// PositionChange referencing such an instrument — positions carry
+// their own asset_class copy, so both must move together or the
+// dimension and the fact rows would disagree. Overrides for
+// instruments not in the batch are silently ignored (the position
+// may not be held in this snapshot window).
+func applyInstrumentOverrides(instruments []canonical.InstrumentChange, positions []canonical.PositionChange, overrides map[string]InstrumentOverride) {
+	if len(overrides) == 0 {
+		return
+	}
+	for i := range instruments {
+		ov, ok := overrides[instruments[i].InstrumentExternalID]
+		if !ok || ov.AssetClass == "" {
+			continue
+		}
+		instruments[i].AssetClass = canonical.AssetClass(ov.AssetClass)
+	}
+	for i := range positions {
+		if positions[i].InstrumentExternalID == nil {
+			continue
+		}
+		ov, ok := overrides[*positions[i].InstrumentExternalID]
+		if !ok || ov.AssetClass == "" {
+			continue
+		}
+		positions[i].AssetClass = canonical.AssetClass(ov.AssetClass)
 	}
 }

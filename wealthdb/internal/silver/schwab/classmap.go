@@ -20,9 +20,20 @@ var classMap = map[string]canonical.AssetClass{
 }
 
 // assetClassFor returns the canonical class for the given Schwab
-// assetType. Empty / unknown values become AssetClassOther; the
-// raw assetType is preserved in the position's payload.
-func assetClassFor(rawAssetType string) canonical.AssetClass {
+// assetType + instrument type pair. Schwab's Trader API reports
+// ETFs as assetType COLLECTIVE_INVESTMENT with the ETF-ness one
+// level down in `instrument.type` (EXCHANGE_TRADED_FUND) — the
+// standalone "ETF" assetType exists in the API's enum but real
+// position dumps don't use it. Both spellings map to `etf`;
+// COLLECTIVE_INVESTMENT with any other instrument type stays in
+// the coarse `fund` bucket. Empty / unknown assetTypes become
+// AssetClassOther; the raw values are preserved in the position's
+// payload.
+func assetClassFor(rawAssetType, rawInstrumentType string) canonical.AssetClass {
+	if rawAssetType == "COLLECTIVE_INVESTMENT" &&
+		rawInstrumentType == "EXCHANGE_TRADED_FUND" {
+		return canonical.AssetClassETF
+	}
 	if c, ok := classMap[rawAssetType]; ok {
 		return c
 	}
