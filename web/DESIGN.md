@@ -93,6 +93,11 @@ provisioning creates pre-defined metrics, questions and three dashboards —
 **Wealth Overview** and **Allocation** carry dashboard-level filters (a time
 range resp. a required as-of day, plus a source picker), **Data Freshness** is
 deliberately unfiltered — all of them MBQL/definition-only, no data baked in.
+Each dashboard also gets a **privacy twin** (linked from the dashboard's top
+row): same layout and filters, but its cards run over `_pct` models that
+normalize monetary values to % of peak — peak daily global net worth for
+holdings, the widget's own peak month for income/fee flows (a self-join
+against the aggregate's max) — and drop absolute-value columns entirely.
 Idempotent — re-running updates cards and dashboards in place and archives
 retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
@@ -101,6 +106,32 @@ back into the browser wizard.
 
 The container runs as root (temurin default), so it reads the mode-600
 gold snapshot without us having to loosen the snapshot's perms.
+
+## 7. Memory discipline (DuckDB runs in-process)
+
+The DuckDB engine lives inside the Metabase JVM, so one `java` process
+holds the JVM heap *plus* DuckDB's native memory. Unconstrained, DuckDB
+assumes 80% of the machine's RAM; a dashboard opening fires all of its
+tiles concurrently, and the history-heavy privacy queries once ballooned
+the process until the kernel OOM-killed it (taking the whole Docker VM's
+memory with it). Four settings work together, each load-bearing:
+
+- **DuckDB `memory_limit` (2GB) + `threads` (8)** — set by `provision.py`
+  as connection *details*, which the driver forwards as instance-level
+  JDBC config. They must NOT move into `init_sql`: that runs per pooled
+  connection, and DuckDB refuses to re-`SET` a used `temp_directory` —
+  the second connection then poisons every query after it.
+- **A writable spill mount** — the driver hard-wires DuckDB's
+  `temp_directory` to `<database_file>.tmp`, which sits on the read-only
+  snapshot mount. `web/web` mounts a host directory at exactly that path
+  so memory-capped queries spill to disk instead of failing.
+- **Container caps** (`--memory 8g`, `-Xmx2g`, `MALLOC_ARENA_MAX=2`) —
+  the backstop: a runaway kills only this container, never the VM; the
+  heap can't auto-size against the container cap; glibc doesn't hoard
+  arenas under DuckDB's thread pool.
+- **`--restart unless-stopped`** — if the backstop ever fires, Metabase
+  comes back on its own (metadata is safe on the H2 volume); a plain
+  `web stop` still stops it for good.
 
 ## Testing
 

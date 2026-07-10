@@ -34,13 +34,16 @@ check_not "v6 → no IPv4"     "127.0.0.1"           "$out"
 
 echo "== _docker_run_args (dual-stack, read-only snapshot mount) =="
 PORT=3000 BIND=both IMAGE=wealthdb/metabase:latest CONTAINER=wealthdb-metabase \
-    H2_DIR=/data/web/metabase SNAP=/data/web/snapshot/wealthdb.db
+    H2_DIR=/data/web/metabase SNAP=/data/web/snapshot/wealthdb.db \
+    SPILL_DIR=/data/web/spill
 _docker_run_args
 joined="${DOCKER_ARGS[*]}"
 check "detached"          "-d"                                                  "$joined"
 check "container name"    "--name wealthdb-metabase"                            "$joined"
+check "memory cap"        "--memory 8g"                                         "$joined"
 check "H2 volume"         "/data/web/metabase:/metabase-data"                   "$joined"
 check "snapshot RO mount" "/data/web/snapshot/wealthdb.db:/gold/wealthdb.db:ro" "$joined"
+check "spill mount"       "/data/web/spill:/gold/wealthdb.db.tmp"               "$joined"
 check "publish IPv4"      "127.0.0.1:3000:3000"                                 "$joined"
 check "publish IPv6"      "[::1]:3000:3000"                                     "$joined"
 check "image is last"     "wealthdb/metabase:latest"                            "$joined"

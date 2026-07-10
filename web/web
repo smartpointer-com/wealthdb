@@ -31,6 +31,11 @@ _resolve_knobs() {
     BIND="${WEALTHDB_WEB_BIND:-both}"   # both | v4 | v6
     H2_DIR="$DATA_DIR/metabase"
     SNAP="$DATA_DIR/snapshot/wealthdb.db"
+    # DuckDB spill space. The driver hard-wires its temp_directory to
+    # "<database_file>.tmp", which sits on the read-only snapshot mount —
+    # so a writable host dir is mounted at exactly that path, letting
+    # memory-capped queries spill to disk instead of dying.
+    SPILL_DIR="$DATA_DIR/spill"
 }
 
 # _load_config reads the resolved `web` settings (enabled, port) and
@@ -80,10 +85,23 @@ _docker_run_args() {
     DOCKER_ARGS=(
         run -d
         --name "$CONTAINER"
+        # Memory discipline. DuckDB runs in-process, so the JVM process
+        # holds heap + DuckDB native memory: the container cap keeps a
+        # runaway from taking the whole Docker VM to global OOM (DuckDB's
+        # own memory_limit is set on the connection by provision.py), the
+        # explicit -Xmx stops the heap from auto-sizing against the cap,
+        # and MALLOC_ARENA_MAX curbs glibc arena hoarding under DuckDB's
+        # thread pool. If the backstop ever fires anyway, restart rather
+        # than staying down (metadata lives on the H2 volume).
+        --memory 8g
+        --restart unless-stopped
+        -e JAVA_TOOL_OPTIONS=-Xmx2g
+        -e MALLOC_ARENA_MAX=2
         -e MB_DB_FILE=/metabase-data/metabase.db
         -e MB_ANON_TRACKING_ENABLED=false
         -v "${H2_DIR}:/metabase-data"
         -v "${SNAP}:/gold/wealthdb.db:ro"
+        -v "${SPILL_DIR}:/gold/wealthdb.db.tmp"
     )
     local tok
     while IFS= read -r tok; do
@@ -132,7 +150,7 @@ web_start() {
         return 1
     fi
     _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
-    mkdir -p "$H2_DIR" "$(dirname "$SNAP")"
+    mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
     [ -f "$SNAP" ] || { echo "web: taking initial gold snapshot…" >&2; _snapshot "$GOLD_DB" "$SNAP"; }
 
     _docker_run_args
@@ -256,8 +274,9 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
   The gold DuckDB database is pre-added as a read-only snapshot, with
   report models mirroring the global / portfolios / accounts /
   positions / transactions commands, plus pre-defined metrics and the
-  Wealth Overview / Allocation / Data Freshness dashboards (in the
-  'wealthdb (pre-defined)' collection; duplicate before customizing).
+  Wealth Overview / Allocation / Data Freshness dashboards, each with
+  a privacy twin showing values as % of peak (all in the 'wealthdb
+  (pre-defined)' collection; duplicate before customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.
 EOF
 }

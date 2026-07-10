@@ -46,6 +46,14 @@ port-forward; auth is Metabase's own login.
     time range resp. a required as-of day, plus a source picker) and
     **Data Freshness** (deliberately unfiltered, so stale sources
     stay visible).
+  - a **privacy twin** of each dashboard (same layout and filters,
+    switch links between the two views), whose cards run over `_pct`
+    models that normalize every monetary column to % of peak — peak
+    daily global net worth for holdings, the widget's own peak month
+    for income/fee flows — and drop columns that would leak absolute
+    values (base-currency totals, quantities, amounts, prices). Still
+    definitions only: the scale factors are computed by the queries at
+    run time, never stored.
   Provisioning is idempotent (updates in place, archives retired names)
   and **converges the pre-defined collection to spec on every start** —
   dashboards get their tile layout replaced wholesale. User content
@@ -74,6 +82,14 @@ trap, see DESIGN.md §3):
 
 When bumping pins, re-run the smoke test (provision + `SELECT count(*)
 FROM positions` through the driver) and update the sha256.
+
+A fourth invariant, same weight (DESIGN.md §7): **keep the memory
+discipline**. DuckDB runs in-process in the Metabase JVM — do not remove
+the container/JVM caps in `web/web`, the `memory_limit`/`threads`
+connection details in `provision.py`, or the writable spill mount at
+`<database_file>.tmp`; and never move DuckDB settings into `init_sql`
+(it runs per pooled connection, and re-`SET`ting a used
+`temp_directory` breaks every later query).
 
 ## 5. Provisioning is API-based and idempotent
 
