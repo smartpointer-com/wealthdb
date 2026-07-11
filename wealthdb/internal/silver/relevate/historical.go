@@ -202,6 +202,10 @@ SELECT snapshot_at, account_external_id, isin,
 			})
 		}
 
+		// V2 taxonomy pair, shared by the instrument and position
+		// changes below.
+		acNew, veh := taxonomyFor(asset, secName)
+
 		// One InstrumentChange per (snap, ISIN).
 		instKey := [2]int64{snap, int64(strHash(isin))}
 		if !instrumentEmitted[instKey] {
@@ -214,6 +218,8 @@ SELECT snapshot_at, account_external_id, isin,
 				Symbol:               &isinCopy,
 				Name:                 &nameCopy,
 				AssetClass:           assetClassFor(asset, secName),
+				AssetClassNew:        acNew,
+				Vehicle:              veh,
 				Currency:             &chf,
 				FirstSeenAt:          snap,
 				LastSeenAt:           snap,
@@ -230,6 +236,8 @@ SELECT snapshot_at, account_external_id, isin,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           assetClassFor(asset, secName),
+			AssetClassNew:        acNew,
+			Vehicle:              veh,
 			Currency:             ccy,
 			Payload:              json.RawMessage(payload),
 		}

@@ -318,9 +318,16 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		if ac == canonical.AssetClassETF {
 			ac = silver.RefineETFClass(name)
 		}
+		// Double-write the 2-D taxonomy alongside the legacy class
+		// (which stays the control). taxonomyFor splits the same
+		// assetType/type signal into (exposure, vehicle); name feeds
+		// the ETF/fund exposure refinement.
+		acNew, vehicle := taxonomyFor(pp.Instrument.AssetType, pp.Instrument.Type, name)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			CUSIP:                silver.StrPtrIfNonEmpty(pp.Instrument.CUSIP),
 			Symbol:               silver.StrPtrIfNonEmpty(pp.Instrument.Symbol),
 			Name:                 silver.StrPtrIfNonEmpty(name),
@@ -337,6 +344,8 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 			PositionKey:          posKey,
 			InstrumentExternalID: instrExtIDPtr,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			Currency:             "USD",
 			Quantity:             &quantity,
 			MarketValue:          pp.MarketValue,

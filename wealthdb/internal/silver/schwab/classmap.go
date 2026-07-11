@@ -1,6 +1,11 @@
 package schwab
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"regexp"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+)
 
 // classMap maps Schwab's `instrument.assetType` value to the
 // canonical AssetClass. Unrecognised values fall through to
@@ -38,6 +43,101 @@ func assetClassFor(rawAssetType, rawInstrumentType string) canonical.AssetClass 
 		return c
 	}
 	return canonical.AssetClassOther
+}
+
+// taxonomyFor is the 2-D-taxonomy counterpart of assetClassFor for
+// live api positions: it returns the (exposure, vehicle) pair
+// (TAXONOMY.md) that double-writes alongside the legacy 1-D
+// AssetClass. assetClassFor stays the control column; this decides
+// asset_class_new + vehicle. Same Schwab assetType/type signal, split
+// across the two dimensions:
+//
+//   - EQUITY                                     → (public_equity, stock)
+//   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (RefineETFExposure(name), etf)
+//   - COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND  → (RefineETFExposure(name), fund)
+//   - ETF (the standalone assetType enum value)  → (RefineETFExposure(name), etf)
+//   - BOND / FIXED_INCOME                        → (fixed_income, bond)
+//   - OPTION                                     → (public_equity, option)  [equity underlying]
+//   - FUTURE                                     → (public_equity, future)  [equity underlying]
+//   - anything else / empty                      → (other, other)
+//
+// RefineETFExposure reads the underlying exposure (crypto / metal /
+// fixed_income / else public_equity) from the fund/ETF's security
+// name — the wrapper (etf vs fund) is fixed by the assetType here,
+// only the exposure is name-derived. Name-shy products are corrected
+// via instrument_overrides. Every pair returned satisfies
+// canonical.ValidTaxonomyPair.
+func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetClass, canonical.Vehicle) {
+	switch rawAssetType {
+	case "EQUITY":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case "ETF":
+		return silver.RefineETFExposure(name), canonical.VehicleETF
+	case "MUTUAL_FUND":
+		return silver.RefineETFExposure(name), canonical.VehicleFund
+	case "COLLECTIVE_INVESTMENT":
+		if rawInstrumentType == "EXCHANGE_TRADED_FUND" {
+			return silver.RefineETFExposure(name), canonical.VehicleETF
+		}
+		return silver.RefineETFExposure(name), canonical.VehicleFund
+	case "BOND", "FIXED_INCOME":
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case "OPTION":
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	case "FUTURE":
+		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
+	}
+	return canonical.AssetClassOther, canonical.VehicleOther
+}
+
+// Instrument-key and description shapes for the statement-history
+// classifier. Ported from fidelity's classifyHistorical (that
+// source's statement PDFs share Schwab's lack of a structured type
+// code, so shape heuristics are all there is), pared to the shapes
+// Schwab statements actually surface: a CUSIP for bonds/options, an
+// OCC option symbol, a coupon-bearing fixed-income line, a word-ETF
+// or money-market description, and the 4-letter-plus-X mutual-fund
+// ticker. First match wins; the fall-through is a plain stock, the
+// overwhelming majority of statement lines.
+var (
+	// OCC option symbol: root + YYMMDD + C/P + strike.
+	histOptionKeyRe  = regexp.MustCompile(`^[A-Z.]{1,6}\d{6}[CP]\d+(\.\d+)?$`)
+	histOptionDescRe = regexp.MustCompile(`^(CALL|PUT)\b`)
+	histCUSIPRe      = regexp.MustCompile(`^[A-Z0-9]{8}[0-9]$`)
+	// Bond rows carry a coupon: "… 04.12500% 01/15/2042" / "FIXED COUPON".
+	histBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
+	// Money-market sweeps ("… GOVERNMENT MONEY MARKET", "… CASH RESERVES").
+	histMoneyMktRe   = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
+	histETFDescRe    = regexp.MustCompile(`\bETF\b`)
+	histMutualFundRe = regexp.MustCompile(`^[A-Z]{4}X$`)
+)
+
+// taxonomyHistorical derives the (exposure, vehicle) pair for a
+// `historical_position_snapshots` row from its instrument key and
+// statement description — the 2-D counterpart the legacy path leaves
+// as (other), which the api side later overwrites whenever the same
+// instrument reappears with a source-classified value. Money-market
+// funds are cash × fund (TAXONOMY.md §5.8); a word-ETF / mutual-fund
+// line takes its exposure from RefineETFExposure(description) inside
+// the etf / fund vehicle. Every returned pair satisfies
+// canonical.ValidTaxonomyPair; instrument_overrides remains the
+// escape hatch for shapes these heuristics misjudge.
+func taxonomyHistorical(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
+	switch {
+	case histOptionKeyRe.MatchString(instrumentKey),
+		histOptionDescRe.MatchString(description):
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	case histMoneyMktRe.MatchString(description):
+		return canonical.AssetClassCash, canonical.VehicleFund
+	case histCUSIPRe.MatchString(instrumentKey),
+		histBondDescRe.MatchString(description):
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case histETFDescRe.MatchString(description):
+		return silver.RefineETFExposure(description), canonical.VehicleETF
+	case histMutualFundRe.MatchString(instrumentKey):
+		return silver.RefineETFExposure(description), canonical.VehicleFund
+	}
+	return canonical.AssetClassPublicEquity, canonical.VehicleStock
 }
 
 // isCashAssetType reports whether a Schwab position's assetType

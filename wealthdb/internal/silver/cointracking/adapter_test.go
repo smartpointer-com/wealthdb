@@ -85,6 +85,9 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
         INSERT INTO dump_runs VALUES (1000, 2, '/x/1', NULL);
         INSERT INTO portfolios VALUES ('cu1', 1, 'aaa', 1000, NULL);
         INSERT INTO wallets VALUES ('cu1', 'cu1:Kraken', 'Kraken', 1000, NULL);
+        INSERT INTO transactions VALUES
+            ('tx1', 'cu1', 'cu1:Kraken', 1000, TIMESTAMP '2024-01-01 00:00:00',
+             'Trade', 2.0, 'BTC', 60000.0, 'USD', NULL, NULL, NULL, NULL, NULL);
         INSERT INTO positions_daily VALUES
             (DATE '2024-01-01', 'cu1', 'cu1:Kraken', 'BTC', 2.0, 1000),
             (DATE '2024-01-01', 'cu1', 'cu1:Kraken', 'USD', 500.0, 1000);
@@ -105,6 +108,7 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	// Drain to the snapshot batch carrying the 2024-01-01 holdings.
 	var crypto canonical.PositionChange
 	var cash canonical.CashBalanceChange
+	var btcInst canonical.InstrumentChange
 	var nPos, nCash int
 	for {
 		batch, more, err := stream.Next(context.Background())
@@ -119,9 +123,22 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 			nCash++
 			cash = c
 		}
+		for _, ins := range batch.Instruments {
+			if ins.InstrumentExternalID == "BTC" {
+				btcInst = ins
+			}
+		}
 		if !more {
 			break
 		}
+	}
+
+	// InstrumentChange carries the same 2-D pair as the position.
+	if btcInst.AssetClassNew != canonical.AssetClassCrypto {
+		t.Errorf("instrument asset_class_new = %q, want crypto", btcInst.AssetClassNew)
+	}
+	if btcInst.Vehicle != canonical.VehiclePhysical {
+		t.Errorf("instrument vehicle = %q, want physical", btcInst.Vehicle)
 	}
 
 	if nPos != 1 {
@@ -132,6 +149,18 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	}
 	if crypto.AssetClass != canonical.AssetClassCrypto {
 		t.Errorf("asset_class = %q, want crypto", crypto.AssetClass)
+	}
+	// 2-D taxonomy double-write: every cointracking holding is
+	// crypto exposure held directly in a wallet → crypto × physical.
+	if crypto.AssetClassNew != canonical.AssetClassCrypto {
+		t.Errorf("asset_class_new = %q, want crypto", crypto.AssetClassNew)
+	}
+	if crypto.Vehicle != canonical.VehiclePhysical {
+		t.Errorf("vehicle = %q, want physical", crypto.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(crypto.AssetClassNew, crypto.Vehicle) {
+		t.Errorf("(%q, %q) is not a valid taxonomy pair",
+			crypto.AssetClassNew, crypto.Vehicle)
 	}
 	if crypto.Currency != "USD" {
 		t.Errorf("currency = %q, want USD", crypto.Currency)

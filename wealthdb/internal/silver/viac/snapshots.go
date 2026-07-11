@@ -186,9 +186,12 @@ SELECT instrument_external_id, COALESCE(isin, ''),
 		if err := rows.Scan(&extID, &isin, &name, &currency, &rawClass, &firstSeen, &lastSeen, &payload); err != nil {
 			return err
 		}
+		classNew, vehicle := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: extID,
 			AssetClass:           assetClassFor(rawClass),
+			AssetClassNew:        classNew,
+			Vehicle:              vehicle,
 			FirstSeenAt:          firstSeen,
 			LastSeenAt:           lastSeen,
 			Payload:              json.RawMessage(payload),
@@ -229,7 +232,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 	// precision loss before parsing through shopspring/decimal.
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_external_id,
-       COALESCE(asset_class, ''),
+       COALESCE(asset_class, ''), COALESCE(name, ''),
        CAST(quantity          AS VARCHAR),
        CAST(market_value_chf  AS VARCHAR),
        CAST(acquisition_price AS VARCHAR),
@@ -243,12 +246,12 @@ SELECT snapshot_at, account_external_id, instrument_external_id,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                       int64
-			acct, isin, rawClass                       string
-			qtyStr, marketValueStr, acquisitionPxStr   sql.NullString
-			payload                                    string
+			snap                                     int64
+			acct, isin, rawClass, name               string
+			qtyStr, marketValueStr, acquisitionPxStr sql.NullString
+			payload                                  string
 		)
-		if err := rows.Scan(&snap, &acct, &isin, &rawClass,
+		if err := rows.Scan(&snap, &acct, &isin, &rawClass, &name,
 			&qtyStr, &marketValueStr, &acquisitionPxStr, &payload); err != nil {
 			return err
 		}
@@ -257,12 +260,15 @@ SELECT snapshot_at, account_external_id, instrument_external_id,
 			continue
 		}
 		instrumentKey := isin
+		classNew, vehicle := taxonomyFor(rawClass, name)
 		change := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
 			PositionKey:          isin,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClassFor(rawClass),
+			AssetClassNew:        classNew,
+			Vehicle:              vehicle,
 			Currency:             "CHF",
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(marketValueStr),

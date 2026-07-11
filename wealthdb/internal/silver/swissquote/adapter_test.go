@@ -106,6 +106,110 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 	}
 }
 
+// TestSnapshotsTaxonomyPair verifies the 2-D-taxonomy double-write:
+// each XLS section header maps to the expected (AssetClassNew,
+// Vehicle) pair on BOTH the InstrumentChange and the matching
+// PositionChange, the two agree, and every pair is admitted by
+// canonical.ValidTaxonomyPair. Collective-vehicle sections ("ETFs",
+// "Funds") get their exposure refined from the security name. All
+// names/symbols here are synthetic placeholders.
+func TestSnapshotsTaxonomyPair(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, '1234567', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload, name, isin) VALUES
+            (1000, '1234567', 'SYNSHR', 'CHF',
+             '{"asset_class":"Shares","currency":"CHF","symbol":"SYNSHR","quantity":1,"total_value":1}',
+             'Placeholder Equity Co', NULL),
+            (1000, '1234567', 'SYNETFEQ', 'USD',
+             '{"asset_class":"ETFs","currency":"USD","symbol":"SYNETFEQ","quantity":1,"total_value":1}',
+             'Placeholder Broad World ETF', NULL),
+            (1000, '1234567', 'SYNETFAU', 'USD',
+             '{"asset_class":"ETFs","currency":"USD","symbol":"SYNETFAU","quantity":1,"total_value":1}',
+             'Placeholder Physical Gold ETF', NULL),
+            (1000, '1234567', 'SYNETFBTC', 'USD',
+             '{"asset_class":"ETFs","currency":"USD","symbol":"SYNETFBTC","quantity":1,"total_value":1}',
+             'Placeholder Bitcoin ETF', NULL),
+            (1000, '1234567', 'SYNBOND', 'CHF',
+             '{"asset_class":"Bonds","currency":"CHF","symbol":"SYNBOND","quantity":1,"total_value":1}',
+             'Placeholder Corp Note', NULL),
+            (1000, '1234567', 'SYNFNDEQ', 'CHF',
+             '{"asset_class":"Funds","currency":"CHF","symbol":"SYNFNDEQ","quantity":1,"total_value":1}',
+             'Placeholder Growth Fund', NULL),
+            (1000, '1234567', 'SYNFNDBND', 'CHF',
+             '{"asset_class":"Funds","currency":"CHF","symbol":"SYNFNDBND","quantity":1,"total_value":1}',
+             'Placeholder Government Bond Fund', NULL),
+            (1000, '1234567', 'SYNOPT', 'USD',
+             '{"asset_class":"Options","currency":"USD","symbol":"SYNOPT","quantity":1,"total_value":1}',
+             'Placeholder Call Option', NULL),
+            (1000, '1234567', 'SYNPM', 'CHF',
+             '{"asset_class":"Precious Metals","currency":"CHF","symbol":"SYNPM","quantity":1,"total_value":1}',
+             'Placeholder Bullion Bar', NULL),
+            (1000, '1234567', 'SYNSP', 'CHF',
+             '{"asset_class":"Structured Products","currency":"CHF","symbol":"SYNSP","quantity":1,"total_value":1}',
+             'Placeholder Structured Note', NULL);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	type pair struct {
+		ac  canonical.AssetClass
+		veh canonical.Vehicle
+	}
+	want := map[string]pair{
+		"SYNSHR@CHF":    {canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		"SYNETFEQ@USD":  {canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		"SYNETFAU@USD":  {canonical.AssetClassMetal, canonical.VehicleETF},
+		"SYNETFBTC@USD": {canonical.AssetClassCrypto, canonical.VehicleETF},
+		"SYNBOND@CHF":   {canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		"SYNFNDEQ@CHF":  {canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		"SYNFNDBND@CHF": {canonical.AssetClassFixedIncome, canonical.VehicleFund},
+		"SYNOPT@USD":    {canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		"SYNPM@CHF":     {canonical.AssetClassMetal, canonical.VehiclePhysical},
+		"SYNSP@CHF":     {canonical.AssetClassOther, canonical.VehicleOther},
+	}
+
+	posByKey := map[string]canonical.PositionChange{}
+	for _, p := range batch.Positions {
+		posByKey[p.PositionKey] = p
+	}
+	instByKey := map[string]canonical.InstrumentChange{}
+	for _, i := range batch.Instruments {
+		instByKey[i.InstrumentExternalID] = i
+	}
+	if len(posByKey) != len(want) || len(instByKey) != len(want) {
+		t.Fatalf("emitted %d positions / %d instruments, want %d each", len(posByKey), len(instByKey), len(want))
+	}
+
+	for key, wp := range want {
+		if !canonical.ValidTaxonomyPair(wp.ac, wp.veh) {
+			t.Fatalf("test bug: (%s, %s) is not a valid taxonomy pair", wp.ac, wp.veh)
+		}
+		p := posByKey[key]
+		if p.AssetClassNew != wp.ac || p.Vehicle != wp.veh {
+			t.Errorf("position %s: (AssetClassNew, Vehicle) = (%s, %s), want (%s, %s)",
+				key, p.AssetClassNew, p.Vehicle, wp.ac, wp.veh)
+		}
+		i := instByKey[key]
+		if i.AssetClassNew != wp.ac || i.Vehicle != wp.veh {
+			t.Errorf("instrument %s: (AssetClassNew, Vehicle) = (%s, %s), want (%s, %s)",
+				key, i.AssetClassNew, i.Vehicle, wp.ac, wp.veh)
+		}
+		// Instrument and position must agree on the pair.
+		if p.AssetClassNew != i.AssetClassNew || p.Vehicle != i.Vehicle {
+			t.Errorf("%s: position/instrument pair disagree: (%s,%s) vs (%s,%s)",
+				key, p.AssetClassNew, p.Vehicle, i.AssetClassNew, i.Vehicle)
+		}
+	}
+}
+
 // TestSnapshotsInstrumentNameAndISIN verifies the swissquote
 // v3 `name` and `isin` columns surface on the InstrumentChange,
 // and that the per-bank identifier becomes the ISIN when one is

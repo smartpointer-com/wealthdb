@@ -1,6 +1,11 @@
 package viac
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"regexp"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+)
 
 // taxWrapperFor maps silver's `accounts.product_code` to the
 // canonical tax_wrapper. Unknown codes fall through to
@@ -30,6 +35,67 @@ func assetClassFor(raw string) canonical.AssetClass {
 		return c
 	}
 	return canonical.AssetClassOther
+}
+
+// listedPrivateEquityRe matches the one exchange-traded holding in the
+// otherwise all-CSIF VIAC universe: the iShares Listed Private Equity
+// UCITS ETF. Silver's coarse asset_class (equity / other) can't tell it
+// apart from the CSIF equity funds, so it's recognised by name.
+var listedPrivateEquityRe = regexp.MustCompile(`(?i)private\s+equity`)
+
+// taxonomyFor derives the 2-D taxonomy pair (exposure, vehicle) — see
+// docs/TAXONOMY.md — from silver's legacy `asset_class` plus the
+// instrument name. It runs alongside (never replaces) assetClassFor,
+// which keeps deriving the legacy 1-D control column.
+//
+// Every VIAC holding is a Credit Suisse Index Fund (CSIF) — a
+// non-exchange-traded institutional index fund, so the vehicle is
+// `fund` throughout — except the one listed private-equity ETF, which
+// is exchange-traded (`etf`). Exposure comes from silver's already-
+// canonicalised class where it's unambiguous; the legacy 'other'
+// (VIAC's ALTERNATIVES sleeve) falls back to a name-derived exposure.
+//
+// The returned pair always satisfies canonical.ValidTaxonomyPair.
+func taxonomyFor(rawClass, name string) (canonical.AssetClass, canonical.Vehicle) {
+	// Name-based special case first: the iShares Listed Private Equity
+	// ETF, regardless of whether silver filed it under EQUITIES or
+	// ALTERNATIVES. Listed PE is private-equity exposure in an ETF
+	// wrapper (TAXONOMY.md §5.3).
+	if listedPrivateEquityRe.MatchString(name) {
+		return canonical.AssetClassPrivateEquity, canonical.VehicleETF
+	}
+	switch assetClassFor(rawClass) {
+	case canonical.AssetClassEquity:
+		// CSIF equity index funds.
+		return canonical.AssetClassPublicEquity, canonical.VehicleFund
+	case canonical.AssetClassBond:
+		// CSIF bond index funds.
+		return canonical.AssetClassFixedIncome, canonical.VehicleFund
+	case canonical.AssetClassFund:
+		// Silver maps VIAC's REAL_ESTATE section to legacy 'fund': a
+		// property CSIF is real-estate exposure in a fund wrapper.
+		return canonical.AssetClassRealEstate, canonical.VehicleFund
+	case canonical.AssetClassMetal:
+		// COMMODITIES sleeve — a physical-precious-metal CSIF.
+		return canonical.AssetClassMetal, canonical.VehicleFund
+	case canonical.AssetClassMoneyMarket:
+		// LIQUIDITY money-market fund → cash exposure, fund wrapper
+		// (TAXONOMY.md §5.8: money-market funds are cash, not fixed
+		// income).
+		return canonical.AssetClassCash, canonical.VehicleFund
+	}
+	// Legacy 'other' (VIAC's ALTERNATIVES sleeve) and any unknown class:
+	// recover the exposure from the fund name where it's unambiguous.
+	// silver.RefineETFExposure returns public_equity as its "name reveals
+	// nothing" default; for an ALTERNATIVES holding that default isn't
+	// meaningful, so only a name that clearly reads crypto / metal /
+	// fixed-income drives the exposure — anything else stays (other,
+	// other). The wrapper remains fund (CSIF).
+	switch exp := silver.RefineETFExposure(name); exp {
+	case canonical.AssetClassCrypto, canonical.AssetClassMetal, canonical.AssetClassFixedIncome:
+		return exp, canonical.VehicleFund
+	}
+	return canonical.AssetClassOther, canonical.VehicleOther
 }
 
 // txKindFor maps silver's already-canonicalised `transactions.kind`

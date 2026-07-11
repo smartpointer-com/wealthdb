@@ -2,6 +2,8 @@ package ubs
 
 import (
 	"log"
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -128,6 +130,133 @@ func assetClassForUacAsstCls(code string) canonical.AssetClass {
 		return canonical.AssetClassMetal
 	}
 	return canonical.AssetClassOther
+}
+
+// ---- 2-D taxonomy (asset_class × vehicle) ---------------------------------
+//
+// The functions below derive the two-dimensional taxonomy pair
+// (exposure + wrapper, TAXONOMY.md) that runs BESIDE the legacy 1-D
+// asset_class above during the migration. The legacy derivation is a
+// control and stays untouched; this is a second, independent
+// derivation the adapter double-writes (see docs/TAXONOMY-PLAN.md).
+
+// taxPair is a 2-D taxonomy pair. It travels through the adapter
+// alongside the legacy 1-D class (e.g. inside instrumentMeta) so the
+// web overlay can stamp web-emitted instruments with the pair PSN
+// would derive, exactly as it already does for the legacy class.
+type taxPair struct {
+	AssetClass canonical.AssetClass
+	Vehicle    canonical.Vehicle
+}
+
+// currencyLinkedRe matches a security name that reads as a currency-
+// or FX-linked product. UBS "T" (structured) CFI codes cover both
+// equity-linked notes and dual-currency / currency-linked notes; the
+// name is the only signal separating them. Word boundaries keep "FX"
+// from matching inside a longer token.
+var currencyLinkedRe = regexp.MustCompile(`(?i)\bcurrenc(?:y|ies)\b|\bFX\b|\bforex\b|foreign exchange|dual currency`)
+
+// taxonomyPairForInstrument is the 2-D-taxonomy counterpart of
+// assetClassForInstrument (its legacy 1-D sibling): it derives the
+// (exposure, vehicle) pair for a PSN instrument from the same signals
+// — CFI first character drives the vehicle, CFI/UAC drive the exposure
+// — per TAXONOMY.md §6.
+//
+// CFI first character → vehicle (with its default exposure):
+//
+//	E → stock,   public_equity
+//	C → etf (CE group) / fund (other C groups); exposure from the
+//	    security name (silver.RefineETFExposure), sharpened by UAC
+//	D → bond,    fixed_income
+//	O → option,  public_equity (equity-option underlying)
+//	F → future,  public_equity
+//	R → right,   public_equity (subscription right)
+//	T / other → structured_product, public_equity (equity-linked) —
+//	    or foreign_exchange when the name reads currency-/FX-linked
+//
+// Empty CFI routes to the UAC fallback (custody items UBS surfaces
+// with no CFI: money-market placements, direct equity, private-market
+// LP interests, gold bars).
+func taxonomyPairForInstrument(cfi, uacAsstClsCd, name string) (canonical.AssetClass, canonical.Vehicle) {
+	if cfi == "" {
+		return taxonomyPairForUAC(uacAsstClsCd, name)
+	}
+	switch cfi[0] {
+	case 'E':
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case 'C':
+		// Collective vehicle: CE is the ISO 10962 ETF group; every
+		// other C group is a (non-exchange-traded) fund.
+		vehicle := canonical.VehicleFund
+		if len(cfi) >= 2 && cfi[1] == 'E' {
+			vehicle = canonical.VehicleETF
+		}
+		// UAC sharpens the exposure the CFI can't see: 0100 is a
+		// money-market (cash) fund, 0400 a private-market vehicle.
+		switch uacAsstClsCd {
+		case "0100":
+			return canonical.AssetClassCash, canonical.VehicleFund
+		case "0400":
+			return privateMarketsPair(name)
+		}
+		return silver.RefineETFExposure(name), vehicle
+	case 'D':
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case 'O':
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	case 'F':
+		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
+	case 'R':
+		return canonical.AssetClassPublicEquity, canonical.VehicleRight
+	default:
+		// 'T' structured products and any unrecognised CFI: a
+		// structured note. Currency-linked notes carry FX exposure;
+		// everything else is equity-linked by default.
+		if currencyLinkedRe.MatchString(name) {
+			return canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct
+		}
+		return canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct
+	}
+}
+
+// taxonomyPairForUAC maps UBS's internal UacAsstClsCd to a
+// (exposure, vehicle) pair for custody items UBS surfaces with an
+// empty CFI. Mirrors assetClassForUacAsstCls's coverage:
+//
+//	0100 → cash × fund           (money-market placement; the "or
+//	       time_deposit" wrapper in TAXONOMY.md §4 belongs to the
+//	       separate money-market-contract path, not custody items)
+//	0300 → public_equity × stock (direct equity)
+//	0400 → private-markets family (split by name; privateMarketsPair)
+//	0600 → metal × physical      (vaulted gold bars)
+//	else → other × other
+func taxonomyPairForUAC(uacAsstClsCd, name string) (canonical.AssetClass, canonical.Vehicle) {
+	switch uacAsstClsCd {
+	case "0100":
+		return canonical.AssetClassCash, canonical.VehicleFund
+	case "0300":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case "0400":
+		return privateMarketsPair(name)
+	case "0600":
+		return canonical.AssetClassMetal, canonical.VehiclePhysical
+	}
+	return canonical.AssetClassOther, canonical.VehicleOther
+}
+
+// privateMarketsPair splits UBS's conflated "hedge funds & private
+// markets" UAC bucket (0400) into the three canonical exposures the
+// taxonomy separates, keyed on the security name (the UAC code alone
+// doesn't distinguish them). All three are held via the fund wrapper.
+func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "infrastructure"):
+		return canonical.AssetClassInfrastructure, canonical.VehicleFund
+	case strings.Contains(lower, "hedge"):
+		return canonical.AssetClassHedgeFund, canonical.VehicleFund
+	}
+	return canonical.AssetClassPrivateEquity, canonical.VehicleFund
 }
 
 // taxWrapperForCashAcctTp / taxWrapperForSafekeepingAcctTp map a

@@ -265,6 +265,9 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		if ac == canonical.AssetClassETF {
 			ac = silver.RefineETFClass(name)
 		}
+		// 2-D taxonomy (double-write): the exposure/vehicle pair runs
+		// alongside the legacy `ac` above without altering it.
+		acNew, vehicle := taxonomyFor(p.AssetClass, name)
 
 		effectiveISIN := isin
 		if effectiveISIN == "" {
@@ -280,6 +283,8 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: positionKey,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			ISIN:                 silver.StrPtrIfNonEmpty(effectiveISIN),
 			Symbol:               silver.StrPtrIfNonEmpty(symbol),
 			Name:                 silver.StrPtrIfNonEmpty(name),
@@ -296,6 +301,8 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 			PositionKey:          positionKey,
 			InstrumentExternalID: &instrIDCopy,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             p.Quantity,
 			MarketValue:          p.effectiveMarketValue(),

@@ -236,6 +236,13 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if posByT[iso(t, "2022-01-01")]["d1"].AssetClass != canonical.AssetClassSPV {
 		t.Errorf("d1 asset_class = %q, want spv", posByT[iso(t, "2022-01-01")]["d1"].AssetClass)
 	}
+	// 2-D taxonomy (double-write): the SPV maps to private_equity × spv on
+	// both the position and its instrument, and the pair must be admitted.
+	assertPair(t, "d1 position", posByT[iso(t, "2022-01-01")]["d1"].AssetClassNew,
+		posByT[iso(t, "2022-01-01")]["d1"].Vehicle,
+		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
+	assertPair(t, "d1 instrument", instByID["d1"].AssetClassNew, instByID["d1"].Vehicle,
+		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
 
 	// 2022-06-01: d1 (forward-filled to its investment), d3 (invested
 	// 2022-03-01), d2 (invested today).
@@ -246,6 +253,12 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if at["d2"].AssetClass != canonical.AssetClassPrivateFund {
 		t.Errorf("d2 asset_class = %q, want private_fund", at["d2"].AssetClass)
 	}
+	// The multi-company fund maps to private_equity × fund (a different vehicle,
+	// same exposure as the SPV) on both the position and its instrument.
+	assertPair(t, "d2 position", at["d2"].AssetClassNew, at["d2"].Vehicle,
+		canonical.AssetClassPrivateEquity, canonical.VehicleFund)
+	assertPair(t, "d2 instrument", instByID["d2"].AssetClassNew, instByID["d2"].Vehicle,
+		canonical.AssetClassPrivateEquity, canonical.VehicleFund)
 	if at["d2"].Quantity != nil {
 		t.Errorf("d2 (fund) quantity = %v, want nil", at["d2"].Quantity)
 	}
@@ -380,5 +393,44 @@ func TestTransactions(t *testing.T) {
 	want("cf-d3-dist:sell", "d3", canonical.TxKindSell, "0.00")
 	if _, ok := byID["cf-d3-dist:withdrawal"]; ok {
 		t.Error("a $0 withdrawal was emitted for the $0 exit; it must be omitted")
+	}
+}
+
+// assertPair checks a double-written 2-D (exposure, vehicle) pair against the
+// expected values and asserts the taxonomy admits it.
+func assertPair(t *testing.T, what string, gotAC canonical.AssetClass, gotV canonical.Vehicle,
+	wantAC canonical.AssetClass, wantV canonical.Vehicle) {
+	t.Helper()
+	if gotAC != wantAC || gotV != wantV {
+		t.Errorf("%s taxonomy pair = (%q, %q), want (%q, %q)", what, gotAC, gotV, wantAC, wantV)
+	}
+	if !canonical.ValidTaxonomyPair(gotAC, gotV) {
+		t.Errorf("%s taxonomy pair (%q, %q) is not an admitted combination", what, gotAC, gotV)
+	}
+}
+
+// TestTaxonomyForKind pins the kind → (exposure, vehicle) mapping and its
+// unknown-kind default, and asserts every emitted pair is admitted.
+func TestTaxonomyForKind(t *testing.T) {
+	cases := []struct {
+		kind   string
+		wantAC canonical.AssetClass
+		wantV  canonical.Vehicle
+	}{
+		{"spv", canonical.AssetClassPrivateEquity, canonical.VehicleSPV},
+		{"private_fund", canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+		// unknown/empty defaults to the fund vehicle (never over-claims an SPV).
+		{"", canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+		{"something_new", canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+	}
+	for _, c := range cases {
+		gotAC, gotV := taxonomyForKind(c.kind)
+		if gotAC != c.wantAC || gotV != c.wantV {
+			t.Errorf("taxonomyForKind(%q) = (%q, %q), want (%q, %q)",
+				c.kind, gotAC, gotV, c.wantAC, c.wantV)
+		}
+		if !canonical.ValidTaxonomyPair(gotAC, gotV) {
+			t.Errorf("taxonomyForKind(%q) pair (%q, %q) not admitted", c.kind, gotAC, gotV)
+		}
 	}
 }

@@ -222,10 +222,22 @@ func TestSnapshotsBasic(t *testing.T) {
 	if batch.Instruments[0].AssetClass != canonical.AssetClassEquity {
 		t.Errorf("asset_class = %q, want equity", batch.Instruments[0].AssetClass)
 	}
+	// 2-D double-write: an EQUITY row is public_equity × stock on
+	// both the instrument and the position (they must agree).
+	if got := batch.Instruments[0].AssetClassNew; got != canonical.AssetClassPublicEquity {
+		t.Errorf("instrument asset_class_new = %q, want public_equity", got)
+	}
+	if got := batch.Instruments[0].Vehicle; got != canonical.VehicleStock {
+		t.Errorf("instrument vehicle = %q, want stock", got)
+	}
 	if len(batch.Positions) != 1 {
 		t.Fatalf("positions = %+v", batch.Positions)
 	}
 	p := batch.Positions[0]
+	if p.AssetClassNew != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleStock {
+		t.Errorf("position (asset_class_new, vehicle) = (%q, %q), want (public_equity, stock)",
+			p.AssetClassNew, p.Vehicle)
+	}
 	if p.PositionKey != "037833100" {
 		t.Errorf("position key = %q", p.PositionKey)
 	}
@@ -350,6 +362,95 @@ func TestSnapshotsAssetClassMapping(t *testing.T) {
 	for _, c := range cases {
 		if got := assetClassFor(c.schwabType, c.instrumentType); got != c.want {
 			t.Errorf("assetClassFor(%q, %q) = %q, want %q", c.schwabType, c.instrumentType, got, c.want)
+		}
+	}
+}
+
+// TestTaxonomyForLive pins the 2-D (exposure, vehicle) pairs the
+// live-api path double-writes alongside the legacy class. Security
+// names are synthetic placeholders; only the exposure keywords
+// (BITCOIN / GOLD / TREASURY BOND / plain) matter to
+// RefineETFExposure. Every emitted pair must satisfy
+// canonical.ValidTaxonomyPair.
+func TestTaxonomyForLive(t *testing.T) {
+	cases := []struct {
+		assetType   string
+		instrType   string
+		name        string
+		wantClass   canonical.AssetClass
+		wantVehicle canonical.Vehicle
+	}{
+		{"EQUITY", "", "", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		// COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → etf, exposure by name.
+		{"COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", "PLACEHOLDER BITCOIN ETF", canonical.AssetClassCrypto, canonical.VehicleETF},
+		{"COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		{"COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", "PLACEHOLDER GROWTH ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		// Standalone ETF assetType behaves the same.
+		{"ETF", "", "PLACEHOLDER GOLD ETF", canonical.AssetClassMetal, canonical.VehicleETF},
+		// COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND → fund, exposure by name.
+		{"COLLECTIVE_INVESTMENT", "UNIT_INVESTMENT_TRUST", "PLACEHOLDER 500 INDEX FUND", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"MUTUAL_FUND", "", "PLACEHOLDER GOLD FUND", canonical.AssetClassMetal, canonical.VehicleFund},
+		{"BOND", "", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"FIXED_INCOME", "", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"OPTION", "", "", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		{"FUTURE", "", "", canonical.AssetClassPublicEquity, canonical.VehicleFuture},
+		{"INDEX", "", "", canonical.AssetClassOther, canonical.VehicleOther},
+		{"NEW_TYPE_2030", "", "", canonical.AssetClassOther, canonical.VehicleOther},
+	}
+	for _, c := range cases {
+		gotClass, gotVehicle := taxonomyFor(c.assetType, c.instrType, c.name)
+		if gotClass != c.wantClass || gotVehicle != c.wantVehicle {
+			t.Errorf("taxonomyFor(%q, %q, %q) = (%q, %q), want (%q, %q)",
+				c.assetType, c.instrType, c.name, gotClass, gotVehicle, c.wantClass, c.wantVehicle)
+		}
+		if !canonical.ValidTaxonomyPair(gotClass, gotVehicle) {
+			t.Errorf("taxonomyFor(%q, %q, %q) → invalid pair (%q, %q)",
+				c.assetType, c.instrType, c.name, gotClass, gotVehicle)
+		}
+	}
+}
+
+// TestTaxonomyHistorical pins the statement-history shape classifier
+// that produces real (exposure, vehicle) pairs where the legacy path
+// leaves `other`. Instrument keys and descriptions are synthetic
+// placeholders shaped to trip each heuristic (OCC symbol, CUSIP-9,
+// coupon line, money-market / word-ETF description, mutual-fund
+// ticker). Every emitted pair must satisfy canonical.ValidTaxonomyPair.
+func TestTaxonomyHistorical(t *testing.T) {
+	cases := []struct {
+		key         string
+		desc        string
+		wantClass   canonical.AssetClass
+		wantVehicle canonical.Vehicle
+	}{
+		// OCC option symbol → equity option.
+		{"XYZ250117C50000", "", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		// CALL/PUT description → equity option.
+		{"EXOPT", "CALL PLACEHOLDER CORP 50 EXP 01/17/25", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		// Money-market sweep → cash × fund.
+		{"EXMMF", "PLACEHOLDER GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+		// CUSIP-9 key → fixed income bond.
+		{"ABCDEFGH1", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		// Coupon-bearing description → fixed income bond.
+		{"EXBND", "PLACEHOLDER NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		// Word-ETF description → exposure by name inside etf.
+		{"EXETF", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		{"EXETF", "PLACEHOLDER GROWTH ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		// Mutual-fund ticker (4 letters + X) → exposure by name inside fund.
+		{"ABCDX", "PLACEHOLDER BITCOIN FUND", canonical.AssetClassCrypto, canonical.VehicleFund},
+		{"WXYZX", "", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		// Fall-through → plain equity stock.
+		{"TICKR", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+	}
+	for _, c := range cases {
+		gotClass, gotVehicle := taxonomyHistorical(c.key, c.desc)
+		if gotClass != c.wantClass || gotVehicle != c.wantVehicle {
+			t.Errorf("taxonomyHistorical(%q, %q) = (%q, %q), want (%q, %q)",
+				c.key, c.desc, gotClass, gotVehicle, c.wantClass, c.wantVehicle)
+		}
+		if !canonical.ValidTaxonomyPair(gotClass, gotVehicle) {
+			t.Errorf("taxonomyHistorical(%q, %q) → invalid pair (%q, %q)",
+				c.key, c.desc, gotClass, gotVehicle)
 		}
 	}
 }

@@ -17,3 +17,22 @@ func assetClassForKind(kind string) canonical.AssetClass {
 	}
 	return canonical.AssetClassPrivateFund
 }
+
+// taxonomyForKind maps the silver vehicles.kind to the 2-D V2 taxonomy
+// pair (exposure, vehicle) that runs alongside the legacy AssetClass
+// from assetClassForKind. Both single-company SPVs/RUVs and
+// multi-company private funds are unlisted-company ownership, so the
+// exposure is private_equity for both; the vehicle preserves the
+// SPV-vs-fund distinction the legacy 1-D class folded into asset_class
+// (spv -> spv, fund -> fund). An unknown/empty kind defaults to the
+// generic private fund, mirroring assetClassForKind. The returned pair
+// always satisfies canonical.ValidTaxonomyPair.
+func taxonomyForKind(kind string) (canonical.AssetClass, canonical.Vehicle) {
+	switch kind {
+	case "spv":
+		return canonical.AssetClassPrivateEquity, canonical.VehicleSPV
+	case "fund":
+		return canonical.AssetClassPrivateEquity, canonical.VehicleFund
+	}
+	return canonical.AssetClassPrivateEquity, canonical.VehicleFund
+}

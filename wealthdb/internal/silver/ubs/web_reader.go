@@ -188,6 +188,7 @@ func (r *webReader) snapshotsForOverlap(
 	w canonical.Window,
 	cutoffByWebRel map[string]int64,
 	psnAssetClass map[string]canonical.AssetClass,
+	psnTaxPair map[string]taxPair,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -214,7 +215,7 @@ func (r *webReader) snapshotsForOverlap(
 	if err := r.appendWebAccounts(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
-	if err := r.appendWebInstruments(ctx, w, byTime, psnAssetClass); err != nil {
+	if err := r.appendWebInstruments(ctx, w, byTime, psnAssetClass, psnTaxPair); err != nil {
 		return nil, err
 	}
 
@@ -254,7 +255,11 @@ func (r *webReader) snapshotsForOverlap(
 // keeps the cross-source upsert idempotent on asset_class while
 // letting web win on Name. Missing ISINs (not in PSN) fall back
 // to AssetClassOther.
-func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnAssetClass map[string]canonical.AssetClass) error {
+//
+// psnTaxPair carries the 2-D-taxonomy counterpart (exposure,
+// vehicle) and is stamped the same way, in lockstep with the legacy
+// class; missing ISINs fall back to (other, other).
+func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnAssetClass map[string]canonical.AssetClass, psnTaxPair map[string]taxPair) error {
 	const q = `
 SELECT snapshot_at, instrument_isin, currency_iso, description
   FROM positions
@@ -284,6 +289,12 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		if c, ok := psnAssetClass[isin]; ok && c != "" {
 			ac = c
 		}
+		acNew := canonical.AssetClassOther
+		vehicle := canonical.VehicleOther
+		if tp, ok := psnTaxPair[isin]; ok && tp.AssetClass != "" {
+			acNew = tp.AssetClass
+			vehicle = tp.Vehicle
+		}
 		isinCopy := isin
 		// UBS web descriptions encode the listing ticker in
 		// trailing parens — e.g. "Reg.shs Novartis Inc.
@@ -296,6 +307,8 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			ISIN:                 &isinCopy,
 			Symbol:               symbol,
 			Name:                 silver.StrPtrIfNonEmpty(description.String),
@@ -1076,6 +1089,8 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: extID,
 			AssetClass:           canonical.AssetClassMortgage,
+			AssetClassNew:        canonical.AssetClassRealEstate,
+			Vehicle:              canonical.VehicleMortgage,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
 			Currency:             silver.StrPtrIfNonEmpty(currency),
 			FirstSeenAt:          snap,
@@ -1140,6 +1155,8 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 			PositionKey:          extID,
 			InstrumentExternalID: &idCopy,
 			AssetClass:           canonical.AssetClassMortgage,
+			AssetClassNew:        canonical.AssetClassRealEstate,
+			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
 			MarketValue:          mv,
 			Payload:              json.RawMessage(payload),

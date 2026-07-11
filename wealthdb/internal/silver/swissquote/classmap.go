@@ -1,6 +1,9 @@
 package swissquote
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
+)
 
 // taxWrapperFor maps the silver-side `accounts.account_product`
 // label (Swissquote's per-account product designation, scraped
@@ -52,5 +55,41 @@ func assetClassFor(xlsHeader string) canonical.AssetClass {
 		// "Structured Products", anything new from a Swissquote
 		// UI redesign, or empty.
 		return canonical.AssetClassOther
+	}
+}
+
+// taxonomyFor is the 2-D-taxonomy counterpart of assetClassFor: it
+// maps a Swissquote XLS section header to a (exposure, vehicle) pair
+// per TAXONOMY.md, running alongside the legacy assetClassFor during
+// the double-write migration (the legacy call is the control; this
+// feeds the new asset_class_new + vehicle columns).
+//
+// The vehicle is pinned by the section header; the exposure is fixed
+// except for the two collective-vehicle sections ("ETFs", "Funds"),
+// whose exposure is refined from the security name via
+// silver.RefineETFExposure (crypto / metal / fixed_income, else the
+// public_equity default). Options are the underlying's exposure —
+// Swissquote surfaces equity options, so public_equity. Unknown /
+// structured-product headers fall through to (other, other); a
+// name-shy holding that lands there is corrected by config
+// instrument_overrides, not here.
+//
+// Every pair returned satisfies canonical.ValidTaxonomyPair.
+func taxonomyFor(xlsHeader, name string) (canonical.AssetClass, canonical.Vehicle) {
+	switch xlsHeader {
+	case "Shares", "Stocks":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case "ETFs":
+		return silver.RefineETFExposure(name), canonical.VehicleETF
+	case "Bonds":
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case "Funds":
+		return silver.RefineETFExposure(name), canonical.VehicleFund
+	case "Options":
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	case "Precious Metals":
+		return canonical.AssetClassMetal, canonical.VehiclePhysical
+	default:
+		return canonical.AssetClassOther, canonical.VehicleOther
 	}
 }

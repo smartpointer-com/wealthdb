@@ -102,6 +102,22 @@ func TestSnapshotsCorePositionBecomesCash(t *testing.T) {
 	if p.MarketValue == nil || p.MarketValue.String() != "2500" {
 		t.Errorf("market_value = %v, want 2500", p.MarketValue)
 	}
+	// 2-D-taxonomy double-write: an equity-exposure ETF wrapper →
+	// (public_equity, etf), agreeing on instrument + position.
+	if p.AssetClassNew != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleETF {
+		t.Errorf("position (exposure, vehicle) = (%q, %q), want (public_equity, etf)", p.AssetClassNew, p.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
+		t.Errorf("position pair (%q, %q) not an admitted taxonomy pair", p.AssetClassNew, p.Vehicle)
+	}
+	if len(batch.Instruments) != 1 {
+		t.Fatalf("instruments = %d, want 1", len(batch.Instruments))
+	}
+	inst := batch.Instruments[0]
+	if inst.AssetClassNew != p.AssetClassNew || inst.Vehicle != p.Vehicle {
+		t.Errorf("instrument pair = (%q, %q), want it to agree with position (%q, %q)",
+			inst.AssetClassNew, inst.Vehicle, p.AssetClassNew, p.Vehicle)
+	}
 
 	// Core money-market row → cash balance.
 	if len(batch.CashBalances) != 1 {
@@ -207,6 +223,93 @@ func TestClassifyHistorical(t *testing.T) {
 	for _, c := range cases {
 		if got := classifyHistorical(c.key, c.desc); got != c.want {
 			t.Errorf("classifyHistorical(%q, %q) = %q, want %q", c.key, c.desc, got, c.want)
+		}
+	}
+}
+
+// TestAssetClassVehicleFor covers the live-path 2-D-taxonomy helper:
+// each silver class maps to a (V2 exposure, Vehicle) pair, with the
+// fund/ETF exposure refined from the security name. All synthetic
+// names / placeholder tickers.
+func TestAssetClassVehicleFor(t *testing.T) {
+	cases := []struct {
+		silverClass, name string
+		wantExposure      canonical.AssetClass
+		wantVehicle       canonical.Vehicle
+	}{
+		{"equity", "PLACEHOLDER INC", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		// ETF wrapper, exposure refined by name.
+		{"etf", "PLACEHOLDER BROAD MARKET ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"etf", "PLACEHOLDER BITCOIN TRUST ETF", canonical.AssetClassCrypto, canonical.VehicleETF},
+		{"etf", "PLACEHOLDER 20+ YEAR TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		// Mutual-fund wrapper, exposure refined by name.
+		{"mutual_fund", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"mutual_fund", "PLACEHOLDER GOLD BULLION FUND", canonical.AssetClassMetal, canonical.VehicleFund},
+		// 529 investment-option sleeve → blended multi-asset fund.
+		{"plan_fund", "STATE PLAN 2099 (FIDELITY BLEND)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
+		{"bond", "PLACEHOLDER CORP NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		// money_market never reaches the position build, but is mapped
+		// for parity with assetClassFor.
+		{"money_market", "PLACEHOLDER GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+		// Unknown class → (other, other).
+		{"widget", "PLACEHOLDER THING", canonical.AssetClassOther, canonical.VehicleOther},
+	}
+	for _, c := range cases {
+		gotExp, gotVeh := assetClassVehicleFor(c.silverClass, c.name)
+		if gotExp != c.wantExposure || gotVeh != c.wantVehicle {
+			t.Errorf("assetClassVehicleFor(%q, %q) = (%q, %q), want (%q, %q)",
+				c.silverClass, c.name, gotExp, gotVeh, c.wantExposure, c.wantVehicle)
+		}
+		if !canonical.ValidTaxonomyPair(gotExp, gotVeh) {
+			t.Errorf("assetClassVehicleFor(%q, %q) → (%q, %q) is not an admitted taxonomy pair",
+				c.silverClass, c.name, gotExp, gotVeh)
+		}
+	}
+}
+
+// TestClassifyHistoricalPair mirrors TestClassifyHistorical, asserting
+// the 2-D-taxonomy pair (V2 exposure + Vehicle) the historical path
+// double-writes. Same shape branches, first match wins.
+func TestClassifyHistoricalPair(t *testing.T) {
+	cases := []struct {
+		key, desc    string
+		wantExposure canonical.AssetClass
+		wantVehicle  canonical.Vehicle
+	}{
+		// Options → equity-underlying option legs.
+		{"ABCD300118C100", "CALL (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		{"", "PUT (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		// Money-market sweeps + the svb net-cash sleeve → cash / fund.
+		{"SPAXX", "FIDELITY GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+		{"", "NET CASH POSITION", canonical.AssetClassCash, canonical.VehicleFund},
+		// 529 plan sleeves, keyed and keyless → multi-asset / fund.
+		{"ABC123456", "STATE PLAN 2099 (FIDELITY BLEND)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
+		{"", "STATE PLAN 2099 (FIDELITY FUNDS)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
+		// Bonds → fixed_income / bond.
+		{"000000AA1", "PLACEHOLDER MUNI GO BDS SER. 2021", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"", "PLACEHOLDER CORP NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		// ETF-by-name → etf wrapper, exposure refined from the name.
+		{"ABCD", "ISHARES TR PLACEHOLDER ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"IBIT", "iShares Bitcoin Trust ETF", canonical.AssetClassCrypto, canonical.VehicleETF},
+		{"", "ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		// Mutual-fund ticker → fund wrapper, exposure refined from the name.
+		{"ABCDX", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		// The svb $0 closure marker carries no exposure.
+		{"", "Account closed — assets transferred", canonical.AssetClassOther, canonical.VehicleOther},
+		// Fall-through: plain stock / ADR rows → public_equity / stock.
+		{"AAPL", "APPLE INC", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"", "PLACEHOLDER AG SPON ADR EACH REP 1 ORD SHS", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"NFLX", "NETFLIX INC", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+	}
+	for _, c := range cases {
+		gotExp, gotVeh := classifyHistoricalPair(c.key, c.desc)
+		if gotExp != c.wantExposure || gotVeh != c.wantVehicle {
+			t.Errorf("classifyHistoricalPair(%q, %q) = (%q, %q), want (%q, %q)",
+				c.key, c.desc, gotExp, gotVeh, c.wantExposure, c.wantVehicle)
+		}
+		if !canonical.ValidTaxonomyPair(gotExp, gotVeh) {
+			t.Errorf("classifyHistoricalPair(%q, %q) → (%q, %q) is not an admitted taxonomy pair",
+				c.key, c.desc, gotExp, gotVeh)
 		}
 	}
 }

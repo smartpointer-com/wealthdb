@@ -80,7 +80,7 @@ ORDER BY t`
 func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	const q = `
-SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
+SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.display_name, ''),
        CAST(strftime('%s', p.acquired_at) AS INTEGER) AS acq_unix,
        p.payload,
        (SELECT v.value FROM valuations v
@@ -107,16 +107,17 @@ SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
 	any := false
 	for rows.Next() {
 		var (
-			id, kind, currency, displayName, payload string
-			acqUnix                                  int64
-			marketValue, bookValue                   sql.NullString
+			id, kind, vehicle, currency, displayName, payload string
+			acqUnix                                           int64
+			marketValue, bookValue                            sql.NullString
 		)
-		if err := rows.Scan(&id, &kind, &currency, &displayName,
+		if err := rows.Scan(&id, &kind, &vehicle, &currency, &displayName,
 			&acqUnix, &payload, &marketValue, &bookValue); err != nil {
 			return batch, err
 		}
 		any = true
 		ac := assetClassFor(kind)
+		acNew, veh := taxonomyFor(kind, vehicle)
 		instKey := id
 
 		pos := canonical.PositionChange{
@@ -125,6 +126,8 @@ SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
 			PositionKey:          id,
 			InstrumentExternalID: &instKey,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              veh,
 			Currency:             currency,
 			AcquisitionDate:      acqDate(acqUnix),
 			Payload:              json.RawMessage(payload),
@@ -154,6 +157,8 @@ SELECT p.id, p.kind, p.currency, COALESCE(p.display_name, ''),
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instKey,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              veh,
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 			Payload:              json.RawMessage(payload),

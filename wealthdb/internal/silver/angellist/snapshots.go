@@ -90,9 +90,12 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
 		if err := rows.Scan(&pid, &company, &kind, &first, &last); err != nil {
 			return nil, err
 		}
+		acNew, vehicle := taxonomyForKind(kind)
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: pid,
 			AssetClass:           assetClassForKind(kind),
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			FirstSeenAt:          first.Int64,
 			LastSeenAt:           last.Int64,
 		}
@@ -228,12 +231,15 @@ SELECT ps.position_external_id,
 		}
 		any = true
 		instKey := pid
+		acNew, vehicle := taxonomyForKind(kind)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    account,
 			PositionKey:          pid,
 			InstrumentExternalID: &instKey,
 			AssetClass:           assetClassForKind(kind),
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			Currency:             currency,
 			MarketValue:          minorPtr(marketMinor),
 			BookValue:            minorPtr(contribMinor),
@@ -244,6 +250,8 @@ SELECT ps.position_external_id,
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instKey,
 			AssetClass:           assetClassForKind(kind),
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 		}

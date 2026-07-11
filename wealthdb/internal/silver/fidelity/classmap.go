@@ -34,6 +34,40 @@ func assetClassFor(silverClass string) canonical.AssetClass {
 	return canonical.AssetClassOther
 }
 
+// assetClassVehicleFor is the 2-D-taxonomy companion to assetClassFor:
+// it maps fidelity-web's silver `positions.asset_class` onto a canonical
+// V2 exposure (AssetClassNew) plus the wrapper Vehicle the exposure is
+// held through. It runs beside the legacy assetClassFor (the control) so
+// both dimensions are double-written without disturbing the V1 column.
+//
+// Funds/ETFs whose exposure depends on their holdings defer to
+// silver.RefineETFExposure(name), which reads the security name
+// (crypto / metal / fixed_income / public_equity); the vehicle (etf vs
+// fund) is fixed by the silver class, not the name. `money_market` never
+// reaches the instrument/position build (it is routed to
+// CashBalanceChange upstream), but is mapped here for parity with
+// assetClassFor. Every pair returned satisfies
+// canonical.ValidTaxonomyPair.
+func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canonical.Vehicle) {
+	switch silverClass {
+	case "equity":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case "etf":
+		return silver.RefineETFExposure(name), canonical.VehicleETF
+	case "mutual_fund":
+		return silver.RefineETFExposure(name), canonical.VehicleFund
+	case "plan_fund":
+		// 529 investment-option wrapper: a blended allocation, so
+		// multi_asset exposure held through a fund vehicle.
+		return canonical.AssetClassMultiAsset, canonical.VehicleFund
+	case "bond":
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case "money_market":
+		return canonical.AssetClassCash, canonical.VehicleFund
+	}
+	return canonical.AssetClassOther, canonical.VehicleOther
+}
+
 // The instrument-key and description shapes classifyHistorical
 // matches. The key shapes mirror fidelity-web's live silver
 // classifier (`load.py _classify_asset_class`); the description
@@ -93,4 +127,45 @@ func classifyHistorical(instrumentKey, description string) canonical.AssetClass 
 		return canonical.AssetClassFund
 	}
 	return canonical.AssetClassEquity
+}
+
+// classifyHistoricalPair is the 2-D-taxonomy companion to
+// classifyHistorical: it mirrors the exact same shape branches (same
+// order, first match wins) but yields a canonical V2 exposure plus the
+// wrapper Vehicle for the double-write. classifyHistorical stays the
+// control; this runs beside it at the historical instrument/position
+// build.
+//
+//   - Account-closed marker → (other, other): a $0 synthetic row with no
+//     exposure to classify.
+//   - option → (public_equity, option): equity-underlying option legs.
+//   - money-market sweep / net-cash sleeve → (cash, fund).
+//   - 529 plan sleeve → (multi_asset, fund): a blended allocation wrapper.
+//   - bond (CUSIP-9 or coupon in the description) → (fixed_income, bond).
+//   - ETF-by-name → (RefineETFExposure(desc), etf).
+//   - mutual-fund ticker → (RefineETFExposure(desc), fund).
+//   - fall-through → (public_equity, stock): plain stock/ADR rows.
+//
+// Every pair returned satisfies canonical.ValidTaxonomyPair.
+func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
+	switch {
+	case histClosedDescRe.MatchString(description):
+		return canonical.AssetClassOther, canonical.VehicleOther
+	case histOptionKeyRe.MatchString(instrumentKey),
+		histOptionDescRe.MatchString(description):
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	case histMoneyMktRe.MatchString(description):
+		return canonical.AssetClassCash, canonical.VehicleFund
+	case histPlanKeyRe.MatchString(instrumentKey),
+		histPlanDescRe.MatchString(description):
+		return canonical.AssetClassMultiAsset, canonical.VehicleFund
+	case histCUSIPRe.MatchString(instrumentKey),
+		histBondDescRe.MatchString(description):
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case histETFDescRe.MatchString(description):
+		return silver.RefineETFExposure(description), canonical.VehicleETF
+	case histMutualFundRe.MatchString(instrumentKey):
+		return silver.RefineETFExposure(description), canonical.VehicleFund
+	}
+	return canonical.AssetClassPublicEquity, canonical.VehicleStock
 }

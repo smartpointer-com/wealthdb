@@ -118,6 +118,7 @@ SELECT p.deal_external_id,
 		}
 		any = true
 		ac := assetClassForKind(kind)
+		acNew, vehicle := taxonomyForKind(kind)
 		instKey := deal
 
 		change := canonical.PositionChange{
@@ -126,6 +127,8 @@ SELECT p.deal_external_id,
 			PositionKey:          deal,
 			InstrumentExternalID: &instKey,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			Currency:             currency,
 			MarketValue:          realPtr(market),
 			BookValue:            realPtr(cost),
@@ -141,6 +144,8 @@ SELECT p.deal_external_id,
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instKey,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 		}

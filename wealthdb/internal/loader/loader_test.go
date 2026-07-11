@@ -478,12 +478,13 @@ func TestInstrumentOverridesApplied(t *testing.T) {
 		}
 	}
 	// The 2-D override lands on the new columns; the un-overridden
-	// row keeps them NULL (schwab adapter not yet migrated).
+	// row carries the schwab adapter's own pair (public_equity, stock
+	// for an EQUITY row), not the override.
 	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'') || '/' || COALESCE(vehicle,'') FROM positions WHERE instrument_external_id='000000AA1'`); got != "metal/etf" {
 		t.Errorf("000000AA1 new pair = %q, want metal/etf", got)
 	}
-	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'NULL') FROM positions WHERE instrument_external_id='000000BB2'`); got != "NULL" {
-		t.Errorf("000000BB2 asset_class_new = %q, want NULL", got)
+	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'') || '/' || COALESCE(vehicle,'') FROM positions WHERE instrument_external_id='000000BB2'`); got != "public_equity/stock" {
+		t.Errorf("000000BB2 new pair = %q, want public_equity/stock (adapter, un-overridden)", got)
 	}
 }
 

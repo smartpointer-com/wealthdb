@@ -241,9 +241,15 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if looksLikeISIN(isin) {
 			isinPtr = &isinCopy
 		}
+		// Historical PDF securities carry no CFI/UAC and this path has
+		// no PSN-lookup access, so the legacy class is `other`; the 2-D
+		// pair mirrors that control as (other, other) rather than
+		// guessing an exposure from the description alone.
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           canonical.AssetClassOther,
+			AssetClassNew:        canonical.AssetClassOther,
+			Vehicle:              canonical.VehicleOther,
 			ISIN:                 isinPtr,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
 			Currency:             silver.StrPtrIfNonEmpty(ccy),
@@ -261,6 +267,8 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           canonical.AssetClassOther,
+			AssetClassNew:        canonical.AssetClassOther,
+			Vehicle:              canonical.VehicleOther,
 			Currency:             positionCcy,
 			Quantity:             decimalFromNullFloat(units),
 			MarketValue:          decimalFromNullFloat(mv),
@@ -510,6 +518,8 @@ SELECT as_of_date, account_external_id, currency_iso,
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: extID,
 			AssetClass:           canonical.AssetClassMortgage,
+			AssetClassNew:        canonical.AssetClassRealEstate,
+			Vehicle:              canonical.VehicleMortgage,
 			Name:                 silver.StrPtrIfNonEmpty(display.String),
 			Currency:             silver.StrPtrIfNonEmpty(currency),
 			FirstSeenAt:          asOf,
@@ -526,6 +536,8 @@ SELECT as_of_date, account_external_id, currency_iso,
 			PositionKey:          extID,
 			InstrumentExternalID: &extIDCopy,
 			AssetClass:           canonical.AssetClassMortgage,
+			AssetClassNew:        canonical.AssetClassRealEstate,
+			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
 			MarketValue:          mv,
 			Payload:              json.RawMessage(payload),

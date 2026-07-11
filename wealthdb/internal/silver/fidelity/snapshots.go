@@ -345,11 +345,15 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			// taxonomy lives in one place (silver.RefineETFClass).
 			assetClass = silver.RefineETFClass(desc)
 		}
+		// 2-D-taxonomy double-write, beside the legacy assetClass.
+		assetClassNew, vehicle := assetClassVehicleFor(silverClass, desc)
 		symbol := key
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: key,
 			AssetClass:           assetClass,
+			AssetClassNew:        assetClassNew,
+			Vehicle:              vehicle,
 			Symbol:               &symbol,
 			Name:                 silver.StrPtrIfNonEmpty(desc),
 			Currency:             &ccy,
@@ -365,6 +369,8 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			PositionKey:          key,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClass,
+			AssetClassNew:        assetClassNew,
+			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),

@@ -155,6 +155,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 
 	posByT := map[int64]map[string]canonical.PositionChange{}
 	instByT := map[int64]int{}
+	instByID := map[string]canonical.InstrumentChange{}
 	var acct *canonical.AccountChange
 	for i := range batches {
 		for _, p := range batches[i].Positions {
@@ -162,6 +163,9 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 				posByT[p.SnapshotAt] = map[string]canonical.PositionChange{}
 			}
 			posByT[p.SnapshotAt][p.PositionKey] = p
+		}
+		for _, in := range batches[i].Instruments {
+			instByID[in.InstrumentExternalID] = in
 		}
 		for j := range batches[i].Accounts {
 			acct = &batches[i].Accounts[j]
@@ -179,6 +183,18 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if posByT[100]["p1"].AssetClass != canonical.AssetClassSPV {
 		t.Errorf("p1 asset_class = %q, want spv", posByT[100]["p1"].AssetClass)
 	}
+	// V2 taxonomy: a single-company SPV is unlisted-company ownership
+	// held via a single-deal vehicle -> (private_equity, spv). The
+	// position and its instrument must carry the same admitted pair.
+	if ac, v := posByT[100]["p1"].AssetClassNew, posByT[100]["p1"].Vehicle; ac != canonical.AssetClassPrivateEquity || v != canonical.VehicleSPV {
+		t.Errorf("p1 (asset_class_new, vehicle) = (%q, %q), want (private_equity, spv)", ac, v)
+	}
+	if !canonical.ValidTaxonomyPair(posByT[100]["p1"].AssetClassNew, posByT[100]["p1"].Vehicle) {
+		t.Errorf("p1 V2 pair (%q, %q) not admitted by ValidTaxonomyPair", posByT[100]["p1"].AssetClassNew, posByT[100]["p1"].Vehicle)
+	}
+	if in := instByID["p1"]; in.AssetClassNew != posByT[100]["p1"].AssetClassNew || in.Vehicle != posByT[100]["p1"].Vehicle {
+		t.Errorf("p1 instrument pair = (%q, %q), want it to match the position (private_equity, spv)", in.AssetClassNew, in.Vehicle)
+	}
 
 	// t=200: p1 forward-fills to its K-1 statement (tax basis); p2 appears.
 	if got := len(posByT[200]); got != 3 {
@@ -189,6 +205,17 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 	if posByT[200]["p2"].AssetClass != canonical.AssetClassPrivateFund {
 		t.Errorf("p2 asset_class = %q, want private_fund", posByT[200]["p2"].AssetClass)
+	}
+	// V2 taxonomy: a multi-company private fund keeps the private_equity
+	// exposure but rides the pooled-fund vehicle -> (private_equity, fund).
+	if ac, v := posByT[200]["p2"].AssetClassNew, posByT[200]["p2"].Vehicle; ac != canonical.AssetClassPrivateEquity || v != canonical.VehicleFund {
+		t.Errorf("p2 (asset_class_new, vehicle) = (%q, %q), want (private_equity, fund)", ac, v)
+	}
+	if !canonical.ValidTaxonomyPair(posByT[200]["p2"].AssetClassNew, posByT[200]["p2"].Vehicle) {
+		t.Errorf("p2 V2 pair (%q, %q) not admitted by ValidTaxonomyPair", posByT[200]["p2"].AssetClassNew, posByT[200]["p2"].Vehicle)
+	}
+	if in := instByID["p2"]; in.AssetClassNew != posByT[200]["p2"].AssetClassNew || in.Vehicle != posByT[200]["p2"].Vehicle {
+		t.Errorf("p2 instrument pair = (%q, %q), want it to match the position (private_equity, fund)", in.AssetClassNew, in.Vehicle)
 	}
 
 	// t=300: p3's latest event is its exit (is_open=0) → dropped.
@@ -423,6 +450,13 @@ func TestExitedInstruments(t *testing.T) {
 	}
 	if foo.AssetClass != canonical.AssetClassSPV {
 		t.Errorf("asset_class = %q, want spv", foo.AssetClass)
+	}
+	// V2 taxonomy rides the exited-instrument path too: (private_equity, spv).
+	if foo.AssetClassNew != canonical.AssetClassPrivateEquity || foo.Vehicle != canonical.VehicleSPV {
+		t.Errorf("(asset_class_new, vehicle) = (%q, %q), want (private_equity, spv)", foo.AssetClassNew, foo.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(foo.AssetClassNew, foo.Vehicle) {
+		t.Errorf("V2 pair (%q, %q) not admitted by ValidTaxonomyPair", foo.AssetClassNew, foo.Vehicle)
 	}
 	if foo.FirstSeenAt != 500 || foo.LastSeenAt != 500 {
 		t.Errorf("seen-range = [%d,%d], want [500,500]", foo.FirstSeenAt, foo.LastSeenAt)

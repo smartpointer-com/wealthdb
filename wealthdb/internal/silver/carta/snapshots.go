@@ -168,13 +168,15 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 // batches).
 func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
-	active := make(map[int64]string)                // entity id -> holdings currency
-	classes := make(map[int64]canonical.AssetClass) // entity id -> position asset class
+	active := make(map[int64]string)                   // entity id -> holdings currency
+	classes := make(map[int64]canonical.AssetClass)    // entity id -> legacy position asset class
+	classesNew := make(map[int64]canonical.AssetClass) // entity id -> V2 exposure (asset_class_new)
+	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> V2 vehicle
 
-	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classes); err != nil {
+	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classes, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, &batch, active, classes); err != nil {
+	if err := c.appendFundAt(ctx, t, acct, &batch, active, classes, classesNew, vehicles); err != nil {
 		return batch, err
 	}
 	if len(active) == 0 {
@@ -227,7 +229,9 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		info := meta[eid]
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentID(eid),
-			AssetClass:           classes[eid], // same class its position carries
+			AssetClass:           classes[eid],    // same legacy class its position carries
+			AssetClassNew:        classesNew[eid], // 2-D taxonomy: same pair its position carries
+			Vehicle:              vehicles[eid],
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 			Payload:              json.RawMessage(info.payload),
@@ -262,7 +266,7 @@ type lot struct {
 // the payload). MarketValue / BookValue sum every held lot — the collector's
 // per-date FMV valuation (collector DESIGN.md §5.1) and the cost basis. The
 // per-lot detail rides in the position payload.
-func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass) error {
+func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, security_type, security_external_id,
        COALESCE(currency, 'USD'), quantity, cost, market_value,
@@ -286,6 +290,7 @@ SELECT entity_external_id, security_type, security_external_id,
 		shareQty, mv, cost          float64
 		hasShareQty, hasMV, hasCost bool
 		hasEquity                   bool // any non-convertible lot (share/option/…)
+		hasStockLike                bool // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
 		lots                        []lot
 	}
 	aggs := make(map[int64]*agg)
@@ -308,6 +313,9 @@ SELECT entity_external_id, security_type, security_external_id,
 		}
 		if secType != "convertible" {
 			a.hasEquity = true // a SAFE/note is a convertible_note only until real equity appears
+		}
+		if isStockVehicleType(secType) {
+			a.hasStockLike = true // share-settled ownership → stock vehicle (vs option/warrant/sar)
 		}
 		if secType == "share" && quantity.Valid {
 			a.shareQty += quantity.Float64
@@ -354,12 +362,15 @@ SELECT entity_external_id, security_type, security_external_id,
 		}
 		instKey := instrumentID(eid)
 		class := capTableAssetClass(a.hasEquity)
+		classNew, vehicle := capTableTaxonomy(a.hasEquity, a.hasStockLike)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(eid),
 			InstrumentExternalID: &instKey,
 			AssetClass:           class,
+			AssetClassNew:        classNew,
+			Vehicle:              vehicle,
 			Currency:             a.ccy,
 			Payload:              json.RawMessage(payload),
 		}
@@ -378,6 +389,8 @@ SELECT entity_external_id, security_type, security_external_id,
 		batch.Positions = append(batch.Positions, change)
 		active[eid] = a.ccy
 		classes[eid] = class
+		classesNew[eid] = classNew
+		vehicles[eid] = vehicle
 	}
 	return nil
 }
@@ -386,7 +399,7 @@ SELECT entity_external_id, security_type, security_external_id,
 // capital-account delta on/before t (one position per fund). MarketValue =
 // net_asset_value (the NAV at that quarter), BookValue = capital_contributed.
 // Money arrives as decimal strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass) error {
+func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, COALESCE(currency, 'USD'),
        COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
@@ -410,12 +423,18 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 		}
 		ccy = normCcy(ccy)
 		instKey := instrumentID(entityID)
+		// 2-D taxonomy: a fund LP interest is private_equity exposure held via
+		// the fund vehicle (TAXONOMY.md — legacy private_fund dissolves to
+		// private_equity/infrastructure/hedge_fund × fund; a Carta fund
+		// investment is read as a venture/PE feeder → private_equity).
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(entityID),
 			InstrumentExternalID: &instKey,
 			AssetClass:           canonical.AssetClassPrivateFund,
+			AssetClassNew:        canonical.AssetClassPrivateEquity,
+			Vehicle:              canonical.VehicleFund,
 			Currency:             ccy,
 			Payload:              json.RawMessage(payload),
 		}
@@ -428,6 +447,8 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 		batch.Positions = append(batch.Positions, change)
 		active[entityID] = ccy
 		classes[entityID] = canonical.AssetClassPrivateFund
+		classesNew[entityID] = canonical.AssetClassPrivateEquity
+		vehicles[entityID] = canonical.VehicleFund
 	}
 	return rows.Err()
 }

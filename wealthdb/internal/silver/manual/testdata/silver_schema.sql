@@ -20,6 +20,7 @@ CREATE TABLE load_runs (
 CREATE TABLE positions (
     id            TEXT NOT NULL PRIMARY KEY,
     kind          TEXT NOT NULL,
+    vehicle       TEXT,
     display_name  TEXT NOT NULL,
     currency      TEXT NOT NULL,
     acquired_at   TEXT NOT NULL,

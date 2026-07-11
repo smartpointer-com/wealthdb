@@ -19,7 +19,10 @@ import (
 // tightly enumerated, so an unexpected reclassification (a bug) is
 // caught.
 var legacyToNewAllowlist = map[canonical.AssetClass][]taxPair{
-	"equity":   {{"public_equity", "stock"}},
+	// stock for direct holders (schwab/fidelity/ubs/...); fund for the
+	// index-fund robo-advisors (relevate/viac) whose equity/bond sleeves
+	// are Swisscanto/CSIF funds, not direct securities.
+	"equity":   {{"public_equity", "stock"}, {"public_equity", "fund"}},
 	"etf":      {{"public_equity", "etf"}},
 	"bond_etf": {{"fixed_income", "etf"}},
 	"fund": {
@@ -27,12 +30,13 @@ var legacyToNewAllowlist = map[canonical.AssetClass][]taxPair{
 		{"real_estate", "fund"}, {"multi_asset", "fund"},
 		{"cash", "fund"}, {"hedge_fund", "fund"}, {"infrastructure", "fund"},
 	},
-	"bond":             {{"fixed_income", "bond"}},
-	"option":           {{"public_equity", "option"}, {"private_equity", "option"}, {"foreign_exchange", "option"}},
-	"future":           {{"public_equity", "future"}},
-	"fx_forward":       {{"foreign_exchange", "forward"}},
-	"fx_option":        {{"foreign_exchange", "option"}},
-	"money_market":     {{"cash", "fund"}, {"cash", "time_deposit"}},
+	"bond":       {{"fixed_income", "bond"}, {"fixed_income", "fund"}},
+	"option":     {{"public_equity", "option"}, {"private_equity", "option"}, {"foreign_exchange", "option"}},
+	"future":     {{"public_equity", "future"}},
+	"fx_forward": {{"foreign_exchange", "forward"}},
+	"fx_option":  {{"foreign_exchange", "option"}},
+	// (cash, demand_deposit): the relevate Liquidity sleeve (portfolio cash).
+	"money_market":     {{"cash", "fund"}, {"cash", "time_deposit"}, {"cash", "demand_deposit"}},
 	"otc_derivative":   {{"foreign_exchange", "forward"}, {"other", "other"}},
 	"metal":            {{"metal", "physical"}, {"metal", "etf"}, {"metal", "fund"}},
 	"crypto":           {{"crypto", "physical"}, {"crypto", "etf"}},

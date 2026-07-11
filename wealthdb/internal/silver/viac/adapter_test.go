@@ -257,6 +257,110 @@ func TestHistoricalSnapshotsSpanWindow(t *testing.T) {
 	}
 }
 
+// TestSnapshotsTaxonomyPairs asserts the 2-D taxonomy
+// (asset_class_new, vehicle) the adapter double-writes alongside the
+// legacy asset_class, one representative row per taxonomyFor branch.
+// It checks the instrument and the position agree on the pair, that
+// every emitted pair is admitted by canonical.ValidTaxonomyPair, and
+// that the legacy control column is left untouched. All instrument
+// names are synthetic placeholders — never a real VIAC fund.
+func TestSnapshotsTaxonomyPairs(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, product_code, name, state, currency_code, management_style, payload) VALUES
+            (1000, 'INV1', '1', 'Free Invest', 'ACTIVE', 'CHF', 'automated', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_external_id, asset_class, currency_code, name, quantity, market_value_chf, acquisition_price, asset_price, payload) VALUES
+            (1000, 'INV1', 'CH0000000001', 'equity',       'CHF', 'Synthetic Equity Index Fund',            1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000002', 'bond',         'CHF', 'Synthetic Bond Index Fund',              1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000003', 'fund',         'CHF', 'Synthetic Property Index Fund',          1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000004', 'equity',       'CHF', 'Placeholder Listed Private Equity Fund', 1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000005', 'metal',        'CHF', 'Synthetic Metal Index Fund',             1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000006', 'money_market', 'CHF', 'Synthetic Money Market Fund',            1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000007', 'other',        'CHF', 'Synthetic Bitcoin Basket',               1, 1, 1, 1, '{}'),
+            (1000, 'INV1', 'CH0000000008', 'other',        'CHF', 'Synthetic Mystery Alternatives',         1, 1, 1, 1, '{}');
+        INSERT INTO instruments(instrument_external_id, isin, name, currency_code, asset_class, first_seen_at, last_seen_at, payload) VALUES
+            ('CH0000000001', 'CH0000000001', 'Synthetic Equity Index Fund',            'CHF', 'equity',       1000, 1000, '{}'),
+            ('CH0000000002', 'CH0000000002', 'Synthetic Bond Index Fund',              'CHF', 'bond',         1000, 1000, '{}'),
+            ('CH0000000003', 'CH0000000003', 'Synthetic Property Index Fund',          'CHF', 'fund',         1000, 1000, '{}'),
+            ('CH0000000004', 'CH0000000004', 'Placeholder Listed Private Equity Fund', 'CHF', 'equity',       1000, 1000, '{}'),
+            ('CH0000000005', 'CH0000000005', 'Synthetic Metal Index Fund',             'CHF', 'metal',        1000, 1000, '{}'),
+            ('CH0000000006', 'CH0000000006', 'Synthetic Money Market Fund',            'CHF', 'money_market', 1000, 1000, '{}'),
+            ('CH0000000007', 'CH0000000007', 'Synthetic Bitcoin Basket',               'CHF', 'other',        1000, 1000, '{}'),
+            ('CH0000000008', 'CH0000000008', 'Synthetic Mystery Alternatives',         'CHF', 'other',        1000, 1000, '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	type pair struct {
+		class   canonical.AssetClass
+		vehicle canonical.Vehicle
+	}
+	want := map[string]pair{
+		"CH0000000001": {canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		"CH0000000002": {canonical.AssetClassFixedIncome, canonical.VehicleFund},
+		"CH0000000003": {canonical.AssetClassRealEstate, canonical.VehicleFund},
+		"CH0000000004": {canonical.AssetClassPrivateEquity, canonical.VehicleETF},
+		"CH0000000005": {canonical.AssetClassMetal, canonical.VehicleFund},
+		"CH0000000006": {canonical.AssetClassCash, canonical.VehicleFund},
+		"CH0000000007": {canonical.AssetClassCrypto, canonical.VehicleFund},
+		"CH0000000008": {canonical.AssetClassOther, canonical.VehicleOther},
+	}
+
+	// Instruments: assert the emitted pair, its validity, and that the
+	// legacy control column is unchanged (still the type-cast of silver's
+	// asset_class, never the new exposure).
+	instByID := map[string]canonical.InstrumentChange{}
+	for _, in := range batch.Instruments {
+		instByID[in.InstrumentExternalID] = in
+	}
+	for id, exp := range want {
+		in, ok := instByID[id]
+		if !ok {
+			t.Errorf("instrument %s missing from batch", id)
+			continue
+		}
+		if in.AssetClassNew != exp.class || in.Vehicle != exp.vehicle {
+			t.Errorf("instrument %s pair = (%q, %q), want (%q, %q)",
+				id, in.AssetClassNew, in.Vehicle, exp.class, exp.vehicle)
+		}
+		if !canonical.ValidTaxonomyPair(in.AssetClassNew, in.Vehicle) {
+			t.Errorf("instrument %s pair (%q, %q) not admitted by ValidTaxonomyPair",
+				id, in.AssetClassNew, in.Vehicle)
+		}
+	}
+	// Control: the legacy 1-D class of the listed-PE ETF stays 'equity'
+	// (silver's coarse value), proving the double-write left it alone
+	// while the new column captured the private-equity exposure.
+	if got := instByID["CH0000000004"].AssetClass; got != canonical.AssetClassEquity {
+		t.Errorf("legacy asset_class of PE ETF = %q, want equity (control unchanged)", got)
+	}
+
+	// Positions: must carry the same pair as their instrument.
+	posByID := map[string]canonical.PositionChange{}
+	for _, p := range batch.Positions {
+		if p.InstrumentExternalID != nil {
+			posByID[*p.InstrumentExternalID] = p
+		}
+	}
+	for id, exp := range want {
+		p, ok := posByID[id]
+		if !ok {
+			t.Errorf("position %s missing from batch", id)
+			continue
+		}
+		if p.AssetClassNew != exp.class || p.Vehicle != exp.vehicle {
+			t.Errorf("position %s pair = (%q, %q), want (%q, %q)",
+				id, p.AssetClassNew, p.Vehicle, exp.class, exp.vehicle)
+		}
+	}
+}
+
 // TestTransactions covers the canonical-kind pass-through and the
 // sign convention (a dividend is a positive inflow).
 func TestTransactions(t *testing.T) {

@@ -66,13 +66,13 @@ func seed(t *testing.T, db *sql.DB) {
 	if _, err := db.Exec(`
         INSERT INTO load_runs(load_at, silver_schema_version, bronze_dir, payload)
             VALUES (1700000000, 1, '/tmp', '{}');
-        INSERT INTO positions(id, kind, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
-            ('re-1',  'real_estate',      'Property A',  'CHF', '2020-01-01', NULL,         '', '{"property_type":"residential"}'),
-            ('cn-1',  'convertible_note', 'Note A',      'CHF', '2020-06-01', '2022-03-01', '', '{"interest_rate":0}'),
-            ('pe-1',  'private_equity',   'Stake A',     'CHF', '2022-03-01', NULL,         '', '{"converted_from_position_id":"cn-1"}'),
-            ('pf-1',  'private_fund',     'Fund A',      'USD', '2021-01-01', NULL,         '', '{"role":"limited_partner"}'),
-            ('spv-1', 'spv',              'SPV A',       'USD', '2021-06-01', NULL,         '', '{"company":"Acme"}'),
-            ('esc-1', 'other',            'Escrow A',    'USD', '2022-06-01', NULL,         '', '{"holding_type":"escrow_receivable"}');
+        INSERT INTO positions(id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
+            ('re-1',  'real_estate',      'physical',         'Property A',  'CHF', '2020-01-01', NULL,         '', '{"property_type":"residential"}'),
+            ('cn-1',  'convertible_note', 'convertible_note', 'Note A',      'CHF', '2020-06-01', '2022-03-01', '', '{"interest_rate":0}'),
+            ('pe-1',  'private_equity',   'stock',            'Stake A',     'CHF', '2022-03-01', NULL,         '', '{"converted_from_position_id":"cn-1"}'),
+            ('pf-1',  'private_fund',     'fund',             'Fund A',      'USD', '2021-01-01', NULL,         '', '{"role":"limited_partner"}'),
+            ('spv-1', 'spv',              'spv',              'SPV A',       'USD', '2021-06-01', NULL,         '', '{"company":"Acme"}'),
+            ('esc-1', 'other',            'escrow',           'Escrow A',    'USD', '2022-06-01', NULL,         '', '{"holding_type":"escrow_receivable"}');
         INSERT INTO valuations(position_id, as_of_date, value, currency, notes, payload) VALUES
             ('re-1',  '2020-01-01', '100', 'CHF', '', '{}'),
             ('re-1',  '2022-01-01', '120', 'CHF', '', '{}'),
@@ -307,6 +307,108 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 }
 
+// TestTaxonomyPair locks in the 2-D (asset_class_new, vehicle) projection for
+// every manual kind, on BOTH the position and its instrument (they must agree),
+// and asserts each emitted pair is admitted by the taxonomy. The legacy
+// AssetClass column is a separate control and is checked elsewhere.
+func TestTaxonomyPair(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	batches := collectSnapshots(t, conn, w)
+
+	posByKey := map[string]canonical.PositionChange{}
+	instByKey := map[string]canonical.InstrumentChange{}
+	for _, b := range batches {
+		for _, p := range b.Positions {
+			posByKey[p.PositionKey] = p
+		}
+		for _, in := range b.Instruments {
+			instByKey[in.InstrumentExternalID] = in
+		}
+	}
+
+	// kind -> expected (exposure, vehicle) pair. real_estate & mortgage share
+	// the real_estate exposure; private_fund & spv share private_equity; the
+	// escrow row (kind 'other', vehicle 'escrow') resolves to private_debt.
+	type want struct {
+		ac  canonical.AssetClass
+		veh canonical.Vehicle
+	}
+	cases := map[string]want{
+		"re-1":  {canonical.AssetClassRealEstate, canonical.VehiclePhysical},
+		"cn-1":  {canonical.AssetClassPrivateDebt, canonical.VehicleConvertibleNote},
+		"pe-1":  {canonical.AssetClassPrivateEquity, canonical.VehicleStock},
+		"pf-1":  {canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+		"spv-1": {canonical.AssetClassPrivateEquity, canonical.VehicleSPV},
+		"esc-1": {canonical.AssetClassPrivateDebt, canonical.VehicleEscrow},
+	}
+	for key, wnt := range cases {
+		p, ok := posByKey[key]
+		if !ok {
+			t.Fatalf("%s: no position emitted", key)
+		}
+		if p.AssetClassNew != wnt.ac || p.Vehicle != wnt.veh {
+			t.Errorf("%s position pair = (%q,%q), want (%q,%q)",
+				key, p.AssetClassNew, p.Vehicle, wnt.ac, wnt.veh)
+		}
+		if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
+			t.Errorf("%s position pair (%q,%q) is not an admitted taxonomy pair",
+				key, p.AssetClassNew, p.Vehicle)
+		}
+		in := instByKey[key]
+		if in.AssetClassNew != p.AssetClassNew || in.Vehicle != p.Vehicle {
+			t.Errorf("%s instrument pair = (%q,%q), disagrees with position (%q,%q)",
+				key, in.AssetClassNew, in.Vehicle, p.AssetClassNew, p.Vehicle)
+		}
+	}
+}
+
+// TestTaxonomyOtherLoanAndFallback covers the two derivation branches the seed
+// book does not: a kind 'other' held as a bilateral loan (→ private_debt, per
+// the vehicle), and a legacy row whose `vehicle` column is NULL (pre-migration)
+// falling back to a kind-derived default so the pair stays valid.
+func TestTaxonomyOtherLoanAndFallback(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO load_runs(load_at, silver_schema_version, bronze_dir, payload)
+            VALUES (1700000000, 1, '/tmp', '{}');
+        INSERT INTO positions(id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
+            ('loan-y', 'other',        'loan', 'Loan Y',  'USD', '2021-01-01', NULL, '', '{}'),
+            ('old-pe', 'private_equity', NULL, 'Stake Y', 'USD', '2021-01-01', NULL, '', '{}');
+        INSERT INTO valuations(position_id, as_of_date, value, currency, notes, payload) VALUES
+            ('loan-y', '2021-01-01', '100', 'USD', '', '{}'),
+            ('old-pe', '2021-01-01', '200', 'USD', '', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	batches := collectSnapshots(t, conn, w)
+
+	posByKey := map[string]canonical.PositionChange{}
+	for _, b := range batches {
+		for _, p := range b.Positions {
+			posByKey[p.PositionKey] = p
+		}
+	}
+
+	if p := posByKey["loan-y"]; p.AssetClassNew != canonical.AssetClassPrivateDebt || p.Vehicle != canonical.VehicleLoan {
+		t.Errorf("loan-y pair = (%q,%q), want (private_debt,loan)", p.AssetClassNew, p.Vehicle)
+	}
+	// NULL vehicle → kind-derived default (private_equity → stock).
+	if p := posByKey["old-pe"]; p.AssetClassNew != canonical.AssetClassPrivateEquity || p.Vehicle != canonical.VehicleStock {
+		t.Errorf("old-pe pair = (%q,%q), want (private_equity,stock) via fallback", p.AssetClassNew, p.Vehicle)
+	}
+	for _, key := range []string{"loan-y", "old-pe"} {
+		p := posByKey[key]
+		if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
+			t.Errorf("%s pair (%q,%q) not admitted", key, p.AssetClassNew, p.Vehicle)
+		}
+	}
+}
+
 // TestMortgageLiabilityNegated locks in the liability path: a `mortgage`
 // position is entered as a positive balance but projects to a NEGATIVE
 // market/book value, so it nets against the property it secures; the asset
@@ -316,9 +418,9 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 	if _, err := db.Exec(`
         INSERT INTO load_runs(load_at, silver_schema_version, bronze_dir, payload)
             VALUES (1700000000, 1, '/tmp', '{}');
-        INSERT INTO positions(id, kind, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
-            ('re-x',   'real_estate', 'Property X', 'USD', '2021-01-01', NULL,         '', '{}'),
-            ('loan-x', 'mortgage',    'Loan X',     'USD', '2021-01-01', '2022-01-01', '', '{"secures_position_id":"re-x"}');
+        INSERT INTO positions(id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload) VALUES
+            ('re-x',   'real_estate', 'physical', 'Property X', 'USD', '2021-01-01', NULL,         '', '{}'),
+            ('loan-x', 'mortgage',    'mortgage', 'Loan X',     'USD', '2021-01-01', '2022-01-01', '', '{"secures_position_id":"re-x"}');
         INSERT INTO valuations(position_id, as_of_date, value, currency, notes, payload) VALUES
             ('re-x',   '2021-01-01', '1000', 'USD', '', '{}'),
             ('loan-x', '2021-01-01', '800',  'USD', '', '{}');
@@ -343,6 +445,11 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 	loan := at1["loan-x"]
 	if loan.AssetClass != canonical.AssetClassMortgage {
 		t.Errorf("loan asset_class = %q, want mortgage", loan.AssetClass)
+	}
+	// 2-D pair: a mortgage is negative real_estate exposure held via the
+	// mortgage vehicle (TAXONOMY.md §1.5).
+	if loan.AssetClassNew != canonical.AssetClassRealEstate || loan.Vehicle != canonical.VehicleMortgage {
+		t.Errorf("loan pair = (%q,%q), want (real_estate,mortgage)", loan.AssetClassNew, loan.Vehicle)
 	}
 	if loan.MarketValue == nil || loan.MarketValue.StringFixed(2) != "-800.00" {
 		t.Errorf("loan market_value = %v, want -800.00 (liability negated)", loan.MarketValue)

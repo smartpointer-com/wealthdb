@@ -222,9 +222,12 @@ SELECT instrument_external_id,
 		if err := rows.Scan(&extID, &isin, &name, &rawClass, &firstSeen, &lastSeen, &payload); err != nil {
 			return err
 		}
+		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: extID,
 			AssetClass:           assetClassFor(rawClass, name),
+			AssetClassNew:        acNew,
+			Vehicle:              veh,
 			Currency:             &ccy,
 			FirstSeenAt:          firstSeen,
 			LastSeenAt:           lastSeen,
@@ -353,12 +356,15 @@ SELECT snapshot_at, account_external_id,
 			key = isin
 		}
 		instrumentKey := extID // join to instruments table on numeric id
+		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    acct,
 			PositionKey:          key,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClassFor(rawClass, name),
+			AssetClassNew:        acNew,
+			Vehicle:              veh,
 		}
 		if bal, ok := securitiesByAcct[[2]any{snap, acct}]; ok {
 			change.Currency = bal.currency

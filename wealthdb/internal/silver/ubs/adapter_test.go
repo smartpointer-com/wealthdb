@@ -160,6 +160,39 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 	if classes["XX0000000006"] != canonical.AssetClassOther {
 		t.Errorf("empty CFI + UAC 0700 (Others) → %q, want other", classes["XX0000000006"])
 	}
+
+	// 2-D taxonomy pair (asset_class_new × vehicle) double-written
+	// beside the legacy class above. Proves the pair flows through to
+	// the emitted InstrumentChange, and every pair is admitted by
+	// canonical.ValidTaxonomyPair.
+	type pair struct {
+		ac  canonical.AssetClass
+		veh canonical.Vehicle
+	}
+	pairs := map[string]pair{}
+	for _, i := range batch.Instruments {
+		pairs[i.InstrumentExternalID] = pair{i.AssetClassNew, i.Vehicle}
+		if !canonical.ValidTaxonomyPair(i.AssetClassNew, i.Vehicle) {
+			t.Errorf("instrument %q emits inadmissible pair (%q, %q)",
+				i.InstrumentExternalID, i.AssetClassNew, i.Vehicle)
+		}
+	}
+	for isin, want := range map[string]pair{
+		"CH0000000001": {canonical.AssetClassPublicEquity, canonical.VehicleStock}, // E → stock
+		"XX0000000002": {canonical.AssetClassPublicEquity, canonical.VehicleETF},   // CE group → etf
+		"XX0000000007": {canonical.AssetClassPublicEquity, canonical.VehicleFund},  // CI group → fund
+		"XX0000000008": {canonical.AssetClassCash, canonical.VehicleFund},          // CI + UAC 0100 → cash fund
+		"XX0000000009": {canonical.AssetClassPrivateEquity, canonical.VehicleFund}, // CI + UAC 0400 → PE fund
+		"XX0000000003": {canonical.AssetClassOther, canonical.VehicleOther},        // empty CFI + empty UAC
+		"XX0000000004": {canonical.AssetClassPrivateEquity, canonical.VehicleFund}, // empty CFI + UAC 0400
+		"XX0000000005": {canonical.AssetClassMetal, canonical.VehiclePhysical},     // empty CFI + UAC 0600 → gold bars
+		"XX0000000006": {canonical.AssetClassOther, canonical.VehicleOther},        // empty CFI + UAC 0700
+	} {
+		if got := pairs[isin]; got != want {
+			t.Errorf("%s pair = (%q, %q), want (%q, %q)",
+				isin, got.ac, got.veh, want.ac, want.veh)
+		}
+	}
 }
 
 // TestSnapshotsAccountCategoryMapping covers AcctTpDesc →
@@ -513,6 +546,13 @@ func TestSnapshotsForwardContract(t *testing.T) {
 	if p.AssetClass != canonical.AssetClassFxForward {
 		t.Errorf("AssetClass = %q, want fx_forward", p.AssetClass)
 	}
+	// 2-D pair double-written beside the legacy fx_forward class.
+	if p.AssetClassNew != canonical.AssetClassForeignExchange || p.Vehicle != canonical.VehicleForward {
+		t.Errorf("pair = (%q, %q), want (foreign_exchange, forward)", p.AssetClassNew, p.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
+		t.Errorf("forward pair (%q, %q) not admitted by ValidTaxonomyPair", p.AssetClassNew, p.Vehicle)
+	}
 	if p.AccountExternalID != "P1:overlay" {
 		t.Errorf("AccountExternalID = %q, want 'P1:overlay' (synthetic per-portfolio overlay)", p.AccountExternalID)
 	}
@@ -641,5 +681,60 @@ func TestTransactionsCashMovementNarrative(t *testing.T) {
 	}
 	if byID["CASH3"] != canonical.TxKindDeposit {
 		t.Errorf("CASH3 kind = %q, want deposit (no narrative prefix → sign-driven)", byID["CASH3"])
+	}
+}
+
+// TestTaxonomyPairForInstrument exercises every branch of the 2-D
+// taxonomy derivation (CFI-first → vehicle; CFI/UAC → exposure) with
+// synthetic CFI/UAC codes and placeholder security names, and asserts
+// each emitted (asset_class, vehicle) pair is admitted by
+// canonical.ValidTaxonomyPair. Names are generic keywords only — no
+// real fund/holding identifiers.
+func TestTaxonomyPairForInstrument(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfi     string
+		uac     string
+		secName string
+		wantAC  canonical.AssetClass
+		wantVeh canonical.Vehicle
+	}{
+		// Listed, classified by CFI first character.
+		{"equity", "ESVTFR", "", "Placeholder Co", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"etf equity default", "CEOIXX", "", "World Index Tracker", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"etf crypto refined", "CEOIXX", "", "Spot Bitcoin ETP", canonical.AssetClassCrypto, canonical.VehicleETF},
+		{"etf metal refined", "CEOIXX", "", "Physical Gold ETC", canonical.AssetClassMetal, canonical.VehicleETF},
+		{"etf bond refined", "CEOIXX", "", "Short Treasury Bond Fund", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		{"fund equity default", "CIOGXX", "", "Global Equity SICAV", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"fund uac 0100 money market", "CIOGXX", "0100", "Liquidity Placeholder", canonical.AssetClassCash, canonical.VehicleFund},
+		{"fund uac 0400 private equity", "CIMGXX", "0400", "Buyout Feeder", canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+		{"fund uac 0400 infrastructure", "CIMGXX", "0400", "Global Infrastructure Feeder", canonical.AssetClassInfrastructure, canonical.VehicleFund},
+		{"fund uac 0400 hedge", "CIMGXX", "0400", "Multi-Strategy Hedge Feeder", canonical.AssetClassHedgeFund, canonical.VehicleFund},
+		{"bond", "DBFTFR", "", "5% Note 2030", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"option", "OCASPS", "", "Call Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		{"future", "FFICSX", "", "Index Future", canonical.AssetClassPublicEquity, canonical.VehicleFuture},
+		{"right", "RSSXXX", "", "Subscription Right", canonical.AssetClassPublicEquity, canonical.VehicleRight},
+		{"structured equity-linked", "TCAXXX", "", "Equity-Linked Note", canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct},
+		{"structured currency-linked", "TCAXXX", "", "Dual Currency Note", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct},
+		{"structured fx-linked", "TCAXXX", "", "FX Autocall Certificate", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct},
+		// Empty CFI → UAC fallback (non-listed custody items).
+		{"custody uac 0100", "", "0100", "Placeholder Deposit", canonical.AssetClassCash, canonical.VehicleFund},
+		{"custody uac 0300 equity", "", "0300", "Direct Share Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"custody uac 0400 private equity", "", "0400", "LP Feeder Placeholder", canonical.AssetClassPrivateEquity, canonical.VehicleFund},
+		{"custody uac 0600 gold", "", "0600", "Gold Bar Deposit", canonical.AssetClassMetal, canonical.VehiclePhysical},
+		{"custody uac unknown", "", "0700", "Unclassified Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"custody uac empty", "", "", "Unclassified Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAC, gotVeh := taxonomyPairForInstrument(tc.cfi, tc.uac, tc.secName)
+			if gotAC != tc.wantAC || gotVeh != tc.wantVeh {
+				t.Errorf("taxonomyPairForInstrument(%q,%q,%q) = (%q, %q), want (%q, %q)",
+					tc.cfi, tc.uac, tc.secName, gotAC, gotVeh, tc.wantAC, tc.wantVeh)
+			}
+			if !canonical.ValidTaxonomyPair(gotAC, gotVeh) {
+				t.Errorf("pair (%q, %q) not admitted by ValidTaxonomyPair", gotAC, gotVeh)
+			}
+		})
 	}
 }

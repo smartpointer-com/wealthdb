@@ -387,6 +387,104 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	}
 }
 
+// TestTaxonomyPairs verifies the 2-D (asset_class_new, vehicle) double-write
+// on every cap-table security shape plus a fund LP interest: real
+// share-settled equity → (private_equity, stock); option-shaped equity comp →
+// (private_equity, option); a mixed share+option holding → stock (share
+// precedence); a purely-convertible SAFE → (private_debt, convertible_note);
+// a fund → (private_equity, fund). The legacy AssetClass column is unchanged,
+// each pair is a canonical.ValidTaxonomyPair, and the position's pair matches
+// its instrument's. Placeholder names / ids only.
+func TestTaxonomyPairs(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	d := unixDate(t, "2026-06-30")
+	if _, err := db.Exec(fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload) VALUES
+    (%[1]d, 100, 'IND1', 0, 'StockCo',  '{}'),
+    (%[1]d, 200, 'IND1', 1, 'FundCo',   '{}'),
+    (%[1]d, 300, 'IND1', 0, 'SafeCo',   '{}'),
+    (%[1]d, 400, 'IND1', 0, 'OptionCo', '{}'),
+    (%[1]d, 500, 'IND1', 0, 'MixedCo',  '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload) VALUES
+    (%[1]d, 100, 'share',       1, 1000,   500,   5000, 'held', '$', '{}'),
+    (%[1]d, 300, 'convertible', 1,    0, 100000, 100000, 'held', '$', '{}'),
+    (%[1]d, 400, 'option',      1,  200,     0,   3000, 'held', '$', '{}'),
+    (%[1]d, 500, 'share',       1,  400,   200,   2000, 'held', '$', '{}'),
+    (%[1]d, 500, 'option',      2,  100,     0,   1500, 'held', '$', '{}');
+INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_value,
+    capital_contributed, payload) VALUES
+    (%[1]d, 200, 'USD', '100000', '100000', '{}');`, d)); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	posByKey := map[string]canonical.PositionChange{}
+	instByID := map[string]canonical.InstrumentChange{}
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range b.Positions {
+			posByKey[p.PositionKey] = p
+		}
+		for _, i := range b.Instruments {
+			instByID[i.InstrumentExternalID] = i
+		}
+		if !more {
+			break
+		}
+	}
+
+	cases := []struct {
+		key       string
+		exposure  canonical.AssetClass
+		vehicle   canonical.Vehicle
+		wantClass canonical.AssetClass // legacy control column, must be untouched
+	}{
+		{"entity:100", canonical.AssetClassPrivateEquity, canonical.VehicleStock, canonical.AssetClassPrivateEquity},
+		{"entity:400", canonical.AssetClassPrivateEquity, canonical.VehicleOption, canonical.AssetClassPrivateEquity},
+		{"entity:500", canonical.AssetClassPrivateEquity, canonical.VehicleStock, canonical.AssetClassPrivateEquity},
+		{"entity:300", canonical.AssetClassPrivateDebt, canonical.VehicleConvertibleNote, canonical.AssetClassConvertibleNote},
+		{"entity:200", canonical.AssetClassPrivateEquity, canonical.VehicleFund, canonical.AssetClassPrivateFund},
+	}
+	for _, tc := range cases {
+		if !canonical.ValidTaxonomyPair(tc.exposure, tc.vehicle) {
+			t.Fatalf("%s: (%s,%s) is not a valid taxonomy pair", tc.key, tc.exposure, tc.vehicle)
+		}
+		p, ok := posByKey[tc.key]
+		if !ok {
+			t.Fatalf("no position for %s", tc.key)
+		}
+		if p.AssetClassNew != tc.exposure || p.Vehicle != tc.vehicle {
+			t.Errorf("%s position V2 = (%s,%s), want (%s,%s)", tc.key,
+				p.AssetClassNew, p.Vehicle, tc.exposure, tc.vehicle)
+		}
+		if p.AssetClass != tc.wantClass {
+			t.Errorf("%s legacy AssetClass = %q, want %q (control must be untouched)",
+				tc.key, p.AssetClass, tc.wantClass)
+		}
+		i, ok := instByID[tc.key]
+		if !ok {
+			t.Fatalf("no instrument for %s", tc.key)
+		}
+		if i.AssetClassNew != tc.exposure || i.Vehicle != tc.vehicle {
+			t.Errorf("%s instrument V2 = (%s,%s), want (%s,%s) (must match its position)",
+				tc.key, i.AssetClassNew, i.Vehicle, tc.exposure, tc.vehicle)
+		}
+	}
+}
+
 // TestConvertiblePurchasePair verifies a `convertible_purchase` cash flow
 // projects to a balanced deposit+buy pair on the funding account, where the buy
 // carries NO share lot (a SAFE has no shares yet) and the pair nets to 0.

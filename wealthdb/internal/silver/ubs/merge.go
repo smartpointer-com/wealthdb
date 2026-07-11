@@ -158,6 +158,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		webMortgages           []canonical.PositionChange
 		cutoff                 map[string]int64
 		psnAssetClass          map[string]canonical.AssetClass
+		psnTaxPair             map[string]taxPair
 		safekeepingByPortfolio map[string]string
 	)
 
@@ -172,6 +173,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, err
 		}
 		psnAssetClass, err = c.psn.assetClassByISIN(ctx)
+		if err != nil {
+			return nil, err
+		}
+		psnTaxPair, err = c.psn.taxPairByISIN(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +212,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			return nil, fmt.Errorf("ubs web Snapshots (historical): %w", err)
 		}
 		streams = append(streams, hist)
-		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff, psnAssetClass)
+		s, err := c.web.snapshotsForOverlap(ctx, w, cutoff, psnAssetClass, psnTaxPair)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Snapshots: %w", err)
 		}

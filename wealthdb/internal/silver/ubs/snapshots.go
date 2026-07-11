@@ -322,7 +322,12 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
 // without re-parsing instrument payloads on every holding.
 type instrumentMeta struct {
 	AssetClass canonical.AssetClass
-	Currency   string
+	// AssetClassNew + Vehicle are the 2-D-taxonomy pair carried
+	// beside the legacy 1-D AssetClass (double-write during the
+	// migration). appendHoldings copies both onto its PositionChange.
+	AssetClassNew canonical.AssetClass
+	Vehicle       canonical.Vehicle
+	Currency      string
 }
 
 type instrumentPayload struct {
@@ -389,9 +394,12 @@ SELECT snapshot_at, isin, payload
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
 		ac := assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
+		acNew, vehicle := taxonomyPairForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
 		lookup[isin] = instrumentMeta{
-			AssetClass: ac,
-			Currency:   p.GacInstrRskCcyIsoCd,
+			AssetClass:    ac,
+			AssetClassNew: acNew,
+			Vehicle:       vehicle,
+			Currency:      p.GacInstrRskCcyIsoCd,
 		}
 
 		// Only emit InstrumentChange for instruments INSIDE the
@@ -407,6 +415,8 @@ SELECT snapshot_at, isin, payload
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           ac,
+			AssetClassNew:        acNew,
+			Vehicle:              vehicle,
 			ISIN:                 &isin,
 			Name:                 silver.StrPtrIfNonEmpty(p.InstrNm.Best()),
 			Currency:             silver.StrPtrIfNonEmpty(p.GacInstrRskCcyIsoCd),
@@ -471,7 +481,11 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 		// a fresh row). Fall back to AssetClass=other / blank
 		// currency when the ISIN has never been seen — the
 		// currency-from-HOLD step below typically rescues us.
-		meta := instrumentMeta{AssetClass: canonical.AssetClassOther}
+		meta := instrumentMeta{
+			AssetClass:    canonical.AssetClassOther,
+			AssetClassNew: canonical.AssetClassOther,
+			Vehicle:       canonical.VehicleOther,
+		}
 		if m, ok := instr[isin]; ok {
 			meta = m
 		}
@@ -530,6 +544,8 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           meta.AssetClass,
+			AssetClassNew:        meta.AssetClassNew,
+			Vehicle:              meta.Vehicle,
 			Currency:             positionCcy,
 			Quantity:             quantity,
 			MarketValue:          marketValue,
@@ -768,6 +784,8 @@ SELECT snapshot_at, contract_external_id, payload
 			AccountExternalID: overlayID,
 			PositionKey:       contractID,
 			AssetClass:        canonical.AssetClassFxForward,
+			AssetClassNew:     canonical.AssetClassForeignExchange,
+			Vehicle:           canonical.VehicleForward,
 			Currency:          ccy,
 			MarketValue:       p.MrktValueAmt,
 			Payload:           json.RawMessage(payload),

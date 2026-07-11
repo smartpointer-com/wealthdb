@@ -36,6 +36,27 @@ func (r *psnReader) assetClassByISIN(ctx context.Context) (map[string]canonical.
 	return out, nil
 }
 
+// taxPairByISIN returns a per-ISIN 2-D taxonomy pair (exposure,
+// vehicle) derived from PSN's CFI/UAC — the 2-D counterpart of
+// assetClassByISIN. The web overlay stamps web-emitted instruments
+// with it exactly as it does the legacy class, keeping gold's
+// per-column upsert guard idempotent on asset_class_new / vehicle
+// across the web→PSN cutover.
+func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, error) {
+	if r == nil {
+		return nil, nil
+	}
+	meta, err := r.instrumentMetaByISIN(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]taxPair, len(meta))
+	for isin, m := range meta {
+		out[isin] = taxPair{AssetClass: m.AssetClassNew, Vehicle: m.Vehicle}
+	}
+	return out, nil
+}
+
 // safekeepingByPortfolio returns a per-portfolio map to the PSN
 // safekeeping account_external_id that holds that portfolio's
 // securities. Used to re-point ubs-web's PDF-reconstructed
@@ -153,9 +174,12 @@ func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instru
 		}
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
+		acNew, vehicle := taxonomyPairForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
 		out[isin] = instrumentMeta{
-			AssetClass: assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best()),
-			Currency:   p.GacInstrRskCcyIsoCd,
+			AssetClass:    assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best()),
+			AssetClassNew: acNew,
+			Vehicle:       vehicle,
+			Currency:      p.GacInstrRskCcyIsoCd,
 		}
 	}
 	return out, rows.Err()

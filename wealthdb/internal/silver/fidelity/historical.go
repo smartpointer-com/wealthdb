@@ -226,6 +226,10 @@ SELECT as_of_date, account_external_id,
 			continue
 		}
 		assetClass := classifyHistorical(instrKey, desc)
+		// 2-D-taxonomy double-write, computed from the same raw
+		// instrKey/desc as the legacy classify (before the synthetic
+		// key substitution below).
+		assetClassNew, vehicle := classifyHistoricalPair(instrKey, desc)
 		if instrKey == "" {
 			instrKey = syntheticHistoricalInstrumentKey(desc)
 		}
@@ -235,6 +239,8 @@ SELECT as_of_date, account_external_id,
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrKey,
 			AssetClass:           assetClass,
+			AssetClassNew:        assetClassNew,
+			Vehicle:              vehicle,
 			Symbol:               &symbol,
 			Name:                 &name,
 			Currency:             &ccy,
@@ -249,6 +255,8 @@ SELECT as_of_date, account_external_id,
 			PositionKey:          instrKey,
 			InstrumentExternalID: &instrumentKey,
 			AssetClass:           assetClass,
+			AssetClassNew:        assetClassNew,
+			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),

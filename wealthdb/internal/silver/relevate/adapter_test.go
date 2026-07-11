@@ -215,3 +215,40 @@ func TestAssetClassMapping(t *testing.T) {
 		}
 	}
 }
+
+// TestTaxonomyMapping covers the 2-D (exposure, vehicle) pair the
+// migration double-writes alongside the legacy asset_class. Every
+// sleeve is a Swisscanto index fund → vehicle `fund`, except the
+// uninvested Liquidity sleeve → `cash`/`demand_deposit`; the label
+// (and, for Alternatives, the fund name) picks the exposure.
+func TestTaxonomyMapping(t *testing.T) {
+	cases := []struct {
+		raw, name string
+		wantAC    canonical.AssetClass
+		wantVeh   canonical.Vehicle
+	}{
+		{"Stocks", "Swisscanto (CH) Index Equity Fund Placeholder CHF", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"Bonds", "Swisscanto (CH) Index Bond Fund Placeholder CHF", canonical.AssetClassFixedIncome, canonical.VehicleFund},
+		{"Liquidity", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
+		{"Liquidity ", "Liquidity in CHF", canonical.AssetClassCash, canonical.VehicleDemandDeposit},
+		// The physical-bullion sleeve hides under "Alternatives".
+		{"Alternatives", "Swisscanto (CH) Index Precious Metal Fund Gold Physical CHF hedged", canonical.AssetClassMetal, canonical.VehicleFund},
+		// Any other Alternatives sleeve is a manager-strategy fund.
+		{"Alternatives", "Swisscanto (CH) Placeholder Hedge Strategies Fund CHF", canonical.AssetClassHedgeFund, canonical.VehicleFund},
+		// Indirect listed real estate: real_estate exposure, fund wrapper.
+		{"Real Estate", "Swisscanto (CH) Index Real Estate Fund Placeholder CHF", canonical.AssetClassRealEstate, canonical.VehicleFund},
+		// Unrecognised label defaults to a blended robo sleeve.
+		{"Something New", "Swisscanto (CH) Future Sleeve CHF", canonical.AssetClassMultiAsset, canonical.VehicleFund},
+	}
+	for _, c := range cases {
+		gotAC, gotVeh := taxonomyFor(c.raw, c.name)
+		if gotAC != c.wantAC || gotVeh != c.wantVeh {
+			t.Errorf("taxonomyFor(%q, %q) = (%q, %q), want (%q, %q)",
+				c.raw, c.name, gotAC, gotVeh, c.wantAC, c.wantVeh)
+		}
+		if !canonical.ValidTaxonomyPair(gotAC, gotVeh) {
+			t.Errorf("taxonomyFor(%q, %q) = (%q, %q) is not a valid taxonomy pair",
+				c.raw, c.name, gotAC, gotVeh)
+		}
+	}
+}
