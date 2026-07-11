@@ -418,39 +418,51 @@ func TestTaxonomyForLive(t *testing.T) {
 // ticker). Every emitted pair must satisfy canonical.ValidTaxonomyPair.
 func TestTaxonomyHistorical(t *testing.T) {
 	cases := []struct {
+		section     string
 		key         string
 		desc        string
 		wantClass   canonical.AssetClass
 		wantVehicle canonical.Vehicle
 	}{
+		// Authoritative statement `section` pins the vehicle.
+		{"Equities", "TICKR", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		// Name-shy bond ETF (no "ETF" token) — section keeps it an ETF,
+		// exposure from the name.
+		{"Exchange Traded Funds", "AGG", "PLACEHOLDER CORE AGGREGATE BOND", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		{"Exchange Traded Funds", "SPY", "PLACEHOLDER LARGE CAP", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"Fixed Income", "EXBND", "PLACEHOLDER 2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"Options", "EXOPT", "PLACEHOLDER 50", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		// Ambiguous / absent section → fall back to key/description shapes.
 		// OCC option symbol → equity option.
-		{"XYZ250117C50000", "", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		{"", "XYZ250117C50000", "", canonical.AssetClassPublicEquity, canonical.VehicleOption},
 		// CALL/PUT description → equity option.
-		{"EXOPT", "CALL PLACEHOLDER CORP 50 EXP 01/17/25", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		{"Investments", "EXOPT", "CALL PLACEHOLDER CORP 50 EXP 01/17/25", canonical.AssetClassPublicEquity, canonical.VehicleOption},
 		// Money-market sweep → cash × fund.
-		{"EXMMF", "PLACEHOLDER GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+		{"", "EXMMF", "PLACEHOLDER GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+		// A money fund whose name lacks the MONEY MARKET token but
+		// reads as a money fund → cash × fund (not a bond guess).
+		{"Investments", "SWVXX", "PLACEHOLDER VALUE MONEY FUND", canonical.AssetClassCash, canonical.VehicleFund},
 		// CUSIP-9 key → fixed income bond.
-		{"ABCDEFGH1", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"", "ABCDEFGH1", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
 		// Coupon-bearing description → fixed income bond.
-		{"EXBND", "PLACEHOLDER NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
+		{"", "EXBND", "PLACEHOLDER NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
 		// Word-ETF description → exposure by name inside etf.
-		{"EXETF", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
-		{"EXETF", "PLACEHOLDER GROWTH ETF", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"", "EXETF", "PLACEHOLDER TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
 		// Mutual-fund ticker (4 letters + X) → exposure by name inside fund.
-		{"ABCDX", "PLACEHOLDER BITCOIN FUND", canonical.AssetClassCrypto, canonical.VehicleFund},
-		{"WXYZX", "", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		{"", "ABCDX", "PLACEHOLDER BITCOIN FUND", canonical.AssetClassCrypto, canonical.VehicleFund},
+		{"", "WXYZX", "", canonical.AssetClassPublicEquity, canonical.VehicleFund},
 		// Fall-through → plain equity stock.
-		{"TICKR", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"Other Assets", "TICKR", "PLACEHOLDER CORP", canonical.AssetClassPublicEquity, canonical.VehicleStock},
 	}
 	for _, c := range cases {
-		gotClass, gotVehicle := taxonomyHistorical(c.key, c.desc)
+		gotClass, gotVehicle := taxonomyHistorical(c.section, c.key, c.desc)
 		if gotClass != c.wantClass || gotVehicle != c.wantVehicle {
-			t.Errorf("taxonomyHistorical(%q, %q) = (%q, %q), want (%q, %q)",
-				c.key, c.desc, gotClass, gotVehicle, c.wantClass, c.wantVehicle)
+			t.Errorf("taxonomyHistorical(%q, %q, %q) = (%q, %q), want (%q, %q)",
+				c.section, c.key, c.desc, gotClass, gotVehicle, c.wantClass, c.wantVehicle)
 		}
 		if !canonical.ValidTaxonomyPair(gotClass, gotVehicle) {
-			t.Errorf("taxonomyHistorical(%q, %q) → invalid pair (%q, %q)",
-				c.key, c.desc, gotClass, gotVehicle)
+			t.Errorf("taxonomyHistorical(%q, %q, %q) → invalid pair (%q, %q)",
+				c.section, c.key, c.desc, gotClass, gotVehicle)
 		}
 	}
 }

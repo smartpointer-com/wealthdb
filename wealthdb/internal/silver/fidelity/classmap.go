@@ -43,10 +43,13 @@ func assetClassFor(silverClass string) canonical.AssetClass {
 // Funds/ETFs whose exposure depends on their holdings defer to
 // silver.RefineETFExposure(name), which reads the security name
 // (crypto / metal / fixed_income / public_equity); the vehicle (etf vs
-// fund) is fixed by the silver class, not the name. `money_market` never
-// reaches the instrument/position build (it is routed to
-// CashBalanceChange upstream), but is mapped here for parity with
-// assetClassFor. Every pair returned satisfies
+// fund) is fixed by the silver class, not the name. A money-market
+// fund is the exception: only the account's CORE sweep is labeled
+// silver `money_market` (routed to CashBalanceChange upstream), so a
+// separately-purchased money fund arrives here as `mutual_fund` — its
+// name is checked for a money-market signal first, since it is a cash
+// equivalent (cash × fund), not the exposure RefineETFExposure would
+// guess from a stray bond keyword. Every pair returned satisfies
 // canonical.ValidTaxonomyPair.
 func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canonical.Vehicle) {
 	switch silverClass {
@@ -55,6 +58,9 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 	case "etf":
 		return silver.RefineETFExposure(name), canonical.VehicleETF
 	case "mutual_fund":
+		if silver.NamesMoneyMarket(name) {
+			return canonical.AssetClassCash, canonical.VehicleFund
+		}
 		return silver.RefineETFExposure(name), canonical.VehicleFund
 	case "plan_fund":
 		// 529 investment-option wrapper: a blended allocation, so
@@ -165,6 +171,12 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 	case histETFDescRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
 	case histMutualFundRe.MatchString(instrumentKey):
+		// A money fund whose name lacks the "MONEY MARKET" token
+		// histMoneyMktRe caught above (e.g. "… MONEY FUND") but still
+		// reads as cash.
+		if silver.NamesMoneyMarket(description) {
+			return canonical.AssetClassCash, canonical.VehicleFund
+		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock

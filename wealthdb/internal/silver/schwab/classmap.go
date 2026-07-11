@@ -74,12 +74,12 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 	case "ETF":
 		return silver.RefineETFExposure(name), canonical.VehicleETF
 	case "MUTUAL_FUND":
-		return silver.RefineETFExposure(name), canonical.VehicleFund
+		return fundExposure(name), canonical.VehicleFund
 	case "COLLECTIVE_INVESTMENT":
 		if rawInstrumentType == "EXCHANGE_TRADED_FUND" {
 			return silver.RefineETFExposure(name), canonical.VehicleETF
 		}
-		return silver.RefineETFExposure(name), canonical.VehicleFund
+		return fundExposure(name), canonical.VehicleFund
 	case "BOND", "FIXED_INCOME":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
 	case "OPTION":
@@ -88,6 +88,19 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
 	}
 	return canonical.AssetClassOther, canonical.VehicleOther
+}
+
+// fundExposure reads the exposure of a (non-exchange-traded) fund from
+// its name, routing money-market funds to cash — a purchased money
+// fund reaches the MUTUAL_FUND / COLLECTIVE_INVESTMENT path (Schwab's
+// cash sweep is CASH_EQUIVALENT, filtered earlier), and it is a cash
+// equivalent, not the exposure RefineETFExposure would guess from a
+// bond keyword in the fund name.
+func fundExposure(name string) canonical.AssetClass {
+	if silver.NamesMoneyMarket(name) {
+		return canonical.AssetClassCash
+	}
+	return silver.RefineETFExposure(name)
 }
 
 // Instrument-key and description shapes for the statement-history
@@ -122,7 +135,28 @@ var (
 // the etf / fund vehicle. Every returned pair satisfies
 // canonical.ValidTaxonomyPair; instrument_overrides remains the
 // escape hatch for shapes these heuristics misjudge.
-func taxonomyHistorical(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
+func taxonomyHistorical(section, instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
+	// The statement `section` is the authoritative wrapper signal —
+	// it pins the vehicle where the row's name/key shape can't (a
+	// name-shy ETF like "iShares Core U.S. Aggregate Bond", no "ETF"
+	// token, would otherwise fall through to stock and disagree with
+	// the api path). Exposure still comes from the name inside a fund
+	// wrapper. Sections without a clean vehicle mapping ("Investments",
+	// "Other Assets", empty) fall back to the key/description shapes.
+	switch section {
+	case "Equities":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case "Exchange Traded Funds":
+		return silver.RefineETFExposure(description), canonical.VehicleETF
+	case "Fixed Income":
+		return canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case "Options":
+		return canonical.AssetClassPublicEquity, canonical.VehicleOption
+	}
+	return taxonomyHistoricalByShape(instrumentKey, description)
+}
+
+func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
 	switch {
 	case histOptionKeyRe.MatchString(instrumentKey),
 		histOptionDescRe.MatchString(description):
@@ -135,6 +169,9 @@ func taxonomyHistorical(instrumentKey, description string) (canonical.AssetClass
 	case histETFDescRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
 	case histMutualFundRe.MatchString(instrumentKey):
+		if silver.NamesMoneyMarket(description) {
+			return canonical.AssetClassCash, canonical.VehicleFund
+		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock
@@ -172,24 +209,24 @@ var schwabRegistrationToWrapper = map[string]canonical.TaxWrapper{
 	// IRA variants. Schwab's "Contributory IRA" is what they
 	// call a regular traditional IRA you contribute to (as
 	// opposed to a Rollover IRA, which they label separately).
-	"Contributory IRA":   canonical.TaxWrapperTraditionalIRA,
-	"Rollover IRA":       canonical.TaxWrapperTraditionalIRA,
-	"Traditional IRA":    canonical.TaxWrapperTraditionalIRA,
-	"Inherited IRA":      canonical.TaxWrapperTraditionalIRA,
-	"Roth IRA":           canonical.TaxWrapperRothIRA,
+	"Contributory IRA":      canonical.TaxWrapperTraditionalIRA,
+	"Rollover IRA":          canonical.TaxWrapperTraditionalIRA,
+	"Traditional IRA":       canonical.TaxWrapperTraditionalIRA,
+	"Inherited IRA":         canonical.TaxWrapperTraditionalIRA,
+	"Roth IRA":              canonical.TaxWrapperRothIRA,
 	"Roth Contributory IRA": canonical.TaxWrapperRothIRA,
-	"Inherited Roth IRA": canonical.TaxWrapperRothIRA,
-	"SEP-IRA":            canonical.TaxWrapperSEPIRA,
-	"SIMPLE IRA":         canonical.TaxWrapperSIMPLEIRA,
+	"Inherited Roth IRA":    canonical.TaxWrapperRothIRA,
+	"SEP-IRA":               canonical.TaxWrapperSEPIRA,
+	"SIMPLE IRA":            canonical.TaxWrapperSIMPLEIRA,
 
 	// Education savings. Schwab uses the bare "Education
 	// Savings" label for Coverdell ESAs on statements; 529s
 	// don't typically live at Schwab retail (Schwab routes
 	// 529s through state plans), so a future "529 College
 	// Savings Plan" label would need adding.
-	"Education Savings":          canonical.TaxWrapperCoverdellESA,
-	"Coverdell ESA":              canonical.TaxWrapperCoverdellESA,
-	"529 College Savings Plan":   canonical.TaxWrapper529,
+	"Education Savings":        canonical.TaxWrapperCoverdellESA,
+	"Coverdell ESA":            canonical.TaxWrapperCoverdellESA,
+	"529 College Savings Plan": canonical.TaxWrapper529,
 
 	// Custodial-for-minors. Schwab's per-state language varies
 	// but the canonical taxonomy collapses to UTMA / UGMA.

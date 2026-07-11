@@ -106,10 +106,10 @@ SELECT as_of_date, account_external_id, instrument_key,
 
 	for rows.Next() {
 		var (
-			asOf                                                    int64
-			suffix, instrumentKey, payload                          string
-			quantity, marketPrice, marketValue, costBasis           sql.NullFloat64
-			unrealized, accrued                                     sql.NullFloat64
+			asOf                                          int64
+			suffix, instrumentKey, payload                string
+			quantity, marketPrice, marketValue, costBasis sql.NullFloat64
+			unrealized, accrued                           sql.NullFloat64
 		)
 		if err := rows.Scan(&asOf, &suffix, &instrumentKey,
 			&quantity, &marketPrice, &marketValue, &costBasis,
@@ -129,10 +129,11 @@ SELECT as_of_date, account_external_id, instrument_key,
 		// per-column upsert overwrites the instrument dimension
 		// whenever the same key reappears source-classified.
 		var hp struct {
+			Section     string `json:"section"`
 			Description string `json:"description"`
 		}
 		_ = json.Unmarshal([]byte(payload), &hp) // best-effort
-		acNew, vehicle := taxonomyHistorical(instrumentKey, hp.Description)
+		acNew, vehicle := taxonomyHistorical(hp.Section, instrumentKey, hp.Description)
 
 		instrIDCopy := instrumentKey
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{

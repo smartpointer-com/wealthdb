@@ -56,6 +56,23 @@ func NamesPhysicalMetal(name string) bool {
 	return etfMetalRe.MatchString(name) && !etfMinersRe.MatchString(name)
 }
 
+// moneyMarketRe matches money-market-fund names. A purchased money
+// fund (not the account's core sweep) reaches a fund/mutual-fund
+// classification path, where its exposure must be read as cash, not
+// as whatever RefineETFExposure guesses from a stray bond keyword
+// like TREASURY in the fund name. Word boundaries keep it off e.g.
+// "Money Center Bank".
+var moneyMarketRe = regexp.MustCompile(`(?i)\bMONEY\s+MARKET\b|\bMONEY\s+FUND\b|\bCASH\s+RESERVES\b|\bMM(?:KT|F)\b|\bMONEY\s+MKT\b`)
+
+// NamesMoneyMarket reports whether a fund's security name reads as a
+// money-market fund — a cash equivalent (TAXONOMY.md: money-market
+// funds are cash, not fixed income). Callers use it to route a
+// fund/mutual-fund holding to (cash, fund) before name-based exposure
+// refinement, which has no money-market awareness.
+func NamesMoneyMarket(name string) bool {
+	return moneyMarketRe.MatchString(name)
+}
+
 // RefineETFExposure is the 2-D-taxonomy counterpart of RefineETFClass:
 // it returns the EXPOSURE (asset_class) of a fund/ETF already known to
 // be a collective vehicle, from its security name. The wrapper

@@ -245,6 +245,10 @@ func TestAssetClassVehicleFor(t *testing.T) {
 		// Mutual-fund wrapper, exposure refined by name.
 		{"mutual_fund", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassPublicEquity, canonical.VehicleFund},
 		{"mutual_fund", "PLACEHOLDER GOLD BULLION FUND", canonical.AssetClassMetal, canonical.VehicleFund},
+		// A purchased (non-core) money-market fund arrives as mutual_fund;
+		// it is a cash equivalent, not the bond exposure the TREASURY
+		// keyword would otherwise suggest.
+		{"mutual_fund", "PLACEHOLDER TREASURY MONEY MARKET FUND", canonical.AssetClassCash, canonical.VehicleFund},
 		// 529 investment-option sleeve → blended multi-asset fund.
 		{"plan_fund", "STATE PLAN 2099 (FIDELITY BLEND)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
 		{"bond", "PLACEHOLDER CORP NOTE 04.12500% 01/15/2042", canonical.AssetClassFixedIncome, canonical.VehicleBond},
