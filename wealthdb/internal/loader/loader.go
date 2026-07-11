@@ -77,11 +77,14 @@ type PortfolioOverride struct {
 }
 
 // InstrumentOverride is the loader's view of one config-file
-// instrument_overrides entry. AssetClass must be a valid
-// canonical enum value when non-empty — config validation
-// catches bad values upstream.
+// instrument_overrides entry. AssetClass (legacy) and the 2-D pair
+// AssetClassNew + Vehicle are validated upstream at config-load time;
+// the loader trusts them. AssetClassNew/Vehicle are empty when the
+// entry only overrides the legacy column.
 type InstrumentOverride struct {
-	AssetClass string
+	AssetClass    string
+	AssetClassNew string
+	Vehicle       string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -514,29 +517,41 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 // applyInstrumentOverrides patches each InstrumentChange whose
 // instrument_external_id appears in the overrides map, and every
 // PositionChange referencing such an instrument — positions carry
-// their own asset_class copy, so both must move together or the
+// their own classification copy, so both must move together or the
 // dimension and the fact rows would disagree. Overrides for
 // instruments not in the batch are silently ignored (the position
-// may not be held in this snapshot window).
+// may not be held in this snapshot window). The legacy asset_class
+// and the 2-D (asset_class_new, vehicle) pair are patched
+// independently: an entry may override either or both.
 func applyInstrumentOverrides(instruments []canonical.InstrumentChange, positions []canonical.PositionChange, overrides map[string]InstrumentOverride) {
 	if len(overrides) == 0 {
 		return
 	}
 	for i := range instruments {
 		ov, ok := overrides[instruments[i].InstrumentExternalID]
-		if !ok || ov.AssetClass == "" {
+		if !ok {
 			continue
 		}
-		instruments[i].AssetClass = canonical.AssetClass(ov.AssetClass)
+		applyInstrumentOverrideTo(&instruments[i].AssetClass, &instruments[i].AssetClassNew, &instruments[i].Vehicle, ov)
 	}
 	for i := range positions {
 		if positions[i].InstrumentExternalID == nil {
 			continue
 		}
 		ov, ok := overrides[*positions[i].InstrumentExternalID]
-		if !ok || ov.AssetClass == "" {
+		if !ok {
 			continue
 		}
-		positions[i].AssetClass = canonical.AssetClass(ov.AssetClass)
+		applyInstrumentOverrideTo(&positions[i].AssetClass, &positions[i].AssetClassNew, &positions[i].Vehicle, ov)
+	}
+}
+
+func applyInstrumentOverrideTo(ac *canonical.AssetClass, acNew *canonical.AssetClass, veh *canonical.Vehicle, ov InstrumentOverride) {
+	if ov.AssetClass != "" {
+		*ac = canonical.AssetClass(ov.AssetClass)
+	}
+	if ov.AssetClassNew != "" {
+		*acNew = canonical.AssetClass(ov.AssetClassNew)
+		*veh = canonical.Vehicle(ov.Vehicle)
 	}
 }

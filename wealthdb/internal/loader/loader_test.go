@@ -455,9 +455,9 @@ func TestInstrumentOverridesApplied(t *testing.T) {
 		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
 		InstrumentOverrides: map[string]loader.InstrumentOverride{
 			// The adapter classifies this one etf (name-shy
-			// exchange-traded product); the config pins the
-			// underlying exposure.
-			"000000AA1": {AssetClass: "metal"},
+			// exchange-traded product); the config pins the legacy
+			// class AND the 2-D pair.
+			"000000AA1": {AssetClass: "metal", AssetClassNew: "metal", Vehicle: "etf"},
 			"000000XX9": {AssetClass: "crypto"}, // no such instrument in batch
 		},
 	})
@@ -476,6 +476,14 @@ func TestInstrumentOverridesApplied(t *testing.T) {
 		if got != q.want {
 			t.Errorf("%s[%s].asset_class = %q, want %q", q.table, q.id, got, q.want)
 		}
+	}
+	// The 2-D override lands on the new columns; the un-overridden
+	// row keeps them NULL (schwab adapter not yet migrated).
+	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'') || '/' || COALESCE(vehicle,'') FROM positions WHERE instrument_external_id='000000AA1'`); got != "metal/etf" {
+		t.Errorf("000000AA1 new pair = %q, want metal/etf", got)
+	}
+	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'NULL') FROM positions WHERE instrument_external_id='000000BB2'`); got != "NULL" {
+		t.Errorf("000000BB2 asset_class_new = %q, want NULL", got)
 	}
 }
 

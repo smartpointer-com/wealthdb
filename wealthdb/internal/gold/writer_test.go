@@ -378,3 +378,64 @@ func TestEmptyBatchIsNoop(t *testing.T) {
 		t.Errorf("accounts count = %d, want 0", n)
 	}
 }
+
+// TestPositionTaxonomyPair covers the transitional 2-D columns:
+// a valid pair round-trips, both-empty stores NULL, and a half-filled
+// or nonsensical pair is rejected before it reaches gold.
+func TestPositionTaxonomyPair(t *testing.T) {
+	db, ctx := openMigrated(t)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{{
+			SilverSourceID: "src", AccountExternalID: "ACC", AccountKind: canonical.AccountKindBrokerage,
+			FirstSeenAt: 1, LastSeenAt: 1,
+		}})
+	})
+	base := func(key string) canonical.PositionChange {
+		return canonical.PositionChange{
+			SilverSourceID: "src", SnapshotAt: 1000, AccountExternalID: "ACC",
+			PositionKey: key, AssetClass: canonical.AssetClassEquity, Currency: "USD",
+		}
+	}
+
+	// Valid pair round-trips; both-empty stores NULL.
+	inTx(t, db, ctx, func(w *Writer) error {
+		p1 := base("WITH")
+		p1.AssetClassNew, p1.Vehicle = canonical.AssetClassPublicEquity, canonical.VehicleStock
+		return w.InsertPositions(ctx, []canonical.PositionChange{p1, base("WITHOUT")})
+	})
+	var ac, veh sql.NullString
+	db.QueryRowContext(ctx, `SELECT asset_class_new, vehicle FROM positions WHERE position_key='WITH'`).Scan(&ac, &veh)
+	if ac.String != "public_equity" || veh.String != "stock" {
+		t.Errorf("WITH pair = (%q,%q), want (public_equity,stock)", ac.String, veh.String)
+	}
+	db.QueryRowContext(ctx, `SELECT asset_class_new, vehicle FROM positions WHERE position_key='WITHOUT'`).Scan(&ac, &veh)
+	if ac.Valid || veh.Valid {
+		t.Errorf("WITHOUT pair = (%v,%v), want (NULL,NULL)", ac, veh)
+	}
+
+	// Rejections.
+	reject := func(name string, mut func(*canonical.PositionChange)) {
+		p := base("REJ")
+		mut(&p)
+		err := insertOne(ctx, db, p)
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+	reject("half-filled", func(p *canonical.PositionChange) { p.AssetClassNew = canonical.AssetClassPublicEquity })
+	reject("invalid exposure", func(p *canonical.PositionChange) {
+		p.AssetClassNew, p.Vehicle = "bogus", canonical.VehicleStock
+	})
+	reject("legacy value in new column", func(p *canonical.PositionChange) {
+		p.AssetClassNew, p.Vehicle = canonical.AssetClassEquity, canonical.VehicleStock
+	})
+	reject("nonsensical pair", func(p *canonical.PositionChange) {
+		p.AssetClassNew, p.Vehicle = canonical.AssetClassCrypto, canonical.VehicleMortgage
+	})
+}
+
+func insertOne(ctx context.Context, db *sql.DB, p canonical.PositionChange) error {
+	tx, _ := db.BeginTx(ctx, nil)
+	defer tx.Rollback()
+	return NewWriter(tx).InsertPositions(ctx, []canonical.PositionChange{p})
+}

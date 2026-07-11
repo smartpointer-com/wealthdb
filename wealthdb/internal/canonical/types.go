@@ -74,15 +74,23 @@ type PortfolioChange struct {
 type InstrumentChange struct {
 	SilverSourceID       string
 	InstrumentExternalID string
-	AssetClass           AssetClass
-	ISIN                 *string
-	CUSIP                *string
-	Symbol               *string
-	Name                 *string
-	Currency             *string
-	FirstSeenAt          int64
-	LastSeenAt           int64
-	Payload              json.RawMessage
+	// AssetClass is the legacy 1-D classification (control column,
+	// unchanged through the taxonomy migration). AssetClassNew +
+	// Vehicle are the 2-D exposure/wrapper pair (TAXONOMY.md); empty
+	// until an adapter is migrated, in which case gold writes NULL.
+	// At cutover AssetClass is dropped and AssetClassNew renamed to
+	// it.
+	AssetClass    AssetClass
+	AssetClassNew AssetClass
+	Vehicle       Vehicle
+	ISIN          *string
+	CUSIP         *string
+	Symbol        *string
+	Name          *string
+	Currency      *string
+	FirstSeenAt   int64
+	LastSeenAt    int64
+	Payload       json.RawMessage
 }
 
 // PositionChange is one insert into gold's `positions` table.
@@ -92,12 +100,16 @@ type PositionChange struct {
 	AccountExternalID    string
 	PositionKey          string
 	InstrumentExternalID *string
-	AssetClass           AssetClass
-	Currency             string
-	Quantity             *Decimal
-	MarketValue          *Decimal
-	BookValue            *Decimal
-	AccruedInterest      *Decimal
+	// AssetClass is legacy 1-D; AssetClassNew + Vehicle are the 2-D
+	// pair. See InstrumentChange for the migration semantics.
+	AssetClass      AssetClass
+	AssetClassNew   AssetClass
+	Vehicle         Vehicle
+	Currency        string
+	Quantity        *Decimal
+	MarketValue     *Decimal
+	BookValue       *Decimal
+	AccruedInterest *Decimal
 	// AcquisitionDate is a calendar date (no time component). Stored
 	// as DATE in DuckDB. Use time.Time at UTC midnight.
 	AcquisitionDate *time.Time
@@ -133,11 +145,11 @@ type FxRateChange struct {
 // the per-kind table and ApplyCanonicalSign helper that adapters
 // use to enforce it):
 //
-//   Single-entry, from the account's perspective.
-//   Positive  → balance increase (deposit, dividend, coupon,
-//               sell proceeds, transfer_in).
-//   Negative  → balance decrease (withdrawal, fee, tax, buy
-//               cost, transfer_out).
+//	Single-entry, from the account's perspective.
+//	Positive  → balance increase (deposit, dividend, coupon,
+//	            sell proceeds, transfer_in).
+//	Negative  → balance decrease (withdrawal, fee, tax, buy
+//	            cost, transfer_out).
 //
 // Summing NetAmount across an account's transactions for a
 // period equals that account's net cash flow over the period.

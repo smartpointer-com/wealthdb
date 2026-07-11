@@ -346,6 +346,45 @@ func TestInstrumentOverrides(t *testing.T) {
 			t.Fatalf("err = %v, want empty-key complaint", err)
 		}
 	})
+	t.Run("accepts legacy + 2-D pair", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"BOXX": {AssetClass: "bond_etf", AssetClassNew: "fixed_income", Vehicle: "etf"}},
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+	t.Run("rejects vehicle without asset_class_new", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {AssetClass: "metal", Vehicle: "etf"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "set together") {
+			t.Fatalf("err = %v, want set-together complaint", err)
+		}
+	})
+	t.Run("rejects legacy value in asset_class_new", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {AssetClass: "metal", AssetClassNew: "etf", Vehicle: "etf"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "invalid asset_class_new") {
+			t.Fatalf("err = %v, want invalid-asset_class_new complaint", err)
+		}
+	})
+	t.Run("rejects nonsensical pair", func(t *testing.T) {
+		c := base()
+		c.InstrumentOverrides = map[string]map[string]InstrumentOverride{
+			"a": {"GLD": {AssetClass: "metal", AssetClassNew: "crypto", Vehicle: "mortgage"}},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "not an admitted taxonomy pair") {
+			t.Fatalf("err = %v, want admitted-pair complaint", err)
+		}
+	})
 }
 
 func TestValidateSymbolOverrides(t *testing.T) {

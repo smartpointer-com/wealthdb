@@ -42,3 +42,22 @@ func TestRefineETFClass(t *testing.T) {
 		}
 	}
 }
+
+func TestRefineETFExposure(t *testing.T) {
+	cases := []struct {
+		name string
+		want canonical.AssetClass
+	}{
+		{"iShares Bitcoin Trust ETF", canonical.AssetClassCrypto},
+		{"SPDR Gold Shares", canonical.AssetClassMetal},
+		{"VanEck Gold Miners ETF", canonical.AssetClassPublicEquity}, // miners hold stocks
+		{"iShares 20+ Year Treasury Bond ETF", canonical.AssetClassFixedIncome},
+		{"Vanguard Total Stock Market ETF", canonical.AssetClassPublicEquity},
+		{"Swisscanto (CH) Index Bond Fund Placeholder CHF", canonical.AssetClassFixedIncome},
+	}
+	for _, c := range cases {
+		if got := RefineETFExposure(c.name); got != c.want {
+			t.Errorf("RefineETFExposure(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

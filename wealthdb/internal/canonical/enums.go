@@ -82,7 +82,9 @@ var assetClassValues = map[AssetClass]struct{}{
 }
 
 // Valid reports whether the receiver is one of the recognised
-// AssetClass values. The gold writer calls this before insert.
+// (legacy 1-D) AssetClass values. The gold writer calls this before
+// writing the legacy `asset_class` column. Removed at the taxonomy
+// cutover, when Valid becomes ValidV2 (see taxonomy_v2.go).
 func (a AssetClass) Valid() bool {
 	_, ok := assetClassValues[a]
 	return ok

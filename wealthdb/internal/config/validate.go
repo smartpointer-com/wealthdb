@@ -161,9 +161,10 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	// instrument_overrides: same shape rules as account_overrides
-	// but keyed by instrument_external_id. asset_class is the only
-	// dimension wired through today.
+	// instrument_overrides: same shape rules as account_overrides but
+	// keyed by instrument_external_id. The legacy `asset_class` is
+	// required; the 2-D `asset_class_new` + `vehicle` are optional but
+	// must appear together and form an admitted pair.
 	for sourceID, perInstrument := range c.InstrumentOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -177,6 +178,20 @@ func (c *Config) Validate() error {
 			}
 			if !canonical.AssetClass(ov.AssetClass).Valid() {
 				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class %q", sourceID, instrID, ov.AssetClass)
+			}
+			if (ov.AssetClassNew == "") != (ov.Vehicle == "") {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class_new and vehicle must be set together", sourceID, instrID)
+			}
+			if ov.AssetClassNew != "" {
+				if !canonical.AssetClass(ov.AssetClassNew).ValidV2() {
+					return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class_new %q", sourceID, instrID, ov.AssetClassNew)
+				}
+				if !canonical.Vehicle(ov.Vehicle).Valid() {
+					return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid vehicle %q", sourceID, instrID, ov.Vehicle)
+				}
+				if !canonical.ValidTaxonomyPair(canonical.AssetClass(ov.AssetClassNew), canonical.Vehicle(ov.Vehicle)) {
+					return fmt.Errorf("config: instrument_overrides[%q][%q]: (%q, %q) is not an admitted taxonomy pair", sourceID, instrID, ov.AssetClassNew, ov.Vehicle)
+				}
 			}
 		}
 	}
