@@ -33,6 +33,11 @@ type SourceStatus struct {
 	// status (`wealthdb status -v`); zero otherwise.
 	OtherAssetClassCount int
 	OtherTxKindCount     int
+	// UnmigratedTaxonomyCount is positions with a NULL 2-D pair
+	// (asset_class_new) — a source that hasn't been migrated to the
+	// vehicle taxonomy, or an adapter that forgot to emit it. Should
+	// be 0 once every source is migrated.
+	UnmigratedTaxonomyCount int
 }
 
 // StatusForSource queries one silver_sources row + aggregates
@@ -113,6 +118,13 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 			  WHERE silver_source_id = ? AND kind = 'other'`,
 			silverSourceID,
 		).Scan(&s.OtherTxKindCount); err != nil {
+			return nil, err
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM positions
+			  WHERE silver_source_id = ? AND asset_class_new IS NULL`,
+			silverSourceID,
+		).Scan(&s.UnmigratedTaxonomyCount); err != nil {
 			return nil, err
 		}
 	}

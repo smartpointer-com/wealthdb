@@ -23,7 +23,7 @@ func init() {
 func cmdStatus(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift counts (asset_class='other' and kind='other')")
+	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift counts ('other' buckets + unmigrated vehicle pairs)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb status [<silver_source_id>] [-v]
 
@@ -36,8 +36,9 @@ silver Status() extrema, the stored watermark, and the most
 recent load_audit rows.
 
 -v additionally counts 'other'-bucketed rows per source (asset_
-class='other' positions, kind='other' transactions) so taxonomy
-drift in the adapters is visible.`)
+class='other' positions, kind='other' transactions) and positions
+with no 2-D vehicle pair yet, so taxonomy drift in the adapters is
+visible.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -127,8 +128,9 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 
 	if verbose {
 		fmt.Fprintln(stdout, "  taxonomy drift ('other' bucket):")
-		fmt.Fprintf(stdout, "    asset_class='other': %d positions\n", st.OtherAssetClassCount)
-		fmt.Fprintf(stdout, "    kind='other':        %d transactions\n", st.OtherTxKindCount)
+		fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
+		fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
+		fmt.Fprintf(stdout, "    vehicle unmigrated (NULL): %d positions\n", st.UnmigratedTaxonomyCount)
 	}
 
 	if silverErr != nil {
@@ -185,6 +187,9 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 	if verbose && (st.OtherAssetClassCount > 0 || st.OtherTxKindCount > 0) {
 		driftHint = fmt.Sprintf("  drift: %d pos/'other'+%d tx/'other'",
 			st.OtherAssetClassCount, st.OtherTxKindCount)
+	}
+	if verbose && st.UnmigratedTaxonomyCount > 0 {
+		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.UnmigratedTaxonomyCount)
 	}
 
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%d%s%s\n",

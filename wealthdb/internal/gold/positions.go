@@ -31,8 +31,12 @@ type PositionRow struct {
 	InstrumentExternalID *string
 	Symbol               *string // instruments.symbol
 	Name                 *string // instruments.name
-	AssetClass           string
-	Currency             string
+	AssetClass           string  // legacy 1-D class (control column)
+	// AssetClassNew + Vehicle are the 2-D taxonomy pair (TAXONOMY.md);
+	// empty for any row a source hasn't migrated yet.
+	AssetClassNew string
+	Vehicle       string
+	Currency      string
 	Quantity             *string
 	MarketValue          *string
 	// ValueOutCcy is MarketValue converted to the requested output
@@ -65,18 +69,21 @@ func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...
 	var out []PositionRow
 	for rows.Next() {
 		var (
-			r                                                 PositionRow
-			displayName, relID, nickname, category, instr     sql.NullString
-			symbol, name, qty, mvalue, valueOut               sql.NullString
+			r                                             PositionRow
+			displayName, relID, nickname, category, instr sql.NullString
+			symbol, name, qty, mvalue, valueOut           sql.NullString
+			assetClassNew, vehicle                        sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.SnapshotAt, &r.AccountExternalID,
 			&displayName, &relID, &nickname, &category,
 			&r.PositionKey, &instr, &symbol, &name,
-			&r.AssetClass, &r.Currency, &qty, &mvalue, &valueOut,
+			&r.AssetClass, &assetClassNew, &vehicle, &r.Currency, &qty, &mvalue, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("%s scan: %w", label, err)
 		}
+		r.AssetClassNew = assetClassNew.String
+		r.Vehicle = vehicle.String
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)
 		r.Nickname = nullStringToPtr(nickname)

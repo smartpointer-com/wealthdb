@@ -150,8 +150,17 @@ func buildColumnRegistry(outCcy string) []columnSpec[gold.PositionRow] {
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Symbol) }},
 		{Name: "name", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.Name) }},
+		// asset_class shows the 2-D exposure (asset_class_new), falling
+		// back to the legacy 1-D value for any row not yet migrated.
 		{Name: "asset_class", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.AssetClass }},
+			Extract: func(r gold.PositionRow) string {
+				if r.AssetClassNew != "" {
+					return r.AssetClassNew
+				}
+				return r.AssetClass
+			}},
+		{Name: "vehicle", Align: output.AlignLeft,
+			Extract: func(r gold.PositionRow) string { return r.Vehicle }},
 		{Name: "currency", Align: output.AlignLeft,
 			Extract: func(r gold.PositionRow) string { return r.Currency }},
 		{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
@@ -189,7 +198,7 @@ func formatCents(p *string) string {
 // header) sits beside the natural-currency market_value.
 var defaultColumns = []string{
 	"silver_source", "snapshot_date", "account", "symbol",
-	"position_key", "asset_class", "currency", "quantity",
+	"position_key", "asset_class", "vehicle", "currency", "quantity",
 	"market_value", "value",
 }
 
