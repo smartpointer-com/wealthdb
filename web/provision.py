@@ -198,8 +198,12 @@ def report_models():
             vals = ", ".join(f"value_{c} / peak.peak_{c} * 100 AS value_{c}"
                              for c in ("usd", "chf", "eur"))
         peak = f", {NW_PEAK}" if pct else ""
+        # asset_class_new is the 2-D exposure (TAXONOMY.md); the cash
+        # union uses the literal 'cash' exposure, so money-market-fund
+        # positions (asset_class_new='cash') and the cash balances sum
+        # together under one 'cash' class, as they should.
         return (f"WITH u AS ("
-                f"SELECT as_of_day, silver_source_id, asset_class, "
+                f"SELECT as_of_day, silver_source_id, asset_class_new AS asset_class, "
                 f"sum(value_usd) AS value_usd, sum(value_chf) AS value_chf, "
                 f"sum(value_eur) AS value_eur "
                 f"FROM report_positions_history_multi() GROUP BY 1, 2, 3 "
@@ -209,6 +213,28 @@ def report_models():
                 f"FROM report_sources_history_multi()) "
                 f"SELECT CAST(to_timestamp(as_of_day) AS TIMESTAMP) AS as_of_day, "
                 f"silver_source_id, asset_class, {vals} FROM u{peak}")
+
+    def vehicles(pct=False):
+        """Positions grouped by the 2-D wrapper (vehicle), unioned with
+        each source's cash balance as a 'demand_deposit' vehicle — so the
+        vehicle values sum exactly to net worth, the wrapper-dimension
+        counterpart of asset_classes()."""
+        vals = ", ".join(f"value_{c}" for c in ("usd", "chf", "eur"))
+        if pct:
+            vals = ", ".join(f"value_{c} / peak.peak_{c} * 100 AS value_{c}"
+                             for c in ("usd", "chf", "eur"))
+        peak = f", {NW_PEAK}" if pct else ""
+        return (f"WITH u AS ("
+                f"SELECT as_of_day, silver_source_id, vehicle, "
+                f"sum(value_usd) AS value_usd, sum(value_chf) AS value_chf, "
+                f"sum(value_eur) AS value_eur "
+                f"FROM report_positions_history_multi() GROUP BY 1, 2, 3 "
+                f"UNION ALL "
+                f"SELECT as_of_day, silver_source_id, 'demand_deposit', "
+                f"cash_balance_usd, cash_balance_chf, cash_balance_eur "
+                f"FROM report_sources_history_multi()) "
+                f"SELECT CAST(to_timestamp(as_of_day) AS TIMESTAMP) AS as_of_day, "
+                f"silver_source_id, vehicle, {vals} FROM u{peak}")
 
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
           for c in ("usd", "chf", "eur")]
@@ -353,6 +379,18 @@ def report_models():
             asset_classes(pct=True),
             "Privacy variant of report_asset_classes_history: values as % of "
             "the peak daily global net worth (per currency)."),
+        # Vehicle (wrapper) breakdown — the second taxonomy dimension.
+        # Same construction as asset classes: sums to net worth, cash
+        # balances counted as a 'demand_deposit' vehicle.
+        "report_vehicles_history": (
+            vehicles(),
+            "One row per vehicle (wrapper, incl. a 'demand_deposit' vehicle "
+            "for cash) per source per day, carried forward, in USD/CHF/EUR. "
+            "Sums to net worth by construction."),
+        "report_vehicles_history_pct": (
+            vehicles(pct=True),
+            "Privacy variant of report_vehicles_history: values as % of the "
+            "peak daily global net worth (per currency)."),
     }
 
 
@@ -415,6 +453,7 @@ PCT_MODEL_MAP = {
     "report_positions_history": "report_positions_history_pct",
     "report_transactions": "report_transactions_pct",
     "report_asset_classes_history": "report_asset_classes_history_pct",
+    "report_vehicles_history": "report_vehicles_history_pct",
     "report_returns": "report_returns_redacted",
 }
 
@@ -736,6 +775,19 @@ def question_defs(db_id, mid):
                    "breakout": [_f("asset_class", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]]}),
             {}),
+        "Allocation by vehicle (USD)": ("row",
+            "Value (USD) by vehicle (the wrapper an exposure is held "
+            "through: stock, etf, fund, spv, bond, physical, …) as of a "
+            "day, including a 'demand_deposit' vehicle for cash — the bars "
+            "sum exactly to net worth. The wrapper-dimension companion to "
+            "Allocation by asset class. Built for the Allocation dashboard, "
+            "which supplies the as-of day; opened standalone, filter "
+            "as_of_day to a single day first.",
+            _mbql(db_id, mid["report_vehicles_history"],
+                  {"aggregation": [["sum", _dec("value_usd")]],
+                   "breakout": [_f("vehicle", "type/Text")],
+                   "order-by": [["desc", ["aggregation", 0]]]}),
+            {}),
         "Allocation by currency (USD)": ("row",
             "Positions value (USD) by the position's native currency — the "
             "FX exposure of the invested part (cash not included) as of a "
@@ -781,7 +833,8 @@ def question_defs(db_id, mid):
                   {"aggregation": [["sum", _dec("value_usd")]],
                    "breakout": [_f("symbol", "type/Text"),
                                 _f("name", "type/Text"),
-                                _f("asset_class", "type/Text")],
+                                _f("asset_class_new", "type/Text"),
+                                _f("vehicle", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 100}),
             {}),
@@ -971,11 +1024,13 @@ def base_dashboards():
             "Where the value sits — asset class, currency, tax wrapper, "
             "management style and the largest positions — as of a chosen "
             "day (default: today). " + note, "asof", [
+            # The two taxonomy dimensions side by side on the top row.
             ("Allocation by asset class (USD)", 0, 0, 12, 8, "as_of_day"),
-            ("Allocation by currency (USD)", 0, 12, 12, 8, "as_of_day"),
-            ("Value by tax wrapper (USD)", 8, 0, 12, 6, "as_of_day"),
-            ("Value by management style (USD)", 8, 12, 12, 6, "as_of_day"),
-            ("Top 100 positions (USD)", 14, 0, 24, 8, "as_of_day"),
+            ("Allocation by vehicle (USD)", 0, 12, 12, 8, "as_of_day"),
+            ("Allocation by currency (USD)", 8, 0, 12, 8, "as_of_day"),
+            ("Value by tax wrapper (USD)", 8, 12, 12, 8, "as_of_day"),
+            ("Value by management style (USD)", 16, 0, 24, 6, "as_of_day"),
+            ("Top 100 positions (USD)", 22, 0, 24, 8, "as_of_day"),
         ]),
         "Returns": (
             "How the portfolio performed — time-weighted (TWR) and "
@@ -1165,7 +1220,7 @@ def dashboard_parameters(model_ids, mode):
                  "values_source_type": "card",
                  "values_source_config": {
                      "card_id": model_ids["report_positions_history"],
-                     "value_field": ["field", "asset_class",
+                     "value_field": ["field", "asset_class_new",
                                      {"base-type": "type/Text"}]}}]
     return [
         # "past12months~": the trailing ~ means "include this month".
@@ -1494,7 +1549,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                 maps.append({"parameter_id": ASSET_PARAM_ID,
                              "card_id": card_ids[card],
                              "target": ["dimension",
-                                        _f("asset_class", "type/Text")]})
+                                        _f("asset_class_new", "type/Text")]})
             return maps
 
         # The switch link occupies row 0, so the tiles shift down one row.
