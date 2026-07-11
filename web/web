@@ -151,7 +151,11 @@ web_start() {
     fi
     _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
-    [ -f "$SNAP" ] || { echo "web: taking initial gold snapshot…" >&2; _snapshot "$GOLD_DB" "$SNAP"; }
+    if [ ! -f "$SNAP" ]; then
+        _materialize_returns
+        echo "web: taking initial gold snapshot…" >&2
+        _snapshot "$GOLD_DB" "$SNAP"
+    fi
 
     _docker_run_args
     if ! docker "${DOCKER_ARGS[@]}" >/dev/null; then
@@ -200,6 +204,7 @@ web_status() {
 
 web_refresh() {
     _load_config
+    _materialize_returns
     echo "web: refreshing snapshot from $GOLD_DB …" >&2
     _snapshot "$GOLD_DB" "$SNAP"
     echo "web: snapshot updated (as of $(_mtime "$SNAP"))"
@@ -223,6 +228,27 @@ web_logs() { _require_docker; exec docker logs -f "$CONTAINER"; }
 # rule (>=1 lower/upper/digit/special).
 _gen_password() {
     printf '%sAa1!' "$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
+}
+
+# _materialize_returns refreshes the report_returns table in LIVE
+# gold via the engine's hidden web-materialize subcommand, so the
+# snapshot taken next carries returns as fresh as the holdings. An
+# engine-owned write, serialized with `wealthdb load` by DuckDB's
+# single-writer lock; it runs BEFORE _snapshot, so a failure aborts
+# under web_main's `set -e` and the previous snapshot keeps serving.
+_materialize_returns() {
+    echo "web: materializing returns (TWR/MWR) into gold …" >&2
+    local rc=0
+    if [ -n "${WEALTHDB_CONFIG:-}" ]; then
+        "$WEALTHDB" -c "$WEALTHDB_CONFIG" web-materialize || rc=$?
+    else
+        "$WEALTHDB" web-materialize || rc=$?
+    fi
+    if [ "$rc" != 0 ]; then
+        echo "web: returns materialization failed — gold busy (a 'wealthdb load' holds the writer lock?) or not writable." >&2
+        echo "     Run 'wealthdb web refresh' once gold is idle; the previous snapshot keeps serving meanwhile." >&2
+        return "$rc"
+    fi
 }
 
 # _provision creates the admin (skipping the browser setup wizard) and
@@ -273,10 +299,11 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
 
   The gold DuckDB database is pre-added as a read-only snapshot, with
   report models mirroring the global / portfolios / accounts /
-  positions / transactions commands, plus pre-defined metrics and the
-  Wealth Overview / Allocation / Data Freshness dashboards, each with
-  a privacy twin showing values as % of peak (all in the 'wealthdb
-  (pre-defined)' collection; duplicate before customizing).
+  positions / transactions / returns commands, plus pre-defined
+  metrics and the Wealth Overview / Allocation / Returns / Data
+  Freshness dashboards, each with a privacy twin that hides absolute
+  values (all in the 'wealthdb (pre-defined)' collection; duplicate
+  before customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.
 EOF
 }
@@ -293,7 +320,8 @@ subcommands:
   stop       stop + remove the container (keeps dashboards/users in H2)
   status     running state, published port, snapshot freshness
   restart    stop then start
-  refresh    re-copy gold → read-only snapshot, then restart Metabase
+  refresh    re-materialize returns + re-copy gold → read-only
+             snapshot, then restart Metabase
              (run after 'wealthdb load' to update the data)
   logs       follow the container logs
   build      build the wealthdb/metabase image

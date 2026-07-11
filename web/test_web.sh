@@ -7,6 +7,19 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Engine stub: web/web resolves WEALTHDB from WEALTHDB_BIN when it is
+# SOURCED, so the stub must be exported before the source line. It
+# records its argv (one arg per line) for the materialize tests.
+cat > "$tmp/engine-stub" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$tmp/engine-args"
+EOF
+chmod +x "$tmp/engine-stub"
+export WEALTHDB_BIN="$tmp/engine-stub"
+
 # shellcheck source=/dev/null
 source "$HERE/web"
 
@@ -49,8 +62,6 @@ check "publish IPv6"      "[::1]:3000:3000"                                     
 check "image is last"     "wealthdb/metabase:latest"                            "$joined"
 
 echo "== _snapshot .wal guard =="
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 printf 'GOLD' > "$tmp/gold.db"
 printf 'WAL'  > "$tmp/gold.db.wal"
 if _snapshot "$tmp/gold.db" "$tmp/snap.db" 2>/dev/null; then
@@ -75,10 +86,46 @@ case "$p" in *[0-9]*) pass "has digit";; *) fail "has digit";; esac
 case "$p" in *[!A-Za-z0-9]*) pass "has special";; *) fail "has special";; esac
 if [ "${#p}" -ge 12 ]; then pass "length >= 12"; else fail "length >= 12"; fi
 
+echo "== _materialize_returns (stubbed engine) =="
+unset WEALTHDB_CONFIG
+rm -f "$tmp/engine-args"
+_materialize_returns 2>/dev/null
+args="$(cat "$tmp/engine-args" 2>/dev/null)"
+check     "invokes web-materialize"       "web-materialize" "$args"
+check_not "no -c without WEALTHDB_CONFIG" "-c"              "$args"
+WEALTHDB_CONFIG="/cfg/wealthdb.cfg"
+rm -f "$tmp/engine-args"
+_materialize_returns 2>/dev/null
+args="$(cat "$tmp/engine-args" 2>/dev/null)"
+check "passes -c with WEALTHDB_CONFIG" "-c"                "$args"
+check "passes the configured path"     "/cfg/wealthdb.cfg" "$args"
+check "still invokes web-materialize"  "web-materialize"   "$args"
+unset WEALTHDB_CONFIG
+
+echo "== refresh wiring: materialize runs, and before the snapshot =="
+# Spy on the two steps in a subshell so the function overrides don't
+# leak into later tests. _load_config and the restart branch are
+# stubbed out (they need Docker); the assertion is purely about
+# web_refresh's ordering: returns materialization, THEN the snapshot.
+seq_file="$tmp/refresh-seq"
+: > "$seq_file"
+(
+    _load_config()          { GOLD_DB="$tmp/gold.db"; }
+    _materialize_returns()  { echo materialize >> "$seq_file"; }
+    _snapshot()             { echo snapshot    >> "$seq_file"; }
+    _mtime()                { echo now; }
+    _is_running()           { return 1; }
+    web_refresh >/dev/null 2>&1
+)
+if [ "$(printf '%s' "$(cat "$seq_file")")" = "materialize
+snapshot" ]; then pass "web_refresh materializes, then snapshots"
+else fail "web_refresh materializes, then snapshots"; printf '       got sequence: %s\n' "$(tr '\n' ' ' < "$seq_file")"; fi
+
 echo "== web help smoke =="
 hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
+check "help mentions returns"  "materialize returns" "$hout"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "web tests: all passed"; exit 0

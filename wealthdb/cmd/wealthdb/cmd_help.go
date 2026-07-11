@@ -41,9 +41,11 @@ var helpText = map[string]string{
 // hiddenSubcommands are registered (so they're callable) but omitted
 // from the help listing — internal plumbing, not user-facing.
 // `web-config` emits resolved web settings for the host-side
-// `wealthdb web` wrapper.
+// `wealthdb web` wrapper; `web-materialize` rewrites the
+// report_returns table before the wrapper snapshots gold.
 var hiddenSubcommands = map[string]bool{
-	"web-config": true,
+	"web-config":      true,
+	"web-materialize": true,
 }
 
 func cmdHelp(_ context.Context, _ globalFlags, subargs []string, _ io.Reader, _, stderr io.Writer) error {

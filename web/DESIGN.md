@@ -1,6 +1,6 @@
 # web — design notes
 
-The optional Metabase BI server. Five decisions worth recording.
+The optional Metabase BI server. The decisions worth recording.
 
 ## 1. Host-side, not a Go subcommand
 
@@ -88,11 +88,14 @@ CLI's single-currency macros use and emit one value-column set per currency
 (USD/CHF/EUR), so the models track command output by construction and bake in
 no data. Two families, in a `wealthdb (pre-defined)` collection: the `_latest`
 snapshot reports (+ all-time `report_transactions`), and the daily `_history`
-reports (migration 0022) for time-series charts. On top of the models,
-provisioning creates pre-defined metrics, questions and three dashboards —
-**Wealth Overview** and **Allocation** carry dashboard-level filters (a time
-range resp. a required as-of day, plus a source picker), **Data Freshness** is
-deliberately unfiltered — all of them MBQL/definition-only, no data baked in.
+reports (migration 0022) for time-series charts, plus cast-only shims over the
+materialized `report_returns` table (§8). On top of the models, provisioning
+creates pre-defined metrics, questions and four dashboards — **Wealth
+Overview** and **Allocation** carry dashboard-level filters (a time range
+resp. a required as-of day, plus a source picker), **Returns** carries a
+required currency picker (returns are stored one row set per currency),
+**Data Freshness** is deliberately unfiltered — all of them
+MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but its cards run over `_pct` models that
 normalize monetary values to % of peak — peak daily global net worth for
@@ -133,12 +136,51 @@ memory with it). Four settings work together, each load-bearing:
   comes back on its own (metadata is safe on the H2 volume); a plain
   `web stop` still stops it for good.
 
+## 8. Materialized returns (computed in Go, served from a table)
+
+The Returns dashboards can't be views or macros: MWR is XIRR (iterative
+root-finding), and the returns engine leans on things that only exist
+in Go and config — per-source `ReturnsPolicy` hooks, `wealthdb.cfg`'s
+inception overrides and exclusions, the transfer-netting heuristic,
+synthetic onboarding. A SQL re-implementation would be a second returns
+engine that drifts. So the existing engine computes and the result is
+**materialized** into `report_returns` (migration 0026) — the first
+*derived* table in gold; everything else is loader-written
+source-of-truth or computed on read.
+
+The contract keeps it honest: each `(grain, granularity, currency)`
+partition is the **verbatim output of one `RunReturns` call with the
+CLI's default knobs** — `wealthdb returns <grain> --period
+<granularity> --method both -x <CCY>` — so dashboard numbers equal CLI
+numbers by construction. 4 grains × 4 granularities (monthly,
+quarterly, annual, total) × 3 currencies (the `_multi` trio) = 48 runs,
+under a minute on real data; the whole table is rewritten in one
+transaction (DELETE + INSERT), so a failed run leaves the previous
+materialization intact. Bucket rows carry TWR only and MWR lives on the
+since-inception summary rows — that is engine behavior, mirrored, not
+smoothed over. Diagnostic knobs (`--netting off`, `--inception strict`)
+stay CLI-only.
+
+The refresh hook: `web refresh` (and `web start`'s initial snapshot)
+runs the engine's hidden `web-materialize` subcommand *before*
+`_snapshot`, so returns are exactly as fresh as the holdings and
+`wealthdb load && wealthdb web refresh` remains the whole update
+flow. It is an
+engine-owned write to live gold — the same class as `load`, serialized
+with it by DuckDB's single-writer lock: a concurrent load makes the
+open fail and refresh abort *before* the snapshot is touched, while the
+previous snapshot keeps serving. The web container itself still never
+sees anything but the `:ro` snapshot (CLAUDE.md §1).
+
 ## Testing
 
 [`test_web.sh`](test_web.sh) (`make test-web`) unit-tests the pure
 helpers with no Docker: the dual-stack `-p` flag construction, the
-read-only snapshot mount in the `docker run` args, the `.wal` guard, and
-the generated-password complexity. The Go side (`web` config block,
-validation, the `web-config` emitter) is covered by `go test ./...`
+read-only snapshot mount in the `docker run` args, the `.wal` guard,
+the generated-password complexity, and — against a stubbed engine —
+the `_materialize_returns` invocation plus `web_refresh`'s
+materialize-then-snapshot ordering. The Go side (`web` config block,
+validation, the `web-config` emitter, `MaterializeReturns` and the
+`web-materialize` command) is covered by `go test ./...`
 (`make test-wealthdb`). End-to-end (build → start → provision → query
 through the driver) is the manual smoke test in §3.

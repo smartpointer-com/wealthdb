@@ -130,10 +130,14 @@ def report_models():
     (USD/CHF/EUR), so no value casting is needed here. The `_latest` reports
     are as of each source's latest snapshot; the `_history` reports carry value
     forward per day; the `_pct` family are the privacy variants backing the
-    privacy dashboards (values as % of peak, absolute-value columns dropped)."""
-    def wrap(from_expr, ts_cols=()):
+    privacy dashboards (values as % of peak, absolute-value columns dropped).
+    The returns models wrap the materialized report_returns TABLE (migration
+    0026) instead of a macro, with the same epoch-to-TIMESTAMP rendering."""
+    def wrap(from_expr, ts_cols=(), exclude=(), where=""):
         parts = [f"CAST(to_timestamp({c}) AS TIMESTAMP) AS {c}" for c in ts_cols]
-        return f"SELECT * REPLACE ({', '.join(parts)}) FROM {from_expr}"
+        excl = f" EXCLUDE ({', '.join(exclude)})" if exclude else ""
+        cond = f" WHERE {where}" if where else ""
+        return f"SELECT *{excl} REPLACE ({', '.join(parts)}) FROM {from_expr}{cond}"
 
     # Scalar subquery with the peak daily global net worth per currency —
     # the shared normalization constant of the privacy (_pct) models.
@@ -263,6 +267,28 @@ def report_models():
             "Per-position value for every day (carried forward), in USD, CHF and EUR. "
             "Large (days x held positions) — filter to a position / account / date range "
             "before charting."),
+        # Returns models wrap the materialized report_returns TABLE (written
+        # by the engine on `web refresh`) rather than a macro. The redacted
+        # variant backs the privacy dashboards: twr/mwr are scale-free
+        # ratios, so privacy = redaction (drop the absolute money columns
+        # and the account/portfolio grains, whose labels would leak) rather
+        # than %-of-peak normalization.
+        "report_returns": (
+            wrap("report_returns", ["computed_at", "start_day", "end_day"]),
+            "Materialized TWR/MWR returns, refreshed on every `wealthdb web "
+            "refresh`: each (grain, granularity, currency) slice is the verbatim "
+            "output of `wealthdb returns <grain> --period <granularity> --method "
+            "both -x <currency>`. twr/mwr are ratios (0.07 = 7%); NULL means not "
+            "computable, with the reason in quality. Bucket rows carry TWR only; "
+            "MWR lives on the is_summary (since-inception) rows."),
+        "report_returns_redacted": (
+            wrap("report_returns", ["computed_at", "start_day", "end_day"],
+                 exclude=("start_value", "end_value", "net_flow"),
+                 where="grain IN ('sources', 'global')"),
+            "Privacy variant of report_returns: returns are scale-free ratios, "
+            "so privacy is redaction rather than normalization — the absolute "
+            "money columns are dropped and only the sources and global grains "
+            "are kept (no account / portfolio labels)."),
         # Privacy (_pct) variants of the models the pre-defined cards are
         # built on: same columns and grain, but monetary values are % of
         # the peak daily global net worth (per currency) and columns that
@@ -354,9 +380,10 @@ RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 # Every dashboard has a privacy twin whose cards run over the _pct models
 # (monetary values as % of the peak daily global net worth). Cards listed
 # here show no monetary values, so the twin reuses them as-is.
-PRIVACY_EXEMPT_CARDS = {"Stalest source (days)"}
+PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)"}
 
-# Which _pct model replaces which model when building the privacy cards.
+# Which privacy model replaces which model when building the privacy cards
+# (the _pct normalizers; returns swap to the redacted model instead).
 PCT_MODEL_MAP = {
     "report_sources_latest": "report_sources_latest_pct",
     "report_sources_history": "report_sources_history_pct",
@@ -364,14 +391,34 @@ PCT_MODEL_MAP = {
     "report_positions_history": "report_positions_history_pct",
     "report_transactions": "report_transactions_pct",
     "report_asset_classes_history": "report_asset_classes_history_pct",
+    "report_returns": "report_returns_redacted",
 }
 
 PRIVACY_DESC = (" Privacy view: values are % of the peak daily global net "
                 "worth, not absolute amounts.")
 
+# The returns questions show scale-free ratios, so their privacy variants
+# redact (run over report_returns_redacted, which drops the absolute money
+# columns) instead of normalizing to % of peak — hence the "(privacy)"
+# suffix and their own description tail.
+RETURNS_CARDS = {"Return since inception (TWR)",
+                 "Return since inception (MWR)",
+                 "Annualized return (TWR)",
+                 "Quarterly returns (TWR)",
+                 "Monthly returns (TWR)",
+                 "Annual returns (TWR)",
+                 "Returns by source since inception",
+                 "Quarterly returns by source (TWR)"}
+
+RETURNS_PRIVACY_DESC = (" Privacy view: returns are scale-free ratios and "
+                        "show unchanged; the absolute money columns are "
+                        "redacted.")
+
 
 def privacy_name(name):
-    """Card title for the %-of-peak variant of card `name`."""
+    """Card title for the privacy variant of card `name`."""
+    if name in RETURNS_CARDS:
+        return f"{name} (privacy)"
     if " (USD)" in name:
         return name.replace(" (USD)", " (% of peak)")
     return f"{name} (% of peak)"
@@ -394,6 +441,14 @@ def _mbql(db_id, model_id, clauses):
     q = {"source-table": f"card__{model_id}"}
     q.update(clauses)
     return {"type": "query", "database": db_id, "query": q}
+
+
+def _percent_viz(*cols):
+    """Viz settings rendering ratio columns (0.07 -> 7%) as percent.
+    column_settings keys are matched literally against what Metabase's
+    JSON.stringify produces, so they must carry no spaces."""
+    return {"column_settings": {f'["name","{c}"]': {"number_style": "percent"}
+                                for c in cols}}
 
 
 def metric_defs(db_id, mid):
@@ -428,9 +483,29 @@ def question_defs(db_id, mid):
     def kind_in(kinds):
         return ["=", _f("kind", "type/Text")] + kinds
 
+    def part(grain, granularity, buckets=False):
+        """Filter to one (grain, granularity) partition of report_returns;
+        buckets=True keeps only the per-period bucket rows (every partition
+        also carries the since-inception summary rows)."""
+        clauses = [["=", _f("grain", "type/Text"), grain],
+                   ["=", _f("granularity", "type/Text"), granularity]]
+        if buckets:
+            clauses.append(["=", _f("is_summary", "type/Boolean"), False])
+        return ["and", *clauses]
+
     month = _f("occurred_at", "type/DateTime", "month")
     days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
                   ["now"], "day"]
+    twr = _f("twr", "type/Float")
+
+    def bucket_axis(unit):
+        """Time axis for the per-period returns charts. Buckets chain —
+        start_day is the PREVIOUS period's end (the V0 valuation day) and
+        end_day is the last day inside the labeled period (or today for
+        the partial current one) — so the axis must bucket end_day;
+        bucketing start_day would shift every label one period early and
+        collide the first two buckets."""
+        return _f("end_day", "type/DateTime", unit)
     return {
         "Net worth — monthly trend (USD)": ("smartscalar",
             "Average daily net worth (USD) of the latest month, with the "
@@ -543,12 +618,123 @@ def question_defs(db_id, mid):
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 100}),
             {}),
+        # The returns questions run over the materialized report_returns
+        # partitions — each (grain, granularity, currency) slice is the
+        # verbatim output of `wealthdb returns` with the web defaults.
+        # twr/mwr are plain ratios, rendered as percent by the viz
+        # settings ("max" is the name Metabase gives the aggregate
+        # column). The Returns dashboard supplies the required currency
+        # filter; opened standalone the cards aggregate across all three
+        # currency slices, so filter currency to one value first (the
+        # descriptions say so too).
+        "Return since inception (TWR)": ("scalar",
+            "Whole-portfolio time-weighted return since inception — "
+            "performance with the timing and size of external flows "
+            "stripped out. Built for the Returns dashboard, which "
+            "supplies the currency; opened standalone, filter currency "
+            "to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "total"),
+                   "aggregation": [["max", twr]]}),
+            _percent_viz("max")),
+        "Return since inception (MWR)": ("scalar",
+            "Whole-portfolio money-weighted return (XIRR) since "
+            "inception — the return the invested cash experienced, "
+            "external flows included. Built for the Returns dashboard, "
+            "which supplies the currency; opened standalone, filter "
+            "currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "total"),
+                   "aggregation": [["max", _f("mwr", "type/Float")]]}),
+            _percent_viz("max")),
+        "Annualized return (TWR)": ("scalar",
+            "The since-inception time-weighted return restated as a "
+            "constant per-year rate. Built for the Returns dashboard, "
+            "which supplies the currency; opened standalone, filter "
+            "currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "total"),
+                   "aggregation": [["max", _f("twr_annualized", "type/Float")]]}),
+            _percent_viz("max")),
+        "Quarterly returns (TWR)": ("bar",
+            "Whole-portfolio time-weighted return per quarter (the "
+            "buckets are precomputed by the returns engine). Built for "
+            "the Returns dashboard, which supplies the currency; opened "
+            "standalone, filter currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "quarterly", buckets=True),
+                   "aggregation": [["max", twr]],
+                   "breakout": [bucket_axis("quarter")]}),
+            _percent_viz("max")),
+        "Monthly returns (TWR)": ("line",
+            "Whole-portfolio time-weighted return per month. Built for "
+            "the Returns dashboard, which supplies the currency; opened "
+            "standalone, filter currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "monthly", buckets=True),
+                   "aggregation": [["max", twr]],
+                   "breakout": [bucket_axis("month")]}),
+            _percent_viz("max")),
+        "Annual returns (TWR)": ("bar",
+            "Whole-portfolio time-weighted return per calendar year. "
+            "Built for the Returns dashboard, which supplies the "
+            "currency; opened standalone, filter currency to one value "
+            "first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("global", "annual", buckets=True),
+                   "aggregation": [["max", twr]],
+                   "breakout": [bucket_axis("year")]}),
+            _percent_viz("max")),
+        "Returns by source since inception": ("table",
+            "Since-inception returns per source: TWR and MWR, plain and "
+            "annualized, with start/end values, net external flow and "
+            "the quality flags that explain every n/a. Built for the "
+            "Returns dashboard, which supplies the currency; opened "
+            "standalone, filter currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("sources", "total"),
+                   "fields": [_f("silver_source_id", "type/Text"),
+                              _f("entity_label", "type/Text"),
+                              twr,
+                              _f("twr_annualized", "type/Float"),
+                              _f("mwr", "type/Float"),
+                              _f("mwr_annualized", "type/Float"),
+                              _dec("start_value"), _dec("end_value"),
+                              _dec("net_flow"),
+                              _f("quality", "type/Text")],
+                   "order-by": [["asc", _f("silver_source_id", "type/Text")]]}),
+            _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized")),
+        "Quarterly returns by source (TWR)": ("line",
+            "Time-weighted return per quarter, one line per source — "
+            "which feed drove a period's performance. Built for the "
+            "Returns dashboard, which supplies the currency; opened "
+            "standalone, filter currency to one value first.",
+            _mbql(db_id, mid["report_returns"],
+                  {"filter": part("sources", "quarterly", buckets=True),
+                   "aggregation": [["max", twr]],
+                   "breakout": [bucket_axis("quarter"),
+                                _f("silver_source_id", "type/Text")]}),
+            _percent_viz("max")),
         "Stalest source (days)": ("scalar",
             "Days since the oldest source's latest snapshot — how out of "
             "date the worst feed is.",
             _mbql(db_id, mid["report_sources_latest"],
                   {"expressions": {"days_stale": days_stale},
                    "aggregation": [["max", ["expression", "days_stale"]]]}),
+            {}),
+        "Returns age (days)": ("scalar",
+            "Days since the returns table was last materialized (it "
+            "refreshes with the snapshot on every `web refresh`).",
+            # Every row of a run shares one computed_at, so max(age) is
+            # the run's age. Runs over the REDACTED model although the
+            # card itself shows no values: it is privacy-exempt (shared
+            # by the Data Freshness twin), and a scalar's "see these
+            # records" drill-through opens the underlying model — which
+            # must therefore not carry absolute money columns.
+            _mbql(db_id, mid["report_returns_redacted"],
+                  {"expressions": {"age_days": ["datetime-diff",
+                       _f("computed_at", "type/DateTime"), ["now"], "day"]},
+                   "aggregation": [["max", ["expression", "age_days"]]]}),
             {}),
         "Source freshness": ("table",
             "Per source: latest snapshot, its age in days, and the value "
@@ -568,18 +754,29 @@ def question_defs(db_id, mid):
 # either a time range over flows/history (default: past 12 months) or a
 # single as-of day over point-in-time holdings (default: today), each
 # linked to every tile — and a widget-scoped asset-class picker that
-# renders inline on the Top-positions tile only. The parameter ids are
-# arbitrary but must be stable across runs so re-provisioning converges
-# instead of accumulating parameters.
+# renders inline on the Top-positions tile only. The Returns dashboards
+# carry a required currency picker (static USD/CHF/EUR, default USD)
+# instead of a time filter — the periods are precomputed buckets. The
+# parameter ids are arbitrary but must be stable across runs so
+# re-provisioning converges instead of accumulating parameters.
 TIME_PARAM_ID = "aa5df100"
 SOURCE_PARAM_ID = "aa5df101"
 ASOF_PARAM_ID = "aa5df102"
 ASSET_PARAM_ID = "aa5df103"
+CURRENCY_PARAM_ID = "aa5df104"
 
 # The asset-class filter is linked only to these tiles (the breakdown
 # widgets each already show asset classes; filtering them by class would
 # mostly self-select).
 ASSET_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (% of peak)"}
+
+# The Returns dashboards' source picker is linked only to these tiles:
+# the other tiles show the global grain, whose silver_source_id is ''
+# — a source filter would blank them.
+RETURNS_SOURCE_CARDS = {"Returns by source since inception",
+                        "Returns by source since inception (privacy)",
+                        "Quarterly returns by source (TWR)",
+                        "Quarterly returns by source (TWR) (privacy)"}
 
 
 def base_dashboards():
@@ -587,10 +784,15 @@ def base_dashboards():
     (card name, row, col, size_x, size_y, time column) on Metabase's
     24-column grid. The filter mode picks the global filters (see
     dashboard_parameters): 'range' for flows/history dashboards, 'asof'
-    for point-in-time holdings dashboards, None for no filters. The time
-    filter lands on each card's time column (as_of_day for history cards,
-    occurred_at for transactions, snapshot_at for latest-snapshot cards);
-    the source filter always lands on silver_source_id. Data Freshness is
+    for point-in-time holdings dashboards, 'returns' for the returns
+    dashboards (a required currency picker; no time filter — the periods
+    are precomputed buckets, and the summary rows ignore windows by
+    construction), None for no filters. The time filter lands on each
+    card's time column (as_of_day for history cards, occurred_at for
+    transactions, snapshot_at for latest-snapshot cards); the source
+    filter lands on silver_source_id — in 'returns' mode only on the
+    by-source tiles (RETURNS_SOURCE_CARDS), since the other tiles show
+    the global grain, whose silver_source_id is ''. Data Freshness is
     deliberately unfiltered — its job is to show every source, especially
     the stale ones a time filter would hide."""
     note = ("Pre-defined by wealthdb and converged to spec on every `web "
@@ -621,11 +823,29 @@ def base_dashboards():
             ("Value by management style (USD)", 8, 12, 12, 6, "as_of_day"),
             ("Top 100 positions (USD)", 14, 0, 24, 8, "as_of_day"),
         ]),
+        "Returns": (
+            "How the portfolio performed — time-weighted (TWR) and "
+            "money-weighted (MWR) returns since inception, per period "
+            "and per source, in a chosen currency (default USD). " + note,
+            "returns", [
+            # Bucket rows carry TWR only (per-bucket Modified Dietz);
+            # MWR lives on the since-inception summary rows — engine
+            # behavior the tiles mirror.
+            ("Return since inception (TWR)", 0, 0, 8, 3, None),
+            ("Return since inception (MWR)", 0, 8, 8, 3, None),
+            ("Annualized return (TWR)", 0, 16, 8, 3, None),
+            ("Quarterly returns (TWR)", 3, 0, 12, 6, None),
+            ("Annual returns (TWR)", 3, 12, 12, 6, None),
+            ("Returns by source since inception", 9, 0, 24, 8, None),
+            ("Monthly returns (TWR)", 17, 0, 12, 6, None),
+            ("Quarterly returns by source (TWR)", 17, 12, 12, 6, None),
+        ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
             "collector run. Unfiltered by design: it must show every "
             "source, especially stale ones. " + note, None, [
             ("Stalest source (days)", 0, 0, 8, 3, None),
+            ("Returns age (days)", 0, 8, 8, 3, None),
             ("Source freshness", 3, 0, 24, 10, None),
         ]),
     }
@@ -639,11 +859,12 @@ def privacy_card_names():
 
 def privacy_card_defs(db_id, model_ids):
     """name -> (card type, display, description, dataset_query, viz
-    settings) for the %-of-peak variants of every card the base
-    dashboards show: the base defs re-run against the _pct models, plus
-    per-widget-peak overrides for the flow charts (whose _pct models
-    pre-filter kinds and pre-negate costs, so the cards are plain
-    sums)."""
+    settings) for the privacy variants of every card the base
+    dashboards show: the base defs re-run against the privacy models,
+    plus per-widget-peak overrides for the flow charts (whose _pct
+    models pre-filter kinds and pre-negate costs, so the cards are
+    plain sums) and a money-column-free field list for the returns
+    by-source table."""
     wanted = privacy_card_names()
     pmid = {n: model_ids[PCT_MODEL_MAP.get(n, n)] for n in model_ids}
     out = {}
@@ -653,8 +874,10 @@ def privacy_card_defs(db_id, model_ids):
                                        desc + PRIVACY_DESC, query, {})
     for name, (display, desc, query, viz) in question_defs(db_id, pmid).items():
         if name in wanted:
+            suffix = (RETURNS_PRIVACY_DESC if name in RETURNS_CARDS
+                      else PRIVACY_DESC)
             out[privacy_name(name)] = ("question", display,
-                                       desc + PRIVACY_DESC, query, viz)
+                                       desc + suffix, query, viz)
     for name, model in (
             ("Income by month (% of peak)", "report_income_monthly_pct"),
             ("Fees & taxes by month (% of peak)", "report_costs_monthly_pct")):
@@ -664,6 +887,29 @@ def privacy_card_defs(db_id, model_ids):
                             "breakout": [_f("occurred_at", "type/DateTime", "month"),
                                          _f("kind", "type/Text")]}),
                      {"stackable.stack_type": "stacked"})
+    # report_returns_redacted drops the money columns, so the by-source
+    # table's privacy variant re-lists its fields without them (the base
+    # card's start/end/net-flow refs would error against it) and gets a
+    # description that doesn't promise the dropped columns.
+    name = privacy_name("Returns by source since inception")
+    out[name] = ("question", "table",
+                 "Since-inception returns per source: TWR and MWR, plain "
+                 "and annualized, with the quality flags that explain "
+                 "every n/a." + RETURNS_PRIVACY_DESC,
+                 _mbql(db_id, model_ids["report_returns_redacted"],
+                       {"filter": ["and",
+                            ["=", _f("grain", "type/Text"), "sources"],
+                            ["=", _f("granularity", "type/Text"), "total"]],
+                        "fields": [_f("silver_source_id", "type/Text"),
+                                   _f("entity_label", "type/Text"),
+                                   _f("twr", "type/Float"),
+                                   _f("twr_annualized", "type/Float"),
+                                   _f("mwr", "type/Float"),
+                                   _f("mwr_annualized", "type/Float"),
+                                   _f("quality", "type/Text")],
+                        "order-by": [["asc", _f("silver_source_id",
+                                                "type/Text")]]}),
+                 out[name][4])
     return out
 
 
@@ -679,11 +925,15 @@ def dashboard_defs():
         out[name] = (desc, mode, pname, tiles)
         ptiles = [(c if c in PRIVACY_EXEMPT_CARDS else privacy_name(c),
                    r, col, sx, sy, t) for c, r, col, sx, sy, t in tiles]
-        out[pname] = (
+        pdesc = (
+            "Privacy view: returns are scale-free ratios and show "
+            "unchanged; the absolute money columns and the account / "
+            "portfolio grains are redacted. " if mode == "returns" else
             "Privacy view: monetary values are % of peak (peak daily "
             "global net worth for holdings, the widget's peak month for "
             "flows), so shapes and shares show but absolute amounts do "
-            "not. " + desc, mode, name, ptiles)
+            "not. ")
+        out[pname] = (pdesc + desc, mode, name, ptiles)
     return out
 
 
@@ -691,8 +941,9 @@ def dashboard_parameters(model_ids, mode):
     """The global filters a pre-defined dashboard carries, by mode:
     'range' pairs the source picker with a time range (flows / history
     dashboards), 'asof' pairs it with a single as-of day (point-in-time
-    holdings dashboards), None means no filters. The source picker draws
-    its dropdown values from the sources model."""
+    holdings dashboards), 'returns' pairs it with a required currency
+    picker (the returns dashboards), None means no filters. The source
+    picker draws its dropdown values from the sources model."""
     if mode is None:
         return []
     source = {"id": SOURCE_PARAM_ID, "name": "Source", "slug": "source",
@@ -702,6 +953,20 @@ def dashboard_parameters(model_ids, mode):
                   "card_id": model_ids["report_sources_latest"],
                   "value_field": ["field", "silver_source_id",
                                   {"base-type": "type/Text"}]}}
+    if mode == "returns":
+        # Required + USD default: report_returns carries one row set per
+        # currency, so a card must never run with the currency cleared —
+        # every period would show all three currency rows (a required
+        # parameter resets to its default instead of clearing). The value
+        # list is static because the materializer's currency trio is
+        # fixed, not data-dependent.
+        return [{"id": CURRENCY_PARAM_ID, "name": "Currency",
+                 "slug": "currency", "type": "string/=",
+                 "sectionId": "string", "isMultiSelect": False,
+                 "default": ["USD"], "required": True,
+                 "values_source_type": "static-list",
+                 "values_source_config": {"values": ["USD", "CHF", "EUR"]}},
+                source]
     if mode == "asof":
         # Required + dynamic "today" default: the as-of cards sum daily
         # history (one row per entity per day), so they must never run
@@ -962,14 +1227,38 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
     for name, (desc, mode, sibling, tiles) in defs.items():
         parameters = dashboard_parameters(model_ids, mode)
         tparam = ASOF_PARAM_ID if mode == "asof" else TIME_PARAM_ID
-        link = (f"🔓 [Switch to absolute values](/dashboard/{dash_ids[sibling]})"
-                if name.endswith(" (privacy)") else
-                f"🔒 [Switch to the privacy view — values as % of peak]"
-                f"(/dashboard/{dash_ids[sibling]})")
+        if mode == "returns":
+            # Both returns twins show the same scale-free ratios; the
+            # privacy view redacts money columns instead of normalizing.
+            link = (f"🔓 [Switch to the full view — money columns included]"
+                    f"(/dashboard/{dash_ids[sibling]})"
+                    if name.endswith(" (privacy)") else
+                    f"🔒 [Switch to the privacy view — money columns redacted]"
+                    f"(/dashboard/{dash_ids[sibling]})")
+        else:
+            link = (f"🔓 [Switch to absolute values](/dashboard/{dash_ids[sibling]})"
+                    if name.endswith(" (privacy)") else
+                    f"🔒 [Switch to the privacy view — values as % of peak]"
+                    f"(/dashboard/{dash_ids[sibling]})")
 
         def tile_mappings(card, tcol):
             if not mode:
                 return []
+            if mode == "returns":
+                # Currency lands on every tile; the source picker only on
+                # the by-source tiles — the rest show the global grain,
+                # whose silver_source_id is '', so a source filter would
+                # blank them.
+                maps = [{"parameter_id": CURRENCY_PARAM_ID,
+                         "card_id": card_ids[card],
+                         "target": ["dimension", _f("currency", "type/Text")]}]
+                if card in RETURNS_SOURCE_CARDS:
+                    maps.append({"parameter_id": SOURCE_PARAM_ID,
+                                 "card_id": card_ids[card],
+                                 "target": ["dimension",
+                                            _f("silver_source_id",
+                                               "type/Text")]})
+                return maps
             maps = [{"parameter_id": tparam, "card_id": card_ids[card],
                      "target": ["dimension", _f(tcol, "type/DateTime")]},
                     {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],

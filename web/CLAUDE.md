@@ -15,6 +15,15 @@ gold DB, never the live file. The snapshot is mounted `:ro`. Never:
 - weaken the `.wal` guard in `_snapshot` (it prevents copying a
   torn / mid-write database).
 
+The one narrow carve-out: before snapshotting, `web refresh` (and the
+initial snapshot in `web start`) invokes the **engine's** hidden
+`web-materialize` subcommand, which rewrites the `report_returns` table
+in live gold (DESIGN.md §8). That is an engine-owned write — the same
+class as `wealthdb load`, serialized with it by DuckDB's single-writer
+lock — not a web write path: the container and `provision.py` still
+only ever see the `:ro` snapshot. Keep it that way: materialization
+happens in the engine, before `_snapshot`, never from the container.
+
 ## 2. Loopback only
 
 Publish on `127.0.0.1` and `[::1]` only. Never bind a public interface
@@ -39,13 +48,24 @@ port-forward; auth is Metabase's own login.
     construction). Those macros emit one value-column set per currency
     (USD/CHF/EUR) as DECIMAL, so the wrapper only casts epoch columns to
     TIMESTAMP.
+  - the returns models over the **materialized** `report_returns`
+    table (migration 0026, rewritten by the engine's `web-materialize`
+    on every refresh — see §1's carve-out and DESIGN.md §8):
+    `report_returns` is the same kind of cast-only shim;
+    `report_returns_redacted` additionally drops the absolute money
+    columns and keeps only the sources and global grains (the privacy
+    twin's basis, below). The definitions are content-free; the
+    table's data lives in gold and reaches Metabase only via the
+    snapshot.
   - pre-defined metrics and questions over those models (net worth
     current and over time, income and fees by month, allocation
-    breakdowns, source freshness), and three dashboards composing
-    them: **Wealth Overview** and **Allocation** (global filters: a
-    time range resp. a required as-of day, plus a source picker) and
-    **Data Freshness** (deliberately unfiltered, so stale sources
-    stay visible).
+    breakdowns, TWR/MWR returns, source freshness), and four dashboards
+    composing them: **Wealth Overview** and **Allocation** (global
+    filters: a time range resp. a required as-of day, plus a source
+    picker), **Returns** (a required currency picker; the source picker
+    lands only on by-source tiles, since global-grain rows carry an
+    empty source id) and **Data Freshness** (deliberately unfiltered,
+    so stale sources stay visible).
   - a **privacy twin** of each dashboard (same layout and filters,
     switch links between the two views), whose cards run over `_pct`
     models that normalize every monetary column to % of peak — peak
@@ -53,7 +73,10 @@ port-forward; auth is Metabase's own login.
     for income/fee flows — and drop columns that would leak absolute
     values (base-currency totals, quantities, amounts, prices). Still
     definitions only: the scale factors are computed by the queries at
-    run time, never stored.
+    run time, never stored. The Returns twin redacts instead of
+    normalizing (returns are already scale-free ratios): its cards run
+    over `report_returns_redacted`, which drops the absolute money
+    columns and keeps only the sources and global grains.
   Provisioning is idempotent (updates in place, archives retired names)
   and **converges the pre-defined collection to spec on every start** —
   dashboards get their tile layout replaced wholesale. User content
