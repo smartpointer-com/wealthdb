@@ -153,45 +153,73 @@ const (
 	nettingWindowDay = 3     // ±3 calendar days
 )
 
-// RunReturns computes returns at the requested grain. All grains are built from
-// the per-account value spine (report_accounts_history) aggregated in Go, so the
-// staggered-inception synthetic-onboarding mechanism applies uniformly.
-func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, error) {
-	fx, err := loadFxBounds(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	accts, err := loadAccountData(ctx, db, p.OutCcy)
-	if err != nil {
-		return nil, err
-	}
-	if err := attachFlows(ctx, db, p.OutCcy, accts, fx); err != nil {
-		return nil, err
-	}
+// returnsDataset is the loaded, currency-specific input to computeReturns: the
+// per-account daily value spine and external flows in one output currency, plus
+// the derived globalMax and the (currency-independent) FX bounds. Loading is
+// the expensive part — several DuckDB scans — so a dataset is built once and
+// reused across every (grain, period) computation for its currency; see
+// MaterializeReturns, which loads three currencies in a single pass.
+type returnsDataset struct {
+	outCcy    string
+	accts     map[string]*accountData
+	fx        fxBounds
+	globalMax int64 // spine's latest emitted day across all accounts (≈ today)
+}
 
+// loadReturnsDataset loads one currency's dataset: the per-account value spine
+// (report_accounts_history) and the external flows (report_transactions), both
+// converted to outCcy, then the derived globalMax / droppedNonzero. fx is
+// currency-independent, so a caller materializing several currencies loads it
+// once and shares it.
+func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds) (*returnsDataset, error) {
+	accts, err := loadAccountData(ctx, db, outCcy)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachFlows(ctx, db, outCcy, accts, fx); err != nil {
+		return nil, err
+	}
+	ds := &returnsDataset{outCcy: outCcy, accts: accts, fx: fx}
+	ds.finalize()
+	return ds, nil
+}
+
+// finalize derives globalMax and flags accounts that dropped out of a later
+// same-source snapshot while still holding value. Both depend only on the
+// loaded series, not on grain/period, so they are computed once per dataset.
+func (ds *returnsDataset) finalize() {
 	// The spine's latest emitted day across all accounts (≈ today). An account
 	// whose own series ends before this dropped out of a later same-source
 	// snapshot (closed / feed-dropped) — its value is 0 thereafter (matching the
 	// macro), and we flag it if it dropped while still holding value (review #1).
 	var globalMax int64
-	for _, a := range accts {
+	for _, a := range ds.accts {
 		if d := a.lastDay(); d > globalMax {
 			globalMax = d
 		}
 	}
-	for _, a := range accts {
+	for _, a := range ds.accts {
 		if a.lastDay() < globalMax && math.Abs(a.lastVal()) > valueTol {
 			a.droppedNonzero = true
 		}
 	}
+	ds.globalMax = globalMax
+}
 
+// computeReturns runs the pure in-memory returns computation for one
+// (grain, period) over a loaded dataset — no database access, so one dataset
+// can drive every grain and period for its currency. p.OutCcy must match the
+// dataset's currency (it steers the pre-FX-history flag). All grains are built
+// from the per-account value spine aggregated here, so the staggered-inception
+// synthetic-onboarding mechanism applies uniformly.
+func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 	// Never value past the latest available data (also guards a future ToEpoch).
 	toDay := p.ToEpoch / 86400
-	if toDay > globalMax {
-		toDay = globalMax
+	if toDay > ds.globalMax {
+		toDay = ds.globalMax
 	}
 
-	groups, order := groupAccounts(p.Level, accts, p.ReturnsExclude)
+	groups, order := groupAccounts(p.Level, ds.accts, p.ReturnsExclude)
 	var out []ReturnRow
 	for _, key := range order {
 		members := groups[key]
@@ -206,7 +234,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		if len(assets) == 0 {
 			continue
 		}
-		rows := computeEntityReturn(assets, p, toDay, fx)
+		rows := computeEntityReturn(assets, p, toDay, ds.fx)
 		// AccountsGrainMeaningless: per-wallet (accounts-grain) rows for a crypto-
 		// sweep source are economically meaningless (coins sweep between wallets on
 		// arrival), so keep their start/end values but blank TWR/MWR to n/a and flag
@@ -223,7 +251,23 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 		}
 		out = append(out, rows...)
 	}
-	return out, nil
+	return out
+}
+
+// RunReturns computes returns at the requested grain: load the currency's
+// dataset, then compute. Callers that need several grains/periods/currencies of
+// the same data load once (loadReturnsDataset or loadReturnsDatasetsMulti) and
+// call computeReturns directly — see MaterializeReturns.
+func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, error) {
+	fx, err := loadFxBounds(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx)
+	if err != nil {
+		return nil, err
+	}
+	return computeReturns(ds, p), nil
 }
 
 // accountsGrainMeaningless reports whether the group's constituent policy marks
@@ -398,6 +442,15 @@ func (a *accountData) lastNonzeroDay() int64 {
 func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string]*accountData, error) {
 	byKey := map[string]*accountData{}
 
+	kinds, err := loadSourceKinds(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	pfNames, err := loadPortfolioNames(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := db.QueryContext(ctx,
 		`SELECT as_of_day, silver_source_id, account_external_id, account_kind,
 		        display_name, base_currency, portfolio_external_id, total_value_outccy
@@ -407,16 +460,6 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		return nil, fmt.Errorf("RunReturns history: %w", err)
 	}
 	defer rows.Close()
-
-	kinds, err := loadSourceKinds(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-
-	pfNames, err := loadPortfolioNames(ctx, db)
-	if err != nil {
-		return nil, err
-	}
 
 	for rows.Next() {
 		var (
@@ -428,25 +471,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf, &tot); err != nil {
 			return nil, fmt.Errorf("RunReturns scan: %w", err)
 		}
-		v, ok := parseFloat(tot)
-		if !ok {
-			continue // unpriceable account-day (no FX path) — omit from the series
-		}
-		k := acctKey(src, acct)
-		a := byKey[k]
-		if a == nil {
-			rp, _ := returns.ReturnsPolicyFor(kinds[src])
-			a = &accountData{src: src, acct: acct, kind: kind, policy: rp.Flow, rpolicy: rp}
-			a.portfolio = pf.String
-			a.portfolioName = pfNames[acctKey(src, pf.String)]
-			a.baseCurrency = base.String
-			a.label = acct
-			if label.Valid && label.String != "" {
-				a.label = label.String
-			}
-			byKey[k] = a
-		}
-		a.series = append(a.series, dayVal{day: asOf / 86400, val: v})
+		appendSeries(byKey, kinds, pfNames, src, acct, kind, label, base, pf, asOf/86400, tot)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -456,6 +481,42 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		return nil, err
 	}
 	return byKey, nil
+}
+
+// newAccountData builds the currency-independent metadata record for an
+// account (kind, portfolio, base currency, label, and the resolved
+// ReturnsPolicy). The value series and flows are attached afterwards, per
+// currency.
+func newAccountData(kinds, pfNames map[string]string, src, acct, kind string, label, base, pf sql.NullString) *accountData {
+	rp, _ := returns.ReturnsPolicyFor(kinds[src])
+	a := &accountData{src: src, acct: acct, kind: kind, policy: rp.Flow, rpolicy: rp}
+	a.portfolio = pf.String
+	a.portfolioName = pfNames[acctKey(src, pf.String)]
+	a.baseCurrency = base.String
+	a.label = acct
+	if label.Valid && label.String != "" {
+		a.label = label.String
+	}
+	return a
+}
+
+// appendSeries adds one account-day value to byKey, creating the account record
+// on first sight. An unpriceable day (NULL total — no FX path) is omitted from
+// the series, matching the single- and multi-currency loaders. Rows must arrive
+// in ascending day order per account (the loaders' ORDER BY guarantees it), so
+// each series is ascending for valueAt's binary search.
+func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]string, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
+	v, ok := parseFloat(tot)
+	if !ok {
+		return
+	}
+	k := acctKey(src, acct)
+	a := byKey[k]
+	if a == nil {
+		a = newAccountData(kinds, pfNames, src, acct, kind, label, base, pf)
+		byKey[k] = a
+	}
+	a.series = append(a.series, dayVal{day: day, val: v})
 }
 
 func loadSourceKinds(ctx context.Context, db *sql.DB) (map[string]string, error) {
@@ -498,7 +559,11 @@ func loadPortfolioNames(ctx context.Context, db *sql.DB) (map[string]string, err
 	return out, rows.Err()
 }
 
-func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*accountData) error {
+// loadSnapshotDays attaches each account's distinct real snapshot days (the
+// inception anchor and empty-bucket detector). The day list is currency-
+// independent, so the multi-currency loader passes all three per-currency maps
+// and this scans once, distributing to whichever map holds the account.
+func loadSnapshotDays(ctx context.Context, db *sql.DB, byKeys ...map[string]*accountData) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT silver_source_id, account_external_id, snapshot_at // 86400 AS day FROM positions
 		UNION
@@ -514,8 +579,10 @@ func loadSnapshotDays(ctx context.Context, db *sql.DB, byKey map[string]*account
 		if err := rows.Scan(&src, &acct, &day); err != nil {
 			return err
 		}
-		if a := byKey[acctKey(src, acct)]; a != nil {
-			a.snapDays = append(a.snapDays, day)
+		for _, byKey := range byKeys {
+			if a := byKey[acctKey(src, acct)]; a != nil {
+				a.snapDays = append(a.snapDays, day)
+			}
 		}
 	}
 	return rows.Err()
@@ -530,54 +597,63 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 		return err
 	}
 	for _, t := range txns {
-		a := byKey[acctKey(t.SilverSourceID, t.AccountExternalID)]
-		if a == nil {
-			continue
-		}
-		kind := canonical.TxKind(t.Kind)
-		if a.policy.Regime == returns.RegimeCryptoPartial &&
-			(kind == canonical.TxKindTransferIn || kind == canonical.TxKindTransferOut) {
-			a.cryptoExcluded = true
-			continue
-		}
-		if !a.policy.IsExternal(kind) {
-			continue
-		}
-		val, ok := parseFloatPtr(t.ValueOutCcy)
-		if !ok {
-			continue // unresolved FX on the flow — skip (documented limitation)
-		}
-		// ExternalOnly: count only boundary-crossing flows; internal churn
-		// (cash<->securities settlements, inter-account transfers, FX, mandate
-		// funding) is NOT a flow. The engine drops an internal flow here ONLY via a
-		// non-nil ClassifyFlow hook (gated by ExternalOnly); ExternalOnly alone does
-		// nothing in the engine. UBS sets ExternalOnly=true but ships NO ClassifyFlow
-		// — it pre-tags the classification in silver instead (internal rows are
-		// emitted under a non-flow kind, so they never reach IsExternal here), which
-		// keeps the counter-account / own-IBAN logic — and any PII — entirely inside
-		// the collector. For UBS, therefore, ExternalOnly is a silver-side contract
-		// and this branch is inert. This is source-scoped via a.rpolicy, so non-UBS
-		// sources (ExternalOnly=false) are untouched.
-		if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
-			if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
-				continue
-			}
-		}
-		day := t.OccurredAt / 86400
-		if kind == canonical.TxKindJournal {
-			a.journalPresent = true
-		}
-		if fx.clampedBefore(t.Currency, outCcy, day) {
-			a.hasClampedFlow = true
-		}
-		f := returns.Flow{Day: day, Amount: val, ID: t.TransactionExternalID}
-		if a.policy.IsTransferLike(kind) {
-			a.transferLike = append(a.transferLike, f)
-		} else {
-			a.nonTransfer = append(a.nonTransfer, f)
-		}
+		attachOneFlow(byKey, fx, outCcy, t.SilverSourceID, t.AccountExternalID,
+			canonical.TxKind(t.Kind), t.OccurredAt, t.TransactionExternalID, t.Currency, t.ValueOutCcy)
 	}
 	return nil
+}
+
+// attachOneFlow classifies one transaction as an external flow for its account
+// in byKey (a no-op if the account isn't loaded), shared by the single- and
+// multi-currency loaders. valueOut is the transaction's net amount already
+// converted to outCcy (nil ⇒ unresolved FX ⇒ not a flow); txCcy is the
+// transaction's own currency, for the day-0 clamp check.
+func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string) {
+	a := byKey[acctKey(src, acct)]
+	if a == nil {
+		return
+	}
+	if a.policy.Regime == returns.RegimeCryptoPartial &&
+		(kind == canonical.TxKindTransferIn || kind == canonical.TxKindTransferOut) {
+		a.cryptoExcluded = true
+		return
+	}
+	if !a.policy.IsExternal(kind) {
+		return
+	}
+	val, ok := parseFloatPtr(valueOut)
+	if !ok {
+		return // unresolved FX on the flow — skip (documented limitation)
+	}
+	// ExternalOnly: count only boundary-crossing flows; internal churn
+	// (cash<->securities settlements, inter-account transfers, FX, mandate
+	// funding) is NOT a flow. The engine drops an internal flow here ONLY via a
+	// non-nil ClassifyFlow hook (gated by ExternalOnly); ExternalOnly alone does
+	// nothing in the engine. UBS sets ExternalOnly=true but ships NO ClassifyFlow
+	// — it pre-tags the classification in silver instead (internal rows are
+	// emitted under a non-flow kind, so they never reach IsExternal here), which
+	// keeps the counter-account / own-IBAN logic — and any PII — entirely inside
+	// the collector. For UBS, therefore, ExternalOnly is a silver-side contract
+	// and this branch is inert. This is source-scoped via a.rpolicy, so non-UBS
+	// sources (ExternalOnly=false) are untouched.
+	if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
+		if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
+			return
+		}
+	}
+	day := occurredAt / 86400
+	if kind == canonical.TxKindJournal {
+		a.journalPresent = true
+	}
+	if fx.clampedBefore(txCcy, outCcy, day) {
+		a.hasClampedFlow = true
+	}
+	f := returns.Flow{Day: day, Amount: val, ID: txID}
+	if a.policy.IsTransferLike(kind) {
+		a.transferLike = append(a.transferLike, f)
+	} else {
+		a.nonTransfer = append(a.nonTransfer, f)
+	}
 }
 
 const maxEpoch = int64(1) << 62
@@ -605,6 +681,18 @@ func groupAccounts(level string, accts map[string]*accountData, excl *ReturnsExc
 	}
 	order := make([]string, 0, len(groups))
 	for k := range groups {
+		// Members accumulate in accts' (randomized) map-iteration order; sort
+		// each group by (src, acct) so aggregation — float summation in `av`,
+		// flow append order — is deterministic across runs, making the
+		// materialized table byte-stable. (Compute is otherwise order-agnostic;
+		// this only pins ULP-level wobble that never survives 2-dp rendering.)
+		g := groups[k]
+		sort.Slice(g, func(i, j int) bool {
+			if g[i].src != g[j].src {
+				return g[i].src < g[j].src
+			}
+			return g[i].acct < g[j].acct
+		})
 		order = append(order, k)
 	}
 	sort.Strings(order)

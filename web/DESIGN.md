@@ -153,13 +153,26 @@ partition is the **verbatim output of one `RunReturns` call with the
 CLI's default knobs** — `wealthdb returns <grain> --period
 <granularity> --method both -x <CCY>` — so dashboard numbers equal CLI
 numbers by construction. 4 grains × 4 granularities (monthly,
-quarterly, annual, total) × 3 currencies (the `_multi` trio) = 48 runs,
-under a minute on real data; the whole table is rewritten in one
-transaction (DELETE + INSERT), so a failed run leaves the previous
-materialization intact. Bucket rows carry TWR only and MWR lives on the
+quarterly, annual, total) × 3 currencies (the `_multi` trio) = 48
+partitions; the whole table is rewritten in one transaction (DELETE +
+batched INSERT), so a failed run leaves the previous materialization
+intact. Bucket rows carry TWR only and MWR lives on the
 since-inception summary rows — that is engine behavior, mirrored, not
 smoothed over. Diagnostic knobs (`--netting off`, `--inception strict`)
 stay CLI-only.
+
+The 48 partitions are cheap because the loaded data depends only on the
+currency, never the grain or period: `RunReturns` is split into a load
+step (the DuckDB scans) and a pure in-memory `computeReturns`, so the
+materializer loads each currency's dataset **once** and drives all 16
+`(grain, period)` computations off it — and loads all three currencies
+in a single pass over the `_multi` report macros rather than one scan
+per currency. With the per-row inserts replaced by batched multi-row
+`INSERT`s, a full refresh dropped from ~20s to ~2s. Aggregate grains
+sum constituent account values as floats, so their cent-and-below
+digits depend on summation order; `groupAccounts` sorts each group's
+members by `(source, account)` so a run is byte-deterministic (the
+accounts grain, whose groups are singletons, was always exact).
 
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*

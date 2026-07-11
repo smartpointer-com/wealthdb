@@ -151,79 +151,95 @@ func matchRate(t *testing.T, key, col string, got sql.NullFloat64, want *float64
 	}
 }
 
-// TestMaterializeReturnsVerbatimPartition checks the core contract row for
-// row: the (sources, quarterly, USD) partition equals the output of one
-// RunReturns call with the same CLI-default parameters.
-func TestMaterializeReturnsVerbatimPartition(t *testing.T) {
+// TestMaterializeReturnsVerbatimAllPartitions checks the core contract row for
+// row across EVERY (grain, granularity, currency) partition: each must equal
+// the output of one RunReturns call with the same CLI-default parameters. This
+// exercises the single-pass multi-currency loader (CHF/EUR, not just USD) and
+// the batched insert end to end.
+func TestMaterializeReturnsVerbatimAllPartitions(t *testing.T) {
 	db, ctx := openMigrated(t)
 	end := seedMaterializeFixture(t, db, ctx)
 
 	if _, err := MaterializeReturns(ctx, db, MaterializeParams{ToEpoch: end, ComputedAt: 1000}); err != nil {
 		t.Fatalf("MaterializeReturns: %v", err)
 	}
-	want, err := RunReturns(ctx, db, ReturnParams{
-		Level: "sources", FromEpoch: 0, ToEpoch: end, OutCcy: "USD",
-		Method: "both", Period: "quarterly", Annualize: "auto", Netting: true, Inception: "full",
-	})
-	if err != nil {
-		t.Fatalf("RunReturns: %v", err)
-	}
-	if len(want) == 0 {
-		t.Fatal("fixture produced no reference rows")
-	}
 
-	rows, err := db.QueryContext(ctx, `
-		SELECT silver_source_id, entity_id, entity_label, period, is_summary,
-		       start_day, end_day,
-		       CAST(start_value AS DOUBLE), CAST(end_value AS DOUBLE), CAST(net_flow AS DOUBLE),
-		       twr, twr_annualized, mwr, mwr_annualized, quality
-		  FROM report_returns
-		 WHERE grain = 'sources' AND granularity = 'quarterly' AND currency = 'USD'`)
-	if err != nil {
-		t.Fatalf("read partition: %v", err)
-	}
-	defer rows.Close()
-	got := map[string]materializedRow{}
-	for rows.Next() {
-		var m materializedRow
-		if err := rows.Scan(&m.src, &m.entityID, &m.entityLabel, &m.period, &m.isSummary,
-			&m.startDay, &m.endDay, &m.startValue, &m.endValue, &m.netFlow,
-			&m.twr, &m.twrAnnualized, &m.mwr, &m.mwrAnnualized, &m.quality); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got[m.src+"|"+m.entityID+"|"+m.period+"|"+strconv.FormatBool(m.isSummary)] = m
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("partition has %d rows, RunReturns produced %d", len(got), len(want))
-	}
+	checked := 0
+	for _, ccy := range materializeCurrencies {
+		for _, grain := range materializeGrains {
+			for _, period := range materializePeriods {
+				want, err := RunReturns(ctx, db, ReturnParams{
+					Level: grain, FromEpoch: 0, ToEpoch: end, OutCcy: ccy,
+					Method: "both", Period: period, Annualize: "auto", Netting: true, Inception: "full",
+				})
+				if err != nil {
+					t.Fatalf("RunReturns %s/%s/%s: %v", grain, period, ccy, err)
+				}
 
-	for _, r := range want {
-		key := r.SilverSourceID + "|" + r.EntityID + "|" + r.Period + "|" + strconv.FormatBool(r.IsSummary)
-		m, ok := got[key]
-		if !ok {
-			t.Errorf("missing materialized row %s", key)
-			continue
+				rows, err := db.QueryContext(ctx, `
+					SELECT silver_source_id, entity_id, entity_label, period, is_summary,
+					       start_day, end_day,
+					       CAST(start_value AS DOUBLE), CAST(end_value AS DOUBLE), CAST(net_flow AS DOUBLE),
+					       twr, twr_annualized, mwr, mwr_annualized, quality
+					  FROM report_returns
+					 WHERE grain = ? AND granularity = ? AND currency = ?`, grain, period, ccy)
+				if err != nil {
+					t.Fatalf("read partition %s/%s/%s: %v", grain, period, ccy, err)
+				}
+				got := map[string]materializedRow{}
+				for rows.Next() {
+					var m materializedRow
+					if err := rows.Scan(&m.src, &m.entityID, &m.entityLabel, &m.period, &m.isSummary,
+						&m.startDay, &m.endDay, &m.startValue, &m.endValue, &m.netFlow,
+						&m.twr, &m.twrAnnualized, &m.mwr, &m.mwrAnnualized, &m.quality); err != nil {
+						rows.Close()
+						t.Fatalf("scan: %v", err)
+					}
+					got[m.src+"|"+m.entityID+"|"+m.period+"|"+strconv.FormatBool(m.isSummary)] = m
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				rows.Close()
+
+				part := grain + "/" + period + "/" + ccy
+				if len(got) != len(want) {
+					t.Errorf("%s: partition has %d rows, RunReturns produced %d", part, len(got), len(want))
+					continue
+				}
+				for _, r := range want {
+					key := r.SilverSourceID + "|" + r.EntityID + "|" + r.Period + "|" + strconv.FormatBool(r.IsSummary)
+					m, ok := got[key]
+					if !ok {
+						t.Errorf("%s: missing materialized row %s", part, key)
+						continue
+					}
+					id := part + " " + key
+					if m.entityLabel != r.EntityLabel {
+						t.Errorf("%s: label %q, want %q", id, m.entityLabel, r.EntityLabel)
+					}
+					if m.startDay != r.StartDay*86400 || m.endDay != r.EndDay*86400 {
+						t.Errorf("%s: days (%d, %d), want (%d, %d)",
+							id, m.startDay, m.endDay, r.StartDay*86400, r.EndDay*86400)
+					}
+					matchMoney(t, id, "start_value", m.startValue, r.StartValue)
+					matchMoney(t, id, "end_value", m.endValue, r.EndValue)
+					matchMoney(t, id, "net_flow", m.netFlow, r.NetFlow)
+					matchRate(t, id, "twr", m.twr, r.TWR)
+					matchRate(t, id, "twr_annualized", m.twrAnnualized, r.TWRAnnualized)
+					matchRate(t, id, "mwr", m.mwr, r.MWR)
+					matchRate(t, id, "mwr_annualized", m.mwrAnnualized, r.MWRAnnualized)
+					if m.quality != strings.Join(r.Quality, ";") {
+						t.Errorf("%s: quality %q, want %q", id, m.quality, strings.Join(r.Quality, ";"))
+					}
+				}
+				checked++
+			}
 		}
-		if m.entityLabel != r.EntityLabel {
-			t.Errorf("%s: label %q, want %q", key, m.entityLabel, r.EntityLabel)
-		}
-		if m.startDay != r.StartDay*86400 || m.endDay != r.EndDay*86400 {
-			t.Errorf("%s: days (%d, %d), want (%d, %d)",
-				key, m.startDay, m.endDay, r.StartDay*86400, r.EndDay*86400)
-		}
-		matchMoney(t, key, "start_value", m.startValue, r.StartValue)
-		matchMoney(t, key, "end_value", m.endValue, r.EndValue)
-		matchMoney(t, key, "net_flow", m.netFlow, r.NetFlow)
-		matchRate(t, key, "twr", m.twr, r.TWR)
-		matchRate(t, key, "twr_annualized", m.twrAnnualized, r.TWRAnnualized)
-		matchRate(t, key, "mwr", m.mwr, r.MWR)
-		matchRate(t, key, "mwr_annualized", m.mwrAnnualized, r.MWRAnnualized)
-		if m.quality != strings.Join(r.Quality, ";") {
-			t.Errorf("%s: quality %q, want %q", key, m.quality, strings.Join(r.Quality, ";"))
-		}
+	}
+	if want := len(materializeCurrencies) * len(materializeGrains) * len(materializePeriods); checked != want {
+		t.Errorf("checked %d partitions, want %d", checked, want)
 	}
 }
 
