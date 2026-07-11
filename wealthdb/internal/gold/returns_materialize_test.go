@@ -176,13 +176,15 @@ func TestMaterializeReturnsVerbatimAllPartitions(t *testing.T) {
 					t.Fatalf("RunReturns %s/%s/%s: %v", grain, period, ccy, err)
 				}
 
+				// window_from_year = 0 is the since-inception base matrix; the
+				// 'total' granularity also holds windowed (>0) summaries.
 				rows, err := db.QueryContext(ctx, `
 					SELECT silver_source_id, entity_id, entity_label, period, is_summary,
 					       start_day, end_day,
 					       CAST(start_value AS DOUBLE), CAST(end_value AS DOUBLE), CAST(net_flow AS DOUBLE),
 					       twr, twr_annualized, mwr, mwr_annualized, quality
 					  FROM report_returns
-					 WHERE grain = ? AND granularity = ? AND currency = ?`, grain, period, ccy)
+					 WHERE grain = ? AND granularity = ? AND currency = ? AND window_from_year = 0`, grain, period, ccy)
 				if err != nil {
 					t.Fatalf("read partition %s/%s/%s: %v", grain, period, ccy, err)
 				}

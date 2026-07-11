@@ -62,10 +62,13 @@ port-forward; auth is Metabase's own login.
     breakdowns, TWR/MWR returns, source freshness), and four dashboards
     composing them: **Wealth Overview** and **Allocation** (global
     filters: a time range resp. a required as-of day, plus a source
-    picker), **Returns** (a required currency picker; the source picker
-    lands only on by-source tiles, since global-grain rows carry an
-    empty source id) and **Data Freshness** (deliberately unfiltered,
-    so stale sources stay visible).
+    picker), **Returns** (a required currency picker plus a start-year
+    picker that rescopes the summary figures to the since-<year> window
+    — `window_from_year` — so the frequently-null since-inception TWR
+    becomes a real number; its per-period and cumulative-growth charts
+    are native SQL, split by source with the global grain unioned in as
+    a toggleable `(all sources)` line) and **Data Freshness**
+    (deliberately unfiltered, so stale sources stay visible).
   - a **privacy twin** of each dashboard (same layout and filters,
     switch links between the two views), whose cards run over `_pct`
     models that normalize every monetary column to % of peak — peak

@@ -174,6 +174,45 @@ digits depend on summation order; `groupAccounts` sorts each group's
 members by `(source, account)` so a run is byte-deterministic (the
 accounts grain, whose groups are singletons, was always exact).
 
+That cheap re-compute also buys the dashboard's **start-year picker**.
+The since-inception TWR is frequently `null` — the earliest months are
+degenerate (a non-positive opening base), and the noise around
+inception swamps the charts. So beyond the base matrix
+(`window_from_year = 0`), the materializer writes, for each grain,
+currency and year in the data's span, a *since-that-year* total summary
+(`window_from_year = Y`, migration 0027) — each just another
+`computeReturns` over the already-loaded dataset with `FromEpoch =
+Jan 1 Y` (the verbatim equivalent of `wealthdb returns <grain>
+<Y>-01-01 - -x <CCY>`). Only the since-X summary depends on the window,
+so windowed rows are `is_summary` totals only; the per-period buckets
+exist once at `window_from_year = 0`. The picker (`window_from_year` on
+the MBQL scalars/table) then rescopes the whole figure exactly, so a
+later start makes the null a real number.
+
+The dashboard reads this as: rescopable **scalars** (TWR / MWR /
+annualized) and a **by-source table**; a **cumulative growth-of-100
+chart on a log axis** (returns go negative, so a growth index — always
+positive — is what a log axis can show); and **monthly / quarterly /
+annual** per-period charts. Every chart is split by source with the
+global grain unioned in as a toggleable `(all sources)` line — the
+pseudo-source that keeps one chart per granularity instead of separate
+global and by-source views. These charts are native SQL (window
+functions and the union need it) and take the Currency / Start-year /
+Source pickers as template variables (Source is a field filter).
+
+The growth index is derived from the **windowed** summaries, not by
+chaining the per-period buckets: `G(Y) = base / (1 + TWR_since_Y)`,
+normalized so the earliest visible year is 100. Chaining calendar-bucket
+Modified-Dietz returns would be wrong here — a flow landing between two
+sparse snapshots poisons that bucket (a mid-month deposit with no fresh
+snapshot reads as a large loss, then a large gain next period), so a
+chained index can diverge from the true TWR by hundreds of points for
+sparse-snapshot sources — a real gainer chained down to a spurious
+near-total loss. The windowed TWRs use the
+engine's snapshot-aligned chain, so the growth chart is correct and
+agrees with the scalars and table by construction — at the cost of
+annual granularity (a finer curve would need per-month windows).
+
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
 `_snapshot`, so returns are exactly as fresh as the holdings and

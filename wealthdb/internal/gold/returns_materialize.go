@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
@@ -34,15 +35,18 @@ type MaterializeParams struct {
 	ReturnsExclude     *ReturnsExclude
 }
 
-// MaterializeReturns rewrites the report_returns table with the full returns
-// matrix — 4 grains × 4 periods × 3 currencies, each partition the verbatim
-// output of one CLI-default RunReturns (method both, netting on, inception
-// full, annualize auto, since-inception window). The three currencies are
-// loaded in a single pass over the `_multi` report macros, and each currency's
-// dataset drives all 16 (grain, period) computations without re-querying — the
-// loaded data depends only on the currency, never the grain or period. Rows are
-// written in one transaction (DELETE all + batched INSERT), so a failed run
-// leaves the previous materialization intact. Returns the inserted row count.
+// MaterializeReturns rewrites the report_returns table. It writes the full
+// returns matrix — 4 grains × 4 periods × 3 currencies, each partition the
+// verbatim output of one CLI-default RunReturns (method both, netting on,
+// inception full, annualize auto, since-inception window, window_from_year=0)
+// — plus, for each grain × currency × year in the data's span, a since-that-
+// year total summary (window_from_year=Y) for the dashboard's start-year
+// rescoping. The three currencies are loaded in a single pass over the `_multi`
+// report macros, and each currency's dataset drives every (grain, period) and
+// windowed computation without re-querying — the loaded data depends only on
+// the currency, never the grain, period or window. Rows are written in one
+// transaction (DELETE all + batched INSERT), so a failed run leaves the
+// previous materialization intact. Returns the inserted row count.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
 	fx, err := loadFxBounds(ctx, db)
 	if err != nil {
@@ -55,9 +59,12 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 
 	type partition struct {
 		grain, granularity, currency string
+		windowFromYear               int
 		rows                         []ReturnRow
 	}
 	var parts []partition
+	// Base matrix: the 48 (grain, period, currency) partitions, since inception
+	// (window_from_year = 0).
 	for _, ccy := range materializeCurrencies {
 		ds := datasets[ccy]
 		for _, grain := range materializeGrains {
@@ -70,6 +77,28 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 					ReturnsExclude:     p.ReturnsExclude,
 				})
 				parts = append(parts, partition{grain: grain, granularity: period, currency: ccy, rows: rows})
+			}
+		}
+	}
+	// Windowed summaries: for each start year in the data's span, a since-that-
+	// year total per grain and currency, so the dashboard can rescope the
+	// scalars past the degenerate inception period. Cheap — the datasets are
+	// already loaded, so each is just another in-memory computeReturns with a
+	// later FromEpoch (period 'total' emits only the summary row).
+	minYear, maxYear := datasetYearRange(datasets, p.ToEpoch)
+	for _, ccy := range materializeCurrencies {
+		ds := datasets[ccy]
+		for _, grain := range materializeGrains {
+			for y := minYear; y <= maxYear; y++ {
+				from := time.Date(y, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
+				rows := computeReturns(ds, ReturnParams{
+					Level: grain, FromEpoch: from, ToEpoch: p.ToEpoch, OutCcy: ccy,
+					Method: "both", Period: "total", Annualize: "auto",
+					Netting: true, Inception: "full",
+					InceptionOverrides: p.InceptionOverrides,
+					ReturnsExclude:     p.ReturnsExclude,
+				})
+				parts = append(parts, partition{grain: grain, granularity: "total", currency: ccy, windowFromYear: y, rows: rows})
 			}
 		}
 	}
@@ -95,7 +124,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	rowsInBatch := 0
 	for _, part := range parts {
 		for _, r := range part.rows {
-			args = appendReturnRow(args, p.ComputedAt, part.currency, part.grain, part.granularity, r)
+			args = appendReturnRow(args, p.ComputedAt, part.currency, part.grain, part.granularity, part.windowFromYear, r)
 			rowsInBatch++
 			n++
 			if rowsInBatch == returnsInsertBatch {
@@ -125,16 +154,16 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	return n, nil
 }
 
-// returnsInsertBatch is the number of rows per multi-row INSERT (× the 19
+// returnsInsertBatch is the number of rows per multi-row INSERT (× the 20
 // columns = params per statement, well under DuckDB's limit).
 const returnsInsertBatch = 128
 
 // returnsInsertCols is report_returns' column count (keep in sync with the
 // column list and appendReturnRow).
-const returnsInsertCols = 19
+const returnsInsertCols = 20
 
 const returnsInsertColumns = `report_returns (
-    computed_at, currency, grain, granularity,
+    computed_at, currency, grain, granularity, window_from_year,
     silver_source_id, entity_id, entity_label, period, is_summary,
     start_day, end_day, start_value, end_value, net_flow,
     twr, twr_annualized, mwr, mwr_annualized, quality
@@ -155,13 +184,39 @@ func returnsInsertSQL(n int) string {
 // dst. Money columns bind the engine's decimal strings as-is (DuckDB casts to
 // DECIMAL(28,4)); nil stays NULL. StartDay/EndDay are epoch DAYS on ReturnRow —
 // stored as epoch seconds, the repo convention for timestamp columns.
-func appendReturnRow(dst []any, computedAt int64, currency, grain, granularity string, r ReturnRow) []any {
+// windowFromYear is 0 for the base matrix and the start year for windowed
+// summaries.
+func appendReturnRow(dst []any, computedAt int64, currency, grain, granularity string, windowFromYear int, r ReturnRow) []any {
 	return append(dst,
-		computedAt, currency, grain, granularity,
+		computedAt, currency, grain, granularity, windowFromYear,
 		r.SilverSourceID, r.EntityID, r.EntityLabel, r.Period, r.IsSummary,
 		r.StartDay*86400, r.EndDay*86400, r.StartValue, r.EndValue, r.NetFlow,
 		r.TWR, r.TWRAnnualized, r.MWR, r.MWRAnnualized,
 		strings.Join(r.Quality, ";"))
+}
+
+// datasetYearRange is the span of start years to materialize windowed summaries
+// for: the year of the earliest value across all loaded accounts through the
+// year of the window end (toEpoch, ≈ today). Returns an empty range (min > max)
+// when there is no data, so the windowed loop is skipped.
+func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, int) {
+	minDay := int64(-1)
+	for _, ds := range datasets {
+		for _, a := range ds.accts {
+			if len(a.series) == 0 {
+				continue
+			}
+			if d := a.series[0].day; minDay < 0 || d < minDay {
+				minDay = d
+			}
+		}
+	}
+	if minDay < 0 {
+		return 1, 0 // no data → empty range
+	}
+	minYear := time.Unix(minDay*86400, 0).UTC().Year()
+	maxYear := time.Unix(toEpoch, 0).UTC().Year()
+	return minYear, maxYear
 }
 
 // loadReturnsDatasetsMulti loads all three currencies' datasets in a single

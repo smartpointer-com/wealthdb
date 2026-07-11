@@ -95,6 +95,11 @@ def main():
     if db_id is None:
         return 1
 
+    global CURRENCY_FIELD_ID, SOURCE_FIELD_ID
+    field_ids = resolve_returns_field_ids(a.base, sid, db_id)
+    CURRENCY_FIELD_ID = field_ids.get("currency")
+    SOURCE_FIELD_ID = field_ids.get("silver_source_id")
+
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
     by_name = pre_defined_cards(a.base, sid, coll_id)
     model_ids = ensure_models(a.base, sid, db_id, coll_id, by_name)
@@ -371,7 +376,21 @@ RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
                       "net_worth_eur_current", "positions_value_usd_current",
                       "cash_balance_usd_current", "net_worth_usd_daily",
                       # Top 10 -> Top 100 (with the inline asset-class filter)
-                      "Top 10 positions (USD)", "Top 10 positions (% of peak)"]
+                      "Top 10 positions (USD)", "Top 10 positions (% of peak)",
+                      # Returns rework: start-year rescoping + growth chart +
+                      # global-as-pseudo-source. Renamed/dropped cards and the
+                      # privacy twins the percentage-only cards no longer need.
+                      "Return since inception (TWR)", "Return since inception (MWR)",
+                      "Returns by source since inception",
+                      "Quarterly returns by source (TWR)",
+                      "Return since inception (TWR) (privacy)",
+                      "Return since inception (MWR) (privacy)",
+                      "Annualized return (TWR) (privacy)",
+                      "Quarterly returns (TWR) (privacy)",
+                      "Monthly returns (TWR) (privacy)",
+                      "Annual returns (TWR) (privacy)",
+                      "Returns by source since inception (privacy)",
+                      "Quarterly returns by source (TWR) (privacy)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
@@ -379,8 +398,13 @@ RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 
 # Every dashboard has a privacy twin whose cards run over the _pct models
 # (monetary values as % of the peak daily global net worth). Cards listed
-# here show no monetary values, so the twin reuses them as-is.
-PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)"}
+# here show no monetary values (percentages, indices, source names), so the
+# twin reuses them as-is. The returns scalars and charts are all
+# percentage/index-only; only the by-source table carries money.
+PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
+                        "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
+                        "Cumulative return (log scale)", "Monthly returns (TWR)",
+                        "Quarterly returns (TWR)", "Annual returns (TWR)"}
 
 # Which privacy model replaces which model when building the privacy cards
 # (the _pct normalizers; returns swap to the redacted model instead).
@@ -397,18 +421,21 @@ PCT_MODEL_MAP = {
 PRIVACY_DESC = (" Privacy view: values are % of the peak daily global net "
                 "worth, not absolute amounts.")
 
-# The returns questions show scale-free ratios, so their privacy variants
-# redact (run over report_returns_redacted, which drops the absolute money
-# columns) instead of normalizing to % of peak — hence the "(privacy)"
-# suffix and their own description tail.
-RETURNS_CARDS = {"Return since inception (TWR)",
-                 "Return since inception (MWR)",
-                 "Annualized return (TWR)",
-                 "Quarterly returns (TWR)",
-                 "Monthly returns (TWR)",
-                 "Annual returns (TWR)",
-                 "Returns by source since inception",
-                 "Quarterly returns by source (TWR)"}
+# The one returns card that carries money is the by-source table; its privacy
+# variant redacts (runs over report_returns_redacted, which drops the absolute
+# money columns) instead of normalizing to % of peak — hence the "(privacy)"
+# suffix and its own description tail. The scalars and charts are exempt.
+RETURNS_CARDS = {"Returns by source"}
+
+# The native-SQL returns charts: the Currency / Start-year pickers map onto
+# their {{currency}} / {{start_year}} template variables (the MBQL returns
+# cards get the same pickers on their currency / window_from_year dimensions).
+RETURNS_NATIVE_CARDS = {"Cumulative return (log scale)", "Monthly returns (TWR)",
+                        "Quarterly returns (TWR)", "Annual returns (TWR)"}
+
+# The whole-portfolio scalars — global grain, so the Source picker doesn't
+# apply (their silver_source_id is '').
+RETURNS_GLOBAL_SCALARS = {"Return (TWR)", "Return (MWR)", "Annualized return (TWR)"}
 
 RETURNS_PRIVACY_DESC = (" Privacy view: returns are scale-free ratios and "
                         "show unchanged; the absolute money columns are "
@@ -451,6 +478,155 @@ def _percent_viz(*cols):
                                 for c in cols}}
 
 
+# The native returns charts carry three template variables — currency, start
+# year, and (a multi-value field filter) source. The Returns dashboard's
+# Currency / Start-year / Source pickers map onto them; the same pickers map
+# onto the MBQL cards' currency / window_from_year / silver_source_id
+# dimensions. Currency and start year default so a card still runs standalone.
+CURRENCY_TAG = {"id": "ccy-tag", "name": "currency", "display-name": "Currency",
+                "type": "text", "default": "USD", "required": True}
+START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
+                  "display-name": "Start year", "type": "number",
+                  "default": "0", "required": True}
+
+# Gold field ids backing the native charts' Currency / Source field filters
+# (so the pickers are dropdowns, not free-text), resolved at provision time
+# (field ids are per-Metabase-instance, so they can't be hard-coded). None ⇒
+# the gold DB isn't synced yet; the chart filter is then a plain variable and
+# the next provision — post-sync — upgrades it to the field-filter dropdown.
+CURRENCY_FIELD_ID = None
+SOURCE_FIELD_ID = None
+
+
+def returns_tags():
+    """Template tags for the native returns charts. Currency is a field filter
+    (a dropdown, values from the currency column) when its field id is known,
+    else a plain text variable (free-text fallback for a not-yet-synced DB).
+    Source is a field filter when its id is known. Start year is always a
+    plain number variable (it drives a `year(end_day) >= …` range, which a
+    field filter can't express)."""
+    if CURRENCY_FIELD_ID is not None:
+        # A field-filter default is a LIST (string/= is multi-value-shaped),
+        # unlike a plain text variable's bare-string default.
+        currency = {"id": "ccy-ff", "name": "currency", "display-name": "Currency",
+                    "type": "dimension", "dimension": ["field", CURRENCY_FIELD_ID, None],
+                    "widget-type": "string/=", "default": ["USD"], "required": True}
+    else:
+        currency = CURRENCY_TAG
+    tags = {"currency": currency, "start_year": START_YEAR_TAG}
+    if SOURCE_FIELD_ID is not None:
+        tags["source_ff"] = {"id": "src-ff", "name": "source_ff",
+                             "display-name": "Source", "type": "dimension",
+                             "dimension": ["field", SOURCE_FIELD_ID, None],
+                             "widget-type": "string/=", "default": None}
+    return tags
+
+
+def _native(db_id, sql, tags):
+    """A native-SQL dataset_query with template variables."""
+    return {"type": "native", "database": db_id,
+            "native": {"query": sql, "template-tags": tags}}
+
+
+def _returns_source_union(granularity, value_col):
+    """A UNION selecting one column from the per-source rows plus the global
+    grain relabelled as the toggleable '(all sources)' pseudo-source, for one
+    granularity's per-period buckets. Filtered to {{currency}} and to periods
+    ending on/after {{start_year}} (0 = all). The Source field filter (an
+    optional [[…]] clause) narrows the real sources but never the '(all
+    sources)' line, so the global reference stays visible while a subset is
+    selected. Shared by the period and growth charts."""
+    # Currency: a field filter inside each subquery (dropdown) when its id is
+    # known, else a plain-variable equality in the outer WHERE. Source: an
+    # optional [[…]] field-filter clause (omitted when nothing is selected, and
+    # only emitted when the tag exists — referencing an undefined {{tag}} would
+    # make the query invalid).
+    cf = CURRENCY_FIELD_ID is not None
+    ccy_sub = "\n     AND {{currency}}" if cf else ""
+    ccy_outer = "" if cf else "currency = {{currency}}\n   AND "
+    src_clause = "\n     [[AND {{source_ff}}]]" if SOURCE_FIELD_ID is not None else ""
+    return (
+        "WITH s AS (\n"
+        "  SELECT silver_source_id, currency, end_day, " + value_col + " AS v\n"
+        "    FROM report_returns\n"
+        "   WHERE grain = 'sources' AND granularity = '" + granularity + "'\n"
+        "     AND NOT is_summary" + ccy_sub + src_clause + "\n"
+        "  UNION ALL\n"
+        "  SELECT '(all sources)', currency, end_day, " + value_col + "\n"
+        "    FROM report_returns\n"
+        "   WHERE grain = 'global' AND granularity = '" + granularity + "'\n"
+        "     AND NOT is_summary" + ccy_sub + ")\n"
+        "SELECT silver_source_id AS source, end_day, v\n"
+        "  FROM s\n"
+        " WHERE " + ccy_outer + "year(to_timestamp(end_day)) >= {{start_year}}")
+
+
+def returns_period_sql(granularity):
+    """Per-period TWR, one row per (source, period) plus the '(all sources)'
+    global line — the pseudo-source that fixes the split-by-source
+    inconsistency (every chart shows sources and the global line together)."""
+    return ("SELECT source, to_timestamp(end_day) AS period, v AS twr\n"
+            "  FROM (\n" + _returns_source_union(granularity, "twr") + "\n) u\n"
+            " ORDER BY end_day")
+
+
+def returns_growth_sql():
+    """Cumulative growth index (base 100), per source and the '(all sources)'
+    line, derived from the ENGINE's since-<year> windowed TWRs — NOT by
+    chaining the per-period buckets. Chaining calendar-month/quarter Modified-
+    Dietz returns is unsound here: a flow landing between two sparse snapshots
+    poisons that bucket (a mid-month deposit with no fresh snapshot reads as a
+    huge loss, then a huge gain next period), so a chained index can diverge by
+    hundreds of points from the true TWR for sparse-snapshot sources — a real
+    gainer chained all the way down to a spurious near-total loss. The windowed
+    summaries use the engine's snapshot-
+    aligned chain, so they are correct and — being the very figures the scalars
+    and by-source table show — the chart agrees with them by construction.
+
+    Since window_from_year=Y is the TWR from Jan 1 Y to today, the index at the
+    start of year Y is G(Y) = base / (1 + TWR_since_Y); normalizing the earliest
+    visible year to 100 gives G(Y) = 100 * (1 + TWR_since_Ymin) / (1 + TWR_Y).
+    {{start_year}} sets Ymin (the index rebases to the chosen start); null
+    windows (degenerate inception) drop out, so the line begins where the return
+    is first defined. Annual granularity — one point per year — is the price of
+    correctness here; a finer curve would need per-month windowed summaries."""
+    cf = CURRENCY_FIELD_ID is not None
+    ccy_sub = "\n     AND {{currency}}" if cf else ""
+    ccy_f = "" if cf else "currency = {{currency}} AND "
+    src = "\n     [[AND {{source_ff}}]]" if SOURCE_FIELD_ID is not None else ""
+    return (
+        "WITH w AS (\n"
+        "  SELECT silver_source_id AS source, currency, window_from_year AS yr, twr\n"
+        "    FROM report_returns\n"
+        "   WHERE grain = 'sources' AND granularity = 'total' AND is_summary\n"
+        "     AND window_from_year > 0" + ccy_sub + src + "\n"
+        "  UNION ALL\n"
+        "  SELECT '(all sources)', currency, window_from_year, twr\n"
+        "    FROM report_returns\n"
+        "   WHERE grain = 'global' AND granularity = 'total' AND is_summary\n"
+        "     AND window_from_year > 0" + ccy_sub + "),\n"
+        "f AS (\n"
+        "  SELECT source, yr, twr FROM w\n"
+        "   WHERE " + ccy_f + "yr >= {{start_year}} AND twr IS NOT NULL)\n"
+        "SELECT source, make_date(yr, 1, 1) AS year,\n"
+        "       100 * first_value(1 + twr) OVER (PARTITION BY source ORDER BY yr)\n"
+        "           / (1 + twr) AS growth_index\n"
+        "  FROM f\n"
+        " ORDER BY yr")
+
+
+def _series_viz(time_col, series_col, metric, *, log=False, percent=False):
+    """Viz for a native time series split by a category: x = time_col,
+    one line per series_col, y = metric. Native queries need the axes named
+    explicitly (there is no MBQL breakout for Metabase to infer them from)."""
+    viz = {"graph.dimensions": [time_col, series_col], "graph.metrics": [metric]}
+    if log:
+        viz["graph.y_axis.scale"] = "log"
+    if percent:
+        viz["column_settings"] = {f'["name","{metric}"]': {"number_style": "percent"}}
+    return viz
+
+
 def metric_defs(db_id, mid):
     """metric name -> (display, description, dataset_query). Kept to a
     single aggregation so Metabase's metric editor can open them (charts
@@ -478,34 +654,25 @@ def metric_defs(db_id, mid):
 
 def question_defs(db_id, mid):
     """question name -> (display, description, dataset_query, viz
-    settings). All MBQL (no native SQL) so the dashboards' filters can
-    map onto every card's dimensions."""
+    settings). Mostly MBQL over the models so the dashboards' filters map
+    onto card dimensions; the returns charts (cumulative index, per-period
+    split-by-source) are native SQL — window functions and the pseudo-source
+    UNION need SQL — and take the Currency / Start-year pickers as template
+    variables instead."""
     def kind_in(kinds):
         return ["=", _f("kind", "type/Text")] + kinds
 
-    def part(grain, granularity, buckets=False):
-        """Filter to one (grain, granularity) partition of report_returns;
-        buckets=True keeps only the per-period bucket rows (every partition
-        also carries the since-inception summary rows)."""
-        clauses = [["=", _f("grain", "type/Text"), grain],
-                   ["=", _f("granularity", "type/Text"), granularity]]
-        if buckets:
-            clauses.append(["=", _f("is_summary", "type/Boolean"), False])
-        return ["and", *clauses]
+    def part(grain, granularity):
+        """Filter to one (grain, granularity) partition of report_returns
+        (the returns scalars/table use the summary 'total' partition; the
+        Start-year picker then selects the window_from_year within it)."""
+        return ["and", ["=", _f("grain", "type/Text"), grain],
+                ["=", _f("granularity", "type/Text"), granularity]]
 
     month = _f("occurred_at", "type/DateTime", "month")
     days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
                   ["now"], "day"]
     twr = _f("twr", "type/Float")
-
-    def bucket_axis(unit):
-        """Time axis for the per-period returns charts. Buckets chain —
-        start_day is the PREVIOUS period's end (the V0 valuation day) and
-        end_day is the last day inside the labeled period (or today for
-        the partial current one) — so the axis must bucket end_day;
-        bucketing start_day would shift every label one period early and
-        collide the first two buckets."""
-        return _f("end_day", "type/DateTime", unit)
     return {
         "Net worth — monthly trend (USD)": ("smartscalar",
             "Average daily net worth (USD) of the latest month, with the "
@@ -618,79 +785,84 @@ def question_defs(db_id, mid):
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 100}),
             {}),
-        # The returns questions run over the materialized report_returns
-        # partitions — each (grain, granularity, currency) slice is the
-        # verbatim output of `wealthdb returns` with the web defaults.
-        # twr/mwr are plain ratios, rendered as percent by the viz
-        # settings ("max" is the name Metabase gives the aggregate
-        # column). The Returns dashboard supplies the required currency
-        # filter; opened standalone the cards aggregate across all three
-        # currency slices, so filter currency to one value first (the
-        # descriptions say so too).
-        "Return since inception (TWR)": ("scalar",
-            "Whole-portfolio time-weighted return since inception — "
-            "performance with the timing and size of external flows "
-            "stripped out. Built for the Returns dashboard, which "
-            "supplies the currency; opened standalone, filter currency "
-            "to one value first.",
-            _mbql(db_id, mid["report_returns"],
+        # The returns cards run over the materialized report_returns table.
+        # The three scalars and the by-source table are MBQL (grain 'global' /
+        # 'sources', granularity 'total'); the Returns dashboard's Currency and
+        # Start-year pickers land on their currency / window_from_year
+        # dimensions — window_from_year selects the since-inception (0) or
+        # since-<year> summary, so the picker rescopes the whole figure exactly
+        # (the since-inception TWR is often null around the degenerate first
+        # months). twr/mwr are ratios rendered as percent ("max" is the name
+        # Metabase gives the aggregate). Opened standalone the cards aggregate
+        # across currencies / windows, so set Currency and Start year first.
+        # The scalars run over the REDACTED model: they are privacy-exempt
+        # (reused as-is on the privacy dashboard), and a scalar's "see these
+        # records" drill-through opens the underlying model, which therefore
+        # must not carry the absolute money columns.
+        "Return (TWR)": ("scalar",
+            "Whole-portfolio time-weighted return over the chosen window — "
+            "performance with the timing and size of external flows stripped "
+            "out. Built for the Returns dashboard (Currency + Start-year "
+            "pickers); opened standalone, set those first.",
+            _mbql(db_id, mid["report_returns_redacted"],
                   {"filter": part("global", "total"),
                    "aggregation": [["max", twr]]}),
             _percent_viz("max")),
-        "Return since inception (MWR)": ("scalar",
-            "Whole-portfolio money-weighted return (XIRR) since "
-            "inception — the return the invested cash experienced, "
-            "external flows included. Built for the Returns dashboard, "
-            "which supplies the currency; opened standalone, filter "
-            "currency to one value first.",
-            _mbql(db_id, mid["report_returns"],
+        "Return (MWR)": ("scalar",
+            "Whole-portfolio money-weighted return (XIRR) over the chosen "
+            "window — the return the invested cash experienced, external flows "
+            "included. Built for the Returns dashboard (Currency + Start-year "
+            "pickers); opened standalone, set those first.",
+            _mbql(db_id, mid["report_returns_redacted"],
                   {"filter": part("global", "total"),
                    "aggregation": [["max", _f("mwr", "type/Float")]]}),
             _percent_viz("max")),
         "Annualized return (TWR)": ("scalar",
-            "The since-inception time-weighted return restated as a "
-            "constant per-year rate. Built for the Returns dashboard, "
-            "which supplies the currency; opened standalone, filter "
-            "currency to one value first.",
-            _mbql(db_id, mid["report_returns"],
+            "The window's time-weighted return restated as a constant "
+            "per-year rate (n/a for windows under a year). Built for the "
+            "Returns dashboard (Currency + Start-year pickers); opened "
+            "standalone, set those first.",
+            _mbql(db_id, mid["report_returns_redacted"],
                   {"filter": part("global", "total"),
                    "aggregation": [["max", _f("twr_annualized", "type/Float")]]}),
             _percent_viz("max")),
-        "Quarterly returns (TWR)": ("bar",
-            "Whole-portfolio time-weighted return per quarter (the "
-            "buckets are precomputed by the returns engine). Built for "
-            "the Returns dashboard, which supplies the currency; opened "
-            "standalone, filter currency to one value first.",
-            _mbql(db_id, mid["report_returns"],
-                  {"filter": part("global", "quarterly", buckets=True),
-                   "aggregation": [["max", twr]],
-                   "breakout": [bucket_axis("quarter")]}),
-            _percent_viz("max")),
+        # Native cumulative + per-period charts. All split by source with the
+        # global grain unioned in as a toggleable '(all sources)' line; the
+        # Currency / Start-year pickers map onto their {{currency}} /
+        # {{start_year}} variables.
+        "Cumulative return (log scale)": ("line",
+            "Growth of 100, indexed from the chosen start year, per source and "
+            "the '(all sources)' portfolio line — derived from the engine's "
+            "since-<year> returns (so it matches the scalars and the by-source "
+            "table exactly). Annual granularity. Log y-axis so a steady "
+            "compounding rate reads as a straight line and every source is "
+            "comparable regardless of size. Built for the Returns dashboard.",
+            _native(db_id, returns_growth_sql(), returns_tags()),
+            _series_viz("year", "source", "growth_index", log=True)),
         "Monthly returns (TWR)": ("line",
-            "Whole-portfolio time-weighted return per month. Built for "
-            "the Returns dashboard, which supplies the currency; opened "
-            "standalone, filter currency to one value first.",
-            _mbql(db_id, mid["report_returns"],
-                  {"filter": part("global", "monthly", buckets=True),
-                   "aggregation": [["max", twr]],
-                   "breakout": [bucket_axis("month")]}),
-            _percent_viz("max")),
-        "Annual returns (TWR)": ("bar",
-            "Whole-portfolio time-weighted return per calendar year. "
-            "Built for the Returns dashboard, which supplies the "
-            "currency; opened standalone, filter currency to one value "
-            "first.",
-            _mbql(db_id, mid["report_returns"],
-                  {"filter": part("global", "annual", buckets=True),
-                   "aggregation": [["max", twr]],
-                   "breakout": [bucket_axis("year")]}),
-            _percent_viz("max")),
-        "Returns by source since inception": ("table",
-            "Since-inception returns per source: TWR and MWR, plain and "
-            "annualized, with start/end values, net external flow and "
-            "the quality flags that explain every n/a. Built for the "
-            "Returns dashboard, which supplies the currency; opened "
-            "standalone, filter currency to one value first.",
+            "Time-weighted return per month, one line per source plus the "
+            "'(all sources)' portfolio line. Built for the Returns dashboard "
+            "(Currency + Start-year pickers).",
+            _native(db_id, returns_period_sql("monthly"), returns_tags()),
+            _series_viz("period", "source", "twr", percent=True)),
+        "Quarterly returns (TWR)": ("line",
+            "Time-weighted return per quarter, one line per source plus the "
+            "'(all sources)' portfolio line. Built for the Returns dashboard "
+            "(Currency + Start-year pickers).",
+            _native(db_id, returns_period_sql("quarterly"), returns_tags()),
+            _series_viz("period", "source", "twr", percent=True)),
+        "Annual returns (TWR)": ("line",
+            "Time-weighted return per calendar year, one line per source plus "
+            "the '(all sources)' portfolio line. Built for the Returns "
+            "dashboard (Currency + Start-year pickers).",
+            _native(db_id, returns_period_sql("annual"), returns_tags()),
+            _series_viz("period", "source", "twr", percent=True)),
+        "Returns by source": ("table",
+            "Returns per source over the chosen window: TWR and MWR, plain and "
+            "annualized, with start/end values, net external flow and the "
+            "quality flags that explain every n/a. Built for the Returns "
+            "dashboard (Currency + Start-year pickers); opened standalone, set "
+            "those first.",
             _mbql(db_id, mid["report_returns"],
                   {"filter": part("sources", "total"),
                    "fields": [_f("silver_source_id", "type/Text"),
@@ -704,17 +876,6 @@ def question_defs(db_id, mid):
                               _f("quality", "type/Text")],
                    "order-by": [["asc", _f("silver_source_id", "type/Text")]]}),
             _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized")),
-        "Quarterly returns by source (TWR)": ("line",
-            "Time-weighted return per quarter, one line per source — "
-            "which feed drove a period's performance. Built for the "
-            "Returns dashboard, which supplies the currency; opened "
-            "standalone, filter currency to one value first.",
-            _mbql(db_id, mid["report_returns"],
-                  {"filter": part("sources", "quarterly", buckets=True),
-                   "aggregation": [["max", twr]],
-                   "breakout": [bucket_axis("quarter"),
-                                _f("silver_source_id", "type/Text")]}),
-            _percent_viz("max")),
         "Stalest source (days)": ("scalar",
             "Days since the oldest source's latest snapshot — how out of "
             "date the worst feed is.",
@@ -764,19 +925,12 @@ SOURCE_PARAM_ID = "aa5df101"
 ASOF_PARAM_ID = "aa5df102"
 ASSET_PARAM_ID = "aa5df103"
 CURRENCY_PARAM_ID = "aa5df104"
+START_YEAR_PARAM_ID = "aa5df105"
 
 # The asset-class filter is linked only to these tiles (the breakdown
 # widgets each already show asset classes; filtering them by class would
 # mostly self-select).
 ASSET_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (% of peak)"}
-
-# The Returns dashboards' source picker is linked only to these tiles:
-# the other tiles show the global grain, whose silver_source_id is ''
-# — a source filter would blank them.
-RETURNS_SOURCE_CARDS = {"Returns by source since inception",
-                        "Returns by source since inception (privacy)",
-                        "Quarterly returns by source (TWR)",
-                        "Quarterly returns by source (TWR) (privacy)"}
 
 
 def base_dashboards():
@@ -825,20 +979,26 @@ def base_dashboards():
         ]),
         "Returns": (
             "How the portfolio performed — time-weighted (TWR) and "
-            "money-weighted (MWR) returns since inception, per period "
-            "and per source, in a chosen currency (default USD). " + note,
+            "money-weighted (MWR) returns, per period and per source, in a "
+            "chosen currency (default USD). Use the Start-year picker to "
+            "rescope past the noisy inception period (0 = since inception); "
+            "the since-inception TWR is often n/a because the first months "
+            "are degenerate. " + note,
             "returns", [
-            # Bucket rows carry TWR only (per-bucket Modified Dietz);
-            # MWR lives on the since-inception summary rows — engine
-            # behavior the tiles mirror.
-            ("Return since inception (TWR)", 0, 0, 8, 3, None),
-            ("Return since inception (MWR)", 0, 8, 8, 3, None),
+            # Scalars rescope to the since-<start year> window; charts split
+            # by source with the global grain as a toggleable '(all sources)'
+            # line. The cumulative chart is log-scaled (returns go negative,
+            # so a growth index — always positive — is what a log axis can
+            # show). MWR is a summary figure only (the per-period buckets
+            # carry TWR); that is engine behavior the scalars mirror.
+            ("Return (TWR)", 0, 0, 8, 3, None),
+            ("Return (MWR)", 0, 8, 8, 3, None),
             ("Annualized return (TWR)", 0, 16, 8, 3, None),
-            ("Quarterly returns (TWR)", 3, 0, 12, 6, None),
-            ("Annual returns (TWR)", 3, 12, 12, 6, None),
-            ("Returns by source since inception", 9, 0, 24, 8, None),
-            ("Monthly returns (TWR)", 17, 0, 12, 6, None),
-            ("Quarterly returns by source (TWR)", 17, 12, 12, 6, None),
+            ("Cumulative return (log scale)", 3, 0, 24, 8, None),
+            ("Monthly returns (TWR)", 11, 0, 8, 6, None),
+            ("Quarterly returns (TWR)", 11, 8, 8, 6, None),
+            ("Annual returns (TWR)", 11, 16, 8, 6, None),
+            ("Returns by source", 17, 0, 24, 8, None),
         ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
@@ -891,10 +1051,10 @@ def privacy_card_defs(db_id, model_ids):
     # table's privacy variant re-lists its fields without them (the base
     # card's start/end/net-flow refs would error against it) and gets a
     # description that doesn't promise the dropped columns.
-    name = privacy_name("Returns by source since inception")
+    name = privacy_name("Returns by source")
     out[name] = ("question", "table",
-                 "Since-inception returns per source: TWR and MWR, plain "
-                 "and annualized, with the quality flags that explain "
+                 "Returns per source over the chosen window: TWR and MWR, "
+                 "plain and annualized, with the quality flags that explain "
                  "every n/a." + RETURNS_PRIVACY_DESC,
                  _mbql(db_id, model_ids["report_returns_redacted"],
                        {"filter": ["and",
@@ -960,13 +1120,35 @@ def dashboard_parameters(model_ids, mode):
         # parameter resets to its default instead of clearing). The value
         # list is static because the materializer's currency trio is
         # fixed, not data-dependent.
-        return [{"id": CURRENCY_PARAM_ID, "name": "Currency",
-                 "slug": "currency", "type": "string/=",
-                 "sectionId": "string", "isMultiSelect": False,
-                 "default": ["USD"], "required": True,
-                 "values_source_type": "static-list",
-                 "values_source_config": {"values": ["USD", "CHF", "EUR"]}},
-                source]
+        currency = {"id": CURRENCY_PARAM_ID, "name": "Currency",
+                    "slug": "currency", "type": "string/=",
+                    "sectionId": "string", "isMultiSelect": False,
+                    "default": ["USD"], "required": True,
+                    "values_source_type": "card",
+                    "values_source_config": {
+                        "card_id": model_ids["report_returns"],
+                        "value_field": ["field", "currency",
+                                        {"base-type": "type/Text"}]}}
+        # Start year: rescopes the summary scalars/table to the since-<year>
+        # window (window_from_year) and clips the charts to periods ending
+        # on/after that year. 0 = since inception. Required + default 0 so a
+        # card never aggregates across windows; values come from the
+        # materialized window_from_year set (auto-syncs to the data's span).
+        start_year = {"id": START_YEAR_PARAM_ID,
+                      "name": "Start year (0 = since inception)",
+                      "slug": "start_year", "type": "number/=",
+                      "sectionId": "number", "isMultiSelect": False,
+                      "default": [0], "required": True,
+                      "values_source_type": "card",
+                      "values_source_config": {
+                          "card_id": model_ids["report_returns"],
+                          "value_field": ["field", "window_from_year",
+                                          {"base-type": "type/Integer"}]}}
+        # The source picker narrows the by-source table and the charts (the
+        # global scalars are whole-portfolio, so it doesn't touch them). Not
+        # required / no default = all sources; the charts keep the global
+        # '(all sources)' reference line regardless.
+        return [currency, start_year, source]
     if mode == "asof":
         # Required + dynamic "today" default: the as-of cards sum daily
         # history (one row per entity per day), so they must never run
@@ -996,6 +1178,27 @@ def dashboard_parameters(model_ids, mode):
          "default": "past12months~"},
         source,
     ]
+
+
+def resolve_returns_field_ids(base, sid, db_id):
+    """Gold field ids for report_returns.{currency, silver_source_id}, for the
+    native returns charts' field filters — which render the Currency / Source
+    dashboard pickers as dropdowns populated from those columns (a plain
+    template variable would be a free-text box instead). Field ids are
+    per-Metabase-instance (assigned when the DB is synced), so they must be
+    looked up, never hard-coded. Missing ids (a fresh install before the first
+    scan) leave the corresponding filter off the charts; the next provision —
+    post-sync — wires it up. Returns {column_name: field_id}."""
+    ids = {}
+    st, meta = req(base, f"/api/database/{db_id}/metadata", session=sid)
+    if st != 200 or not isinstance(meta, dict):
+        return ids
+    for t in meta.get("tables", []):
+        if t.get("name") == "report_returns":
+            for f in t.get("fields", []):
+                if f.get("name") in ("currency", "silver_source_id"):
+                    ids[f["name"]] = f.get("id")
+    return ids
 
 
 def ensure_database(base, sid, db_name, gold_path):
@@ -1245,19 +1448,42 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
             if not mode:
                 return []
             if mode == "returns":
-                # Currency lands on every tile; the source picker only on
-                # the by-source tiles — the rest show the global grain,
-                # whose silver_source_id is '', so a source filter would
-                # blank them.
-                maps = [{"parameter_id": CURRENCY_PARAM_ID,
-                         "card_id": card_ids[card],
-                         "target": ["dimension", _f("currency", "type/Text")]}]
-                if card in RETURNS_SOURCE_CARDS:
-                    maps.append({"parameter_id": SOURCE_PARAM_ID,
-                                 "card_id": card_ids[card],
-                                 "target": ["dimension",
-                                            _f("silver_source_id",
-                                               "type/Text")]})
+                # Currency + Start-year land on every returns tile. The
+                # native charts take them as template variables ({{currency}}
+                # / {{start_year}}); the MBQL scalars + table take them as
+                # dimensions (currency, and window_from_year to pick the
+                # since-<year> summary). The Source picker lands on the charts
+                # (a field-filter variable, when its field id resolved) and
+                # the by-source table (silver_source_id dimension) but NOT the
+                # global scalars, whose silver_source_id is '' — a source
+                # filter would blank them.
+                if card in RETURNS_NATIVE_CARDS:
+                    # Currency is a field-filter dimension (dropdown) when its
+                    # id resolved, else a plain text variable.
+                    ccy_target = (["dimension", ["template-tag", "currency"]]
+                                  if CURRENCY_FIELD_ID is not None else
+                                  ["variable", ["template-tag", "currency"]])
+                    maps = [
+                        {"parameter_id": CURRENCY_PARAM_ID, "card_id": card_ids[card],
+                         "target": ccy_target},
+                        {"parameter_id": START_YEAR_PARAM_ID, "card_id": card_ids[card],
+                         "target": ["variable", ["template-tag", "start_year"]]},
+                    ]
+                    if SOURCE_FIELD_ID is not None:
+                        maps.append(
+                            {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
+                             "target": ["dimension", ["template-tag", "source_ff"]]})
+                    return maps
+                maps = [
+                    {"parameter_id": CURRENCY_PARAM_ID, "card_id": card_ids[card],
+                     "target": ["dimension", _f("currency", "type/Text")]},
+                    {"parameter_id": START_YEAR_PARAM_ID, "card_id": card_ids[card],
+                     "target": ["dimension", _f("window_from_year", "type/Integer")]},
+                ]
+                if card not in RETURNS_GLOBAL_SCALARS:
+                    maps.append(
+                        {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
+                         "target": ["dimension", _f("silver_source_id", "type/Text")]})
                 return maps
             maps = [{"parameter_id": tparam, "card_id": card_ids[card],
                      "target": ["dimension", _f(tcol, "type/DateTime")]},

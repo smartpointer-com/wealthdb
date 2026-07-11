@@ -1,6 +1,7 @@
 package gold
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -164,26 +165,9 @@ func TestMaterializeReturnsBatchBoundary(t *testing.T) {
 			n, returnsInsertBatch)
 	}
 
-	// Independent expectation: sum the row counts of a per-partition RunReturns.
-	want := 0
-	for _, ccy := range materializeCurrencies {
-		for _, grain := range materializeGrains {
-			for _, period := range materializePeriods {
-				rows, err := RunReturns(ctx, db, ReturnParams{
-					Level: grain, FromEpoch: 0, ToEpoch: end, OutCcy: ccy,
-					Method: "both", Period: period, Annualize: "auto", Netting: true, Inception: "full",
-				})
-				if err != nil {
-					t.Fatalf("RunReturns %s/%s/%s: %v", grain, period, ccy, err)
-				}
-				want += len(rows)
-			}
-		}
-	}
-	if n != want {
-		t.Errorf("MaterializeReturns inserted %d rows, per-partition RunReturns totals %d", n, want)
-	}
-
+	// No row lost or duplicated across batch boundaries: the reported count
+	// equals the actual table count, on a single computed_at. (Row-content
+	// correctness is covered by the verbatim / windowed tests.)
 	var total, stamps int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*), COUNT(DISTINCT computed_at) FROM report_returns`).Scan(&total, &stamps); err != nil {
@@ -195,6 +179,59 @@ func TestMaterializeReturnsBatchBoundary(t *testing.T) {
 	if stamps != 1 {
 		t.Errorf("expected one computed_at, got %d distinct", stamps)
 	}
+}
+
+// TestMaterializeReturnsWindowedSummaries verifies the per-year windowed
+// summaries: window_from_year > 0 rows are is_summary totals that equal a
+// RunReturns since Jan 1 of that year, and window_from_year = 0 totals equal
+// since-inception — so the dashboard's start-year picker rescopes exactly.
+func TestMaterializeReturnsWindowedSummaries(t *testing.T) {
+	db, ctx := openMigrated(t)
+	end := seedMaterializeFixture(t, db, ctx) // spans 2024-01 .. 2024-07
+
+	if _, err := MaterializeReturns(ctx, db, MaterializeParams{ToEpoch: end, ComputedAt: 1000}); err != nil {
+		t.Fatalf("MaterializeReturns: %v", err)
+	}
+
+	// Windowed rows must exist, all is_summary, all granularity 'total'.
+	var windowed, nonSummary, nonTotal int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE NOT is_summary),
+		       COUNT(*) FILTER (WHERE granularity <> 'total')
+		  FROM report_returns WHERE window_from_year > 0`).Scan(&windowed, &nonSummary, &nonTotal); err != nil {
+		t.Fatalf("windowed count: %v", err)
+	}
+	if windowed == 0 {
+		t.Fatal("no windowed summary rows materialized")
+	}
+	if nonSummary != 0 || nonTotal != 0 {
+		t.Errorf("windowed rows must be is_summary totals: %d non-summary, %d non-total", nonSummary, nonTotal)
+	}
+
+	// The 2024 window (the fixture's year) for global/USD equals RunReturns
+	// since 2024-01-01.
+	from2024 := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
+	want, err := RunReturns(ctx, db, ReturnParams{
+		Level: "global", FromEpoch: from2024, ToEpoch: end, OutCcy: "USD",
+		Method: "both", Period: "total", Annualize: "auto", Netting: true, Inception: "full",
+	})
+	if err != nil {
+		t.Fatalf("RunReturns windowed: %v", err)
+	}
+	if len(want) != 1 {
+		t.Fatalf("expected 1 global summary row, got %d", len(want))
+	}
+	var gotTWR sql.NullFloat64
+	var gotStart sql.NullFloat64
+	if err := db.QueryRowContext(ctx, `
+		SELECT twr, CAST(start_value AS DOUBLE) FROM report_returns
+		 WHERE grain='global' AND currency='USD' AND window_from_year=2024`).
+		Scan(&gotTWR, &gotStart); err != nil {
+		t.Fatalf("read 2024 window: %v", err)
+	}
+	matchRate(t, "global/2024/USD", "twr", gotTWR, want[0].TWR)
+	matchMoney(t, "global/2024/USD", "start_value", gotStart, want[0].StartValue)
 }
 
 // TestGroupAccountsMemberOrderDeterministic protects the groupAccounts member
