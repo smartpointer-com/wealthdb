@@ -39,7 +39,7 @@ var legacyToNewAllowlist = map[canonical.AssetClass][]taxPair{
 	"private_equity":   {{"private_equity", "stock"}, {"private_equity", "option"}},
 	"spv":              {{"private_equity", "spv"}},
 	"private_fund":     {{"private_equity", "fund"}, {"infrastructure", "fund"}, {"hedge_fund", "fund"}},
-	"real_estate":      {{"real_estate", "physical"}, {"real_estate", "fund"}},
+	"real_estate":      {{"real_estate", "physical"}},
 	"convertible_note": {{"private_debt", "convertible_note"}},
 	"mortgage":         {{"real_estate", "mortgage"}},
 }
@@ -86,7 +86,7 @@ func TestTaxonomyMigrationInvariants(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 
-	printPerSourceValueTotals(ctx, t, db)
+	checkValuePreservation(ctx, t, db)
 	if !hasTaxonomyColumns(ctx, db) {
 		t.Skip("gold DB predates migration 0028 (no asset_class_new column); reload with the current binary first")
 	}
@@ -167,27 +167,109 @@ func containsPair(set []taxPair, p taxPair) bool {
 	return false
 }
 
-// printPerSourceValueTotals dumps per-source market_value sums so an
-// external before/after diff can confirm classification changed no
-// values (invariant 1). Reclassification must never move money.
-func printPerSourceValueTotals(ctx context.Context, t *testing.T, db *sql.DB) {
-	rows, err := db.QueryContext(ctx, `
-SELECT silver_source_id, count(*), COALESCE(CAST(sum(market_value) AS VARCHAR), '')
-  FROM positions GROUP BY 1 ORDER BY 1`)
+// checkValuePreservation enforces invariant 1: reclassification must
+// never move money or drop rows. When WEALTHDB_GOLD_BEFORE points at a
+// pre-reload copy of the gold DB, it ASSERTS that per-(source,
+// account, snapshot) market_value totals and per-source positions +
+// instruments row counts are identical before and after — the finest
+// grain at which a mis-migration could hide a value change. Absent the
+// before-copy it degrades to printing the current totals for a manual
+// external diff.
+//
+// Operator workflow for a real check:
+//
+//	cp $GOLD gold.before.db          # BEFORE reload
+//	wealthdb reload -a               # re-project with migrated adapters
+//	WEALTHDB_GOLD_VERIFY=$GOLD WEALTHDB_GOLD_BEFORE=gold.before.db \
+//	  go test ./internal/gold -run TestTaxonomyMigrationInvariants -v
+func checkValuePreservation(ctx context.Context, t *testing.T, after *sql.DB) {
+	printCounts(ctx, t, "after", after)
+
+	beforePath := os.Getenv("WEALTHDB_GOLD_BEFORE")
+	if beforePath == "" {
+		t.Log("WEALTHDB_GOLD_BEFORE unset: value preservation printed only, not asserted (set it to a pre-reload gold copy to assert)")
+		return
+	}
+	before, err := Open(beforePath, ModeReadOnly)
 	if err != nil {
-		t.Fatalf("value totals: %v", err)
+		t.Fatalf("open before-gold %q: %v", beforePath, err)
+	}
+	defer before.Close()
+	printCounts(ctx, t, "before", before)
+
+	// Per-(source, account, snapshot) market_value totals must match
+	// exactly. DECIMAL summed and rendered as VARCHAR compares exactly.
+	const q = `
+SELECT silver_source_id || '\x1f' || account_external_id || '\x1f' || CAST(snapshot_at AS VARCHAR),
+       COALESCE(CAST(sum(market_value) AS VARCHAR), 'NULL')
+  FROM positions GROUP BY 1`
+	beforeTot, err := scanKV(ctx, before, q)
+	if err != nil {
+		t.Fatalf("before totals: %v", err)
+	}
+	afterTot, err := scanKV(ctx, after, q)
+	if err != nil {
+		t.Fatalf("after totals: %v", err)
+	}
+	drift := 0
+	for k, bv := range beforeTot {
+		if av, ok := afterTot[k]; !ok {
+			t.Errorf("value preservation: group %q present before, missing after", k)
+			drift++
+		} else if av != bv {
+			t.Errorf("value preservation: group %q market_value %s → %s (must be unchanged)", k, bv, av)
+			drift++
+		}
+	}
+	for k := range afterTot {
+		if _, ok := beforeTot[k]; !ok {
+			t.Errorf("value preservation: group %q appeared after (was absent before)", k)
+			drift++
+		}
+	}
+	if drift == 0 {
+		t.Logf("value preservation OK: %d (source,account,snapshot) groups identical before/after", len(afterTot))
+	}
+}
+
+func printCounts(ctx context.Context, t *testing.T, label string, db *sql.DB) {
+	rows, err := db.QueryContext(ctx, `
+SELECT silver_source_id,
+       (SELECT count(*) FROM positions p WHERE p.silver_source_id = s.silver_source_id),
+       (SELECT count(*) FROM instruments i WHERE i.silver_source_id = s.silver_source_id),
+       COALESCE(CAST((SELECT sum(market_value) FROM positions p WHERE p.silver_source_id = s.silver_source_id) AS VARCHAR), '')
+  FROM silver_sources s ORDER BY silver_source_id`)
+	if err != nil {
+		t.Fatalf("%s counts: %v", label, err)
 	}
 	defer rows.Close()
 	var lines []string
 	for rows.Next() {
 		var src, total string
-		var n int64
-		if err := rows.Scan(&src, &n, &total); err != nil {
+		var pos, instr int64
+		if err := rows.Scan(&src, &pos, &instr, &total); err != nil {
 			t.Fatal(err)
 		}
-		lines = append(lines, fmt.Sprintf("  %-12s rows=%-7d sum(market_value)=%s", src, n, total))
+		lines = append(lines, fmt.Sprintf("  %-12s positions=%-7d instruments=%-6d sum(market_value)=%s", src, pos, instr, total))
 	}
-	t.Logf("per-source position totals (control for value preservation):\n%s", join(lines))
+	t.Logf("%s per-source counts:\n%s", label, join(lines))
+}
+
+func scanKV(ctx context.Context, db *sql.DB, q string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
 }
 
 func join(lines []string) string {

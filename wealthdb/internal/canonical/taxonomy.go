@@ -102,7 +102,7 @@ var validTaxonomyPairs = map[AssetClass]map[Vehicle]struct{}{
 	AssetClassPublicEquity: setOf(VehicleStock, VehicleETF, VehicleFund,
 		VehicleOption, VehicleFuture, VehicleRight, VehicleStructuredProduct),
 	AssetClassPrivateEquity: setOf(VehicleStock, VehicleSPV, VehicleFund,
-		VehicleOption, VehicleETF, VehicleConvertibleNote),
+		VehicleOption, VehicleETF),
 	AssetClassFixedIncome: setOf(VehicleBond, VehicleETF, VehicleFund,
 		VehicleStructuredProduct),
 	AssetClassPrivateDebt:     setOf(VehicleConvertibleNote, VehicleLoan, VehicleEscrow),
