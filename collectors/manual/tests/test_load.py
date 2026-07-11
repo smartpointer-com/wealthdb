@@ -114,6 +114,39 @@ def test_bad_json_payload(tmp_path):
         loader.load(conn, tmp_path)
 
 
+def test_vehicle_defaults_from_kind(tmp_path):
+    """When the CSV omits `vehicle` (or the whole column), each kind gets its
+    default wrapper; an explicit vehicle overrides — notably escrow/loan for
+    the kind=other catch-all."""
+    _write(tmp_path, "positions.csv",
+           "id,kind,vehicle,display_name,currency,acquired_at\n"
+           "re,real_estate,,Prop,CHF,2020-01-01\n"        # default -> physical
+           "pe,private_equity,,Co,CHF,2020-01-01\n"       # default -> stock
+           "esc,other,escrow,Escrow,USD,2020-01-01\n"     # explicit
+           "ln,other,loan,Loan,CHF,2020-01-01\n")         # explicit
+    conn = _fresh_db(tmp_path)
+    loader.load(conn, tmp_path)
+    got = dict(conn.execute("SELECT id, vehicle FROM positions").fetchall())
+    assert got == {"re": "physical", "pe": "stock", "esc": "escrow", "ln": "loan"}
+
+    # A whole-column omission still defaults (back-compat with pre-0002 CSVs).
+    _write(tmp_path, "positions.csv",
+           "id,kind,display_name,currency,acquired_at\n"
+           "sp,spv,Deal,USD,2020-01-01\n")
+    conn = _fresh_db(tmp_path)
+    loader.load(conn, tmp_path)
+    assert conn.execute("SELECT vehicle FROM positions WHERE id='sp'").fetchone()[0] == "spv"
+
+
+def test_unknown_vehicle(tmp_path):
+    _write(tmp_path, "positions.csv",
+           "id,kind,vehicle,display_name,currency,acquired_at\n"
+           "p-1,real_estate,spaceship,X,CHF,2020-01-01\n")
+    conn = _fresh_db(tmp_path)
+    with pytest.raises(loader.LoadError, match=r"positions.csv:row 2:vehicle"):
+        loader.load(conn, tmp_path)
+
+
 def test_converted_from_dangling_reference(tmp_path):
     """A position that back-references a converted_from_position_id which
     isn't in positions.csv fails loudly (the conversion-link integrity check

@@ -76,11 +76,20 @@ kind, so adding another asset kind (a crypto cold-wallet, a collectible)
 needs no new file and no schema change.
 
 **positions.csv** — one row per held asset.
-`id, kind, display_name, currency, acquired_at, closed_at, notes, payload`
-- `kind` ∈ `real_estate | private_equity | convertible_note | private_fund`
-  (extensible — lives in `load.py`'s `POSITION_KINDS`, not a DB constraint).
-  The kind is **deliberately identical to the canonical gold `asset_class`**
-  (so the gold classmap is an identity and the CSV self-documents the class).
+`id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload`
+- `kind` ∈ `real_estate | private_equity | convertible_note | private_fund
+  | spv | mortgage | other` (extensible — lives in `load.py`'s
+  `POSITION_KINDS`, not a DB constraint). The kind is the **legacy 1-D
+  `asset_class`** (the gold classmap is an identity for it).
+- `vehicle` (optional) — the wrapper dimension of the 2-D taxonomy (wealthdb
+  docs/TAXONOMY.md), e.g. `physical | stock | fund | spv | convertible_note
+  | loan | escrow | mortgage`. Blank defaults from `kind`
+  (real_estate→physical, private_equity→stock, spv→spv, private_fund→fund,
+  convertible_note→convertible_note, mortgage→mortgage, other→other). Set it
+  explicitly on a `kind=other` row so gold gets the right wrapper — an
+  escrow receivable is `escrow`, a private loan is `loan`. The gold adapter
+  derives the new exposure (`asset_class_new`) from (`kind`, `vehicle`). Full
+  vocabulary is `load.py`'s `POSITION_VEHICLES`.
 - `closed_at` (nullable) — set when the asset stops existing (full disposal,
   or a convertible note that converted). Gold drops the position from as-of
   queries after this date.

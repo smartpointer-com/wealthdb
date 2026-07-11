@@ -89,11 +89,35 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
 POSITION_KINDS = {"real_estate", "private_equity", "convertible_note",
                   "private_fund", "spv", "mortgage", "other"}
 
+# --- Accepted vehicles (the wrapper dimension of the 2-D taxonomy; see
+# wealthdb docs/TAXONOMY.md). `kind` stays the legacy asset_class; `vehicle`
+# records how the exposure is held. The full canonical vehicle vocabulary is
+# accepted since the owner authors these rows by hand, but only the ones a
+# manual (illiquid, hand-tracked) holding realistically uses are expected.
+POSITION_VEHICLES = {
+    "stock", "etf", "fund", "spv", "bond", "convertible_note", "loan",
+    "option", "future", "forward", "time_deposit", "demand_deposit",
+    "physical", "structured_product", "right", "mortgage", "escrow", "other",
+}
+
+# When the CSV omits `vehicle`, default it from `kind` so existing files load
+# unchanged. `other` defaults to `other`; an escrow receivable or private loan filed under kind=other should set vehicle explicitly (escrow / loan) to carry the
+# right wrapper into gold.
+DEFAULT_VEHICLE_BY_KIND = {
+    "real_estate": "physical",
+    "private_equity": "stock",
+    "convertible_note": "convertible_note",
+    "private_fund": "fund",
+    "spv": "spv",
+    "mortgage": "mortgage",
+    "other": "other",
+}
+
 # --- CSV column contracts. Required columns must be present in the header;
 # optional columns default to empty when a file omits them; any unexpected
 # column is rejected as a likely typo.
 POSITIONS_REQUIRED = ["id", "kind", "display_name", "currency", "acquired_at"]
-POSITIONS_OPTIONAL = ["closed_at", "notes", "payload"]
+POSITIONS_OPTIONAL = ["closed_at", "notes", "payload", "vehicle"]
 VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
 VALUATIONS_OPTIONAL = ["notes", "payload"]
 
@@ -209,6 +233,11 @@ def validate_positions(rows: list[dict]) -> dict[str, dict]:
             _fail(fname, n, "kind",
                   f"unknown kind; expected one of {sorted(POSITION_KINDS)}",
                   kind)
+        vehicle = (r.get("vehicle") or "").strip() or DEFAULT_VEHICLE_BY_KIND[kind]
+        if vehicle not in POSITION_VEHICLES:
+            _fail(fname, n, "vehicle",
+                  f"unknown vehicle; expected one of {sorted(POSITION_VEHICLES)}",
+                  vehicle)
         acquired = _date(fname, n, "acquired_at", r["acquired_at"])
         closed = _date(fname, n, "closed_at", r["closed_at"], required=False)
         if closed is not None and closed < acquired:
@@ -217,6 +246,7 @@ def validate_positions(rows: list[dict]) -> dict[str, dict]:
         out[pid] = {
             "id": pid,
             "kind": kind,
+            "vehicle": vehicle,
             "display_name": _req(fname, n, "display_name", r["display_name"]),
             "currency": _currency(fname, n, "currency", r["currency"]),
             "acquired_at": acquired,
@@ -313,10 +343,10 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
         conn.execute("DELETE FROM valuations")
         conn.execute("DELETE FROM positions")
         conn.executemany(
-            "INSERT INTO positions (id, kind, display_name, currency, "
+            "INSERT INTO positions (id, kind, vehicle, display_name, currency, "
             "acquired_at, closed_at, notes, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(p["id"], p["kind"], p["display_name"], p["currency"],
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(p["id"], p["kind"], p["vehicle"], p["display_name"], p["currency"],
               p["acquired_at"].isoformat(),
               p["closed_at"].isoformat() if p["closed_at"] else None,
               p["notes"], json.dumps(p["payload"]))
