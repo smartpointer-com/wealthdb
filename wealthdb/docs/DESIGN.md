@@ -110,10 +110,15 @@ wealthdb config [-c <cfg>]            (setup) Interactive first-time wizard; wri
 wealthdb init                         (RW)    Initialise an empty gold DB at the configured path.
 wealthdb load    <id> | -a            (RW)    Merge new silver snapshots into gold.
 wealthdb reset   <id> | -a            (RW)    Purge a silver source's data from gold.
+wealthdb reload  <id> | -a            (RW)    Reset then load; -a builds a fresh compact gold and swaps it in.
+wealthdb compact                      (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
+wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
+wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
+wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb help [<subcommand>]
 ```
 
@@ -487,8 +492,12 @@ Example config file:
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
+| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Same inner fields as `account_overrides`; a per-account override still wins over a portfolio one on the same column. See §13.9. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
+| `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
+| `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`, `thinkingFormat`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
+| `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
 
 ### 5.2 `kind: "auto"`
 
@@ -602,7 +611,30 @@ package silver
 
 type Adapter interface {
     Kind() string                                       // "schwab", "ubs", "swissquote"
-    Open(ctx context.Context, path string) (Connection, error)
+    // Open attaches to the silver source(s) in spec. Single-file
+    // adapters read spec.Path; merged adapters (UBS = web + PSN)
+    // read spec.Subsources and align identities via spec.Relationships.
+    Open(ctx context.Context, spec OpenSpec) (Connection, error)
+}
+
+type OpenSpec struct {
+    Path          string             // single-file adapters
+    Subsources    []Subsource        // merged adapters (UBS = ubs-web + ubs-psn)
+    Relationships []RelationshipPair
+}
+
+type Subsource struct {
+    Kind string
+    Path string
+}
+
+// RelationshipPair pairs a web banking_relationship_id with a PSN
+// relationship_id under one label so downstream sees a single key.
+type RelationshipPair struct {
+    Label            string
+    WebID            string
+    PSNID            string
+    PSNStartOverride int64 // Unix seconds UTC; 0 = auto-detect the web↔PSN cutover
 }
 
 type Connection interface {
@@ -700,20 +732,22 @@ type PositionChange struct {
 ### 6.3 Registration
 
 `silver.Register(name, factory)` is called from each backend
-package's `init()`. Backends live under `internal/silver/schwab`,
-`internal/silver/ubs`, `internal/silver/swissquote`.
-`cmd/wealthdb/main.go` blank-imports each backend to trigger
-registration:
+package's `init()`. Backends live under `internal/silver/<source>`
+— currently `angellist`, `carta`, `cointracking`, `equityzen`,
+`fidelity`, `fred`, `manual`, `relevate`, `schwab`, `swissquote`,
+`ubs`, `viac`. `cmd/wealthdb/main.go` blank-imports each backend to
+trigger registration:
 
 ```go
 import (
     _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
     _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/ubs"
     _ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
+    // ...one blank import per backend package listed above.
 )
 ```
 
-Adding a new bank means adding a package and one blank import —
+Adding a new source means adding a package and one blank import —
 both trivial.
 
 ### 6.4 The logical change number
@@ -794,6 +828,11 @@ to keep this document focused on gold-side architecture:
 - [adapters/schwab.md](adapters/schwab.md)
 - [adapters/ubs.md](adapters/ubs.md)
 - [adapters/swissquote.md](adapters/swissquote.md)
+- [adapters/carta.md](adapters/carta.md)
+- [adapters/cointracking.md](adapters/cointracking.md)
+
+(Adapters without a dedicated doc here are described inline
+where they diverge from the gold-side contract above.)
 
 Each adapter doc is self-contained for the engineer writing or
 maintaining that adapter. New bank adapters add a new file in
@@ -967,6 +1006,14 @@ CREATE TABLE load_audit (
 --                     directly rather than to a sub-account (UBS
 --                     forward contracts). One per portfolio,
 --                     lazily emitted when needed.
+--   'crypto'        — crypto holding bucket (cointracking); wallet
+--                     display names don't reliably distinguish
+--                     exchange from self-custody, so one kind covers
+--                     both. 'crypto_exchange' / 'crypto_self_custody'
+--                     stay reserved for a future adapter that surfaces
+--                     the distinction at source.
+--   'mortgage'      — real-property-backed liability; outstanding
+--                     principal sits as a negative-value position
 --   'other'         — unclassifiable, fall back to payload
 --
 -- portfolio_external_id (nullable) names the parent portfolio in
@@ -1796,7 +1843,7 @@ for why we don't separate stages.
 
 ### 12.1 Image
 
-Base: `golang:1.24-bookworm` (glibc, full Go toolchain, gcc/g++
+Base: `golang:1.25-bookworm` (glibc, full Go toolchain, gcc/g++
 for CGO). The Dockerfile:
 
 1. Copies `go.mod` / `go.sum` and runs `go mod download` in its own
@@ -2136,8 +2183,9 @@ structured-enum columns):
 
 - **`account_kind`** — the technical container the bank exposes:
   `brokerage`, `cash`, `safekeeping`, `custody`, `overlay`,
-  `crypto_exchange`, `crypto_self_custody`, `other`. Required;
-  every adapter stamps this.
+  `crypto`, `mortgage`, `other` (with `crypto_exchange` /
+  `crypto_self_custody` reserved for a future adapter that
+  distinguishes them). Required; every adapter stamps this.
 - **`tax_wrapper`** — the tax / regulatory registration.
   Nullable; defaults to `taxable_personal` at render time.
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,

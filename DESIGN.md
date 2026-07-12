@@ -70,8 +70,9 @@ account taxonomy is **three orthogonal axes** so queries can slice
 without conflating them:
 
 - `account_kind` — technical container: brokerage / cash /
-  safekeeping / custody / overlay / crypto_exchange /
-  crypto_self_custody / other.
+  safekeeping / custody / overlay / crypto / mortgage / other
+  (with crypto_exchange / crypto_self_custody reserved for a
+  future adapter that distinguishes them).
 - `tax_wrapper` — tax/regulatory registration: taxable_personal,
   the US IRA family, 401k/403b/457b, 529, coverdell_esa,
   custodial_utma/ugma, trust_*, and the Swiss pillar_3a /

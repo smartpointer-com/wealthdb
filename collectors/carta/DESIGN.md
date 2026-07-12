@@ -502,8 +502,8 @@ revisit if a DuckDB silver is in fact wanted (same call as
 The gold adapter is **built** — `wealthdb/internal/silver/carta/`, documented
 in [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md).
 It projects this silver into canonical `accounts` / `instruments` /
-`positions`, plus a **planned** `transactions` projection from the cash-flow
-ledger (§6.1 — not yet built; the gold layer is locked by concurrent work).
+`positions`, plus a `transactions` projection from the cash-flow ledger
+(§6.1) as balanced double-entry pairs on a sentinel funding account.
 What the earlier "open questions" posed, as resolved:
 
 - **Asset classes** — two new canonical values in
