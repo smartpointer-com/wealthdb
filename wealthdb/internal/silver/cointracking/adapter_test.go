@@ -134,8 +134,8 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	}
 
 	// InstrumentChange carries the same 2-D pair as the position.
-	if btcInst.AssetClassNew != canonical.AssetClassCrypto {
-		t.Errorf("instrument asset_class_new = %q, want crypto", btcInst.AssetClassNew)
+	if btcInst.AssetClass != canonical.AssetClassCrypto {
+		t.Errorf("instrument asset_class_new = %q, want crypto", btcInst.AssetClass)
 	}
 	if btcInst.Vehicle != canonical.VehiclePhysical {
 		t.Errorf("instrument vehicle = %q, want physical", btcInst.Vehicle)
@@ -147,20 +147,17 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	if crypto.PositionKey != "BTC" {
 		t.Errorf("position key = %q, want BTC", crypto.PositionKey)
 	}
-	if crypto.AssetClass != canonical.AssetClassCrypto {
-		t.Errorf("asset_class = %q, want crypto", crypto.AssetClass)
-	}
 	// 2-D taxonomy double-write: every cointracking holding is
 	// crypto exposure held directly in a wallet → crypto × physical.
-	if crypto.AssetClassNew != canonical.AssetClassCrypto {
-		t.Errorf("asset_class_new = %q, want crypto", crypto.AssetClassNew)
+	if crypto.AssetClass != canonical.AssetClassCrypto {
+		t.Errorf("asset_class_new = %q, want crypto", crypto.AssetClass)
 	}
 	if crypto.Vehicle != canonical.VehiclePhysical {
 		t.Errorf("vehicle = %q, want physical", crypto.Vehicle)
 	}
-	if !canonical.ValidTaxonomyPair(crypto.AssetClassNew, crypto.Vehicle) {
+	if !canonical.ValidTaxonomyPair(crypto.AssetClass, crypto.Vehicle) {
 		t.Errorf("(%q, %q) is not a valid taxonomy pair",
-			crypto.AssetClassNew, crypto.Vehicle)
+			crypto.AssetClass, crypto.Vehicle)
 	}
 	if crypto.Currency != "USD" {
 		t.Errorf("currency = %q, want USD", crypto.Currency)

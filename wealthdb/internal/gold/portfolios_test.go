@@ -53,10 +53,10 @@ func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{
 			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "SAFE1",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity,
+				PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 				Currency: "CHF", MarketValue: &chf1000},
 			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "ORPHAN",
-				PositionKey: "Y", AssetClass: canonical.AssetClassEquity,
+				PositionKey: "Y", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 				Currency: "USD", MarketValue: &usd200},
 		}); err != nil {
 			return err

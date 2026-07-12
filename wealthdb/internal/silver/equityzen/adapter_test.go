@@ -233,15 +233,12 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if q := posByT[iso(t, "2022-01-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "100.00" {
 		t.Errorf("d1 quantity = %v, want 100.00 (spv share count)", q)
 	}
-	if posByT[iso(t, "2022-01-01")]["d1"].AssetClass != canonical.AssetClassSPV {
-		t.Errorf("d1 asset_class = %q, want spv", posByT[iso(t, "2022-01-01")]["d1"].AssetClass)
-	}
 	// 2-D taxonomy (double-write): the SPV maps to private_equity × spv on
 	// both the position and its instrument, and the pair must be admitted.
-	assertPair(t, "d1 position", posByT[iso(t, "2022-01-01")]["d1"].AssetClassNew,
+	assertPair(t, "d1 position", posByT[iso(t, "2022-01-01")]["d1"].AssetClass,
 		posByT[iso(t, "2022-01-01")]["d1"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
-	assertPair(t, "d1 instrument", instByID["d1"].AssetClassNew, instByID["d1"].Vehicle,
+	assertPair(t, "d1 instrument", instByID["d1"].AssetClass, instByID["d1"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleSPV)
 
 	// 2022-06-01: d1 (forward-filled to its investment), d3 (invested
@@ -250,14 +247,11 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if len(at) != 3 {
 		t.Errorf("2022-06-01 positions = %d, want 3 (d1,d2,d3)", len(at))
 	}
-	if at["d2"].AssetClass != canonical.AssetClassPrivateFund {
-		t.Errorf("d2 asset_class = %q, want private_fund", at["d2"].AssetClass)
-	}
 	// The multi-company fund maps to private_equity × fund (a different vehicle,
 	// same exposure as the SPV) on both the position and its instrument.
-	assertPair(t, "d2 position", at["d2"].AssetClassNew, at["d2"].Vehicle,
+	assertPair(t, "d2 position", at["d2"].AssetClass, at["d2"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleFund)
-	assertPair(t, "d2 instrument", instByID["d2"].AssetClassNew, instByID["d2"].Vehicle,
+	assertPair(t, "d2 instrument", instByID["d2"].AssetClass, instByID["d2"].Vehicle,
 		canonical.AssetClassPrivateEquity, canonical.VehicleFund)
 	if at["d2"].Quantity != nil {
 		t.Errorf("d2 (fund) quantity = %v, want nil", at["d2"].Quantity)

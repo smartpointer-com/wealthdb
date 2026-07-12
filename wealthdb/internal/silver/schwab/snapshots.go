@@ -325,8 +325,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		acNew, vehicle := taxonomyFor(pp.Instrument.AssetType, pp.Instrument.Type, name)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			CUSIP:                silver.StrPtrIfNonEmpty(pp.Instrument.CUSIP),
 			Symbol:               silver.StrPtrIfNonEmpty(pp.Instrument.Symbol),
@@ -343,8 +342,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 			AccountExternalID:    extID,
 			PositionKey:          posKey,
 			InstrumentExternalID: instrExtIDPtr,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             "USD",
 			Quantity:             &quantity,

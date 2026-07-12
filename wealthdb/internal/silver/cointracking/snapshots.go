@@ -282,8 +282,7 @@ SELECT
 		acNew, vehicle := taxonomyV2()
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: ticker,
-			AssetClass:           canonical.AssetClassCrypto,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Symbol:               &sym,
 			Name:                 &name,
@@ -312,18 +311,18 @@ SELECT
 // MarketValue is resolved in priority order, as-of the snapshot's
 // date (not the latest available):
 //
-//   1. portfolio_prices for (portfolio, coin, currency) — CT's
-//      own per-portfolio valuation, preferred because it
-//      reproduces CT's totals exactly.
-//   2. For USD-currency positions, coin_prices.price_usd — the
-//      cross-source canonical USD reference, kicks in for
-//      portfolios with no portfolio_prices yet, or for coins CT
-//      didn't include in that portfolio's overview.csv.
-//   3. For a USD-instrument USD-currency position, the trivial
-//      1.0.
-//   4. NULL otherwise — most commonly a non-USD-quoted portfolio
-//      with a long-tail coin its overview.csv didn't price on
-//      that day.
+//  1. portfolio_prices for (portfolio, coin, currency) — CT's
+//     own per-portfolio valuation, preferred because it
+//     reproduces CT's totals exactly.
+//  2. For USD-currency positions, coin_prices.price_usd — the
+//     cross-source canonical USD reference, kicks in for
+//     portfolios with no portfolio_prices yet, or for coins CT
+//     didn't include in that portfolio's overview.csv.
+//  3. For a USD-instrument USD-currency position, the trivial
+//     1.0.
+//  4. NULL otherwise — most commonly a non-USD-quoted portfolio
+//     with a long-tail coin its overview.csv didn't price on
+//     that day.
 //
 // All three price tables are joined via the same LEAD-based
 // interval trick used for positions_daily, so each row resolves
@@ -456,8 +455,7 @@ SELECT
 			AccountExternalID:    walletID,
 			PositionKey:          ticker,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           canonical.AssetClassCrypto,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             qty,
@@ -473,7 +471,6 @@ SELECT
 	}
 	return rows.Err()
 }
-
 
 // appendFxRates emits one FxRateChange per row in silver.coin_prices:
 // the (instrument → USD) pair the price fetcher populated. Drives
@@ -503,9 +500,9 @@ SELECT
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			base       string
-			snap       int64
-			priceStr   sql.NullString
+			base     string
+			snap     int64
+			priceStr sql.NullString
 		)
 		if err := rows.Scan(&base, &snap, &priceStr); err != nil {
 			return err
@@ -531,4 +528,3 @@ SELECT
 	}
 	return rows.Err()
 }
-

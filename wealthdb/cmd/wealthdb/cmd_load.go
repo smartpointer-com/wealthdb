@@ -173,9 +173,8 @@ func buildSourceSpec(
 		spec.InstrumentOverrides = make(map[string]loader.InstrumentOverride, len(cfgOvr))
 		for instrID, ov := range cfgOvr {
 			spec.InstrumentOverrides[instrID] = loader.InstrumentOverride{
-				AssetClass:    ov.AssetClass,
-				AssetClassNew: ov.AssetClassNew,
-				Vehicle:       ov.Vehicle,
+				AssetClass: ov.AssetClass,
+				Vehicle:    ov.Vehicle,
 			}
 		}
 	}

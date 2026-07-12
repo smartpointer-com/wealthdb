@@ -62,10 +62,10 @@ CREATE TABLE transactions (
 );`
 
 type harness struct {
-	t        *testing.T
-	gold     *sql.DB
-	loader   *loader.Loader
-	silver   *sql.DB
+	t          *testing.T
+	gold       *sql.DB
+	loader     *loader.Loader
+	silver     *sql.DB
 	silverPath string
 }
 
@@ -397,9 +397,9 @@ func TestAccountOverridesApplied(t *testing.T) {
 		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
 		Overrides: map[string]loader.AccountOverride{
 			"ACC1": {Nickname: "Main brokerage", Category: "personal"},
-			"ACC2": {Nickname: "Education account"},      // partial: only nickname
-			"ACC3": {Category: "managed"},        // partial: only category
-			"ACCX": {Nickname: "unmatched"},      // no such account in batch
+			"ACC2": {Nickname: "Education account"}, // partial: only nickname
+			"ACC3": {Category: "managed"},   // partial: only category
+			"ACCX": {Nickname: "unmatched"}, // no such account in batch
 		},
 	})
 	if err != nil {
@@ -454,37 +454,29 @@ func TestInstrumentOverridesApplied(t *testing.T) {
 	_, err := h.loader.Load(context.Background(), loader.SourceSpec{
 		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
 		InstrumentOverrides: map[string]loader.InstrumentOverride{
-			// The adapter classifies this one etf (name-shy
-			// exchange-traded product); the config pins the legacy
-			// class AND the 2-D pair.
-			"000000AA1": {AssetClass: "metal", AssetClassNew: "metal", Vehicle: "etf"},
-			"000000XX9": {AssetClass: "crypto"}, // no such instrument in batch
+			// The adapter classifies this one (public_equity, etf) from
+			// the name; the config pins the true (metal, etf) pair.
+			"000000AA1": {AssetClass: "metal", Vehicle: "etf"},
+			"000000XX9": {AssetClass: "crypto", Vehicle: "etf"}, // no such instrument in batch
 		},
 	})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
+	// The overridden row carries the pinned pair; the un-overridden
+	// EQUITY row carries the schwab adapter's own (public_equity, stock).
 	for _, q := range []struct{ table, id, want string }{
-		{"instruments", "000000AA1", "metal"},
-		{"instruments", "000000BB2", "equity"},
-		{"positions", "000000AA1", "metal"},
-		{"positions", "000000BB2", "equity"},
+		{"instruments", "000000AA1", "metal/etf"},
+		{"instruments", "000000BB2", "public_equity/stock"},
+		{"positions", "000000AA1", "metal/etf"},
+		{"positions", "000000BB2", "public_equity/stock"},
 	} {
 		got := h.goldScalar(t, fmt.Sprintf(
-			`SELECT asset_class FROM %s WHERE instrument_external_id = '%s'`, q.table, q.id))
+			`SELECT asset_class || '/' || vehicle FROM %s WHERE instrument_external_id = '%s'`, q.table, q.id))
 		if got != q.want {
-			t.Errorf("%s[%s].asset_class = %q, want %q", q.table, q.id, got, q.want)
+			t.Errorf("%s[%s] pair = %q, want %q", q.table, q.id, got, q.want)
 		}
-	}
-	// The 2-D override lands on the new columns; the un-overridden
-	// row carries the schwab adapter's own pair (public_equity, stock
-	// for an EQUITY row), not the override.
-	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'') || '/' || COALESCE(vehicle,'') FROM positions WHERE instrument_external_id='000000AA1'`); got != "metal/etf" {
-		t.Errorf("000000AA1 new pair = %q, want metal/etf", got)
-	}
-	if got := h.goldScalar(t, `SELECT COALESCE(asset_class_new,'') || '/' || COALESCE(vehicle,'') FROM positions WHERE instrument_external_id='000000BB2'`); got != "public_equity/stock" {
-		t.Errorf("000000BB2 new pair = %q, want public_equity/stock (adapter, un-overridden)", got)
 	}
 }
 

@@ -162,9 +162,8 @@ func (c *Config) Validate() error {
 		}
 	}
 	// instrument_overrides: same shape rules as account_overrides but
-	// keyed by instrument_external_id. The legacy `asset_class` is
-	// required; the 2-D `asset_class_new` + `vehicle` are optional but
-	// must appear together and form an admitted pair.
+	// keyed by instrument_external_id. Both asset_class (V2 exposure)
+	// and vehicle are required and must form an admitted taxonomy pair.
 	for sourceID, perInstrument := range c.InstrumentOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
@@ -173,25 +172,17 @@ func (c *Config) Validate() error {
 			if instrID == "" {
 				return fmt.Errorf("config: instrument_overrides[%q]: empty instrument_external_id key", sourceID)
 			}
-			if ov.AssetClass == "" {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class must be set", sourceID, instrID)
+			if ov.AssetClass == "" || ov.Vehicle == "" {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class and vehicle must both be set", sourceID, instrID)
 			}
-			if !canonical.AssetClass(ov.AssetClass).Valid() {
+			if !canonical.AssetClass(ov.AssetClass).ValidV2() {
 				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class %q", sourceID, instrID, ov.AssetClass)
 			}
-			if (ov.AssetClassNew == "") != (ov.Vehicle == "") {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class_new and vehicle must be set together", sourceID, instrID)
+			if !canonical.Vehicle(ov.Vehicle).Valid() {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid vehicle %q", sourceID, instrID, ov.Vehicle)
 			}
-			if ov.AssetClassNew != "" {
-				if !canonical.AssetClass(ov.AssetClassNew).ValidV2() {
-					return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class_new %q", sourceID, instrID, ov.AssetClassNew)
-				}
-				if !canonical.Vehicle(ov.Vehicle).Valid() {
-					return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid vehicle %q", sourceID, instrID, ov.Vehicle)
-				}
-				if !canonical.ValidTaxonomyPair(canonical.AssetClass(ov.AssetClassNew), canonical.Vehicle(ov.Vehicle)) {
-					return fmt.Errorf("config: instrument_overrides[%q][%q]: (%q, %q) is not an admitted taxonomy pair", sourceID, instrID, ov.AssetClassNew, ov.Vehicle)
-				}
+			if !canonical.ValidTaxonomyPair(canonical.AssetClass(ov.AssetClass), canonical.Vehicle(ov.Vehicle)) {
+				return fmt.Errorf("config: instrument_overrides[%q][%q]: (%q, %q) is not an admitted taxonomy pair", sourceID, instrID, ov.AssetClass, ov.Vehicle)
 			}
 		}
 	}

@@ -121,9 +121,6 @@ func TestSnapshotsTaxWrapperMapping(t *testing.T) {
 		t.Fatalf("positions = %d, want 1", len(batch.Positions))
 	}
 	p := batch.Positions[0]
-	if p.AssetClass != canonical.AssetClassEquity {
-		t.Errorf("asset_class = %q, want equity", p.AssetClass)
-	}
 	if p.Currency != "CHF" {
 		t.Errorf("currency = %q, want CHF", p.Currency)
 	}
@@ -325,20 +322,19 @@ func TestSnapshotsTaxonomyPairs(t *testing.T) {
 			t.Errorf("instrument %s missing from batch", id)
 			continue
 		}
-		if in.AssetClassNew != exp.class || in.Vehicle != exp.vehicle {
+		if in.AssetClass != exp.class || in.Vehicle != exp.vehicle {
 			t.Errorf("instrument %s pair = (%q, %q), want (%q, %q)",
-				id, in.AssetClassNew, in.Vehicle, exp.class, exp.vehicle)
+				id, in.AssetClass, in.Vehicle, exp.class, exp.vehicle)
 		}
-		if !canonical.ValidTaxonomyPair(in.AssetClassNew, in.Vehicle) {
+		if !canonical.ValidTaxonomyPair(in.AssetClass, in.Vehicle) {
 			t.Errorf("instrument %s pair (%q, %q) not admitted by ValidTaxonomyPair",
-				id, in.AssetClassNew, in.Vehicle)
+				id, in.AssetClass, in.Vehicle)
 		}
 	}
-	// Control: the legacy 1-D class of the listed-PE ETF stays 'equity'
-	// (silver's coarse value), proving the double-write left it alone
-	// while the new column captured the private-equity exposure.
-	if got := instByID["CH0000000004"].AssetClass; got != canonical.AssetClassEquity {
-		t.Errorf("legacy asset_class of PE ETF = %q, want equity (control unchanged)", got)
+	// The listed-PE ETF carries private-equity exposure via an etf
+	// wrapper (the name check overrides viac's coarse fund default).
+	if got := instByID["CH0000000004"].AssetClass; got != canonical.AssetClassPrivateEquity {
+		t.Errorf("PE ETF asset_class = %q, want private_equity", got)
 	}
 
 	// Positions: must carry the same pair as their instrument.
@@ -354,9 +350,9 @@ func TestSnapshotsTaxonomyPairs(t *testing.T) {
 			t.Errorf("position %s missing from batch", id)
 			continue
 		}
-		if p.AssetClassNew != exp.class || p.Vehicle != exp.vehicle {
+		if p.AssetClass != exp.class || p.Vehicle != exp.vehicle {
 			t.Errorf("position %s pair = (%q, %q), want (%q, %q)",
-				id, p.AssetClassNew, p.Vehicle, exp.class, exp.vehicle)
+				id, p.AssetClass, p.Vehicle, exp.class, exp.vehicle)
 		}
 	}
 }

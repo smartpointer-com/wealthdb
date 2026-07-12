@@ -182,9 +182,10 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 // silver schema is positions-only (no cash-balance counterpart
 // for the 529 historical path), so we never produce
 // CashBalanceChange rows from this source. The statement PDFs
-// carry no structured type code, so asset_class comes from the
-// shape heuristics in classifyHistorical (instrument-key and
-// description shapes); the live-positions path still overwrites
+// carry no structured type code, so the (asset_class, vehicle)
+// pair comes from the shape heuristics in classifyHistoricalPair
+// (instrument-key and description shapes); the live-positions
+// path still overwrites
 // the instrument dimension whenever the same instrument_key
 // reappears with a source-classified value.
 //
@@ -212,10 +213,10 @@ SELECT as_of_date, account_external_id,
 
 	for rows.Next() {
 		var (
-			snap                                int64
-			acct, instrKey, desc, currency      string
-			qtyStr, valueStr                    sql.NullString
-			payload                             string
+			snap                           int64
+			acct, instrKey, desc, currency string
+			qtyStr, valueStr               sql.NullString
+			payload                        string
 		)
 		if err := rows.Scan(&snap, &acct, &instrKey, &desc, &currency,
 			&qtyStr, &valueStr, &payload); err != nil {
@@ -225,9 +226,7 @@ SELECT as_of_date, account_external_id,
 		if !ok {
 			continue
 		}
-		assetClass := classifyHistorical(instrKey, desc)
-		// 2-D-taxonomy double-write, computed from the same raw
-		// instrKey/desc as the legacy classify (before the synthetic
+		// Classified from the raw instrKey/desc (before the synthetic
 		// key substitution below).
 		assetClassNew, vehicle := classifyHistoricalPair(instrKey, desc)
 		if instrKey == "" {
@@ -238,8 +237,7 @@ SELECT as_of_date, account_external_id,
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrKey,
-			AssetClass:           assetClass,
-			AssetClassNew:        assetClassNew,
+			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Symbol:               &symbol,
 			Name:                 &name,
@@ -254,8 +252,7 @@ SELECT as_of_date, account_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          instrKey,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           assetClass,
-			AssetClassNew:        assetClassNew,
+			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),

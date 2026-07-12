@@ -26,18 +26,18 @@ func TestPositionsAsOfSingleSource(t *testing.T) {
 			// snapshot 1000: just AAPL
 			{
 				SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "ACC",
-				PositionKey: "AAPL", AssetClass: canonical.AssetClassEquity, Currency: "USD",
+				PositionKey: "AAPL", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD",
 				Quantity: &qty10, MarketValue: &mv1500,
 			},
 			// snapshot 2000: AAPL + MSFT
 			{
 				SilverSourceID: "test-src", SnapshotAt: 2000, AccountExternalID: "ACC",
-				PositionKey: "AAPL", AssetClass: canonical.AssetClassEquity, Currency: "USD",
+				PositionKey: "AAPL", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD",
 				Quantity: &qty10, MarketValue: &mv1500,
 			},
 			{
 				SilverSourceID: "test-src", SnapshotAt: 2000, AccountExternalID: "ACC",
-				PositionKey: "MSFT", AssetClass: canonical.AssetClassEquity, Currency: "USD",
+				PositionKey: "MSFT", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD",
 				Quantity: &qty5, MarketValue: &mv250,
 			},
 		})
@@ -101,10 +101,10 @@ func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
 			return err
 		}
 		return w.InsertPositions(ctx, []canonical.PositionChange{
-			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "A", PositionKey: "AAPL", AssetClass: canonical.AssetClassEquity, Currency: "USD", Quantity: &qty, MarketValue: &mv},
-			{SilverSourceID: "test-src", SnapshotAt: 3000, AccountExternalID: "A", PositionKey: "AAPL", AssetClass: canonical.AssetClassEquity, Currency: "USD", Quantity: &qty, MarketValue: &mv},
-			{SilverSourceID: "other-src", SnapshotAt: 1500, AccountExternalID: "B", PositionKey: "MSFT", AssetClass: canonical.AssetClassEquity, Currency: "USD", Quantity: &qty, MarketValue: &mv},
-			{SilverSourceID: "other-src", SnapshotAt: 2500, AccountExternalID: "B", PositionKey: "MSFT", AssetClass: canonical.AssetClassEquity, Currency: "USD", Quantity: &qty, MarketValue: &mv},
+			{SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "A", PositionKey: "AAPL", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", Quantity: &qty, MarketValue: &mv},
+			{SilverSourceID: "test-src", SnapshotAt: 3000, AccountExternalID: "A", PositionKey: "AAPL", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", Quantity: &qty, MarketValue: &mv},
+			{SilverSourceID: "other-src", SnapshotAt: 1500, AccountExternalID: "B", PositionKey: "MSFT", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", Quantity: &qty, MarketValue: &mv},
+			{SilverSourceID: "other-src", SnapshotAt: 2500, AccountExternalID: "B", PositionKey: "MSFT", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", Quantity: &qty, MarketValue: &mv},
 		})
 	})
 
@@ -123,4 +123,3 @@ func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
 		}
 	}
 }
-

@@ -130,7 +130,7 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 		fmt.Fprintln(stdout, "  taxonomy drift ('other' bucket):")
 		fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
 		fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
-		fmt.Fprintf(stdout, "    vehicle unmigrated (NULL): %d positions\n", st.UnmigratedTaxonomyCount)
+		fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
 	}
 
 	if silverErr != nil {
@@ -188,8 +188,8 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 		driftHint = fmt.Sprintf("  drift: %d pos/'other'+%d tx/'other'",
 			st.OtherAssetClassCount, st.OtherTxKindCount)
 	}
-	if verbose && st.UnmigratedTaxonomyCount > 0 {
-		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.UnmigratedTaxonomyCount)
+	if verbose && st.MissingVehicleCount > 0 {
+		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.MissingVehicleCount)
 	}
 
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%d%s%s\n",

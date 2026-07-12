@@ -285,10 +285,6 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		if !ok {
 			continue
 		}
-		ac := canonical.AssetClassOther
-		if c, ok := psnAssetClass[isin]; ok && c != "" {
-			ac = c
-		}
 		acNew := canonical.AssetClassOther
 		vehicle := canonical.VehicleOther
 		if tp, ok := psnTaxPair[isin]; ok && tp.AssetClass != "" {
@@ -306,8 +302,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		symbol := tickerFromDescription(description.String)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			ISIN:                 &isinCopy,
 			Symbol:               symbol,
@@ -1088,8 +1083,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		})
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: extID,
-			AssetClass:           canonical.AssetClassMortgage,
-			AssetClassNew:        canonical.AssetClassRealEstate,
+			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
 			Currency:             silver.StrPtrIfNonEmpty(currency),
@@ -1154,8 +1148,7 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 			AccountExternalID:    extID,
 			PositionKey:          extID,
 			InstrumentExternalID: &idCopy,
-			AssetClass:           canonical.AssetClassMortgage,
-			AssetClassNew:        canonical.AssetClassRealEstate,
+			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
 			MarketValue:          mv,

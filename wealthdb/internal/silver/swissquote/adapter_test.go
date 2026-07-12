@@ -92,12 +92,6 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 	for _, p := range batch.Positions {
 		byKey[p.PositionKey] = p
 	}
-	if byKey["IUSQ@USD"].AssetClass != canonical.AssetClassETF {
-		t.Errorf("ETFs → %q, want etf", byKey["IUSQ@USD"].AssetClass)
-	}
-	if byKey["XS1234567890@CHF"].AssetClass != canonical.AssetClassBond {
-		t.Errorf("Bonds → %q, want bond", byKey["XS1234567890@CHF"].AssetClass)
-	}
 	if byKey["IUSQ@USD"].Quantity == nil || byKey["IUSQ@USD"].Quantity.String() != "10" {
 		t.Errorf("IUSQ quantity = %v, want 10", byKey["IUSQ@USD"].Quantity)
 	}
@@ -107,7 +101,7 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 }
 
 // TestSnapshotsTaxonomyPair verifies the 2-D-taxonomy double-write:
-// each XLS section header maps to the expected (AssetClassNew,
+// each XLS section header maps to the expected (AssetClass,
 // Vehicle) pair on BOTH the InstrumentChange and the matching
 // PositionChange, the two agree, and every pair is admitted by
 // canonical.ValidTaxonomyPair. Collective-vehicle sections ("ETFs",
@@ -193,19 +187,19 @@ func TestSnapshotsTaxonomyPair(t *testing.T) {
 			t.Fatalf("test bug: (%s, %s) is not a valid taxonomy pair", wp.ac, wp.veh)
 		}
 		p := posByKey[key]
-		if p.AssetClassNew != wp.ac || p.Vehicle != wp.veh {
-			t.Errorf("position %s: (AssetClassNew, Vehicle) = (%s, %s), want (%s, %s)",
-				key, p.AssetClassNew, p.Vehicle, wp.ac, wp.veh)
+		if p.AssetClass != wp.ac || p.Vehicle != wp.veh {
+			t.Errorf("position %s: (AssetClass, Vehicle) = (%s, %s), want (%s, %s)",
+				key, p.AssetClass, p.Vehicle, wp.ac, wp.veh)
 		}
 		i := instByKey[key]
-		if i.AssetClassNew != wp.ac || i.Vehicle != wp.veh {
-			t.Errorf("instrument %s: (AssetClassNew, Vehicle) = (%s, %s), want (%s, %s)",
-				key, i.AssetClassNew, i.Vehicle, wp.ac, wp.veh)
+		if i.AssetClass != wp.ac || i.Vehicle != wp.veh {
+			t.Errorf("instrument %s: (AssetClass, Vehicle) = (%s, %s), want (%s, %s)",
+				key, i.AssetClass, i.Vehicle, wp.ac, wp.veh)
 		}
 		// Instrument and position must agree on the pair.
-		if p.AssetClassNew != i.AssetClassNew || p.Vehicle != i.Vehicle {
+		if p.AssetClass != i.AssetClass || p.Vehicle != i.Vehicle {
 			t.Errorf("%s: position/instrument pair disagree: (%s,%s) vs (%s,%s)",
-				key, p.AssetClassNew, p.Vehicle, i.AssetClassNew, i.Vehicle)
+				key, p.AssetClass, p.Vehicle, i.AssetClass, i.Vehicle)
 		}
 	}
 }

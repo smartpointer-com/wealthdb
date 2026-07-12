@@ -52,7 +52,7 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 	}
 	out := make(map[string]taxPair, len(meta))
 	for isin, m := range meta {
-		out[isin] = taxPair{AssetClass: m.AssetClassNew, Vehicle: m.Vehicle}
+		out[isin] = taxPair{AssetClass: m.AssetClass, Vehicle: m.Vehicle}
 	}
 	return out, nil
 }
@@ -176,10 +176,9 @@ func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instru
 		_ = json.Unmarshal([]byte(payload), &p)
 		acNew, vehicle := taxonomyPairForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best())
 		out[isin] = instrumentMeta{
-			AssetClass:    assetClassForInstrument(p.InstrCtgyCFI, p.UacAsstClsCd, p.InstrNm.Best()),
-			AssetClassNew: acNew,
-			Vehicle:       vehicle,
-			Currency:      p.GacInstrRskCcyIsoCd,
+			AssetClass: acNew,
+			Vehicle:    vehicle,
+			Currency:   p.GacInstrRskCcyIsoCd,
 		}
 	}
 	return out, rows.Err()

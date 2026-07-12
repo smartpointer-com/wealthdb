@@ -125,8 +125,7 @@ SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.
 			AccountExternalID:    accountKey,
 			PositionKey:          id,
 			InstrumentExternalID: &instKey,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              veh,
 			Currency:             currency,
 			AcquisitionDate:      acqDate(acqUnix),
@@ -156,8 +155,7 @@ SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.
 
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instKey,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              veh,
 			FirstSeenAt:          t,
 			LastSeenAt:           t,

@@ -129,40 +129,7 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 	if len(batch.Instruments) != 9 {
 		t.Fatalf("instruments = %d, want 9", len(batch.Instruments))
 	}
-	classes := map[string]canonical.AssetClass{}
-	for _, i := range batch.Instruments {
-		classes[i.InstrumentExternalID] = i.AssetClass
-	}
-	if classes["CH0000000001"] != canonical.AssetClassEquity {
-		t.Errorf("ESVTFR → %q, want equity", classes["CH0000000001"])
-	}
-	if classes["XX0000000002"] != canonical.AssetClassETF {
-		t.Errorf("CECIMX (CFI ETF group) → %q, want etf", classes["XX0000000002"])
-	}
-	if classes["XX0000000007"] != canonical.AssetClassFund {
-		t.Errorf("CIOGMX (CFI standard-fund group) → %q, want fund", classes["XX0000000007"])
-	}
-	if classes["XX0000000008"] != canonical.AssetClassMoneyMarket {
-		t.Errorf("CIOGMX + UAC 0100 (Liquidity) → %q, want money_market", classes["XX0000000008"])
-	}
-	if classes["XX0000000009"] != canonical.AssetClassPrivateFund {
-		t.Errorf("CIMGMX + UAC 0400 (HF&PM) → %q, want private_fund", classes["XX0000000009"])
-	}
-	if classes["XX0000000003"] != canonical.AssetClassOther {
-		t.Errorf("empty CFI + empty UAC → %q, want other", classes["XX0000000003"])
-	}
-	if classes["XX0000000004"] != canonical.AssetClassPrivateFund {
-		t.Errorf("empty CFI + UAC 0400 (HF&PM) → %q, want private_fund", classes["XX0000000004"])
-	}
-	if classes["XX0000000005"] != canonical.AssetClassMetal {
-		t.Errorf("empty CFI + UAC 0600 (PMC) → %q, want metal", classes["XX0000000005"])
-	}
-	if classes["XX0000000006"] != canonical.AssetClassOther {
-		t.Errorf("empty CFI + UAC 0700 (Others) → %q, want other", classes["XX0000000006"])
-	}
-
-	// 2-D taxonomy pair (asset_class_new × vehicle) double-written
-	// beside the legacy class above. Proves the pair flows through to
+	// 2-D taxonomy pair (asset_class × vehicle). Proves the pair flows through to
 	// the emitted InstrumentChange, and every pair is admitted by
 	// canonical.ValidTaxonomyPair.
 	type pair struct {
@@ -171,10 +138,10 @@ func TestSnapshotsAccountsAndInstruments(t *testing.T) {
 	}
 	pairs := map[string]pair{}
 	for _, i := range batch.Instruments {
-		pairs[i.InstrumentExternalID] = pair{i.AssetClassNew, i.Vehicle}
-		if !canonical.ValidTaxonomyPair(i.AssetClassNew, i.Vehicle) {
+		pairs[i.InstrumentExternalID] = pair{i.AssetClass, i.Vehicle}
+		if !canonical.ValidTaxonomyPair(i.AssetClass, i.Vehicle) {
 			t.Errorf("instrument %q emits inadmissible pair (%q, %q)",
-				i.InstrumentExternalID, i.AssetClassNew, i.Vehicle)
+				i.InstrumentExternalID, i.AssetClass, i.Vehicle)
 		}
 	}
 	for isin, want := range map[string]pair{
@@ -447,9 +414,6 @@ func TestSnapshotsHoldingsJoinInstruments(t *testing.T) {
 	}
 
 	// Parsed-from-MT535 position should have quantity + market_value.
-	if withMT.AssetClass != canonical.AssetClassEquity {
-		t.Errorf("AssetClass = %q, want equity (resolved via instrument)", withMT.AssetClass)
-	}
 	if withMT.Currency != "CHF" {
 		t.Errorf("Currency = %q, want CHF", withMT.Currency)
 	}
@@ -543,15 +507,12 @@ func TestSnapshotsForwardContract(t *testing.T) {
 		t.Fatalf("positions = %d, want 1", len(batch.Positions))
 	}
 	p := batch.Positions[0]
-	if p.AssetClass != canonical.AssetClassFxForward {
-		t.Errorf("AssetClass = %q, want fx_forward", p.AssetClass)
-	}
 	// 2-D pair double-written beside the legacy fx_forward class.
-	if p.AssetClassNew != canonical.AssetClassForeignExchange || p.Vehicle != canonical.VehicleForward {
-		t.Errorf("pair = (%q, %q), want (foreign_exchange, forward)", p.AssetClassNew, p.Vehicle)
+	if p.AssetClass != canonical.AssetClassForeignExchange || p.Vehicle != canonical.VehicleForward {
+		t.Errorf("pair = (%q, %q), want (foreign_exchange, forward)", p.AssetClass, p.Vehicle)
 	}
-	if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
-		t.Errorf("forward pair (%q, %q) not admitted by ValidTaxonomyPair", p.AssetClassNew, p.Vehicle)
+	if !canonical.ValidTaxonomyPair(p.AssetClass, p.Vehicle) {
+		t.Errorf("forward pair (%q, %q) not admitted by ValidTaxonomyPair", p.AssetClass, p.Vehicle)
 	}
 	if p.AccountExternalID != "P1:overlay" {
 		t.Errorf("AccountExternalID = %q, want 'P1:overlay' (synthetic per-portfolio overlay)", p.AccountExternalID)

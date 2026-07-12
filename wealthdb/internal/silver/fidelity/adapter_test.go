@@ -96,27 +96,24 @@ func TestSnapshotsCorePositionBecomesCash(t *testing.T) {
 	if p.PositionKey != "VTI" {
 		t.Errorf("position key = %q, want VTI", p.PositionKey)
 	}
-	if p.AssetClass != canonical.AssetClassETF {
-		t.Errorf("asset_class = %q, want etf", p.AssetClass)
-	}
 	if p.MarketValue == nil || p.MarketValue.String() != "2500" {
 		t.Errorf("market_value = %v, want 2500", p.MarketValue)
 	}
 	// 2-D-taxonomy double-write: an equity-exposure ETF wrapper →
 	// (public_equity, etf), agreeing on instrument + position.
-	if p.AssetClassNew != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleETF {
-		t.Errorf("position (exposure, vehicle) = (%q, %q), want (public_equity, etf)", p.AssetClassNew, p.Vehicle)
+	if p.AssetClass != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleETF {
+		t.Errorf("position (exposure, vehicle) = (%q, %q), want (public_equity, etf)", p.AssetClass, p.Vehicle)
 	}
-	if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
-		t.Errorf("position pair (%q, %q) not an admitted taxonomy pair", p.AssetClassNew, p.Vehicle)
+	if !canonical.ValidTaxonomyPair(p.AssetClass, p.Vehicle) {
+		t.Errorf("position pair (%q, %q) not an admitted taxonomy pair", p.AssetClass, p.Vehicle)
 	}
 	if len(batch.Instruments) != 1 {
 		t.Fatalf("instruments = %d, want 1", len(batch.Instruments))
 	}
 	inst := batch.Instruments[0]
-	if inst.AssetClassNew != p.AssetClassNew || inst.Vehicle != p.Vehicle {
+	if inst.AssetClass != p.AssetClass || inst.Vehicle != p.Vehicle {
 		t.Errorf("instrument pair = (%q, %q), want it to agree with position (%q, %q)",
-			inst.AssetClassNew, inst.Vehicle, p.AssetClassNew, p.Vehicle)
+			inst.AssetClass, inst.Vehicle, p.AssetClass, p.Vehicle)
 	}
 
 	// Core money-market row → cash balance.

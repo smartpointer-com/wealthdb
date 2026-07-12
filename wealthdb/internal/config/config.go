@@ -274,20 +274,14 @@ type PortfolioOverride struct {
 }
 
 // InstrumentOverride is one per-instrument override entry, validated
-// against the canonical enums at config-load time.
-//
-// AssetClass overrides the legacy 1-D `asset_class` column.
-// AssetClassNew + Vehicle override the 2-D taxonomy columns
-// (TAXONOMY.md) — both must be set together and form an admitted
-// pair. During the taxonomy migration an entry typically carries all
-// three (legacy value + new pair) since the two vocabularies differ
-// (e.g. a bond ETF is legacy `bond_etf`, new `fixed_income` ×
-// `etf`). At cutover AssetClass is dropped and AssetClassNew renamed
-// to it.
+// against the canonical enums at config-load time. It pins the 2-D
+// taxonomy pair (TAXONOMY.md) for a holding the adapters misclassify —
+// e.g. an exchange-traded commodity trust whose name gives nothing
+// away. Both fields are required and must form an admitted pair (e.g.
+// a bond ETF is `fixed_income` × `etf`).
 type InstrumentOverride struct {
-	AssetClass    string `json:"asset_class,omitempty"`
-	AssetClassNew string `json:"asset_class_new,omitempty"`
-	Vehicle       string `json:"vehicle,omitempty"`
+	AssetClass string `json:"asset_class,omitempty"`
+	Vehicle    string `json:"vehicle,omitempty"`
 }
 
 // InceptionOverrides is the `inception_overrides` block of wealthdb.cfg.

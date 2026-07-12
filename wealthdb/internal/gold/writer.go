@@ -179,16 +179,13 @@ func (w *Writer) UpsertInstruments(ctx context.Context, batch []canonical.Instru
 	// Same guard semantics as UpsertAccounts; see comment there.
 	const q = `
 INSERT INTO instruments (
-    silver_source_id, instrument_external_id, asset_class,
-    asset_class_new, vehicle,
+    silver_source_id, instrument_external_id, asset_class, vehicle,
     isin, cusip, symbol, name, currency,
     first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
     asset_class   = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
                          THEN EXCLUDED.asset_class ELSE instruments.asset_class END,
-    asset_class_new = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.asset_class_new, instruments.asset_class_new) ELSE instruments.asset_class_new END,
     vehicle       = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
                          THEN COALESCE(EXCLUDED.vehicle, instruments.vehicle) ELSE instruments.vehicle END,
     isin          = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
@@ -214,16 +211,11 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
 
 	for i := range batch {
 		r := &batch[i]
-		if !r.AssetClass.Valid() {
-			return fmt.Errorf("UpsertInstruments row %d: invalid asset_class %q", i, r.AssetClass)
-		}
-		acNew, veh, err := validateTaxonomyPair("UpsertInstruments", i, r.AssetClassNew, r.Vehicle)
-		if err != nil {
+		if err := validateTaxonomyPair("UpsertInstruments", i, r.AssetClass, r.Vehicle); err != nil {
 			return err
 		}
 		if _, err := stmt.ExecContext(ctx,
-			r.SilverSourceID, r.InstrumentExternalID, string(r.AssetClass),
-			acNew, veh,
+			r.SilverSourceID, r.InstrumentExternalID, string(r.AssetClass), string(r.Vehicle),
 			nullableString(r.ISIN), nullableString(r.CUSIP),
 			nullableString(r.Symbol), nullableString(r.Name),
 			nullableString(r.Currency),
@@ -235,32 +227,22 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
 	return nil
 }
 
-// validateTaxonomyPair validates the transitional 2-D taxonomy pair
-// on an instrument/position row and returns the values to bind (as
-// interface{} so an unset pair binds SQL NULL rather than "").
-//
-// The pair is optional during the migration: both empty means "this
-// source isn't migrated yet" → (NULL, NULL). If either is set, both
-// must be set and must form a taxonomy-admitted combination
-// (ValidTaxonomyPair) — a half-filled or nonsensical pair is a bug in
-// the adapter, caught here before it reaches gold.
-func validateTaxonomyPair(op string, i int, a canonical.AssetClass, v canonical.Vehicle) (any, any, error) {
-	if a == "" && v == "" {
-		return nil, nil, nil
-	}
-	if a == "" || v == "" {
-		return nil, nil, fmt.Errorf("%s row %d: half-filled taxonomy pair (asset_class_new=%q, vehicle=%q); set both or neither", op, i, a, v)
-	}
+// validateTaxonomyPair validates the 2-D taxonomy pair (exposure,
+// vehicle) on an instrument/position row before write: both are
+// required and must form a taxonomy-admitted combination
+// (ValidTaxonomyPair) — a missing or nonsensical pair is an adapter
+// bug, caught here before it reaches gold.
+func validateTaxonomyPair(op string, i int, a canonical.AssetClass, v canonical.Vehicle) error {
 	if !a.ValidV2() {
-		return nil, nil, fmt.Errorf("%s row %d: invalid asset_class_new %q", op, i, a)
+		return fmt.Errorf("%s row %d: invalid asset_class %q", op, i, a)
 	}
 	if !v.Valid() {
-		return nil, nil, fmt.Errorf("%s row %d: invalid vehicle %q", op, i, v)
+		return fmt.Errorf("%s row %d: invalid vehicle %q", op, i, v)
 	}
 	if !canonical.ValidTaxonomyPair(a, v) {
-		return nil, nil, fmt.Errorf("%s row %d: taxonomy pair (%q, %q) is not an admitted combination", op, i, a, v)
+		return fmt.Errorf("%s row %d: taxonomy pair (%q, %q) is not an admitted combination", op, i, a, v)
 	}
-	return string(a), string(v), nil
+	return nil
 }
 
 // InsertPositions inserts `positions` rows. Snapshot-grain: the
@@ -274,10 +256,10 @@ func (w *Writer) InsertPositions(ctx context.Context, batch []canonical.Position
 	const q = `
 INSERT INTO positions (
     silver_source_id, snapshot_at, account_external_id, position_key,
-    instrument_external_id, asset_class, asset_class_new, vehicle, currency,
+    instrument_external_id, asset_class, vehicle, currency,
     quantity, market_value, book_value, accrued_interest,
     acquisition_date, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	stmt, err := w.tx.PrepareContext(ctx, q)
 	if err != nil {
@@ -287,16 +269,12 @@ INSERT INTO positions (
 
 	for i := range batch {
 		r := &batch[i]
-		if !r.AssetClass.Valid() {
-			return fmt.Errorf("InsertPositions row %d: invalid asset_class %q", i, r.AssetClass)
-		}
-		acNew, veh, err := validateTaxonomyPair("InsertPositions", i, r.AssetClassNew, r.Vehicle)
-		if err != nil {
+		if err := validateTaxonomyPair("InsertPositions", i, r.AssetClass, r.Vehicle); err != nil {
 			return err
 		}
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey,
-			nullableString(r.InstrumentExternalID), string(r.AssetClass), acNew, veh, r.Currency,
+			nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
 			nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
 			nullableDecimal(r.BookValue), nullableDecimal(r.AccruedInterest),
 			nullableTime(r.AcquisitionDate), nullableJSON(r.Payload),

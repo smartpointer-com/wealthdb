@@ -225,8 +225,7 @@ SELECT instrument_external_id,
 		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: extID,
-			AssetClass:           assetClassFor(rawClass, name),
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              veh,
 			Currency:             &ccy,
 			FirstSeenAt:          firstSeen,
@@ -288,9 +287,9 @@ SELECT snapshot_at, account_external_id, currency,
 	securitiesByAcct := make(map[[2]any]acctBal)
 	for rows.Next() {
 		var (
-			snap                            int64
-			acct, ccy                       string
-			cashAmt, securitiesAmt          sql.NullFloat64
+			snap                   int64
+			acct, ccy              string
+			cashAmt, securitiesAmt sql.NullFloat64
 		)
 		if err := rows.Scan(&snap, &acct, &ccy, &cashAmt, &securitiesAmt); err != nil {
 			return err
@@ -362,8 +361,7 @@ SELECT snapshot_at, account_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          key,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           assetClassFor(rawClass, name),
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              veh,
 		}
 		if bal, ok := securitiesByAcct[[2]any{snap, acct}]; ok {

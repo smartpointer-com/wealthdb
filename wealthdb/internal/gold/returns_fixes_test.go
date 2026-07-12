@@ -164,8 +164,8 @@ func TestRunReturnsFxClampFlags(t *testing.T) {
 	})
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{
-			{SilverSourceID: "ubs", SnapshotAt: t0, AccountExternalID: "CH1", PositionKey: "P", AssetClass: canonical.AssetClassEquity, Currency: "CHF", MarketValue: decp(1000)},
-			{SilverSourceID: "ubs", SnapshotAt: t1, AccountExternalID: "CH1", PositionKey: "P", AssetClass: canonical.AssetClassEquity, Currency: "CHF", MarketValue: decp(1100)},
+			{SilverSourceID: "ubs", SnapshotAt: t0, AccountExternalID: "CH1", PositionKey: "P", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "CHF", MarketValue: decp(1000)},
+			{SilverSourceID: "ubs", SnapshotAt: t1, AccountExternalID: "CH1", PositionKey: "P", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "CHF", MarketValue: decp(1100)},
 		}); err != nil {
 			return err
 		}

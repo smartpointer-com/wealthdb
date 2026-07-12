@@ -44,10 +44,10 @@ func TestSourcesAsOfRollupAndReconcile(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{
 			{SilverSourceID: "ubs", SnapshotAt: 1000, AccountExternalID: "SAFE1",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity,
+				PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 				Currency: "CHF", MarketValue: &chf1000},
 			{SilverSourceID: "schwab", SnapshotAt: 1000, AccountExternalID: "BROK1",
-				PositionKey: "Y", AssetClass: canonical.AssetClassEquity,
+				PositionKey: "Y", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 				Currency: "USD", MarketValue: &usd200},
 		}); err != nil {
 			return err
@@ -147,9 +147,9 @@ func TestSourcesAsOfMixedBaseNull(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.InsertPositions(ctx, []canonical.PositionChange{
 			{SilverSourceID: "mixed", SnapshotAt: 1000, AccountExternalID: "A_CHF",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity, Currency: "CHF", MarketValue: &chf1000},
+				PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "CHF", MarketValue: &chf1000},
 			{SilverSourceID: "mixed", SnapshotAt: 1000, AccountExternalID: "A_USD",
-				PositionKey: "Y", AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: &usd1000},
+				PositionKey: "Y", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: &usd1000},
 		})
 	})
 	// Seed 1 USD = 0.80 CHF so the USD output trio resolves for both
@@ -220,9 +220,9 @@ func TestSourcesHistoryCarryForward(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.InsertPositions(ctx, []canonical.PositionChange{
 			{SilverSourceID: "ubs", SnapshotAt: day1, AccountExternalID: "A1",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity, Currency: "CHF", MarketValue: &v1000},
+				PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "CHF", MarketValue: &v1000},
 			{SilverSourceID: "ubs", SnapshotAt: day2, AccountExternalID: "A1",
-				PositionKey: "X", AssetClass: canonical.AssetClassEquity, Currency: "CHF", MarketValue: &v1500},
+				PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "CHF", MarketValue: &v1500},
 		})
 	})
 

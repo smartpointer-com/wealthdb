@@ -41,7 +41,7 @@ func seedAcct(t *testing.T, db *sql.DB, ctx context.Context, src, acct string, k
 		for _, s := range snaps {
 			pos = append(pos, canonical.PositionChange{
 				SilverSourceID: src, SnapshotAt: s.at, AccountExternalID: acct,
-				PositionKey: "P", AssetClass: canonical.AssetClassEquity,
+				PositionKey: "P", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 				Currency: "USD", MarketValue: decp(s.val),
 			})
 		}

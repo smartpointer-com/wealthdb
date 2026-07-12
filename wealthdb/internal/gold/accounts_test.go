@@ -19,7 +19,7 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.UpsertAccounts(ctx, []canonical.AccountChange{{
 			SilverSourceID: "test-src", AccountExternalID: "ACC1",
-			AccountKind: canonical.AccountKindBrokerage,
+			AccountKind:  canonical.AccountKindBrokerage,
 			BaseCurrency: &usd,
 			FirstSeenAt:  1000, LastSeenAt: 1000,
 		}})
@@ -41,13 +41,15 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 			{
 				SilverSourceID: "test-src", SnapshotAt: 1000,
 				AccountExternalID: "ACC1", PositionKey: "AAPL",
-				AssetClass: canonical.AssetClassEquity,
+				AssetClass: canonical.AssetClassPublicEquity,
+				Vehicle:    canonical.VehicleStock,
 				Currency:   "USD", MarketValue: &usd1000,
 			},
 			{
 				SilverSourceID: "test-src", SnapshotAt: 1000,
 				AccountExternalID: "ACC1", PositionKey: "SAP",
-				AssetClass: canonical.AssetClassEquity,
+				AssetClass: canonical.AssetClassPublicEquity,
+				Vehicle:    canonical.VehicleStock,
 				Currency:   "EUR", MarketValue: &eur500,
 			},
 		}); err != nil {
@@ -122,7 +124,8 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 		return w.InsertPositions(ctx, []canonical.PositionChange{{
 			SilverSourceID: "test-src", SnapshotAt: 1000,
 			AccountExternalID: "ACC1", PositionKey: "AAPL",
-			AssetClass: canonical.AssetClassEquity,
+			AssetClass: canonical.AssetClassPublicEquity,
+			Vehicle:    canonical.VehicleStock,
 			Currency:   "USD", MarketValue: &usd500,
 		}})
 	})
@@ -169,7 +172,7 @@ func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{{
 			SilverSourceID: "test-src", SnapshotAt: 1000, AccountExternalID: "SAFE1",
-			PositionKey: "X", AssetClass: canonical.AssetClassEquity,
+			PositionKey: "X", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock,
 			Currency: "CHF", MarketValue: &chf1000,
 		}}); err != nil {
 			return err

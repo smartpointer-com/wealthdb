@@ -366,9 +366,6 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	if !ok {
 		t.Fatal("no position for the SAFE (entity:300)")
 	}
-	if safe.AssetClass != canonical.AssetClassConvertibleNote {
-		t.Errorf("SAFE asset_class = %q, want convertible_note", safe.AssetClass)
-	}
 	if safe.BookValue == nil || safe.BookValue.StringFixed(2) != "100000.00" {
 		t.Errorf("SAFE book_value = %v, want 100000.00", safe.BookValue)
 	}
@@ -378,13 +375,7 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	if safe.Quantity != nil {
 		t.Errorf("SAFE quantity = %v, want nil (no shares pre-conversion)", safe.Quantity)
 	}
-	if inst, ok := instByID["entity:300"]; !ok || inst.AssetClass != canonical.AssetClassConvertibleNote {
-		t.Errorf("SAFE instrument asset_class = %q (ok=%v), want convertible_note", inst.AssetClass, ok)
-	}
 	// Regression: an equity holding is unaffected by the convertible split.
-	if eq, ok := posByKey["entity:100"]; !ok || eq.AssetClass != canonical.AssetClassPrivateEquity {
-		t.Errorf("share asset_class = %q (ok=%v), want private_equity", eq.AssetClass, ok)
-	}
 }
 
 // TestTaxonomyPairs verifies the 2-D (asset_class_new, vehicle) double-write
@@ -466,21 +457,17 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 		if !ok {
 			t.Fatalf("no position for %s", tc.key)
 		}
-		if p.AssetClassNew != tc.exposure || p.Vehicle != tc.vehicle {
+		if p.AssetClass != tc.exposure || p.Vehicle != tc.vehicle {
 			t.Errorf("%s position V2 = (%s,%s), want (%s,%s)", tc.key,
-				p.AssetClassNew, p.Vehicle, tc.exposure, tc.vehicle)
-		}
-		if p.AssetClass != tc.wantClass {
-			t.Errorf("%s legacy AssetClass = %q, want %q (control must be untouched)",
-				tc.key, p.AssetClass, tc.wantClass)
+				p.AssetClass, p.Vehicle, tc.exposure, tc.vehicle)
 		}
 		i, ok := instByID[tc.key]
 		if !ok {
 			t.Fatalf("no instrument for %s", tc.key)
 		}
-		if i.AssetClassNew != tc.exposure || i.Vehicle != tc.vehicle {
+		if i.AssetClass != tc.exposure || i.Vehicle != tc.vehicle {
 			t.Errorf("%s instrument V2 = (%s,%s), want (%s,%s) (must match its position)",
-				tc.key, i.AssetClassNew, i.Vehicle, tc.exposure, tc.vehicle)
+				tc.key, i.AssetClass, i.Vehicle, tc.exposure, tc.vehicle)
 		}
 	}
 }

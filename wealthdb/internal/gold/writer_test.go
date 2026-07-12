@@ -214,7 +214,8 @@ func TestInsertPositionsNullable(t *testing.T) {
 				SilverSourceID: "test-src", SnapshotAt: 1000,
 				AccountExternalID: "ACC", PositionKey: "AAPL",
 				InstrumentExternalID: ptr("US0000000010"),
-				AssetClass:           canonical.AssetClassEquity,
+				AssetClass:           canonical.AssetClassPublicEquity,
+				Vehicle:              canonical.VehicleStock,
 				Currency:             "USD",
 				Quantity:             &qty,
 				MarketValue:          &mv,
@@ -224,15 +225,16 @@ func TestInsertPositionsNullable(t *testing.T) {
 			{
 				SilverSourceID: "test-src", SnapshotAt: 1000,
 				AccountExternalID: "ACC", PositionKey: "MINIMAL",
-				AssetClass:        canonical.AssetClassOther,
-				Currency:          "USD",
+				AssetClass: canonical.AssetClassOther,
+				Vehicle:    canonical.VehicleOther,
+				Currency:   "USD",
 			},
 		})
 	})
 
 	// Verify the populated row preserves decimal precision and the date.
 	var (
-		isin    sql.NullString
+		isin     sql.NullString
 		quantity sql.NullString
 		mvScan   sql.NullString
 		date     sql.NullTime
@@ -393,44 +395,34 @@ func TestPositionTaxonomyPair(t *testing.T) {
 	base := func(key string) canonical.PositionChange {
 		return canonical.PositionChange{
 			SilverSourceID: "src", SnapshotAt: 1000, AccountExternalID: "ACC",
-			PositionKey: key, AssetClass: canonical.AssetClassEquity, Currency: "USD",
+			PositionKey: key, AssetClass: canonical.AssetClassPublicEquity,
+			Vehicle: canonical.VehicleStock, Currency: "USD",
 		}
 	}
 
-	// Valid pair round-trips; both-empty stores NULL.
+	// A valid pair round-trips into asset_class + vehicle.
 	inTx(t, db, ctx, func(w *Writer) error {
-		p1 := base("WITH")
-		p1.AssetClassNew, p1.Vehicle = canonical.AssetClassPublicEquity, canonical.VehicleStock
-		return w.InsertPositions(ctx, []canonical.PositionChange{p1, base("WITHOUT")})
+		return w.InsertPositions(ctx, []canonical.PositionChange{base("WITH")})
 	})
-	var ac, veh sql.NullString
-	db.QueryRowContext(ctx, `SELECT asset_class_new, vehicle FROM positions WHERE position_key='WITH'`).Scan(&ac, &veh)
-	if ac.String != "public_equity" || veh.String != "stock" {
-		t.Errorf("WITH pair = (%q,%q), want (public_equity,stock)", ac.String, veh.String)
-	}
-	db.QueryRowContext(ctx, `SELECT asset_class_new, vehicle FROM positions WHERE position_key='WITHOUT'`).Scan(&ac, &veh)
-	if ac.Valid || veh.Valid {
-		t.Errorf("WITHOUT pair = (%v,%v), want (NULL,NULL)", ac, veh)
+	var ac, veh string
+	db.QueryRowContext(ctx, `SELECT asset_class, vehicle FROM positions WHERE position_key='WITH'`).Scan(&ac, &veh)
+	if ac != "public_equity" || veh != "stock" {
+		t.Errorf("WITH pair = (%q,%q), want (public_equity,stock)", ac, veh)
 	}
 
-	// Rejections.
+	// The pair is required and must be admitted.
 	reject := func(name string, mut func(*canonical.PositionChange)) {
 		p := base("REJ")
 		mut(&p)
-		err := insertOne(ctx, db, p)
-		if err == nil {
+		if err := insertOne(ctx, db, p); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
 	}
-	reject("half-filled", func(p *canonical.PositionChange) { p.AssetClassNew = canonical.AssetClassPublicEquity })
-	reject("invalid exposure", func(p *canonical.PositionChange) {
-		p.AssetClassNew, p.Vehicle = "bogus", canonical.VehicleStock
-	})
-	reject("legacy value in new column", func(p *canonical.PositionChange) {
-		p.AssetClassNew, p.Vehicle = canonical.AssetClassEquity, canonical.VehicleStock
-	})
+	reject("missing vehicle", func(p *canonical.PositionChange) { p.Vehicle = "" })
+	reject("invalid exposure", func(p *canonical.PositionChange) { p.AssetClass = "bogus" })
+	reject("legacy value in asset_class", func(p *canonical.PositionChange) { p.AssetClass = canonical.AssetClassEquity })
 	reject("nonsensical pair", func(p *canonical.PositionChange) {
-		p.AssetClassNew, p.Vehicle = canonical.AssetClassCrypto, canonical.VehicleMortgage
+		p.AssetClass, p.Vehicle = canonical.AssetClassCrypto, canonical.VehicleMortgage
 	})
 }
 

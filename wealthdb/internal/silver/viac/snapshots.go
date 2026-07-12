@@ -189,8 +189,7 @@ SELECT instrument_external_id, COALESCE(isin, ''),
 		classNew, vehicle := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: extID,
-			AssetClass:           assetClassFor(rawClass),
-			AssetClassNew:        classNew,
+			AssetClass:           classNew,
 			Vehicle:              vehicle,
 			FirstSeenAt:          firstSeen,
 			LastSeenAt:           lastSeen,
@@ -266,8 +265,7 @@ SELECT snapshot_at, account_external_id, instrument_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          isin,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           assetClassFor(rawClass),
-			AssetClassNew:        classNew,
+			AssetClass:           classNew,
 			Vehicle:              vehicle,
 			Currency:             "CHF",
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),
@@ -300,9 +298,9 @@ SELECT snapshot_at, account_external_id, currency,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap          int64
-			acct, ccy     string
-			amountStr     sql.NullString
+			snap      int64
+			acct, ccy string
+			amountStr sql.NullString
 		)
 		if err := rows.Scan(&snap, &acct, &ccy, &amountStr); err != nil {
 			return err

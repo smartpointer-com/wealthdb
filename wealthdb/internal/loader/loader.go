@@ -77,14 +77,11 @@ type PortfolioOverride struct {
 }
 
 // InstrumentOverride is the loader's view of one config-file
-// instrument_overrides entry. AssetClass (legacy) and the 2-D pair
-// AssetClassNew + Vehicle are validated upstream at config-load time;
-// the loader trusts them. AssetClassNew/Vehicle are empty when the
-// entry only overrides the legacy column.
+// instrument_overrides entry: the 2-D taxonomy pair (exposure +
+// vehicle), validated upstream at config-load time.
 type InstrumentOverride struct {
-	AssetClass    string
-	AssetClassNew string
-	Vehicle       string
+	AssetClass string
+	Vehicle    string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -520,9 +517,7 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 // their own classification copy, so both must move together or the
 // dimension and the fact rows would disagree. Overrides for
 // instruments not in the batch are silently ignored (the position
-// may not be held in this snapshot window). The legacy asset_class
-// and the 2-D (asset_class_new, vehicle) pair are patched
-// independently: an entry may override either or both.
+// may not be held in this snapshot window).
 func applyInstrumentOverrides(instruments []canonical.InstrumentChange, positions []canonical.PositionChange, overrides map[string]InstrumentOverride) {
 	if len(overrides) == 0 {
 		return
@@ -532,7 +527,7 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 		if !ok {
 			continue
 		}
-		applyInstrumentOverrideTo(&instruments[i].AssetClass, &instruments[i].AssetClassNew, &instruments[i].Vehicle, ov)
+		applyInstrumentOverrideTo(&instruments[i].AssetClass, &instruments[i].Vehicle, ov)
 	}
 	for i := range positions {
 		if positions[i].InstrumentExternalID == nil {
@@ -542,16 +537,15 @@ func applyInstrumentOverrides(instruments []canonical.InstrumentChange, position
 		if !ok {
 			continue
 		}
-		applyInstrumentOverrideTo(&positions[i].AssetClass, &positions[i].AssetClassNew, &positions[i].Vehicle, ov)
+		applyInstrumentOverrideTo(&positions[i].AssetClass, &positions[i].Vehicle, ov)
 	}
 }
 
-func applyInstrumentOverrideTo(ac *canonical.AssetClass, acNew *canonical.AssetClass, veh *canonical.Vehicle, ov InstrumentOverride) {
+func applyInstrumentOverrideTo(ac *canonical.AssetClass, veh *canonical.Vehicle, ov InstrumentOverride) {
 	if ov.AssetClass != "" {
 		*ac = canonical.AssetClass(ov.AssetClass)
 	}
-	if ov.AssetClassNew != "" {
-		*acNew = canonical.AssetClass(ov.AssetClassNew)
+	if ov.Vehicle != "" {
 		*veh = canonical.Vehicle(ov.Vehicle)
 	}
 }

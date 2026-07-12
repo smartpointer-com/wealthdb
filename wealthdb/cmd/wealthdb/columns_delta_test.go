@@ -7,10 +7,10 @@ import (
 
 func TestParseColumnsDelta(t *testing.T) {
 	cases := []struct {
-		in       string
-		adds     []string
-		removes  []string
-		isDelta  bool
+		in      string
+		adds    []string
+		removes []string
+		isDelta bool
 	}{
 		{"", nil, nil, false},
 		{"default", nil, nil, false},

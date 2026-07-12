@@ -168,12 +168,12 @@ SELECT snapshot_at, account_external_id, isin,
 
 	for rows.Next() {
 		var (
-			snap            int64
-			acct, isin      string
-			secName, asset  string
-			ccy             string
-			units, mv       sql.NullFloat64
-			payload         string
+			snap           int64
+			acct, isin     string
+			secName, asset string
+			ccy            string
+			units, mv      sql.NullFloat64
+			payload        string
 		)
 		if err := rows.Scan(&snap, &acct, &isin, &secName, &asset,
 			&ccy, &units, &mv, &payload); err != nil {
@@ -217,8 +217,7 @@ SELECT snapshot_at, account_external_id, isin,
 				ISIN:                 &isinCopy,
 				Symbol:               &isinCopy,
 				Name:                 &nameCopy,
-				AssetClass:           assetClassFor(asset, secName),
-				AssetClassNew:        acNew,
+				AssetClass:           acNew,
 				Vehicle:              veh,
 				Currency:             &chf,
 				FirstSeenAt:          snap,
@@ -235,8 +234,7 @@ SELECT snapshot_at, account_external_id, isin,
 			AccountExternalID:    acct,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
-			AssetClass:           assetClassFor(asset, secName),
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              veh,
 			Currency:             ccy,
 			Payload:              json.RawMessage(payload),

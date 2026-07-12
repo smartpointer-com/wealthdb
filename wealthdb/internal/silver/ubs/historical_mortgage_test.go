@@ -100,7 +100,7 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 	}
 	var sawMortgage bool
 	for _, p := range got1000 {
-		if p.AssetClass == canonical.AssetClassMortgage {
+		if p.Vehicle == canonical.VehicleMortgage {
 			sawMortgage = true
 		}
 	}

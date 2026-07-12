@@ -219,12 +219,9 @@ func TestSnapshotsBasic(t *testing.T) {
 	if len(batch.Instruments) != 1 || batch.Instruments[0].InstrumentExternalID != "037833100" {
 		t.Errorf("instruments = %+v", batch.Instruments)
 	}
-	if batch.Instruments[0].AssetClass != canonical.AssetClassEquity {
-		t.Errorf("asset_class = %q, want equity", batch.Instruments[0].AssetClass)
-	}
 	// 2-D double-write: an EQUITY row is public_equity × stock on
 	// both the instrument and the position (they must agree).
-	if got := batch.Instruments[0].AssetClassNew; got != canonical.AssetClassPublicEquity {
+	if got := batch.Instruments[0].AssetClass; got != canonical.AssetClassPublicEquity {
 		t.Errorf("instrument asset_class_new = %q, want public_equity", got)
 	}
 	if got := batch.Instruments[0].Vehicle; got != canonical.VehicleStock {
@@ -234,9 +231,9 @@ func TestSnapshotsBasic(t *testing.T) {
 		t.Fatalf("positions = %+v", batch.Positions)
 	}
 	p := batch.Positions[0]
-	if p.AssetClassNew != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleStock {
+	if p.AssetClass != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleStock {
 		t.Errorf("position (asset_class_new, vehicle) = (%q, %q), want (public_equity, stock)",
-			p.AssetClassNew, p.Vehicle)
+			p.AssetClass, p.Vehicle)
 	}
 	if p.PositionKey != "037833100" {
 		t.Errorf("position key = %q", p.PositionKey)

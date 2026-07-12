@@ -97,7 +97,7 @@ func (r *webReader) snapshotsHistorical(
 // appendHistoricalSecurities emits security positions from
 // `historical_position_snapshots` (rows where instrument_isin IS
 // NOT NULL). UBS PDFs don't surface the safekeeping account
-// reliably, so silver leaves account_external_id='' on these
+// reliably, so silver leaves account_external_id=” on these
 // rows. We attach them to the per-portfolio overlay account
 // pattern PSN already uses for forward contracts (account_kind=
 // 'overlay', '<portfolio>:overlay'), preserving the invariant
@@ -248,7 +248,6 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           canonical.AssetClassOther,
-			AssetClassNew:        canonical.AssetClassOther,
 			Vehicle:              canonical.VehicleOther,
 			ISIN:                 isinPtr,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
@@ -267,7 +266,6 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
 			AssetClass:           canonical.AssetClassOther,
-			AssetClassNew:        canonical.AssetClassOther,
 			Vehicle:              canonical.VehicleOther,
 			Currency:             positionCcy,
 			Quantity:             decimalFromNullFloat(units),
@@ -517,8 +515,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 		})
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: extID,
-			AssetClass:           canonical.AssetClassMortgage,
-			AssetClassNew:        canonical.AssetClassRealEstate,
+			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Name:                 silver.StrPtrIfNonEmpty(display.String),
 			Currency:             silver.StrPtrIfNonEmpty(currency),
@@ -535,8 +532,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 			AccountExternalID:    extID,
 			PositionKey:          extID,
 			InstrumentExternalID: &extIDCopy,
-			AssetClass:           canonical.AssetClassMortgage,
-			AssetClassNew:        canonical.AssetClassRealEstate,
+			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
 			MarketValue:          mv,

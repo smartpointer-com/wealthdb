@@ -282,8 +282,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: positionKey,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			ISIN:                 silver.StrPtrIfNonEmpty(effectiveISIN),
 			Symbol:               silver.StrPtrIfNonEmpty(symbol),
@@ -300,8 +299,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 			AccountExternalID:    extID,
 			PositionKey:          positionKey,
 			InstrumentExternalID: &instrIDCopy,
-			AssetClass:           ac,
-			AssetClassNew:        acNew,
+			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             p.Quantity,

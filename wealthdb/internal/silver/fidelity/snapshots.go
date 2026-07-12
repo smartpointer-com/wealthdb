@@ -115,8 +115,8 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 	usd := "USD"
 	for rows.Next() {
 		var (
-			snap                  int64
-			extID, kind, payload  string
+			snap                 int64
+			extID, kind, payload string
 		)
 		if err := rows.Scan(&snap, &extID, &kind, &payload); err != nil {
 			return err
@@ -153,7 +153,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 //   - kind=529           → TaxWrapper=529 (US education-savings).
 //   - kind=trust_managed → TaxWrapper=trust_non_grantor.
 //   - kind=other         → leave TaxWrapper nil so a config-side
-//                          override can pin per-account values.
+//     override can pin per-account values.
 //
 // ManagementStyle comes from silver's promoted column
 // `accounts.management_style` (added in fidelity-web silver
@@ -191,9 +191,9 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 	usd := "USD"
 	for rows.Next() {
 		var (
-			snap                                          int64
-			extID, payload, silverMgmt                    string
-			portfolioID, nickname, portfolioKind          sql.NullString
+			snap                                 int64
+			extID, payload, silverMgmt           string
+			portfolioID, nickname, portfolioKind sql.NullString
 		)
 		if err := rows.Scan(&snap, &extID, &portfolioID, &nickname, &payload,
 			&portfolioKind, &silverMgmt); err != nil {
@@ -300,11 +300,11 @@ SELECT snapshot_at, account_external_id, instrument_key,
 
 	for rows.Next() {
 		var (
-			snap                                          int64
-			acct, key, desc, silverClass, currency        string
-			isCore                                        int
-			qtyStr, valueStr                              sql.NullString
-			payload                                       string
+			snap                                   int64
+			acct, key, desc, silverClass, currency string
+			isCore                                 int
+			qtyStr, valueStr                       sql.NullString
+			payload                                string
 		)
 		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
 			&isCore, &qtyStr, &valueStr, &payload); err != nil {
@@ -351,8 +351,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 		ccy := currency
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: key,
-			AssetClass:           assetClass,
-			AssetClassNew:        assetClassNew,
+			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Symbol:               &symbol,
 			Name:                 silver.StrPtrIfNonEmpty(desc),
@@ -368,8 +367,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			AccountExternalID:    acct,
 			PositionKey:          key,
 			InstrumentExternalID: &instrumentKey,
-			AssetClass:           assetClass,
-			AssetClassNew:        assetClassNew,
+			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
 			Quantity:             silver.DecimalPtrOrNil(qtyStr),

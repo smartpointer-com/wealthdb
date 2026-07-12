@@ -79,17 +79,17 @@ func setupReturnsGold(t *testing.T) string {
 	seed(func(w *gold.Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{
 			{SilverSourceID: "schwab", SnapshotAt: t0, AccountExternalID: "BROK1", PositionKey: "AAA",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(1000)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(1000)},
 			{SilverSourceID: "schwab", SnapshotAt: t1, AccountExternalID: "BROK1", PositionKey: "AAA",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(1200)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(1200)},
 			{SilverSourceID: "schwab", SnapshotAt: t0, AccountExternalID: "MORT1", PositionKey: "M",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(-500)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(-500)},
 			{SilverSourceID: "schwab", SnapshotAt: t1, AccountExternalID: "MORT1", PositionKey: "M",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(-480)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(-480)},
 			{SilverSourceID: "manualre", SnapshotAt: t0, AccountExternalID: "RE1", PositionKey: "RE",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(2000)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(2000)},
 			{SilverSourceID: "manualre", SnapshotAt: t1, AccountExternalID: "RE1", PositionKey: "RE",
-				AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: d(2100)},
+				AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: d(2100)},
 		}); err != nil {
 			return err
 		}

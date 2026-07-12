@@ -244,9 +244,6 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 		t.Errorf("2020-01-01 re-1 mv/bv = %s/%s, want 100.00/100.00",
 			mv("2020-01-01", "re-1"), bv("2020-01-01", "re-1"))
 	}
-	if at("2020-01-01")["re-1"].AssetClass != canonical.AssetClassRealEstate {
-		t.Errorf("re-1 asset_class = %q, want real_estate", at("2020-01-01")["re-1"].AssetClass)
-	}
 
 	// 2021-06-01: re-1 (ff), cn-1, pf-1, spv-1.
 	if got := len(at("2021-06-01")); got != 4 {
@@ -264,9 +261,6 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 	if _, ok := conv["pe-1"]; !ok {
 		t.Error("2022-03-01 missing the converted-in pe-1")
-	}
-	if conv["pe-1"].AssetClass != canonical.AssetClassPrivateEquity {
-		t.Errorf("pe-1 asset_class = %q, want private_equity", conv["pe-1"].AssetClass)
 	}
 	if bv("2022-03-01", "pe-1") != "30.00" {
 		t.Errorf("2022-03-01 pe-1 book = %s, want 30.00", bv("2022-03-01", "pe-1"))
@@ -349,18 +343,18 @@ func TestTaxonomyPair(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no position emitted", key)
 		}
-		if p.AssetClassNew != wnt.ac || p.Vehicle != wnt.veh {
+		if p.AssetClass != wnt.ac || p.Vehicle != wnt.veh {
 			t.Errorf("%s position pair = (%q,%q), want (%q,%q)",
-				key, p.AssetClassNew, p.Vehicle, wnt.ac, wnt.veh)
+				key, p.AssetClass, p.Vehicle, wnt.ac, wnt.veh)
 		}
-		if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
+		if !canonical.ValidTaxonomyPair(p.AssetClass, p.Vehicle) {
 			t.Errorf("%s position pair (%q,%q) is not an admitted taxonomy pair",
-				key, p.AssetClassNew, p.Vehicle)
+				key, p.AssetClass, p.Vehicle)
 		}
 		in := instByKey[key]
-		if in.AssetClassNew != p.AssetClassNew || in.Vehicle != p.Vehicle {
+		if in.AssetClass != p.AssetClass || in.Vehicle != p.Vehicle {
 			t.Errorf("%s instrument pair = (%q,%q), disagrees with position (%q,%q)",
-				key, in.AssetClassNew, in.Vehicle, p.AssetClassNew, p.Vehicle)
+				key, in.AssetClass, in.Vehicle, p.AssetClass, p.Vehicle)
 		}
 	}
 }
@@ -394,17 +388,17 @@ func TestTaxonomyOtherLoanAndFallback(t *testing.T) {
 		}
 	}
 
-	if p := posByKey["loan-y"]; p.AssetClassNew != canonical.AssetClassPrivateDebt || p.Vehicle != canonical.VehicleLoan {
-		t.Errorf("loan-y pair = (%q,%q), want (private_debt,loan)", p.AssetClassNew, p.Vehicle)
+	if p := posByKey["loan-y"]; p.AssetClass != canonical.AssetClassPrivateDebt || p.Vehicle != canonical.VehicleLoan {
+		t.Errorf("loan-y pair = (%q,%q), want (private_debt,loan)", p.AssetClass, p.Vehicle)
 	}
 	// NULL vehicle → kind-derived default (private_equity → stock).
-	if p := posByKey["old-pe"]; p.AssetClassNew != canonical.AssetClassPrivateEquity || p.Vehicle != canonical.VehicleStock {
-		t.Errorf("old-pe pair = (%q,%q), want (private_equity,stock) via fallback", p.AssetClassNew, p.Vehicle)
+	if p := posByKey["old-pe"]; p.AssetClass != canonical.AssetClassPrivateEquity || p.Vehicle != canonical.VehicleStock {
+		t.Errorf("old-pe pair = (%q,%q), want (private_equity,stock) via fallback", p.AssetClass, p.Vehicle)
 	}
 	for _, key := range []string{"loan-y", "old-pe"} {
 		p := posByKey[key]
-		if !canonical.ValidTaxonomyPair(p.AssetClassNew, p.Vehicle) {
-			t.Errorf("%s pair (%q,%q) not admitted", key, p.AssetClassNew, p.Vehicle)
+		if !canonical.ValidTaxonomyPair(p.AssetClass, p.Vehicle) {
+			t.Errorf("%s pair (%q,%q) not admitted", key, p.AssetClass, p.Vehicle)
 		}
 	}
 }
@@ -443,13 +437,10 @@ func TestMortgageLiabilityNegated(t *testing.T) {
 
 	at1 := posByT[iso(t, "2021-01-01")]
 	loan := at1["loan-x"]
-	if loan.AssetClass != canonical.AssetClassMortgage {
-		t.Errorf("loan asset_class = %q, want mortgage", loan.AssetClass)
-	}
 	// 2-D pair: a mortgage is negative real_estate exposure held via the
 	// mortgage vehicle (TAXONOMY.md §1.5).
-	if loan.AssetClassNew != canonical.AssetClassRealEstate || loan.Vehicle != canonical.VehicleMortgage {
-		t.Errorf("loan pair = (%q,%q), want (real_estate,mortgage)", loan.AssetClassNew, loan.Vehicle)
+	if loan.AssetClass != canonical.AssetClassRealEstate || loan.Vehicle != canonical.VehicleMortgage {
+		t.Errorf("loan pair = (%q,%q), want (real_estate,mortgage)", loan.AssetClass, loan.Vehicle)
 	}
 	if loan.MarketValue == nil || loan.MarketValue.StringFixed(2) != "-800.00" {
 		t.Errorf("loan market_value = %v, want -800.00 (liability negated)", loan.MarketValue)

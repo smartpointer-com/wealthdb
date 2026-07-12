@@ -198,12 +198,12 @@ def report_models():
             vals = ", ".join(f"value_{c} / peak.peak_{c} * 100 AS value_{c}"
                              for c in ("usd", "chf", "eur"))
         peak = f", {NW_PEAK}" if pct else ""
-        # asset_class_new is the 2-D exposure (TAXONOMY.md); the cash
+        # asset_class is the 2-D exposure (TAXONOMY.md); the cash
         # union uses the literal 'cash' exposure, so money-market-fund
-        # positions (asset_class_new='cash') and the cash balances sum
+        # positions (asset_class=cash) and the cash balances sum
         # together under one 'cash' class, as they should.
         return (f"WITH u AS ("
-                f"SELECT as_of_day, silver_source_id, asset_class_new AS asset_class, "
+                f"SELECT as_of_day, silver_source_id, asset_class, "
                 f"sum(value_usd) AS value_usd, sum(value_chf) AS value_chf, "
                 f"sum(value_eur) AS value_eur "
                 f"FROM report_positions_history_multi() GROUP BY 1, 2, 3 "
@@ -833,7 +833,7 @@ def question_defs(db_id, mid):
                   {"aggregation": [["sum", _dec("value_usd")]],
                    "breakout": [_f("symbol", "type/Text"),
                                 _f("name", "type/Text"),
-                                _f("asset_class_new", "type/Text"),
+                                _f("asset_class", "type/Text"),
                                 _f("vehicle", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 100}),
@@ -1220,7 +1220,7 @@ def dashboard_parameters(model_ids, mode):
                  "values_source_type": "card",
                  "values_source_config": {
                      "card_id": model_ids["report_positions_history"],
-                     "value_field": ["field", "asset_class_new",
+                     "value_field": ["field", "asset_class",
                                      {"base-type": "type/Text"}]}}]
     return [
         # "past12months~": the trailing ~ means "include this month".
@@ -1549,7 +1549,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                 maps.append({"parameter_id": ASSET_PARAM_ID,
                              "card_id": card_ids[card],
                              "target": ["dimension",
-                                        _f("asset_class_new", "type/Text")]})
+                                        _f("asset_class", "type/Text")]})
             return maps
 
         # The switch link occupies row 0, so the tiles shift down one row.

@@ -115,18 +115,18 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	if len(byKey) != 2 {
 		t.Fatalf("positions = %d, want 2", len(byKey))
 	}
-	// I1 keyed by ISIN, Stocks→equity, 1000×0.6 = 600.
+	// I1 keyed by ISIN, Stocks→public_equity (fund wrapper), 1000×0.6 = 600.
 	i1 := byKey["CH0000000001"]
-	if i1.AssetClass != canonical.AssetClassEquity {
-		t.Errorf("I1 asset_class = %q, want equity", i1.AssetClass)
+	if i1.AssetClass != canonical.AssetClassPublicEquity {
+		t.Errorf("I1 asset_class = %q, want public_equity", i1.AssetClass)
 	}
 	if i1.MarketValue == nil || i1.MarketValue.String() != "600" {
 		t.Errorf("I1 market_value = %v, want 600", i1.MarketValue)
 	}
-	// I2 keyed by internal id (no ISIN), default→fund, 1000×0.4 = 400.
+	// I2 keyed by internal id (no ISIN), default label→multi_asset, 1000×0.4 = 400.
 	i2 := byKey["I2"]
-	if i2.AssetClass != canonical.AssetClassFund {
-		t.Errorf("I2 asset_class = %q, want fund", i2.AssetClass)
+	if i2.AssetClass != canonical.AssetClassMultiAsset {
+		t.Errorf("I2 asset_class = %q, want multi_asset", i2.AssetClass)
 	}
 	if i2.MarketValue == nil || i2.MarketValue.String() != "400" {
 		t.Errorf("I2 market_value = %v, want 400", i2.MarketValue)

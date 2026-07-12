@@ -229,8 +229,7 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		info := meta[eid]
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentID(eid),
-			AssetClass:           classes[eid],    // same legacy class its position carries
-			AssetClassNew:        classesNew[eid], // 2-D taxonomy: same pair its position carries
+			AssetClass:           classesNew[eid], // 2-D taxonomy: same pair its position carries
 			Vehicle:              vehicles[eid],
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
@@ -368,8 +367,7 @@ SELECT entity_external_id, security_type, security_external_id,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(eid),
 			InstrumentExternalID: &instKey,
-			AssetClass:           class,
-			AssetClassNew:        classNew,
+			AssetClass:           classNew,
 			Vehicle:              vehicle,
 			Currency:             a.ccy,
 			Payload:              json.RawMessage(payload),
@@ -432,8 +430,7 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(entityID),
 			InstrumentExternalID: &instKey,
-			AssetClass:           canonical.AssetClassPrivateFund,
-			AssetClassNew:        canonical.AssetClassPrivateEquity,
+			AssetClass:           canonical.AssetClassPrivateEquity,
 			Vehicle:              canonical.VehicleFund,
 			Currency:             ccy,
 			Payload:              json.RawMessage(payload),

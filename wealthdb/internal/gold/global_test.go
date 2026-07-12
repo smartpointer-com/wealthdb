@@ -33,8 +33,8 @@ func TestGlobalAsOfRollup(t *testing.T) {
 
 	inTx(t, db, ctx, func(w *Writer) error {
 		if err := w.InsertPositions(ctx, []canonical.PositionChange{
-			{SilverSourceID: "src1", SnapshotAt: 1000, AccountExternalID: "ACC1", PositionKey: "AAPL", AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: &pos1},
-			{SilverSourceID: "src2", SnapshotAt: 2000, AccountExternalID: "ACC2", PositionKey: "MSFT", AssetClass: canonical.AssetClassEquity, Currency: "USD", MarketValue: &pos2},
+			{SilverSourceID: "src1", SnapshotAt: 1000, AccountExternalID: "ACC1", PositionKey: "AAPL", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: &pos1},
+			{SilverSourceID: "src2", SnapshotAt: 2000, AccountExternalID: "ACC2", PositionKey: "MSFT", AssetClass: canonical.AssetClassPublicEquity, Vehicle: canonical.VehicleStock, Currency: "USD", MarketValue: &pos2},
 		}); err != nil {
 			return err
 		}
