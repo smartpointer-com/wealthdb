@@ -17,21 +17,21 @@ import (
 //
 // Composition rules (api + web configured):
 //
-//   Snapshots
-//     - Live positions, cash balances, fx rates, and instrument
-//       dimensions come from api.
-//     - Web emits AccountChange rows (rewritten to api hashValue)
-//       so its `nickname` flows into gold via per-column upsert.
-//     - Web's historical position snapshots and historical cash
-//       balances stream alongside api's live ones — different
-//       snapshot timestamps (statement period-ends vs live dump
-//       times) so they coexist under the gold PK.
+//	Snapshots
+//	  - Live positions, cash balances, fx rates, and instrument
+//	    dimensions come from api.
+//	  - Web emits AccountChange rows (rewritten to api hashValue)
+//	    so its `nickname` flows into gold via per-column upsert.
+//	  - Web's historical position snapshots and historical cash
+//	    balances stream alongside api's live ones — different
+//	    snapshot timestamps (statement period-ends vs live dump
+//	    times) so they coexist under the gold PK.
 //
-//   Transactions
-//     - Hard cut at per-account api-coverage-start. Web emits
-//       only timestamps strictly below that cutoff. api emits
-//       unfiltered above. INTEROP §2 documents why a per-row
-//       merge across the boundary isn't safe.
+//	Transactions
+//	  - Hard cut at per-account api-coverage-start. Web emits
+//	    only timestamps strictly below that cutoff. api emits
+//	    unfiltered above. INTEROP §2 documents why a per-row
+//	    merge across the boundary isn't safe.
 //
 // Account identity: web stores the 3-to-5-digit account suffix;
 // api stores Schwab's opaque hashValue. The orchestrator builds
@@ -46,15 +46,15 @@ type Connection struct {
 	// bridge resolves web account_external_id (suffix) → api
 	// account_external_id (hashValue). Built lazily on first
 	// Status/Snapshots/Transactions call.
-	bridge       map[string]string
-	bridgeBuilt  bool
-	bridgeErr    error
+	bridge      map[string]string
+	bridgeBuilt bool
+	bridgeErr   error
 
 	// apiStartByHash caches per-api-account MIN(timestamp) for
 	// the transactions splice. Same lazy-build pattern as bridge.
-	apiStartByHash    map[string]int64
-	apiStartBuilt     bool
-	apiStartErr       error
+	apiStartByHash map[string]int64
+	apiStartBuilt  bool
+	apiStartErr    error
 
 	// symbolToCUSIP resolves a ticker (the schwab-web silver's
 	// instrument_key) to the matching CUSIP (the schwab-api
@@ -63,9 +63,9 @@ type Connection struct {
 	// instruments row the api side registered — so the symbol /
 	// name / asset_class columns populate via the LEFT JOIN
 	// without a second instrument-emit on the web side.
-	symbolToCUSIP    map[string]string
+	symbolToCUSIP     map[string]string
 	symbolBridgeBuilt bool
-	symbolBridgeErr  error
+	symbolBridgeErr   error
 }
 
 // Close releases both readers. Safe to call multiple times.

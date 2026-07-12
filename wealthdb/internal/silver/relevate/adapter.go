@@ -30,15 +30,15 @@
 // Account taxonomy:
 //
 //   - AccountKind:      brokerage (Pillar-2 vested benefits
-//                       holds investible securities, not just
-//                       deposit cash).
+//     holds investible securities, not just
+//     deposit cash).
 //   - TaxWrapper:       vested_benefits (the Swiss canonical
-//                       enum value for Pillar-2 in transit /
-//                       Freizügigkeit).
+//     enum value for Pillar-2 in transit /
+//     Freizügigkeit).
 //   - ManagementStyle:  self_directed. Relevate offers a fixed
-//                       menu of pre-defined strategies; the
-//                       account holder picks one. No advisor
-//                       discretion.
+//     menu of pre-defined strategies; the
+//     account holder picks one. No advisor
+//     discretion.
 package relevate
 
 import (

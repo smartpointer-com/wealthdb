@@ -132,12 +132,12 @@ func (c *apiReader) scanInstrumentDescriptions(ctx context.Context, out map[stri
 // comparison works between, say, "VANGUARD TOTAL STOCK MKT ETF"
 // and "Vanguard Total Stock Market".
 //
-//	- Uppercase the entire string.
-//	- Strip everything that's not an ASCII letter or digit
-//	  (whitespace, ampersands, punctuation, parens).
-//	- Strip common asset-class / type suffixes so they don't
-//	  perturb the match: ETF, FUND, TRUST, INC, CO, LTD,
-//	  CORP, COMPANY, CL[A-Z], CLASS[A-Z].
+//   - Uppercase the entire string.
+//   - Strip everything that's not an ASCII letter or digit
+//     (whitespace, ampersands, punctuation, parens).
+//   - Strip common asset-class / type suffixes so they don't
+//     perturb the match: ETF, FUND, TRUST, INC, CO, LTD,
+//     CORP, COMPANY, CL[A-Z], CLASS[A-Z].
 //
 // Empty input returns "". The function is symmetric — the
 // caller normalises both sides before comparing.

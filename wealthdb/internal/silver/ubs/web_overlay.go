@@ -89,4 +89,3 @@ SELECT snapshot_at, account_external_id, currency_iso, payload
 	}
 	return out, rows.Err()
 }
-

@@ -47,12 +47,12 @@ func TestSpliceNonExternalToJSON(t *testing.T) {
 		// JSON defines account A's coverage span [100, 200].
 		wtx("jA-lo", js, canonical.TxKindBuy, "A", 100, -500),
 		wtx("jA-hi", js, canonical.TxKindSell, "A", 200, 500),
-		wtx("pA-before", pdf, canonical.TxKindBuy, "A", 50, -100),   // pre-span backfill → kept
-		wtx("pA-in", pdf, canonical.TxKindBuy, "A", 150, -100),      // in span → dropped
-		wtx("pA-onlo", pdf, canonical.TxKindDividend, "A", 100, 10), // on boundary → dropped
-		wtx("pA-after", pdf, canonical.TxKindBuy, "A", 250, -100),   // past span → kept
+		wtx("pA-before", pdf, canonical.TxKindBuy, "A", 50, -100),         // pre-span backfill → kept
+		wtx("pA-in", pdf, canonical.TxKindBuy, "A", 150, -100),            // in span → dropped
+		wtx("pA-onlo", pdf, canonical.TxKindDividend, "A", 100, 10),       // on boundary → dropped
+		wtx("pA-after", pdf, canonical.TxKindBuy, "A", 250, -100),         // past span → kept
 		wtx("pA-extin", pdf, canonical.TxKindWithdrawal, "A", 150, -1000), // external in span → kept (dedup handles it)
-		wtx("pB", pdf, canonical.TxKindBuy, "B", 150, -100),         // account B has no JSON → kept
+		wtx("pB", pdf, canonical.TxKindBuy, "B", 150, -100),               // account B has no JSON → kept
 	}
 	got := builtIDs(spliceNonExternalToJSON(in))
 	wantKept := []string{"jA-lo", "jA-hi", "pA-before", "pA-after", "pA-extin", "pB"}

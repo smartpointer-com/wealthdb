@@ -67,10 +67,10 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 	var out []PortfolioRow
 	for rows.Next() {
 		var (
-			r                                       PortfolioRow
-			displayName, baseCcy, relID, nickname   sql.NullString
-			taxWrapper, mgmtStyle                   sql.NullString
-			pvb, cvb, tvb, pvo, cvo, tvo            sql.NullString
+			r                                     PortfolioRow
+			displayName, baseCcy, relID, nickname sql.NullString
+			taxWrapper, mgmtStyle                 sql.NullString
+			pvb, cvb, tvb, pvo, cvo, tvo          sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.PortfolioExternalID,

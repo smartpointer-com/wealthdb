@@ -140,19 +140,19 @@ func joinColumnNames[T any](registry []columnSpec[T]) string {
 // drives privacy mode's per-format behaviour:
 //
 //   - table        — redacted cells render as visible placeholders
-//                    ("****1234" / "***" / "*****.**") so the
-//                    eye can still scan rows.
+//     ("****1234" / "***" / "*****.**") so the
+//     eye can still scan rows.
 //   - csv / csv_plain — quantity / money cells render empty
-//                       (",," between separators) so downstream
-//                       parsers see "missing" rather than the
-//                       literal asterisks. Account-ID columns
-//                       still render the visible placeholder so
-//                       row identity is preserved for grep / awk.
+//     (",," between separators) so downstream
+//     parsers see "missing" rather than the
+//     literal asterisks. Account-ID columns
+//     still render the visible placeholder so
+//     row identity is preserved for grep / awk.
 //   - json         — quantity / money columns are DROPPED from
-//                    the output entirely (the keys don't appear)
-//                    so JSON consumers see only fields they're
-//                    allowed to know. Account-ID columns still
-//                    surface the visible placeholder.
+//     the output entirely (the keys don't appear)
+//     so JSON consumers see only fields they're
+//     allowed to know. Account-ID columns still
+//     surface the visible placeholder.
 //
 // `privacy` is false ⇒ no redaction regardless of format.
 func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format output.Format) output.Table {
@@ -205,9 +205,9 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 //   - table:     visible placeholder ("***" / "*****.**")
 //   - csv*:      empty string ⇒ ",," between separators
 //   - json:      empty string (the caller in rowsToTable has
-//                already dropped the column from the JSON output
-//                so this branch isn't reached for JSON, but
-//                returning "" is the safe fallback).
+//     already dropped the column from the JSON output
+//     so this branch isn't reached for JSON, but
+//     returning "" is the safe fallback).
 //
 // AccountID is always the visible placeholder — every format
 // needs row-identity to remain scannable.
@@ -250,10 +250,10 @@ func applyPrivacy(value string, class PrivacyClass, format output.Format) string
 //     content is taxonomy, not identifier.
 //   - Trailing-slice length scales down with the input so very
 //     short IDs don't reveal a guessable amount:
-//         length ≥ 8  → last 4
-//         length 6-7  → last 3
-//         length 4-5  → last 2
-//         length ≤ 3  → fully starred
+//     length ≥ 8  → last 4
+//     length 6-7  → last 3
+//     length 4-5  → last 2
+//     length ≤ 3  → fully starred
 //   - Output length always matches the input. The redacted form
 //     is visually a drop-in replacement for the original so
 //     column widths and eyeball-scan shape are preserved

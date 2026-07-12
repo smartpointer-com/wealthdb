@@ -41,8 +41,8 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, mid, payload
 	)
 	for rows.Next() {
 		var (
-			snap                            int64
-			base, quote, mid, payload       string
+			snap                      int64
+			base, quote, mid, payload string
 		)
 		if err := rows.Scan(&snap, &base, &quote, &mid, &payload); err != nil {
 			return nil, fmt.Errorf("fred Snapshots scan: %w", err)

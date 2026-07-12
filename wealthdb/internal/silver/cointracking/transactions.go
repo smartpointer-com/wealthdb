@@ -13,43 +13,43 @@ import (
 // Transactions projects every silver transactions row in the
 // window into one or two canonical TransactionChange records:
 //
-//   Trade where one side is the portfolio's base currency
-//     → 1 row (kind=buy or kind=sell). Instrument = the non-base
-//       side; Quantity = signed amount; NetAmount = signed base-
-//       currency cash flow.
+//	Trade where one side is the portfolio's base currency
+//	  → 1 row (kind=buy or kind=sell). Instrument = the non-base
+//	    side; Quantity = signed amount; NetAmount = signed base-
+//	    currency cash flow.
 //
-//   Trade where neither side is the base currency (crypto-to-
-//   crypto or fiat-to-fiat-without-base)
-//     → 2 rows (kind=sell of sell-leg + kind=buy of buy-leg).
-//       NetAmount on both legs = ±V where V is the per-trade
-//       base-currency value, computed via the sell-side price
-//       lookup with a buy-side fallback. The two NetAmounts
-//       cancel so base-currency balance derived from SUM is
-//       unaffected by the trade.
+//	Trade where neither side is the base currency (crypto-to-
+//	crypto or fiat-to-fiat-without-base)
+//	  → 2 rows (kind=sell of sell-leg + kind=buy of buy-leg).
+//	    NetAmount on both legs = ±V where V is the per-trade
+//	    base-currency value, computed via the sell-side price
+//	    lookup with a buy-side fallback. The two NetAmounts
+//	    cancel so base-currency balance derived from SUM is
+//	    unaffected by the trade.
 //
-//   Non-Trade types (Deposit, Withdrawal, Other Fee, Staking,
-//   Reward / Bonus, Income, Income/Expense (non taxable),
-//   Airdrop, Gift / Tip, Gift, Donation, Spend, Lost, Stolen)
-//     → 1 row per the CT-type-to-canonical-TxKind mapping in
-//       kindmap.go. Currency = the asset that actually moved
-//       (not the portfolio's base ccy), NetAmount = ±amount in
-//       that currency, signed by direction. For non-base assets
-//       the row also carries Instrument=ticker + Quantity=
-//       ±amount so position-side rollups keyed on Instrument
-//       work too; base-currency cash events leave Instrument /
-//       Quantity NULL (cash-flow-only).
+//	Non-Trade types (Deposit, Withdrawal, Other Fee, Staking,
+//	Reward / Bonus, Income, Income/Expense (non taxable),
+//	Airdrop, Gift / Tip, Gift, Donation, Spend, Lost, Stolen)
+//	  → 1 row per the CT-type-to-canonical-TxKind mapping in
+//	    kindmap.go. Currency = the asset that actually moved
+//	    (not the portfolio's base ccy), NetAmount = ±amount in
+//	    that currency, signed by direction. For non-base assets
+//	    the row also carries Instrument=ticker + Quantity=
+//	    ±amount so position-side rollups keyed on Instrument
+//	    work too; base-currency cash events leave Instrument /
+//	    Quantity NULL (cash-flow-only).
 //
-//       Setting Currency to the asset (e.g. ETH for a staking
-//       row) lets the gold layer compute value_USD by joining
-//       NetAmount against the asset's USD price on the event
-//       date. The Instrument==Currency overlap is excluded from
-//       the standard balance-derivation formula (see invariant
-//       below) so this doesn't double-count.
+//	    Setting Currency to the asset (e.g. ETH for a staking
+//	    row) lets the gold layer compute value_USD by joining
+//	    NetAmount against the asset's USD price on the event
+//	    date. The Instrument==Currency overlap is excluded from
+//	    the standard balance-derivation formula (see invariant
+//	    below) so this doesn't double-count.
 //
 // Closing-balance invariant — for any asset C held in a portfolio:
 //
-//   balance(C) = SUM(Quantity  WHERE Instrument = C)
-//              + SUM(NetAmount WHERE Currency   = C)
+//	balance(C) = SUM(Quantity  WHERE Instrument = C)
+//	           + SUM(NetAmount WHERE Currency   = C)
 //
 // holds across all emitted rows. The portfolios' positions_daily
 // in silver is the reference; gold transactions reconstruct the
@@ -93,10 +93,10 @@ SELECT
 	out := canonical.TransactionBatch{}
 	for rows.Next() {
 		var (
-			txID, portfolioID, walletID, ctType                string
-			buyCcy, sellCcy, feeCcy                            string
-			occurredAt                                         int64
-			buyAmtStr, sellAmtStr, feeAmtStr, payload          sql.NullString
+			txID, portfolioID, walletID, ctType       string
+			buyCcy, sellCcy, feeCcy                   string
+			occurredAt                                int64
+			buyAmtStr, sellAmtStr, feeAmtStr, payload sql.NullString
 		)
 		if err := rows.Scan(&txID, &portfolioID, &walletID, &occurredAt,
 			&ctType, &buyAmtStr, &buyCcy, &sellAmtStr, &sellCcy,
@@ -299,11 +299,11 @@ func (c *Connection) lookupTradeValue(
 // `base` currency as of `occurredAt`. Hierarchy mirrors
 // snapshots.go's appendPositions:
 //
-//   1. portfolio_prices for (portfolio, instrument, base) — the
-//      latest entry on or before the trade date.
-//   2. coin_prices for (instrument) — only when base = USD.
-//   3. Trivial 1.0 when instrument == base.
-//   4. nil otherwise.
+//  1. portfolio_prices for (portfolio, instrument, base) — the
+//     latest entry on or before the trade date.
+//  2. coin_prices for (instrument) — only when base = USD.
+//  3. Trivial 1.0 when instrument == base.
+//  4. nil otherwise.
 func (c *Connection) lookupUnitPrice(
 	ctx context.Context, portfolioID, instrument, base string, occurredAt int64,
 ) (*canonical.Decimal, error) {

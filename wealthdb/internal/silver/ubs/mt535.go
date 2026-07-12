@@ -41,8 +41,8 @@ type mt535Money struct {
 
 // mt535Qty is one parsed 93B entry.
 type mt535Qty struct {
-	Qualifier string            // AGGR, AVAI, ...
-	Format    string            // UNIT, FAMT, AMOR
+	Qualifier string // AGGR, AVAI, ...
+	Format    string // UNIT, FAMT, AMOR
 	Amount    canonical.Decimal
 }
 
@@ -104,9 +104,9 @@ func parse93B(raw []string) []mt535Qty {
 // (otherwise routed to the "XXX" sentinel).
 func findHoldEntry(amounts []mt535Money, preferredCurrency string) (canonical.Decimal, string, bool) {
 	var (
-		fallbackAmt    canonical.Decimal
-		fallbackCcy    string
-		hasFallback    bool
+		fallbackAmt canonical.Decimal
+		fallbackCcy string
+		hasFallback bool
 	)
 	for _, a := range amounts {
 		if a.Qualifier != "HOLD" {
@@ -150,9 +150,9 @@ func findQuantity(qtys []mt535Qty) (canonical.Decimal, bool) {
 // of the trailing terminator comma; here we only need to swap
 // the embedded comma for a dot.
 //
-//   "1500000"     → 1500000
-//   "150,123456"  → 150.123456
-//   "60,839"      → 60.839
+//	"1500000"     → 1500000
+//	"150,123456"  → 150.123456
+//	"60,839"      → 60.839
 func parseSwiftDecimal(s string) (canonical.Decimal, error) {
 	s = strings.ReplaceAll(s, ",", ".")
 	return canonical.NewDecimalFromString(s)

@@ -7,9 +7,9 @@ import (
 
 func TestNewDecimalFromString(t *testing.T) {
 	cases := []struct {
-		in      string
-		ok      bool
-		canon   string // canonical form expected from String()
+		in    string
+		ok    bool
+		canon string // canonical form expected from String()
 	}{
 		{"0", true, "0"},
 		{"1.5", true, "1.5"},

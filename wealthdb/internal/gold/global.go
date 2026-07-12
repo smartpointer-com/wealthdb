@@ -32,7 +32,7 @@ type GlobalRow struct {
 // `global` == Σ `accounts`. See migration 0021.
 func GlobalAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) (GlobalRow, error) {
 	var (
-		g                     GlobalRow
+		g                      GlobalRow
 		cash, positions, total sql.NullString
 	)
 	err := db.QueryRowContext(ctx,

@@ -48,7 +48,7 @@ func cmdWebConfig(_ context.Context, g globalFlags, _ []string, _ io.Reader, std
 
 // shellSingleQuote wraps s in single quotes for safe `eval` in a
 // POSIX shell, escaping embedded single quotes the standard way
-// ('\'' closes the quote, adds a literal ', reopens).
+// ('\” closes the quote, adds a literal ', reopens).
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

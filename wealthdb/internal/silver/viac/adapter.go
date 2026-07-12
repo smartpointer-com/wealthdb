@@ -5,9 +5,9 @@
 // Single-source CHF-only adapter. Notable shapes:
 //
 //   - Accounts split by silver `product_code`:
-//        '3' → Pillar 3a            → tax_wrapper = pillar_3a
-//        '2' → Vested benefits      → tax_wrapper = vested_benefits
-//        '1' → Free investment      → tax_wrapper = taxable_personal
+//     '3' → Pillar 3a            → tax_wrapper = pillar_3a
+//     '2' → Vested benefits      → tax_wrapper = vested_benefits
+//     '1' → Free investment      → tax_wrapper = taxable_personal
 //     (Other codes fall through to taxable_personal.)
 //
 //   - Management style is robo-managed across every VIAC product

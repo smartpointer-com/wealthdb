@@ -74,10 +74,10 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 	var out []AccountRow
 	for rows.Next() {
 		var (
-			a                                                      AccountRow
-			displayName, baseCcy, relID, nickname, category        sql.NullString
-			portfolio, taxWrapper, mgmtStyle                       sql.NullString
-			pvb, cvb, tvb, pvo, cvo, tvo                           sql.NullString
+			a                                               AccountRow
+			displayName, baseCcy, relID, nickname, category sql.NullString
+			portfolio, taxWrapper, mgmtStyle                sql.NullString
+			pvb, cvb, tvb, pvo, cvo, tvo                    sql.NullString
 		)
 		if err := rows.Scan(
 			&a.SilverSourceID, &a.AccountExternalID, &a.AccountKind,

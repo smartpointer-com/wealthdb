@@ -74,4 +74,3 @@ func (l *Loader) ListSourceIDs(ctx context.Context) ([]string, error) {
 	}
 	return out, rows.Err()
 }
-

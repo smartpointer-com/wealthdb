@@ -49,14 +49,14 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 // --- per-kind payload structs ---------------------------------------------
 
 type tradeConfirmationPayload struct {
-	Side                 string             `json:"side"`
-	ISIN                 string             `json:"isin"`
-	GrossAmount          *canonical.Decimal `json:"gross_amount"`
-	NetAmount            *canonical.Decimal `json:"net_amount"`
-	NetCurrency          string             `json:"net_currency"`
-	Price                *canonical.Decimal `json:"price"`
-	Quantity             *canonical.Decimal `json:"quantity"`
-	CashAccountExternalID string            `json:"cash_account_external_id"`
+	Side                  string             `json:"side"`
+	ISIN                  string             `json:"isin"`
+	GrossAmount           *canonical.Decimal `json:"gross_amount"`
+	NetAmount             *canonical.Decimal `json:"net_amount"`
+	NetCurrency           string             `json:"net_currency"`
+	Price                 *canonical.Decimal `json:"price"`
+	Quantity              *canonical.Decimal `json:"quantity"`
+	CashAccountExternalID string             `json:"cash_account_external_id"`
 }
 
 type cashMovementPayload struct {
