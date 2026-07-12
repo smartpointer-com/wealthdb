@@ -11,7 +11,6 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/loader"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -95,19 +94,11 @@ or below the high watermark. Reload forces a full re-projection.`)
 		return errs.Newf(2, "reload: expected one silver_source_id or -a")
 	}
 
-	// Reload is RW (combines reset + load).
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'reload' requires write access to the gold database, but '%s' is read-only (detected: %s).",
-			cfg.GoldDB, dec.Reason)
+	// Reload is RW (combines reset + load). Gate here; the fresh-swap
+	// and in-place paths each open the DB themselves.
+	if err := gateGoldForWrite(g, cfg, "reload",
+		"gold database %q does not exist. Run 'wealthdb init' first (requires write access)."); err != nil {
+		return err
 	}
 
 	// Default '-a': build a fresh file from scratch and swap it in.

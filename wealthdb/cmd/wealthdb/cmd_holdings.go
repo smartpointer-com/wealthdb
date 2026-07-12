@@ -14,7 +14,7 @@ func init() {
 
 // holdingsViews are the point-in-time portfolio views, grouped under
 // `wealthdb holdings` so the top-level command surface stays small as
-// more report families land (e.g. a future `wealthdb returns`). They
+// more report families land (e.g. the sibling `wealthdb returns`). They
 // share one flag idiom (-d / -f / -x / --fx-mode / -p, plus -C on all
 // but global) and their totals reconcile: global == Σ sources ==
 // Σ portfolios == Σ accounts == positions --with-cash.

@@ -10,7 +10,6 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -43,22 +42,9 @@ don't" debugging.`)
 		return err
 	}
 
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	db, err := openGoldForRead(g, cfg)
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-
-	openMode := gold.ModeReadWrite
-	if dec.Mode == pathmode.ModeReadOnly {
-		openMode = gold.ModeReadOnly
-	}
-	db, err := gold.Open(cfg.GoldDB, openMode)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
 	defer db.Close()
 

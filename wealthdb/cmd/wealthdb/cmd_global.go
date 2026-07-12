@@ -6,11 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
-	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
@@ -25,15 +21,13 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 	fs := flag.NewFlagSet("wealthdb holdings global", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	asOf := fs.String("d", "", "as-of date (YYYY-MM-DD; default today UTC)")
-	fs.StringVar(asOf, "as-of", "", "as-of date (YYYY-MM-DD; default today UTC)")
-	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
-	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
-	currency := fs.String("x", "", "output currency for the _<CCY> columns (default: config.default_currency)")
-	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)")
-	privacy := fs.Bool("p", false, "redact the monetary amounts in the output")
-	fs.BoolVar(privacy, "privacy", false, "redact the monetary amounts in the output")
+	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
+		cmd:            "global",
+		currencyUsage:  "output currency for the _<CCY> columns (default: config.default_currency)",
+		fxModeUsage:    "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)",
+		privacyUsage:   "redact the monetary amounts in the output",
+		fxModeWantHint: true,
+	})
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, globalCmdUsage())
 	}
@@ -48,47 +42,24 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 		return errs.Newf(2, "global: unexpected positional argument %q", fs.Arg(0))
 	}
 
-	mode := canonical.FxMode(*fxMode)
-	if !mode.Valid() {
-		return errs.Newf(2, "global: invalid --fx-mode %q (want 'historic' or 'current')", *fxMode)
-	}
-
-	fmtChoice, err := output.Parse(*format)
-	if err != nil {
-		return errs.Newf(2, "global: %s", err.Error())
-	}
-
-	asOfEpoch, err := parseAsOf(*asOf, time.Now())
-	if err != nil {
-		return errs.Newf(2, "global: %s", err.Error())
-	}
-
-	cfg, err := config.Load(g.ConfigPath)
+	hv, err := hf.resolve(g)
 	if err != nil {
 		return err
 	}
 
-	outCcy := strings.ToUpper(*currency)
-	if outCcy == "" {
-		outCcy = cfg.DefaultCurrency
-	}
-	if len(outCcy) != 3 {
-		return errs.Newf(2, "global: invalid -x/--currency %q (want a 3-letter ISO 4217 code)", outCcy)
-	}
-
-	db, err := openGoldForRead(g, cfg)
+	db, err := openGoldForRead(g, hv.cfg)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	row, err := gold.GlobalAsOf(ctx, db, asOfEpoch, outCcy, mode)
+	row, err := gold.GlobalAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
 	if err != nil {
 		return err
 	}
 
-	cols := buildGlobalColumnRegistry(outCcy)
-	return writeFormatted(stdout, fmtChoice, rowsToTable([]gold.GlobalRow{row}, cols, *privacy, fmtChoice))
+	cols := buildGlobalColumnRegistry(hv.outCcy)
+	return writeFormatted(stdout, hv.fmtChoice, rowsToTable([]gold.GlobalRow{row}, cols, *hf.privacy, hv.fmtChoice))
 }
 
 // buildGlobalColumnRegistry is the fixed five-column shape of the

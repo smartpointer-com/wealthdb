@@ -87,6 +87,11 @@ var tickerShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
 // tickers don't look like this.
 var isinShapeRe = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{9}[0-9]$`)
 
+// thinkBlockRe matches deepseek-style <think>...</think> reasoning
+// blocks. (?s) lets . span newlines and .*? stays non-greedy so
+// stacked / interleaved blocks each strip individually.
+var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
 // cmdResolveSymbols collects rows from gold that the silver
 // adapters couldn't ticker-resolve, calls the configured LLM
 // endpoint with a CSV-shaped prompt, validates the response, and
@@ -644,8 +649,7 @@ type openAIMessage struct {
 type openAIResponse struct {
 	Choices []struct {
 		Message struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content,omitempty"`
+			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Error *struct {
@@ -790,8 +794,7 @@ func truncate(s string, n int) string {
 // thinkingFormat=deepseek emit them inline; the CSV body follows.
 // We strip non-greedily to handle stacked / interleaved blocks.
 func stripThinkingBlocks(s string) string {
-	re := regexp.MustCompile(`(?s)<think>.*?</think>`)
-	return strings.TrimSpace(re.ReplaceAllString(s, ""))
+	return strings.TrimSpace(thinkBlockRe.ReplaceAllString(s, ""))
 }
 
 // ---- prompt assembly -------------------------------------------------------

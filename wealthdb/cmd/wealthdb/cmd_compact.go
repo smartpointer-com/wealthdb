@@ -16,7 +16,6 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -68,19 +67,11 @@ then discards it without touching the live DB.`)
 	}
 
 	// Compact rewrites the gold file in place (via swap); it needs the
-	// same RW + existence gating as reset / reload.
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Nothing to compact.", cfg.GoldDB)
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'compact' requires write access to the gold database, but '%s' is read-only (detected: %s).",
-			cfg.GoldDB, dec.Reason)
+	// same RW + existence gating as reset / reload, but opens nothing
+	// here — the rewrite ATTACHes the live DB read-only.
+	if err := gateGoldForWrite(g, cfg, "compact",
+		"gold database %q does not exist. Nothing to compact."); err != nil {
+		return err
 	}
 
 	build := compactBuild(ctx, cfg.GoldDB)

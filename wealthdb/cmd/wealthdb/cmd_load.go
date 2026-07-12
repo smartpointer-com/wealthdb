@@ -11,7 +11,6 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/loader"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -78,24 +77,11 @@ load semantics.`)
 		return errs.Newf(2, "load: expected one silver_source_id or -a")
 	}
 
-	// Mode detection. load is RW.
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	// load mutates the live gold file: gate for write, then open RW.
+	db, err := openGoldForWrite(g, cfg, "load",
+		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'load' requires write access to the gold database, but '%s' is read-only (detected: %s).",
-			cfg.GoldDB, dec.Reason)
-	}
-
-	db, err := gold.Open(cfg.GoldDB, gold.ModeReadWrite)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
 	defer db.Close()
 
@@ -104,11 +90,7 @@ load semantics.`)
 	for _, spec := range specs {
 		res, err := ld.Load(ctx, spec)
 		if err != nil {
-			if errors.Is(err, loader.ErrSilverWentBackwards) {
-				fmt.Fprintf(stderr, "load: %s: %s\n", spec.ID, err.Error())
-			} else {
-				fmt.Fprintf(stderr, "load: %s: %s\n", spec.ID, err.Error())
-			}
+			fmt.Fprintf(stderr, "load: %s: %s\n", spec.ID, err.Error())
 			if firstErr == nil {
 				firstErr = err
 			}

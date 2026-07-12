@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -34,24 +32,12 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 
-	// Mode detection mirrors cmd_load: materialization is a write.
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	// Materialization mutates the live gold file: gate for write, then
+	// open RW (mirrors cmd_load).
+	db, err := openGoldForWrite(g, cfg, "web-materialize",
+		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Run 'wealthdb init' first (requires write access).", cfg.GoldDB)
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'web-materialize' requires write access to the gold database, but '%s' is read-only (detected: %s).",
-			cfg.GoldDB, dec.Reason)
-	}
-
-	db, err := gold.Open(cfg.GoldDB, gold.ModeReadWrite)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
 	defer db.Close()
 

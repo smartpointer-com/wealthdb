@@ -9,9 +9,7 @@ import (
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/loader"
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/pathmode"
 )
 
 func init() {
@@ -46,24 +44,11 @@ scratch for that source.`)
 		return err
 	}
 
-	// Mode + DB-existence gating. Reset is RW.
-	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
+	// Reset mutates the live gold file: gate for write, then open RW.
+	db, err := openGoldForWrite(g, cfg, "reset",
+		"gold database %q does not exist. Nothing to reset.")
 	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
-	}
-	if !dec.DBExists {
-		return errs.Newf(errs.ExitMissingDB,
-			"gold database %q does not exist. Nothing to reset.", cfg.GoldDB)
-	}
-	if dec.Mode != pathmode.ModeReadWrite {
-		return errs.Newf(errs.ExitRWNeeded,
-			"'reset' requires write access to the gold database, but '%s' is read-only (detected: %s).",
-			cfg.GoldDB, dec.Reason)
-	}
-
-	db, err := gold.Open(cfg.GoldDB, gold.ModeReadWrite)
-	if err != nil {
-		return errs.Wrap(errs.ExitOpenFailed, err)
+		return err
 	}
 	defer db.Close()
 
