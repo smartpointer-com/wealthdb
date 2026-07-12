@@ -21,7 +21,7 @@ func TestVehicleValid(t *testing.T) {
 	}
 }
 
-func TestAssetClassValidV2(t *testing.T) {
+func TestAssetClassValid(t *testing.T) {
 	for _, a := range []AssetClass{
 		AssetClassPublicEquity, AssetClassPrivateEquity, AssetClassFixedIncome,
 		AssetClassPrivateDebt, AssetClassRealEstate, AssetClassInfrastructure,
@@ -29,12 +29,13 @@ func TestAssetClassValidV2(t *testing.T) {
 		AssetClassForeignExchange, AssetClassHedgeFund, AssetClassMultiAsset,
 		AssetClassOther,
 	} {
-		if !a.ValidV2() {
-			t.Errorf("AssetClass(%q).ValidV2() = false, want true", a)
+		if !a.Valid() {
+			t.Errorf("AssetClass(%q).Valid() = false, want true", a)
 		}
 	}
-	// Legacy-only values are NOT valid V2 exposures — they are
-	// wrappers or blends that become (asset_class, vehicle) pairs.
+	// The adapters' intermediate 1-D labels are NOT exposure values —
+	// they are wrappers or blends that reach gold as (asset_class,
+	// vehicle) pairs, so Valid must reject them.
 	for _, a := range []AssetClass{
 		AssetClassEquity, AssetClassETF, AssetClassBondETF, AssetClassFund,
 		AssetClassBond, AssetClassOption, AssetClassFuture, AssetClassFxForward,
@@ -42,17 +43,9 @@ func TestAssetClassValidV2(t *testing.T) {
 		AssetClassSPV, AssetClassPrivateFund, AssetClassConvertibleNote,
 		AssetClassMortgage, "",
 	} {
-		if a.ValidV2() {
-			t.Errorf("AssetClass(%q).ValidV2() = true, want false (legacy-only)", a)
+		if a.Valid() {
+			t.Errorf("AssetClass(%q).Valid() = true, want false (intermediate-only)", a)
 		}
-	}
-	// The legacy Valid() set must be unchanged by the migration — the
-	// legacy column is a control. A V2-only value is not legacy-valid.
-	if AssetClassCash.Valid() {
-		t.Error("AssetClassCash.Valid() = true; cash is a V2-only value, must not be legacy-valid")
-	}
-	if !AssetClassEquity.Valid() {
-		t.Error("AssetClassEquity.Valid() = false; legacy set must still accept it")
 	}
 }
 

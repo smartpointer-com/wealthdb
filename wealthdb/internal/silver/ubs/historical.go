@@ -242,9 +242,9 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			isinPtr = &isinCopy
 		}
 		// Historical PDF securities carry no CFI/UAC and this path has
-		// no PSN-lookup access, so the legacy class is `other`; the 2-D
-		// pair mirrors that control as (other, other) rather than
-		// guessing an exposure from the description alone.
+		// no PSN-lookup access, so there is no classification signal;
+		// the pair defaults to (other, other) rather than guessing an
+		// exposure from the description alone.
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
 			AssetClass:           canonical.AssetClassOther,

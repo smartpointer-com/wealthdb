@@ -386,8 +386,8 @@ when implemented. The schema must not preclude them.
   current positions.
 
 The point of mentioning them now is to ensure the schema carries
-the columns these will need (`asset_class`, `acquisition_date`,
-`currency`, etc.) from day one.
+the columns these will need (`asset_class`, `vehicle`,
+`acquisition_date`, `currency`, etc.) from day one.
 
 ## 5. Configuration
 
@@ -456,7 +456,7 @@ Example config file:
     },
     "instrument_overrides": {
         "schwab-retail": {
-            "78463V107": {"asset_class": "metal"}
+            "78463V107": {"asset_class": "metal", "vehicle": "etf"}
         }
     },
     "web": { "enabled": true, "port": 3000 }
@@ -487,7 +487,7 @@ Example config file:
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
 | `account_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `account_external_id` (inner) carrying user-supplied per-account `nickname`, `category`, `tax_wrapper`, and/or `management_style` strings. See §13.9; all four inner fields are optional but at least one must be set per entry. `tax_wrapper` and `management_style` values are validated against the canonical enums (`internal/canonical/enums.go`) at config-load time. The loader applies overrides AFTER the adapter stamps its own values, so config wins on overlap. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument `asset_class` (the only field today; required per entry, validated against the canonical enum). For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds. The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 
 ### 5.2 `kind: "auto"`
@@ -683,7 +683,8 @@ type PositionChange struct {
     AccountExternalID     string
     PositionKey           string
     InstrumentExternalID  string  // "" if NULL in gold
-    AssetClass            string
+    AssetClass            string  // exposure (§7.2, TAXONOMY.md)
+    Vehicle               string  // wrapper (§7.2, TAXONOMY.md)
     Currency              string
     Quantity              *Decimal
     MarketValue           *Decimal
@@ -770,9 +771,9 @@ schema. It:
 - Knows which silver tables exist and what columns are promoted.
 - Projects each silver row into one or more canonical `*Change`
   records.
-- Picks the right `asset_class` enum value from per-bank type fields
-  (Schwab `assetType`, UBS SDFI `Tp` codes, Swissquote XLS section
-  headers).
+- Picks the `(asset_class, vehicle)` taxonomy pair from per-bank type
+  fields (Schwab `assetType`, UBS SDFI `Tp` codes, Swissquote XLS
+  section headers).
 - Handles per-bank identifier conventions (Schwab account hash, UBS
   relationship_id + IBAN/safekeeping code, Swissquote customer ID).
 - Decides whether a "position" in silver belongs in gold's `positions`
@@ -784,8 +785,9 @@ The main binary deliberately knows nothing about these mappings.
 ### 6.7 Per-bank adapter design docs
 
 Bank-specific mappings (which silver table feeds which gold table,
-how `asset_class` is derived per source, how `transactions.kind`
-maps from each bank's discriminator, identifier conventions,
+how the `(asset_class, vehicle)` pair is derived per source, how
+`transactions.kind` maps from each bank's discriminator, identifier
+conventions,
 deferred silver tables, open questions) live in their own files
 to keep this document focused on gold-side architecture:
 
@@ -806,19 +808,19 @@ A few rules apply to every adapter regardless of bank:
   in `payload`, rather than failing the load. `wealthdb status -v`
   reports the count of `other` rows per silver source so taxonomy
   drift is visible.
-- **Unrecognised `asset_class` source codes fall through to
-  `'other'`** with the raw code preserved in `payload`. Same
-  rationale.
+- **Unrecognised `asset_class` source codes fall through to the
+  `(other, other)` pair** with the raw code preserved in `payload`.
+  Same rationale.
 - **ETFs classify by underlying exposure, not by the wrapper.**
   Every adapter whose structured signal identifies an
   exchange-traded fund (UBS CFI group `CE`, Schwab
   `instrument.type = EXCHANGE_TRADED_FUND`, Swissquote's "ETFs"
-  section, fidelity-web's silver `etf` class) then refines the
-  class from the security name via the shared
-  `silver.RefineETFClass`: crypto ETFs/ETPs → `crypto`,
+  section, fidelity-web's silver `etf` class) sets `vehicle = etf`
+  and refines the exposure from the security name via the shared
+  `silver.RefineETFExposure`: crypto ETFs/ETPs → `crypto`,
   physical-metal ETFs/ETPs → `metal` (miners funds excluded —
-  they hold stocks), bond / fixed-income ETFs → `bond_etf`,
-  everything else stays `etf`. Products whose names don't give
+  they hold stocks), bond / fixed-income ETFs → `fixed_income`,
+  everything else → `public_equity`. Products whose names don't give
   away the exposure are pinned via the config's
   `instrument_overrides` (§5.1, §13.9).
 - **Deferred silver tables** — silver tables not yet projected
@@ -1010,23 +1012,20 @@ CREATE TABLE portfolios (
     FOREIGN KEY (silver_source_id) REFERENCES silver_sources(silver_source_id)
 );
 
--- asset_class values (canonical taxonomy):
---   'equity'              — common/preferred stock
---   'etf'                 — exchange-traded fund (equity exposure;
---                           crypto/metal ETFs classify as
---                           'crypto'/'metal' by underlying, see §6.8)
---   'bond_etf'            — bond / fixed-income ETF (kept out of
---                           'bond': no maturity, rolls forever)
---   'fund'                — mutual fund / structured product
---   'bond'                — fixed income (govt, corp, conv)
---   'option'              — listed option
---   'future'              — listed future
---   'fx_forward'          — OTC FX forward (UBS-specific today)
---   'fx_option'           — OTC FX option (UBS-specific today)
---   'money_market'        — MM contract / time deposit (UBS)
---   'otc_derivative'      — other OTC contract (UBS)
---   'metal'               — precious metal (UBS, Swissquote XAU/XAG)
---   'other'               — fallback; adapter must set this explicitly
+-- asset_class (exposure) + vehicle (wrapper) are the two-dimensional
+-- instrument taxonomy — docs/TAXONOMY.md is the authority.
+--   asset_class — one of 13 exposures: public_equity, private_equity,
+--     fixed_income, private_debt, real_estate, infrastructure, metal,
+--     crypto, cash, foreign_exchange, hedge_fund, multi_asset, other.
+--   vehicle     — one of 18 wrappers: stock, etf, fund, spv, bond,
+--     convertible_note, loan, option, future, forward, time_deposit,
+--     demand_deposit, physical, structured_product, right, mortgage,
+--     escrow, other.
+-- The writer accepts only admitted (exposure, vehicle) pairs
+-- (canonical.ValidTaxonomyPair); an unrecognised source code falls
+-- through to (other, other) with the raw code preserved in `payload`.
+-- The vehicle column was added by gold migration 0028; the writer
+-- always populates it though the column itself is nullable.
 --
 -- `instrument_external_id` is whatever the silver layer uses as its
 -- per-source instrument key:
@@ -1036,7 +1035,8 @@ CREATE TABLE portfolios (
 CREATE TABLE instruments (
     silver_source_id        TEXT    NOT NULL,
     instrument_external_id  TEXT    NOT NULL,
-    asset_class             TEXT    NOT NULL,
+    asset_class             TEXT    NOT NULL,       -- exposure (see above)
+    vehicle                 TEXT,                   -- wrapper; writer-required
     isin                    TEXT,               -- ISO 6166; NULL where source doesn't supply
     cusip                   TEXT,
     symbol                  TEXT,
@@ -1066,7 +1066,8 @@ CREATE TABLE positions (
     account_external_id     TEXT    NOT NULL,
     position_key            TEXT    NOT NULL,        -- adapter-chosen, see comment above
     instrument_external_id  TEXT,                    -- NULL for one-off contracts not in `instruments`
-    asset_class             TEXT    NOT NULL,        -- mirrored from instruments for index-friendliness
+    asset_class             TEXT    NOT NULL,        -- exposure, mirrored from instruments for index-friendliness
+    vehicle                 TEXT,                    -- wrapper, mirrored from instruments; writer-required
     currency                TEXT    NOT NULL,        -- position's natural currency (ISO 4217)
     quantity                DECIMAL(28, 8),          -- units / nominal / face value
     market_value            DECIMAL(28, 4),          -- in `currency`
@@ -1453,20 +1454,25 @@ SELECT ..., 'cash' AS asset_class, NULL AS instrument_external_id,
 not in queries. (Schwab → `current`; UBS → `closing`; Swissquote →
 its sole per-currency total.)
 
-### 10.3 Filter by asset class
+### 10.3 Filter by asset class and vehicle
+
+Exposure and wrapper are separate columns, so a query can filter on
+either dimension. Fixed-income exposure held as direct bonds or bond
+funds (excluding, say, bond ETFs):
 
 ```sql
 SELECT * FROM positions
  WHERE silver_source_id = ?
    AND snapshot_at = (SELECT MAX(snapshot_at) FROM positions WHERE silver_source_id = ?)
-   AND asset_class IN ('bond', 'fund');
+   AND asset_class = 'fixed_income'
+   AND vehicle IN ('bond', 'fund');
 ```
 
 ### 10.4 Holding-period filter (future, sketch)
 
 ```sql
 SELECT * FROM positions
- WHERE asset_class = 'equity'
+ WHERE asset_class = 'public_equity'
    AND acquisition_date <= :now - INTERVAL 1 YEAR;
 ```
 
@@ -2189,15 +2195,15 @@ from any silver-side field).
 
 The instrument dimension has the same escape hatch:
 `instrument_overrides`, keyed by `(silver_source_id,
-instrument_external_id)`, pins a per-instrument `asset_class`
-(validated against the canonical enum). The loader patches both
-the `instruments` row and every `positions` row referencing the
-instrument — the fact rows carry their own `asset_class` copy,
-so the two must move together. Use it where neither the source's
-structured signal nor the ETF name refinement (§6.8) gets the
-class right — the canonical example is an exchange-traded
-commodity trust whose security name never mentions the metal or
-the ETF-ness.
+instrument_external_id)`, pins a per-instrument `(asset_class,
+vehicle)` pair (validated as an admitted taxonomy pair). The loader
+patches both the `instruments` row and every `positions` row
+referencing the instrument — the fact rows carry their own
+`asset_class`/`vehicle` copy, so the two must move together. Use it
+where neither the source's structured signal nor the ETF name
+refinement (§6.8) gets the pair right — the canonical example is an
+exchange-traded commodity trust whose security name never mentions
+the metal or the ETF-ness (`metal × etf`).
 
 Selectable columns: `wealthdb holdings accounts -C
 silver_source,account,account_kind,tax_wrapper,management_style,...`.

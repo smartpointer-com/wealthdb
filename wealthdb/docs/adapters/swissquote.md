@@ -25,28 +25,32 @@ the canonical gold schema. Implements the `silver.Adapter` /
 | --- | --- | --- |
 | `schema_meta` / `dump_runs` | meta only | Used by `Status` / `ChangeWindow`. |
 | `accounts` | `accounts` (kind=`brokerage`) | Customer ID as `account_external_id`. |
-| `positions` (`source='live'`) | `positions` | `position_key` = ISIN when known, else `symbol + '@' + currency`. See §4 for `asset_class`. |
+| `positions` (`source='live'`) | `positions` | `position_key` = ISIN when known, else `symbol + '@' + currency`. See §4 for the `(asset_class, vehicle)` pair. |
 | `positions` (`source='pp:<doc_id>'`) | `positions` | Historical year-end snapshots reconstructed from Portfolio Performance PDFs (silver migration 0004). Same mapping as live — see §8. |
 | `currency_balances` | `cash_balances`; also derives `fx_rates` from `rate_to_chf` | See §5. |
 | `transactions` | `transactions` | See `transaction_type` mapping in §6. |
 | `documents` | — | PDFs are bronze-only; gold doesn't store binaries. |
 
-## 4. `asset_class` derivation for `positions`
+## 4. `(asset_class, vehicle)` derivation for `positions`
 
 The Swissquote Positions XLS export groups rows under section
 headers ("ETFs", "Bonds", "Shares", "Funds", "Structured Products",
-...) — silver preserves this as `asset_class` inside `payload`.
+...) — silver preserves this as `asset_class` inside `payload`. The
+section header pins the gold `vehicle`; the `asset_class` (exposure)
+is fixed per header except for the two collective-vehicle sections
+(`ETFs`, `Funds`), whose exposure is refined from the security name
+via `silver.RefineETFExposure`.
 
-| Swissquote section header | Gold `asset_class` |
+| Swissquote section header | Gold `(asset_class, vehicle)` |
 | --- | --- |
-| `Shares` / `Stocks` | `equity` |
-| `ETFs` | `etf`, then refined by underlying exposure from the security name (`silver.RefineETFClass`): crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf` |
-| `Bonds` | `bond` |
-| `Funds` | `fund` |
-| `Structured Products` | `other` (refine if/when a richer category lands in gold) |
-| `Precious Metals` | `metal` |
-| `Options` | `option` |
-| (other) | `other`, raw header preserved in payload |
+| `Shares` / `Stocks` | `(public_equity, stock)` |
+| `ETFs` | `(RefineETFExposure(name), etf)` — exposure refined from the security name: crypto → `crypto`, bullion → `metal`, bond keywords → `fixed_income`, else `public_equity` |
+| `Bonds` | `(fixed_income, bond)` |
+| `Funds` | `(RefineETFExposure(name), fund)` — same name-derived exposure inside the `fund` wrapper |
+| `Structured Products` | `(other, other)` (falls through the default; refine if/when a richer category lands in gold) |
+| `Precious Metals` | `(metal, physical)` |
+| `Options` | `(public_equity, option)` (Swissquote surfaces equity options — the option's underlying exposure) |
+| (other) | `(other, other)`, raw header preserved in payload |
 
 ## 5. `currency_balances` → `cash_balances` + `fx_rates`
 

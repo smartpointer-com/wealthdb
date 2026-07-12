@@ -45,12 +45,11 @@ func assetClassFor(rawAssetType, rawInstrumentType string) canonical.AssetClass 
 	return canonical.AssetClassOther
 }
 
-// taxonomyFor is the 2-D-taxonomy counterpart of assetClassFor for
-// live api positions: it returns the (exposure, vehicle) pair
-// (TAXONOMY.md) that double-writes alongside the legacy 1-D
-// AssetClass. assetClassFor stays the control column; this decides
-// asset_class_new + vehicle. Same Schwab assetType/type signal, split
-// across the two dimensions:
+// taxonomyFor returns the single (exposure, vehicle) pair
+// (TAXONOMY.md) emitted to gold for a live api position —
+// asset_class + vehicle. assetClassFor gives the coarse 1-D class
+// over the same Schwab assetType/type signal; taxonomyFor splits
+// that signal across the two dimensions:
 //
 //   - EQUITY                                     → (public_equity, stock)
 //   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (RefineETFExposure(name), etf)
@@ -126,10 +125,10 @@ var (
 )
 
 // taxonomyHistorical derives the (exposure, vehicle) pair for a
-// `historical_position_snapshots` row from its instrument key and
-// statement description — the 2-D counterpart the legacy path leaves
-// as (other), which the api side later overwrites whenever the same
-// instrument reappears with a source-classified value. Money-market
+// `historical_position_snapshots` row from its statement section,
+// instrument key, and description; the api side later overwrites the
+// instrument dimension whenever the same instrument reappears with a
+// source-classified value. Money-market
 // funds are cash × fund (TAXONOMY.md §5.8); a word-ETF / mutual-fund
 // line takes its exposure from RefineETFExposure(description) inside
 // the etf / fund vehicle. Every returned pair satisfies

@@ -99,8 +99,8 @@ func TestSnapshotsCorePositionBecomesCash(t *testing.T) {
 	if p.MarketValue == nil || p.MarketValue.String() != "2500" {
 		t.Errorf("market_value = %v, want 2500", p.MarketValue)
 	}
-	// 2-D-taxonomy double-write: an equity-exposure ETF wrapper →
-	// (public_equity, etf), agreeing on instrument + position.
+	// An equity-exposure ETF wrapper → (public_equity, etf),
+	// agreeing on instrument + position.
 	if p.AssetClass != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleETF {
 		t.Errorf("position (exposure, vehicle) = (%q, %q), want (public_equity, etf)", p.AssetClass, p.Vehicle)
 	}
@@ -224,8 +224,8 @@ func TestClassifyHistorical(t *testing.T) {
 	}
 }
 
-// TestAssetClassVehicleFor covers the live-path 2-D-taxonomy helper:
-// each silver class maps to a (V2 exposure, Vehicle) pair, with the
+// TestAssetClassVehicleFor covers the live-path taxonomy helper:
+// each silver class maps to an (exposure, Vehicle) pair, with the
 // fund/ETF exposure refined from the security name. All synthetic
 // names / placeholder tickers.
 func TestAssetClassVehicleFor(t *testing.T) {
@@ -269,8 +269,8 @@ func TestAssetClassVehicleFor(t *testing.T) {
 }
 
 // TestClassifyHistoricalPair mirrors TestClassifyHistorical, asserting
-// the 2-D-taxonomy pair (V2 exposure + Vehicle) the historical path
-// double-writes. Same shape branches, first match wins.
+// the (exposure, Vehicle) pair the historical path emits. Same shape
+// branches, first match wins.
 func TestClassifyHistoricalPair(t *testing.T) {
 	cases := []struct {
 		key, desc    string

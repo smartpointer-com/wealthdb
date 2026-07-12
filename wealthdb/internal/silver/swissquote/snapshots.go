@@ -265,8 +265,9 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		if ac == canonical.AssetClassETF {
 			ac = silver.RefineETFClass(name)
 		}
-		// 2-D taxonomy (double-write): the exposure/vehicle pair runs
-		// alongside the legacy `ac` above without altering it.
+		// Map the same inputs to the single (exposure, vehicle) pair
+		// emitted to gold. The coarse `ac` above is the 1-D
+		// intermediate signal and is never written.
 		acNew, vehicle := taxonomyFor(p.AssetClass, name)
 
 		effectiveISIN := isin

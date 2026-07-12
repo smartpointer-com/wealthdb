@@ -73,15 +73,15 @@ func NamesMoneyMarket(name string) bool {
 	return moneyMarketRe.MatchString(name)
 }
 
-// RefineETFExposure is the 2-D-taxonomy counterpart of RefineETFClass:
-// it returns the EXPOSURE (asset_class) of a fund/ETF already known to
-// be a collective vehicle, from its security name. The wrapper
-// (vehicle=etf or fund) is the caller's — this decides only what the
-// wrapper holds. Same keyword logic as RefineETFClass, but in the V2
-// vocabulary: crypto → crypto, bullion → metal, bond keywords →
-// fixed_income, everything else → public_equity (the default for a
-// name that doesn't reveal a non-equity underlying). Name-shy products
-// are corrected by instrument_overrides.
+// RefineETFExposure is the exposure-dimension counterpart of
+// RefineETFClass: it returns the EXPOSURE (asset_class) of a fund/ETF
+// already known to be a collective vehicle, from its security name.
+// The wrapper (vehicle=etf or fund) is the caller's — this decides
+// only what the wrapper holds. Same keyword logic as RefineETFClass,
+// but returns an exposure value: crypto → crypto, bullion → metal,
+// bond keywords → fixed_income, everything else → public_equity (the
+// default for a name that doesn't reveal a non-equity underlying).
+// Name-shy products are corrected by instrument_overrides.
 func RefineETFExposure(name string) canonical.AssetClass {
 	switch {
 	case etfCryptoRe.MatchString(name):

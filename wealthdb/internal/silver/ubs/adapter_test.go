@@ -507,7 +507,7 @@ func TestSnapshotsForwardContract(t *testing.T) {
 		t.Fatalf("positions = %d, want 1", len(batch.Positions))
 	}
 	p := batch.Positions[0]
-	// 2-D pair double-written beside the legacy fx_forward class.
+	// The FX-forward contract emits (foreign_exchange, forward).
 	if p.AssetClass != canonical.AssetClassForeignExchange || p.Vehicle != canonical.VehicleForward {
 		t.Errorf("pair = (%q, %q), want (foreign_exchange, forward)", p.AssetClass, p.Vehicle)
 	}

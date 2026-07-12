@@ -187,7 +187,6 @@ func (r *webReader) snapshotsForOverlap(
 	ctx context.Context,
 	w canonical.Window,
 	cutoffByWebRel map[string]int64,
-	psnAssetClass map[string]canonical.AssetClass,
 	psnTaxPair map[string]taxPair,
 ) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
@@ -215,7 +214,7 @@ func (r *webReader) snapshotsForOverlap(
 	if err := r.appendWebAccounts(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
-	if err := r.appendWebInstruments(ctx, w, byTime, psnAssetClass, psnTaxPair); err != nil {
+	if err := r.appendWebInstruments(ctx, w, byTime, psnTaxPair); err != nil {
 		return nil, err
 	}
 
@@ -247,19 +246,14 @@ func (r *webReader) snapshotsForOverlap(
 // to one emission with the description from the first row seen —
 // the descriptions don't vary by portfolio.
 //
-// psnAssetClass maps ISIN → PSN's CFI-derived asset_class.
-// Web doesn't know an instrument's class (no CFI), and a naive
-// `AssetClassOther` emission would overwrite PSN's specific
-// class via the per-column upsert guard (web's last_seen_at is
-// typically later than PSN's). Stamping PSN's class
-// keeps the cross-source upsert idempotent on asset_class while
-// letting web win on Name. Missing ISINs (not in PSN) fall back
-// to AssetClassOther.
-//
-// psnTaxPair carries the 2-D-taxonomy counterpart (exposure,
-// vehicle) and is stamped the same way, in lockstep with the legacy
-// class; missing ISINs fall back to (other, other).
-func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnAssetClass map[string]canonical.AssetClass, psnTaxPair map[string]taxPair) error {
+// psnTaxPair maps ISIN → PSN's CFI/UAC-derived (asset_class, vehicle)
+// pair. Web doesn't know an instrument's taxonomy (no CFI), and a
+// naive (other, other) emission would overwrite PSN's specific pair
+// via the per-column upsert guard (web's last_seen_at is typically
+// later than PSN's). Stamping PSN's pair keeps the cross-source upsert
+// idempotent on asset_class / vehicle while letting web win on Name.
+// Missing ISINs (not in PSN) fall back to (other, other).
+func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnTaxPair map[string]taxPair) error {
 	const q = `
 SELECT snapshot_at, instrument_isin, currency_iso, description
   FROM positions

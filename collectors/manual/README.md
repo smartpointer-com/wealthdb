@@ -84,7 +84,7 @@ CSV column. Full details + the gold mapping are in [DESIGN.md](DESIGN.md).
 | column | notes |
 | --- | --- |
 | `id` | your stable id, e.g. `re-001`, `pe-001`, `cn-001`, `pf-001`, `spv-001` (unique) |
-| `kind` | `real_estate` \| `private_equity` \| `convertible_note` \| `private_fund` \| `spv` \| `mortgage` \| `other` — the legacy 1-D `asset_class` names; `other` is the catch-all (e.g. a receivable). Add a kind in `load.py`'s `POSITION_KINDS` (one line, no migration). |
+| `kind` | `real_estate` \| `private_equity` \| `convertible_note` \| `private_fund` \| `spv` \| `mortgage` \| `other` — the coarse 1-D classification; the gold adapter maps (`kind`, `vehicle`) to the (`asset_class`, `vehicle`) pair. `other` is the catch-all (e.g. a receivable). Add a kind in `load.py`'s `POSITION_KINDS` (one line, no migration). |
 | `vehicle` | optional — the wrapper dimension of the 2-D taxonomy (wealthdb docs/TAXONOMY.md): `physical` \| `stock` \| `fund` \| `spv` \| `convertible_note` \| `loan` \| `escrow` \| `mortgage` \| … When blank it defaults from `kind` (real_estate→physical, private_equity→stock, spv→spv, private_fund→fund, convertible_note→convertible_note, mortgage→mortgage, other→other). Set it explicitly for a kind=other row to carry the right wrapper into gold — an escrow receivable is `escrow`, a private loan is `loan`. Full vocabulary in `load.py`'s `POSITION_VEHICLES`. |
 | `display_name` | a label (synthetic in any committed file) |
 | `currency` | ISO 4217 |

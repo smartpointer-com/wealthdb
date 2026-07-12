@@ -345,7 +345,8 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			// taxonomy lives in one place (silver.RefineETFClass).
 			assetClass = silver.RefineETFClass(desc)
 		}
-		// 2-D-taxonomy double-write, beside the legacy assetClass.
+		// Map silverClass + name to the single (exposure, vehicle)
+		// pair emitted to gold.
 		assetClassNew, vehicle := assetClassVehicleFor(silverClass, desc)
 		symbol := key
 		ccy := currency

@@ -59,26 +59,31 @@ Schwab models cash positions as instruments with
 emits a `CashBalanceChange` instead of a `PositionChange`. The
 `currency` and `marketValue` carry over directly.
 
-All other Schwab positions land in `positions` with `asset_class`
-derived from `payload.instrument.assetType`:
+All other Schwab positions land in `positions` with the
+`(asset_class, vehicle)` pair derived from
+`payload.instrument.assetType` (plus, for collective vehicles,
+`instrument.type` and the security name):
 
-| Schwab `assetType` | Gold `asset_class` |
+| Schwab `assetType` | Gold `(asset_class, vehicle)` |
 | --- | --- |
-| `EQUITY` | `equity` |
-| `ETF` | `etf` (in the API's enum, but real dumps use `COLLECTIVE_INVESTMENT` below) |
-| `MUTUAL_FUND` | `fund` |
-| `BOND` / `FIXED_INCOME` | `bond` |
-| `OPTION` | `option` |
-| `FUTURE` | `future` |
-| `COLLECTIVE_INVESTMENT` | `fund`; with `instrument.type = EXCHANGE_TRADED_FUND` → `etf` — this is how the Trader API actually types ETFs |
-| (unrecognised) | `other` (original `assetType` preserved in payload) |
+| `EQUITY` | `(public_equity, stock)` |
+| `ETF` | `(RefineETFExposure(name), etf)` (in the API's enum, but real dumps use `COLLECTIVE_INVESTMENT` below) |
+| `MUTUAL_FUND` | `(fundExposure(name), fund)` — name-derived exposure, money-market funds → `cash` |
+| `BOND` / `FIXED_INCOME` | `(fixed_income, bond)` |
+| `OPTION` | `(public_equity, option)` (equity underlying) |
+| `FUTURE` | `(public_equity, future)` (equity underlying) |
+| `COLLECTIVE_INVESTMENT` | `(fundExposure(name), fund)`; with `instrument.type = EXCHANGE_TRADED_FUND` → `(RefineETFExposure(name), etf)` — this is how the Trader API actually types ETFs |
+| (unrecognised) | `(other, other)` (original `assetType` preserved in payload) |
 
-Instruments landing in `etf` are then refined by underlying
-exposure from `instrument.description` (`silver.RefineETFClass`):
-crypto ETFs → `crypto`, bullion ETFs → `metal` (miners funds stay
-`etf` — they hold stocks), bond / fixed-income ETFs → `bond_etf`.
-Name-shy exchange-traded products are pinned via the config's
-`instrument_overrides` (DESIGN.md §13.9).
+For ETF and fund wrappers the exposure is refined from
+`instrument.description` (`silver.RefineETFExposure`): crypto →
+`crypto`, bullion → `metal` (miners funds stay `public_equity` —
+they hold stocks), bond / fixed-income → `fixed_income`, everything
+else → `public_equity`. Purchased money-market funds reaching the
+`MUTUAL_FUND` / `COLLECTIVE_INVESTMENT` path take `cash` instead
+(`fundExposure` routes a money-fund name to cash before name-based
+exposure refinement). Name-shy exchange-traded products are pinned
+via the config's `instrument_overrides` (DESIGN.md §13.9).
 
 ### `instrument.name` is empty for EQUITY positions
 
@@ -148,10 +153,18 @@ contributes three things the api silver doesn't have:
 - **Historical position snapshots.** `historical_position_snapshots`
   carries per-statement-period holdings (one row per (period_end,
   account, instrument_key)). Cadence is monthly when statements
-  are available. asset_class defaults to `other` (statements
-  don't carry a CFI/assetType code); per-column upsert lets a
-  later api emission win on instruments.asset_class for the
-  underlying instrument row.
+  are available. Statements carry no CFI/assetType code, so the
+  `(asset_class, vehicle)` pair is derived from the statement
+  section (`Equities` → `(public_equity, stock)`, `Exchange Traded
+  Funds` → `(RefineETFExposure(description), etf)`, `Fixed Income`
+  → `(fixed_income, bond)`, `Options` → `(public_equity, option)`),
+  falling back to instrument-key / description shape heuristics for
+  other sections — OCC symbol or CALL/PUT → `(public_equity,
+  option)`, money-market name → `(cash, fund)`, CUSIP or coupon →
+  `(fixed_income, bond)`, word-ETF → etf, four-letter-plus-X ticker
+  → fund, else `(public_equity, stock)`. Per-column upsert lets a
+  later api emission win on the underlying instrument row's
+  dimension when the same key reappears source-classified.
 - **Historical cash balances.** `historical_cash_balances`
   carries opening + closing balances per statement period.
   Opening lands at `period_start`, closing at `period_end`; rows

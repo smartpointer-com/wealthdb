@@ -18,15 +18,15 @@ func assetClassForKind(kind string) canonical.AssetClass {
 	return canonical.AssetClassPrivateFund
 }
 
-// taxonomyForKind is the 2-D (exposure, vehicle) analogue of
-// assetClassForKind for the taxonomy migration. Both EquityZen kinds are
-// private-company ownership, so the exposure is always
-// AssetClassPrivateEquity; the vehicle carries the packaging distinction the
-// legacy class conflated into asset_class — a single-company special-purpose
-// vehicle -> VehicleSPV, a multi-company fund -> VehicleFund. An unknown/empty
-// kind defaults to the fund vehicle, matching assetClassForKind's
-// private_fund default (don't over-claim a single-company SPV). Both pairs
-// satisfy canonical.ValidTaxonomyPair.
+// taxonomyForKind derives the (exposure, vehicle) pair from an
+// EquityZen kind. Both EquityZen kinds are private-company ownership,
+// so the exposure is always AssetClassPrivateEquity; the vehicle
+// carries the packaging distinction a single-axis class could not — a
+// single-company special-purpose vehicle -> VehicleSPV, a
+// multi-company fund -> VehicleFund. An unknown/empty kind defaults to
+// the fund vehicle, matching assetClassForKind's private_fund default
+// (don't over-claim a single-company SPV). Both pairs satisfy
+// canonical.ValidTaxonomyPair.
 func taxonomyForKind(kind string) (canonical.AssetClass, canonical.Vehicle) {
 	if kind == "spv" {
 		return canonical.AssetClassPrivateEquity, canonical.VehicleSPV

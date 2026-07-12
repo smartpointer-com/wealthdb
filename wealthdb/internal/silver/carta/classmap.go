@@ -34,12 +34,12 @@ func isStockVehicleType(secType string) bool {
 	return false
 }
 
-// capTableTaxonomy is the 2-D-taxonomy (exposure, vehicle) counterpart of the
-// legacy capTableAssetClass, for an aggregated cap-table position. Every
-// cap-table stake is private_equity EXCEPT a purely-convertible holding (a
-// SAFE / pre-conversion note), which is private_debt held via the
-// convertible_note vehicle — mirroring the legacy private_equity vs
-// convertible_note split. Within equity, a position holding any real
+// capTableTaxonomy derives the (exposure, vehicle) pair for an
+// aggregated cap-table position, using the coarse capTableAssetClass
+// as its intermediate. Every cap-table stake is private_equity EXCEPT
+// a purely-convertible holding (a SAFE / pre-conversion note), which
+// is private_debt held via the convertible_note vehicle. Within
+// equity, a position holding any real
 // share-settled unit (share / rsu / rsa / piu / equity_grant) is the `stock`
 // vehicle; a position whose equity is only option-shaped claims (option /
 // warrant / sar) is the `option` vehicle. The returned pair always satisfies

@@ -169,9 +169,9 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	active := make(map[int64]string)                   // entity id -> holdings currency
-	classes := make(map[int64]canonical.AssetClass)    // entity id -> legacy position asset class
-	classesNew := make(map[int64]canonical.AssetClass) // entity id -> V2 exposure (asset_class_new)
-	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> V2 vehicle
+	classes := make(map[int64]canonical.AssetClass)    // entity id -> coarse 1-D asset class (intermediate)
+	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
+	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> vehicle
 
 	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classes, classesNew, vehicles); err != nil {
 		return batch, err
@@ -192,9 +192,10 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 	// One account for the whole Carta portfolio. management_style is an
 	// account-level field (the canonical position carries none), so the
 	// GP-managed fund vs equity vs pre-conversion SAFE distinction rides on
-	// each position's asset_class (private_fund / private_equity /
-	// convertible_note), not here; the
-	// account is self-directed — the holder controls what the portfolio holds.
+	// each position's (asset_class, vehicle) pair ((private_equity, fund) vs
+	// (private_equity, stock) vs (private_debt, convertible_note)), not here;
+	// the account is self-directed — the holder controls what the portfolio
+	// holds.
 	wrapper := canonical.TaxWrapperTaxablePersonal
 	style := canonical.ManagementStyleSelfDirected
 	usd := "USD"

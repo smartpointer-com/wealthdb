@@ -43,36 +43,50 @@ identifier dimensions show up in every gold row:
 | `cash_accounts` | `accounts` (kind=`cash`) | IBAN as `account_external_id`. |
 | `safekeeping_accounts` | `accounts` (kind=`safekeeping`) | UBS safekeeping code as `account_external_id`. |
 | `portfolios` | `accounts` (kind=`portfolio`) | `PrtflId` as `account_external_id`. |
-| `instruments` | `instruments` | See §4 for `asset_class` derivation. |
+| `instruments` | `instruments` | See §4 for the `(asset_class, vehicle)` derivation. |
 | `holdings` | `positions` | One securities holding per row. |
 | `cash_balances` | `cash_balances` | Direct one-to-one; UBS `balance_kind` enum carries over. |
 | `pending_securities` | — | Most rows are "no activity" markers (`ACTI//N`). Deferred. |
 | `fx_rates` | `fx_rates` | Base currency is CHF in the current PSN setup. |
 | `portfolio_performance` | — | Monthly TDPOPF analytics. Deferred. |
 | `cash_account_pricing` | — | TDCAPI interest-rate config. Deferred. |
-| `forward_contracts` | `positions` (asset_class=`fx_forward`) | `contract_external_id` is `position_key`. |
-| `option_contracts` | `positions` (asset_class=`fx_option`) | Same. |
-| `money_market_contracts` | `positions` (asset_class=`money_market`) | Same. |
-| `otc_contracts` | `positions` (asset_class=`otc_derivative`) | Same. |
+| `forward_contracts` | `positions` — `(foreign_exchange, forward)` | `contract_external_id` is `position_key`. |
+| `option_contracts` | `positions` — `(foreign_exchange, option)` | Same. |
+| `money_market_contracts` | `positions` — `(cash, time_deposit)` | Same. |
+| `otc_contracts` | `positions` — `(foreign_exchange, forward)`, or `(other, other)` for a non-FX underlying | Same. |
 | `events` | `transactions` | See `kind` mapping in §5. |
 
-## 4. `asset_class` derivation for `holdings`
+## 4. `(asset_class, vehicle)` derivation for `holdings`
 
-`silver.holdings` doesn't carry an asset-class column directly.
-The adapter looks up the holding's ISIN in `silver.instruments`
-and reads the ISO 10962 CFI code (`InstrCtgyCFI` in the SDFI
-payload). The CFI's first character is the asset category, so a
-one-letter switch is enough:
+`silver.holdings` doesn't carry a taxonomy column directly. The
+adapter looks up the holding's ISIN in `silver.instruments` and
+reads the ISO 10962 CFI code (`InstrCtgyCFI` in the SDFI payload),
+falling back to UBS's internal `UacAsstClsCd` bucket when the CFI
+is empty — the non-listed custody items (e.g. metal-deposit receipts, private-market fund interests) carry no CFI but
+do carry a UAC code. `taxonomyPairForInstrument` derives the gold
+`(asset_class, vehicle)` pair (exposure = what moves the value,
+vehicle = the wrapper — TAXONOMY.md) from those signals: the CFI's
+first character picks the vehicle, and the exposure comes from the
+CFI, the `UacAsstClsCd` bucket, and the instrument name together.
 
-| CFI first char | Gold `asset_class` |
+| CFI first char | Gold `(asset_class, vehicle)` |
 | --- | --- |
-| `E` | `equity` |
-| `C` | `fund` (Collective investment); the `CE` group (ISO 10962:2015 ETFs) maps to `etf` and is then refined by underlying exposure from the instrument name (`silver.RefineETFClass` — crypto → `crypto`, bullion → `metal`, fixed income → `bond_etf`), and a fund's `UacAsstClsCd` — UBS's own allocation bucket — sharpens the generic CFI: `0100` (Liquidity) → `money_market`, `0400` (Hedge funds & private markets) → `private_fund` |
-| `D` | `bond` (Debt) |
-| `O` | `option` |
-| `F` | `future` |
-| `M` | `money_market` |
-| other / empty | `other` (e.g. `T` structured, `R` rights, or instruments UBS ships without a CFI code) |
+| `E` | `(public_equity, stock)` |
+| `C` | Collective vehicle. The vehicle is `fund`, or `etf` for the `CE` group (ISO 10962:2015 ETFs); every other `C` group stays `fund`. The exposure is read from the instrument name by `silver.RefineETFExposure` — crypto → `crypto`, bullion → `metal`, bond keywords → `fixed_income`, everything else → `public_equity`. A fund's `UacAsstClsCd` sharpens the generic CFI and overrides the name read: `0100` (Liquidity) → `(cash, fund)`, `0400` (Hedge funds & private markets) → the private-markets family via `privateMarketsPair` (name contains "infrastructure" → `(infrastructure, fund)`, "hedge" → `(hedge_fund, fund)`, otherwise → `(private_equity, fund)`). |
+| `D` | `(fixed_income, bond)` |
+| `O` | `(public_equity, option)` |
+| `F` | `(public_equity, future)` |
+| `R` | `(public_equity, right)` |
+| `T` / other | Structured note: `(foreign_exchange, structured_product)` when the name reads currency-/FX-linked (`currencyLinkedRe` — "currency", "FX", "forex", "dual currency"), otherwise `(public_equity, structured_product)`. This default catches `T` (structured), the former `M` money-market first character (no longer a distinct case in the pair switch), and any unrecognised first character. |
+| empty CFI | Routes to the `UacAsstClsCd` fallback (`taxonomyPairForUAC`): `0100` (Liquidity) → `(cash, fund)`, `0300` (Equities) → `(public_equity, stock)`, `0400` (Hedge funds & private markets) → the private-markets family (see the `C` row), `0600` (Precious metals & commodities) → `(metal, physical)`, anything else → `(other, other)`. |
+
+The emit path uses `silver.RefineETFExposure`, which returns the
+*exposure* (asset class) of a collective vehicle from its name; the
+vehicle (`etf` / `fund`) is supplied by the CFI group, so the pair
+is `(RefineETFExposure(name), etf-or-fund)`. Its sibling
+`silver.RefineETFClass` (which returns a 1-D class such as
+`bond_etf`) feeds the intermediate `assetClassForInstrument`
+classifier only and never reaches gold.
 
 ### Latest-known-instruments lookup
 
@@ -208,11 +222,14 @@ invariant that every gold `positions` row is owned by an
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |
 
-`asset_class` defaults to `other` for historical rows — the PDFs
-don't carry a CFI code. The per-column upsert guard means a later
-PSN snapshot containing the same ISIN will overwrite `asset_class`
-with the CFI-derived value, so the `other` is only ever the
-visible value for instruments that never made it into PSN.
+The `(asset_class, vehicle)` pair defaults to `(other, other)` for
+historical rows — the PDFs carry no CFI/UAC code, and this path has
+no PSN-lookup access, so it mirrors the legacy `other` control
+rather than guessing an exposure from the description alone. The
+per-column upsert guard means a later PSN snapshot containing the
+same ISIN will overwrite both columns with the CFI-derived pair, so
+`(other, other)` is only ever the visible value for instruments
+that never made it into PSN.
 
 ### Cash balances
 
@@ -258,11 +275,11 @@ present in silver.
   visibility lands, project into a new gold table
   `pending_transactions` rather than mixing with settled
   `transactions`.
-- **Historical asset_class.** Historical security positions
-  default to `asset_class=other` because the PDFs don't carry a
+- **Historical taxonomy pair.** Historical security positions
+  default to `(other, other)` because the PDFs don't carry a
   CFI code. When PSN data exists for an ISIN the per-column
-  upsert backfills with the CFI-derived value, but instruments
+  upsert backfills with the CFI-derived pair, but instruments
   that pre-date PSN (closed positions, instruments since
-  delisted) stay `other`. Consider a per-ISIN asset-class lookup
-  populated from an external catalogue if richer historical
-  classification is needed.
+  delisted) stay `(other, other)`. Consider a per-ISIN taxonomy
+  lookup populated from an external catalogue if richer
+  historical classification is needed.

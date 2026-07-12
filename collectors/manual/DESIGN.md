@@ -79,8 +79,9 @@ needs no new file and no schema change.
 `id, kind, vehicle, display_name, currency, acquired_at, closed_at, notes, payload`
 - `kind` ∈ `real_estate | private_equity | convertible_note | private_fund
   | spv | mortgage | other` (extensible — lives in `load.py`'s
-  `POSITION_KINDS`, not a DB constraint). The kind is the **legacy 1-D
-  `asset_class`** (the gold classmap is an identity for it).
+  `POSITION_KINDS`, not a DB constraint). The kind is the coarse 1-D
+  classification; the gold adapter maps (`kind`, `vehicle`) to the
+  (`asset_class`, `vehicle`) pair.
 - `vehicle` (optional) — the wrapper dimension of the 2-D taxonomy (wealthdb
   docs/TAXONOMY.md), e.g. `physical | stock | fund | spv | convertible_note
   | loan | escrow | mortgage`. Blank defaults from `kind`
@@ -88,7 +89,7 @@ needs no new file and no schema change.
   convertible_note→convertible_note, mortgage→mortgage, other→other). Set it
   explicitly on a `kind=other` row so gold gets the right wrapper — an
   escrow receivable is `escrow`, a private loan is `loan`. The gold adapter
-  derives the new exposure (`asset_class_new`) from (`kind`, `vehicle`). Full
+  derives the exposure (`asset_class`) from (`kind`, `vehicle`). Full
   vocabulary is `load.py`'s `POSITION_VEHICLES`.
 - `closed_at` (nullable) — set when the asset stops existing (full disposal,
   or a convertible note that converted). Gold drops the position from as-of

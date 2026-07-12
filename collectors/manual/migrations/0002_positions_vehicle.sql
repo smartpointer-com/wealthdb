@@ -14,8 +14,8 @@
 -- load.py fills a sensible default from `kind` (real_estate→physical,
 -- private_equity→stock, spv→spv, private_fund→fund,
 -- convertible_note→convertible_note, mortgage→mortgage, other→other),
--- so existing CSVs load unchanged. The gold adapter derives the new
--- exposure (asset_class_new) from (kind, vehicle).
+-- so existing CSVs load unchanged. The gold adapter derives the
+-- exposure (asset_class) from (kind, vehicle).
 --
 -- Nullable: the loader always writes a value (explicit or defaulted),
 -- but NULL is tolerated for forward compatibility. Allowed vehicle

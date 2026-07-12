@@ -233,7 +233,7 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
 // (ValidTaxonomyPair) — a missing or nonsensical pair is an adapter
 // bug, caught here before it reaches gold.
 func validateTaxonomyPair(op string, i int, a canonical.AssetClass, v canonical.Vehicle) error {
-	if !a.ValidV2() {
+	if !a.Valid() {
 		return fmt.Errorf("%s row %d: invalid asset_class %q", op, i, a)
 	}
 	if !v.Valid() {

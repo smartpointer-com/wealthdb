@@ -34,11 +34,11 @@ func assetClassFor(silverClass string) canonical.AssetClass {
 	return canonical.AssetClassOther
 }
 
-// assetClassVehicleFor is the 2-D-taxonomy companion to assetClassFor:
-// it maps fidelity-web's silver `positions.asset_class` onto a canonical
-// V2 exposure (AssetClassNew) plus the wrapper Vehicle the exposure is
-// held through. It runs beside the legacy assetClassFor (the control) so
-// both dimensions are double-written without disturbing the V1 column.
+// assetClassVehicleFor maps fidelity-web's silver
+// `positions.asset_class` onto the canonical exposure (AssetClass)
+// plus the wrapper Vehicle the exposure is held through — the single
+// (exposure, vehicle) pair emitted to gold. assetClassFor is the
+// coarse 1-D companion over the same silver signal.
 //
 // Funds/ETFs whose exposure depends on their holdings defer to
 // silver.RefineETFExposure(name), which reads the security name
@@ -135,12 +135,10 @@ func classifyHistorical(instrumentKey, description string) canonical.AssetClass 
 	return canonical.AssetClassEquity
 }
 
-// classifyHistoricalPair is the 2-D-taxonomy companion to
-// classifyHistorical: it mirrors the exact same shape branches (same
-// order, first match wins) but yields a canonical V2 exposure plus the
-// wrapper Vehicle for the double-write. classifyHistorical stays the
-// control; this runs beside it at the historical instrument/position
-// build.
+// classifyHistoricalPair mirrors classifyHistorical's shape branches
+// (same order, first match wins) but yields the canonical exposure
+// plus the wrapper Vehicle — the single (exposure, vehicle) pair
+// emitted at the historical instrument/position build.
 //
 //   - Account-closed marker → (other, other): a $0 synthetic row with no
 //     exposure to classify.

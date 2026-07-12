@@ -162,7 +162,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	// instrument_overrides: same shape rules as account_overrides but
-	// keyed by instrument_external_id. Both asset_class (V2 exposure)
+	// keyed by instrument_external_id. Both asset_class (the exposure)
 	// and vehicle are required and must form an admitted taxonomy pair.
 	for sourceID, perInstrument := range c.InstrumentOverrides {
 		if !seenIDs[sourceID] {
@@ -175,7 +175,7 @@ func (c *Config) Validate() error {
 			if ov.AssetClass == "" || ov.Vehicle == "" {
 				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class and vehicle must both be set", sourceID, instrID)
 			}
-			if !canonical.AssetClass(ov.AssetClass).ValidV2() {
+			if !canonical.AssetClass(ov.AssetClass).Valid() {
 				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class %q", sourceID, instrID, ov.AssetClass)
 			}
 			if !canonical.Vehicle(ov.Vehicle).Valid() {

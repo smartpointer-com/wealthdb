@@ -135,15 +135,15 @@ func assetClassForUacAsstCls(code string) canonical.AssetClass {
 // ---- 2-D taxonomy (asset_class × vehicle) ---------------------------------
 //
 // The functions below derive the two-dimensional taxonomy pair
-// (exposure + wrapper, TAXONOMY.md) that runs BESIDE the legacy 1-D
-// asset_class above during the migration. The legacy derivation is a
-// control and stays untouched; this is a second, independent
-// derivation the adapter double-writes (see docs/TAXONOMY-PLAN.md).
+// (exposure + wrapper, TAXONOMY.md) emitted to gold. The 1-D
+// assetClassForInstrument above is the coarse intermediate
+// classifier over the same signals; these map them to the single
+// (asset_class, vehicle) pair, and nothing 1-D reaches gold.
 
-// taxPair is a 2-D taxonomy pair. It travels through the adapter
-// alongside the legacy 1-D class (e.g. inside instrumentMeta) so the
-// web overlay can stamp web-emitted instruments with the pair PSN
-// would derive, exactly as it already does for the legacy class.
+// taxPair is a 2-D taxonomy pair. Its components travel through the
+// adapter inside instrumentMeta so the web overlay can stamp web-
+// emitted instruments with the (asset_class, vehicle) pair PSN would
+// derive, keeping web and PSN instruments on the same taxonomy.
 type taxPair struct {
 	AssetClass canonical.AssetClass
 	Vehicle    canonical.Vehicle
@@ -157,10 +157,10 @@ type taxPair struct {
 var currencyLinkedRe = regexp.MustCompile(`(?i)\bcurrenc(?:y|ies)\b|\bFX\b|\bforex\b|foreign exchange|dual currency`)
 
 // taxonomyPairForInstrument is the 2-D-taxonomy counterpart of
-// assetClassForInstrument (its legacy 1-D sibling): it derives the
-// (exposure, vehicle) pair for a PSN instrument from the same signals
-// — CFI first character drives the vehicle, CFI/UAC drive the exposure
-// — per TAXONOMY.md §6.
+// assetClassForInstrument (its 1-D intermediate sibling): it derives
+// the (exposure, vehicle) pair for a PSN instrument from the same
+// signals — CFI first character drives the vehicle, CFI/UAC drive
+// the exposure — per TAXONOMY.md §6.
 //
 // CFI first character → vehicle (with its default exposure):
 //
@@ -336,21 +336,21 @@ func taxWrapperForSafekeepingAcctTp(code, desc string) canonical.TaxWrapper {
 // canonical ManagementStyle. UBS's safekeeping sub-type tags the
 // mandate type directly:
 //
-//   "managed securities account"              → discretionary
-//                                               (UBS Vermögens-
-//                                                verwaltung — the
-//                                                bank places trades
-//                                                under limited POA)
-//   "securities account with dvisory agreement" → advisory
-//                                                 (UBS Anlage-
-//                                                  beratung; note
-//                                                  the missing 'a'
-//                                                  is the actual
-//                                                  string in UBS's
-//                                                  payload)
-//   "securities account with advisory agreement" → advisory
-//                                                  (if UBS ever
-//                                                   fixes the typo)
+//	"managed securities account"              → discretionary
+//	                                            (UBS Vermögens-
+//	                                             verwaltung — the
+//	                                             bank places trades
+//	                                             under limited POA)
+//	"securities account with dvisory agreement" → advisory
+//	                                              (UBS Anlage-
+//	                                               beratung; note
+//	                                               the missing 'a'
+//	                                               is the actual
+//	                                               string in UBS's
+//	                                               payload)
+//	"securities account with advisory agreement" → advisory
+//	                                               (if UBS ever
+//	                                                fixes the typo)
 //
 // Unknown sub-types return "" so the caller leaves
 // ManagementStyle nil; the render-time default surfaces

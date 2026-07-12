@@ -78,10 +78,11 @@ func (r *webReader) snapshotsHistorical(
 // distinct (snapshot, instrument_key) — Schwab statements
 // surface CUSIPs in some sections and tickers in others, so the
 // instrument_key is used as both the gold instrument_external_id
-// and the position_key. asset_class defaults to AssetClassOther
-// (statement PDFs don't carry a structured type code); the api
-// side's per-column upsert will overwrite with the real class
-// whenever an api position references the same instrument.
+// and the position_key. The (asset_class, vehicle) pair is derived
+// from the statement shapes (statement PDFs carry no structured
+// type code); the api side's per-column upsert overwrites the
+// instrument dimension whenever an api position references the
+// same instrument.
 //
 // market_value, cost_basis, and accrued_interest are forwarded;
 // quantity and market_price land in the payload via the silver
@@ -122,12 +123,12 @@ SELECT as_of_date, account_external_id, instrument_key,
 		}
 		batch := getBatch(asOf)
 
-		// The legacy 1-D class stays `other` (statement PDFs carry no
-		// structured type code) as the control; the 2-D pair is
-		// derived from the instrument-key / description shapes
-		// (payload.description is the security name). The api side's
-		// per-column upsert overwrites the instrument dimension
-		// whenever the same key reappears source-classified.
+		// Statement PDFs carry no structured type code, so the
+		// (asset_class, vehicle) pair is derived from the section /
+		// instrument-key / description shapes (payload.description
+		// is the security name). The api side's per-column upsert
+		// overwrites the instrument dimension whenever the same key
+		// reappears source-classified.
 		var hp struct {
 			Section     string `json:"section"`
 			Description string `json:"description"`

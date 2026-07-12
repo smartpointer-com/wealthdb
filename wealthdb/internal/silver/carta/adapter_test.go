@@ -378,14 +378,14 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 	// Regression: an equity holding is unaffected by the convertible split.
 }
 
-// TestTaxonomyPairs verifies the 2-D (asset_class_new, vehicle) double-write
-// on every cap-table security shape plus a fund LP interest: real
+// TestTaxonomyPairs verifies the 2-D (asset_class, vehicle) pair emitted
+// for every cap-table security shape plus a fund LP interest: real
 // share-settled equity → (private_equity, stock); option-shaped equity comp →
 // (private_equity, option); a mixed share+option holding → stock (share
 // precedence); a purely-convertible SAFE → (private_debt, convertible_note);
-// a fund → (private_equity, fund). The legacy AssetClass column is unchanged,
-// each pair is a canonical.ValidTaxonomyPair, and the position's pair matches
-// its instrument's. Placeholder names / ids only.
+// a fund → (private_equity, fund). Each pair is a canonical.ValidTaxonomyPair,
+// and the position's pair matches its instrument's. Placeholder names / ids
+// only.
 func TestTaxonomyPairs(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	d := unixDate(t, "2026-06-30")
@@ -441,7 +441,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 		key       string
 		exposure  canonical.AssetClass
 		vehicle   canonical.Vehicle
-		wantClass canonical.AssetClass // legacy control column, must be untouched
+		wantClass canonical.AssetClass // coarse 1-D class each shape maps from
 	}{
 		{"entity:100", canonical.AssetClassPrivateEquity, canonical.VehicleStock, canonical.AssetClassPrivateEquity},
 		{"entity:400", canonical.AssetClassPrivateEquity, canonical.VehicleOption, canonical.AssetClassPrivateEquity},
@@ -458,7 +458,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 			t.Fatalf("no position for %s", tc.key)
 		}
 		if p.AssetClass != tc.exposure || p.Vehicle != tc.vehicle {
-			t.Errorf("%s position V2 = (%s,%s), want (%s,%s)", tc.key,
+			t.Errorf("%s position (asset_class,vehicle) = (%s,%s), want (%s,%s)", tc.key,
 				p.AssetClass, p.Vehicle, tc.exposure, tc.vehicle)
 		}
 		i, ok := instByID[tc.key]
@@ -466,7 +466,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 			t.Fatalf("no instrument for %s", tc.key)
 		}
 		if i.AssetClass != tc.exposure || i.Vehicle != tc.vehicle {
-			t.Errorf("%s instrument V2 = (%s,%s), want (%s,%s) (must match its position)",
+			t.Errorf("%s instrument (asset_class,vehicle) = (%s,%s), want (%s,%s) (must match its position)",
 				tc.key, i.AssetClass, i.Vehicle, tc.exposure, tc.vehicle)
 		}
 	}

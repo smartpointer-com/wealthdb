@@ -75,9 +75,10 @@ holds many securities. All values are adapter defaults; config-side
 - **tax_wrapper** = `taxable_personal`. The holdings are personally held
   and taxable (K-1 / 1042-S confirm); no tax-advantaged wrapper.
 - **management_style** = `self_directed`. `management_style` is an
-  account-level field (a canonical position carries none), and a Carta account can hold both holder-controlled equity and a GP-managed fund — so the
-  GP-vs-holder distinction rides on each position's `asset_class`
-  (`private_fund` vs `private_equity`), not here. The holder controls what the
+  account-level field (a canonical position carries none), and a Carta account may hold holder-controlled equity, GP-managed funds, and pre-conversion SAFEs — so the GP-managed-fund vs holder-controlled-equity vs
+  pre-conversion-SAFE distinction rides on each position's (`asset_class`,
+  `vehicle`) pair ((`private_equity`, `fund`) vs (`private_equity`, `stock`) vs
+  (`private_debt`, `convertible_note`)), not here. The holder controls what the
   portfolio holds, so the account is self-directed.
 - **base_currency** = `USD` (all Carta holdings; the cap-table side reports the
   currency as `$`, normalised to `USD`). Set on the account so the
@@ -95,8 +96,9 @@ latest `position_status` is `exited`, then **aggregating the surviving lots
 into one position per company**. An exited holding disappears exactly at its
 disposition date, with no full-portfolio re-storage in silver.
 
-**Cap-table** (the held `securities` lots of one company → one `private_equity`
-position):
+**Cap-table** (the held `securities` lots of one company → one position, whose
+(`asset_class`, `vehicle`) pair is derived from the aggregated security types —
+see §6):
 - `quantity` = Σ the **share** lots' quantity (the common-stock count; an
   unexercised option is a different unit and would double-count the
   certificates it became, so it is excluded here and kept as a 0-value lot in
@@ -109,7 +111,8 @@ position):
 - The per-lot detail (label, `security_type`, quantity, cost, market_value,
   issue date, strike) rides in the position payload under `lots`.
 
-**Fund LP** (one position per held `fund_metrics` row → `private_fund`):
+**Fund LP** (one position per held `fund_metrics` row → (`private_equity`,
+`fund`)):
 - `market_value` = `net_asset_value` — the NAV of the latest quarterly
   statement on/before the as-of date (a real per-quarter time series).
 - `book_value` = `capital_contributed` (cost basis paid in).
@@ -125,24 +128,41 @@ The currency on every position is normalised to ISO (`$` → `USD`).
 
 ## 6. Instruments
 
-One instrument per entity (`entity:<id>`), `asset_class` =
-`private_fund` for the fund, `private_equity` for the cap-table company.
-`name` = the entity legal name; ISIN/CUSIP/symbol/currency are NULL (private
-securities have none). The company's single position references its instrument;
-its lots (e.g. several share certificates + option grants) are aggregated into that one
-position, not separate instruments or positions.
+One instrument per entity (`entity:<id>`), carrying the same (`asset_class`,
+`vehicle`) pair its position does: (`private_equity`, `fund`) for the fund, and
+for a cap-table company the pair its security types derive — (`private_equity`,
+`stock`), (`private_equity`, `option`), or (`private_debt`, `convertible_note`)
+for a purely-convertible holding (see below). `name` = the entity legal name;
+ISIN/CUSIP/symbol/currency are NULL (private securities have none). The
+company's single position references its instrument; its lots (e.g. several share certificates + option grants) are aggregated into that one position, not separate
+instruments or positions.
 
-### Asset classes (new, canonical)
+### Taxonomy (`asset_class` × `vehicle`)
 
-`AssetClassPrivateEquity` ("private_equity") and `AssetClassPrivateFund`
-("private_fund") were added to `internal/canonical/enums.go` for this
-adapter. They sit beside the public-market `equity` / `fund` so portfolio
-queries can separate illiquid, non-quotable private holdings from listed
-securities. Every cap-table security type folds into `private_equity` (a
-private ESO is not lumped with exchange-traded `option`, nor a private share
-with public `equity`); the type stays in the payload. `asset_class` carries
-no SQL CHECK (Go-validated via `AssetClass.Valid()`), so no gold migration
-was needed for the enum — only migration `0013` widening the
+Every Carta holding derives a two-dimensional (`asset_class`, `vehicle`) pair —
+the exposure (what moves the value) and the wrapper (how it is held), per
+[`docs/TAXONOMY.md`](../TAXONOMY.md). `capTableTaxonomy` (`classmap.go`)
+classifies a cap-table position from the security types it aggregates:
+
+- any real share-settled unit (share / RSU / RSA / PIU / equity grant) →
+  (`private_equity`, `stock`);
+- equity that is only option-shaped (option / warrant / SAR) →
+  (`private_equity`, `option`);
+- a purely-convertible holding still pre-conversion (a SAFE / note) →
+  (`private_debt`, `convertible_note`) — carried at principal, kept distinct
+  from equity until it converts.
+
+A fund LP interest is (`private_equity`, `fund`) (`appendFundAt` in
+`snapshots.go`; a Carta fund investment is read as a venture/PE feeder). The illiquid
+private exposures sit beside the public-market ones so portfolio queries can
+separate non-quotable private holdings from listed securities; the security
+type stays queryable in the payload (a private ESO is not lumped with an
+exchange-traded `option`, nor a private share with public equity).
+
+Neither `asset_class` nor `vehicle` carries a SQL CHECK — both are
+Go-validated (`AssetClass.Valid()` / `Vehicle.Valid()`, and the combination
+via `ValidTaxonomyPair`, in `internal/canonical/taxonomy.go`), so no gold
+migration was needed for the enums — only migration `0013` widening the
 `silver_sources.silver_kind` whitelist to admit `carta`.
 
 ## 7. Transactions

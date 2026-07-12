@@ -99,7 +99,13 @@ from the previous load.
   `overview.csv` didn't make it into a bronze snapshot yet); the
   gold layer's per-column upsert leaves prior values intact.
 
-- **`asset_class`** is `crypto` for every position.
+- **`asset_class`** is `crypto` and **`vehicle`** is `physical`
+  for every position — coins and tokens held directly in a
+  wallet or exchange account. The pair is a single constant
+  (`taxonomy` in
+  [`classmap.go`](../../internal/silver/cointracking/classmap.go);
+  the (`crypto`, `physical`) pair of `docs/TAXONOMY.md`), since CT
+  only ever describes digital assets held directly.
 
 ## 6. Instruments
 

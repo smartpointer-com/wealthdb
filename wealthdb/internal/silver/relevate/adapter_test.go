@@ -217,10 +217,10 @@ func TestAssetClassMapping(t *testing.T) {
 }
 
 // TestTaxonomyMapping covers the 2-D (exposure, vehicle) pair the
-// migration double-writes alongside the legacy asset_class. Every
-// sleeve is a Swisscanto index fund → vehicle `fund`, except the
-// uninvested Liquidity sleeve → `cash`/`demand_deposit`; the label
-// (and, for Alternatives, the fund name) picks the exposure.
+// adapter derives from the sleeve label. Every sleeve is a Swisscanto
+// index fund → vehicle `fund`, except the uninvested Liquidity sleeve
+// → `cash`/`demand_deposit`; the label (and, for Alternatives, the
+// fund name) picks the exposure.
 func TestTaxonomyMapping(t *testing.T) {
 	cases := []struct {
 		raw, name string

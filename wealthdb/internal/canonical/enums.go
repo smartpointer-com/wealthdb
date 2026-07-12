@@ -4,10 +4,21 @@
 // docs/DESIGN.md §7.2 for the SQL-side definitions.
 package canonical
 
-// AssetClass is the canonical asset-class taxonomy for `positions.asset_class`
-// and `instruments.asset_class`. Adapters map their source-specific
-// type codes onto these values; unrecognised codes fall through to
-// AssetClassOther per docs/DESIGN.md §6.8.
+// AssetClass is the exposure dimension of the instrument taxonomy —
+// what moves a holding's value. The recognised exposure values and
+// the Valid method live in taxonomy.go (docs/TAXONOMY.md §2).
+//
+// The consts below are the intermediate 1-D classification labels
+// the silver adapters use inside their classmaps (equity, etf, bond,
+// fund, money_market, spv, private_fund, …). These labels are never
+// written to gold: each adapter translates them to an
+// (exposure, vehicle) pair at the emit boundary, so they need not be
+// members of the exposure set (ValidCoarse tests membership in this
+// intermediate vocabulary; Valid, in taxonomy.go, tests the exposure
+// set). A subset — private_equity, real_estate, metal, crypto, other
+// — double as exposure values and keep the same meaning in both
+// roles. Unrecognised source codes fall through to AssetClassOther
+// (docs/DESIGN.md §6.8).
 type AssetClass string
 
 const (
@@ -68,7 +79,13 @@ const (
 	AssetClassOther    AssetClass = "other"
 )
 
-var assetClassValues = map[AssetClass]struct{}{
+// assetClassCoarseValues is the intermediate 1-D classification
+// vocabulary the silver adapters use inside their classmaps before
+// mapping to an (exposure, vehicle) pair. It is NOT the set written to
+// gold — that is the exposure set in taxonomy.go (AssetClass.Valid).
+// The two overlap only on the shared strings (private_equity,
+// real_estate, metal, crypto, other).
+var assetClassCoarseValues = map[AssetClass]struct{}{
 	AssetClassEquity: {}, AssetClassETF: {}, AssetClassBondETF: {},
 	AssetClassFund: {},
 	AssetClassBond: {}, AssetClassOption: {}, AssetClassFuture: {},
@@ -81,12 +98,14 @@ var assetClassValues = map[AssetClass]struct{}{
 	AssetClassOther:    {},
 }
 
-// Valid reports whether the receiver is one of the recognised
-// (legacy 1-D) AssetClass values. The gold writer calls this before
-// writing the legacy `asset_class` column. Removed at the taxonomy
-// cutover, when Valid becomes ValidV2 (see taxonomy_v2.go).
-func (a AssetClass) Valid() bool {
-	_, ok := assetClassValues[a]
+// ValidCoarse reports whether the receiver is a recognised coarse 1-D
+// classification label (the adapters' intermediate vocabulary above).
+// Distinct from Valid (taxonomy.go), which checks the exposure set
+// written to gold: an adapter uses ValidCoarse to canonicalise a raw
+// silver class — falling back to AssetClassOther for an unrecognised
+// label — before mapping it to an (exposure, vehicle) pair.
+func (a AssetClass) ValidCoarse() bool {
+	_, ok := assetClassCoarseValues[a]
 	return ok
 }
 

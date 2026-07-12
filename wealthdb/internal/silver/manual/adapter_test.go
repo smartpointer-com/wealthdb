@@ -301,10 +301,9 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	}
 }
 
-// TestTaxonomyPair locks in the 2-D (asset_class_new, vehicle) projection for
+// TestTaxonomyPair locks in the 2-D (asset_class, vehicle) projection for
 // every manual kind, on BOTH the position and its instrument (they must agree),
-// and asserts each emitted pair is admitted by the taxonomy. The legacy
-// AssetClass column is a separate control and is checked elsewhere.
+// and asserts each emitted pair is admitted by the taxonomy.
 func TestTaxonomyPair(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)

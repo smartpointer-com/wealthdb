@@ -50,12 +50,10 @@ func assetClassFor(raw, name string) canonical.AssetClass {
 }
 
 // taxonomyFor is the 2-D (exposure, vehicle) analogue of
-// assetClassFor — the V2 taxonomy the migration adds alongside the
-// legacy 1-D asset_class (TAXONOMY.md). The two are derived from the
-// same silver signals but land in separate columns; this helper is
-// invoked next to assetClassFor at every InstrumentChange /
-// PositionChange the adapter builds, and the pair it returns always
-// satisfies canonical.ValidTaxonomyPair.
+// assetClassFor: it derives the (asset_class, vehicle) pair from the
+// same silver signals (TAXONOMY.md). This helper is invoked at every
+// InstrumentChange / PositionChange the adapter builds, and the pair
+// it returns always satisfies canonical.ValidTaxonomyPair.
 //
 // Vehicle is `fund` for every sleeve except Liquidity: the holder
 // can only pick from a menu of pre-built Swisscanto index-fund

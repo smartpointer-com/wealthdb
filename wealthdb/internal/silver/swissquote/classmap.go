@@ -58,11 +58,9 @@ func assetClassFor(xlsHeader string) canonical.AssetClass {
 	}
 }
 
-// taxonomyFor is the 2-D-taxonomy counterpart of assetClassFor: it
-// maps a Swissquote XLS section header to a (exposure, vehicle) pair
-// per TAXONOMY.md, running alongside the legacy assetClassFor during
-// the double-write migration (the legacy call is the control; this
-// feeds the new asset_class_new + vehicle columns).
+// taxonomyFor is the 2-D counterpart of assetClassFor (its 1-D
+// intermediate sibling): it maps a Swissquote XLS section header to
+// the (exposure, vehicle) pair emitted to gold, per TAXONOMY.md.
 //
 // The vehicle is pinned by the section header; the exposure is fixed
 // except for the two collective-vehicle sections ("ETFs", "Funds"),

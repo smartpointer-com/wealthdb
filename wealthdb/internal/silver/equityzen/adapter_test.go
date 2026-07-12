@@ -233,7 +233,7 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 	if q := posByT[iso(t, "2022-01-01")]["d1"].Quantity; q == nil || q.StringFixed(2) != "100.00" {
 		t.Errorf("d1 quantity = %v, want 100.00 (spv share count)", q)
 	}
-	// 2-D taxonomy (double-write): the SPV maps to private_equity × spv on
+	// 2-D taxonomy: the SPV maps to private_equity × spv on
 	// both the position and its instrument, and the pair must be admitted.
 	assertPair(t, "d1 position", posByT[iso(t, "2022-01-01")]["d1"].AssetClass,
 		posByT[iso(t, "2022-01-01")]["d1"].Vehicle,
@@ -390,7 +390,7 @@ func TestTransactions(t *testing.T) {
 	}
 }
 
-// assertPair checks a double-written 2-D (exposure, vehicle) pair against the
+// assertPair checks a 2-D (exposure, vehicle) pair against the
 // expected values and asserts the taxonomy admits it.
 func assertPair(t *testing.T, what string, gotAC canonical.AssetClass, gotV canonical.Vehicle,
 	wantAC canonical.AssetClass, wantV canonical.Vehicle) {

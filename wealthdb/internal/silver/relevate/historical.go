@@ -202,8 +202,8 @@ SELECT snapshot_at, account_external_id, isin,
 			})
 		}
 
-		// V2 taxonomy pair, shared by the instrument and position
-		// changes below.
+		// The (asset_class, vehicle) pair, shared by the instrument
+		// and position changes below.
 		acNew, veh := taxonomyFor(asset, secName)
 
 		// One InstrumentChange per (snap, ISIN).

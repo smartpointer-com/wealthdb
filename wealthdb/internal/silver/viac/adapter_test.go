@@ -255,12 +255,11 @@ func TestHistoricalSnapshotsSpanWindow(t *testing.T) {
 }
 
 // TestSnapshotsTaxonomyPairs asserts the 2-D taxonomy
-// (asset_class_new, vehicle) the adapter double-writes alongside the
-// legacy asset_class, one representative row per taxonomyFor branch.
-// It checks the instrument and the position agree on the pair, that
-// every emitted pair is admitted by canonical.ValidTaxonomyPair, and
-// that the legacy control column is left untouched. All instrument
-// names are synthetic placeholders — never a real VIAC fund.
+// (asset_class, vehicle) the adapter emits, one representative row
+// per taxonomyFor branch. It checks the instrument and the position
+// agree on the pair, and that every emitted pair is admitted by
+// canonical.ValidTaxonomyPair. All instrument names are synthetic
+// placeholders — never a real VIAC fund.
 func TestSnapshotsTaxonomyPairs(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
@@ -309,9 +308,8 @@ func TestSnapshotsTaxonomyPairs(t *testing.T) {
 		"CH0000000008": {canonical.AssetClassOther, canonical.VehicleOther},
 	}
 
-	// Instruments: assert the emitted pair, its validity, and that the
-	// legacy control column is unchanged (still the type-cast of silver's
-	// asset_class, never the new exposure).
+	// Instruments: assert the emitted (asset_class, vehicle) pair and
+	// that it's admitted by canonical.ValidTaxonomyPair.
 	instByID := map[string]canonical.InstrumentChange{}
 	for _, in := range batch.Instruments {
 		instByID[in.InstrumentExternalID] = in

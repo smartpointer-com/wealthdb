@@ -100,7 +100,7 @@ func TestSnapshotsPositionsAndInstruments(t *testing.T) {
 	}
 }
 
-// TestSnapshotsTaxonomyPair verifies the 2-D-taxonomy double-write:
+// TestSnapshotsTaxonomyPair verifies the 2-D taxonomy:
 // each XLS section header maps to the expected (AssetClass,
 // Vehicle) pair on BOTH the InstrumentChange and the matching
 // PositionChange, the two agree, and every pair is admitted by

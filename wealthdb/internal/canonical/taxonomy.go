@@ -1,19 +1,17 @@
 package canonical
 
-// This file carries the two-dimensional instrument taxonomy that
-// replaces the single `asset_class` column: exposure (the asset
-// class — what moves the value) and vehicle (the wrapper — how the
-// exposure is held). See docs/TAXONOMY.md for definitions and
-// docs/TAXONOMY-PLAN.md for the migration. During the migration the
-// legacy 1-D AssetClass values (enums.go) and these V2 values coexist:
-// the legacy `asset_class` column keeps its old values, the new
-// `asset_class_new` column takes V2 values, and `vehicle` takes
-// Vehicle values. At cutover the legacy values are pruned, Valid
-// becomes ValidV2, and asset_class_new is renamed back to asset_class.
+// This file carries the two-dimensional instrument taxonomy:
+// exposure (the asset class — what moves the value) and vehicle (the
+// wrapper — how the exposure is held). See docs/TAXONOMY.md for
+// definitions. The exposure dimension reuses the AssetClass type
+// declared in enums.go; the values enumerated here are the ones that
+// reach gold's `asset_class` column, and Valid gates them. Vehicle
+// (below) is the wrapper dimension.
 
-// V2 asset-class (exposure) values. Some strings are shared with the
-// legacy set (PrivateEquity, RealEstate, Metal, Crypto, Other) and
-// keep the same meaning across both vocabularies; the rest are new.
+// Asset-class (exposure) values written to gold. Some strings are
+// shared with the adapters' intermediate 1-D vocabulary in enums.go
+// (PrivateEquity, RealEstate, Metal, Crypto, Other) and keep the same
+// meaning in both roles; the rest are exposure-only.
 const (
 	AssetClassPublicEquity    AssetClass = "public_equity"
 	AssetClassFixedIncome     AssetClass = "fixed_income"
@@ -28,13 +26,14 @@ const (
 	// reused verbatim here.
 )
 
-// assetClassV2Values is the exposure dimension of the 2-D taxonomy —
-// TAXONOMY.md §2. The legacy-only values (equity, etf, bond_etf,
-// fund, bond, option, future, fx_forward, fx_option, money_market,
-// otc_derivative, spv, private_fund, convertible_note, mortgage) are
-// deliberately absent: they are wrappers or wrapper+exposure blends,
-// not pure exposures, and become (asset_class, vehicle) pairs.
-var assetClassV2Values = map[AssetClass]struct{}{
+// assetClassValues is the exposure dimension of the taxonomy —
+// TAXONOMY.md §2. The adapters' intermediate-only labels (equity,
+// etf, bond_etf, fund, bond, option, future, fx_forward, fx_option,
+// money_market, otc_derivative, spv, private_fund, convertible_note,
+// mortgage) are deliberately absent: they are wrappers or
+// wrapper+exposure blends, not pure exposures, and reach gold as
+// (asset_class, vehicle) pairs.
+var assetClassValues = map[AssetClass]struct{}{
 	AssetClassPublicEquity: {}, AssetClassPrivateEquity: {},
 	AssetClassFixedIncome: {}, AssetClassPrivateDebt: {},
 	AssetClassRealEstate: {}, AssetClassInfrastructure: {},
@@ -43,11 +42,12 @@ var assetClassV2Values = map[AssetClass]struct{}{
 	AssetClassMultiAsset: {}, AssetClassOther: {},
 }
 
-// ValidV2 reports whether the receiver is a recognised V2 exposure
-// value. The gold writer calls this before writing the
-// `asset_class_new` column. At cutover this logic moves into Valid.
-func (a AssetClass) ValidV2() bool {
-	_, ok := assetClassV2Values[a]
+// Valid reports whether the receiver is a recognised exposure value.
+// The gold writer and config validation call it before an
+// asset_class reaches gold. The adapters' intermediate 1-D labels
+// (enums.go) are not exposures and are not accepted here.
+func (a AssetClass) Valid() bool {
+	_, ok := assetClassValues[a]
 	return ok
 }
 

@@ -1,10 +1,12 @@
 # Instrument taxonomy: asset class × vehicle
 
-Reference for the two-dimensional instrument classification that
-replaces the single `asset_class` column. Status: **approved design,
-not yet implemented** — the enums in `internal/canonical/enums.go`
-and the gold schema still carry the 1-D taxonomy; this document is
-the target they migrate to.
+Reference for the two-dimensional instrument classification. Status:
+**implemented** — `asset_class` (exposure) and `vehicle` (wrapper)
+are the live gold columns; the canonical enums live in
+`internal/canonical/taxonomy.go` and `enums.go`, and every adapter
+emits an (`asset_class`, `vehicle`) pair. Section 4 records how the
+former single `asset_class` values map onto the pair, for reading
+data or history captured before the split.
 
 ## 1. Design principles
 
@@ -74,9 +76,15 @@ the target they migrate to.
 
 (18 including `other`.)
 
-## 4. Migration: how the 1-D classes dissolve
+## 4. How the former 1-D classes map to the pair
 
-| 1-D `asset_class` (today) | 2-D `(asset_class, vehicle)` |
+The single `asset_class` scheme this replaced used the values in the
+left column; each dissolves into one or more `(asset_class, vehicle)`
+pairs. Kept as a reading aid for pre-split data and for the adapters'
+intermediate 1-D classifiers, which still emit these values internally
+before mapping to the pair.
+
+| former 1-D `asset_class` | 2-D `(asset_class, vehicle)` |
 | --- | --- |
 | `equity` | `public_equity × stock` |
 | `etf` | `public_equity × etf` (the residual default after exposure refinement) |
@@ -99,8 +107,8 @@ the target they migrate to.
 | `mortgage` | `real_estate × mortgage` |
 | `other` | `other × other`, minus the recoverable cases above |
 
-`fund` and `private_fund` are the only values whose dissolution needs
-new classification logic; every other mapping is mechanical.
+`fund` and `private_fund` were the only values whose dissolution
+needed real classification logic; every other mapping is mechanical.
 
 ## 5. Decisions of record
 
@@ -137,7 +145,7 @@ new classification logic; every other mapping is mechanical.
 | Ticker/description shapes (fidelity family) | both | CUSIP-9→bond, `…X`→fund, OCC→option, word-ETF→etf |
 | Security-name keywords (shared refiner) | asset_class | bullion / crypto / bond keywords refine exposure inside etf/fund vehicles |
 | Collector kind (private-market + manual) | both | carta/angellist/equityzen/manual kinds map directly to pairs |
-| `instrument_overrides` (config) | both | escape hatch; gains a `vehicle` field alongside `asset_class` |
+| `instrument_overrides` (config) | both | escape hatch; pins both `asset_class` and `vehicle` for a named instrument |
 
 Where a source pins only one dimension, the other defaults from the
 pair tables above (e.g. a vehicle-only "Funds" section header defaults

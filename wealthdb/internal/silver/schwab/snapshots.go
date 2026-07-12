@@ -318,10 +318,9 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 		if ac == canonical.AssetClassETF {
 			ac = silver.RefineETFClass(name)
 		}
-		// Double-write the 2-D taxonomy alongside the legacy class
-		// (which stays the control). taxonomyFor splits the same
-		// assetType/type signal into (exposure, vehicle); name feeds
-		// the ETF/fund exposure refinement.
+		// taxonomyFor maps the same assetType/type signal to the
+		// single (exposure, vehicle) pair emitted to gold; name
+		// feeds the ETF/fund exposure refinement.
 		acNew, vehicle := taxonomyFor(pp.Instrument.AssetType, pp.Instrument.Type, name)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,

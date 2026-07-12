@@ -219,10 +219,10 @@ func TestSnapshotsBasic(t *testing.T) {
 	if len(batch.Instruments) != 1 || batch.Instruments[0].InstrumentExternalID != "037833100" {
 		t.Errorf("instruments = %+v", batch.Instruments)
 	}
-	// 2-D double-write: an EQUITY row is public_equity × stock on
-	// both the instrument and the position (they must agree).
+	// An EQUITY row is public_equity × stock on both the instrument
+	// and the position (they must agree).
 	if got := batch.Instruments[0].AssetClass; got != canonical.AssetClassPublicEquity {
-		t.Errorf("instrument asset_class_new = %q, want public_equity", got)
+		t.Errorf("instrument asset_class = %q, want public_equity", got)
 	}
 	if got := batch.Instruments[0].Vehicle; got != canonical.VehicleStock {
 		t.Errorf("instrument vehicle = %q, want stock", got)
@@ -232,7 +232,7 @@ func TestSnapshotsBasic(t *testing.T) {
 	}
 	p := batch.Positions[0]
 	if p.AssetClass != canonical.AssetClassPublicEquity || p.Vehicle != canonical.VehicleStock {
-		t.Errorf("position (asset_class_new, vehicle) = (%q, %q), want (public_equity, stock)",
+		t.Errorf("position (asset_class, vehicle) = (%q, %q), want (public_equity, stock)",
 			p.AssetClass, p.Vehicle)
 	}
 	if p.PositionKey != "037833100" {
@@ -363,12 +363,11 @@ func TestSnapshotsAssetClassMapping(t *testing.T) {
 	}
 }
 
-// TestTaxonomyForLive pins the 2-D (exposure, vehicle) pairs the
-// live-api path double-writes alongside the legacy class. Security
-// names are synthetic placeholders; only the exposure keywords
-// (BITCOIN / GOLD / TREASURY BOND / plain) matter to
-// RefineETFExposure. Every emitted pair must satisfy
-// canonical.ValidTaxonomyPair.
+// TestTaxonomyForLive pins the (exposure, vehicle) pairs the
+// live-api path emits. Security names are synthetic placeholders;
+// only the exposure keywords (BITCOIN / GOLD / TREASURY BOND /
+// plain) matter to RefineETFExposure. Every emitted pair must
+// satisfy canonical.ValidTaxonomyPair.
 func TestTaxonomyForLive(t *testing.T) {
 	cases := []struct {
 		assetType   string
@@ -408,11 +407,11 @@ func TestTaxonomyForLive(t *testing.T) {
 }
 
 // TestTaxonomyHistorical pins the statement-history shape classifier
-// that produces real (exposure, vehicle) pairs where the legacy path
-// leaves `other`. Instrument keys and descriptions are synthetic
-// placeholders shaped to trip each heuristic (OCC symbol, CUSIP-9,
-// coupon line, money-market / word-ETF description, mutual-fund
-// ticker). Every emitted pair must satisfy canonical.ValidTaxonomyPair.
+// that produces the (exposure, vehicle) pairs for historical rows.
+// Instrument keys and descriptions are synthetic placeholders shaped
+// to trip each heuristic (OCC symbol, CUSIP-9, coupon line,
+// money-market / word-ETF description, mutual-fund ticker). Every
+// emitted pair must satisfy canonical.ValidTaxonomyPair.
 func TestTaxonomyHistorical(t *testing.T) {
 	cases := []struct {
 		section     string

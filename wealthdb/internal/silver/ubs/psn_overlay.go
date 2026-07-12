@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // PSN-side overlay helpers. The orchestrator pre-fetches PSN
@@ -15,33 +13,11 @@ import (
 // hands it to the merge layer so per-entity append funcs don't
 // have to redo the same joins.
 
-// assetClassByISIN returns a per-ISIN canonical asset class
-// derived from PSN's CFI. Used by the web reader to stamp web-
-// emitted InstrumentChange rows with the same asset_class PSN
-// would emit, so the per-column upsert guard in gold.instruments
-// stays idempotent on asset_class while letting web's Name +
-// Currency win on later last_seen_at.
-func (r *psnReader) assetClassByISIN(ctx context.Context) (map[string]canonical.AssetClass, error) {
-	if r == nil {
-		return nil, nil
-	}
-	meta, err := r.instrumentMetaByISIN(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]canonical.AssetClass, len(meta))
-	for isin, m := range meta {
-		out[isin] = m.AssetClass
-	}
-	return out, nil
-}
-
-// taxPairByISIN returns a per-ISIN 2-D taxonomy pair (exposure,
-// vehicle) derived from PSN's CFI/UAC — the 2-D counterpart of
-// assetClassByISIN. The web overlay stamps web-emitted instruments
-// with it exactly as it does the legacy class, keeping gold's
-// per-column upsert guard idempotent on asset_class_new / vehicle
-// across the web→PSN cutover.
+// taxPairByISIN returns a per-ISIN taxonomy pair (exposure, vehicle)
+// derived from PSN's CFI/UAC. The web overlay stamps web-emitted
+// instruments with it (web has no CFI of its own), keeping gold's
+// per-column upsert guard idempotent on asset_class / vehicle across
+// the web→PSN cutover while letting web's later Name + Currency win.
 func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, error) {
 	if r == nil {
 		return nil, nil
