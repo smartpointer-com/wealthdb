@@ -58,6 +58,7 @@ _current_schema_version = silver.current_schema_version
 
 import pdf_parsers as pp
 import tax_form_parsers as tf
+from numparse import parse_amount
 
 log = logging.getLogger("schwab-web.load")
 
@@ -889,18 +890,7 @@ def _parse_money(s) -> float | None:
     non-money input. Conservative: silver stores the raw string
     in `payload` regardless; this is for ordering / arithmetic
     indexes only."""
-    if s is None:
-        return None
-    txt = str(s).strip()
-    if not txt:
-        return None
-    neg = txt.startswith("-") or (txt.startswith("(") and txt.endswith(")"))
-    txt = txt.strip("()-").lstrip("$").replace(",", "")
-    try:
-        v = float(txt)
-    except ValueError:
-        return None
-    return -v if neg else v
+    return parse_amount(s, dollar=True, leading_minus=True)
 
 
 def _insert_tx_history_transactions(conn: sqlite3.Connection,

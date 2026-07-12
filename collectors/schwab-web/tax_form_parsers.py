@@ -34,6 +34,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from numparse import parse_amount
+
 log = logging.getLogger("schwab-web.tax_form_parsers")
 
 _YYYYMMDD_RE = re.compile(r"^\s*(\d{4})(\d{2})(\d{2})\s*$")
@@ -51,18 +53,7 @@ _TRUTHY = {"Y", "YES", "TRUE", "1", "X", "CHECKED"}
 def _to_float(s) -> float | None:
     """Parse a 1099 numeric cell to float. Returns None for
     blank / non-numeric input. Strips $ and thousands commas."""
-    if s is None:
-        return None
-    txt = str(s).strip().lstrip("$").replace(",", "")
-    if not txt:
-        return None
-    neg = txt.startswith("(") and txt.endswith(")")
-    txt = txt.strip("()")
-    try:
-        v = float(txt)
-    except ValueError:
-        return None
-    return -v if neg else v
+    return parse_amount(s, dollar_first=True)
 
 
 def _iso_from_yyyymmdd(s: str | None) -> str | None:

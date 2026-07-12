@@ -51,6 +51,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import date, datetime
 
 from collectorkit.pdf import extract_text_pdfium as _extract_pdf_text
+from numparse import parse_amount
 
 log = logging.getLogger("schwab-web.pdf_parsers")
 
@@ -383,20 +384,7 @@ _CUSIP_RE = re.compile(r"^[A-Z0-9]{8}\d$")
 
 
 def _parse_number(s: str) -> float | None:
-    if s is None:
-        return None
-    s = s.strip()
-    if not s:
-        return None
-    neg = s.startswith("(") and s.endswith(")")
-    if neg:
-        s = s[1:-1]
-    s = s.replace(",", "")
-    try:
-        v = float(s)
-    except ValueError:
-        return None
-    return -v if neg else v
+    return parse_amount(s)
 
 
 def _line_starts_new_row(line: str) -> bool:
@@ -1911,29 +1899,14 @@ def _parse_cash_summary_new(text: str) -> dict | None:
 
     nums_text = _CASH_DATA_RE.findall(data_line)
 
-    def _clean(s: str) -> float | None:
-        # Strip leading $, leading ( and trailing ).
-        if s is None:
-            return None
-        s = s.strip()
-        neg = (s.startswith("(") and s.endswith(")")) or (
-            s.startswith("($") and s.endswith(")")
-        )
-        if neg:
-            s = s[1:-1]
-        s = s.lstrip("$")
-        # Stray paren around $ already removed; "$" might still
-        # lead if we had "(${num})" form.
-        s = s.lstrip("$").replace(",", "")
-        try:
-            v = float(s)
-        except ValueError:
-            return None
-        return -v if neg else v
-
-    # Map by position; missing columns leave NULL.
+    # Map by position; missing columns leave NULL. Cash cells carry a
+    # leading "$" and parenthesised negatives (e.g. "($1,234.56)").
     def _at(i):
-        return _clean(nums_text[i]) if i < len(nums_text) else None
+        return (
+            parse_amount(nums_text[i], dollar=True)
+            if i < len(nums_text)
+            else None
+        )
 
     opening = _at(0)
     deposits = _at(1)
@@ -1951,7 +1924,7 @@ def _parse_cash_summary_new(text: str) -> dict | None:
         if "OtherActivity" in cand or "Other Activity" in cand:
             ms = _CASH_DATA_RE.findall(cand)
             if ms:
-                other_activity = _clean(ms[0])
+                other_activity = parse_amount(ms[0], dollar=True)
             break
 
     def _sum_or_none(*vals):
