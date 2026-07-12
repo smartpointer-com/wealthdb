@@ -47,9 +47,6 @@ log = logging.getLogger("ubs-web.load")
 # UTC timestamp directory pattern from download.py's ts_slug().
 DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
-# Migration file pattern: NNNN_<slug>.sql, sorted numerically.
-MIGRATION_FILE_RE = re.compile(r"^(\d+)_[a-z0-9_-]+\.sql$", re.IGNORECASE)
-
 # UBS positions.csv columns we care about (semicolon-delimited,
 # UTF-8 BOM, CRLF). Header row defines them in the order below.
 POSITIONS_COLS = [
@@ -212,19 +209,6 @@ def iban_to_psn_acct_id(iban_c: str | None) -> str | None:
     base = iban_c[12:20]
     chk = iban_c[20]
     return branch + "0000" + "00" + base + "0000" + chk
-
-
-def relationship_prefix_from_iban(iban_c: str | None) -> str | None:
-    """Extract the banking-relationship account-number prefix
-    from a canonical IBAN. For a canonical IBAN of the shape
-    'CHKKBBBBRRRRAAAAAAAAC' the prefix is 'RRRR AAAAAAAA' (branch +
-    8-char account base). Used as a proxy join key when the opaque
-    bankingRelationId tokens differ across sessions."""
-    if not iban_c or len(iban_c) != 21:
-        return None
-    branch = iban_c[8:12]
-    base8 = iban_c[12:20]
-    return f"{branch} {base8}"
 
 
 def portfolio_external_id_from_full(full: str | None) -> str | None:

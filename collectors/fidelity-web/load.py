@@ -76,7 +76,6 @@ def _logical_bronze_path(path):
 
 
 DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
-MIGRATION_FILE_RE = re.compile(r"^(\d+)_[a-z0-9_-]+\.sql$", re.IGNORECASE)
 
 # Fidelity activity rows whose Action column starts with one of
 # these tokens are pure-cash and legitimately have no instrument.
@@ -822,9 +821,6 @@ def _synthesise_activity_id(identity, occurrence):
 # ------------------------------------------------------------
 
 TAX_FORM_YEAR_RE = re.compile(r"^(\d{4})-")
-TRUST_AGREEMENT_TAIL_RE = re.compile(
-    r"Example-(\d+)", re.IGNORECASE,
-)
 
 
 def _load_documents(conn, snapshot_at, dump_dir, run_meta):

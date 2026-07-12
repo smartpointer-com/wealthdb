@@ -81,9 +81,10 @@ ACCOUNT_SUMMARY_URL = "https://client.schwab.com/app/accounts/summary"
 # enumerate per-account bank documents and fetch the PDFs.
 STATEMENTS_URL = "https://client.schwab.com/app/accounts/statements/"
 
-# Transaction History page. download.py's transactions mode
-# currently only captures the rendered HTML + a screenshot per
-# account; the real row-walker is deferred until we have a sample.
+# Transaction History page. download.py's transactions mode selects
+# each account, applies the date-range filter, and drives the Export
+# modal to save CSV/JSON/XML of the full tx-history; with
+# --with-more-detail it also walks each row's "More" detail modal.
 TRANSACTION_HISTORY_URL = "https://client.schwab.com/app/accounts/history/"
 
 

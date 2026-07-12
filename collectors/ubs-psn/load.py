@@ -239,6 +239,8 @@ def strip_header_noise(payload_obj):
 _MT_BLOCK4_RE = re.compile(r"\{4:\s*(.*?)\s*-\}", re.S)
 _BAL_RE = re.compile(r"^([CD])R?(\d{6})([A-Z]{3})([0-9,]+)$")
 _TAG_LINE_RE = re.compile(r"^:([0-9A-Z]+):(.*)$")
+# ISIN inside a :35B: value: the literal token followed by a 12-char code.
+_ISIN_RE = re.compile(r"ISIN\s+([A-Z0-9]{12})")
 
 
 def parse_mt_block4(text: str) -> list[tuple[str, str]]:
@@ -619,7 +621,7 @@ def load_mt535(conn, snapshot_at, relationship_id, mt_text):
             entries = {}
             for t, v in sequence:
                 if t == "35B" and not isin:
-                    m = re.search(r"ISIN\s+([A-Z0-9]{12})", v)
+                    m = _ISIN_RE.search(v)
                     if m:
                         isin = m.group(1)
                 entries.setdefault(t, []).append(v)
@@ -859,7 +861,7 @@ def load_mt566(conn, snapshot_at, relationship_id, mt_text):
     isin = None
     for tag, val in fields:
         if tag == "35B":
-            m = re.search(r"ISIN\s+([A-Z0-9]{12})", val)
+            m = _ISIN_RE.search(val)
             if m:
                 isin = m.group(1)
             break
@@ -966,7 +968,7 @@ def _parse_35b(val: str) -> tuple[str | None, str | None]:
     lines = [l.strip() for l in val.splitlines() if l.strip()]
     isin = None
     for l in lines:
-        m = re.match(r"ISIN\s+([A-Z0-9]{12})", l)
+        m = _ISIN_RE.match(l)
         if m:
             isin = m.group(1)
             break

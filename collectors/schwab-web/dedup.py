@@ -69,12 +69,12 @@ def build_statement_catalog(bronze_dir: Path) -> dict[str, tuple[str, int]]:
     A document counts as a statement PDF exactly as `load`'s statement walk
     decides: its manifest ``type`` maps to ``doc_kind == "statement"`` and its
     on-disk extension is ``pdf`` (extension trusted over the manifest's format
-    claim, as load does). ``logical_id`` is ``"<suffix>/<filename>"`` — the same
-    logical statement lands at the same id in every run. The ``logical_id`` is
-    ``"<suffix>/<doc_date>/<filename>"`` — load's own logical statement key
-    (`load.py`'s ``logical_doc_key``) minus the constant ``doc_kind``, so copies
-    collapse only when they are the same logical statement load would treat as
-    one. ``year_hint`` is the year of the manifest doc-date, the fallback
+    claim, as load does). ``logical_id`` is ``"<suffix>/<doc_date>/<filename>"``
+    — load's own logical statement key (`load.py`'s ``logical_doc_key``) minus
+    the constant ``doc_kind``, so the same logical statement lands at the same id
+    in every run and copies collapse only when they are the same logical
+    statement load would treat as one. ``year_hint`` is the year of the manifest
+    doc-date, the fallback
     `parse_statement_pdf` uses when a pre-2025 statement has no period header — so
     this verb parses each copy with the SAME hint load would, making "equivalent"
     mean "load yields the same rows". Keyed by the run-dir path so a mis-keyed

@@ -2,7 +2,7 @@
 """manual — load hand-maintained private-holding CSVs into a SQLite silver.
 
 The "manual" collector is the odd one out in wealthdb: there is **no source
-to fetch from**. There is no source to fetch. Bronze is two hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
+to fetch from**. Bronze is two hand-maintained CSV files in $XDG_DATA_HOME/wealthdb/manual/ for private holdings that have no
 bank or portal behind them — real estate, direct private-company equity,
 convertible notes, fund LP interests, single-deal SPVs, and other illiquid
 positions (e.g. a receivable). The position `kind` is the
@@ -54,7 +54,7 @@ log = logging.getLogger("manual.load")
 HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
-# Default data layout: $XDG_DATA_HOME/wealthdb/manual/{positions,valuations,transactions}.csv
+# Default data layout: $XDG_DATA_HOME/wealthdb/manual/{positions,valuations}.csv
 # with the silver DB (manual.db) alongside them. Both paths are overridable,
 # in precedence order: CLI flag > env var > default.
 ENV_BRONZE_DIR = "MANUAL_BRONZE_DIR"
@@ -381,8 +381,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Load hand-maintained private-holding CSVs into the "
                     "manual SQLite silver.")
     p.add_argument("--bronze-dir", type=Path, default=None,
-                   help=f"Directory holding positions.csv / valuations.csv / "
-                        f"transactions.csv. Precedence: this flag > "
+                   help=f"Directory holding positions.csv / valuations.csv. "
+                        f"Precedence: this flag > "
                         f"${ENV_BRONZE_DIR} env var > {DEFAULT_BRONZE_DIR}.")
     p.add_argument("--silver-db", type=Path, default=None,
                    help=f"SQLite silver path. Precedence: this flag > "

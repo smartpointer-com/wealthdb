@@ -221,10 +221,6 @@ def entry_stats(path: Path) -> tuple[int, int, float]:
     return files, size, newest
 
 
-# Back-compat alias — the reference collector named this dir_stats.
-dir_stats = entry_stats
-
-
 def human_size(n: int) -> str:
     for unit in ("B", "KiB", "MiB", "GiB"):
         if n < 1024 or unit == "GiB":

@@ -607,10 +607,10 @@ def run(args: argparse.Namespace) -> int:
         log.info("Dry run complete. No artefacts written.")
         return 0
 
-    # Default the transaction window to the last year if not specified.
-    # Schwab caps the transactions endpoint at 365 days per request; we
-    # set the default lookback so the entire range fits in a single Schwab
-    # call and we don't emit a 1-day trailing chunk on the boundary.
+    # Default the transaction window to 90 days if not specified —
+    # collectorkit's shared default lookback (resolve_lookback). Wider
+    # explicit windows are split into <=365-day chunks downstream to
+    # respect Schwab's per-request cap.
     today = datetime.now(timezone.utc).date()
     since, until, _, _ = cli.resolve_lookback(args, has_documents=False)
     log.info("Transaction window: %s -> %s", since, until)

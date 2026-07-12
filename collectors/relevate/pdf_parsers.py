@@ -44,7 +44,6 @@ ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{9}\d)\b")
 # have to embed the Unicode character.
 SWISS_THSEP = r"[’']"
 NUM_RE_SOURCE = rf"-?\d{{1,3}}(?:{SWISS_THSEP}\d{{3}})*\.\d+"
-NUM_RE = re.compile(NUM_RE_SOURCE)
 
 # 12-char account external id: NNNN.NNNNNN.N
 ACCOUNT_RE = re.compile(r"\b(\d{4}\.\d{6}\.\d)\b")
