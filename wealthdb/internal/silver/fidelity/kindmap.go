@@ -1,10 +1,18 @@
 package fidelity
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+)
 
 // kindFor maps fidelity-web's `transactions.kind` (the
 // first word of Fidelity's "Action" column, e.g. "BUY",
 // "DIVIDEND", "CASH_SWEEP_IN") to canonical TxKind values.
+// DISTRIBUTION is the one kind that needs row context — the
+// quantity and the payload's raw Action text — because Fidelity
+// overloads it (see the case below).
 //
 // Fidelity's signed `amount` already follows the single-entry
 // convention from the account's perspective (positive = cash in,
@@ -22,7 +30,7 @@ import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 //
 // Unrecognised values land as TxKindOther with the raw kind
 // preserved in payload.
-func kindFor(raw string) canonical.TxKind {
+func kindFor(raw string, quantity *canonical.Decimal, payload string) canonical.TxKind {
 	switch raw {
 	case "BUY", "REINVESTMENT":
 		// REINVESTMENT is the share-purchase leg of a reinvested
@@ -31,10 +39,21 @@ func kindFor(raw string) canonical.TxKind {
 		return canonical.TxKindBuy
 	case "SELL", "REDEMPTION":
 		return canonical.TxKindSell
-	case "DIVIDEND", "DISTRIBUTION":
-		// DISTRIBUTION covers mutual-fund capital-gains
-		// distributions, treated as dividend-class cash income
-		// for single-entry purposes.
+	case "DIVIDEND":
+		return canonical.TxKindDividend
+	case "DISTRIBUTION":
+		// Fidelity overloads DISTRIBUTION: pooled-fund capital-
+		// gain payouts are pure-cash rows, but the share legs of
+		// stock splits, ADR ratio changes and spinoffs also book
+		// as DISTRIBUTION — with Amount carrying the market value
+		// of the shares received even though no cash moved. Only
+		// the cash rows are dividend-class income; a nonzero
+		// quantity (shares received) or a SPINOFF action marks a
+		// corporate action instead.
+		if (quantity != nil && !quantity.IsZero()) ||
+			strings.Contains(payloadAction(payload), "SPINOFF") {
+			return canonical.TxKindCorporateAction
+		}
 		return canonical.TxKindDividend
 	case "INTEREST":
 		return canonical.TxKindInterest
@@ -56,4 +75,17 @@ func kindFor(raw string) canonical.TxKind {
 		return canonical.TxKindOther
 	}
 	return canonical.TxKindOther
+}
+
+// payloadAction extracts the raw "Action" text from a silver
+// transaction payload. Empty on absent key or malformed JSON —
+// callers treat that as "no signal", never an error.
+func payloadAction(payload string) string {
+	var p struct {
+		Action string `json:"Action"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	return strings.ToUpper(p.Action)
 }

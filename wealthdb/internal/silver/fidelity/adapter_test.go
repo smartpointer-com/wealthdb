@@ -182,6 +182,58 @@ func TestTransactions(t *testing.T) {
 	}
 }
 
+// TestDistributionKinds covers the DISTRIBUTION overload: share
+// legs of splits / ADR ratio changes (nonzero quantity) and
+// spinoffs (SPINOFF action) are corporate actions with the source
+// amount preserved; pure-cash capital-gain payouts stay
+// dividend-class income.
+func TestDistributionKinds(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('split',   900, 'ACC1', 'DISTRIBUTION', 'XYZ',   'USD', 10, 0, 1000.00,
+             '{"Action": "DISTRIBUTION EXAMPLE CORP COM NEW (XYZ) (Cash)"}'),
+            ('spinoff', 910, 'ACC1', 'DISTRIBUTION', 'XYZA',  'USD', 0,  0, 0.00,
+             '{"Action": "DISTRIBUTION SPINOFF FROM:(XYZ ) EXAMPLE AERO INC COM (XYZA) (Cash)"}'),
+            ('capgain', 920, 'ACC1', 'DISTRIBUTION', 'XFNDX', 'USD', 0,  0, 250.00,
+             '{"Action": "LONG-TERM CAP GAIN as of Dec-19-2024 EXAMPLE FUND (XFNDX) (Cash)"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	if len(batch.Transactions) != 3 {
+		t.Fatalf("transactions = %d, want 3", len(batch.Transactions))
+	}
+	byID := map[string]canonical.TransactionChange{}
+	for _, x := range batch.Transactions {
+		byID[x.TransactionExternalID] = x
+	}
+	for id, want := range map[string]canonical.TxKind{
+		"split":   canonical.TxKindCorporateAction,
+		"spinoff": canonical.TxKindCorporateAction,
+		"capgain": canonical.TxKindDividend,
+	} {
+		if got := byID[id].Kind; got != want {
+			t.Errorf("%s kind = %q, want %q", id, got, want)
+		}
+	}
+	// Corporate actions pass the source amount through unchanged
+	// (the MERGER convention): the split leg keeps its informative
+	// share-value amount, the income row its cash amount.
+	if v := byID["split"].NetAmount; v == nil || v.String() != "1000" {
+		t.Errorf("split net_amount = %v, want 1000", v)
+	}
+	if v := byID["capgain"].NetAmount; v == nil || v.String() != "250" {
+		t.Errorf("capgain net_amount = %v, want 250", v)
+	}
+}
+
 // TestAssetClassVehicleFor covers the live-path taxonomy helper:
 // each silver class maps to an (exposure, Vehicle) pair, with the
 // fund/ETF exposure refined from the security name. All synthetic

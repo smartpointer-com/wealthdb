@@ -45,7 +45,8 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			return nil, fmt.Errorf("fidelity Transactions scan: %w", err)
 		}
 
-		kind := kindFor(rawKind)
+		qty := silver.DecimalPtrOrNil(qtyStr)
+		kind := kindFor(rawKind, qty, payload)
 		netDec := silver.DecimalPtrOrNil(amtStr)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
@@ -54,7 +55,7 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			Kind:                  kind,
 			Currency:              currency,
 			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
-			Quantity:              silver.DecimalPtrOrNil(qtyStr),
+			Quantity:              qty,
 			Price:                 silver.DecimalPtrOrNil(priceStr),
 			Payload:               json.RawMessage(payload),
 		}
