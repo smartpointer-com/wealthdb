@@ -174,25 +174,10 @@ def mode_for_class(doc_class: str | None,
     return modes.get(doc_class, MODE_FETCH_VERIFY)
 
 
-# ---------------------------------------------------------------------------
-# Completeness classification — reuse prune's central manifest read, exactly as
-# dedup does, so docdedup only ever indexes COMPLETE prior runs and can never
-# disagree with prune/dedup about what "complete" means.
-# ---------------------------------------------------------------------------
-
-def _legacy_complete(run_dir, meta):
-    # Generic, conservative: a readable manifest (with or without a status
-    # field) means the dump finished. Skipping a run is always safe — it just
-    # means a document is re-fetched rather than linked.
-    return meta is not None
-
-
-def _is_complete(run_dir, meta):
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=_legacy_complete)
-
-
-_CLASSIFY_CFG = prune.PruneConfig(debug_subdirs=(), is_complete=_is_complete)
+# Completeness classification reuses prune's shared lenient config
+# (``prune.LENIENT_CLASSIFY_CFG``), exactly as dedup does, so docdedup only
+# ever indexes COMPLETE prior runs and can never disagree with prune / dedup /
+# recompress about what "complete" means.
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +268,7 @@ class SkipSet:
                 continue
             if run_dir.is_symlink():
                 continue
-            state, _reason = prune.classify(run_dir, _CLASSIFY_CFG)
+            state, _reason = prune.classify(run_dir, prune.LENIENT_CLASSIFY_CFG)
             if state != prune.COMPLETE:
                 continue
             manifest = _read_manifest(run_dir)

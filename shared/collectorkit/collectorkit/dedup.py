@@ -80,24 +80,6 @@ from collectorkit import bronze, prune
 DEFAULT_MIN_SIZE = 4096
 
 
-def _legacy_complete(run_dir, meta):
-    # Generic, conservative completeness: a readable manifest (with or
-    # without a status field) means the dump finished. Missing / unreadable
-    # / non-complete-status dumps are skipped — dedup never needs full
-    # coverage, and skipping is always safe (just less reclaimed).
-    return meta is not None
-
-
-def _is_complete(run_dir, meta):
-    return prune.status_classification(
-        meta, run_dir=run_dir, legacy_complete=_legacy_complete)
-
-
-# A generic PruneConfig purely so we can reuse prune.classify's central
-# manifest read + UNKNOWN-safety for the completeness decision.
-_CLASSIFY_CFG = prune.PruneConfig(debug_subdirs=(), is_complete=_is_complete)
-
-
 @dataclass
 class _FileRef:
     path: Path
@@ -122,30 +104,26 @@ class DupGroup:
 def _eligible_run_dirs(bronze_dir: Path, min_age_s: float, now: float,
                        skipped: list):
     """Yield COMPLETE, quiescent, non-symlink run dirs; record the rest."""
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
-        if run_dir.is_symlink():
-            skipped.append((run_dir, "symlinked run dir"))
-            continue
-        state, reason = prune.classify(run_dir, _CLASSIFY_CFG)
-        if state != prune.COMPLETE:
+    for e in prune.iter_run_eligibility(bronze_dir, prune.LENIENT_CLASSIFY_CFG,
+                                        min_age_s, now):
+        if e.verdict == prune.ELIGIBLE:
+            yield e.run_dir
+        elif e.verdict == prune.SKIP_SYMLINK:
+            skipped.append((e.run_dir, "symlinked run dir"))
+        elif e.verdict == prune.SKIP_NOT_COMPLETE:
+            reason = e.reason
             # prune's reason attributes a missing run.json to a crash; for
             # dedup a manifestless dump (schwab-api / ubs-psn legacy) may be
             # perfectly complete — we just can't confirm it, so say that
             # honestly rather than implying a crash.
             if reason.startswith("no manifest"):
                 reason = "no run.json — completeness not confirmed"
-            skipped.append((run_dir, reason))
-            continue
-        _, _, newest = prune.entry_stats(run_dir)
-        age_s = prune._quiescent_age_s(run_dir, newest, now)
-        if age_s is None:
-            skipped.append((run_dir, "unparseable timestamp slug"))
-            continue
-        if age_s < min_age_s:
-            skipped.append((run_dir, f"only {age_s / 60:.0f} min old "
-                                     "— possibly in flight"))
-            continue
-        yield run_dir
+            skipped.append((e.run_dir, reason))
+        elif e.verdict == prune.SKIP_BAD_SLUG:
+            skipped.append((e.run_dir, "unparseable timestamp slug"))
+        elif e.verdict == prune.SKIP_TOO_YOUNG:
+            skipped.append((e.run_dir, f"only {e.age_s / 60:.0f} min old "
+                                       "— possibly in flight"))
 
 
 def _walk_files(run_dir: Path, min_size: int):

@@ -185,6 +185,31 @@ def status_classification(
     return NON_COMPLETE, "no status field; legacy completeness signal absent"
 
 
+def _lenient_legacy_complete(run_dir: Path | None, meta: dict | None) -> bool:
+    """Generic, conservative completeness: a readable manifest (with or
+    without a ``status`` field) means the dump finished. Missing / unreadable
+    / non-``complete``-status dumps fail this, which for the reclaim engines
+    (dedup / docdedup / recompress) is always safe — skipping a run just means
+    a document is re-fetched or a byte-dup is left unshared, never data loss."""
+    return meta is not None
+
+
+def lenient_classification(run_dir: Path | None,
+                           meta: dict | None) -> Classification:
+    """Completeness classification for the reclaim engines: the normalized
+    ``status`` field with the lenient legacy fallback (a readable statusless
+    manifest counts as complete). Shared so dedup / docdedup / recompress can
+    never disagree about what "complete" means."""
+    return status_classification(
+        meta, run_dir=run_dir, legacy_complete=_lenient_legacy_complete)
+
+
+# A generic PruneConfig so the reclaim engines can reuse `classify`'s central
+# manifest read + UNKNOWN-safety for their completeness decision.
+LENIENT_CLASSIFY_CFG = PruneConfig(debug_subdirs=(),
+                                   is_complete=lenient_classification)
+
+
 # ---------------------------------------------------------------------------
 # Filesystem stats
 # ---------------------------------------------------------------------------
@@ -282,6 +307,69 @@ def _quiescent_age_s(run_dir: Path, newest_mtime: float,
     except OSError:
         own_mtime = 0.0
     return now - max(slug_ts, own_mtime, newest_mtime)
+
+
+# ---------------------------------------------------------------------------
+# Shared COMPLETE-and-quiescent eligibility gate (dedup / recompress)
+# ---------------------------------------------------------------------------
+
+# Verdicts from `iter_run_eligibility`: a run dir is either ELIGIBLE (a
+# complete, quiescent, non-symlink dump a reclaim engine may act on) or skipped
+# for one of four reasons. Each engine formats its own skip message from the
+# verdict, so their existing wording and skip accounting are preserved.
+ELIGIBLE = "eligible"
+SKIP_SYMLINK = "symlink"
+SKIP_NOT_COMPLETE = "not-complete"      # NON_COMPLETE or UNKNOWN (both skipped)
+SKIP_BAD_SLUG = "bad-slug"
+SKIP_TOO_YOUNG = "too-young"
+
+
+@dataclass(frozen=True)
+class Eligibility:
+    """One run dir's verdict from :func:`iter_run_eligibility`.
+
+    ``verdict`` is :data:`ELIGIBLE` or one of the ``SKIP_*`` codes. ``reason``
+    carries the ``classify`` reason for :data:`SKIP_NOT_COMPLETE` and
+    :data:`SKIP_TOO_YOUNG` (where an engine surfaces it) and is ``None``
+    otherwise. ``age_s`` is the quiescent age for :data:`SKIP_TOO_YOUNG` and
+    ``None`` otherwise.
+    """
+    run_dir: Path
+    verdict: str
+    reason: str | None = None
+    age_s: float | None = None
+
+
+def iter_run_eligibility(bronze_dir: Path, config: PruneConfig,
+                         min_age_s: float, now: float):
+    """Yield an :class:`Eligibility` per run dir under ``bronze_dir`` — the
+    COMPLETE-and-quiescent gate the disk-reclaim engines (dedup, recompress)
+    share.
+
+    The gate, in order: skip a symlinked run dir; classify via ``config`` and
+    skip anything not :data:`COMPLETE` (NON_COMPLETE *or* UNKNOWN); compute the
+    quiescent age and skip an unparseable slug or a dir touched within
+    ``min_age_s``; otherwise ELIGIBLE. Callers map each verdict to their own
+    skip record, so their message wording and accounting are unchanged.
+    """
+    for run_dir in bronze.iter_run_dirs(bronze_dir):
+        if run_dir.is_symlink():
+            yield Eligibility(run_dir, SKIP_SYMLINK)
+            continue
+        state, reason = classify(run_dir, config)
+        if state != COMPLETE:
+            yield Eligibility(run_dir, SKIP_NOT_COMPLETE, reason=reason)
+            continue
+        _, _, newest = entry_stats(run_dir)
+        age_s = _quiescent_age_s(run_dir, newest, now)
+        if age_s is None:
+            yield Eligibility(run_dir, SKIP_BAD_SLUG)
+            continue
+        if age_s < min_age_s:
+            yield Eligibility(run_dir, SKIP_TOO_YOUNG, reason=reason,
+                              age_s=age_s)
+            continue
+        yield Eligibility(run_dir, ELIGIBLE)
 
 
 # ---------------------------------------------------------------------------

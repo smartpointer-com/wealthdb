@@ -43,7 +43,7 @@ from pathlib import Path
 
 import duckdb
 
-from collectorkit import cli, compress
+from collectorkit import bronze, cli, compress
 
 from binance import (
     BinanceClient, build_mapping, get_api_key, PROVIDER as PRICE_PROVIDER,
@@ -238,19 +238,6 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
 NON_COMPLETE_STATUSES = ("in-progress", "dry-run")
 
 
-def _snapshot_status(run_json: Path) -> str | None:
-    """Read the run.json ``status`` field, or ``None`` when the manifest
-    is unreadable/corrupt or predates the field (statusless). A
-    statusless manifest is treated as loadable for backward
-    compatibility — the walk historically wrote run.json only once, at
-    the end, so its presence meant the dump finished."""
-    try:
-        meta = json.loads(run_json.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return meta.get("status") if isinstance(meta, dict) else None
-
-
 def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
     """Return the timestamped subdirs of bronze_dir that hold a
     completed run.json (chronological). A run.json whose ``status`` is
@@ -268,7 +255,7 @@ def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
         run_json = p / "run.json"
         if not run_json.is_file():
             continue
-        if _snapshot_status(run_json) in NON_COMPLETE_STATUSES:
+        if bronze.run_status(run_json) in NON_COMPLETE_STATUSES:
             log.info("skipping %s (run.json status not complete)", p.name)
             continue
         snapshots.append(p)

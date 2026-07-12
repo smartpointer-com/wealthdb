@@ -111,16 +111,11 @@ def file_snapshot_at(fname: str) -> int | None:
 # Database / migrations
 # --------------------------------------------------------------------------
 
-def open_db(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic); open_db stays local
-# because ubs-psn uses the default isolation model for per-dump atomicity.
+# open_db + schema versioning + the migration runner live in
+# collectorkit.silver. ubs-psn wraps each dump in `with conn:` for per-dump
+# atomicity, so it shares silver's default-isolation opener (mkdir + connect +
+# foreign_keys, no row_factory/WAL) rather than keeping its own copy.
+open_db = silver.open_db_default_isolation
 
 
 # --------------------------------------------------------------------------

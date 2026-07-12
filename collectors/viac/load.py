@@ -83,21 +83,11 @@ VIAC_TX_KIND_MAP: dict[str, str] = {
 # DB plumbing
 # ============================================================
 
-def open_db(path: Path) -> sqlite3.Connection:
-    """Open (or create) the silver DB with sensible defaults."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)  # autocommit; we BEGIN/COMMIT explicitly
-    conn.row_factory = sqlite3.Row
-    # foreign_keys is a per-connection PRAGMA; it must be re-set
-    # on every new connection regardless of what's in the schema.
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    return conn
-
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic). open_db stays local
-# per the decision not to unify collector transaction models.
+# Silver DB plumbing (open_db + schema versioning + the migration runner)
+# lives in collectorkit.silver. VIAC uses the manual-transaction model
+# (isolation_level=None; explicit BEGIN/COMMIT per dump) that silver.open_db
+# provides, so it shares that opener directly.
+open_db = silver.open_db
 
 
 # ============================================================
@@ -884,22 +874,6 @@ def load_one_dump(
 # Orchestration
 # ============================================================
 
-def _run_status(run_json_path: Path) -> str | None:
-    """Read the `status` field from a bronze run.json, or None when the
-    file is unreadable/unparseable or carries no `status` key.
-
-    A statusless manifest predates download.py's status lifecycle and is
-    treated as loadable (its mere presence historically meant the walk
-    finished). An unreadable/corrupt manifest also returns None so it
-    stays in the pending set and load_one_dump surfaces the error, rather
-    than being silently skipped here."""
-    try:
-        meta = json.loads(run_json_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return meta.get("status") if isinstance(meta, dict) else None
-
-
 def list_pending_dumps(
     conn: sqlite3.Connection, bronze_dir: Path,
 ) -> list[Path]:
@@ -927,7 +901,7 @@ def list_pending_dumps(
         # alone no longer proves the walk finished. Skip a crashed/aborted
         # walk ("in-progress") or a --dry-run shell ("dry-run"); a
         # statusless manifest predates the lifecycle and stays loadable.
-        status = _run_status(run_json_path)
+        status = bronze.run_status(run_json_path)
         if status in ("in-progress", "dry-run"):
             logger.info("skipping %s — run.json status=%s", d.name, status)
             continue

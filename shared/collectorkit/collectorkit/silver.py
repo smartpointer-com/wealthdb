@@ -55,6 +55,23 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_db_default_isolation(path: Path) -> sqlite3.Connection:
+    """Open (creating parent dirs) the silver DB in sqlite3's default
+    (implicit-transaction) isolation model, with foreign keys enforced.
+
+    The counterpart to `open_db` for collectors whose load.py wraps each
+    dump in the connection-as-context-manager (`with conn:` — BEGIN on
+    entry, COMMIT/ROLLBACK on exit) rather than issuing explicit
+    BEGIN/COMMIT under manual (`isolation_level=None`) control. No
+    row_factory or WAL: these collectors read result rows positionally and
+    never relied on either. `apply_migrations` works with either model.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 def current_schema_version(conn: sqlite3.Connection) -> int:
     """MAX(silver_schema_version) from schema_meta, or 0 if it's absent."""
     row = conn.execute(

@@ -38,6 +38,11 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, envfile
 
+# Single source of truth for FRED's no-data / market-holiday sentinels — the
+# loader owns the constant (it filters rows on it); the downloader imports it
+# so the dated-row count and the silver row filter can never drift apart.
+from load import NO_DATA
+
 log = logging.getLogger("fred.download")
 
 DEFAULT_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -118,10 +123,10 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
 
 
 def _dated_count(doc: dict) -> int:
-    """Number of observations with a real value ('.' is FRED's no-data /
-    holiday sentinel)."""
+    """Number of observations with a real value (a NO_DATA member is FRED's
+    no-data / holiday sentinel)."""
     return sum(1 for o in doc.get("observations", [])
-               if o.get("value") not in (".", None, ""))
+               if o.get("value") not in NO_DATA)
 
 
 def main(argv: list[str] | None = None) -> int:

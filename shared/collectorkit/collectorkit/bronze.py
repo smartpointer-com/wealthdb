@@ -58,6 +58,27 @@ def iter_run_dirs(dest: Path):
             yield child
 
 
+def run_status(run_json_path: Path) -> str | None:
+    """The ``status`` field of a bronze run's ``run.json``, or ``None`` when
+    the manifest is unreadable/corrupt or carries no ``status`` key.
+
+    Silver loaders use this to decide loadability: ``download`` stamps
+    ``status="in-progress"`` at run-dir creation and atomically overwrites it
+    with ``"complete"`` / ``"dry-run"`` at the end, so a present status other
+    than ``"complete"`` marks a crashed / still-running / dry-run dump whose
+    partial artefacts must not be ingested. A statusless manifest predates the
+    lifecycle and stays loadable (its mere presence historically meant the walk
+    finished); an unreadable/corrupt manifest also returns ``None`` so the
+    caller keeps it pending and surfaces any real error at load time rather
+    than skipping it silently here.
+    """
+    try:
+        meta = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta.get("status") if isinstance(meta, dict) else None
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write `data` to `path` via a sibling .tmp file + rename."""
     path = Path(path)

@@ -48,7 +48,7 @@ from pathlib import Path
 
 import oauth_landmarks as lm
 
-from collectorkit import session
+from collectorkit import envfile, session
 
 log = logging.getLogger("schwab-login")
 
@@ -208,16 +208,8 @@ def source_env_files() -> None:
                 break
 
 
-def resolve_credential(value: str | None, env_name: str,
-                       flag_name: str) -> str:
-    if value:
-        return value
-    env_value = os.environ.get(env_name)
-    if env_value:
-        return env_value
-    raise SystemExit(
-        f"Missing credential: pass {flag_name} or set {env_name}."
-    )
+# Credential resolution (value-with-env-fallback) is
+# collectorkit.envfile.resolve_credential; call sites use it directly.
 
 
 # ============================================================
@@ -608,9 +600,9 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     except ImportError:
         raise SystemExit("schwab-py is not installed.")
 
-    client_id = resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
+    client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
-    client_secret = resolve_credential(args.client_secret,
+    client_secret = envfile.resolve_credential(args.client_secret,
                                        "SCHWAB_CLIENT_SECRET",
                                        "--client-secret")
     login_id = os.environ.get("SCHWAB_LOGIN_ID")
@@ -729,9 +721,9 @@ def cmd_login_manual(args: argparse.Namespace) -> int:
         from schwab import auth as schwab_auth
     except ImportError:
         raise SystemExit("schwab-py is not installed.")
-    client_id = resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
+    client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
-    client_secret = resolve_credential(args.client_secret,
+    client_secret = envfile.resolve_credential(args.client_secret,
                                        "SCHWAB_CLIENT_SECRET",
                                        "--client-secret")
     args.token_path.parent.mkdir(parents=True, exist_ok=True)

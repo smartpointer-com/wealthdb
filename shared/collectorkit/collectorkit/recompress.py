@@ -93,30 +93,27 @@ def plan_recompress(bronze_dir: Path, config: RecompressConfig,
     pcfg = _prune_config(config)
     targets = []
     skipped = []
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
-        if run_dir.is_symlink():
+    for e in prune.iter_run_eligibility(bronze_dir, pcfg, min_age_s, now):
+        if e.verdict == prune.SKIP_SYMLINK:
             skipped.append({
-                "path": run_dir, "age_s": None,
+                "path": e.run_dir, "age_s": None,
                 "reason": "symlinked run dir (foreign; download never "
                           "creates one)"})
             continue
-        state, reason = prune.classify(run_dir, pcfg)
-        if state != prune.COMPLETE:
-            skipped.append({"path": run_dir, "age_s": None,
-                            "reason": f"not a complete dump ({reason})"})
+        if e.verdict == prune.SKIP_NOT_COMPLETE:
+            skipped.append({"path": e.run_dir, "age_s": None,
+                            "reason": f"not a complete dump ({e.reason})"})
             continue
-        _, _, newest = prune.entry_stats(run_dir)
-        age_s = prune._quiescent_age_s(run_dir, newest, now)
-        if age_s is None:
-            skipped.append({"path": run_dir, "age_s": None,
+        if e.verdict == prune.SKIP_BAD_SLUG:
+            skipped.append({"path": e.run_dir, "age_s": None,
                             "reason": "unparseable timestamp slug"})
             continue
-        if age_s < min_age_s:
-            skipped.append({"path": run_dir, "reason": reason,
-                            "age_s": age_s})
+        if e.verdict == prune.SKIP_TOO_YOUNG:
+            skipped.append({"path": e.run_dir, "reason": e.reason,
+                            "age_s": e.age_s})
             continue
         for pattern in config.patterns:
-            for f in sorted(run_dir.glob(pattern)):
+            for f in sorted(e.run_dir.glob(pattern)):
                 if not f.is_file() or f.is_symlink():
                     continue
                 twin = f.with_name(f.name + compress.ZSTD_SUFFIX)

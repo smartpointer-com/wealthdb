@@ -50,21 +50,11 @@ DEFAULT_SILVER_DB = Path("/data/relevate.db")
 # DB plumbing
 # ============================================================
 
-def open_db(path: Path) -> sqlite3.Connection:
-    """Open (or create) the silver DB with sensible defaults."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)  # autocommit; we BEGIN/COMMIT explicitly
-    conn.row_factory = sqlite3.Row
-    # foreign_keys is a per-connection PRAGMA; it must be re-set on
-    # every new connection regardless of what's in the schema file.
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    return conn
-
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic). open_db stays local
-# per the decision not to unify collector transaction models.
+# Silver DB plumbing (open_db + schema versioning + the migration runner)
+# lives in collectorkit.silver. relevate uses the manual-transaction model
+# (isolation_level=None; explicit BEGIN/COMMIT per dump) that silver.open_db
+# provides, so it shares that opener directly.
+open_db = silver.open_db
 
 
 # ============================================================
