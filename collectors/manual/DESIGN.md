@@ -1,9 +1,9 @@
 # manual — design notes
 
-**Implemented end-to-end (2026-06-10).** `load.py` is verified against the
-synthetic [examples/](examples/) (`tests/`), and the **gold adapter is built**
+`load.py` validates two hand-maintained CSVs into a SQLite silver against the
+synthetic [examples/](examples/) (`tests/`); the gold adapter
 ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
-§6) — the manual source loads into gold and shows up in `wealthdb holdings positions`.
+§6) loads the manual source into gold, so it shows up in `wealthdb holdings positions`.
 
 A catch-all collector for **private holdings with no source UI at all** —
 the bank/portal sources are all covered by the other twelve collectors;
@@ -30,8 +30,7 @@ Sections:
 3. [Silver schema](#3-silver-schema)
 4. [Why SQLite](#4-why-sqlite)
 5. [Validation](#5-validation)
-6. [Gold mapping (built)](#6-gold-mapping-built)
-7. [Status of the decisions](#7-status-of-the-decisions)
+6. [Gold mapping](#6-gold-mapping)
 
 ## 1. The unique shape — no source
 
@@ -162,8 +161,8 @@ SQLite + JSON1 — the repo default. The one prior DuckDB exception
 `DECIMAL(38,18)` crypto amounts; **neither applies here** — this is a tiny
 shape transformation, a few rows a year, no computation and no
 arbitrary-precision need. DuckDB is for high-volume / complex-query stores,
-which this is not. (The Phase-0 brief sketched a DuckDB silver; that was
-overridden to stay on the documented default — same call carta made.) Money
+which this is not. (An early sketch used a DuckDB silver; it was overridden to
+stay on the documented default — the same call carta made.) Money
 is stored as decimal STRINGS (TEXT) verbatim to avoid float rounding, dates
 as ISO TEXT, `payload` as TEXT JSON — exactly the carta silver conventions,
 so the gold adapter reads it with the same `modernc.org/sqlite` driver every
@@ -182,7 +181,7 @@ position's; a `valuations` `position_id` absent from `positions.csv`; a
 (typo'd) column. It **warns** but loads when a valuation predates the
 position's `acquired_at`.
 
-## 6. Gold mapping (built)
+## 6. Gold mapping
 
 The gold adapter is in [`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
 registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
@@ -215,7 +214,7 @@ correct at any historical date:
   amount (the way carta values a fund LP interest by NAV, not units).
 - `acquisition_date` = `acquired_at`.
 
-**Asset class — DECIDED.** Bronze `kind` **is** the canonical `asset_class`
+**Asset class.** Bronze `kind` **is** the canonical `asset_class`
 (identity classmap), so the CSV self-documents the class:
 
 | position `kind` = `asset_class` | status | rationale |
@@ -233,45 +232,20 @@ angellist / equityzen). `asset_class` carries **no SQL CHECK** (Go-validated
 only), so the two new values touch just `internal/canonical/enums.go` + its
 `assetClassValues` map — no gold migration for the enum itself.
 
-**No transactions — DECIDED (2026-06-10).** The adapter's `Transactions()`
-returns an empty stream; there is no `manual-funding` sentinel. Every cash
-flow a manual holding could record — a purchase wire, rent, a fee, sale
-proceeds — is a real movement in the bank accounts, already captured by
-the bank collectors; re-representing it on a sentinel only duplicates them.
-The one datum the acquisition transaction carried that positions/valuations
-don't (the acquisition date) already rides on the position. carta/equityzen
-*need* their funding sentinel because those sources' cash is invisible to
-everything else; manual's is not. (This **reverses** an interim decision to
-mirror the sentinel — §7.)
+**No transactions.** The adapter's `Transactions()` returns an empty stream;
+there is no `manual-funding` sentinel. Every cash flow a manual holding could
+record — a purchase wire, rent, a fee, sale proceeds — is a real movement in
+the bank accounts, already captured by the bank collectors; re-representing it
+on a sentinel only duplicates them. The one datum the acquisition transaction
+carried that positions/valuations don't (the acquisition date) already rides on
+the position. carta/equityzen *need* their funding sentinel because those
+sources' cash is invisible to everything else; manual's is not. (An earlier
+draft mirrored that sentinel; it was reversed once it was clear every manual
+cash flow is already a wire in the bank collectors.)
 
-**Gold registration — DONE.** `internal/gold/migrations/0016_silver_sources_manual.sql`
+**Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
 widens the `silver_sources` `silver_kind` whitelist (the 0007–0015
 rename-recreate pattern); `real_estate` + `convertible_note` are added to
 `internal/canonical/enums.go`; the adapter is built + registered in
 `cmd/wealthdb`. The `wealthdb.cfg` entry is
 `{"id":"manual","kind":"manual","path":"…/manual.db"}`.
-
-## 7. Status of the decisions
-
-Decided (2026-06-10):
-
-1. **Bronze `kind` = canonical `asset_class`** (identity classmap). The
-   real data uses `real_estate` / `private_equity` / `convertible_note` /
-   `private_fund` / `spv` directly as kinds. ✔
-2. **New enum values**: `real_estate` + `convertible_note` (the latter not
-   `private_debt`/`bond` — these are 0% venture notes; calling them debt would
-   mislead). `private_equity` / `private_fund` / `spv` already exist. ✔
-3. **No transactions** → the collector is positions + valuations only; the
-   gold adapter projects no transactions and uses no funding sentinel. This
-   **supersedes** an interim decision (2026-06-10, same day) to mirror
-   carta/equityzen's `manual-funding` double-entry sentinel — reversed once it
-   was clear every manual cash flow is already a wire in the bank
-   collectors, so the sentinel only duplicated them. The acquisition date
-   lives on the position; a conversion is recorded position-side
-   (`closed_at` + `converted_from_position_id`). ✔
-4. **Account** → one `manual` account, `account_kind = other`. ✔
-5. **Silver engine** → SQLite (the repo default; DuckDB is for
-   high-volume / complex-query stores, neither of which this is). ✔
-
-The gold adapter is **built** (`wealthdb/internal/silver/manual/`); there are
-no open design questions.

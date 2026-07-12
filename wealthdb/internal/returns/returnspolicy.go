@@ -8,7 +8,8 @@ import (
 
 // ReturnsPolicy is the per-source superset container for the returns engine. It
 // holds the FlowPolicy that classifies transactions into return flows PLUS the
-// pluggable-policy knobs (docs/RETURNS-NOTES.md).
+// pluggable per-source knobs (see docs/RETURNS-NOTES.md, "Pluggable per-source
+// policy").
 //
 // The UBS migration has landed, so a subset of the knobs is now consumed by the
 // engine: OnboardScope (returns_compute.go, per-entity-once onboarding),

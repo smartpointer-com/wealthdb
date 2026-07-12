@@ -90,8 +90,8 @@ resolved.
 
 | Topic | Document |
 | --- | --- |
-| Gold schema, CLI, plugin contract, load semantics | [wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md) |
-| Go package layout, dependency direction, testing | [wealthdb/docs/IMPLEMENTATION.md](wealthdb/docs/IMPLEMENTATION.md) |
+| Gold schema, CLI, plugin contract, load semantics, package layout | [wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md) |
+| Returns method (TWR / MWR) and its rationale | [wealthdb/docs/RETURNS-NOTES.md](wealthdb/docs/RETURNS-NOTES.md) |
 | Per-source adapter design (gold side) | [wealthdb/docs/adapters/](wealthdb/docs/adapters/) |
 | A given source's bronze/silver internals | `collectors/<source>/DESIGN.md` |
 | Agent ground rules (shared) | [CLAUDE.md](CLAUDE.md) |

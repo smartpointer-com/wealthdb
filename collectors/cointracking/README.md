@@ -13,7 +13,7 @@ persists for years afterwards) by driving headless Firefox via
 Playwright.
 
 Part of the **wealthdb** suite — see
-[the architecture overview](../../ARCHITECTURE.md) for the bronze →
+[the architecture overview](../../DESIGN.md) for the bronze →
 silver → gold model and [collectors/README.md](../README.md) for
 shared collector conventions.
 
@@ -22,7 +22,7 @@ shared collector conventions.
 | Verb | Status | Notes |
 | --- | --- | --- |
 | `login`    | implemented | Headless Playwright Firefox, CLI-MFA on stdin, persistent profile. |
-| `download` | implemented | Per-portfolio SPA loop, 19-column trade CSV + balance CSV per portfolio. |
+| `download` | implemented | Per-portfolio SPA loop: 19-column trade CSV + balance CSV + daily-overview CSV per portfolio. |
 | `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
 | `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
 | `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks). No debug artefacts to reclaim; a complete dump's load inputs are left intact. |
@@ -97,15 +97,15 @@ authenticated tiers for higher rate-limit ceilings; unused on the
 public endpoint at api.binance.com.
 
 **Coverage gap (small in practice):** Binance retains pair
-metadata in `exchangeInfo` long after they purge kline history
-for coins Binance has delisted and whose kline history it has
-since purged (e.g. some privacy coins and older altcoins dropped
-from the exchange). Impact is bounded by the architecture:
+metadata in `exchangeInfo` long after it purges the kline history
+for a delisted coin (e.g. some privacy coins and older altcoins
+dropped from the exchange), so a mapping can resolve to a symbol
+with no price data. Impact is bounded by the architecture:
 `coin_prices` is only read by gold for non-USD portfolios (USD
-portfolios use `portfolio_prices` directly), and the non-USD
-non-USD portfolios in practice hold mostly major coins that
-Binance covers fully. A Yahoo Finance secondary-source fallback
-is parked as a "if it ever bites" follow-up.
+portfolios use `portfolio_prices` directly), and those non-USD
+portfolios in practice hold mostly major coins that Binance covers
+fully. A Yahoo Finance secondary-source fallback is parked as an
+"if it ever bites" follow-up.
 
 Probe the session without firing a 2FA push:
 

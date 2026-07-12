@@ -1,9 +1,12 @@
 # cointracking — design notes
 
-This is a Phase-1 skeleton. Most decisions are deferred until
-`explore` produces real traces; what is locked in here is the
-shape of the discovery harness and the contract with the rest of
-the suite.
+This collector mirrors cointracking.info's browser flow: it drives a
+real logged-in session, exports the CSVs cointracking already
+produces, and loads them into silver + gold. The pipeline runs
+discovery → login → download → silver load → gold; each stage is
+described below. `explore` is the discovery harness the login and
+download flows were authored from, kept for re-discovery when
+cointracking changes its UI.
 
 ## Why a separate collector
 
@@ -22,7 +25,7 @@ The alternative — directly integrating each exchange API + every
 on-chain wallet — was rejected: cointracking already does that
 heavy lifting and serves as the canonical view.
 
-## Phase 1: discovery via `explore`
+## Discovery — the `explore` harness
 
 `explore.py` launches Camoufox in the container's Xvfb display,
 opens cointracking.info, and records the live session via
@@ -49,17 +52,14 @@ recording forever.
 
 Artefacts land under `/debug/<UTC-ts>/` (mounted from
 `$HOME/.cache/cointracking-debug` on the host), explicitly NOT
-under `/data` — the bronze/silver tree stays clean until `download`
-exists.
+under `/data`, so the bronze/silver tree stays clean.
 
 The persistent Camoufox profile dir at
 `/secrets/cointracking-profile` carries the post-MFA session cookie
 between runs, so subsequent `explore` invocations skip the 2FA
 challenge.
 
-## Phase 2: login (done) + download (TBD)
-
-### login — headless Playwright Firefox, CLI-MFA
+## Login — headless Playwright Firefox, CLI-MFA
 
 Pure HTTP was attempted first and abandoned. The explore traces
 showed POST 1's `password_login` was a 32-char **session-encrypted
@@ -102,16 +102,16 @@ push — safe for cron healthchecks.
 
 Renewal short-circuit (step 2) covers the cron use case: every
 nightly run hits /login.php, sees the redirect to /dashboard, and
-exits — no 2FA push. The `ctfa<user_id>` cookie is multi-year
-a multi-year value, so this path stays live until the next
-genuine session-cookie rotation.
+exits — no 2FA push. The `ctfa<user_id>` cookie is a multi-year
+value, so this path stays live until the next genuine session-
+cookie rotation.
 
 The Camoufox base image is still used because `explore.py` needs
 it. Adding vanilla Firefox via `playwright install firefox` in
 the Dockerfile costs ~80 MB; the two browsers coexist cleanly
 (separate binary paths, no API conflict).
 
-### download — headless Playwright Firefox, per-portfolio blob loop
+## Download — headless Playwright Firefox, per-portfolio blob loop
 
 Same browser stack as login.py (vanilla Firefox, `headless=True`,
 shared `/secrets/cointracking-profile/`). The login session
@@ -127,6 +127,9 @@ pulls the complete transaction list per portfolio.
   anchors on /enter_coins.php (the in-page portfolio switcher
   shows the OTHER portfolios; the current/master is implicit).
 - Union of the two = full list of all portfolios.
+- The live scrape is merged with a persistent `known_portfolios.json`
+  union cache at the bronze root, so a transient miss in CT's flaky
+  linked-user list doesn't drop a portfolio from the download set.
 
 **Per-portfolio loop** (in `download_portfolio()`):
 1. `GET /enter_coins.php?change_user=<id>` activates the
@@ -141,6 +144,9 @@ pulls the complete transaction list per portfolio.
 4. `GET /balance_by_exchange.php?change_user=<id>` activates the
    portfolio for the balance view.
 5. Click Export → exact-text "CSV". Save the blob.
+6. `GET /overview.php?change_user=<id>` → Export → CSV → "Comma
+   separated" saves the Daily Balance overview (wide-form per-day
+   holdings; load.py parses it into portfolio_prices).
 
 Files land in `<bronze-dir>/<UTC-ts>/cu_<id>/{trades,balance,overview}.csv.zst`.
 
@@ -191,7 +197,7 @@ external `/debug` mount, never in a bronze run dir), so the flag
 currently gates nothing — it reserves the discipline that any future
 capture lands only under an explicit `--debug` run.
 
-### load — DuckDB silver with incremental positions_daily upsert
+## Load — DuckDB silver with incremental positions_daily upsert
 
 Each `load` invocation iterates the bronze tree, processing every
 snapshot not already in `dump_runs`. Per snapshot:
@@ -241,7 +247,7 @@ rules.
 re-validating after a load.py change without manually clearing
 the table.
 
-### prune — reclaiming bronze disk
+## Prune — reclaiming bronze disk
 
 `prune.py` is a thin wrapper over the shared
 `collectorkit.prune` engine (the one reviewed, unit-tested place that
@@ -280,7 +286,9 @@ guard so `./cointracking prune` can reclaim disk while a `login` /
 in-flight dump). `entrypoint.sh` keeps a browserless `prune)` arm too,
 for a direct `docker run`.
 
-### Other questions answered by the explore traces
+## Page surfaces and endpoints
+
+The cointracking.info surfaces the collector reads:
 
 - **Page surfaces:** /dashboard, /enter_coins.php (trade history),
   /balance_by_exchange.php (current per-wallet holdings),
@@ -294,7 +302,7 @@ for a direct `docker run`.
   returns JSON, but with HTML strings embedded — it's the SPA
   render envelope, not clean data. Not worth using.
 
-### Phase 3: prices (portfolio_prices + coin_prices)
+## Prices — portfolio_prices + coin_prices
 
 Two price tables, populated from different sources:
 
@@ -406,10 +414,10 @@ Finance secondary-source fallback would close that tail; left as
 a follow-up — the gold-layer's forward-fill or "unpriced"
 sentinel can handle the residual.
 
-## Data model — locked-in facts
+## Data model
 
-These hold regardless of what the trades CSV looks like; recorded
-here so the load.py replay doesn't accidentally re-litigate them.
+The semantics the load.py replay implements — how CoinTracking's
+transaction vocabulary maps onto per-wallet balances.
 
 **Portfolios = linked CoinTracking user accounts.** Each linked
 user maps to one wealthdb portfolio. The URL surface uses
@@ -520,9 +528,9 @@ breaks that pattern for two specific reasons:
     future-proofs the table if their export ever widens.
 
 Cost of the exception:
-  - The Go gold adapter for cointracking will use `go-duckdb`
-    instead of `mattn/go-sqlite3`. Adapter-level concern; doesn't
-    touch the rest of the gold engine.
+  - The Go gold adapter for cointracking uses the DuckDB Go driver
+    (`duckdb-go`) instead of `mattn/go-sqlite3`. Adapter-level
+    concern; doesn't touch the rest of the gold engine.
   - `collectorkit.silver` is SQLite-shaped — cointracking's
     load.py does not import it. The DuckDB equivalents (a
     one-file apply-migrations helper) live inline in load.py.
@@ -567,81 +575,83 @@ grows as the transaction history does. It also keeps the resulting query plan
 free of the row-discarding `QUALIFY` filter the naive version
 would need.
 
-**Float-vs-Decimal validation experiment.** Same setup as before,
-trivially expressible in DuckDB: run the CTE chain once with the
-amount columns left as `DECIMAL(38, 18)` and once cast through
-`DOUBLE`, then diff the resulting `positions_daily` snapshots.
-The three-way comparison against CoinTracking's reported current
-per-coin balance tells us whether they compute internally in
-doubles, in arbitrary precision, or round only at display. This
-informs whether the float fast-path is ever safe to trust.
+## Silver schema
 
-## Phase 3: silver schema + gold adapter
-
-Pending Phase 2. The silver schema mirrors the shape cointracking
-already canonicalises, using the locked-in vocabulary above:
+The silver schema mirrors the shape cointracking canonicalises,
+using the data-model vocabulary above:
 
 - `portfolios` — one row per linked CoinTracking user account.
 - `wallets` — one row per (portfolio, wallet); covers custodial
   exchanges and self-custody hardware wallets uniformly.
-- `transactions` — raw rows from `/export/trades_csv.php`, one
-  per CSV row, with the source `type` preserved and amounts as
-  `DECIMAL(38, 18)`.
+- `transactions` — raw rows from the 19-column "CSV (Full Export)"
+  trade blob, one per CSV row, with the source `type` preserved and
+  amounts as `DECIMAL(38, 18)`.
 - `positions_daily` — COMPUTED by load.py via the transaction
   replay: `(as_of_date, portfolio, wallet, instrument) → amount`.
   Written only on days where state actually changed; gold queries
   forward-fill.
-- `documents` — exported PDF reports (if we ever fetch them)
-  tracked by content hash. CSV exports are the primary signal;
-  PDFs are optional bulk archive.
+- `portfolio_prices` — CT-reported per-portfolio prices parsed from
+  overview.csv, in each portfolio's "main fiat" quote currency.
+- `coin_prices` — canonical USD reference prices per coin per day
+  (Binance USDT-denominated crypto + Frankfurter/ECB FX for fiat
+  cash).
+- `coin_mapping` — CT-ticker → market-data-provider-id translation,
+  keyed on (instrument, provider).
 
-Concrete columns are in [`migrations/0001_initial.sql`](migrations/0001_initial.sql).
-The actual bronze-ingest path waits until `download.py` lands.
+Concrete columns are in
+[`migrations/0001_initial.sql`](migrations/0001_initial.sql) and
+[`migrations/0002_prices.sql`](migrations/0002_prices.sql).
 
-## Phase 4: graduate `explore` to a shared bootstrap tool
+The Go gold adapter (`wealthdb/internal/silver/cointracking/`) opens
+this DuckDB silver read-only and projects portfolios → accounts →
+positions into the canonical gold layer. It does not yet emit the
+transaction history — silver's `transactions` stays the source of
+truth for trades, and a later pass can lift it into gold if
+downstream queries call for it.
 
-Every web-based collector in wealthdb has gone through the same
-discovery loop: stand up a headed browser, capture clicks + HAR,
-study the artefacts, write `login.py` / `download.py` from them.
-The cointracking `explore` command is the third time the pattern
-has been written by hand (schwab-web's `vnc-login` and
-fidelity-web's `vnc-login` are earlier rougher cuts).
+## Future work
 
-Rather than delete `explore.py` once cointracking is fully
-implemented, the plan is to lift it out of this collector into a
-top-level discovery tool (target home: `shared/explore/` or
-`tools/explore/`, name TBD). The collector wrapper would stop
-shipping its own `explore` subcommand; the shared tool would take
-the target URL + profile dir + debug dir as args and produce the
-same artefact triple (HAR + Playwright trace + click log).
-
-The shared tool would also save us from re-deriving the VNC port
-walk, the click-recorder JS, and the artefact layout for each new
-collector. Concretely, the API would look like:
+**Graduate `explore` to a shared discovery tool.** Every web-based
+collector in wealthdb goes through the same discovery loop: stand up
+a headed browser, capture clicks + HAR, study the artefacts, write
+`login.py` / `download.py` from them (schwab-web and fidelity-web
+ship a `vnc-login` subcommand for the same purpose; the private-
+market collectors carry their own `explore.py`). Rather than keep a
+per-collector copy, `explore.py` could be lifted into a top-level
+discovery tool (target home: `shared/explore/` or `tools/explore/`,
+name TBD) taking the target URL + profile dir + debug dir as args
+and producing the same artefact triple — HAR + Playwright trace +
+click log — plus a shared VNC port walk and click-recorder JS:
 
 ```sh
 wealthdb-explore <target-name> [--url URL] [--profile-dir DIR] [--debug-dir DIR]
 ```
 
-…and the existing `vnc-login` subcommands on schwab-web /
-fidelity-web could be retired in favour of the shared tool too
-(they currently do similar things with slightly different
-ergonomics).
+The per-collector `explore` / `vnc-login` subcommands could then be
+retired in favour of the shared tool. Deferred: generalising now
+would slow immediate work while the per-collector harnesses still
+differ in ergonomics.
 
-Punted to after the cointracking explore phase produces working
-traces — generalising now would slow the immediate discovery work
-without any net benefit.
+**`documents` table.** A content-hash-tracked silver table for
+exported PDF reports, if bulk PDF archival is ever wanted. CSV
+exports are the primary signal today; no PDF fetch path exists.
+
+**Float-vs-Decimal validation.** The replay uses `DECIMAL(38, 18)`
+throughout. Running the CTE chain a second time with the amount
+columns cast through `DOUBLE` and diffing the resulting
+`positions_daily` snapshots — three-way against CoinTracking's
+reported per-coin balances — would reveal whether CT computes
+internally in doubles, arbitrary precision, or rounds only at
+display, and hence whether a float fast-path is ever safe.
 
 ## Why Camoufox
 
-Same reasoning as schwab-web / fidelity-web: cointracking.info
-probably uses Cloudflare or an Akamai-style bot detector behind
-its login (most aggregator portals do). Camoufox's stealth-Firefox
-posture gets us past that without ad-hoc fingerprint patching, and
-its `os="macos"` + `humanize=True` + `geoip=True` profile matches
-what schwab-web / fidelity-web settled on after their own anti-bot
-investigations.
-
-If `explore` reveals cointracking doesn't actually need stealth, a
-later move to plain Chromium would shed the Camoufox dependency.
-Pragmatically: start strict, relax if telemetry says we can.
+The `explore` harness runs Camoufox, matching schwab-web /
+fidelity-web: aggregator portals often sit behind Cloudflare or an
+Akamai-style bot detector, and Camoufox's stealth-Firefox posture
+(`os="macos"` + `humanize=True` + `geoip=True`) clears that without
+ad-hoc fingerprint patching. Discovery then established that
+cointracking does NOT bot-check the login flow, so `login.py` /
+`download.py` drive vanilla headless Playwright Firefox instead
+(see the Login section above); Camoufox stays as the base image the
+`explore` harness depends on.

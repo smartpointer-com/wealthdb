@@ -10,9 +10,9 @@ applies on top of those shared rules.
 Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
 concrete surface for viac:
 
-Allowed UI surfaces — the Phase 2 / Phase 3 scripts may only
-navigate to or click within (final list TBD once the live SPA is
-mapped in Phase 1, but the allow-list pattern below is binding):
+Allowed surfaces — `login.py` and `download.py` (the only scripts
+that touch the network) may reach only the following; treat
+anything not listed as forbidden:
 
 - The VIAC login form and the MFA approval page that follows it.
 - The REST endpoints listed in DESIGN.md §2.2 (customer profile,

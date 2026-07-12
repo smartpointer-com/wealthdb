@@ -21,7 +21,7 @@ sources and its sibling [`angellist`](../angellist/) — this collector
 replays the browser flow (2FA login, React SPA) via Camoufox.
 
 Part of the **wealthdb** suite — see
-[the architecture overview](../../ARCHITECTURE.md) for the bronze → silver →
+[the architecture overview](../../DESIGN.md) for the bronze → silver →
 gold model and [collectors/README.md](../README.md) for shared collector
 conventions.
 

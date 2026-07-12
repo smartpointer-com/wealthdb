@@ -7,7 +7,7 @@ engineer (current author, future contributor) maintaining
 and the `wealthdb` VIAC adapter.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. This document only covers what's VIAC-specific.
 
@@ -353,7 +353,7 @@ idempotency anchor).
 How gold interprets these columns (the `tax_wrapper` /
 `management_style` / `account_kind` mapping) is owned by the
 wealthdb viac adapter — see [the canonical
-model](../../ARCHITECTURE.md) and the adapter source
+model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/viac/`](../../wealthdb/internal/silver/viac/).
 The silver-side facts the adapter reads:
 
@@ -387,12 +387,10 @@ The silver-side facts the adapter reads:
   [CLAUDE.md §2](CLAUDE.md). Unattended runs can't pass the
   mTAN gate anyway.
 - **Cross-bank semantic alignment** — gold's job.
-- **PDF body parsing for transaction documents** — Phase 1
-  established that the per-transaction PDFs carry rich data
-  for TRADE / DIVIDEND / FUSION events (ISIN, units, FX rate,
-  old→new ISIN map). Parsing them into structured silver
-  events is a future migration; today silver records them
-  only by sha256 + (type, subType) metadata.
+- **PDF body parsing for transaction documents** — silver records
+  the per-event TRADE / DIVIDEND / SECURITY_FUSION PDFs only by
+  sha256 + (type, subType) metadata; parsing their bodies into
+  structured events is deferred (§9).
 - **The VIAC mobile app's payload** — separate `viac-mobile`
   repo if ever.
 
@@ -423,9 +421,9 @@ Outstanding work — currently neither implemented nor blocking:
    distinct events. Worth a follow-up if a future bronze dump
    shows a materially higher collision rate, which would suggest
    the synthesizer needs a row-index disambiguator.
-6. **Transaction-document PDF body parsing.** TRADE / DIVIDEND
-   / SECURITY_FUSION PDFs carry data not in the JSON
+6. **Transaction-document PDF body parsing.** The per-event TRADE /
+   DIVIDEND / SECURITY_FUSION PDFs carry data not in the JSON
    (per-event ISIN, units, FX rate, old→new ISIN mapping for
-   fusions). A future loader pass could project these into a
-   structured silver column. Phase 1 inspected the layouts;
-   the work is mechanical pdfplumber given that.
+   fusions). Projecting them into a structured silver column — today
+   they are only indexed, not parsed (§8) — is a mechanical parser
+   pass, deferred until a downstream consumer needs it.

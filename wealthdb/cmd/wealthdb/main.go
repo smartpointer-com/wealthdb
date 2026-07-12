@@ -1,6 +1,5 @@
 // wealthdb — gold-layer CLI for the personal-portfolio pipeline.
-// See docs/DESIGN.md for the architecture and IMPLEMENTATION.md
-// for the build order.
+// See docs/DESIGN.md for the architecture, schema, and package layout.
 package main
 
 import (

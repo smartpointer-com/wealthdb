@@ -8,7 +8,7 @@ downstream tools — e.g. local LLM-based agents and the `wealthdb`
 gold layer — to consume.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
@@ -437,7 +437,7 @@ band) is treated as a parallel bronze input on every run: each
 file's sha256 is compared against `documents.content_sha256`, and only
 new files are recorded as `source = 'manual'`.
 
-See [the architecture overview](../../ARCHITECTURE.md) for the
+See [the architecture overview](../../DESIGN.md) for the
 bronze → silver → gold model; this collector follows the shared
 snapshot/event and semi-relational JSON1 conventions.
 

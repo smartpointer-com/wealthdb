@@ -6,7 +6,7 @@ and documents from Relevate's customer portal
 "silver" database. Read-only; CLI-only; REST-only; human-triggered.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions.
 

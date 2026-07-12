@@ -1,6 +1,6 @@
 # schwab-api: Design
 
-Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 ## 1. Audience and scope
 
@@ -12,7 +12,7 @@ pattern to another backend can substitute the equivalent.
 
 ## 2. The three layers
 
-See [the architecture overview](../../ARCHITECTURE.md) for the
+See [the architecture overview](../../DESIGN.md) for the
 bronze → silver → gold model and the layer-ownership boundaries this
 toolkit inherits. The rest of this document covers only how
 `schwab-api` realises its bronze and silver.

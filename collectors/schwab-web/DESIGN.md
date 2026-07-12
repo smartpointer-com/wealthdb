@@ -1,6 +1,6 @@
 # schwab-web — design notes for the gold-layer merge
 
-Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 This document is the contract between `schwab-web` and the
 `wealthdb` gold layer that converges the web-scraped silver with

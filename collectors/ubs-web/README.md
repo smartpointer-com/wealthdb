@@ -6,7 +6,7 @@ Playwright to export historic account statements, custody/portfolio
 statements, transaction reports, and other eDocuments, then parsing
 the raw downloads into a queryable SQLite silver database.
 
-Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
+Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md)
 for the bronze → silver → gold model and [collectors/README.md](../README.md)
 for shared collector conventions. The companion UBS collector is
 [ubs-psn](../ubs-psn/) (see [Relationship to ubs-psn](#relationship-to-ubs-psn)

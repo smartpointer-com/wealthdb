@@ -6,7 +6,7 @@ fully dockerized (no host Java/Metabase), read-only against your data,
 and reachable only over an SSH tunnel + Metabase's own login.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../ARCHITECTURE.md). Run it via the main wrapper:
+overview](../DESIGN.md). Run it via the main wrapper:
 
 ```sh
 wealthdb web start | stop | status | restart | refresh | logs

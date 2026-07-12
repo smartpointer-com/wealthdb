@@ -13,7 +13,7 @@ surface — a direct shareholder / option-holder in private companies, not a
 corporate issuer and not (by default) a fund LP. The collector replays the
 holder's browser session (2FA login, React SPA) via Camoufox, captures
 bronze, and parses it into a source-shaped SQLite silver. Part of the
-**wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
+**wealthdb** suite — see [the architecture overview](../../DESIGN.md)
 and [collectors/README.md](../README.md).
 
 This is the **first wealthdb source for non-public-market equity** — stock

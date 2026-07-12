@@ -9,24 +9,24 @@ interest in the SPV, not the shares directly. Same data shape
 as the [`angellist`](../angellist/) LP collector (SPV / fund interests,
 illiquid, no public quote) and a sibling of [`carta`](../carta/). Part of
 the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) and [collectors/README.md](../README.md).
+overview](../../DESIGN.md) and [collectors/README.md](../README.md).
 
-Unlike `angellist` / `carta`, this design is **not** a pre-explore
-skeleton: a discovery (`explore`) session against the live portal has
-been run, so the API surface, auth flow, page routes, and data model
-below are **observed**, not guessed. What remains deferred to the
-implementation pass is `login.py` / `download.py` / `load.py` themselves
-and the gold-side mapping (§6).
+The API surface, auth flow, page routes, and data model described below
+are **observed** from a real discovery (`explore`) session against the
+live portal, not guessed. The collector is implemented end-to-end —
+`explore` / `login` / `download` / `load` / `prune` plus the gold adapter
+(§6) — and the sections below describe how it works today; genuinely
+unbuilt pieces are collected under [Future work](#7-future-work).
 
 Sections:
 
 1. [Why web, not a public API — the path investigation](#1-why-web-not-a-public-api--the-path-investigation)
 2. [The investor GraphQL surface (observed)](#2-the-investor-graphql-surface-observed)
-3. [Phase 1: discovery via `explore` (done)](#3-phase-1-discovery-via-explore-done)
-4. [Phase 2: login + download](#4-phase-2-login--download)
-5. [Phase 3: silver schema](#5-phase-3-silver-schema)
-6. [Phase 4: gold mapping — open questions](#6-phase-4-gold-mapping--open-questions)
-7. [Scope for the first implementation pass](#7-scope-for-the-first-implementation-pass)
+3. [Discovery: the `explore` harness](#3-discovery-the-explore-harness)
+4. [Login and download](#4-login-and-download)
+5. [Silver schema](#5-silver-schema)
+6. [Gold adapter](#6-gold-adapter)
+7. [Future work](#7-future-work)
 8. [Read-only & PII](#8-read-only--pii)
 
 ## Why a separate collector
@@ -109,14 +109,14 @@ explore session, no values retained):
   `{ASSET_COMPANY, ASSET_MULTI_COMPANY_FUND}` distinguishes a
   single-company SPV from a multi-company fund directly — no inference
   from company counts needed. Maps to silver `offerings.kind` (§5) and
-  gold `asset_class` (§6.3).
+  gold `asset_class` (§6).
 - **Distributions are in the structured API.**
   `primaryTransaction.distributedTransactions[]` was populated (several
   entries on some investments), with a `type` enum of `{ACH, DISTRIBUTION}`.
   So cash flows are derivable from GraphQL — a real distribution that
   arrived in a bank account with no obvious UI record *does* show up here.
   The K-1 / capital-account-statement PDFs corroborate but are not the
-  only source (§7).
+  only source (§5).
 - **Document types** (`documentType` enum): `K1`,
   `CAPITAL_ACCOUNT_STATEMENT` (the quarterly statements), `SUMMARY_SHEET`,
   plus onboarding `SUITABILITY` / `W_8`. `sellOrders` was empty (no
@@ -131,7 +131,7 @@ write). `download.py` issues only the read queries above plus the two
 auth mutations; it must not call `createPVR` or any IOI / reserve /
 order operation. See [CLAUDE.md](CLAUDE.md).
 
-## 3. Phase 1: discovery via `explore` (done)
+## 3. Discovery: the `explore` harness
 
 `explore.py` launches Camoufox in the container's Xvfb display, opens
 `/accounts/login/`, pre-fills the credentials (origin- and login-path-
@@ -150,13 +150,13 @@ route map (§4), the cookie+CSRF auth, and the document set (statement +
 K-1-equivalent PDFs plus a few zip bundles, spanning the document/tax
 centre).
 
-## 4. Phase 2: login + download
+## 4. Login and download
 
-### login — SPA form + CLI-MFA, persistent profile (implemented)
+### login — SPA form + CLI-MFA, persistent profile
 
-Implemented and exercised end-to-end. Headed Camoufox under the
-container's Xvfb (no VNC) — the proven stealth fingerprint, not a headless
-guess — on a persistent context at `/secrets/equityzen-profile/`. Navigate
+Runs headed Camoufox under the container's Xvfb (no VNC) — the proven
+stealth fingerprint, not a headless guess — on a persistent context at
+`/secrets/equityzen-profile/`. Navigate
 to `/accounts/login/`; short-circuit if a prior session is still valid;
 else fill credentials and complete the two-step auth, reading the 6-digit
 **TOTP** from stdin. `EQUITYZEN_USERNAME` (alias `EQUITYZEN_EMAIL`) /
@@ -194,12 +194,12 @@ server-side expiry, so the renewal short-circuit keeps nightly runs from
 firing a fresh 2FA push (cf. `cointracking`). **Never log out at the end of
 any verb.** `--check` probes the dashboard and exits 0/1 with no 2FA push.
 
-### download — per-surface bronze capture (implemented)
+### download — per-surface bronze capture
 
-Implemented (headed Camoufox under Xvfb, same engine as login; the session
-from the profile carries auth). It navigates the SPA and captures the
-GraphQL responses the page fires — the SPA supplies the Relay-id variables,
-so no query text is reconstructed. Two mechanics, learned the hard way and
+Runs headed Camoufox under Xvfb (same engine as login; the session from the
+profile carries auth), navigating the SPA and capturing the GraphQL
+responses the page fires — the SPA supplies the Relay-id variables, so no
+query text is reconstructed. Two mechanics, learned the hard way and
 recorded so they are not re-litigated:
 
 - **The investments list is per-stage, behind Ant-Design tabs.**
@@ -240,10 +240,8 @@ recorded so they are not re-litigated:
     signed/issued and are **not parsed by load.py**, so an identical prior copy
     is **hardlinked** in and the fetch skipped (any hardlink error falls through
     to a real fetch), realizing the fetch-avoidance win at zero silver-
-    correctness risk. This is an explicit allow-list defined in
-    `_document_class`; it is **owner-confirmable** (the doc-type inventory is the
-    owner's call — Move 1 plan §8), and anything not on it is fetched, not
-    linked.
+    correctness risk. This is an explicit, curated allow-list defined in
+    `_document_class`; anything not named in it is fetched, not linked.
   - **fetch-verify** (the default) any other / unrecognised `documentType`:
     always fetched, and a byte-identical prior is still deduped. Deduping an
     identical copy is always safe, so there is no reason to fetch a document
@@ -329,13 +327,13 @@ operation map (`getEquityBlocks` → `getInvOpps`/`getIssuerInformation`/
 `getEquityDetails`/`getEquityBlockInformation`, all keyed by
 `equityBlockUuid`) is recorded here for that.
 
-## 5. Phase 3: silver schema
+## 5. Silver schema
 
 SQLite + JSON1, source-shaped, owned by `load.py` (via
-`collectorkit.silver`). **Implemented** in `migrations/0001_initial.sql`
-and loaded end-to-end against real bronze. `snapshot_at` is INTEGER
-Unix-seconds-UTC; source *dates* (purchase / tender / deal start) stay as
-their source ISO TEXT; stable filter columns promoted, rest in `payload`.
+`collectorkit.silver`) and defined in `migrations/0001_initial.sql`.
+`snapshot_at` is INTEGER Unix-seconds-UTC; source *dates* (purchase /
+tender / deal start) stay as their source ISO TEXT; stable filter columns
+promoted, rest in `payload`.
 **Normalized into immutable vs time-varying** (a modelling call):
 identity + entry terms live once in `offerings` (keyed by
 `deal_external_id`, no `snapshot_at`); only what moves between snapshots
@@ -361,7 +359,12 @@ tender-driven), so a fund's `positions` history runs investment → quarterly
 NAV revaluations. This matters: a fund can run materially below cost, so a statement NAV well
 under the original commitment is invisible in the API, which only reports
 cost. K-1s contribute the tax-basis capital account; their
-Part III boxes are deferred (form-grid parsing).
+Part III boxes are not extracted (form-grid parsing — see §7).
+
+The GraphQL feed is the primary cash-flow source; these PDFs corroborate
+it and backstop anything it misses — a distribution can reach a bank
+account with only an email and a prose investor notice, so the documents
+are worth fetching even though the API does carry the event.
 
 Identity: `deal_external_id` = `dealId` (base64 `DealNode:N`). EquityZen has
 no ISIN/CUSIP (private SPV interests) — gold instrument joins key on
@@ -374,16 +377,16 @@ The repo default is SQLite + JSON1; the single DuckDB exception
 (`cointracking`) was driven by a window-function holdings *replay* and a
 `DECIMAL(38,18)` need — neither applies here (a small set of SPV
 interests with a handful of cash flows each, shape transformation only).
-**The Phase-0 task brief sketched "DuckDB tables"; this design overrides
-that to stay on the documented default** — same call `angellist` and
-`carta` made. Revisit if a DuckDB silver is in fact wanted.
+So this collector stays on the documented default — the same call
+`angellist` and `carta` made.
 
-## 6. Phase 4: gold adapter — implemented
+## 6. Gold adapter
 
 The gold adapter lives at `wealthdb/internal/silver/equityzen/`
-(adapter / status / snapshots / transactions / classmap `.go` +
-`adapter_test.go`). It is the closest sibling of `angellist` (an
-event-sourced LP book with distributions) and a cousin of `carta`. The
+(adapter / status / snapshots / transactions / classmap / policy `.go` +
+`adapter_test.go`) and is registered with the gold engine by the blank
+import in `cmd/wealthdb/main.go`. It is the closest sibling of `angellist`
+(an event-sourced LP book with distributions) and a cousin of `carta`. The
 package doc comment in `adapter.go` is the canonical spec — like
 `angellist`, there is no separate `docs/adapters/*.md` (the latest
 convention is the package comment).
@@ -427,7 +430,7 @@ values. The only gold-schema change is migration `0015`, which widens the
   cost_basis_remaining`, `quantity = shares_held` for SPVs (NULL for funds —
   units are not a share count). `acquisition_date` = the deal's first event.
 
-### Adapter shape (five files, mirroring angellist)
+### Adapter shape (six files, mirroring angellist)
 
 - `adapter.go` — `silver.Register`, `Open` (read-only SQLite), `Connection`.
 - `status.go` — `Status` + `ChangeWindow`, driven by `dump_runs`
@@ -463,6 +466,9 @@ values. The only gold-schema change is migration `0015`, which widens the
     Every leg links to the offering's instrument. EquityZen is funded
     upfront, so there are no capital calls beyond the initial purchase.
 - `classmap.go` — `offerings.kind` → `asset_class`.
+- `policy.go` — registers the source's NAV-only `ReturnsPolicy`: the
+  synthetic funding-account double-entries net to 0, so there are no usable
+  external flows and returns are NAV-driven (matching `carta`).
 
 The parsed `capital_account_statements` / `k1_documents` stay silver-only:
 the statement **NAV already reaches gold via the `positions` `statement`
@@ -487,44 +493,28 @@ pre-investment, the book growing then an exited SPV dropping out, fund marks
 tracking statement NAVs, current total matching the silver-level figure) and
 the funding account's transactions sum to 0.
 
-## 7. Scope for the first implementation pass
+## 7. Future work
 
-**DECIDED (user): offerings + positions + cash flows.** The first pass
-implements:
+The collector ingests offerings + positions + cash flows (§2, §5) and, with
+`download --documents`, the tax-document PDFs (§4, §5); the gold adapter
+(§6) is implemented and registered. What remains:
 
-- **offerings + positions** — `getBuyerInvestments` + per-deal
-  `getMyInvestmentDetails`: the holdings snapshot (basis / FMV / shares /
-  status), one position per investment.
-- **cash flows** — purchase + distribution ledger (fees informative) from
-  `primaryTransaction` + `primaryTransaction.distributedTransactions`
-  (confirmed populated, typed `ACH` / `DISTRIBUTION`) + `transfers`. The
-  GraphQL is the primary source; the **K-1 + capital-account-statement
-  PDFs corroborate** (and are the backstop for anything the structured
-  feed misses — a distribution can land in the bank with
-  only an email + a prose investor notice, so the PDFs are worth keeping
-  even though the API does carry the event).
-
-- **tax documents (implemented)** — `download --documents` fetches each
-  offering's document PDF blobs; `load` parses capital-account statements
-  (fund NAV → positions `statement` events) and K-1s (tax-basis capital) via
-  `statements.py`. See §5. Both parsed classes — **capital-account statements
-  and K-1s** — can be re-issued/restated/corrected under a stable Relay
-  `doc.id`, so `download` classifies them (with the financial reports) as
-  fetch-verify in `collectorkit.docdedup`: always re-fetched and
-  content-compared, so a byte-identical copy is hardlinked for disk reclaim but
-  a restatement is caught and its fresh bytes kept (never a hardlinked stale
-  copy fed into the NAV / positions replay). Only the executed-once,
-  never-parsed legal / offering documents are fetch-avoided by hardlink; see the
-  `_document_class` mapping in download.py.
-
-Still deferred:
-
+- **Enabling the source in a gold run.** Build, test, gold-adapter
+  registration (`cmd/wealthdb/main.go`), and the gold `silver_sources`
+  whitelist (migration `0015`) are all in place; pulling EquityZen into a
+  run is then just the operator's `wealthdb.cfg` `silver_sources` entry
+  pointing at the silver DB.
 - **K-1 Part III box amounts** (income / gains / distributions) — the IRS
-  form grid defeats a naive `pdftotext` parse (grabs box numbers); needs a
-  grid-aware extractor. The blobs are archived in bronze, so this is a
+  form grid defeats a naive `pdftotext` parse (it grabs box *numbers*, not
+  amounts), so only Item L (the tax-basis capital account) is extracted
+  today. The blobs are archived in bronze, so a grid-aware extractor is a
   parse-only follow-up.
-- **`/equity/<uuid>/` per-company pages** — investigated and intentionally
-  dropped (asks + metadata only); see §4.
+- **A per-company *closed*-deal price feed.** The `/equity/<uuid>/` pages
+  were built, trialled, and intentionally dropped — they carry only
+  order-book asks and company metadata, no reliable price (§4, "Why no
+  `/equity/<uuid>/` capture"), and everything valuation needs is already in
+  the holdings bronze. If EquityZen ever exposes a per-company closed-deal
+  price, that is the surface to revisit; the operation map is recorded in §4.
 
 ## 8. Read-only & PII
 

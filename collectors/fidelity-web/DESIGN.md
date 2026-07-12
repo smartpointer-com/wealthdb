@@ -12,7 +12,7 @@ that get revised should be revised here, in place. See §11 for the
 explicit punch list of unknowns that remain.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. This document only covers what's Fidelity-specific.
 

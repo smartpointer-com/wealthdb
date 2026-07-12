@@ -11,7 +11,7 @@ bronze tree, then parses them into a queryable SQLite silver
 database.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. The closest sibling is
 [relevate](../relevate/) (Swiss vested-benefits, same
@@ -20,20 +20,18 @@ Airlock-shaped auth stack); this collector's own
 
 ## Status
 
-| Phase | Verb | Status |
+| Stage | Verb | Status |
 | --- | --- | --- |
 | Persistent session minting | `login` | implemented (pure httpx) |
 | Bronze scrape | `download` | implemented (pure httpx) |
 | Silver loader | `load` | implemented |
 | Reclaim bronze disk | `prune` | implemented (non-complete dumps) |
 
-Phase 1 discovery (mapping the SPA's REST surface) ran via a
-short-lived VNC-driven Playwright harness; that scaffolding has
-been removed now that the API shape is locked in. If VIAC ever
-rotates the CSRF cookie name or the per-endpoint `/N-N` version
-suffixes, the right move is to spin up a fresh capture in a
-throwaway branch rather than carry discovery scaffolding in
-the main toolkit indefinitely.
+The REST surface is mapped and stable, so the toolkit needs no
+browser and carries no discovery scaffolding. If VIAC ever rotates
+the CSRF cookie name or the per-endpoint `/N-N` version suffixes,
+the fix is a fresh capture against the SPA in a throwaway branch
+rather than discovery tooling parked in the main toolkit.
 
 ## Why this design
 
@@ -46,10 +44,9 @@ Pillar-3a data:
 - **Email feeds** — VIAC sends "new document available"
   notifications with no payload.
 
-The remaining channel is the `app.viac.ch` SPA. Discovery
-showed the underlying backend is plain JSON over cookies +
-double-submit-cookie CSRF — so the toolkit replays it with
-`httpx` directly, no browser needed.
+The remaining channel is the `app.viac.ch` SPA, whose backend is
+plain JSON over cookies + double-submit-cookie CSRF — so the
+toolkit replays it with `httpx` directly, no browser needed.
 
 A 2FA approval (SMS mTAN) is required on every fresh login.
 Unattended cron is therefore impossible; this toolkit is

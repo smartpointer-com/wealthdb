@@ -1706,7 +1706,7 @@ the verified per-adapter flow table):
   (whose value series does reflect it). Onboarding still legitimately recognizes
   *untracked pre-existing* capital (a late account with no funding transactions at
   all, e.g. a custody account whose backfill carries no transactions), which is NOT a double-count.
-  See `docs/RETURNS-NOTES.md` §M6.
+  See `docs/RETURNS-NOTES.md`, "Staggered-inception subsumption".
 - **Conduit relationships (per-source policy knobs).** A source whose policy opts
   in (UBS today) is treated specially by the source-blind engine purely via its
   `ReturnsPolicy`: **conduit-kind** accounts (UBS cash) feed the value spine but
@@ -1718,7 +1718,7 @@ the verified per-adapter flow table):
   it); **inception = first-real-snapshot** anchors the window past sparse cash-only
   pre-history (kills the tiny-base artifact). All four are source-scoped, so
   every other source stays byte-identical even in the merged global entity. See
-  `docs/RETURNS-NOTES.md` §M7.
+  `docs/RETURNS-NOTES.md`, "Pluggable per-source policy".
 
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
 every approximation is tagged (`since_data_inception`, `partial_window`,
@@ -1735,49 +1735,58 @@ additive across grains**.
 
 ```
 wealthdb/
-├── DESIGN.md                       — this document (gold-layer architecture)
+├── DESIGN.md                       — this document (gold-layer design)
 ├── README.md                       — user-facing usage
 ├── CLAUDE.md                       — agent ground rules
 ├── Dockerfile                      — single-stage; Go toolchain + binary in one image
 ├── docker-entrypoint.sh            — sets up paths, then exec wealthdb
-├── wealthdb                          — thin host-side wrapper around `docker run` (production binary)
-├── wealthdb-test                     — thin host-side wrapper around `docker run go test ...` (§12.5)
+├── wealthdb                        — host-side wrapper around `docker run` (production binary)
+├── wealthdb-test                   — host-side wrapper around `docker run go test ...` (§12.5)
 ├── config.example.json             — annotated example config
-├── go.mod
-├── go.sum
+├── go.mod / go.sum
 ├── docs/
-│   └── adapters/                   — per-bank adapter design docs (one file per bank)
-│       ├── schwab.md
-│       ├── ubs.md
-│       └── swissquote.md
+│   ├── DESIGN.md · RETURNS-NOTES.md · TAXONOMY.md
+│   └── adapters/                   — per-bank adapter design (carta, cointracking, schwab, swissquote, ubs)
 ├── cmd/
-│   └── wealthdb/
-│       └── main.go                 — CLI entry point, flag parsing, subcommand dispatch
+│   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
 ├── internal/
-│   ├── config/                     — JSON config parsing & validation
-│   ├── gold/                       — DuckDB schema, transaction wrappers, queries
-│   │   ├── schema.go               — embed migrations/, run them on init
-│   │   ├── load.go                 — the per-source load orchestration in §8
-│   │   ├── reset.go
-│   │   ├── positions.go            — as-of query, formatting
-│   │   └── status.go
-│   ├── returns/                    — source-agnostic returns math + pluggable policy
-│   │   ├── returnspolicy.go        — ReturnsPolicy superset + kind-keyed registry
-│   │   ├── policy.go               — FlowPolicy, Regime, FlowPolicyFor
-│   │   ├── dietz.go / xirr.go / chain.go / synthetic.go
-│   ├── silver/                     — adapter interface and registry
-│   │   ├── adapter.go              — interfaces from §6
-│   │   ├── registry.go             — silver.Register / silver.Get
-│   │   ├── schwab/                 — Schwab adapter (impl + co-located policy.go)
-│   │   ├── ubs/                    — UBS adapter (impl + co-located policy.go, conduit knobs)
-│   │   └── swissquote/             — Swissquote adapter (impl + co-located policy.go)
-│   └── output/                     — table / csv / csv_plain / json formatters
-└── migrations/
-    └── 0001_initial.sql            — the schema in §7.2
+│   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
+│   ├── silver/                     — adapter interface + registry, one package per source:
+│   │   │                             angellist carta cointracking equityzen fidelity fred
+│   │   │                             manual relevate schwab swissquote ubs viac
+│   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
+│   ├── gold/                       — DuckDB schema, writer, queries, report macros
+│   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go
+│   ├── returns/                    — source-agnostic TWR/MWR math + pluggable per-source policy
+│   ├── loader/                     — the §8 silver→gold load orchestration (the only silver↔gold bridge)
+│   └── config/ · pathmode/ · wizard/ · output/ · errs/ · version/
+└── (Dockerfile, wrappers, config.example.json per above)
 ```
 
-The `internal/` prefix prevents downstream packages from depending
-on the internals — `wealthdb` is an application, not a library.
+**Dependency direction** is strictly one-way — anything lower may
+import anything higher, never the reverse:
+
+```
+canonical                    (zero deps)
+   ↑
+silver (interface)           imports canonical
+   ↑
+silver/<source> adapters     import silver + canonical
+   ↑
+gold                         imports canonical — NOT silver
+   ↑
+loader                       imports gold + silver (the bridge)
+   ↑
+cmd/wealthdb                 imports loader + gold + config + wizard + output
+```
+
+**`gold` never imports `silver`** (a compile-time test in
+`internal/gold` guards it): the writer takes canonical `*Change`
+values, not adapter handles, and `loader` is the sole place silver
+and gold meet. Migrations live under `internal/gold/migrations/`
+because Go's `//go:embed` can't traverse up the tree. The
+`internal/` prefix keeps every package unimportable downstream —
+wealthdb is an application, not a library.
 
 ## 12. Container / build / run
 
@@ -1889,8 +1898,13 @@ absent from runtime. Retrofitting is mechanical. Not pre-paid.
 
 ### 12.5 Running tests
 
+From the repo root, `make test-wealthdb` (or `make test` for the
+whole suite) is the top-level entry: it rebuilds the image and runs
+`go test ./...` in one step. Under the hood it calls the
+`./wealthdb-test` wrapper described here.
+
 Tests run **inside the container**, so the host stays clean of Go
-toolchain, DuckDB headers, SQLite headers, and the rest. A
+toolchain, DuckDB headers, SQLite headers, and the rest. The
 companion wrapper `./wealthdb-test` (sibling to `./wealthdb`) routes
 `go test` invocations into the container while passing arguments
 through verbatim. This means individual tests are invoked from

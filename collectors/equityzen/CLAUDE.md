@@ -6,9 +6,10 @@ source, git/commit conventions) live in the repo-root
 on top of those shared rules.
 
 This collector is **implemented** — `explore`, `login`, `download`, and
-`load` all work end-to-end (against the live portal / real bronze); it is
-not yet wired into the broader suite. The allow/forbid surface below is
-mapped against real traces, not guesses. EquityZen is a
+`load` all work end-to-end (against the live portal / real bronze), and the
+gold adapter is registered with the gold engine; enabling the source in a
+gold run is operator config (a `wealthdb.cfg` `silver_sources` entry). The
+allow/forbid surface below is mapped against real traces, not guesses. EquityZen is a
 read-only target reached by replaying the buyer's browser session and
 reading the SPA's own investor-scoped GraphQL API responses
 (`POST /api/graphql/`); see [DESIGN.md](DESIGN.md). Note `download` captures

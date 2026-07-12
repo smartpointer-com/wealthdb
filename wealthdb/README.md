@@ -1,16 +1,14 @@
 # wealthdb
 
-A personal-portfolio gold-layer CLI. Reads per-bank silver
-SQLite databases (produced by the sibling collectors —
-[schwab-api](../collectors/schwab-api/),
-[ubs-psn](../collectors/ubs-psn/),
-[ubs-web](../collectors/ubs-web/),
-[swissquote](../collectors/swissquote/)) and
-projects them into a canonical cross-bank DuckDB schema queryable
-through the `wealthdb` CLI.
+A personal-portfolio gold-layer CLI. Reads the per-source silver
+SQLite databases produced by the sibling
+[collectors](../collectors/) — one per bank, pension, and crypto
+source — and projects them into a canonical cross-bank DuckDB
+schema queryable through the `wealthdb` CLI.
 
-CLI only, no web UI. Single Docker image; no host-side Go
-toolchain required.
+CLI only; the optional Metabase BI server lives in
+[../web/](../web/). Single Docker image; no host-side Go toolchain
+required.
 
 ## Status
 
@@ -32,8 +30,11 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
 | `wealthdb help [<subcommand>]` | Help. |
 
-Adapters ship for Schwab (API + web statements), UBS (PSN feed +
-web export), Swissquote, and Fidelity (web scrape).
+Adapters ship for every source: Schwab (API + web), UBS (PSN feed
++ web), Swissquote, Fidelity (web; SVB historical statements load
+through it), VIAC and Relevate (Swiss pension), CoinTracking
+(crypto), Carta, AngelList and EquityZen (private markets), the
+manual CSV source, and FRED (reference FX).
 
 Accounts carry a three-dimensional taxonomy: `account_kind`
 (technical container — brokerage / cash / safekeeping / custody /
@@ -74,13 +75,18 @@ The `config` wizard walks you through:
 2. Default output currency (default `USD`; can be overridden per
    query with `-x`).
 3. One or more silver sources — for each: a short id (used by
-   `load`/`reset`/`snapshots`), the bank kind (`schwab`, `ubs`,
-   `swissquote`), and the path to the silver SQLite.
+   `load`/`reset`/`snapshots`), the source kind (`schwab`, `ubs`,
+   `swissquote`, `viac`, `cointracking`, …), and the path to the
+   silver SQLite.
 
 It writes the result to `$HOME/.config/wealthdb.cfg` (overridable
 with `-c <path>`).
 
 ## Build and run
+
+From the repo root, the `Makefile` drives builds and tests
+(`make build-wealthdb`, `make test-wealthdb`); the commands below
+are the underlying per-component wrappers.
 
 All commands run inside a single Docker image; the host wrapper
 bind-mounts `$HOME/.config/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/` at
@@ -99,9 +105,14 @@ and read-only sharing pattern.
 ## Documentation
 
 - **[docs/DESIGN.md](docs/DESIGN.md)** — gold-layer architecture,
-  schema, CLI, plugin contract, load semantics, query patterns.
-- **[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** — Go
-  package layout, dependency direction, testing strategy.
-- **[docs/adapters/](docs/adapters/)** — per-bank adapter design
-  ([schwab](docs/adapters/schwab.md), [ubs](docs/adapters/ubs.md),
+  schema, CLI, plugin contract, load semantics, query patterns,
+  package layout.
+- **[docs/RETURNS-NOTES.md](docs/RETURNS-NOTES.md)** — TWR / MWR
+  method and rationale.
+- **[docs/TAXONOMY.md](docs/TAXONOMY.md)** — the 2-D
+  `asset_class` × `vehicle` taxonomy.
+- **[docs/adapters/](docs/adapters/)** — per-source adapter design
+  ([carta](docs/adapters/carta.md),
+  [cointracking](docs/adapters/cointracking.md),
+  [schwab](docs/adapters/schwab.md), [ubs](docs/adapters/ubs.md),
   [swissquote](docs/adapters/swissquote.md)).

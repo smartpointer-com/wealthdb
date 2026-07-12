@@ -34,7 +34,7 @@ func (r Regime) String() string {
 
 // FlowPolicy is the per-adapter rule for turning transactions into return flows.
 // Verified against every transaction-bearing adapter's kindmap (see
-// RETURNS-NOTES.md / proposal §2.1).
+// RETURNS-NOTES.md).
 type FlowPolicy struct {
 	Regime Regime
 	// Known is false for an unrecognised adapter kind; the caller surfaces

@@ -9,7 +9,7 @@ stdin during login.
 Lands per-portfolio JSON + per-document PDFs into a versioned
 bronze tree, then parses them into a queryable SQLite silver
 database. Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
@@ -669,7 +669,7 @@ identically, so `product_key` is not a behavioural
 discriminator — a downstream consumer should treat FZI and FZPF
 the same. How gold interprets this column is owned by the
 wealthdb relevate adapter — see [the canonical
-model](../../ARCHITECTURE.md) and the adapter source
+model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
 ### 7.2 Validation against a real load
@@ -720,7 +720,7 @@ The silver-side identity choices for the columns the loader
 promotes. How gold interprets these columns (the
 `tax_wrapper` / `management_style` / `account_kind` mapping) is
 owned by the wealthdb relevate adapter — see [the canonical
-model](../../ARCHITECTURE.md) and the adapter source
+model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
 ### 8.1 `account_external_id`

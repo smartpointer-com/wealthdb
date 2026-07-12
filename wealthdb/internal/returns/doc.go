@@ -21,8 +21,7 @@
 //     capital OUT is negative. Modified-Dietz uses Amount directly as F_i; XIRR
 //     negates it to the investor cash-flow convention internally.
 //
-// See wealthdb/docs/RETURNS-NOTES.md for the design decisions and the places the
-// implementation deviated from the rev.2 proposal.
+// See wealthdb/docs/RETURNS-NOTES.md for the design decisions and rationale.
 package returns
 
 // Flow is a dated external cash flow in the report (output) currency.

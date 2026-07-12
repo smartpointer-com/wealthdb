@@ -2,7 +2,7 @@
 
 This is the **wealthdb** monorepo: a Go gold engine under
 `wealthdb/` plus fifteen bronze+silver collectors under
-`collectors/<source>/`. See [ARCHITECTURE.md](ARCHITECTURE.md)
+`collectors/<source>/`. See [DESIGN.md](DESIGN.md)
 for the bronze → silver → gold model.
 
 The ground rules below apply across **every** component. Each
@@ -87,10 +87,49 @@ before committing anything derived from it. When in doubt, ask.
 - Commit messages must not reference user data even indirectly —
   no balances, holdings, account IDs, or "coverage before/after"
   framing. Bank names and example tickers are fine.
+- **Messages say WHAT changed and WHY, not HOW** — a tight subject
+  line plus a few high-level bullets (the behaviour and the
+  reason), not a blow-by-blow of the implementation. Match the
+  existing log's voice.
+- **No AI-attribution trailer** — no `Co-Authored-By: Claude`, no
+  "generated with" line. Use the repo's normal git identity.
 - Stage specific files by name; avoid `git add -A` so stray
   secrets/artefacts don't slip in.
 
-## 6. Build & test entry points
+## 6. Code quality & style
+
+Hold every change to the bar a senior engineer would.
+
+- **Refactor before you commit.** Make a pass for dead code,
+  outdated comments, and obvious simplification / optimization the
+  change opens up. No comment may survive that no longer matches
+  the code it describes.
+- **Comprehensive unit tests, and they must pass.** New behaviour
+  ships with tests that cover it; run the relevant `make test-<x>`
+  (and the full `make test` before a milestone commit) and keep it
+  green. Ad-hoc verification is additive, never a substitute.
+- **Comments and docs describe behaviour, not an operator.**
+  Narrate what the code does and why; describe a choice's *effect*,
+  not the person making it. Don't lean on a stand-in like "the
+  user" / "the owner" — rephrase to remove it. First/second person
+  ("you") only in install and license docs. Match the density and
+  idiom of the surrounding code.
+- **Examples stay synthetic** (§4) — never a real identifier, even
+  in a comment, fixture, or doc.
+
+## 7. Build & test entry points
+
+The repo-root `Makefile` is the top-level entry — run it from the
+root, no `cd`-ing into subdirectories:
+
+- `make all` / `make test` — build or test everything.
+- `make build-<name>` / `make test-<name>` — one component (the
+  gold engine is `wealthdb`; e.g. `make test-wealthdb`).
+- `make update` — bring deps forward (host venvs, Go modules, base
+  images); commit any resulting `go.mod` / `go.sum` bump, never
+  revert it.
+
+Underneath, each component also builds directly:
 
 - **Gold engine** (`wealthdb/`): `./wealthdb build` then
   `./wealthdb <subcommand>`; tests via `./wealthdb-test ./...`

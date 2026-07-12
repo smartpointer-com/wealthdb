@@ -51,7 +51,7 @@ data or history captured before the split.
 | `multi_asset` | Blended-allocation products | target-date and 529 plan sleeves, balanced / "real return" funds, robo strategy sleeves |
 | `other` | Fallback; adapters must set explicitly | unclassifiable placeholders, synthetic $0 closure markers |
 
-## 3. `vehicle` values (17)
+## 3. `vehicle` values (18)
 
 | Value | Definition | Notes |
 | --- | --- | --- |
@@ -73,8 +73,6 @@ data or history captured before the split.
 | `mortgage` | Property-secured liability | negative market value by convention |
 | `escrow` | Sale-proceeds holdback | contingent receivable |
 | `other` | Fallback; adapters must set explicitly | |
-
-(18 including `other`.)
 
 ## 4. How the former 1-D classes map to the pair
 

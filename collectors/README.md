@@ -6,7 +6,7 @@ pipeline. Each collector owns the **bronze** and **silver** layers
 for its source; the gold engine under [`../wealthdb/`](../wealthdb/)
 reads every collector's silver and merges them into one canonical
 store. For the full bronze → silver → gold model see
-[../ARCHITECTURE.md](../ARCHITECTURE.md).
+[../DESIGN.md](../DESIGN.md).
 
 This file covers what's **common** to all collectors. Each
 subdirectory's own `README.md` covers only what's specific to that

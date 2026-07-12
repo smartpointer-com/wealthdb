@@ -14,7 +14,7 @@ The suite is a **monorepo** of two parts:
   source. Each logs in, downloads raw artefacts (bronze), and
   parses them into a source-shaped silver SQLite (silver).
 
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the bronze → silver
+See **[DESIGN.md](DESIGN.md)** for the bronze → silver
 → gold model and how the pieces fit.
 
 ## Component map
@@ -135,7 +135,7 @@ their `--help`.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — suite-wide pipeline,
+- **[DESIGN.md](DESIGN.md)** — suite-wide pipeline,
   layer ownership, canonical model.
 - **[CLAUDE.md](CLAUDE.md)** — agent ground rules shared across
   every component (security, PII, read-only access).

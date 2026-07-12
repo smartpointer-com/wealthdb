@@ -4,7 +4,7 @@ A toolkit for ingesting UBS Private Standard Network (PSN) banking data:
 fetching the raw per-order-type zips over SFTP Pull and parsing them into
 a queryable SQLite silver database.
 
-Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md)
+Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md)
 for the bronze → silver → gold model and [collectors/README.md](../README.md)
 for shared collector conventions.
 

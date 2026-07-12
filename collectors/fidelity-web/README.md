@@ -8,7 +8,7 @@ subsequent scripts) parsing the raw downloads into a queryable
 SQLite silver database for downstream tools to consume.
 
 Part of the **wealthdb** suite — see [the architecture
-overview](../../ARCHITECTURE.md) for the bronze → silver → gold
+overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. [DESIGN.md](DESIGN.md) here covers Fidelity-specific
 design decisions.
@@ -75,9 +75,9 @@ Silver classifies each section label into a stable
 - `other` — anything else, kept as a fall-through so future
   Fidelity labels don't need a schema migration
 
-A trust can be a separate tax entity, so this `portfolios.kind` split is not cosmetic; how
-gold consumes it is the adapter's concern — see [the canonical
-model](../../ARCHITECTURE.md) and the adapter source
+A trust can be a separate tax entity, so this `portfolios.kind`
+split is not cosmetic. How gold consumes it is the adapter's
+concern — see [the canonical model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/).
 
 See [DESIGN.md §1.2](DESIGN.md) for the account-category model

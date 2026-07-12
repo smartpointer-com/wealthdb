@@ -15,7 +15,7 @@ VNC, and the collector lifts that session and drives the venture GraphQL
 API with it. See [DESIGN.md](DESIGN.md) for the full story.
 
 Part of the **wealthdb** suite — see
-[the architecture overview](../../ARCHITECTURE.md) and
+[the architecture overview](../../DESIGN.md) and
 [collectors/README.md](../README.md).
 
 ## Status

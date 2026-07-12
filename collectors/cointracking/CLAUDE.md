@@ -8,12 +8,12 @@ applies on top of those shared rules.
 ## 1. Read-only cointracking.info access — never trigger write actions
 
 Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
-concrete surface for cointracking is **TBD pending the Phase-1
-`explore` traces** — the allow-list pattern below is binding even
-while the specific URLs are still being mapped.
+concrete surfaces the collector reads are enumerated in DESIGN.md
+("Page surfaces and endpoints"); the allow-list pattern below is the
+binding read-only policy regardless of which specific URLs a later
+UI change relocates.
 
-Allowed — once mapped, only these surfaces may be navigated or
-clicked:
+Allowed — only these surfaces may be navigated or clicked:
 
 - The cointracking.info login form and the Duo / Google
   Authenticator 2FA challenge page that follows it.
@@ -65,10 +65,10 @@ foreseeable future. **Do not** invalidate it without cause:
   cost of an unnecessary fresh login is a real 2FA push to the
   user's phone.
 - `/secrets/cointracking-profile/` is the Playwright Firefox
-  persistent profile dir. **Single profile dir shared between
-  `login` and `explore`.** Holds session cookies including the
-  multi-year `ctfa<user_id>` device-trust value. Keep it at
-  0700; treat the whole dir as a credential.
+  persistent profile dir. **Single profile dir shared across
+  `login`, `download`, and `explore`.** Holds session cookies
+  including the multi-year `ctfa<user_id>` device-trust value. Keep
+  it at 0700; treat the whole dir as a credential.
 
 ## 3. login is headless Playwright Firefox, CLI-MFA
 

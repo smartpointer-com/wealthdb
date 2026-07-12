@@ -1,6 +1,6 @@
 # schwab-web
 
-Part of the **wealthdb** suite — see [the architecture overview](../../ARCHITECTURE.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
+Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 A toolkit for ingesting Charles Schwab data the Trader API does
 not cover: driving the Schwab client UI (`client.schwab.com`)
