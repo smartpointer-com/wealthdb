@@ -826,9 +826,9 @@ def question_defs(db_id, mid):
         "Top 100 positions (USD)": ("table",
             "The hundred largest positions by market value (USD) as of a "
             "day, aggregated across accounts; narrow with the widget's "
-            "asset-class filter. Built for the Allocation dashboard, "
-            "which supplies the as-of day; opened standalone, filter "
-            "as_of_day to a single day first.",
+            "asset-class and vehicle filters. Built for the Allocation "
+            "dashboard, which supplies the as-of day; opened standalone, "
+            "filter as_of_day to a single day first.",
             _mbql(db_id, mid["report_positions_history"],
                   {"aggregation": [["sum", _dec("value_usd")]],
                    "breakout": [_f("symbol", "type/Text"),
@@ -979,11 +979,13 @@ ASOF_PARAM_ID = "aa5df102"
 ASSET_PARAM_ID = "aa5df103"
 CURRENCY_PARAM_ID = "aa5df104"
 START_YEAR_PARAM_ID = "aa5df105"
+VEHICLE_PARAM_ID = "aa5df106"
 
-# The asset-class filter is linked only to these tiles (the breakdown
-# widgets each already show asset classes; filtering them by class would
-# mostly self-select).
-ASSET_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (% of peak)"}
+# The asset-class and vehicle filters (the two taxonomy dimensions) are
+# linked only to these tiles: the Top-positions widgets, which list
+# individual holdings. The breakdown widgets each already group by one of
+# the dimensions, so filtering them by it would mostly self-select.
+POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (% of peak)"}
 
 
 def base_dashboards():
@@ -1208,20 +1210,25 @@ def dashboard_parameters(model_ids, mode):
         # Required + dynamic "today" default: the as-of cards sum daily
         # history (one row per entity per day), so they must never run
         # with the day filter cleared — a required parameter resets to
-        # its default instead of clearing. The asset-class picker (no
-        # default = all values) is linked only to ASSET_FILTERED_CARDS.
+        # its default instead of clearing. The asset-class and vehicle
+        # pickers (no default = all values) draw their dropdown values
+        # from the positions model and are linked only to
+        # POSITION_FILTERED_CARDS.
+        def positions_picker(pid, name, slug, field):
+            return {"id": pid, "name": name, "slug": slug, "type": "string/=",
+                    "sectionId": "string", "isMultiSelect": True,
+                    "values_source_type": "card",
+                    "values_source_config": {
+                        "card_id": model_ids["report_positions_history"],
+                        "value_field": ["field", field,
+                                        {"base-type": "type/Text"}]}}
+
         return [{"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
                  "type": "date/single", "sectionId": "date",
                  "default": "thisday", "required": True},
                 source,
-                {"id": ASSET_PARAM_ID, "name": "Asset class",
-                 "slug": "asset_class", "type": "string/=",
-                 "sectionId": "string", "isMultiSelect": True,
-                 "values_source_type": "card",
-                 "values_source_config": {
-                     "card_id": model_ids["report_positions_history"],
-                     "value_field": ["field", "asset_class",
-                                     {"base-type": "type/Text"}]}}]
+                positions_picker(ASSET_PARAM_ID, "Asset class", "asset_class", "asset_class"),
+                positions_picker(VEHICLE_PARAM_ID, "Vehicle", "vehicle", "vehicle")]
     return [
         # "past12months~": the trailing ~ means "include this month".
         # Without it Metabase takes the previous 12 COMPLETE months, which
@@ -1545,24 +1552,28 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                     {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
                      "target": ["dimension",
                                 _f("silver_source_id", "type/Text")]}]
-            if mode == "asof" and card in ASSET_FILTERED_CARDS:
+            if mode == "asof" and card in POSITION_FILTERED_CARDS:
                 maps.append({"parameter_id": ASSET_PARAM_ID,
                              "card_id": card_ids[card],
                              "target": ["dimension",
                                         _f("asset_class", "type/Text")]})
+                maps.append({"parameter_id": VEHICLE_PARAM_ID,
+                             "card_id": card_ids[card],
+                             "target": ["dimension",
+                                        _f("vehicle", "type/Text")]})
             return maps
 
         # The switch link occupies row 0, so the tiles shift down one row.
-        # The asset-class filter renders on the Top-positions tile itself
-        # (inline_parameters) rather than in the dashboard's filter bar —
-        # it only applies to that one widget.
+        # The asset-class and vehicle filters render on the Top-positions
+        # tile itself (inline_parameters) rather than in the dashboard's
+        # filter bar — they only apply to that one widget.
         dashcards = [text_dashcard(-99, link)]
         dashcards += [{"id": -(i + 1), "card_id": card_ids[card], "row": row + 1,
                        "col": col, "size_x": sx, "size_y": sy, "series": [],
                        "visualization_settings": {},
                        "inline_parameters":
-                           [ASSET_PARAM_ID] if mode == "asof"
-                           and card in ASSET_FILTERED_CARDS else [],
+                           [ASSET_PARAM_ID, VEHICLE_PARAM_ID] if mode == "asof"
+                           and card in POSITION_FILTERED_CARDS else [],
                        "parameter_mappings": tile_mappings(card, tcol)}
                       for i, (card, row, col, sx, sy, tcol) in enumerate(tiles)]
         st, body = req(base, f"/api/dashboard/{dash_ids[name]}", "PUT",
