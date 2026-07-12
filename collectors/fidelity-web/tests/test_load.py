@@ -287,6 +287,36 @@ def test_activity_dedups_across_overlapping_windows(migrated, tmp_path):
     assert n == 2
 
 
+def test_activity_dedups_across_description_relabels(migrated, tmp_path):
+    """The same transaction whose security text Fidelity re-labelled
+    between exports (Action/Description drift, structural columns
+    unchanged) must still collapse onto one row. Regression guard
+    for the payload-hash identity, which split on any text change."""
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "activity").mkdir(parents=True)
+    row_a = (
+        f'06/01/2024,"Trust: Under Agreement","{ACCT_TRUST}",'
+        f'"MERGER MER FROM 000000000#REOR R0000000000000 STUB CO '
+        f'SPONSORED ADR ({SYM_TRUST}) (Cash)",'
+        f'{SYM_TRUST},"STUB CO SPONSORED ADR",Cash,,25.000,,,,'
+        f'1234.50,\n'
+    )
+    row_b = (
+        f'06/01/2024,"Trust: Under Agreement","{ACCT_TRUST}",'
+        f'"MERGER MER FROM 000000000#REOR R0000000000000 STUB CO '
+        f'SPON ADS EACH REP 1 O ({SYM_TRUST}) (Cash)",'
+        f'{SYM_TRUST},"STUB CO SPON ADS EACH REP 1 O",Cash,,25.000,,,,'
+        f'1234.50,\n'
+    )
+    (dump / "activity" / "activity_20240401__20240630.csv").write_text(
+        _activity_csv(row_a))
+    (dump / "activity" / "activity_20240501__20240731.csv").write_text(
+        _activity_csv(row_b))
+    load._load_transactions(migrated, 1, dump)
+    n = migrated.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    assert n == 1
+
+
 def test_activity_preserves_genuine_same_day_duplicates(migrated, tmp_path):
     """Two byte-identical rows within a single export are two real
     transactions (e.g. two same-day, same-amount fills) and must be
