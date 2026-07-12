@@ -11,11 +11,13 @@ import (
 // pluggable per-source knobs (see docs/RETURNS-NOTES.md, "Pluggable per-source
 // policy").
 //
-// The UBS migration has landed, so a subset of the knobs is now consumed by the
-// engine: OnboardScope (returns_compute.go, per-entity-once onboarding),
-// Inception (entityWindow, first-real-snapshot anchor), ConduitKinds via
-// IsConduit (returns.go), and the ClassifyFlow/ExternalOnly hook path
-// (attachFlows in returns.go). The remaining knobs — NettingTol, SpineDensity,
+// The UBS and cointracking migrations have landed, so a subset of the knobs is
+// now consumed by the engine: OnboardScope (returns_compute.go, per-entity-once
+// onboarding), Inception (entityWindow, first-real-snapshot anchor), ConduitKinds
+// via IsConduit (returns.go), the ClassifyFlow/ExternalOnly hook path (attachFlows
+// in returns.go), and AccountsGrainMeaningless (returns.go, suppressing the
+// per-wallet accounts grain for crypto sources). The remaining knobs — NettingTol,
+// SpineDensity,
 // InKindJumpTol, the NavOnly mirror, and the OnboardAmount hook — are DEFINED
 // but NOT YET consumed. Every knob defaults to reproduce CURRENT behavior, so
 // DefaultReturnsPolicy() is a strict no-op: a recognised-but-unmigrated source

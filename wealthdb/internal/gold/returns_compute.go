@@ -463,19 +463,6 @@ func groupOnboardStep(grp []*accountData, day int64) float64 {
 	return step
 }
 
-// subsumesAt reports whether a constituent's flow on `day` lands in a region the
-// aggregate value series does not reflect, so it is subsumed by the synthetic
-// onboarding/closure amount rather than counted as a visible flow:
-//
-//   - PRE-DEBUT: the constituent debuts (joins the value spine) at d > winFrom and
-//     the flow is dated on or before d. The aggregate value series is 0 for this
-//     constituent until d, so a pre-debut deposit/journal-in caused no visible
-//     ΔV; onboarding books the whole firstValue at d instead.
-//   - CLOSURE-DRAIN: the constituent closes (value → 0) at cd ≤ winTo and the flow
-//     is dated after the last snapshot that still carried a non-zero value, up to
-//     cd. The carried value is flat across that gap (no visible ΔV), so a drain
-//     there would double-count with the synthetic closure outflow at cd.
-//
 // subsumesAtDebut reports whether a flow on `day` falls in a late constituent's
 // pre-debut region, where synthetic onboarding books the debut value instead. It
 // must NOT fire for an OnboardNone source: there is no onboarding to replace the
@@ -493,6 +480,18 @@ func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
 	return cd > winFrom && cd <= winTo && day > a.lastNonzeroDay() && day <= cd
 }
 
+// subsumesAt reports whether a constituent's flow on `day` lands in a region the
+// aggregate value series does not reflect, so it is subsumed by the synthetic
+// onboarding/closure amount rather than counted as a visible flow:
+//
+//   - PRE-DEBUT: the constituent debuts (joins the value spine) at d > winFrom and
+//     the flow is dated on or before d. The aggregate value series is 0 for this
+//     constituent until d, so a pre-debut deposit/journal-in caused no visible
+//     ΔV; onboarding books the whole firstValue at d instead.
+//   - CLOSURE-DRAIN: the constituent closes (value → 0) at cd ≤ winTo and the flow
+//     is dated after the last snapshot that still carried a non-zero value, up to
+//     cd. The carried value is flat across that gap (no visible ΔV), so a drain
+//     there would double-count with the synthetic closure outflow at cd.
 func subsumesAt(a *accountData, day, winFrom, winTo int64) bool {
 	return subsumesAtDebut(a, day, winFrom, winTo) || subsumesAtClosure(a, day, winFrom, winTo)
 }

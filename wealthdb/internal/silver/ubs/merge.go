@@ -341,9 +341,8 @@ func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, b
 
 func (s *psnWebFoldStream) Close() error { return s.inner.Close() }
 
-// foldWebPayloadAsWebKey mirrors foldPSNPayload but injects the
-// web JSON under the "web" key rather than "psn". The base
-// (canonical) row is owned by PSN here.
+// foldWebPayloadAsWebKey injects the web JSON under the "web" key
+// of a PSN-owned canonical row (the base row here is owned by PSN).
 func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 	if web == "" {
 		return base

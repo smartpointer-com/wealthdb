@@ -56,7 +56,7 @@ func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, m
 }
 
 // scanPositionRows runs a report_positions / report_cash macro query
-// (both emit the same 16-column position shape) and scans the rows.
+// (both emit the same 17-column position shape) and scans the rows.
 func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...any) ([]PositionRow, error) {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
