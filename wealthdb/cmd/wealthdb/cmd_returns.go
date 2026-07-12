@@ -245,8 +245,8 @@ func returnsUsage() string {
                         [--netting on|off] [--inception full|strict] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Time-weighted (TWR) and money-weighted (MWR/XIRR) returns. Grain is the
-positional <view>; everything else is a flag. Returns are historic-FX only
-and net of fees and taxes paid (after-tax).
+positional <view>; everything else is a flag. Returns use historic FX
+and are net of fees and taxes paid (after-tax).
 
 Views (coarsest → finest):
   global       the whole tracked portfolio

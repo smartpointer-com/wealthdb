@@ -51,7 +51,6 @@ command; no setup, no paths, no flags required to connect.
 ## Flags (the query commands)
 - `-f json|csv|table` — output format. Default is `table` (for humans). Use `json` to parse.
 - `-x CCY` — currency for value columns. Default is the configured base (USD). E.g. `-x CHF`, `-x EUR`.
-- `--fx-mode historic|current` — `historic` (default: FX rate at the snapshot/transaction date) or `current` (latest rate). **holdings + transactions only** — `returns` is historic-FX only and has no `--fx-mode`.
 - `-d` (as-of date) applies to **holdings** views; `transactions` and `returns` take a positional date range/window instead, not `-d`. `-p` (privacy/redact) works on all.
 - `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `holdings global`, which is a single fixed row.)
 - `holdings positions` only: `--with-cash` — add one cash-balance row per account+currency.
@@ -113,7 +112,7 @@ Window is positional like `transactions` (default: since first snapshot → toda
 `returns accounts 2025`, `returns global 2024-01-01 -`. Buckets: `--period
 monthly|quarterly|annual|total` (default quarterly) — you get one row per bucket
 plus a since-inception summary row. Other flags: `--annualize auto|always|never`,
-`-x CCY` (historic FX only — there is **no** `--fx-mode`), `-f json`, `-p`.
+`-x CCY` (historic FX), `-f json`, `-p`.
 
 Columns: `silver_source, entity, period, start_<CCY>, end_<CCY>, net_flow_<CCY>,
 twr_% , mwr_% , twr_ann_%, mwr_ann_%, quality`. Returns are **after fees and

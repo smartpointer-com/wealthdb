@@ -60,8 +60,7 @@ strictly relational, and the surface that future analytics
 - **Multi-currency output at query time.** Position and net-worth
   reports can be rendered in any ISO currency; the choice is made
   per-invocation, not baked into the database. FX conversion uses
-  either "current" rates (latest available) or "historic" rates
-  (*default*, snapshot-time): the flat nearest rate at or before
+  historic rates (snapshot-time): the flat nearest rate at or before
   the line's own day, no interpolation. See §10.6.
 - **Hands-off operation.** Non-interactive CLI. One process, one
   database, no daemons. Re-runs are idempotent.
@@ -138,7 +137,6 @@ gold DB at all.
 | --- | --- | --- |
 | `-c`, `--config` | `$HOME/.config/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
 | `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable. Useful for ad-hoc safety during exploration ("I'm running queries on prod and don't want to accidentally mutate anything"). Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
-| `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### 4.3 `wealthdb init`
 
@@ -177,9 +175,7 @@ Prints the consolidated portfolio as of a date.
 | --- | --- | --- |
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
-| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
-| `--fx-mode` | `historic` | `historic` = convert using the flat nearest FX rate at or before each position's snapshot day (no interpolation; a day before the first known rate clamps to the earliest available rate); `current` = convert using the latest FX rate available, regardless of snapshot time. |
-| `--include-cash` | on | Include cash balances as synthetic rows with `asset_class = 'cash'`. |
+| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). || `--include-cash` | on | Include cash balances as synthetic rows with `asset_class = 'cash'`. |
 
 Formats:
 - `table` — Postgres-style aligned ASCII (one column header line,
@@ -1728,7 +1724,7 @@ the verified per-adapter flow table):
   crypto = fiat flows only; manual/carta/equityzen = NAV-only). `value_outccy`
   already carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR
   `cf = -value_outccy` with no per-kind exception.
-- **Historic-FX only** (no `--fx-mode`): FX movement is part of the return. **Net
+- **Historic-FX**: FX movement is part of the return. **Net
   of fees and taxes paid** (after-tax) — costs stay inside the value series.
 - **Mortgage / net-negative entities** are excluded from coarse rollups and shown
   as a separate `nonpositive_base` liability line.

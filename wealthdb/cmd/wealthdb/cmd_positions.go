@@ -180,7 +180,7 @@ func positionsUsage() string {
 Print consolidated positions as of a date. For each silver source,
 the latest snapshot ≤ the as-of date is used. Default: today UTC,
 table format, default column set, output currency from
-config.default_currency, historic FX mode.
+config.default_currency, historic FX (nearest rate at-or-before the snapshot).
 
 Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)

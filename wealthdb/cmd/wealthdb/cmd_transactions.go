@@ -208,7 +208,7 @@ func transactionsUsage() string {
 
 Print transactions over a date range. Default: past 30 days,
 table format, oldest first, default column set, output currency
-from config.default_currency, historic FX mode (nearest rate
+from config.default_currency, historic FX (nearest rate
 at-or-before occurred_at).
 
 Date arguments (positional, optional; may appear before or after
