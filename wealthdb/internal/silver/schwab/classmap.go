@@ -77,28 +77,13 @@ func fundExposure(name string) canonical.AssetClass {
 // or money-market description, and the 4-letter-plus-X mutual-fund
 // ticker. First match wins; the fall-through is a plain stock, the
 // overwhelming majority of statement lines.
-var (
-	// OCC option symbol: root + YYMMDD + C/P + strike.
-	histOptionKeyRe  = regexp.MustCompile(`^[A-Z.]{1,6}\d{6}[CP]\d+(\.\d+)?$`)
-	histOptionDescRe = regexp.MustCompile(`^(CALL|PUT)\b`)
-	histCUSIPRe      = regexp.MustCompile(`^[A-Z0-9]{8}[0-9]$`)
-	// Bond rows carry a coupon: "… 04.12500% 01/15/2042" / "FIXED COUPON".
-	histBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
-	// Money-market sweeps ("… GOVERNMENT MONEY MARKET", "… CASH RESERVES").
-	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
-	// US money-market funds carry 5-letter tickers ending in a
-	// doubled X — the convention separating them from ordinary
-	// mutual funds' single trailing X. Catches money funds whose
-	// truncated statement description names no money-market token.
-	histMoneyMktKeyRe = regexp.MustCompile(`^[A-Z]{3}XX$`)
-	histETFDescRe     = regexp.MustCompile(`\bETF\b`)
-	histMutualFundRe  = regexp.MustCompile(`^[A-Z]{4}X$`)
-	// ETF-only issuer families whose statement descriptions omit the
-	// "ETF" token. Checked AFTER the mutual-fund ticker shape so an
-	// issuer's ordinary mutual funds (5-letter X-tickers) keep the
-	// fund vehicle.
-	histETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
-)
+// The shared, cross-adapter shapes (option / CUSIP / bond-coupon /
+// money-market ticker / ETF / mutual-fund / ETF-issuer) live in
+// silver.Stmt*Re. Only Schwab's own money-market description shape,
+// which lacks fidelity's "NET CASH POSITION" arm, is declared here.
+//
+// Money-market sweeps ("… GOVERNMENT MONEY MARKET", "… CASH RESERVES").
+var histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
 
 // taxonomyHistorical derives the (exposure, vehicle) pair for a
 // `historical_position_snapshots` row from its statement section,
@@ -133,23 +118,23 @@ func taxonomyHistorical(section, instrumentKey, description string) (canonical.A
 
 func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
 	switch {
-	case histOptionKeyRe.MatchString(instrumentKey),
-		histOptionDescRe.MatchString(description):
+	case silver.StmtOptionKeyRe.MatchString(instrumentKey),
+		silver.StmtOptionDescRe.MatchString(description):
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
 	case histMoneyMktRe.MatchString(description),
-		histMoneyMktKeyRe.MatchString(instrumentKey):
+		silver.StmtMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
-	case histCUSIPRe.MatchString(instrumentKey),
-		histBondDescRe.MatchString(description):
+	case silver.StmtCUSIPRe.MatchString(instrumentKey),
+		silver.StmtBondDescRe.MatchString(description):
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case histETFDescRe.MatchString(description):
+	case silver.StmtETFDescRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
-	case histMutualFundRe.MatchString(instrumentKey):
+	case silver.StmtMutualFundRe.MatchString(instrumentKey):
 		if silver.NamesMoneyMarket(description) {
 			return canonical.AssetClassCash, canonical.VehicleFund
 		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
-	case histETFIssuerRe.MatchString(description):
+	case silver.StmtETFIssuerRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock

@@ -3,14 +3,16 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"slices"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// idPattern restricts silver_source_id values to slug-style
-// strings — DESIGN.md §5.1 spec.
-var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+// IDPattern restricts silver_source_id values to slug-style
+// strings — DESIGN.md §5.1 spec. Exported so the setup wizard can
+// reject bad ids at prompt time against the same shape.
+var IDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // symbolOverrideShapeRe matches the ticker shape we'll accept in
 // `symbol_overrides[].symbol`. Same surface form the runtime
@@ -30,15 +32,15 @@ func (c *Config) Validate() error {
 	if c.DefaultCurrency == "" {
 		return fmt.Errorf("config: default_currency is required")
 	}
-	if !isLikelyISO4217(c.DefaultCurrency) {
+	if !IsLikelyISO4217(c.DefaultCurrency) {
 		return fmt.Errorf("config: default_currency %q is not a 3-letter ISO 4217 code", c.DefaultCurrency)
 	}
 
 	known := silver.Kinds() // empty during tests that don't blank-import adapters; we tolerate that
 	seenIDs := make(map[string]bool, len(c.SilverSources))
 	for i, s := range c.SilverSources {
-		if !idPattern.MatchString(s.ID) {
-			return fmt.Errorf("config: silver_sources[%d].id %q must match %s", i, s.ID, idPattern.String())
+		if !IDPattern.MatchString(s.ID) {
+			return fmt.Errorf("config: silver_sources[%d].id %q must match %s", i, s.ID, IDPattern.String())
 		}
 		if seenIDs[s.ID] {
 			return fmt.Errorf("config: duplicate silver_sources[].id %q", s.ID)
@@ -48,7 +50,7 @@ func (c *Config) Validate() error {
 		if s.Kind == "" {
 			return fmt.Errorf("config: silver_sources[%d].kind is required", i)
 		}
-		if len(known) > 0 && !kindIsKnown(s.Kind, known) && s.Kind != "auto" {
+		if len(known) > 0 && !slices.Contains(known, s.Kind) && s.Kind != "auto" {
 			return fmt.Errorf("config: silver_sources[%d].kind %q not registered (known: %v)", i, s.Kind, known)
 		}
 
@@ -267,10 +269,11 @@ func validateExcludeNested(grain string, m map[string][]string, seenIDs map[stri
 	return nil
 }
 
-// isLikelyISO4217 does a sanity check, not a full ISO 4217 lookup:
+// IsLikelyISO4217 does a sanity check, not a full ISO 4217 lookup:
 // exactly 3 uppercase ASCII letters. Pragmatically enough at this
 // scale; we don't want a vendored currency-code table in the binary.
-func isLikelyISO4217(s string) bool {
+// Exported so the setup wizard validates currency input identically.
+func IsLikelyISO4217(s string) bool {
 	if len(s) != 3 {
 		return false
 	}
@@ -280,13 +283,4 @@ func isLikelyISO4217(s string) bool {
 		}
 	}
 	return true
-}
-
-func kindIsKnown(want string, known []string) bool {
-	for _, k := range known {
-		if k == want {
-			return true
-		}
-	}
-	return false
 }

@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -32,11 +32,6 @@ type Result struct {
 	Config     config.Config
 	ConfigPath string
 }
-
-// idPattern mirrors config.idPattern — kept here to avoid a
-// cross-package import cycle and so the wizard can reject bad
-// IDs at prompt time rather than at validate time.
-var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Run drives the first-time setup conversation. configPath is
 // where the resulting wealthdb.cfg will be written; the caller
@@ -76,7 +71,7 @@ func Run(stdin io.Reader, stdout io.Writer, configPath string, def Defaults) (*R
 		"Default output currency (ISO 4217, 3 uppercase letters)",
 		def.DefaultCurrency,
 		func(s string) error {
-			if !isISO4217Shape(s) {
+			if !config.IsLikelyISO4217(s) {
 				return fmt.Errorf("not a 3-letter uppercase code")
 			}
 			return nil
@@ -140,8 +135,8 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 		"  Silver source id (e.g. 'schwab', 'ubs-main')",
 		"",
 		func(s string) error {
-			if !idPattern.MatchString(s) {
-				return fmt.Errorf("must match %s", idPattern.String())
+			if !config.IDPattern.MatchString(s) {
+				return fmt.Errorf("must match %s", config.IDPattern.String())
 			}
 			if _, dup := usedIDs[s]; dup {
 				return fmt.Errorf("already in use in this config")
@@ -167,10 +162,8 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 			if s == "auto" {
 				return nil
 			}
-			for _, k := range knownKinds {
-				if k == s {
-					return nil
-				}
+			if slices.Contains(knownKinds, s) {
+				return nil
 			}
 			return fmt.Errorf("unknown kind; want one of %s or 'auto'", strings.Join(knownKinds, ", "))
 		},
@@ -252,16 +245,4 @@ func expandLeadingHome(s string) string {
 		}
 	}
 	return s
-}
-
-func isISO4217Shape(s string) bool {
-	if len(s) != 3 {
-		return false
-	}
-	for _, r := range s {
-		if r < 'A' || r > 'Z' {
-			return false
-		}
-	}
-	return true
 }

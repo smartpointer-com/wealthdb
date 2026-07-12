@@ -49,43 +49,22 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 	return canonical.AssetClassOther, canonical.VehicleOther
 }
 
-// The instrument-key and description shapes classifyHistoricalPair
-// matches. The key shapes mirror fidelity-web's live silver
-// classifier (`load.py _classify_asset_class`); the description
-// shapes cover what the supplied-statement and SVB statement-PDF
-// families surface instead of a structured type
-// code.
+// Fidelity-specific instrument-key and description shapes
+// classifyHistoricalPair matches. The shared, cross-adapter shapes
+// (option / CUSIP / bond-coupon / money-market ticker / ETF /
+// mutual-fund / ETF-issuer) live in silver.Stmt*Re; only the shapes
+// unique to fidelity's trust-statement and SVB Wealth Advisory
+// statement-PDF families are declared here.
 var (
-	// OCC option symbol: root + YYMMDD + C/P + strike.
-	histOptionKeyRe = regexp.MustCompile(`^[A-Z.]{1,6}\d{6}[CP]\d+(\.\d+)?$`)
-	// Option legs print as "CALL (ABCD) …" / "PUT (…) …".
-	histOptionDescRe = regexp.MustCompile(`^(CALL|PUT)\b`)
-	histCUSIPRe      = regexp.MustCompile(`^[A-Z0-9]{8}[0-9]$`)
-	histPlanKeyRe    = regexp.MustCompile(`^[A-Z]{3}[0-9]{6}$`)
+	histPlanKeyRe = regexp.MustCompile(`^[A-Z]{3}[0-9]{6}$`)
 	// Keyless 529 plan sleeves: "STATE PLAN 2099 (FIDELITY BLEND)".
 	histPlanDescRe = regexp.MustCompile(`\(FIDELITY [^)]*\)$`)
-	// US money-market funds carry 5-letter tickers ending in a
-	// doubled X — the convention separating them from ordinary
-	// mutual funds' single trailing X. Catches money funds whose
-	// truncated statement description says neither "MONEY MARKET"
-	// nor "CASH RESERVES".
-	histMoneyMktKeyRe = regexp.MustCompile(`^[A-Z]{3}XX$`)
-	histMutualFundRe  = regexp.MustCompile(`^[A-Z]{4}X$`)
-	// Bond rows carry a coupon: "… 04.12500% 01/15/2042" / "FIXED COUPON".
-	histBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
 	// Money-market sweeps ("FIDELITY GOVERNMENT MONEY MARKET",
 	// "… CASH RESERVES") plus the svb builder's "NET CASH POSITION"
 	// row — the statement's net cash/margin sleeve booked as a
-	// position (negative = margin debit).
+	// position (negative = margin debit). Distinct from
+	// silver.StmtMoneyMktRe by the trailing NET CASH POSITION arm.
 	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b|^NET CASH POSITION$`)
-	histETFDescRe  = regexp.MustCompile(`\bETF\b`)
-	// ETF-only issuer families whose statement descriptions often
-	// omit the "ETF" token — truncated lines like "ISHARES TRUST DJ
-	// US EXAMPLE" or "VANGUARD INTL EQUITY INDEX FDS EXAMPLE".
-	// Checked AFTER the mutual-fund ticker shape so an issuer's
-	// ordinary mutual funds (5-letter X-tickers) keep the fund
-	// vehicle.
-	histETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
 	// The svb builder's synthetic $0 closure marker — value 0, no
 	// exposure to classify.
 	histClosedDescRe = regexp.MustCompile(`^Account closed`)
@@ -114,21 +93,21 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 	switch {
 	case histClosedDescRe.MatchString(description):
 		return canonical.AssetClassOther, canonical.VehicleOther
-	case histOptionKeyRe.MatchString(instrumentKey),
-		histOptionDescRe.MatchString(description):
+	case silver.StmtOptionKeyRe.MatchString(instrumentKey),
+		silver.StmtOptionDescRe.MatchString(description):
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
 	case histMoneyMktRe.MatchString(description),
-		histMoneyMktKeyRe.MatchString(instrumentKey):
+		silver.StmtMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
 	case histPlanKeyRe.MatchString(instrumentKey),
 		histPlanDescRe.MatchString(description):
 		return canonical.AssetClassMultiAsset, canonical.VehicleFund
-	case histCUSIPRe.MatchString(instrumentKey),
-		histBondDescRe.MatchString(description):
+	case silver.StmtCUSIPRe.MatchString(instrumentKey),
+		silver.StmtBondDescRe.MatchString(description):
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case histETFDescRe.MatchString(description):
+	case silver.StmtETFDescRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
-	case histMutualFundRe.MatchString(instrumentKey):
+	case silver.StmtMutualFundRe.MatchString(instrumentKey):
 		// A money fund whose name lacks the "MONEY MARKET" token
 		// histMoneyMktRe caught above (e.g. "… MONEY FUND") but still
 		// reads as cash.
@@ -136,7 +115,7 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 			return canonical.AssetClassCash, canonical.VehicleFund
 		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
-	case histETFIssuerRe.MatchString(description):
+	case silver.StmtETFIssuerRe.MatchString(description):
 		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock
