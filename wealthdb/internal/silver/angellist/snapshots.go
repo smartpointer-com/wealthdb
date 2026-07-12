@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -241,7 +240,7 @@ SELECT ps.position_external_id,
 			Currency:             currency,
 			MarketValue:          minorPtr(marketMinor),
 			BookValue:            minorPtr(contribMinor),
-			AcquisitionDate:      acqDate(invDate),
+			AcquisitionDate:      silver.DatePtrFromNullUnix(invDate),
 		}
 		batch.Positions = append(batch.Positions, change)
 
@@ -298,16 +297,5 @@ func minorPtr(n sql.NullInt64) *canonical.Decimal {
 		return nil
 	}
 	d := decimal.New(n.Int64, -2)
-	return &d
-}
-
-// acqDate converts a nullable unix-seconds timestamp to a UTC-midnight
-// calendar date (gold stores AcquisitionDate as DATE).
-func acqDate(n sql.NullInt64) *time.Time {
-	if !n.Valid {
-		return nil
-	}
-	t := time.Unix(n.Int64, 0).UTC()
-	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 	return &d
 }

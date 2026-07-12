@@ -274,10 +274,10 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			AssetClass:           acHist,
 			Vehicle:              vehHist,
 			Currency:             positionCcy,
-			Quantity:             decimalFromNullFloat(units),
-			MarketValue:          decimalFromNullFloat(mv),
+			Quantity:             silver.DecimalPtrFromNullFloat(units),
+			MarketValue:          silver.DecimalPtrFromNullFloat(mv),
 			BookValue:            bookValueFromUnitsCost(units, cost),
-			AccruedInterest:      decimalFromNullFloat(accrued),
+			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              json.RawMessage(payload),
 		})
 	}
@@ -648,14 +648,6 @@ func strHash(s string) uint64 {
 		h *= prime64
 	}
 	return h
-}
-
-func decimalFromNullFloat(n sql.NullFloat64) *canonical.Decimal {
-	if !n.Valid {
-		return nil
-	}
-	d := canonical.NewDecimalFromFloat(n.Float64)
-	return &d
 }
 
 func bookValueFromUnitsCost(units, cost sql.NullFloat64) *canonical.Decimal {

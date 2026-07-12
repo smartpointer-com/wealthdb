@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -129,14 +128,14 @@ SELECT p.deal_external_id,
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			MarketValue:          realPtr(market),
-			BookValue:            realPtr(cost),
-			AcquisitionDate:      acqDate(acqUnix),
+			MarketValue:          silver.DecimalPtrFromNullFloat(market),
+			BookValue:            silver.DecimalPtrFromNullFloat(cost),
+			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
 		// quantity is a share count only for SPVs; a multi-company fund's
 		// LP interest has no meaningful unit count.
 		if ac == canonical.AssetClassSPV {
-			change.Quantity = realPtr(shares)
+			change.Quantity = silver.DecimalPtrFromNullFloat(shares)
 		}
 		batch.Positions = append(batch.Positions, change)
 
@@ -203,28 +202,4 @@ SELECT p.deal_external_id,
 		LastSeenAt:        t,
 	})
 	return batch, nil
-}
-
-// ---- helpers ------------------------------------------------------
-
-// realPtr converts a nullable SQLite REAL (dollars) to a canonical Decimal
-// pointer. Returns nil for SQL NULL. The collector already rounds money to
-// cents, so the float→decimal reconstruction is exact at display precision.
-func realPtr(n sql.NullFloat64) *canonical.Decimal {
-	if !n.Valid {
-		return nil
-	}
-	d := canonical.NewDecimalFromFloat(n.Float64)
-	return &d
-}
-
-// acqDate converts a nullable unix-seconds timestamp to a UTC-midnight
-// calendar date (gold stores AcquisitionDate as DATE).
-func acqDate(n sql.NullInt64) *time.Time {
-	if !n.Valid {
-		return nil
-	}
-	t := time.Unix(n.Int64, 0).UTC()
-	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	return &d
 }

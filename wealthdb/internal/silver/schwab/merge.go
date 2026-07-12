@@ -221,7 +221,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		}
 		streams = append(streams, s)
 	}
-	return &concatSnapshotStream{streams: streams}, nil
+	return silver.NewConcatSnapshotStream(streams), nil
 }
 
 // snapshotsWebDimensions emits only the AccountChange rows from
@@ -303,7 +303,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 		streams = append(streams, s)
 	}
-	return &concatTransactionStream{streams: streams}, nil
+	return silver.NewConcatTransactionStream(streams), nil
 }
 
 // ensureBridge builds the web suffix → api hashValue map on first
@@ -499,71 +499,4 @@ SELECT account_external_id, MIN(timestamp)
 	}
 	c.apiStartErr = rows.Err()
 	return c.apiStartByHash, c.apiStartErr
-}
-
-// concatSnapshotStream drains each underlying stream in order.
-// Mirrors the UBS orchestrator's concat type — small duplication,
-// not worth a shared helper for two callers.
-type concatSnapshotStream struct {
-	streams []silver.SnapshotStream
-	idx     int
-}
-
-func (s *concatSnapshotStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
-	for s.idx < len(s.streams) {
-		batch, more, err := s.streams[s.idx].Next(ctx)
-		if err != nil {
-			return canonical.SnapshotBatch{}, false, err
-		}
-		if more {
-			return batch, true, nil
-		}
-		s.idx++
-		anyLeft := s.idx < len(s.streams)
-		return batch, anyLeft, nil
-	}
-	return canonical.SnapshotBatch{}, false, nil
-}
-
-func (s *concatSnapshotStream) Close() error {
-	var firstErr error
-	for _, st := range s.streams {
-		if err := st.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-// concatTransactionStream mirrors concatSnapshotStream for
-// transactions.
-type concatTransactionStream struct {
-	streams []silver.TransactionStream
-	idx     int
-}
-
-func (s *concatTransactionStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
-	for s.idx < len(s.streams) {
-		batch, more, err := s.streams[s.idx].Next(ctx)
-		if err != nil {
-			return canonical.TransactionBatch{}, false, err
-		}
-		if more {
-			return batch, true, nil
-		}
-		s.idx++
-		anyLeft := s.idx < len(s.streams)
-		return batch, anyLeft, nil
-	}
-	return canonical.TransactionBatch{}, false, nil
-}
-
-func (s *concatTransactionStream) Close() error {
-	var firstErr error
-	for _, st := range s.streams {
-		if err := st.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
 }

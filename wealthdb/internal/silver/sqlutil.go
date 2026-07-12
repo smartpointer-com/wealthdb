@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver registration for all adapters.
 
@@ -72,6 +73,18 @@ func DecimalPtrOrNil(s sql.NullString) *canonical.Decimal {
 	return &d
 }
 
+// DecimalPtrFromNullFloat converts a nullable SQLite REAL to a
+// canonical Decimal pointer: nil for SQL NULL, else the float
+// reconstructed as a Decimal. Collectors round money to cents before
+// storing, so the float→decimal step is exact at display precision.
+func DecimalPtrFromNullFloat(n sql.NullFloat64) *canonical.Decimal {
+	if !n.Valid {
+		return nil
+	}
+	d := canonical.NewDecimalFromFloat(n.Float64)
+	return &d
+}
+
 // DecimalOrZero parses a string-encoded decimal, returning a zero
 // Decimal for NULL / empty input and a wrapped error on a genuine
 // parse failure (the caller wants to know).
@@ -109,4 +122,16 @@ func JSONOrNil(s sql.NullString) json.RawMessage {
 		return nil
 	}
 	return json.RawMessage(s.String)
+}
+
+// DatePtrFromNullUnix converts a nullable unix-seconds timestamp to a
+// pointer to its UTC-midnight calendar date, or nil for SQL NULL.
+// Gold stores acquisition dates as DATE, so the time-of-day is dropped.
+func DatePtrFromNullUnix(n sql.NullInt64) *time.Time {
+	if !n.Valid {
+		return nil
+	}
+	t := time.Unix(n.Int64, 0).UTC()
+	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return &d
 }

@@ -155,10 +155,10 @@ SELECT as_of_date, account_external_id, instrument_key,
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             "USD",
-			Quantity:             decimalFromNullFloat(quantity),
-			MarketValue:          decimalFromNullFloat(marketValue),
-			BookValue:            decimalFromNullFloat(costBasis),
-			AccruedInterest:      decimalFromNullFloat(accrued),
+			Quantity:             silver.DecimalPtrFromNullFloat(quantity),
+			MarketValue:          silver.DecimalPtrFromNullFloat(marketValue),
+			BookValue:            silver.DecimalPtrFromNullFloat(costBasis),
+			AccruedInterest:      silver.DecimalPtrFromNullFloat(accrued),
 			Payload:              json.RawMessage(payload),
 		})
 	}
@@ -286,12 +286,4 @@ SELECT COUNT(*) FROM sqlite_master
 		return false, fmt.Errorf("schwab-web hasHistoricalTables: %w", err)
 	}
 	return n == 2, nil
-}
-
-func decimalFromNullFloat(n sql.NullFloat64) *canonical.Decimal {
-	if !n.Valid {
-		return nil
-	}
-	d := canonical.NewDecimalFromFloat(n.Float64)
-	return &d
 }

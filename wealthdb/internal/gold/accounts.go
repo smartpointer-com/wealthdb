@@ -95,12 +95,9 @@ func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mo
 		a.PortfolioExternalID = nullStringToPtr(portfolio)
 		a.TaxWrapper = nullStringToPtr(taxWrapper)
 		a.ManagementStyle = nullStringToPtr(mgmtStyle)
-		a.PositionsValueBase = trimmedDecimalPtr(pvb)
-		a.CashBalanceBase = trimmedDecimalPtr(cvb)
-		a.TotalValueBase = trimmedDecimalPtr(tvb)
-		a.PositionsValueOutCcy = trimmedDecimalPtr(pvo)
-		a.CashBalanceOutCcy = trimmedDecimalPtr(cvo)
-		a.TotalValueOutCcy = trimmedDecimalPtr(tvo)
+		a.PositionsValueBase, a.CashBalanceBase, a.TotalValueBase,
+			a.PositionsValueOutCcy, a.CashBalanceOutCcy, a.TotalValueOutCcy =
+			sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo)
 		out = append(out, a)
 	}
 	return out, rows.Err()

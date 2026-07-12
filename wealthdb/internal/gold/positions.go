@@ -142,3 +142,12 @@ func trimTrailingZeros(s string) string {
 	s = strings.TrimRight(s, ".")
 	return s
 }
+
+// sixAggPtrs trims the six aggregate value columns every report_*
+// macro projects — positions / cash / total, each in base and out
+// currency — returning them in that order for the caller to assign to
+// its row struct.
+func sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo sql.NullString) (*string, *string, *string, *string, *string, *string) {
+	return trimmedDecimalPtr(pvb), trimmedDecimalPtr(cvb), trimmedDecimalPtr(tvb),
+		trimmedDecimalPtr(pvo), trimmedDecimalPtr(cvo), trimmedDecimalPtr(tvo)
+}

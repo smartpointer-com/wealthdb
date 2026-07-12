@@ -71,7 +71,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		// emit appends one leg of the double-entry pair — both legs sit on the
 		// sentinel funding account and link to the deal's instrument.
 		emit := func(kind canonical.TxKind, withLot bool) {
-			signed := canonical.ApplyCanonicalSign(kind, realPtr(amount))
+			signed := canonical.ApplyCanonicalSign(kind, silver.DecimalPtrFromNullFloat(amount))
 			inst := deal
 			tx := canonical.TransactionChange{
 				TransactionExternalID: cfID + ":" + string(kind),
@@ -84,8 +84,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 				NetAmount:             signed,
 			}
 			if withLot {
-				tx.Quantity = realPtr(shares)
-				tx.Price = realPtr(price)
+				tx.Quantity = silver.DecimalPtrFromNullFloat(shares)
+				tx.Price = silver.DecimalPtrFromNullFloat(price)
 			}
 			txs = append(txs, tx)
 		}

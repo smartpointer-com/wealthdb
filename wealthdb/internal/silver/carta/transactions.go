@@ -33,17 +33,6 @@ func flowDateUnix(s string) (int64, bool) {
 	return 0, false
 }
 
-// realPtr converts a nullable SQLite REAL (dollars) to a canonical Decimal
-// pointer; nil for SQL NULL. The collector rounds money to cents, so the
-// float→decimal reconstruction is exact at display precision.
-func realPtr(n sql.NullFloat64) *canonical.Decimal {
-	if !n.Valid {
-		return nil
-	}
-	d := canonical.NewDecimalFromFloat(n.Float64)
-	return &d
-}
-
 // Transactions projects the cash-flow ledger (collector DESIGN.md §5.2) as
 // DOUBLE-ENTRY pairs on the sentinel funding account (fundingAccountKey). Carta
 // exposes no real cash balance — a capital call is wired from an external bank
@@ -99,7 +88,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		// description (e.g. a withdrawal's destination bank) rides on
 		// each leg.
 		emit := func(txKind canonical.TxKind, withLot bool) {
-			signed := canonical.ApplyCanonicalSign(txKind, realPtr(amount))
+			signed := canonical.ApplyCanonicalSign(txKind, silver.DecimalPtrFromNullFloat(amount))
 			i := inst
 			tx := canonical.TransactionChange{
 				TransactionExternalID: cfID + ":" + string(txKind),
@@ -116,8 +105,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 				tx.Description = &d
 			}
 			if withLot {
-				tx.Quantity = realPtr(shares)
-				tx.Price = realPtr(price)
+				tx.Quantity = silver.DecimalPtrFromNullFloat(shares)
+				tx.Price = silver.DecimalPtrFromNullFloat(price)
 			}
 			txs = append(txs, tx)
 		}

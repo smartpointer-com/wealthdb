@@ -86,12 +86,9 @@ func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, 
 		r.Nickname = nullStringToPtr(nickname)
 		r.TaxWrapper = nullStringToPtr(taxWrapper)
 		r.ManagementStyle = nullStringToPtr(mgmtStyle)
-		r.PositionsValueBase = trimmedDecimalPtr(pvb)
-		r.CashBalanceBase = trimmedDecimalPtr(cvb)
-		r.TotalValueBase = trimmedDecimalPtr(tvb)
-		r.PositionsValueOutCcy = trimmedDecimalPtr(pvo)
-		r.CashBalanceOutCcy = trimmedDecimalPtr(cvo)
-		r.TotalValueOutCcy = trimmedDecimalPtr(tvo)
+		r.PositionsValueBase, r.CashBalanceBase, r.TotalValueBase,
+			r.PositionsValueOutCcy, r.CashBalanceOutCcy, r.TotalValueOutCcy =
+			sixAggPtrs(pvb, cvb, tvb, pvo, cvo, tvo)
 		out = append(out, r)
 	}
 	return out, rows.Err()
