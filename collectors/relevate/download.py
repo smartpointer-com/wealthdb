@@ -79,7 +79,7 @@ except ModuleNotFoundError:  # pragma: no cover
         """Fallback so ``except RequestException`` still resolves when the real
         ``requests`` is absent (the HTTP paths are never entered then)."""
 
-from collectorkit import cli, docdedup
+from collectorkit import cli, docdedup, session as ck_session
 
 # doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
 # on, so the download-avoidance mode is chosen off the exact label load reads
@@ -165,13 +165,7 @@ logger = logging.getLogger("download")
 
 
 def load_state(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("could not load state %s: %s", path, exc)
-        return None
+    return ck_session.load_state(path)
 
 
 def state_into_jar(state_cookies: list[dict[str, Any]], jar) -> None:
