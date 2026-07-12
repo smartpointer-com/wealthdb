@@ -592,15 +592,58 @@ func loadSnapshotDays(ctx context.Context, db *sql.DB, byKeys ...map[string]*acc
 // to their accounts, tagging each flow with its source id (for deterministic
 // netting) and flagging any valued at the day-0 clamped FX rate.
 func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[string]*accountData, fx fxBounds) error {
-	txns, err := TransactionsBetween(ctx, db, 0, maxEpoch, outCcy, SortAscending)
+	txns, err := loadFlowTransactions(ctx, db, outCcy)
 	if err != nil {
 		return err
 	}
 	for _, t := range txns {
-		attachOneFlow(byKey, fx, outCcy, t.SilverSourceID, t.AccountExternalID,
-			canonical.TxKind(t.Kind), t.OccurredAt, t.TransactionExternalID, t.Currency, t.ValueOutCcy)
+		attachOneFlow(byKey, fx, outCcy, t.src, t.acct,
+			canonical.TxKind(t.kind), t.occurredAt, t.txID, t.ccy, t.valueOut)
 	}
 	return nil
+}
+
+// flowTxnRow is the lean projection of report_transactions the returns engine
+// needs: only the seven fields attachOneFlow reads, not the 20-column display
+// row TransactionsBetween builds. Selecting just these lets DuckDB prune the
+// macro's account/instrument LEFT JOINs, which the flow path never consults.
+type flowTxnRow struct {
+	src, acct  string
+	occurredAt int64
+	kind       string
+	ccy        string
+	txID       string
+	valueOut   *string
+}
+
+// loadFlowTransactions reads every transaction's flow-relevant fields in the
+// report_transactions macro's own total order (occurred_at, silver_source_id,
+// transaction_external_id) — the same order TransactionsBetween's ascending
+// path relies on, so the flow sequence is identical to the wide loader.
+func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flowTxnRow, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT silver_source_id, account_external_id, occurred_at, kind, currency,
+		        transaction_external_id, value_outccy
+		   FROM report_transactions(?, ?, ?)
+		  ORDER BY occurred_at, silver_source_id, transaction_external_id`,
+		int64(0), maxEpoch, outCcy)
+	if err != nil {
+		return nil, fmt.Errorf("attachFlows transactions: %w", err)
+	}
+	defer rows.Close()
+	var out []flowTxnRow
+	for rows.Next() {
+		var (
+			r        flowTxnRow
+			valueOut sql.NullString
+		)
+		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID, &valueOut); err != nil {
+			return nil, fmt.Errorf("attachFlows transactions scan: %w", err)
+		}
+		r.valueOut = trimmedDecimalPtr(valueOut)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // attachOneFlow classifies one transaction as an external flow for its account
