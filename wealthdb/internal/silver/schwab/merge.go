@@ -148,18 +148,6 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // HasChanges is true when at least one subsource reports changes.
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
 	out := canonical.Window{NewChangeNumber: sinceN}
-	min := func(a, b int64) int64 {
-		if a < b {
-			return a
-		}
-		return b
-	}
-	max := func(a, b int64) int64 {
-		if a > b {
-			return a
-		}
-		return b
-	}
 	if c.api != nil {
 		w, err := c.api.ChangeWindow(ctx, sinceN)
 		if err != nil {

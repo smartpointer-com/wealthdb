@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -64,7 +65,7 @@ func (r *webReader) snapshotsHistorical(
 	for t := range byTime {
 		times = append(times, t)
 	}
-	sortInt64Asc(times)
+	slices.Sort(times)
 
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
@@ -285,14 +286,6 @@ SELECT COUNT(*) FROM sqlite_master
 		return false, fmt.Errorf("schwab-web hasHistoricalTables: %w", err)
 	}
 	return n == 2, nil
-}
-
-func sortInt64Asc(xs []int64) {
-	for i := 1; i < len(xs); i++ {
-		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
-			xs[j-1], xs[j] = xs[j], xs[j-1]
-		}
-	}
 }
 
 func decimalFromNullFloat(n sql.NullFloat64) *canonical.Decimal {

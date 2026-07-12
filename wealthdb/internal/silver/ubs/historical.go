@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -85,7 +86,7 @@ func (r *webReader) snapshotsHistorical(
 	for t := range byTime {
 		times = append(times, t)
 	}
-	sortInt64Asc(times)
+	slices.Sort(times)
 
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
 	for _, t := range times {
@@ -647,14 +648,6 @@ func strHash(s string) uint64 {
 		h *= prime64
 	}
 	return h
-}
-
-func sortInt64Asc(xs []int64) {
-	for i := 1; i < len(xs); i++ {
-		for j := i; j > 0 && xs[j-1] > xs[j]; j-- {
-			xs[j-1], xs[j] = xs[j], xs[j-1]
-		}
-	}
 }
 
 func decimalFromNullFloat(n sql.NullFloat64) *canonical.Decimal {

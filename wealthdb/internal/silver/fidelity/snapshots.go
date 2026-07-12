@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -62,7 +62,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	for t := range byTime {
 		allTimes = append(allTimes, t)
 	}
-	sort.Slice(allTimes, func(i, j int) bool { return allTimes[i] < allTimes[j] })
+	slices.Sort(allTimes)
 	out := make([]canonical.SnapshotBatch, 0, len(allTimes))
 	for _, t := range allTimes {
 		out = append(out, *byTime[t])

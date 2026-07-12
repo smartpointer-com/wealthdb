@@ -86,7 +86,7 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 			out.LatestSnapshotAt = histHi
 		}
 	}
-	out.LatestChangeNumber = maxInt64(out.LatestSnapshotAt, out.LatestTransactionAt)
+	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	return out, nil
 }
 
@@ -704,13 +704,6 @@ func webKind(s string) canonical.TxKind {
 		return canonical.TxKindCorporateAction
 	}
 	return canonical.TxKindOther
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // schwabWebTxPayload captures the payload shapes the silver

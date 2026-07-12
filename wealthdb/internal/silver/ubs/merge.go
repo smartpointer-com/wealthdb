@@ -103,18 +103,6 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 // reports changes.
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
 	out := canonical.Window{NewChangeNumber: sinceN}
-	min := func(a, b int64) int64 {
-		if a < b {
-			return a
-		}
-		return b
-	}
-	max := func(a, b int64) int64 {
-		if a > b {
-			return a
-		}
-		return b
-	}
 	if c.psn != nil {
 		w, err := c.psn.ChangeWindow(ctx, sinceN)
 		if err != nil {

@@ -81,7 +81,7 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 			out.LatestSnapshotAt = histHi
 		}
 	}
-	out.LatestChangeNumber = maxInt64(out.LatestSnapshotAt, out.LatestTransactionAt)
+	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
 	return out, nil
 }
 
@@ -1204,13 +1204,4 @@ func stripReversalSuffix(descKind string) (string, bool) {
 		return descKind[:len(descKind)-len(suffix)], true
 	}
 	return descKind, false
-}
-
-// maxInt64 because Go 1.20 doesn't have generics-flavoured max in
-// this codebase's helper set.
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
