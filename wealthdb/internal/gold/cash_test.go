@@ -38,7 +38,7 @@ func TestCashAsOfMultiCurrencyAndZeroFiltering(t *testing.T) {
 		})
 	})
 
-	rows, err := CashAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
+	rows, err := CashAsOf(ctx, db, 2000, "USD")
 	if err != nil {
 		t.Fatalf("CashAsOf: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestCashAsOfBalanceKindPrecedence(t *testing.T) {
 		})
 	})
 
-	rows, err := CashAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
+	rows, err := CashAsOf(ctx, db, 2000, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestCashAsOfPicksLatestSnapshotPerSource(t *testing.T) {
 		})
 	})
 
-	rows, err := CashAsOf(ctx, db, 3000, "USD", canonical.FxModeHistoric)
+	rows, err := CashAsOf(ctx, db, 3000, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}

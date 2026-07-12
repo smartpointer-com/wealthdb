@@ -58,7 +58,7 @@ func TestSourcesAsOfRollupAndReconcile(t *testing.T) {
 		}})
 	})
 
-	rows, err := SourcesAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := SourcesAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatalf("SourcesAsOf: %v", err)
 	}
@@ -101,8 +101,8 @@ func TestSourcesAsOfRollupAndReconcile(t *testing.T) {
 	// Reconciliation in USD (FX CHF→USD=0.80): sum over sources must
 	// equal the sum over accounts.
 	seedFX(t, db, 1000, "CHF", "USD", "0.80")
-	sRows, _ := SourcesAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
-	aRows, _ := AccountsAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
+	sRows, _ := SourcesAsOf(ctx, db, 2000, "USD")
+	aRows, _ := AccountsAsOf(ctx, db, 2000, "USD")
 
 	sum := func(getter func(idx int) *string, n int) string {
 		var total canonical.Decimal
@@ -156,7 +156,7 @@ func TestSourcesAsOfMixedBaseNull(t *testing.T) {
 	// lines (CHF→USD multiplies by the 1/0.80 = 1.25 reciprocal).
 	seedFX(t, db, 1000, "CHF", "USD", "0.80")
 
-	rows, err := SourcesAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
+	rows, err := SourcesAsOf(ctx, db, 2000, "USD")
 	if err != nil {
 		t.Fatalf("SourcesAsOf: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSourcesAsOfMixedBaseNull(t *testing.T) {
 // (no accounts ⇒ no source buckets) rather than an error.
 func TestSourcesAsOfEmpty(t *testing.T) {
 	db, ctx := openMigrated(t)
-	rows, err := SourcesAsOf(ctx, db, 3000, "USD", canonical.FxModeHistoric)
+	rows, err := SourcesAsOf(ctx, db, 3000, "USD")
 	if err != nil {
 		t.Fatalf("SourcesAsOf: %v", err)
 	}

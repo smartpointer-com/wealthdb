@@ -103,20 +103,3 @@ func TestBalanceKindValid(t *testing.T) {
 		}
 	}
 }
-
-func TestFxModeValid(t *testing.T) {
-	cases := []struct {
-		v    FxMode
-		want bool
-	}{
-		{FxModeHistoric, true},
-		{FxModeCurrent, true},
-		{"", false},
-		{"spot", false},
-	}
-	for _, c := range cases {
-		if got := c.v.Valid(); got != c.want {
-			t.Errorf("FxMode(%q).Valid() = %v, want %v", c.v, got, c.want)
-		}
-	}
-}

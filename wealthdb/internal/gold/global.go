@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // GlobalRow is the single-row, whole-portfolio rollup: it sums every
@@ -30,13 +28,13 @@ type GlobalRow struct {
 // GlobalAsOf rolls the per-account view into one GlobalRow via the
 // report_global macro (Σ over report_accounts), guaranteeing
 // `global` == Σ `accounts`. See migration 0021.
-func GlobalAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) (GlobalRow, error) {
+func GlobalAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) (GlobalRow, error) {
 	var (
 		g                      GlobalRow
 		cash, positions, total sql.NullString
 	)
 	err := db.QueryRowContext(ctx,
-		`SELECT * FROM report_global(?, ?)`, effectiveAsOf(asOf, mode), outCcy).
+		`SELECT * FROM report_global(?, ?)`, asOf, outCcy).
 		Scan(&g.MinSnapshotAt, &g.MaxSnapshotAt, &cash, &positions, &total)
 	if err != nil {
 		return GlobalRow{}, fmt.Errorf("GlobalAsOf: %w", err)

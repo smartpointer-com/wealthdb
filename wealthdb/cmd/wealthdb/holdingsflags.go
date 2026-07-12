@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
@@ -18,13 +17,11 @@ import (
 // each command's user-facing strings stay byte-for-byte what they
 // were before the shared helper.
 type holdingsFlagSpec struct {
-	cmd            string // error-prefix and validation-message command name
-	currencyUsage  string // -x short-flag help text
-	fxModeUsage    string // --fx-mode help text
-	privacyUsage   string // -p / --privacy help text
-	fxModeWantHint bool   // append " (want 'historic' or 'current')" to the invalid --fx-mode error
-	withColumns    bool   // register -C / --columns (every view but global)
-	withCash       bool   // register --with-cash (positions only)
+	cmd           string // error-prefix and validation-message command name
+	currencyUsage string // -x short-flag help text
+	privacyUsage  string // -p / --privacy help text
+	withColumns   bool   // register -C / --columns (every view but global)
+	withCash      bool   // register --with-cash (positions only)
 }
 
 // holdingsFlags holds the registered flag pointers shared across the
@@ -36,7 +33,6 @@ type holdingsFlags struct {
 	format   *string
 	cols     *string
 	currency *string
-	fxMode   *string
 	withCash *bool
 	privacy  *bool
 }
@@ -56,7 +52,6 @@ func registerHoldingsFlags(fs *flag.FlagSet, spec holdingsFlagSpec) *holdingsFla
 	}
 	hf.currency = fs.String("x", "", spec.currencyUsage)
 	fs.StringVar(hf.currency, "currency", "", "output currency (default: config.default_currency)")
-	hf.fxMode = fs.String("fx-mode", "historic", spec.fxModeUsage)
 	if spec.withCash {
 		hf.withCash = fs.Bool("with-cash", false, "also emit one synthetic row per account+currency with non-zero cash")
 	}
@@ -66,30 +61,21 @@ func registerHoldingsFlags(fs *flag.FlagSet, spec holdingsFlagSpec) *holdingsFla
 }
 
 // holdingsValues is the validated, ready-to-use result of the shared
-// readout flags: FX mode, output format, as-of epoch, loaded config,
-// and resolved output currency.
+// readout flags: output format, as-of epoch, loaded config, and
+// resolved output currency.
 type holdingsValues struct {
-	mode      canonical.FxMode
 	fmtChoice output.Format
 	asOfEpoch int64
 	cfg       *config.Config
 	outCcy    string
 }
 
-// resolve validates the parsed flags (FX mode, output format, as-of
-// date), loads the config, and resolves the output currency — in the
-// exact order and with the exact error-prefix strings the commands
-// used inline. Call after fs.Parse.
+// resolve validates the parsed flags (output format, as-of date),
+// loads the config, and resolves the output currency — in the exact
+// order and with the exact error-prefix strings the commands used
+// inline. Call after fs.Parse.
 func (hf *holdingsFlags) resolve(g globalFlags) (holdingsValues, error) {
 	spec := hf.spec
-
-	mode := canonical.FxMode(*hf.fxMode)
-	if !mode.Valid() {
-		if spec.fxModeWantHint {
-			return holdingsValues{}, errs.Newf(2, "%s: invalid --fx-mode %q (want 'historic' or 'current')", spec.cmd, *hf.fxMode)
-		}
-		return holdingsValues{}, errs.Newf(2, "%s: invalid --fx-mode %q", spec.cmd, *hf.fxMode)
-	}
 
 	fmtChoice, err := output.Parse(*hf.format)
 	if err != nil {
@@ -115,7 +101,6 @@ func (hf *holdingsFlags) resolve(g globalFlags) (holdingsValues, error) {
 	}
 
 	return holdingsValues{
-		mode:      mode,
 		fmtChoice: fmtChoice,
 		asOfEpoch: asOfEpoch,
 		cfg:       cfg,

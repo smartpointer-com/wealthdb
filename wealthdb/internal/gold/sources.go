@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // SourceRow is one row of the `wealthdb sources` output: every
@@ -50,9 +48,9 @@ type SourceRow struct {
 // least one account, each summing that source's own positions and
 // cash. All aggregation + FX is the report_sources macro; this is
 // the scan. Rows are ordered by silver_source_id.
-func SourcesAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]SourceRow, error) {
+func SourcesAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]SourceRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_sources(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+		`SELECT * FROM report_sources(?, ?)`, asOf, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("SourcesAsOf: %w", err)
 	}

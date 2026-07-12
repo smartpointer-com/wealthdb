@@ -3,8 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // CashAsOf returns one synthetic PositionRow per (silver_source_id,
@@ -23,7 +21,7 @@ import (
 // (asset_class='cash', position_key='cash:<CCY>', symbol=<CCY>,
 // name='Cash <CCY>', quantity NULL, market_value = the amount). See
 // migration 0021.
-func CashAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]PositionRow, error) {
+func CashAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "CashAsOf",
-		`SELECT * FROM report_cash(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+		`SELECT * FROM report_cash(?, ?)`, asOf, outCcy)
 }

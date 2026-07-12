@@ -25,12 +25,10 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	fs.SetOutput(stderr)
 
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:            "accounts",
-		currencyUsage:  "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		fxModeUsage:    "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)",
-		privacyUsage:   "redact account IDs / quantities / monetary amounts in the output",
-		fxModeWantHint: true,
-		withColumns:    true,
+		cmd:           "accounts",
+		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
+		privacyUsage:  "redact account IDs / quantities / monetary amounts in the output",
+		withColumns:   true,
 	})
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, accountsUsage())
@@ -62,7 +60,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	}
 	defer db.Close()
 
-	rows, err := gold.AccountsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+	rows, err := gold.AccountsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
 		return err
 	}
@@ -163,7 +161,7 @@ func resolveAccountColumns(flagValue, outCcy string) ([]columnSpec[gold.AccountR
 
 func accountsUsage() string {
 	registry := buildAccountColumnRegistry("CCY")
-	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings accounts [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print one row per registered account, with derived aggregate
 columns rolled up over the account's positions and cash balances.
@@ -180,7 +178,6 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; nearest rate at-or-before the snapshot) or 'current' (latest rate)
   -p, --privacy            redact account IDs, quantities, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

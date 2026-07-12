@@ -20,13 +20,11 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	fs.SetOutput(stderr)
 
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:            "positions",
-		currencyUsage:  "output currency for the value column (default: config.default_currency)",
-		fxModeUsage:    "FX rate selection: 'historic' (nearest rate at-or-before snapshot) or 'current' (latest available)",
-		privacyUsage:   "redact account IDs / share quantities / monetary amounts in the output",
-		fxModeWantHint: true,
-		withColumns:    true,
-		withCash:       true,
+		cmd:           "positions",
+		currencyUsage: "output currency for the value column (default: config.default_currency)",
+		privacyUsage:  "redact account IDs / share quantities / monetary amounts in the output",
+		withColumns:   true,
+		withCash:      true,
 	})
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, positionsUsage())
@@ -60,12 +58,12 @@ func cmdPositions(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	}
 	defer db.Close()
 
-	rows, err := gold.PositionsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+	rows, err := gold.PositionsAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
 		return err
 	}
 	if *hf.withCash {
-		cash, err := gold.CashAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+		cash, err := gold.CashAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 		if err != nil {
 			return err
 		}
@@ -177,7 +175,7 @@ func positionsUsage() string {
 	// We don't know the chosen output currency at usage-print
 	// time; show a placeholder for the dynamic column.
 	registry := buildColumnRegistry("CCY")
-	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings positions [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print consolidated positions as of a date. For each silver source,
 the latest snapshot ≤ the as-of date is used. Default: today UTC,
@@ -191,7 +189,6 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-market_value)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; nearest rate at-or-before the snapshot) or 'current' (latest rate)
   -p, --privacy            redact account IDs, share quantities, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
       --with-cash          also emit one row per account+currency with non-zero cash

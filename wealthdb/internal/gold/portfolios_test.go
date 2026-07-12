@@ -67,7 +67,7 @@ func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
 		}})
 	})
 
-	rows, err := PortfoliosAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := PortfoliosAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatalf("PortfoliosAsOf: %v", err)
 	}
@@ -118,8 +118,8 @@ func TestPortfoliosAsOfRollupAndSentinel(t *testing.T) {
 	// CHF→USD=0.80): sum(portfolios.total_USD) should equal
 	// sum(accounts.total_USD).
 	seedFX(t, db, 1000, "CHF", "USD", "0.80")
-	pRows, _ := PortfoliosAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
-	aRows, _ := AccountsAsOf(ctx, db, 2000, "USD", canonical.FxModeHistoric)
+	pRows, _ := PortfoliosAsOf(ctx, db, 2000, "USD")
+	aRows, _ := AccountsAsOf(ctx, db, 2000, "USD")
 
 	sum := func(getter func(idx int) *string, n int) string {
 		var total canonical.Decimal

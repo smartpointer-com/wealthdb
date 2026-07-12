@@ -302,15 +302,6 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 		t.Errorf("expected a USD row with an empty value_CHF cell: %s", so)
 	}
 
-	// Bad fx-mode → exit 2.
-	_, se, code = run(t, "-c", cfg, "holdings", "positions", "--fx-mode", "yolo")
-	if code != 2 {
-		t.Errorf("bad fx-mode exit = %d, want 2", code)
-	}
-	if !strings.Contains(se, "fx-mode") {
-		t.Errorf("missing fx-mode guidance: %s", se)
-	}
-
 	// Bad currency → exit 2.
 	_, _, code = run(t, "-c", cfg, "holdings", "positions", "-x", "DOLLAR")
 	if code != 2 {

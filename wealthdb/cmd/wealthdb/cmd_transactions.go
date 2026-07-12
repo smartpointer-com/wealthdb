@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
@@ -28,7 +27,6 @@ var txValueFlags = map[string]bool{
 	"-f": true, "--format": true,
 	"-C": true, "--columns": true,
 	"-x": true, "--currency": true,
-	"--fx-mode": true,
 }
 
 // reorderFlagsFirst shuffles `args` so that flag tokens (and any
@@ -67,7 +65,6 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fs.StringVar(cols, "columns", "default", "columns: comma-separated names, or 'default' / 'all'")
 	currency := fs.String("x", "", "output currency for the value column (default: config.default_currency)")
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
-	fxMode := fs.String("fx-mode", "historic", "FX rate selection: 'historic' (nearest rate at-or-before occurred_at) or 'current' (latest available)")
 	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
 	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
 	privacy := fs.Bool("p", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
@@ -94,10 +91,6 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 		return errs.Newf(2, "transactions: %s", err.Error())
 	}
 
-	mode := canonical.FxMode(*fxMode)
-	if !mode.Valid() {
-		return errs.Newf(2, "transactions: invalid --fx-mode %q (want 'historic' or 'current')", *fxMode)
-	}
 	fmtChoice, err := output.Parse(*format)
 	if err != nil {
 		return errs.Newf(2, "transactions: %s", err.Error())
@@ -211,7 +204,7 @@ func resolveTransactionColumns(flagValue, outCcy string) ([]columnSpec[gold.Tran
 
 func transactionsUsage() string {
 	registry := buildTransactionColumnRegistry("CCY")
-	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb transactions [FROM [TO]] [-r] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print transactions over a date range. Default: past 30 days,
 table format, oldest first, default column set, output currency
@@ -237,7 +230,6 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; nearest rate at-or-before occurred_at) or 'current' (latest rate)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

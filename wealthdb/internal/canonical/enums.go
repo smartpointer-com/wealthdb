@@ -357,18 +357,3 @@ func (b BalanceKind) Valid() bool {
 	_, ok := balanceKindValues[b]
 	return ok
 }
-
-// FxMode controls how the `-x <currency>` reports resolve the FX
-// rate for each row: the nearest rate at or before the row's
-// snapshot time (historic) or the most-recent available rate
-// (current).
-type FxMode string
-
-const (
-	FxModeHistoric FxMode = "historic"
-	FxModeCurrent  FxMode = "current"
-)
-
-func (f FxMode) Valid() bool {
-	return f == FxModeHistoric || f == FxModeCurrent
-}

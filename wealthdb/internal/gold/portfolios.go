@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // PortfolioRow is one row of the `wealthdb portfolios` output. Each
@@ -56,9 +54,9 @@ type PortfolioRow struct {
 // report_portfolios macro (migrations 0021/0023); this is the scan.
 // Rows are ordered by (silver_source_id, portfolio_external_id) — ""
 // sorts first within each source.
-func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]PortfolioRow, error) {
+func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PortfolioRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_portfolios(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+		`SELECT * FROM report_portfolios(?, ?)`, asOf, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("PortfoliosAsOf: %w", err)
 	}

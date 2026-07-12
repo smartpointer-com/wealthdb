@@ -44,7 +44,7 @@ func TestGlobalAsOfRollup(t *testing.T) {
 		})
 	})
 
-	g, err := GlobalAsOf(ctx, db, 3000, "CHF", canonical.FxModeHistoric)
+	g, err := GlobalAsOf(ctx, db, 3000, "CHF")
 	if err != nil {
 		t.Fatalf("GlobalAsOf: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestGlobalAsOfRollup(t *testing.T) {
 // (sums "0", no snapshot dates) rather than an error.
 func TestGlobalAsOfEmpty(t *testing.T) {
 	db, ctx := openMigrated(t)
-	g, err := GlobalAsOf(ctx, db, 3000, "USD", canonical.FxModeHistoric)
+	g, err := GlobalAsOf(ctx, db, 3000, "USD")
 	if err != nil {
 		t.Fatalf("GlobalAsOf: %v", err)
 	}

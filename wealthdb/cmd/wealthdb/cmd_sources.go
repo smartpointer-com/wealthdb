@@ -25,7 +25,6 @@ func cmdSources(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
 		cmd:           "sources",
 		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		fxModeUsage:   "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)",
 		privacyUsage:  "redact the monetary amounts in the output",
 		withColumns:   true,
 	})
@@ -59,7 +58,7 @@ func cmdSources(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 	}
 	defer db.Close()
 
-	rows, err := gold.SourcesAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+	rows, err := gold.SourcesAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
 		return err
 	}
@@ -120,7 +119,7 @@ func resolveSourceColumns(flagValue, outCcy string) ([]columnSpec[gold.SourceRow
 
 func sourcesUsage() string {
 	registry := buildSourceColumnRegistry("CCY")
-	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings sources [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print one row per silver source, rolling up every one of its
 accounts (positions + cash). The source-grain level between
@@ -135,7 +134,6 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+positions_value_outccy-base_currency)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default) or 'current'
   -p, --privacy            redact the monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

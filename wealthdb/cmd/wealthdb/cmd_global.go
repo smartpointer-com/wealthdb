@@ -22,11 +22,9 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 	fs.SetOutput(stderr)
 
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
-		cmd:            "global",
-		currencyUsage:  "output currency for the _<CCY> columns (default: config.default_currency)",
-		fxModeUsage:    "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)",
-		privacyUsage:   "redact the monetary amounts in the output",
-		fxModeWantHint: true,
+		cmd:           "global",
+		currencyUsage: "output currency for the _<CCY> columns (default: config.default_currency)",
+		privacyUsage:  "redact the monetary amounts in the output",
 	})
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, globalCmdUsage())
@@ -53,7 +51,7 @@ func cmdGlobal(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 	}
 	defer db.Close()
 
-	row, err := gold.GlobalAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+	row, err := gold.GlobalAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
 		return err
 	}
@@ -90,7 +88,7 @@ func buildGlobalColumnRegistry(outCcy string) []columnSpec[gold.GlobalRow] {
 }
 
 func globalCmdUsage() string {
-	return `usage: wealthdb holdings global [-d YYYY-MM-DD] [-f FORMAT] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings global [-d YYYY-MM-DD] [-f FORMAT] [-x CCY] [-p]
 
 Roll the entire portfolio up into a single row — the ultimate level
 of aggregation, summing every account's output-currency cash,
@@ -108,7 +106,6 @@ Flags:
   -d, --as-of YYYY-MM-DD   as-of date (default: today UTC)
   -f, --format FORMAT      output format (table | csv | csv_plain | json)
   -x, --currency CCY       output currency for the _<CUR> columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default; nearest rate at-or-before the snapshot) or 'current' (latest rate)
   -p, --privacy            redact the monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)`
 }

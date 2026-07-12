@@ -4,10 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
 	"strings"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // PositionRow is one row of the consolidated positions output.
@@ -50,9 +47,9 @@ type PositionRow struct {
 // position_key). FX (and everything else) is computed in SQL by the
 // report_positions table macro (see migrations 0020/0021); this is
 // just the scan. See docs/DESIGN.md §10.1.
-func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]PositionRow, error) {
+func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "PositionsAsOf",
-		`SELECT * FROM report_positions(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+		`SELECT * FROM report_positions(?, ?)`, asOf, outCcy)
 }
 
 // scanPositionRows runs a report_positions / report_cash macro query
@@ -94,20 +91,6 @@ func scanPositionRows(ctx context.Context, db *sql.DB, label, q string, args ...
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// effectiveAsOf maps the FX mode to the as-of bound passed to the
-// report macros. Historic uses the real asOf (the macros pick the
-// nearest rate at-or-before each line's own snapshot). Current
-// ignores asOf — a max bound makes the latest snapshot win; the
-// per-line FX still resolves flat at each line's snapshot day (the
-// 1.x FX engine's literal "latest rate" semantics are not preserved,
-// which is acceptable for this rarely-used mode — see web/DESIGN.md).
-func effectiveAsOf(asOf int64, mode canonical.FxMode) int64 {
-	if mode == canonical.FxModeCurrent {
-		return math.MaxInt64
-	}
-	return asOf
 }
 
 func nullStringToPtr(n sql.NullString) *string {

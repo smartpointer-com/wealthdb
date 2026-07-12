@@ -15,7 +15,7 @@ func init() {
 // holdingsViews are the point-in-time portfolio views, grouped under
 // `wealthdb holdings` so the top-level command surface stays small as
 // more report families land (e.g. the sibling `wealthdb returns`). They
-// share one flag idiom (-d / -f / -x / --fx-mode / -p, plus -C on all
+// share one flag idiom (-d / -f / -x / -p, plus -C on all
 // but global) and their totals reconcile: global == Σ sources ==
 // Σ portfolios == Σ accounts == positions --with-cash.
 var holdingsViews = map[string]subcommandHandler{
@@ -61,7 +61,7 @@ views (coarsest → finest aggregation):
   positions    one row per individual holding (instrument)
 
 Each view takes a date (-d), output format (-f), currency (-x),
---fx-mode and -p/--privacy; all but global also take -C/--columns.
+and -p/--privacy; all but global also take -C/--columns.
 Totals reconcile: global == Σ sources == Σ portfolios == Σ accounts
 == positions --with-cash. Run 'wealthdb holdings <view> -h' for a
 view's full flags.

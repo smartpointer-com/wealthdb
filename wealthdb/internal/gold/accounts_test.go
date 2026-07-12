@@ -64,7 +64,7 @@ func TestAccountsAsOfAggregates(t *testing.T) {
 		}})
 	})
 
-	rows, err := AccountsAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := AccountsAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatalf("AccountsAsOf: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestAccountsAsOfNoBaseCurrency(t *testing.T) {
 		}})
 	})
 
-	rows, err := AccountsAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := AccountsAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestAccountsAsOfNoCrossAccountRollup(t *testing.T) {
 		}})
 	})
 
-	rows, err := AccountsAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := AccountsAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestAccountsAsOfEmptyAccount(t *testing.T) {
 		}})
 	})
 
-	rows, err := AccountsAsOf(ctx, db, 2000, "CHF", canonical.FxModeHistoric)
+	rows, err := AccountsAsOf(ctx, db, 2000, "CHF")
 	if err != nil {
 		t.Fatal(err)
 	}

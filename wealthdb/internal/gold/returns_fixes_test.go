@@ -35,7 +35,7 @@ func TestRunReturnsDisappearingAccountReconciles(t *testing.T) {
 		t.Fatalf("global rows = %d, want 1", len(g))
 	}
 	// Reconcile the engine's terminal value against the macro-based GlobalAsOf.
-	ga, err := GlobalAsOf(ctx, db, end, "USD", canonical.FxModeHistoric)
+	ga, err := GlobalAsOf(ctx, db, end, "USD")
 	if err != nil {
 		t.Fatalf("GlobalAsOf: %v", err)
 	}

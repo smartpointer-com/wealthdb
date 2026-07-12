@@ -44,7 +44,6 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
 		cmd:           "portfolios",
 		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		fxModeUsage:   "FX rate selection: 'historic' (nearest rate at-or-before the snapshot) or 'current' (latest available)",
 		privacyUsage:  "redact portfolio / account IDs and monetary amounts in the output",
 		withColumns:   true,
 	})
@@ -78,7 +77,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	}
 	defer db.Close()
 
-	rows, err := gold.PortfoliosAsOf(ctx, db, hv.asOfEpoch, hv.outCcy, hv.mode)
+	rows, err := gold.PortfoliosAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
 		return err
 	}
@@ -165,7 +164,7 @@ func resolvePortfolioColumns(flagValue, outCcy string) ([]columnSpec[gold.Portfo
 
 func portfoliosUsage() string {
 	registry := buildPortfolioColumnRegistry("CCY")
-	return `usage: wealthdb holdings portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [--fx-mode MODE] [-p]
+	return `usage: wealthdb holdings portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print one row per portfolio (wealth-management wrapper grouping
 component accounts) plus one sentinel row per silver_source that
@@ -181,7 +180,6 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+relationship_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-      --fx-mode MODE       'historic' (default) or 'current'
   -p, --privacy            redact portfolio / account IDs and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

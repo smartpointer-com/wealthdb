@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // AccountRow is one row of the `accounts` subcommand's output: the
@@ -63,9 +61,9 @@ type AccountRow struct {
 // summing the accounts equals the full positions-+-cash total
 // exactly once. All aggregation + FX is the report_accounts macro;
 // this is the scan. See docs/DESIGN.md.
-func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, mode canonical.FxMode) ([]AccountRow, error) {
+func AccountsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]AccountRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT * FROM report_accounts(?, ?)`, effectiveAsOf(asOf, mode), outCcy)
+		`SELECT * FROM report_accounts(?, ?)`, asOf, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("AccountsAsOf: %w", err)
 	}
