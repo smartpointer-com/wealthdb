@@ -1,10 +1,30 @@
 """Credential + .env handling shared across collectors.
 
-Env files are *sourced via bash* (honoring full bash syntax — quoting,
-`export`, variable references) rather than hand-parsed with a lossy
-KEY=VALUE splitter. Credentials are resolved with the value-with-env-
-fallback pattern (an explicit flag value wins, else the env var), never a
-`--x-env NAME` indirection.
+Two loaders live here, for two different needs:
+
+- :func:`source_env_file` *sources the file via bash* (honoring full bash
+  syntax — quoting, `export`, variable references). Preferred for env
+  files that hold ordinary configuration.
+
+- :func:`load_env_file` *hand-parses* KEY=VALUE, reading each value
+  byte-for-byte and stripping only a matched pair of outer quotes. This
+  exists for the browser-login collectors' credential files: bash
+  sourcing would `$`-expand, run backtick/`$()` command substitution, and
+  strip unquoted trailing `#` comments, silently mangling a password that
+  contains those characters even when it is *double-quoted*. Measured
+  divergences of a bash source vs. this loader, for shapes a real
+  credential file can hit:
+    * ``PW="ab$cd"`` / ``PW=ab$cd``  → bash yields ``ab`` (``$cd`` expands)
+    * ``PW="a`cmd`b"``               → bash runs ``cmd`` (substitution)
+    * CRLF line endings             → bash keeps a trailing ``\\r``
+    * ``KEY=value # note``          → bash strips the inline comment
+    * ``KEY = value`` / unquoted spaces → bash treats it as a command
+  Single-quoted values match under both. The hand parser preserves the
+  literal bytes, so credentials survive regardless of quoting style.
+
+Credentials are resolved with the value-with-env-fallback pattern (an
+explicit flag value wins, else the env var), never a `--x-env NAME`
+indirection.
 """
 from __future__ import annotations
 
@@ -84,6 +104,70 @@ def load_env(arg_path, candidates) -> Path | None:
     if path is not None and source_env_file(path):
         return path
     return None
+
+
+def _strip_outer_quotes(s: str) -> str:
+    """Strip a matched pair of leading+trailing single or double quotes
+    from ``s``. Single-side strips (e.g. ``"foo``) are left alone — they
+    are more likely a real value than a syntax slip."""
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    return s
+
+
+def load_env_file(path, override_vars, *, logger,
+                  warn_on_override: bool = False) -> None:
+    """Hand-parse KEY=VALUE pairs from ``path`` into ``os.environ``.
+
+    Unlike :func:`source_env_file` this does NOT hand the file to bash;
+    it reads each value byte-for-byte, stripping only a matched pair of
+    outer quotes, so a credential that contains ``$``, backticks, ``#``
+    or shell metacharacters survives intact regardless of quoting (see
+    the module docstring for the bash-source divergence table).
+
+    ``override_vars`` names the keys whose file value wins over an
+    already-set host env var (credentials — the file is authoritative);
+    every other key uses ``setdefault`` (the env-file is a fallback).
+    With ``warn_on_override`` a mismatch between an inherited value and
+    the file value is logged via ``logger`` (lengths only, never the
+    secret).
+
+    Lines beginning with ``#`` and blank lines are ignored; a leading
+    ``export`` is stripped; malformed lines raise ``SystemExit``.
+    """
+    path = Path(path)
+    logger.debug("loading env file: %s", path)
+    with path.open("r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            if "=" not in line:
+                raise SystemExit(
+                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
+                    f"{raw.rstrip()!r}"
+                )
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = _strip_outer_quotes(value.strip())
+            if not key:
+                raise SystemExit(f"env file {path}:{lineno}: empty key")
+            if key in override_vars:
+                if warn_on_override:
+                    prior = os.environ.get(key)
+                    if prior is not None and prior != value:
+                        logger.warning(
+                            "%s inherited from host env (len=%d) differs "
+                            "from %s file value (len=%d); using file value. "
+                            "(Use SINGLE quotes for values containing $/!/"
+                            "backtick to avoid host `source` mangling.)",
+                            key, len(prior), path, len(value),
+                        )
+                os.environ[key] = value
+            else:
+                os.environ.setdefault(key, value)
 
 
 def resolve_credential(value, env_name: str, flag_name: str) -> str:

@@ -103,7 +103,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress
+from collectorkit import bronze, cli, compress, envfile
 
 
 log = logging.getLogger("fidelity-web.download")
@@ -190,7 +190,7 @@ USERNAME_ENV = "FIDELITY_USERNAME"
 PASSWORD_ENV = "FIDELITY_PASSWORD"
 # Credentials whose file value overrides anything inherited from the
 # host env (defeats the source-mangling-on-$ pitfall — see
-# load_env_file docstring).
+# collectorkit.envfile.load_env_file).
 _CRED_OVERRIDE_VARS = (USERNAME_ENV, PASSWORD_ENV)
 
 DEFAULT_ENV_FILE_CANDIDATES = (
@@ -2096,60 +2096,9 @@ def walk(context, page, config):
 # Env-file loader
 # ---------------------------------------------------------------------------
 
-def load_env_file(path):
-    """Source KEY=VALUE pairs from ``path`` into ``os.environ``.
-
-    For credentials (FIDELITY_USERNAME / FIDELITY_PASSWORD) the file
-    value wins over an already-set host env var, because the host
-    shell's ``source`` does $-expansion on double-quoted values,
-    which would silently mangle passwords containing $, !, backtick.
-    The file itself, read byte-for-byte by us, has the original
-    intact. Single-quoted values defeat the issue at the source.
-
-    Other vars use setdefault (env-file is a fallback for those).
-    Outer matching quotes (single OR double) are stripped. Lines
-    starting with ``#`` and blank lines are ignored. Malformed lines
-    raise.
-    """
-    log.debug("loading env file: %s", path)
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not KEY=VALUE: "
-                    f"{raw.rstrip()!r}"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = _strip_outer_quotes(value.strip())
-            if not key:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: empty key"
-                )
-            if key in _CRED_OVERRIDE_VARS:
-                prior = os.environ.get(key)
-                if prior is not None and prior != value:
-                    log.warning(
-                        "%s inherited from host env (len=%d) differs "
-                        "from %s file value (len=%d); using file value. "
-                        "(Use SINGLE quotes around values containing "
-                        "$/!/backtick to avoid host `source` mangling.)",
-                        key, len(prior), path, len(value),
-                    )
-                os.environ[key] = value
-            else:
-                os.environ.setdefault(key, value)
-
-
-def _strip_outer_quotes(s):
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        return s[1:-1]
-    return s
+def _load_env_file(path):
+    envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log,
+                          warn_on_override=True)
 
 
 def maybe_source_env_files(args):
@@ -2158,11 +2107,11 @@ def maybe_source_env_files(args):
             raise SystemExit(
                 f"--env-file does not exist: {args.env_file}"
             )
-        load_env_file(args.env_file)
+        _load_env_file(args.env_file)
         return
     for path in DEFAULT_ENV_FILE_CANDIDATES:
         if path.exists():
-            load_env_file(path)
+            _load_env_file(path)
             return
 
 

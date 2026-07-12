@@ -60,9 +60,9 @@ PROFILE_DIR_MODE = 0o700
 
 # Credential env vars whose env-file value wins over an inherited host
 # value (the host shell's `source` mangles $-containing values; see
-# load_env_file). The OAuth app id/secret live in schwab-api.env; the
-# Schwab web login id/password (reused to pre-fill the consent login)
-# live in schwab-web.env.
+# collectorkit.envfile.load_env_file). The OAuth app id/secret live in
+# schwab-api.env; the Schwab web login id/password (reused to pre-fill
+# the consent login) live in schwab-web.env.
 _CRED_OVERRIDE_VARS = frozenset({
     "SCHWAB_CLIENT_ID", "SCHWAB_CLIENT_SECRET",
     "SCHWAB_LOGIN_ID", "SCHWAB_PASSWORD",
@@ -163,40 +163,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Env-file loading (mirrors schwab-web)
 # ============================================================
 
-def _strip_outer_quotes(s: str) -> str:
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        return s[1:-1]
-    return s
-
-
-def load_env_file(path: Path) -> None:
-    """Source KEY=VALUE pairs from `path` into os.environ. For the
-    credential vars the file value wins over an inherited host value
-    (the host `source` mangles $-containing values; single-quote them)."""
-    log.debug("loading env file: %s", path)
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
-                    f"{raw.rstrip()!r}"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = _strip_outer_quotes(value.strip())
-            if not key:
-                raise SystemExit(f"env file {path}:{lineno}: empty key")
-            if key in _CRED_OVERRIDE_VARS:
-                os.environ[key] = value
-            else:
-                os.environ.setdefault(key, value)
-
-
 def source_env_files() -> None:
     """Source the first existing path of each env-file set (schwab-api
     then schwab-web), so the OAuth app creds and the Schwab login creds
@@ -204,7 +170,7 @@ def source_env_files() -> None:
     for candidates in _ENV_FILE_SETS:
         for path in candidates:
             if path.exists():
-                load_env_file(path)
+                envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log)
                 break
 
 

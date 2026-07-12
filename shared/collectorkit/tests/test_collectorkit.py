@@ -184,6 +184,199 @@ class EnvFileTest(unittest.TestCase):
             envfile.resolve_credential(None, "CK_CRED", "--x")
 
 
+# --------------------------------------------------------------------------
+# Equivalence proof for the hoisted hand-rolled parser (WI p7p8-envfile).
+#
+# `envfile.load_env_file` replaces a hand-rolled KEY=VALUE parser that was
+# triplicated in schwab-api/login.py, schwab-web/login.py and
+# fidelity-web/download.py. `_oracle_load` is an INDEPENDENT verbatim copy
+# of that pre-refactor parser; the tests below assert the shared helper is
+# byte-identical to it, and that it does NOT match a bash source
+# (`source_env_file`) on shapes a real credential file can hit — which is
+# why the parser was hoisted verbatim rather than migrated to bash.
+# --------------------------------------------------------------------------
+
+_OVR = frozenset({"CRED_A", "CRED_B"})
+
+# (name, content). Realistic + edge shapes a credential env file can carry.
+_GOOD_FIXTURES = [
+    ("plain", "CRED_A=value\n"),
+    ("double_quoted", 'CRED_A="value"\n'),
+    ("single_quoted", "CRED_A='value'\n"),
+    ("export_prefix", "export CRED_A=value\n"),
+    ("blank_and_comment", "\n   \n# a comment\nCRED_A=value\n"),
+    ("empty_value", "CRED_A=\n"),
+    ("empty_value_quoted", 'CRED_A=""\n'),
+    ("eq_in_value", "CRED_A=a=b=c\n"),
+    ("hash_in_value_unquoted", "CRED_A=ab#cd\n"),
+    ("hash_in_value_quoted", 'CRED_A="ab#cd"\n'),
+    ("dollar_double_quoted", 'CRED_A="abc$def"\n'),
+    ("dollar_single_quoted", "CRED_A='abc$def'\n"),
+    ("dollar_unquoted", "CRED_A=abc$def\n"),
+    ("backtick_double_quoted", 'CRED_A="a`echo x`b"\n'),
+    ("bang_double_quoted", 'CRED_A="abc!def"\n'),
+    ("spaces_in_value_quoted", 'CRED_A="a b c"\n'),
+    ("spaces_in_value_unquoted", "CRED_A=a b c\n"),
+    ("spaces_around_eq", "CRED_A = value\n"),
+    ("trailing_inline_comment", "CRED_A=value # note\n"),
+    ("crlf", "CRED_A=value\r\n"),
+    ("indented", "    CRED_A=value\n"),
+    ("single_side_quote", 'CRED_A="foo\n'),  # unmatched -> left intact
+    ("override_and_plain", "CRED_A=fromfile\nPLAIN=alsofile\n"),
+    ("non_override_only", "PLAIN=fromfile\n"),
+    ("multi_override", "CRED_A=aaa\nCRED_B=bbb\n"),
+]
+
+_MALFORMED_FIXTURES = [
+    ("no_equals", "CRED_A\n"),
+    ("empty_key", "=value\n"),
+    ("empty_key_after_export", "export =value\n"),
+]
+
+_BASE_ENVS = [
+    {},
+    {"CRED_A": "hostval", "PLAIN": "hostplain"},
+]
+
+
+def _oracle_load(path, override_vars, base_env):
+    """Independent verbatim copy of the pre-refactor hand-rolled parser.
+    Returns the resulting env mapping (does not touch os.environ)."""
+    env = dict(base_env)
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            if "=" not in line:
+                raise SystemExit(
+                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
+                    f"{raw.rstrip()!r}"
+                )
+            key, _, value = line.partition("=")
+            key = key.strip()
+            v = value.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            if not key:
+                raise SystemExit(f"env file {path}:{lineno}: empty key")
+            if key in override_vars:
+                env[key] = v
+            else:
+                env.setdefault(key, v)
+    return env
+
+
+class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
+    """Proves envfile.load_env_file == the parser it replaced, and that a
+    bash source would diverge on realistic credential shapes (P7)."""
+
+    def _run_helper(self, path, override_vars, base_env, warn):
+        import logging
+        saved = dict(os.environ)
+        try:
+            os.environ.clear()
+            os.environ.update(base_env)
+            envfile.load_env_file(path, override_vars,
+                                  logger=logging.getLogger("test-envfile"),
+                                  warn_on_override=warn)
+            return dict(os.environ)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    def test_helper_matches_oracle_on_good_fixtures(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, content in _GOOD_FIXTURES:
+                p = Path(d) / f"{name}.env"
+                p.write_text(content)
+                for base in _BASE_ENVS:
+                    expected = _oracle_load(p, _OVR, base)
+                    # warn flag must not change the resolved mapping.
+                    for warn in (False, True):
+                        got = self._run_helper(p, _OVR, base, warn)
+                        self.assertEqual(
+                            got, expected,
+                            msg=f"{name} base={base} warn={warn}")
+
+    def test_helper_matches_oracle_on_malformed(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, content in _MALFORMED_FIXTURES:
+                p = Path(d) / f"{name}.env"
+                p.write_text(content)
+                with self.assertRaises(SystemExit, msg=f"oracle {name}"):
+                    _oracle_load(p, _OVR, {})
+                with self.assertRaises(SystemExit, msg=f"helper {name}"):
+                    self._run_helper(p, _OVR, {}, False)
+
+    def test_override_semantics(self):
+        # Override keys: file wins over an inherited host value.
+        # Non-override keys: setdefault (host value wins).
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "ovr.env"
+            p.write_text("CRED_A=fromfile\nPLAIN=fromfile\n")
+            got = self._run_helper(
+                p, _OVR, {"CRED_A": "hostcred", "PLAIN": "hostplain"}, True)
+            self.assertEqual(got["CRED_A"], "fromfile")   # file wins
+            self.assertEqual(got["PLAIN"], "hostplain")   # env wins
+
+    def test_bash_source_would_diverge_on_credential_shapes(self):
+        # The decisive P7 evidence: for shapes a real credential file can
+        # hit, a bash source (source_env_file) yields a DIFFERENT value
+        # than the byte-preserving hand parser. If these ever stop
+        # diverging, revisit the P8 migration.
+        diverging = {
+            "dollar_double_quoted": 'CRED_A="abc$def"\n',   # $def expands
+            "dollar_unquoted": "CRED_A=abc$def\n",
+            "backtick_double_quoted": 'CRED_A="a`echo x`b"\n',  # cmd subst
+            "crlf": "CRED_A=value\r\n",                     # keeps \r
+            "trailing_inline_comment": "CRED_A=value # note\n",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, content in diverging.items():
+                p = Path(d) / f"{name}.env"
+                p.write_text(content)
+                hand = self._run_helper(p, _OVR, {}, False).get("CRED_A")
+                saved = dict(os.environ)
+                try:
+                    os.environ.clear()
+                    os.environ["PATH"] = saved.get("PATH", "/usr/bin:/bin")
+                    envfile.source_env_file(p, prefer_file=True)
+                    bash = os.environ.get("CRED_A")
+                finally:
+                    os.environ.clear()
+                    os.environ.update(saved)
+                self.assertNotEqual(
+                    hand, bash,
+                    msg=f"{name}: expected divergence but both = {hand!r}")
+
+    def test_bash_source_matches_on_single_quoted_and_plain(self):
+        # Following the documented single-quote convention, both agree.
+        agreeing = {
+            "plain": "CRED_A=value\n",
+            "single_quoted": "CRED_A='value'\n",
+            "dollar_single_quoted": "CRED_A='abc$def'\n",
+            "double_quoted_plain": 'CRED_A="value"\n',
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, content in agreeing.items():
+                p = Path(d) / f"{name}.env"
+                p.write_text(content)
+                hand = self._run_helper(p, _OVR, {}, False).get("CRED_A")
+                saved = dict(os.environ)
+                try:
+                    os.environ.clear()
+                    os.environ["PATH"] = saved.get("PATH", "/usr/bin:/bin")
+                    envfile.source_env_file(p, prefer_file=True)
+                    bash = os.environ.get("CRED_A")
+                finally:
+                    os.environ.clear()
+                    os.environ.update(saved)
+                self.assertEqual(hand, bash, msg=name)
+
+
 def _build_parser(has_documents=True):
     p = argparse.ArgumentParser()
     cli.add_lookback_args(p, has_documents=has_documents)

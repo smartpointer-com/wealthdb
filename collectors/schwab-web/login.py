@@ -45,7 +45,7 @@ from pathlib import Path
 
 import landmarks as schwab
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, envfile
 
 log = logging.getLogger("schwab-web.login")
 
@@ -72,7 +72,7 @@ DEFAULT_ENV_FILE_CANDIDATES = (
 # Env var names. The companion ~/.secrets/schwab-web.env file
 # should contain lines of the form `SCHWAB_LOGIN_ID=<login-id>`
 # and `SCHWAB_PASSWORD=<password>` (single-quoted if the values
-# contain shell metacharacters — see load_env_file's docstring).
+# contain shell metacharacters — see collectorkit.envfile.load_env_file).
 #
 # Note the asymmetry vs. schwab-api (Trader API), which uses
 # SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET for OAuth credentials.
@@ -82,7 +82,7 @@ LOGIN_ID_ENV = "SCHWAB_LOGIN_ID"
 PASSWORD_ENV = "SCHWAB_PASSWORD"
 
 # Credentials whose file value overrides anything inherited from
-# the host env. See load_env_file for the rationale.
+# the host env. See collectorkit.envfile.load_env_file for the rationale.
 _CRED_OVERRIDE_VARS = (LOGIN_ID_ENV, PASSWORD_ENV)
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -206,75 +206,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Env-file loader
 # ============================================================
 
-def load_env_file(path: Path) -> None:
-    """Source KEY=VALUE pairs from `path` into os.environ.
-
-    For credentials (SCHWAB_LOGIN_ID / SCHWAB_PASSWORD) the file
-    value wins over an already-set host env var. Reason: the host
-    shell's `source ~/.secrets/schwab-web.env` does $-expansion on
-    double-quoted values, so a password like "abc$def!" becomes
-    "abc" before the wrapper forwards it via -e SCHWAB_PASSWORD.
-    The file itself, read by us byte-for-byte, has the original
-    intact. Use SINGLE quotes around values containing $/!/backtick
-    to defeat the issue at the source.
-
-    Other vars use setdefault (env-file is a fallback).
-
-    Outer matching quotes (single OR double) are stripped. Lines
-    beginning with `#` and blank lines are ignored. Malformed
-    lines raise.
-    """
-    log.debug("loading env file: %s", path)
-    with path.open("r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):]
-            if "=" not in line:
-                raise SystemExit(
-                    f"env file {path}:{lineno}: not a KEY=VALUE line: "
-                    f"{raw.rstrip()!r}"
-                )
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = _strip_outer_quotes(value.strip())
-            if not key:
-                raise SystemExit(f"env file {path}:{lineno}: empty key")
-            if key in _CRED_OVERRIDE_VARS:
-                prior = os.environ.get(key)
-                if prior is not None and prior != value:
-                    log.warning(
-                        "%s inherited from host env (len=%d) differs "
-                        "from %s file value (len=%d); using file value. "
-                        "(Use SINGLE quotes for values containing $/!/"
-                        "backtick to avoid host `source` mangling.)",
-                        key, len(prior), path, len(value),
-                    )
-                os.environ[key] = value
-            else:
-                os.environ.setdefault(key, value)
-
-
-def _strip_outer_quotes(s: str) -> str:
-    """Strip a matched pair of leading+trailing single or double
-    quotes from `s`. Single-side strips (e.g. `"foo`) are left
-    alone — they're more likely a real value than a syntax slip."""
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        return s[1:-1]
-    return s
+def _load_env_file(path: Path) -> None:
+    envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log,
+                          warn_on_override=True)
 
 
 def maybe_source_env_files(args: argparse.Namespace) -> None:
     if args.env_file is not None:
         if not args.env_file.exists():
             raise SystemExit(f"--env-file does not exist: {args.env_file}")
-        load_env_file(args.env_file)
+        _load_env_file(args.env_file)
         return
     for path in DEFAULT_ENV_FILE_CANDIDATES:
         if path.exists():
-            load_env_file(path)
+            _load_env_file(path)
             return
 
 
