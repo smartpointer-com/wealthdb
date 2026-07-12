@@ -7,49 +7,15 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// classMap maps Schwab's `instrument.assetType` value to the
-// canonical AssetClass. Unrecognised values fall through to
-// `other` per docs/DESIGN.md §6.8.
-var classMap = map[string]canonical.AssetClass{
-	"EQUITY":                canonical.AssetClassEquity,
-	"ETF":                   canonical.AssetClassETF,
-	"MUTUAL_FUND":           canonical.AssetClassFund,
-	"COLLECTIVE_INVESTMENT": canonical.AssetClassFund,
-	"BOND":                  canonical.AssetClassBond,
-	"FIXED_INCOME":          canonical.AssetClassBond,
-	"OPTION":                canonical.AssetClassOption,
-	"FUTURE":                canonical.AssetClassFuture,
-	// CASH_EQUIVALENT and CURRENCY don't appear here — those rows
-	// are routed to cash_balances by snapshots.go before this map
-	// is consulted.
-}
-
-// assetClassFor returns the canonical class for the given Schwab
-// assetType + instrument type pair. Schwab's Trader API reports
-// ETFs as assetType COLLECTIVE_INVESTMENT with the ETF-ness one
-// level down in `instrument.type` (EXCHANGE_TRADED_FUND) — the
-// standalone "ETF" assetType exists in the API's enum but real
-// position dumps don't use it. Both spellings map to `etf`;
-// COLLECTIVE_INVESTMENT with any other instrument type stays in
-// the coarse `fund` bucket. Empty / unknown assetTypes become
-// AssetClassOther; the raw values are preserved in the position's
-// payload.
-func assetClassFor(rawAssetType, rawInstrumentType string) canonical.AssetClass {
-	if rawAssetType == "COLLECTIVE_INVESTMENT" &&
-		rawInstrumentType == "EXCHANGE_TRADED_FUND" {
-		return canonical.AssetClassETF
-	}
-	if c, ok := classMap[rawAssetType]; ok {
-		return c
-	}
-	return canonical.AssetClassOther
-}
-
 // taxonomyFor returns the single (exposure, vehicle) pair
-// (TAXONOMY.md) emitted to gold for a live api position —
-// asset_class + vehicle. assetClassFor gives the coarse 1-D class
-// over the same Schwab assetType/type signal; taxonomyFor splits
-// that signal across the two dimensions:
+// (TAXONOMY.md) emitted to gold for a live api position, from
+// Schwab's `instrument.assetType` + `instrument.type` signal.
+// Schwab's Trader API reports ETFs as assetType
+// COLLECTIVE_INVESTMENT with the ETF-ness one level down in
+// `instrument.type` (EXCHANGE_TRADED_FUND) — the standalone "ETF"
+// assetType exists in the API's enum but real position dumps don't
+// use it. CASH_EQUIVALENT and CURRENCY rows never reach this helper —
+// they are routed to cash_balances by snapshots.go first.
 //
 //   - EQUITY                                     → (public_equity, stock)
 //   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (RefineETFExposure(name), etf)
@@ -103,7 +69,7 @@ func fundExposure(name string) canonical.AssetClass {
 }
 
 // Instrument-key and description shapes for the statement-history
-// classifier. Ported from fidelity's classifyHistorical (that
+// classifier. Ported from fidelity's classifyHistoricalPair (that
 // source's statement PDFs share Schwab's lack of a structured type
 // code, so shape heuristics are all there is), pared to the shapes
 // Schwab statements actually surface: a CUSIP for bonds/options, an
@@ -119,9 +85,19 @@ var (
 	// Bond rows carry a coupon: "… 04.12500% 01/15/2042" / "FIXED COUPON".
 	histBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
 	// Money-market sweeps ("… GOVERNMENT MONEY MARKET", "… CASH RESERVES").
-	histMoneyMktRe   = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
-	histETFDescRe    = regexp.MustCompile(`\bETF\b`)
-	histMutualFundRe = regexp.MustCompile(`^[A-Z]{4}X$`)
+	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`)
+	// US money-market funds carry 5-letter tickers ending in a
+	// doubled X — the convention separating them from ordinary
+	// mutual funds' single trailing X. Catches money funds whose
+	// truncated statement description names no money-market token.
+	histMoneyMktKeyRe = regexp.MustCompile(`^[A-Z]{3}XX$`)
+	histETFDescRe     = regexp.MustCompile(`\bETF\b`)
+	histMutualFundRe  = regexp.MustCompile(`^[A-Z]{4}X$`)
+	// ETF-only issuer families whose statement descriptions omit the
+	// "ETF" token. Checked AFTER the mutual-fund ticker shape so an
+	// issuer's ordinary mutual funds (5-letter X-tickers) keep the
+	// fund vehicle.
+	histETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
 )
 
 // taxonomyHistorical derives the (exposure, vehicle) pair for a
@@ -160,7 +136,8 @@ func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.Ass
 	case histOptionKeyRe.MatchString(instrumentKey),
 		histOptionDescRe.MatchString(description):
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
-	case histMoneyMktRe.MatchString(description):
+	case histMoneyMktRe.MatchString(description),
+		histMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
 	case histCUSIPRe.MatchString(instrumentKey),
 		histBondDescRe.MatchString(description):
@@ -172,6 +149,8 @@ func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.Ass
 			return canonical.AssetClassCash, canonical.VehicleFund
 		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
+	case histETFIssuerRe.MatchString(description):
+		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock
 }

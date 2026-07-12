@@ -7,38 +7,13 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// assetClassFor maps fidelity-web's `positions.asset_class`
-// (the silver-side classification: 'equity' / 'etf' / 'mutual_fund'
-// / 'bond' / 'plan_fund' / 'money_market' / ...) to the canonical
-// AssetClass. Unknown / empty values fall through to AssetClassOther.
-//
-// `money_market` rows never reach this helper — they're filtered
-// out earlier in appendPositionsAndCash and emitted as
-// CashBalanceChange instead.
-func assetClassFor(silverClass string) canonical.AssetClass {
-	switch silverClass {
-	case "equity":
-		return canonical.AssetClassEquity
-	case "etf":
-		return canonical.AssetClassETF
-	case "mutual_fund", "plan_fund":
-		// plan_fund is a 529 investment-option code — Fidelity-
-		// administered fund wrapper around an underlying allocation.
-		// Same canonical bucket as a regular mutual fund.
-		return canonical.AssetClassFund
-	case "bond":
-		return canonical.AssetClassBond
-	case "money_market":
-		return canonical.AssetClassMoneyMarket
-	}
-	return canonical.AssetClassOther
-}
-
 // assetClassVehicleFor maps fidelity-web's silver
-// `positions.asset_class` onto the canonical exposure (AssetClass)
-// plus the wrapper Vehicle the exposure is held through — the single
-// (exposure, vehicle) pair emitted to gold. assetClassFor is the
-// coarse 1-D companion over the same silver signal.
+// `positions.asset_class` (the silver-side classification: 'equity' /
+// 'etf' / 'mutual_fund' / 'bond' / 'plan_fund' / 'money_market' / …)
+// onto the canonical exposure (AssetClass) plus the wrapper Vehicle
+// the exposure is held through — the single (exposure, vehicle) pair
+// emitted to gold. Unknown / empty silver classes fall through to
+// (other, other).
 //
 // Funds/ETFs whose exposure depends on their holdings defer to
 // silver.RefineETFExposure(name), which reads the security name
@@ -74,7 +49,7 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 	return canonical.AssetClassOther, canonical.VehicleOther
 }
 
-// The instrument-key and description shapes classifyHistorical
+// The instrument-key and description shapes classifyHistoricalPair
 // matches. The key shapes mirror fidelity-web's live silver
 // classifier (`load.py _classify_asset_class`); the description
 // shapes cover what the supplied-statement and SVB statement-PDF
@@ -88,8 +63,14 @@ var (
 	histCUSIPRe      = regexp.MustCompile(`^[A-Z0-9]{8}[0-9]$`)
 	histPlanKeyRe    = regexp.MustCompile(`^[A-Z]{3}[0-9]{6}$`)
 	// Keyless 529 plan sleeves: "STATE PLAN 2099 (FIDELITY BLEND)".
-	histPlanDescRe   = regexp.MustCompile(`\(FIDELITY [^)]*\)$`)
-	histMutualFundRe = regexp.MustCompile(`^[A-Z]{4}X$`)
+	histPlanDescRe = regexp.MustCompile(`\(FIDELITY [^)]*\)$`)
+	// US money-market funds carry 5-letter tickers ending in a
+	// doubled X — the convention separating them from ordinary
+	// mutual funds' single trailing X. Catches money funds whose
+	// truncated statement description says neither "MONEY MARKET"
+	// nor "CASH RESERVES".
+	histMoneyMktKeyRe = regexp.MustCompile(`^[A-Z]{3}XX$`)
+	histMutualFundRe  = regexp.MustCompile(`^[A-Z]{4}X$`)
 	// Bond rows carry a coupon: "… 04.12500% 01/15/2042" / "FIXED COUPON".
 	histBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
 	// Money-market sweeps ("FIDELITY GOVERNMENT MONEY MARKET",
@@ -98,57 +79,35 @@ var (
 	// position (negative = margin debit).
 	histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b|^NET CASH POSITION$`)
 	histETFDescRe  = regexp.MustCompile(`\bETF\b`)
+	// ETF-only issuer families whose statement descriptions often
+	// omit the "ETF" token — truncated lines like "ISHARES TRUST DJ
+	// US EXAMPLE" or "VANGUARD INTL EQUITY INDEX FDS EXAMPLE".
+	// Checked AFTER the mutual-fund ticker shape so an issuer's
+	// ordinary mutual funds (5-letter X-tickers) keep the fund
+	// vehicle.
+	histETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
 	// The svb builder's synthetic $0 closure marker — value 0, no
 	// exposure to classify.
 	histClosedDescRe = regexp.MustCompile(`^Account closed`)
 )
 
-// classifyHistorical derives the asset class of a
+// classifyHistoricalPair derives the (exposure, vehicle) pair of a
 // `historical_position_snapshots` row from its instrument key and
 // description — the statement PDFs behind these rows carry no
-// structured type code, so shape heuristics are all there is.
-// First match wins; the fall-through is equity, not other,
-// because an unrecognised line is a plain stock/ADR row — the
-// statements' overwhelming majority. The config's
-// instrument_overrides remain the escape hatch for rows the
-// shapes misjudge.
-func classifyHistorical(instrumentKey, description string) canonical.AssetClass {
-	switch {
-	case histClosedDescRe.MatchString(description):
-		return canonical.AssetClassOther
-	case histOptionKeyRe.MatchString(instrumentKey),
-		histOptionDescRe.MatchString(description):
-		return canonical.AssetClassOption
-	case histMoneyMktRe.MatchString(description):
-		return canonical.AssetClassMoneyMarket
-	case histPlanKeyRe.MatchString(instrumentKey),
-		histPlanDescRe.MatchString(description):
-		return canonical.AssetClassFund
-	case histCUSIPRe.MatchString(instrumentKey),
-		histBondDescRe.MatchString(description):
-		return canonical.AssetClassBond
-	case histETFDescRe.MatchString(description):
-		return silver.RefineETFClass(description)
-	case histMutualFundRe.MatchString(instrumentKey):
-		return canonical.AssetClassFund
-	}
-	return canonical.AssetClassEquity
-}
-
-// classifyHistoricalPair mirrors classifyHistorical's shape branches
-// (same order, first match wins) but yields the canonical exposure
-// plus the wrapper Vehicle — the single (exposure, vehicle) pair
-// emitted at the historical instrument/position build.
+// structured type code, so shape heuristics are all there is. First
+// match wins; the config's instrument_overrides remain the escape
+// hatch for rows the shapes misjudge.
 //
 //   - Account-closed marker → (other, other): a $0 synthetic row with no
 //     exposure to classify.
 //   - option → (public_equity, option): equity-underlying option legs.
-//   - money-market sweep / net-cash sleeve → (cash, fund).
+//   - money-market sweep / net-cash sleeve / XX-ticker money fund → (cash, fund).
 //   - 529 plan sleeve → (multi_asset, fund): a blended allocation wrapper.
 //   - bond (CUSIP-9 or coupon in the description) → (fixed_income, bond).
-//   - ETF-by-name → (RefineETFExposure(desc), etf).
+//   - ETF-by-name or ETF-only-issuer name → (RefineETFExposure(desc), etf).
 //   - mutual-fund ticker → (RefineETFExposure(desc), fund).
-//   - fall-through → (public_equity, stock): plain stock/ADR rows.
+//   - fall-through → (public_equity, stock): plain stock/ADR rows, the
+//     statements' overwhelming majority.
 //
 // Every pair returned satisfies canonical.ValidTaxonomyPair.
 func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
@@ -158,7 +117,8 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 	case histOptionKeyRe.MatchString(instrumentKey),
 		histOptionDescRe.MatchString(description):
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
-	case histMoneyMktRe.MatchString(description):
+	case histMoneyMktRe.MatchString(description),
+		histMoneyMktKeyRe.MatchString(instrumentKey):
 		return canonical.AssetClassCash, canonical.VehicleFund
 	case histPlanKeyRe.MatchString(instrumentKey),
 		histPlanDescRe.MatchString(description):
@@ -176,6 +136,8 @@ func classifyHistoricalPair(instrumentKey, description string) (canonical.AssetC
 			return canonical.AssetClassCash, canonical.VehicleFund
 		}
 		return silver.RefineETFExposure(description), canonical.VehicleFund
+	case histETFIssuerRe.MatchString(description):
+		return silver.RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock
 }

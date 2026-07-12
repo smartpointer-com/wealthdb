@@ -261,13 +261,8 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("appendPositions row (snap=%d, %s@%s): %w", snap, symbol, currency, err)
 		}
-		ac := assetClassFor(p.AssetClass)
-		if ac == canonical.AssetClassETF {
-			ac = silver.RefineETFClass(name)
-		}
-		// Map the same inputs to the single (exposure, vehicle) pair
-		// emitted to gold. The coarse `ac` above is the 1-D
-		// intermediate signal and is never written.
+		// Map the section header + security name to the single
+		// (exposure, vehicle) pair emitted to gold.
 		acNew, vehicle := taxonomyFor(p.AssetClass, name)
 
 		effectiveISIN := isin

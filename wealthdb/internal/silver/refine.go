@@ -6,7 +6,7 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-// The security-name patterns RefineETFClass matches, uppercase-
+// The security-name patterns RefineETFExposure matches, uppercase-
 // insensitive. Word boundaries matter throughout: GOLD must not
 // match GOLDMAN, ETHER must not match WEATHERFORD, and the miners
 // guard keeps equity ETFs of mining companies (gold-miners funds
@@ -17,34 +17,6 @@ var (
 	etfMinersRe = regexp.MustCompile(`(?i)\bMINERS?\b|\bMINING\b`)
 	etfBondRe   = regexp.MustCompile(`(?i)\bBONDS?\b|TREASURY|FIXED INCOME|MUNICIPAL|\bMUNI\b|\bTIPS\b`)
 )
-
-// RefineETFClass narrows an instrument already identified as an
-// exchange-traded fund/product to the asset class of what it
-// holds, from its security name. The canonical taxonomy classes
-// ETFs by underlying exposure, not by the wrapper: a spot-bitcoin
-// ETF is `crypto` alongside directly-held coin, a bullion ETF is
-// `metal` alongside vault gold, and a bond ETF is `bond_etf`
-// (deliberately not `bond` — see the canonical.AssetClassBondETF
-// comment). Everything else — equity and anything the name doesn't
-// give away — stays `etf`; the config's instrument_overrides is
-// the escape hatch for name-shy products.
-//
-// Callers apply this only AFTER the source's structured signal
-// (CFI group, Schwab instrument.type, statement section, silver
-// classifier) said "ETF" — the name alone must never promote a
-// non-ETF into these buckets (a gold-miner *stock* is equity, not
-// metal).
-func RefineETFClass(name string) canonical.AssetClass {
-	switch {
-	case etfCryptoRe.MatchString(name):
-		return canonical.AssetClassCrypto
-	case NamesPhysicalMetal(name):
-		return canonical.AssetClassMetal
-	case etfBondRe.MatchString(name):
-		return canonical.AssetClassBondETF
-	}
-	return canonical.AssetClassETF
-}
 
 // NamesPhysicalMetal reports whether a security name reads as a
 // physical precious-metal holding — bullion, not the stocks of
@@ -73,15 +45,18 @@ func NamesMoneyMarket(name string) bool {
 	return moneyMarketRe.MatchString(name)
 }
 
-// RefineETFExposure is the exposure-dimension counterpart of
-// RefineETFClass: it returns the EXPOSURE (asset_class) of a fund/ETF
-// already known to be a collective vehicle, from its security name.
-// The wrapper (vehicle=etf or fund) is the caller's — this decides
-// only what the wrapper holds. Same keyword logic as RefineETFClass,
-// but returns an exposure value: crypto → crypto, bullion → metal,
-// bond keywords → fixed_income, everything else → public_equity (the
-// default for a name that doesn't reveal a non-equity underlying).
-// Name-shy products are corrected by instrument_overrides.
+// RefineETFExposure returns the EXPOSURE (asset_class) of a fund/ETF
+// already known to be a collective vehicle, from its security name:
+// crypto → crypto, bullion → metal, bond keywords → fixed_income,
+// everything else → public_equity (the default for a name that
+// doesn't reveal a non-equity underlying). The wrapper (vehicle=etf
+// or fund) is the caller's — this decides only what the wrapper
+// holds. Callers apply it only AFTER the source's structured signal
+// (CFI group, Schwab instrument.type, statement section, silver
+// classifier) said "collective vehicle" — the name alone must never
+// promote a non-fund into these buckets (a gold-miner *stock* is
+// equity, not metal). Name-shy products are corrected by
+// instrument_overrides.
 func RefineETFExposure(name string) canonical.AssetClass {
 	switch {
 	case etfCryptoRe.MatchString(name):

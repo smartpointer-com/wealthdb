@@ -139,8 +139,9 @@ needed real classification logic; every other mapping is mechanical.
 | CFI category + group (UBS, ISO 10962) | both | `E`→(public_equity, stock), group `EY` participation certs→structured_product; `CE`→etf, other `C`→fund; `D`→bond; `R`→right; `O`/`H`→option; `F`→future; `J`→forward (FX); `S`/`I`/`K`/`L`/`T`/`M`/unknown→other |
 | UAC asset-class code (UBS) | asset_class | 0100→cash, 0300→public_equity, 0400→private-markets family, 0600→metal |
 | `instrument.assetType` + `.type` (Schwab) | both | EQUITY→(public_equity, stock); COLLECTIVE_INVESTMENT+EXCHANGE_TRADED_FUND→(…, etf) |
-| Statement section headers (Swissquote) | vehicle-leaning | "ETFs"/"Funds"/"Bonds"/"Shares"/"Options" |
-| Ticker/description shapes (fidelity family) | both | CUSIP-9→bond, `…X`→fund, OCC→option, word-ETF→etf |
+| Statement section headers (Swissquote) | vehicle-leaning | "ETFs"/"Funds"/"Bonds"/"Shares"/"Options"/"Structured Products" |
+| Description templates (ubs-web / historical PDFs) | both | "Reg.shs"/"Shs"/DRs/participation certs→stock, ETF umbrellas→etf, SICAV/fund→fund, "Actively Managed Certificate"→structured_product, precious-metals lines→(metal, physical) |
+| Ticker/description shapes (fidelity family + schwab statements) | both | CUSIP-9→bond, `…X`→fund, `…XX`→money fund (cash), OCC→option, word-ETF or ETF-only issuer→etf |
 | Security-name keywords (shared refiner) | asset_class | bullion / crypto / bond keywords refine exposure inside etf/fund vehicles |
 | Collector kind (private-market + manual) | both | carta/angellist/equityzen/manual kinds map directly to pairs |
 | `instrument_overrides` (config) | both | escape hatch; pins both `asset_class` and `vehicle` for a named instrument |

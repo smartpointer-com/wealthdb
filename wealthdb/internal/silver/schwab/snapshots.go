@@ -309,18 +309,13 @@ SELECT snapshot_at, account_external_id, instrument_key, payload
 
 		// Real security position.
 		instrExtID := posKey
-		ac := assetClassFor(pp.Instrument.AssetType, pp.Instrument.Type)
-
 		name := pp.Instrument.Description
 		if name == "" && pp.Instrument.Symbol != "" {
 			name = instrumentNames[pp.Instrument.Symbol]
 		}
-		if ac == canonical.AssetClassETF {
-			ac = silver.RefineETFClass(name)
-		}
-		// taxonomyFor maps the same assetType/type signal to the
-		// single (exposure, vehicle) pair emitted to gold; name
-		// feeds the ETF/fund exposure refinement.
+		// taxonomyFor maps the assetType/type signal to the single
+		// (exposure, vehicle) pair emitted to gold; name feeds the
+		// ETF/fund exposure refinement.
 		acNew, vehicle := taxonomyFor(pp.Instrument.AssetType, pp.Instrument.Type, name)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: instrExtID,

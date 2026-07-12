@@ -252,7 +252,8 @@ func (r *webReader) snapshotsForOverlap(
 // via the per-column upsert guard (web's last_seen_at is typically
 // later than PSN's). Stamping PSN's pair keeps the cross-source upsert
 // idempotent on asset_class / vehicle while letting web win on Name.
-// Missing ISINs (not in PSN) fall back to (other, other).
+// ISINs PSN has never seen fall back to the description-template
+// classifier (taxonomyPairForWebDescription), then (other, other).
 func (r *webReader) appendWebInstruments(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, psnTaxPair map[string]taxPair) error {
 	const q = `
 SELECT snapshot_at, instrument_isin, currency_iso, description
@@ -284,6 +285,8 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		if tp, ok := psnTaxPair[isin]; ok && tp.AssetClass != "" {
 			acNew = tp.AssetClass
 			vehicle = tp.Vehicle
+		} else if ac, veh, ok := taxonomyPairForWebDescription(description.String); ok {
+			acNew, vehicle = ac, veh
 		}
 		isinCopy := isin
 		// UBS web descriptions encode the listing ticker in

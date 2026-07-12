@@ -132,6 +132,85 @@ func taxonomyPairForInstrument(cfi, uacAsstClsCd, name string) (canonical.AssetC
 	}
 }
 
+// The security-description templates taxonomyPairForWebDescription
+// matches. UBS's web exports and Statement-of-Assets PDFs generate
+// descriptions from a fixed per-instrument-type vocabulary, so the
+// leading template words are a reliable classification signal —
+// strict prefixes first (immune to a token like "Private Equity"
+// appearing inside a share's company name), fuzzy tokens after.
+var (
+	// "Reg.shs Example AG", "Reg. shs", "Reg shs", "Shs -A- …",
+	// "Shs nom.", "shs …" — ordinary/registered shares.
+	webSharesRe = regexp.MustCompile(`(?i)^(reg\.?\s*)?shs\b`)
+	// "Sponsored American Deposit Receipt …", "Sponsrd American
+	// Depositary Receipt …", "Non-Voting Depository Receipt …",
+	// "Sponsored Global Deposit Receipt …" — DRs are shares.
+	webDepositReceiptRe = regexp.MustCompile(`(?i)deposit(a|o)ry receipt|deposit receipt`)
+	// "Part. Cert. …", "Participation Cert …", "Dividend-right
+	// certificate" — Swiss Partizipationsscheine / Genussscheine:
+	// non-voting corporate equity (PSN codes the same securities
+	// CFI ES…), not issuer-wrapped structured products.
+	webPartCertRe = regexp.MustCompile(`(?i)^(part\.?\s*cert|participation cert|dividend-right certificate)`)
+	// "SSgA SPDR ETFs Europe I Plc", "UBS (Irl) ETF plc" — plus the
+	// ETF umbrellas whose names lack the token: "iShares III Plc",
+	// "Xtrackers (IE) Plc", "Invesco Markets III Plc".
+	webETFRe = regexp.MustCompile(`(?i)\bETFs?\b|^(ishares|xtrackers|invesco markets)\b`)
+	// "… - Multi-Vintage …" — UBS's multi-vintage private-markets
+	// program families.
+	webMultiVintageRe = regexp.MustCompile(`(?i)\bmulti-vintage\b`)
+	// "… Sicav - …", "UBS (Lux) Fund Solutions - …" — pooled funds.
+	webFundRe = regexp.MustCompile(`(?i)\bsicav\b|\bfund\b`)
+	// Exposure sharpeners inside the fund branch.
+	webInfraRe = regexp.MustCompile(`(?i)\binfrastructure\b`)
+	webPERe    = regexp.MustCompile(`(?i)\bprivate equity\b`)
+	// "Precious metals & commodities" (the overview-derived
+	// per-portfolio line), "Gold bar(s) fine weight …".
+	webMetalRe = regexp.MustCompile(`(?i)^(precious metals|gold bar)`)
+	webAMCRe   = regexp.MustCompile(`(?i)^actively managed certificate`)
+	webMMRe    = regexp.MustCompile(`(?i)\bmoney market\b`)
+)
+
+// taxonomyPairForWebDescription derives the (exposure, vehicle) pair
+// from a ubs-web security description, for instruments PSN has no
+// CFI/UAC for — historical Statement-of-Assets securities sold before
+// the PSN feed began, and web-only holdings. Returns ok=false when no
+// template matches; callers keep (other, other) then rather than
+// guessing. When PSN metadata exists for the ISIN it always wins —
+// this fallback only fires for PSN-unknown instruments, so the two
+// classifiers cannot disagree on the same gold row.
+func taxonomyPairForWebDescription(desc string) (canonical.AssetClass, canonical.Vehicle, bool) {
+	switch {
+	case webAMCRe.MatchString(desc):
+		// Actively Managed Certificate: a structured participation
+		// wrapper (the web-description twin of CFI group EY).
+		if currencyLinkedRe.MatchString(desc) {
+			return canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct, true
+		}
+		return canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct, true
+	case webSharesRe.MatchString(desc),
+		webDepositReceiptRe.MatchString(desc),
+		webPartCertRe.MatchString(desc):
+		return canonical.AssetClassPublicEquity, canonical.VehicleStock, true
+	case webMMRe.MatchString(desc):
+		return canonical.AssetClassCash, canonical.VehicleFund, true
+	case webETFRe.MatchString(desc):
+		return silver.RefineETFExposure(desc), canonical.VehicleETF, true
+	case webMultiVintageRe.MatchString(desc):
+		return canonical.AssetClassPrivateEquity, canonical.VehicleFund, true
+	case webFundRe.MatchString(desc):
+		switch {
+		case webInfraRe.MatchString(desc):
+			return canonical.AssetClassInfrastructure, canonical.VehicleFund, true
+		case webPERe.MatchString(desc):
+			return canonical.AssetClassPrivateEquity, canonical.VehicleFund, true
+		}
+		return silver.RefineETFExposure(desc), canonical.VehicleFund, true
+	case webMetalRe.MatchString(desc):
+		return canonical.AssetClassMetal, canonical.VehiclePhysical, true
+	}
+	return canonical.AssetClassOther, canonical.VehicleOther, false
+}
+
 // taxonomyPairForUAC maps UBS's internal UacAsstClsCd to a
 // (exposure, vehicle) pair for custody items UBS surfaces with an
 // empty CFI. Covers the UAC codes UBS surfaces for custody items:

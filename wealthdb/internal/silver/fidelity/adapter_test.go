@@ -182,48 +182,6 @@ func TestTransactions(t *testing.T) {
 	}
 }
 
-// classifyHistorical covers the statement-PDF shapes: statement rows
-// carry no structured type code, so the class comes from instrument-key and description
-// shapes alone.
-func TestClassifyHistorical(t *testing.T) {
-	cases := []struct {
-		key, desc string
-		want      canonical.AssetClass
-	}{
-		// Options: OCC key or CALL/PUT-prefixed description.
-		{"ABCD300118C100", "CALL (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassOption},
-		{"", "PUT (ABCD) PLACEHOLDER CORP JAN 18 30", canonical.AssetClassOption},
-		// Money-market sweeps + the svb net-cash sleeve.
-		{"SPAXX", "FIDELITY GOVERNMENT MONEY MARKET", canonical.AssetClassMoneyMarket},
-		{"FDRXX", "FIDELITY GOVERNMENT CASH RESERVES", canonical.AssetClassMoneyMarket},
-		{"", "NET CASH POSITION", canonical.AssetClassMoneyMarket},
-		// 529 plan sleeves, keyed and keyless.
-		{"ABC123456", "STATE PLAN 2030 (FIDELITY BLEND)", canonical.AssetClassFund},
-		{"", "STATE PLAN 2030 (FIDELITY FUNDS)", canonical.AssetClassFund},
-		// Bonds: CUSIP-9 key or coupon in the description.
-		{"000000AA1", "PLACEHOLDER MUNI GO BDS SER. 2021", canonical.AssetClassBond},
-		{"", "PLACEHOLDER CORP NOTE 04.12500% 01/15/2042", canonical.AssetClassBond},
-		{"", "PLACEHOLDER ST GO BDS 1,234.56 FIXED COUPON", canonical.AssetClassBond},
-		// ETFs refine by underlying exposure.
-		{"ABCD", "ISHARES TR PLACEHOLDER ETF", canonical.AssetClassETF},
-		{"IBIT", "iShares Bitcoin Trust ETF", canonical.AssetClassCrypto},
-		{"", "ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassBondETF},
-		// Mutual-fund ticker convention.
-		{"ABCDX", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassFund},
-		// The svb $0 closure marker carries no exposure.
-		{"", "Account closed — assets transferred", canonical.AssetClassOther},
-		// Fall-through: plain stock / ADR rows.
-		{"AAPL", "APPLE INC", canonical.AssetClassEquity},
-		{"", "PLACEHOLDER AG SPON ADR EACH REP 1 ORD SHS", canonical.AssetClassEquity},
-		{"NFLX", "NETFLIX INC", canonical.AssetClassEquity},
-	}
-	for _, c := range cases {
-		if got := classifyHistorical(c.key, c.desc); got != c.want {
-			t.Errorf("classifyHistorical(%q, %q) = %q, want %q", c.key, c.desc, got, c.want)
-		}
-	}
-}
-
 // TestAssetClassVehicleFor covers the live-path taxonomy helper:
 // each silver class maps to an (exposure, Vehicle) pair, with the
 // fund/ETF exposure refined from the security name. All synthetic
@@ -268,9 +226,9 @@ func TestAssetClassVehicleFor(t *testing.T) {
 	}
 }
 
-// TestClassifyHistoricalPair mirrors TestClassifyHistorical, asserting
-// the (exposure, Vehicle) pair the historical path emits. Same shape
-// branches, first match wins.
+// TestClassifyHistoricalPair covers the statement-PDF shapes: statement rows carry no
+// structured type code, so the (exposure, Vehicle) pair comes from instrument-key
+// and description shapes alone. First match wins.
 func TestClassifyHistoricalPair(t *testing.T) {
 	cases := []struct {
 		key, desc    string
@@ -283,6 +241,9 @@ func TestClassifyHistoricalPair(t *testing.T) {
 		// Money-market sweeps + the svb net-cash sleeve → cash / fund.
 		{"SPAXX", "FIDELITY GOVERNMENT MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
 		{"", "NET CASH POSITION", canonical.AssetClassCash, canonical.VehicleFund},
+		// XX-ticker money fund whose truncated description names no
+		// money-market token.
+		{"EXMXX", "PLACEHOLDER VALUE FUND◊", canonical.AssetClassCash, canonical.VehicleFund},
 		// 529 plan sleeves, keyed and keyless → multi-asset / fund.
 		{"ABC123456", "STATE PLAN 2099 (FIDELITY BLEND)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
 		{"", "STATE PLAN 2099 (FIDELITY FUNDS)", canonical.AssetClassMultiAsset, canonical.VehicleFund},
@@ -295,6 +256,13 @@ func TestClassifyHistoricalPair(t *testing.T) {
 		{"", "ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassFixedIncome, canonical.VehicleETF},
 		// Mutual-fund ticker → fund wrapper, exposure refined from the name.
 		{"ABCDX", "PLACEHOLDER EMERGING MKTS INSTL", canonical.AssetClassPublicEquity, canonical.VehicleFund},
+		// ETF-only issuer families without the "ETF" token → etf; an
+		// issuer's mutual fund (X-ticker, previous case shape) still
+		// wins the fund vehicle first.
+		{"EXA", "ISHARES TRUST DJ US EXAMPLE", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"EXB", "VANGUARD INTL EQUITY INDEX FDS EXAMPLE", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"EXC", "ISHARES TREASURY FLOATING RATE EXAMPLE", canonical.AssetClassFixedIncome, canonical.VehicleETF},
+		{"EXMPX", "VANGUARD EXAMPLE ADMIRAL SHARES", canonical.AssetClassPublicEquity, canonical.VehicleFund},
 		// The svb $0 closure marker carries no exposure.
 		{"", "Account closed — assets transferred", canonical.AssetClassOther, canonical.VehicleOther},
 		// Fall-through: plain stock / ADR rows → public_equity / stock.

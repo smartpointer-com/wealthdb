@@ -336,33 +336,6 @@ func TestSnapshotsCashRouting(t *testing.T) {
 	}
 }
 
-func TestSnapshotsAssetClassMapping(t *testing.T) {
-	cases := []struct {
-		schwabType     string
-		instrumentType string
-		want           canonical.AssetClass
-	}{
-		{"EQUITY", "", canonical.AssetClassEquity},
-		{"ETF", "", canonical.AssetClassETF},
-		{"MUTUAL_FUND", "", canonical.AssetClassFund},
-		// Real Trader API dumps type ETFs as COLLECTIVE_INVESTMENT
-		// with the ETF-ness one level down in instrument.type.
-		{"COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", canonical.AssetClassETF},
-		{"COLLECTIVE_INVESTMENT", "", canonical.AssetClassFund},
-		{"COLLECTIVE_INVESTMENT", "UNIT_INVESTMENT_TRUST", canonical.AssetClassFund},
-		{"BOND", "", canonical.AssetClassBond},
-		{"OPTION", "", canonical.AssetClassOption},
-		{"FUTURE", "", canonical.AssetClassFuture},
-		{"INDEX", "", canonical.AssetClassOther},
-		{"NEW_TYPE_2030", "", canonical.AssetClassOther},
-	}
-	for _, c := range cases {
-		if got := assetClassFor(c.schwabType, c.instrumentType); got != c.want {
-			t.Errorf("assetClassFor(%q, %q) = %q, want %q", c.schwabType, c.instrumentType, got, c.want)
-		}
-	}
-}
-
 // TestTaxonomyForLive pins the (exposure, vehicle) pairs the
 // live-api path emits. Security names are synthetic placeholders;
 // only the exposure keywords (BITCOIN / GOLD / TREASURY BOND /
@@ -438,6 +411,13 @@ func TestTaxonomyHistorical(t *testing.T) {
 		// A money fund whose name lacks the MONEY MARKET token but
 		// reads as a money fund → cash × fund (not a bond guess).
 		{"Investments", "SWVXX", "PLACEHOLDER VALUE MONEY FUND", canonical.AssetClassCash, canonical.VehicleFund},
+		// XX-ticker money fund whose truncated description names no
+		// money token at all → still cash × fund.
+		{"Investments", "EXMXX", "PLACEHOLDER VALUE ADVANTAGE◊", canonical.AssetClassCash, canonical.VehicleFund},
+		// ETF-only issuer without the "ETF" token → etf; a 5-letter
+		// X-ticker fund from the same issuer keeps the fund vehicle.
+		{"Investments", "EXA", "ISHARES TRUST DJ US EXAMPLE", canonical.AssetClassPublicEquity, canonical.VehicleETF},
+		{"Investments", "EXMPX", "VANGUARD EXAMPLE ADMIRAL SHARES", canonical.AssetClassPublicEquity, canonical.VehicleFund},
 		// CUSIP-9 key → fixed income bond.
 		{"", "ABCDEFGH1", "", canonical.AssetClassFixedIncome, canonical.VehicleBond},
 		// Coupon-bearing description → fixed income bond.

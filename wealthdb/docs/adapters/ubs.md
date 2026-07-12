@@ -69,24 +69,22 @@ vehicle = the wrapper — TAXONOMY.md) from those signals: the CFI's
 first character picks the vehicle, and the exposure comes from the
 CFI, the `UacAsstClsCd` bucket, and the instrument name together.
 
-| CFI first char | Gold `(asset_class, vehicle)` |
+| CFI category (first char) | Gold `(asset_class, vehicle)` |
 | --- | --- |
-| `E` | `(public_equity, stock)` |
-| `C` | Collective vehicle. The vehicle is `fund`, or `etf` for the `CE` group (ISO 10962:2015 ETFs); every other `C` group stays `fund`. The exposure is read from the instrument name by `silver.RefineETFExposure` — crypto → `crypto`, bullion → `metal`, bond keywords → `fixed_income`, everything else → `public_equity`. A fund's `UacAsstClsCd` sharpens the generic CFI and overrides the name read: `0100` (Liquidity) → `(cash, fund)`, `0400` (Hedge funds & private markets) → the private-markets family via `privateMarketsPair` (name contains "infrastructure" → `(infrastructure, fund)`, "hedge" → `(hedge_fund, fund)`, otherwise → `(private_equity, fund)`). |
-| `D` | `(fixed_income, bond)` |
-| `O` | `(public_equity, option)` |
-| `F` | `(public_equity, future)` |
-| `R` | `(public_equity, right)` |
-| `T` / other | Structured note: `(foreign_exchange, structured_product)` when the name reads currency-/FX-linked (`currencyLinkedRe` — "currency", "FX", "forex", "dual currency"), otherwise `(public_equity, structured_product)`. This default catches `T` (structured), the former `M` money-market first character (no longer a distinct case in the pair switch), and any unrecognised first character. |
+| `E` Equities | `(public_equity, stock)` — except group `EY` ("structured participation instruments": tracker / actively-managed certificates), which is `(public_equity, structured_product)`, or `(foreign_exchange, structured_product)` when the name reads currency-/FX-linked (`currencyLinkedRe` — "currency", "FX", "forex", "dual currency"). Every other `E` group (`ES` shares, `ED` depository receipts, …) is a stock. |
+| `C` Collective investment | The vehicle is `fund`, or `etf` for the `CE` group (ISO 10962:2015 ETFs); every other `C` group stays `fund`. The exposure is read from the instrument name by `silver.RefineETFExposure` — crypto → `crypto`, bullion → `metal`, bond keywords → `fixed_income`, everything else → `public_equity`. A fund's `UacAsstClsCd` sharpens the generic CFI and overrides the name read: `0100` (Liquidity) → `(cash, fund)`, `0400` (Hedge funds & private markets) → the private-markets family via `privateMarketsPair` (name contains "infrastructure" → `(infrastructure, fund)`, "hedge" → `(hedge_fund, fund)`, otherwise → `(private_equity, fund)`). |
+| `D` Debt | `(fixed_income, bond)` |
+| `R` Entitlements (rights) | `(public_equity, right)` |
+| `O` Listed / `H` non-listed & complex options | `(public_equity, option)` |
+| `F` Futures | `(public_equity, future)` |
+| `J` Forwards | `(foreign_exchange, forward)` — the forward wrapper pairs only with FX in the taxonomy, and these feeds carry FX forwards. |
+| `S` swaps · `I` spot · `K` strategies · `L` financing · `T` referential · `M` others · unrecognised | `(other, other)`. Not modelled as custody holdings — `T` in particular is reference data, not a position (UBS's per-currency reference rows carry `TC…` codes), so an honest `other` beats forcing an equity or structured-product guess. |
 | empty CFI | Routes to the `UacAsstClsCd` fallback (`taxonomyPairForUAC`): `0100` (Liquidity) → `(cash, fund)`, `0300` (Equities) → `(public_equity, stock)`, `0400` (Hedge funds & private markets) → the private-markets family (see the `C` row), `0600` (Precious metals & commodities) → `(metal, physical)`, anything else → `(other, other)`. |
 
 The emit path uses `silver.RefineETFExposure`, which returns the
 *exposure* (asset class) of a collective vehicle from its name; the
 vehicle (`etf` / `fund`) is supplied by the CFI group, so the pair
-is `(RefineETFExposure(name), etf-or-fund)`. Its sibling
-`silver.RefineETFClass` (which returns a 1-D class such as
-`bond_etf`) feeds the intermediate `assetClassForInstrument`
-classifier only and never reaches gold.
+is `(RefineETFExposure(name), etf-or-fund)`.
 
 ### Latest-known-instruments lookup
 
@@ -222,14 +220,21 @@ invariant that every gold `positions` row is owned by an
 | `description` | `instruments.name` |
 | `sector` | (kept in payload only) |
 
-The `(asset_class, vehicle)` pair defaults to `(other, other)` for
-historical rows — the PDFs carry no CFI/UAC code, and this path has
-no PSN-lookup access, so it mirrors the legacy `other` control
-rather than guessing an exposure from the description alone. The
-per-column upsert guard means a later PSN snapshot containing the
-same ISIN will overwrite both columns with the CFI-derived pair, so
-`(other, other)` is only ever the visible value for instruments
-that never made it into PSN.
+The `(asset_class, vehicle)` pair for historical rows comes from the
+description-template classifier (`taxonomyPairForWebDescription`) —
+the PDFs carry no CFI/UAC code, but UBS generates their descriptions
+from a fixed per-instrument-type vocabulary, so the leading template
+words are a reliable signal: "Reg.shs …"/"Shs …" and depository
+receipts / participation certificates → `(public_equity, stock)`,
+ETF umbrellas → `(RefineETFExposure, etf)`, SICAVs / funds →
+`(…, fund)` (money-market / infrastructure / private-equity names
+sharpen the exposure), "Actively Managed Certificate" →
+`structured_product`, precious-metals / gold-bar lines →
+`(metal, physical)`. Unmatched descriptions keep `(other, other)`.
+When a later PSN snapshot contains the same ISIN, the per-column
+upsert guard overwrites both columns with the CFI-derived pair — the
+description read only ever decides for instruments that never made
+it into PSN.
 
 ### Cash balances
 
@@ -275,11 +280,9 @@ present in silver.
   visibility lands, project into a new gold table
   `pending_transactions` rather than mixing with settled
   `transactions`.
-- **Historical taxonomy pair.** Historical security positions
-  default to `(other, other)` because the PDFs don't carry a
-  CFI code. When PSN data exists for an ISIN the per-column
-  upsert backfills with the CFI-derived pair, but instruments
-  that pre-date PSN (closed positions, instruments since
-  delisted) stay `(other, other)`. Consider a per-ISIN taxonomy
-  lookup populated from an external catalogue if richer
-  historical classification is needed.
+- **Historical taxonomy pair.** Historical security positions are
+  classified by the description-template read (see the mapping
+  section above); a description outside UBS's known templates
+  stays `(other, other)`. Consider a per-ISIN taxonomy lookup
+  populated from an external catalogue if a residual unmatched
+  instrument ever matters.

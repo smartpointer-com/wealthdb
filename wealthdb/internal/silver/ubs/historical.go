@@ -241,14 +241,19 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		if looksLikeISIN(isin) {
 			isinPtr = &isinCopy
 		}
-		// Historical PDF securities carry no CFI/UAC and this path has
-		// no PSN-lookup access, so there is no classification signal;
-		// the pair defaults to (other, other) rather than guessing an
-		// exposure from the description alone.
+		// Historical PDF securities carry no CFI/UAC, so the pair
+		// comes from the description-template classifier — UBS
+		// generates PDF descriptions from a fixed per-instrument-type
+		// vocabulary ("Reg.shs …", "… Sicav …", "Sponsored American
+		// Deposit Receipt …"), so the templates are a reliable signal.
+		// Unmatched descriptions keep (other, other). Instruments that
+		// later reappear in PSN converge on PSN's CFI-derived pair via
+		// gold's latest-last_seen_at per-column upsert.
+		acHist, vehHist, _ := taxonomyPairForWebDescription(descr.String)
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
-			AssetClass:           canonical.AssetClassOther,
-			Vehicle:              canonical.VehicleOther,
+			AssetClass:           acHist,
+			Vehicle:              vehHist,
 			ISIN:                 isinPtr,
 			Name:                 silver.StrPtrIfNonEmpty(descr.String),
 			Currency:             silver.StrPtrIfNonEmpty(ccy),
@@ -265,8 +270,8 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 			AccountExternalID:    accountID,
 			PositionKey:          isin,
 			InstrumentExternalID: &isinCopy,
-			AssetClass:           canonical.AssetClassOther,
-			Vehicle:              canonical.VehicleOther,
+			AssetClass:           acHist,
+			Vehicle:              vehHist,
 			Currency:             positionCcy,
 			Quantity:             decimalFromNullFloat(units),
 			MarketValue:          decimalFromNullFloat(mv),

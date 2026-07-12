@@ -167,7 +167,7 @@ func TestSnapshotsTaxonomyPair(t *testing.T) {
 		"SYNFNDBND@CHF": {canonical.AssetClassFixedIncome, canonical.VehicleFund},
 		"SYNOPT@USD":    {canonical.AssetClassPublicEquity, canonical.VehicleOption},
 		"SYNPM@CHF":     {canonical.AssetClassMetal, canonical.VehiclePhysical},
-		"SYNSP@CHF":     {canonical.AssetClassOther, canonical.VehicleOther},
+		"SYNSP@CHF":     {canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct},
 	}
 
 	posByKey := map[string]canonical.PositionChange{}

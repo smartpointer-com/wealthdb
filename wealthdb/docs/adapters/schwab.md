@@ -160,9 +160,11 @@ contributes three things the api silver doesn't have:
   → `(fixed_income, bond)`, `Options` → `(public_equity, option)`),
   falling back to instrument-key / description shape heuristics for
   other sections — OCC symbol or CALL/PUT → `(public_equity,
-  option)`, money-market name → `(cash, fund)`, CUSIP or coupon →
-  `(fixed_income, bond)`, word-ETF → etf, four-letter-plus-X ticker
-  → fund, else `(public_equity, stock)`. Per-column upsert lets a
+  option)`, money-market name or XX-ending money-fund ticker →
+  `(cash, fund)`, CUSIP or coupon → `(fixed_income, bond)`,
+  word-ETF → etf, four-letter-plus-X ticker → fund, ETF-only
+  issuer name (iShares / SPDR / Vanguard / …) → etf, else
+  `(public_equity, stock)`. Per-column upsert lets a
   later api emission win on the underlying instrument row's
   dimension when the same key reappears source-classified.
 - **Historical cash balances.** `historical_cash_balances`

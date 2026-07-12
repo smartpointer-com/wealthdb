@@ -28,48 +28,22 @@ func taxWrapperFor(accountProduct string) canonical.TaxWrapper {
 	return ""
 }
 
-// assetClassFor maps Swissquote's XLS section-header string
-// (stored in positions.payload.asset_class) to the canonical
-// AssetClass. The set of headers is small and stable; unknown
-// values fall through to AssetClassOther with the raw header
-// preserved in payload.
-//
-// Observed headers in real silver: "ETFs", "Bonds". Others
-// listed below are from Swissquote UI sections we expect to
-// see eventually.
-func assetClassFor(xlsHeader string) canonical.AssetClass {
-	switch xlsHeader {
-	case "Shares", "Stocks":
-		return canonical.AssetClassEquity
-	case "ETFs":
-		return canonical.AssetClassETF
-	case "Bonds":
-		return canonical.AssetClassBond
-	case "Funds":
-		return canonical.AssetClassFund
-	case "Options":
-		return canonical.AssetClassOption
-	case "Precious Metals":
-		return canonical.AssetClassMetal
-	default:
-		// "Structured Products", anything new from a Swissquote
-		// UI redesign, or empty.
-		return canonical.AssetClassOther
-	}
-}
-
-// taxonomyFor is the 2-D counterpart of assetClassFor (its 1-D
-// intermediate sibling): it maps a Swissquote XLS section header to
-// the (exposure, vehicle) pair emitted to gold, per TAXONOMY.md.
+// taxonomyFor maps a Swissquote XLS section header (stored in
+// positions.payload.asset_class; the set of headers is small and
+// stable) to the (exposure, vehicle) pair emitted to gold, per
+// TAXONOMY.md. Observed headers in real silver: "ETFs", "Bonds";
+// the rest are Swissquote UI sections expected eventually.
 //
 // The vehicle is pinned by the section header; the exposure is fixed
 // except for the two collective-vehicle sections ("ETFs", "Funds"),
 // whose exposure is refined from the security name via
 // silver.RefineETFExposure (crypto / metal / fixed_income, else the
 // public_equity default). Options are the underlying's exposure —
-// Swissquote surfaces equity options, so public_equity. Unknown /
-// structured-product headers fall through to (other, other); a
-// name-shy holding that lands there is corrected by config
+// Swissquote surfaces equity options, so public_equity. Structured
+// products default to equity exposure inside the structured_product
+// wrapper (the same convention the ubs adapter uses for certificate
+// CFIs). Unknown headers fall through to (other, other); a name-shy
+// holding that lands there is corrected by config
 // instrument_overrides, not here.
 //
 // Every pair returned satisfies canonical.ValidTaxonomyPair.
@@ -87,6 +61,8 @@ func taxonomyFor(xlsHeader, name string) (canonical.AssetClass, canonical.Vehicl
 		return canonical.AssetClassPublicEquity, canonical.VehicleOption
 	case "Precious Metals":
 		return canonical.AssetClassMetal, canonical.VehiclePhysical
+	case "Structured Products":
+		return canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct
 	default:
 		return canonical.AssetClassOther, canonical.VehicleOther
 	}

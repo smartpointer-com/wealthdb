@@ -47,7 +47,7 @@ via `silver.RefineETFExposure`.
 | `ETFs` | `(RefineETFExposure(name), etf)` — exposure refined from the security name: crypto → `crypto`, bullion → `metal`, bond keywords → `fixed_income`, else `public_equity` |
 | `Bonds` | `(fixed_income, bond)` |
 | `Funds` | `(RefineETFExposure(name), fund)` — same name-derived exposure inside the `fund` wrapper |
-| `Structured Products` | `(other, other)` (falls through the default; refine if/when a richer category lands in gold) |
+| `Structured Products` | `(public_equity, structured_product)` — equity-default exposure inside the structured-product wrapper, the same convention the ubs adapter uses for certificate CFIs |
 | `Precious Metals` | `(metal, physical)` |
 | `Options` | `(public_equity, option)` (Swissquote surfaces equity options — the option's underlying exposure) |
 | (other) | `(other, other)`, raw header preserved in payload |

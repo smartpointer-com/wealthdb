@@ -337,14 +337,6 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			continue
 		}
 
-		assetClass := assetClassFor(silverClass)
-		if assetClass == canonical.AssetClassETF {
-			// The silver classifier only detects ETF-ness (from the
-			// security name); the underlying-exposure refinement to
-			// crypto / metal / bond_etf happens here so the keyword
-			// taxonomy lives in one place (silver.RefineETFClass).
-			assetClass = silver.RefineETFClass(desc)
-		}
 		// Map silverClass + name to the single (exposure, vehicle)
 		// pair emitted to gold.
 		assetClassNew, vehicle := assetClassVehicleFor(silverClass, desc)

@@ -6,7 +6,7 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-func TestRefineETFClass(t *testing.T) {
+func TestRefineETFExposure(t *testing.T) {
 	cases := []struct {
 		name string
 		want canonical.AssetClass
@@ -21,39 +21,21 @@ func TestRefineETFClass(t *testing.T) {
 		{"abrdn Physical Platinum Shares ETF", canonical.AssetClassMetal},
 		{"Invesco DB Precious Metals Fund", canonical.AssetClassMetal},
 		// Miners hold mining STOCKS — equity exposure, not metal.
-		{"VanEck Gold Miners ETF", canonical.AssetClassETF},
-		{"Global X Silver Miners ETF", canonical.AssetClassETF},
-		// Bond / fixed-income ETFs.
-		{"ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassBondETF},
-		{"Vanguard Total Bond Market ETF", canonical.AssetClassBondETF},
-		{"SCHWAB US TIPS ETF", canonical.AssetClassBondETF},
-		{"iShares National Muni Bond ETF", canonical.AssetClassBondETF},
-		{"SPDR Bloomberg High Yield Bond ETF", canonical.AssetClassBondETF},
-		// Everything else stays etf.
-		{"iShares MSCI EAFE Small-Cap ETF", canonical.AssetClassETF},
-		{"Vanguard Total Stock Market ETF", canonical.AssetClassETF},
-		// Word boundaries: no false positives from lookalike names.
-		{"Goldman Sachs ActiveBeta US Large Cap ETF", canonical.AssetClassETF},
-		{"iShares MSCI Netherlands ETF", canonical.AssetClassETF},
-	}
-	for _, c := range cases {
-		if got := RefineETFClass(c.name); got != c.want {
-			t.Errorf("RefineETFClass(%q) = %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
-func TestRefineETFExposure(t *testing.T) {
-	cases := []struct {
-		name string
-		want canonical.AssetClass
-	}{
-		{"iShares Bitcoin Trust ETF", canonical.AssetClassCrypto},
-		{"SPDR Gold Shares", canonical.AssetClassMetal},
-		{"VanEck Gold Miners ETF", canonical.AssetClassPublicEquity}, // miners hold stocks
-		{"iShares 20+ Year Treasury Bond ETF", canonical.AssetClassFixedIncome},
-		{"Vanguard Total Stock Market ETF", canonical.AssetClassPublicEquity},
+		{"VanEck Gold Miners ETF", canonical.AssetClassPublicEquity},
+		{"Global X Silver Miners ETF", canonical.AssetClassPublicEquity},
+		// Bond / fixed-income keywords.
+		{"ISHARES 20+ YEAR TREASURY BOND ETF", canonical.AssetClassFixedIncome},
+		{"Vanguard Total Bond Market ETF", canonical.AssetClassFixedIncome},
+		{"SCHWAB US TIPS ETF", canonical.AssetClassFixedIncome},
+		{"iShares National Muni Bond ETF", canonical.AssetClassFixedIncome},
+		{"SPDR Bloomberg High Yield Bond ETF", canonical.AssetClassFixedIncome},
 		{"Swisscanto (CH) Index Bond Fund Placeholder CHF", canonical.AssetClassFixedIncome},
+		// Everything else defaults to public equity.
+		{"iShares MSCI EAFE Small-Cap ETF", canonical.AssetClassPublicEquity},
+		{"Vanguard Total Stock Market ETF", canonical.AssetClassPublicEquity},
+		// Word boundaries: no false positives from lookalike names.
+		{"Goldman Sachs ActiveBeta US Large Cap ETF", canonical.AssetClassPublicEquity},
+		{"iShares MSCI Netherlands ETF", canonical.AssetClassPublicEquity},
 	}
 	for _, c := range cases {
 		if got := RefineETFExposure(c.name); got != c.want {

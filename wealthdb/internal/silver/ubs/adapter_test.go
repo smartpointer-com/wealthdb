@@ -717,3 +717,65 @@ func TestTaxonomyPairForInstrument(t *testing.T) {
 		})
 	}
 }
+
+// TestTaxonomyPairForWebDescription exercises the description-template
+// classifier for PSN-unknown instruments (historical PDF securities,
+// web-only holdings) with synthetic names built from UBS's fixed
+// description vocabulary. Every matched pair must be admitted by
+// canonical.ValidTaxonomyPair; unmatched descriptions must report
+// ok=false and (other, other).
+func TestTaxonomyPairForWebDescription(t *testing.T) {
+	cases := []struct {
+		name    string
+		desc    string
+		wantAC  canonical.AssetClass
+		wantVeh canonical.Vehicle
+		wantOK  bool
+	}{
+		{"reg shs", "Reg.shs Example Industrials AG", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"reg shs dotted", "Reg.shs. Example Materials Ltd", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"reg shs spaced", "Reg. shs Example Holdings Ltd", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"shs class", "Shs -A- Example Bank SA", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"shs lowercase", "shs Example KGaA (XMPL)", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"shs nom", "Shs nom. Example Generale SA", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		// A share whose company name contains a fund-ish token must
+		// stay a stock (prefix rules win over token rules).
+		{"shs with PE in company name", "Reg.shs Private Equity Holding AG", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"adr", "Sponsored American Deposit Receipt Example Bank Ltd (Repr. 2 shs)", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"adr variant", "Sponsrd American Depositary Receipt Example Communication", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"gdr", "Sponsored Global Deposit Receipt Example Electronics Co Ltd", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"nvdr", "Non-Voting Depository Receipt Example PCL", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"part cert", "Part. Cert. Example Holding Ltd (XMPL)", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"participation cert", "Participation Cert Example Holding Ltd", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"dividend-right cert", "Dividend-right certificate", canonical.AssetClassPublicEquity, canonical.VehicleStock, true},
+		{"amc", "Actively Managed Certificate issued by Example Bank on Example Portfolio", canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct, true},
+		{"amc fx-linked", "Actively Managed Certificate on Example Dual Currency Basket", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct, true},
+		{"money market", "UBS (Lux) Money Market Example", canonical.AssetClassCash, canonical.VehicleFund, true},
+		{"etf token", "SSgA SPDR ETFs Europe I Plc - Example Sector", canonical.AssetClassPublicEquity, canonical.VehicleETF, true},
+		{"etf umbrella ishares", "iShares III Plc - Example", canonical.AssetClassPublicEquity, canonical.VehicleETF, true},
+		{"etf umbrella xtrackers", "Xtrackers (IE) Plc- Example", canonical.AssetClassPublicEquity, canonical.VehicleETF, true},
+		{"etf bond refined", "UBS (Irl) ETF plc - Example Treasury Bond", canonical.AssetClassFixedIncome, canonical.VehicleETF, true},
+		{"multi-vintage", "MV 1 - Multi-Vintage Example", canonical.AssetClassPrivateEquity, canonical.VehicleFund, true},
+		{"sicav", "Multi Units Example Sicav - Index Basket", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
+		{"fund solutions", "UBS (Lux) Fund Solutions - All sectors", canonical.AssetClassPublicEquity, canonical.VehicleFund, true},
+		{"infrastructure fund", "Example Infrastructure Fund SICAV", canonical.AssetClassInfrastructure, canonical.VehicleFund, true},
+		{"private equity fund", "Example Private Equity Feeder Fund", canonical.AssetClassPrivateEquity, canonical.VehicleFund, true},
+		{"precious metals line", "Precious metals & commodities", canonical.AssetClassMetal, canonical.VehiclePhysical, true},
+		{"gold bars", "Gold bar(s) fine weight 99.99", canonical.AssetClassMetal, canonical.VehiclePhysical, true},
+		{"feed placeholder row", "EXAMPLE UNDERLYING", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"currency reference", "Switzerland:Informal Rates Example", canonical.AssetClassOther, canonical.VehicleOther, false},
+		{"empty", "", canonical.AssetClassOther, canonical.VehicleOther, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAC, gotVeh, gotOK := taxonomyPairForWebDescription(tc.desc)
+			if gotAC != tc.wantAC || gotVeh != tc.wantVeh || gotOK != tc.wantOK {
+				t.Errorf("taxonomyPairForWebDescription(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.desc, gotAC, gotVeh, gotOK, tc.wantAC, tc.wantVeh, tc.wantOK)
+			}
+			if gotOK && !canonical.ValidTaxonomyPair(gotAC, gotVeh) {
+				t.Errorf("pair (%q, %q) not admitted by ValidTaxonomyPair", gotAC, gotVeh)
+			}
+		})
+	}
+}
