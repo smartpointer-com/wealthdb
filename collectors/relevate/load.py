@@ -21,7 +21,6 @@ import argparse
 import hashlib
 import json
 import logging
-import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -33,10 +32,6 @@ from collectorkit import bronze, cli, parse, silver
 from pdf_parsers import parse_credit_note, parse_quarterly_report
 
 logger = logging.getLogger("load")
-
-# Bronze run dir name: YYYYMMDDTHHMMSSZ — same convention as the
-# sibling repos.
-RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 # Path to migrations dir relative to this script.
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -465,9 +460,7 @@ def list_pending_dumps(
         for row in conn.execute("SELECT snapshot_at FROM dump_runs")
     }
     pending: list[Path] = []
-    for d in sorted(bronze_dir.iterdir()):
-        if not d.is_dir() or not RUN_DIR_RE.match(d.name):
-            continue
+    for d in bronze.iter_run_dirs(bronze_dir):
         snapshot_at = bronze.parse_run_ts(d.name)
         if snapshot_at in loaded:
             continue

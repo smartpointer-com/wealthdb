@@ -1230,10 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
 
-    dumps = [
-        d for d in sorted(args.bronze_dir.iterdir())
-        if d.is_dir() and SNAPSHOT_DIR_RE.match(d.name)
-    ]
+    dumps = list(bronze.iter_run_dirs(args.bronze_dir))
     log.info("Found %d dump directory(s) under %s", len(dumps), args.bronze_dir)
 
     for d in dumps:

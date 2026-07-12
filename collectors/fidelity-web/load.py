@@ -75,8 +75,6 @@ def _logical_bronze_path(path):
     return path
 
 
-DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
-
 # Fidelity activity rows whose Action column starts with one of
 # these tokens are pure-cash and legitimately have no instrument.
 # Any other Action with an empty Symbol is a validation failure.
@@ -229,11 +227,7 @@ def main(argv=None):
 def scan_bronze(bronze_dir):
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
-    return sorted(
-        (p for p in bronze_dir.iterdir()
-         if p.is_dir() and DUMP_DIR_RE.match(p.name)),
-        key=lambda p: p.name,
-    )
+    return list(bronze.iter_run_dirs(bronze_dir))
 
 
 def already_loaded(conn, dump_dir):
