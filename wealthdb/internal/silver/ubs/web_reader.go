@@ -21,8 +21,7 @@ import (
 // list and the *psnReader handle; results are cached on the
 // webReader (single-use Connection lifecycle).
 type webReader struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 func (r *webReader) Close() error {

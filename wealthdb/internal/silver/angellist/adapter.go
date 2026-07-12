@@ -65,12 +65,11 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db, path: spec.Path}, nil
+	return &Connection{db: db}, nil
 }
 
 type Connection struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 func (c *Connection) Close() error {

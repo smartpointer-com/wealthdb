@@ -169,14 +169,13 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	active := make(map[int64]string)                   // entity id -> holdings currency
-	classes := make(map[int64]canonical.AssetClass)    // entity id -> coarse 1-D asset class (intermediate)
 	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
 	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> vehicle
 
-	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classes, classesNew, vehicles); err != nil {
+	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, &batch, active, classes, classesNew, vehicles); err != nil {
+	if err := c.appendFundAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
 	if len(active) == 0 {
@@ -266,7 +265,7 @@ type lot struct {
 // the payload). MarketValue / BookValue sum every held lot — the collector's
 // per-date FMV valuation (collector DESIGN.md §5.1) and the cost basis. The
 // per-lot detail rides in the position payload.
-func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
+func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, security_type, security_external_id,
        COALESCE(currency, 'USD'), quantity, cost, market_value,
@@ -361,7 +360,6 @@ SELECT entity_external_id, security_type, security_external_id,
 			return fmt.Errorf("appendCapTableAt payload: %w", err)
 		}
 		instKey := instrumentID(eid)
-		class := capTableAssetClass(a.hasEquity)
 		classNew, vehicle := capTableTaxonomy(a.hasEquity, a.hasStockLike)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
@@ -387,7 +385,6 @@ SELECT entity_external_id, security_type, security_external_id,
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[eid] = a.ccy
-		classes[eid] = class
 		classesNew[eid] = classNew
 		vehicles[eid] = vehicle
 	}
@@ -398,7 +395,7 @@ SELECT entity_external_id, security_type, security_external_id,
 // capital-account delta on/before t (one position per fund). MarketValue =
 // net_asset_value (the NAV at that quarter), BookValue = capital_contributed.
 // Money arrives as decimal strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classes map[int64]canonical.AssetClass, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
+func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	const q = `
 SELECT entity_external_id, COALESCE(currency, 'USD'),
        COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
@@ -444,7 +441,6 @@ SELECT entity_external_id, COALESCE(currency, 'USD'),
 		}
 		batch.Positions = append(batch.Positions, change)
 		active[entityID] = ccy
-		classes[entityID] = canonical.AssetClassPrivateFund
 		classesNew[entityID] = canonical.AssetClassPrivateEquity
 		vehicles[entityID] = canonical.VehicleFund
 	}

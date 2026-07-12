@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // stubAdapter is a no-op Adapter used for registry exercises.
@@ -15,25 +13,6 @@ type stubAdapter struct{ kind string }
 func (s *stubAdapter) Kind() string { return s.kind }
 func (s *stubAdapter) Open(context.Context, OpenSpec) (Connection, error) {
 	return nil, errors.New("not implemented")
-}
-
-// Connection / SnapshotStream / TransactionStream stubs are only
-// needed to satisfy the interface; they panic if anything calls
-// them.
-type stubConn struct{}
-
-func (stubConn) Close() error { return nil }
-func (stubConn) Status(context.Context) (canonical.Status, error) {
-	return canonical.Status{}, nil
-}
-func (stubConn) ChangeWindow(context.Context, int64) (canonical.Window, error) {
-	return canonical.Window{}, nil
-}
-func (stubConn) Snapshots(context.Context, canonical.Window) (SnapshotStream, error) {
-	return nil, nil
-}
-func (stubConn) Transactions(context.Context, canonical.Window) (TransactionStream, error) {
-	return nil, nil
 }
 
 func TestRegisterAndGet(t *testing.T) {

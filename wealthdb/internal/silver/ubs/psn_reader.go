@@ -6,8 +6,7 @@ import "database/sql"
 // spread across snapshots.go / transactions.go / status.go — this
 // file just defines the type and lifecycle.
 type psnReader struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 func (r *psnReader) Close() error {

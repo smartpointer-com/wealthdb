@@ -41,7 +41,7 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 		if err != nil {
 			return nil, err
 		}
-		c.psn = &psnReader{db: db, path: spec.Path}
+		c.psn = &psnReader{db: db}
 		return c, nil
 	}
 
@@ -53,9 +53,9 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 		}
 		switch s.Kind {
 		case "ubs-psn":
-			c.psn = &psnReader{db: db, path: s.Path}
+			c.psn = &psnReader{db: db}
 		case "ubs-web":
-			c.web = &webReader{db: db, path: s.Path}
+			c.web = &webReader{db: db}
 		default:
 			_ = db.Close()
 			_ = c.Close()

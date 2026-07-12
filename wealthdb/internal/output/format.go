@@ -49,9 +49,6 @@ type Table struct {
 	Rows    [][]string
 }
 
-// IsEmpty reports whether the table has no data rows.
-func (t Table) IsEmpty() bool { return len(t.Rows) == 0 }
-
 // alignAt returns the alignment for column i, defaulting to
 // AlignLeft when Aligns is too short or absent.
 func (t Table) alignAt(i int) Alignment {

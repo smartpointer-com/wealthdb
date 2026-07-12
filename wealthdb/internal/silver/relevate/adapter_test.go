@@ -191,31 +191,6 @@ func TestTransactionsCreditNote(t *testing.T) {
 	}
 }
 
-// Every Relevate sleeve is structurally a fund; the label (and,
-// for "Alternatives", the fund name) picks the exposure class.
-func TestAssetClassMapping(t *testing.T) {
-	cases := []struct {
-		raw, name string
-		want      canonical.AssetClass
-	}{
-		{"Stocks", "Swisscanto (CH) Index Equity Fund Placeholder CHF", canonical.AssetClassEquity},
-		{"Bonds", "Swisscanto (CH) Index Bond Fund Placeholder CHF", canonical.AssetClassBond},
-		{"Liquidity", "Liquidity in CHF", canonical.AssetClassMoneyMarket},
-		// The physical-bullion sleeve hides under "Alternatives".
-		{"Alternatives", "Swisscanto (CH) Index Precious Metal Fund Gold Physical CHF hedged", canonical.AssetClassMetal},
-		{"Alternatives", "Swisscanto (CH) Placeholder Hedge Strategies Fund CHF", canonical.AssetClassFund},
-		// Indirect listed real estate stays fund — `real_estate`
-		// is reserved for directly-held property.
-		{"Real Estate", "Swisscanto (CH) Index Real Estate Fund Placeholder CHF", canonical.AssetClassFund},
-		{"Something New", "Swisscanto (CH) Future Sleeve CHF", canonical.AssetClassFund},
-	}
-	for _, c := range cases {
-		if got := assetClassFor(c.raw, c.name); got != c.want {
-			t.Errorf("assetClassFor(%q, %q) = %q, want %q", c.raw, c.name, got, c.want)
-		}
-	}
-}
-
 // TestTaxonomyMapping covers the 2-D (exposure, vehicle) pair the
 // adapter derives from the sleeve label. Every sleeve is a Swisscanto
 // index fund → vehicle `fund`, except the uninvested Liquidity sleeve

@@ -3,28 +3,12 @@ package wizard
 import (
 	"bytes"
 	"database/sql"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
-
-	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
-
-// stubAdapter exists only so silver.Kinds() returns at least one
-// entry during these tests (the wizard reads the registry to
-// build its prompts).
-type stubAdapter struct{ name string }
-
-func (s *stubAdapter) Kind() string { return s.name }
-func (s *stubAdapter) Open(_ interface{ Done() <-chan struct{} }, _ string) (silver.Connection, error) {
-	return nil, nil
-}
-
-// Compile-time check skipped — the wizard never actually calls
-// Adapter.Open(); it just needs the kind name in the registry.
 
 // newSilverFixture writes a minimal SQLite with a `dump_runs`
 // table so probeSilverDB succeeds against it.
@@ -206,7 +190,3 @@ func TestRunRejectsDuplicateID(t *testing.T) {
 		t.Errorf("second source should be id-b, got %q", res.Config.SilverSources[1].ID)
 	}
 }
-
-// silence unused-symbol warnings if a future refactor drops a
-// reference to stubAdapter etc.
-var _ = os.UserHomeDir

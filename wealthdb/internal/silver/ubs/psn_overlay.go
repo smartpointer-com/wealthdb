@@ -160,45 +160,6 @@ func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instru
 	return out, rows.Err()
 }
 
-// psnCashKey is the cash-balance counterpart to psnPosKey.
-type psnCashKey struct {
-	utcDate  int64
-	account  string
-	currency string
-}
-
-// cashPayloadByKey returns PSN's latest-per-day cash payload
-// keyed by (UTC date, account_external_id, currency).
-// account_external_id is the IBAN as of silver migration 0002 —
-// matches cash_accounts directly.
-func (r *psnReader) cashPayloadByKey(ctx context.Context, wStart, wEnd int64) (map[psnCashKey]string, error) {
-	if r == nil {
-		return nil, nil
-	}
-	const q = `
-SELECT snapshot_at, account_external_id, currency_iso, payload
-  FROM cash_balances
- WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, wStart, wEnd)
-	if err != nil {
-		return nil, fmt.Errorf("psn cashPayloadByKey: %w", err)
-	}
-	defer rows.Close()
-	out := make(map[psnCashKey]string)
-	for rows.Next() {
-		var (
-			snap            int64
-			acctID, ccy, pl string
-		)
-		if err := rows.Scan(&snap, &acctID, &ccy, &pl); err != nil {
-			return nil, err
-		}
-		k := psnCashKey{utcDate: utcDay(snap), account: acctID, currency: ccy}
-		out[k] = pl
-	}
-	return out, rows.Err()
-}
-
 // utcDay rounds a Unix-seconds timestamp DOWN to UTC midnight.
 // Used to bucket cross-source snapshots that fall on the same
 // business day but at different wall-clock times.

@@ -2,8 +2,23 @@ package gold
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
+
+// latestSchemaVersion returns the version number of the highest
+// embedded migration. Used by tests to assert post-Migrate state
+// without hardcoding a version that drifts as new migrations land.
+func latestSchemaVersion() (int, error) {
+	ms, err := listMigrations()
+	if err != nil {
+		return 0, err
+	}
+	if len(ms) == 0 {
+		return 0, fmt.Errorf("no migrations embedded")
+	}
+	return ms[len(ms)-1].version, nil
+}
 
 // TestMigrateAppliesSchema is the smoke test that proves the
 // DuckDB driver loads, the embedded migrations run end-to-end,
