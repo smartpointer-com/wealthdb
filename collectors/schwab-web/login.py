@@ -41,12 +41,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import landmarks as schwab
 
-from collectorkit import cli
+from collectorkit import bronze, cli
 
 log = logging.getLogger("schwab-web.login")
 
@@ -299,10 +298,6 @@ def prepare_profile_dir(profile_dir: Path) -> None:
 # Screenshot / trace helpers
 # ============================================================
 
-def ts_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """Capture page state at a navigation landmark: always save the
     rendered HTML (fast — no font/animation wait), and best-effort
@@ -317,7 +312,7 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     except Exception as e:
         log.warning("could not create screenshot dir %s: %s", screenshot_dir, e)
         return
-    ts = ts_slug()
+    ts = bronze.ts_slug()
     # HTML first. page.content() can fail with "page is navigating
     # and changing" on Angular SPAs; fall back to evaluate which
     # reads the DOM with no such guard.
@@ -352,7 +347,7 @@ def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
         log.warning("--trace without --screenshot-dir; trace discarded")
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = screenshot_dir / f"{ts_slug()}-{label}-trace.zip"
+    trace_path = screenshot_dir / f"{bronze.ts_slug()}-{label}-trace.zip"
     context.tracing.stop(path=str(trace_path))
     log.info("trace saved to %s", trace_path)
 

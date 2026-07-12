@@ -51,6 +51,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from collectorkit.pdf import extract_text_pdfium as extract_text
+
 # ISIN: ISO 6166 — 2-letter country + 9 alphanumeric + 1 check digit.
 _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 # FX: a bare three-letter currency code (CHF / USD / EUR / CAD / …).
@@ -129,31 +131,6 @@ def _num(token: str) -> float:
     """Parse a Swiss-formatted number: apostrophe thousands separator
     (1'719.35), optional trailing percent, optional leading sign."""
     return float(token.replace("'", "").replace("%", ""))
-
-
-def extract_text(pdf_path: Path | str) -> str:
-    """Extract the full text of a PDF via pypdfium2, one page per
-    block, joined with newlines. Import is local so the module loads
-    (for its dataclasses / text-variant) even where pypdfium2 isn't
-    installed."""
-    import pypdfium2 as pdfium
-
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    try:
-        parts: list[str] = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                textpage = page.get_textpage()
-                try:
-                    parts.append(textpage.get_text_bounded() or "")
-                finally:
-                    textpage.close()
-            finally:
-                page.close()
-        return "\n".join(parts)
-    finally:
-        pdf.close()
 
 
 def parse_investment_report(pdf_path: Path | str) -> ReportParseResult:

@@ -84,7 +84,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -222,10 +222,6 @@ def _empty_doc_counts() -> dict:
 
 def _tally(counts: dict, status: str) -> None:
     docdedup.tally(counts, status)
-
-
-def utc_ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 # Transient httpx errors worth retrying. Empirically VIAC has
@@ -453,7 +449,7 @@ def walk(client: ViacClient, dest_root: Path, *,
     In-gate document PDFs run through the `collectorkit.docdedup`
     download-avoidance engine (link the immutable/unparsed docs, fetch-verify
     the parsed/tax/fusion ones); `documents_force` bypasses that index."""
-    ts = utc_ts()
+    ts = bronze.ts_slug()
     bronze_dir = dest_root / ts
     if dry_run:
         # Export-nothing dry-run (root CLAUDE.md §2): still walk every

@@ -43,10 +43,6 @@ log = logging.getLogger("swissquote.load")
 # at insert time; the original string is retained in payload.
 SWISSQUOTE_TZ = ZoneInfo("Europe/Zurich")
 
-# Bronze dump-run directory name format. Same as Schwab/UBS for
-# uniformity across the toolkit family.
-RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
-
 # CSV transactions: a literal "00000000" Order # is the source's
 # placeholder for non-trade rows; we normalise to NULL.
 ORDER_NUM_PLACEHOLDER = "00000000"
@@ -150,7 +146,7 @@ def find_pending_dumps(
     for child in sorted(bronze_dir.iterdir()):
         if not child.is_dir():
             continue
-        if not RUN_DIR_RE.match(child.name):
+        if not bronze.RUN_DIR_RE.match(child.name):
             continue
         ts = _run_dir_to_epoch(child.name)
         if ts in loaded:

@@ -21,7 +21,7 @@ RUN pip install -r requirements.txt
 # debug-artefact/incomplete-dump cleaner, and recompress.py the
 # one-time HTML/CSV → .zst backlog sweep (all also reachable
 # host-side via the wrapper).
-COPY download.py load.py prune.py recompress.py pdf_parsers.py pdf_parsers_supplied.py /app/
+COPY download.py load.py prune.py recompress.py pdf_parsers.py pdf_parsers_supplied.py pdf_common.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

@@ -62,50 +62,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
 
+from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
-# ============================================================
-# Statement period
-# ============================================================
-
-_PERIOD_RE = re.compile(
-    r"(?P<m1>January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\s+"
-    r"(?P<d1>\d{1,2}),\s*"
-    r"(?P<y1>\d{4})\s*[-–]\s*"
-    r"(?P<m2>January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\s+"
-    r"(?P<d2>\d{1,2}),\s*"
-    r"(?P<y2>\d{4})"
-)
-
-_MONTH_NUMS = {
-    "January": 1, "February": 2, "March": 3, "April": 4,
-    "May": 5, "June": 6, "July": 7, "August": 8,
-    "September": 9, "October": 10, "November": 11, "December": 12,
-}
-
-
-def parse_statement_period(text):
-    """Return ``(start_date, end_date)`` from a trust statement's
-    page-1 period header, or ``None`` if no header is present."""
-    m = _PERIOD_RE.search(text)
-    if not m:
-        return None
-    try:
-        start = date(int(m["y1"]), _MONTH_NUMS[m["m1"]], int(m["d1"]))
-        end = date(int(m["y2"]), _MONTH_NUMS[m["m2"]], int(m["d2"]))
-    except (KeyError, ValueError):
-        return None
-    return start, end
+from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
 
 
 # ============================================================
 # Per-account blocks
 # ============================================================
-
-_ACCOUNT_HEADER_RE = re.compile(r"Account\s+#\s+(?P<acct>\d{3}-\d{6})")
+#
+# The statement period parser, month map and the ``Account #``
+# header regex (``_ACCOUNT_HEADER_RE``) are shared with the 529
+# parser — see pdf_common. ``parse_account_blocks`` below glues the
+# header Fidelity re-stamps on every page of a trust account.
 
 
 @dataclass
@@ -528,16 +498,8 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
     }
 
 
-def _extract_pdf_text(path):
-    """Concatenate every page's text via pdfplumber. Pages join
-    with newlines so ``parse_account_blocks`` can split on the
-    per-account ``Account #`` header regardless of which page it
-    lands on."""
-    import pdfplumber
-    with pdfplumber.open(str(path)) as pdf:
-        return "\n".join(
-            (page.extract_text() or "") for page in pdf.pages
-        )
+# PDF text extraction goes through collectorkit.pdf.extract_text_pdfplumber
+# (imported at module top as `_extract_pdf_text`).
 
 
 # ============================================================

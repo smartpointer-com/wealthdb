@@ -250,7 +250,7 @@ def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
     for p in sorted(bronze_dir.iterdir()):
         if not p.is_dir():
             continue
-        if not re.match(r"\d{8}T\d{6}Z$", p.name):
+        if not bronze.RUN_DIR_RE.match(p.name):
             continue
         run_json = p / "run.json"
         if not run_json.is_file():
@@ -263,11 +263,9 @@ def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
 
 
 def parse_run_ts(run_dir: Path) -> int:
-    """Parse `YYYYMMDDTHHMMSSZ` directory name into a UTC unix
-    timestamp."""
-    dt = datetime.strptime(run_dir.name, "%Y%m%dT%H%M%SZ").replace(
-        tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    """Parse a `YYYYMMDDTHHMMSSZ` run-dir into a UTC unix timestamp
+    (thin Path-adapter over `bronze.parse_run_ts`)."""
+    return bronze.parse_run_ts(run_dir.name)
 
 
 def ingest_portfolios_and_wallets(

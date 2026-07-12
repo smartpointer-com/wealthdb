@@ -50,6 +50,8 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime
 
+from collectorkit.pdf import extract_text_pdfium as _extract_pdf_text
+
 log = logging.getLogger("schwab-web.pdf_parsers")
 
 
@@ -2173,44 +2175,9 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
 
 
 # ============================================================
-# PDF text extraction (pypdfium2)
+# PDF text extraction goes through collectorkit.pdf.extract_text_pdfium
+# (imported at module top as `_extract_pdf_text`).
 # ============================================================
-
-def _extract_pdf_text(path) -> str:
-    """Open `path` with pypdfium2 and return the concatenated
-    text of every page joined with '\\n'.
-
-    pypdfium2 reads the PDF via PDFium's C++ core; the text we
-    get back is layout-ordered (top-to-bottom, left-to-right
-    within each page) which is what the line-anchored parsers
-    expect. Each page's text is taken via PdfPage.get_textpage()
-    and PdfTextPage.get_text_bounded() — the latter returns the
-    full text without coordinate filtering. (Older code called
-    get_text_range() with default args; pypdfium2 deprecated
-    that to a redirect — calling get_text_bounded() directly
-    avoids the per-PDF UserWarning.)
-
-    Resources are released explicitly (textpage/page/document
-    close()) — PDFium handles are C pointers and Python GC isn't
-    deterministic enough to rely on across hundreds of PDFs.
-    """
-    import pypdfium2 as pdfium
-    parts: list[str] = []
-    pdf = pdfium.PdfDocument(str(path))
-    try:
-        for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                textpage = page.get_textpage()
-                try:
-                    parts.append(textpage.get_text_bounded() or "")
-                finally:
-                    textpage.close()
-            finally:
-                page.close()
-    finally:
-        pdf.close()
-    return "\n".join(parts)
 
 
 # ============================================================

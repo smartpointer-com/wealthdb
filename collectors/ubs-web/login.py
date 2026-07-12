@@ -28,12 +28,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-from collectorkit import envfile, session
+from collectorkit import bronze, envfile, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -167,15 +166,11 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
 # Screenshot / trace helpers
 # ============================================================
 
-def ts_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     if screenshot_dir is None:
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
-    path = screenshot_dir / f"{ts_slug()}-{label}.png"
+    path = screenshot_dir / f"{bronze.ts_slug()}-{label}.png"
     page.screenshot(path=str(path), full_page=True)
     log.debug("wrote screenshot %s", path)
 
@@ -372,7 +367,7 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
                     log.warning("--trace without --screenshot-dir; trace discarded")
                 else:
                     screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = screenshot_dir / f"{ts_slug()}-check-trace.zip"
+                    trace_path = screenshot_dir / f"{bronze.ts_slug()}-check-trace.zip"
                     context.tracing.stop(path=str(trace_path))
                     log.info("trace saved to %s", trace_path)
             context.close()
@@ -517,7 +512,7 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
                     log.warning("--trace without --screenshot-dir; trace discarded")
                 else:
                     screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    trace_path = screenshot_dir / f"{ts_slug()}-login-trace.zip"
+                    trace_path = screenshot_dir / f"{bronze.ts_slug()}-login-trace.zip"
                     context.tracing.stop(path=str(trace_path))
                     log.info("trace saved to %s", trace_path)
             context.close()

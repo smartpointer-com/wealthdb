@@ -61,18 +61,6 @@ open_db = silver.open_db
 # Helpers
 # ============================================================
 
-def ts_from_run_dir(name: str) -> int:
-    """Parse YYYYMMDDTHHMMSSZ into Unix seconds UTC."""
-    return bronze.parse_run_ts(name)
-
-
-def iso_date_to_epoch(s: str | None) -> int | None:
-    """Parse an ISO date (with or without time) into Unix seconds UTC
-    at the day's midnight. Returns None for falsy / unparseable
-    input."""
-    return parse.iso_date_to_epoch(s)
-
-
 def canonical_json(obj: Any) -> str:
     """Stable JSON serialisation for `payload` columns. Sorted keys
     so two equivalent payloads compare equal byte-for-byte (useful
@@ -295,7 +283,7 @@ def load_portfolio_artefacts(
         perf = json.loads(perf_path.read_text(encoding="utf-8"))
         currency = (perf.get("currency") or {}).get("currencyCode")
         for v in (perf.get("values") or []):
-            value_date = iso_date_to_epoch(v.get("date"))
+            value_date = parse.iso_date_to_epoch(v.get("date"))
             if value_date is None:
                 continue
             conn.execute(
@@ -414,7 +402,7 @@ def load_one_dump(
     """Load one bronze run dir into silver in a single transaction.
     Idempotency: caller must have already checked dump_runs."""
     name = run_dir.name
-    snapshot_at = ts_from_run_dir(name)
+    snapshot_at = bronze.parse_run_ts(name)
     logger.info("loading dump %s (snapshot_at=%d)", name, snapshot_at)
 
     run_json_path = run_dir / "run.json"
@@ -449,7 +437,7 @@ def load_one_dump(
                 snapshot_at, schema_version, run_dir.name,
                 run_manifest.get("mode"),
                 1 if run_manifest.get("dry_run") else 0,
-                iso_date_to_epoch(run_manifest.get("state_minted_at")),
+                parse.iso_date_to_epoch(run_manifest.get("state_minted_at")),
                 len(run_manifest.get("files") or []),
                 len(run_manifest.get("errors") or []),
                 canonical_json(run_manifest),
@@ -480,7 +468,7 @@ def list_pending_dumps(
     for d in sorted(bronze_dir.iterdir()):
         if not d.is_dir() or not RUN_DIR_RE.match(d.name):
             continue
-        snapshot_at = ts_from_run_dir(d.name)
+        snapshot_at = bronze.parse_run_ts(d.name)
         if snapshot_at in loaded:
             continue
         # Skip in-flight dumps that don't have a final run.json yet.

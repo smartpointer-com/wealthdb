@@ -44,9 +44,6 @@ from collectorkit import bronze, cli, silver
 
 log = logging.getLogger("ubs-web.load")
 
-# UTC timestamp directory pattern from download.py's ts_slug().
-DUMP_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
-
 # UBS positions.csv columns we care about (semicolon-delimited,
 # UTF-8 BOM, CRLF). Header row defines them in the order below.
 POSITIONS_COLS = [
@@ -112,7 +109,7 @@ def scan_bronze(bronze_dir: Path) -> list[Path]:
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
     return sorted(
         (p for p in bronze_dir.iterdir()
-         if p.is_dir() and DUMP_DIR_RE.match(p.name)),
+         if p.is_dir() and bronze.RUN_DIR_RE.match(p.name)),
         key=lambda p: p.name,
     )
 
