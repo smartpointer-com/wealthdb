@@ -20,12 +20,12 @@ RUN pip install -r requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Vanilla Playwright Firefox as a possible fallback engine for login.py /
-# download.py (headless, no stealth). Whether Carta's bot-detection
-# (likely Akamai — cf. fidelity-web) actually forces Camoufox for the
-# authenticated flows — or whether plain Firefox suffices once a session
-# exists — is a decision for the explore phase (see DESIGN.md §3).
-# Installing it now is cheap insurance and mirrors the cointracking image.
+# Vanilla Playwright Firefox, installed as a fallback engine. The
+# explore phase settled the question the other way: Carta's login is
+# fronted by Akamai-style bot detection that flags vanilla Playwright
+# Firefox, so login.py and download.py run on Camoufox (the base
+# image's stealth-patched Firefox). This plain-Firefox install is kept
+# as cheap insurance and mirrors the cointracking image.
 RUN playwright install firefox && playwright install-deps firefox
 
 # Copy scripts last. Listed explicitly so accidentally-present host

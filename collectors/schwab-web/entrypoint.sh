@@ -45,6 +45,28 @@ start_xvfb() {
     return 1
 }
 
+start_x11vnc() {
+    # Single-use password. openssl rand -hex 8 is a single command, so
+    # `set -euo pipefail` does not trip on SIGPIPE the way a piped
+    # `tr -dc ... | head -c 16` would.
+    VNC_PASSWORD=$(openssl rand -hex 8)
+    x11vnc -display ":$VFB_DISPLAY" -passwd "$VNC_PASSWORD" \
+        -forever -shared -rfbport 5900 -bg \
+        -o /tmp/x11vnc.log >/dev/null 2>&1
+    # The wrapper picks the host-side port (it knows which are free); we
+    # publish it through VNC_HOST_PORT so the messages below print the
+    # real port to tunnel through. Defaults to 5900 for direct
+    # `docker run` invocations that skip the wrapper.
+    local label="$1"
+    local host_port="${VNC_HOST_PORT:-5900}"
+    echo "$label: VNC ready on 127.0.0.1:${host_port}" >&2
+    echo "$label: password (single-use):  $VNC_PASSWORD" >&2
+    echo "$label: tunnel from your laptop with" >&2
+    echo "$label:   ssh -L ${host_port}:127.0.0.1:${host_port} <mbp-host>" >&2
+    echo "$label: then on the laptop:" >&2
+    echo "$label:   open vnc://localhost:${host_port}" >&2
+}
+
 case "${1:-help}" in
     download)
         # One-shot: CLI-MFA login → scrape → exit. Schwab
@@ -71,25 +93,7 @@ case "${1:-help}" in
         # +1 each time 5900 is already taken on the host) —
         # tunnel from your laptop with ssh -L.
         start_xvfb
-        # openssl rand -hex 8 is a single command, no pipe — so
-        # `set -euo pipefail` doesn't trip on SIGPIPE the way
-        # `tr -dc ... | head -c 16` does.
-        VNC_PASSWORD=$(openssl rand -hex 8)
-        x11vnc -display ":$VFB_DISPLAY" -passwd "$VNC_PASSWORD" \
-            -forever -shared -rfbport 5900 -bg \
-            -o /tmp/x11vnc.log >/dev/null 2>&1
-        # The wrapper picks the host-side port (it knows which
-        # ones are free); we publish it through this env var so
-        # the messages below print the actual port the operator
-        # needs to tunnel. Defaults to 5900 for direct
-        # `docker run` invocations that skip the wrapper.
-        host_port="${VNC_HOST_PORT:-5900}"
-        echo "vnc-login: VNC ready on 127.0.0.1:${host_port}" >&2
-        echo "vnc-login: password (single-use):  $VNC_PASSWORD" >&2
-        echo "vnc-login: tunnel from your laptop with" >&2
-        echo "vnc-login:   ssh -L ${host_port}:127.0.0.1:${host_port} <mbp-host>" >&2
-        echo "vnc-login: then on the laptop:" >&2
-        echo "vnc-login:   open vnc://localhost:${host_port}" >&2
+        start_x11vnc vnc-login
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \

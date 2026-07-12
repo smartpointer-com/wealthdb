@@ -28,9 +28,9 @@ RUN chmod +x /app/entrypoint.sh
 
 # Default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes
-# have host-correct ownership; Chromium's user-namespace sandbox is
-# disabled at launch time in code with `--no-sandbox` instead. This
-# is acceptable in a single-tenant, single-trusted-origin scenario
+# have host-correct ownership. download.py drives Camoufox (a
+# stealth-patched Firefox fork) headed under the entrypoint's Xvfb —
+# there is no Chromium here. Single-tenant, single-trusted-origin
 # (we only ever load fidelity.com).
 
 ENTRYPOINT ["/app/entrypoint.sh"]

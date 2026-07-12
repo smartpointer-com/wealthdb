@@ -106,9 +106,7 @@ fi
 # The default --bronze-dir comes first so an explicit flag in [args...]
 # overrides it (argparse last-wins).
 if [[ "${1:-}" == "prune" ]]; then
-    shift
-    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+    wrapper_host_prune "$@"
 fi
 
 wrapper_main "$@"

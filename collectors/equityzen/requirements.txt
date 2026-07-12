@@ -20,8 +20,7 @@ pytest>=8,<9
 
 # login.py + download.py drive a browser (Camoufox for stealth, with
 # vanilla Playwright Firefox as a possible fallback). Both browser stacks
-# are pre-installed in the base-camoufox image; nothing to add here until
-# explore tells us which engine the EquityZen portal needs.
+# are pre-installed in the base-camoufox image, so nothing is added here.
 
 # Document downloads (capital-account statements / K-1 PDFs) are fetched
 # through Playwright's authenticated request API using the live session

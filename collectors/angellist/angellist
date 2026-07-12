@@ -118,9 +118,7 @@ fi
 # angellist-documents/ tree and the silver angellist.db are never
 # touched.
 if [[ "${1:-}" == "prune" ]]; then
-    shift
-    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+    wrapper_host_prune "$@"
 fi
 
 wrapper_main "$@"

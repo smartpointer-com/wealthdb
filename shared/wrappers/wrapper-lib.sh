@@ -145,6 +145,23 @@ wrapper_build() {
     exec docker build -t "$IMAGE" "$@" "$HERE"
 }
 
+# Implement `./<wrapper> prune [extra args]` host-side — exec the
+# collector's prune.py under host python3 with collectorkit on
+# PYTHONPATH, defaulting --bronze-dir to the bronze root ($HOST_DATA;
+# an explicit --bronze-dir in the extra args overrides it, argparse
+# last-wins). Runs on the host, not in a container: the prune engine is
+# a pure stdlib file walk that needs no image deps, and running it
+# host-side bypasses the single-writer safety guard so it can reclaim
+# disk while a download container is mid-flight (prune's own --min-age
+# guard protects an in-flight dump). The container entrypoints keep a
+# `prune)` arm too, for a direct `docker run`. Caller dispatches on
+# $1 == "prune".
+wrapper_host_prune() {
+    shift  # drop "prune"
+    exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
+        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+}
+
 # ----------------------------------------------------------------------
 # Pre-run sanity checks + docker-arg construction
 # ----------------------------------------------------------------------

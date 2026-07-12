@@ -1,5 +1,7 @@
-# Shared functions for the host-venv collector wrappers (schwab-api,
-# ubs-psn, manual). The host-venv analogue of wrapper-lib.sh: no Docker, no
+# Shared functions for the collector wrappers that run a collector's
+# .py directly on a host venv rather than in a container — the pure
+# host-venv collectors and the host-side subcommands of the hybrid
+# ones. The host-venv analogue of wrapper-lib.sh: no Docker, no
 # mounts — it resolves the secrets / data / silver paths the same way and
 # runs the collector's own .py under its .venv.
 #

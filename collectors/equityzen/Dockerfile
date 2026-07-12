@@ -2,9 +2,9 @@
 # Builds on the shared base-camoufox image, which provides
 # Firefox/Xvfb/x11vnc OS deps, camoufox + the matching Playwright pin, the
 # pre-fetched Firefox bundle at /opt/camoufox-cache, and the collectorkit
-# shared package. Per-collector deps (pytest for now) come from
-# requirements.txt; login.py / download.py will add their own as the
-# implementation lands post-explore.
+# shared package. Per-collector pip deps come from requirements.txt
+# (pytest for the in-container tests; silver is stdlib SQLite, so no
+# driver dep). poppler-utils (below) is the one system dep.
 FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app
@@ -20,12 +20,12 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Vanilla Playwright Firefox as a possible fallback engine for login.py /
-# download.py (headless, no stealth). Whether EquityZen's bot-detection
-# (likely Cloudflare/Akamai — cf. fidelity-web) actually forces Camoufox
-# for the authenticated flows — or whether plain Firefox suffices once a
-# session exists — is a decision for the explore phase (see DESIGN.md §3).
-# Installing it now is cheap insurance and mirrors the cointracking image.
+# Vanilla Playwright Firefox, installed as a fallback engine. The
+# explore phase settled the question: login.py and download.py run on
+# Camoufox (the base image's stealth-patched Firefox), which the
+# EquityZen portal's Cloudflare/Akamai-style bot detection needs. This
+# plain-Firefox install is kept as cheap insurance and mirrors the
+# cointracking image.
 RUN playwright install firefox && playwright install-deps firefox
 
 # Copy scripts last. Listed explicitly so accidentally-present host

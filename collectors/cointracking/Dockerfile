@@ -1,10 +1,10 @@
 # Headed-browser (Camoufox) collector: builds on the shared
 # base-camoufox image, which provides Firefox/Xvfb/x11vnc OS deps,
 # camoufox + the matching Playwright pin, the pre-fetched Firefox
-# bundle at /opt/camoufox-cache, and collectorkit. The only
-# per-collector dep so far is pytest (for in-container tests once
-# they exist); login.py / download.py will add their own deps as
-# the implementation lands post-explore.
+# bundle at /opt/camoufox-cache, and collectorkit. Per-collector deps
+# come from requirements.txt: duckdb (the DuckDB silver layer),
+# zstandard (in-place .csv.zst compression at download time), requests
+# (Binance price backfill), and pytest (in-container tests).
 FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app
@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Vanilla Playwright Firefox for login.py + (future) download.py
+# Vanilla Playwright Firefox for login.py + download.py
 # (headless, no stealth patches). Camoufox stays as the base for
 # explore.py — defensive, in case cointracking ever adds bot
 # detection we want stealth available for the discovery harness —
