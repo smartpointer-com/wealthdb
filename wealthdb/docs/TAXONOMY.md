@@ -38,7 +38,7 @@ data or history captured before the split.
 | Value | Definition | Example holdings |
 | --- | --- | --- |
 | `public_equity` | Listed company shares and products whose return is listed-equity performance | common/preferred stock, ADRs, equity ETFs and index funds, equity options' underlying exposure, equity-linked structured products, subscription rights |
-| `private_equity` | Unlisted company ownership | direct stakes in private companies, employee equity comp (options/RSUs/warrants), venture SPVs, PE/VC funds and feeders, listed private-equity ETFs |
+| `private_equity` | Unlisted company ownership | direct stakes in private companies, employee equity comp (options/RSUs/warrants), venture SPVs, PE/VC funds and feeders, listed private-equity ETFs, equity-like pre-seed convertible notes (via override, see §5.10) |
 | `fixed_income` | Public / rated debt | government, municipal and corporate bonds, MTNs, bond ETFs and bond index funds |
 | `private_debt` | Non-public credit claims | convertible notes and SAFEs, bilateral private loans, sale-proceeds escrow receivables |
 | `real_estate` | Property exposure, direct or securitized; includes property-secured liabilities as negative exposure | directly-held property, real-estate index funds, REITs, mortgages |
@@ -131,6 +131,13 @@ needed real classification logic; every other mapping is mechanical.
 8. **Money-market funds are `cash`**, not fixed income.
 9. **`demand_deposit` / `time_deposit`** name the two cash wrappers:
    at-sight account cash vs term-locked placements.
+10. **Convertible notes default to `private_debt`, but the pair
+    `private_equity × convertible_note` is admitted** for notes that
+    are economically equity — e.g. a 0%-interest pre-seed note with no
+    repayment expectation, which either converts in the next round or
+    writes to zero. Adapters keep emitting `private_debt` (the legal
+    form); an `instrument_overrides` entry pins the exposure to
+    `private_equity` per holding.
 
 ## 6. Source signals per dimension (implementation guide)
 

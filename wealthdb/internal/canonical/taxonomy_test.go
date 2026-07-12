@@ -68,6 +68,7 @@ func TestValidTaxonomyPair(t *testing.T) {
 		{AssetClassRealEstate, VehicleMortgage},
 		{AssetClassForeignExchange, VehicleForward},
 		{AssetClassPrivateDebt, VehicleConvertibleNote},
+		{AssetClassPrivateEquity, VehicleConvertibleNote}, // pre-seed note, equity-like
 		{AssetClassPrivateDebt, VehicleEscrow},
 		{AssetClassOther, VehicleOther},
 	}
