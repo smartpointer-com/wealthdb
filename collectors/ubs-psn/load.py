@@ -38,7 +38,6 @@ rather than the dashed ExtAcctId).
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import sqlite3
@@ -81,8 +80,11 @@ def parse_yymmdd(s: str) -> int:
 
 
 def canonical_json(obj) -> str:
-    """Compact JSON, sorted keys. Used both for storage and for dedup compare."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    """Compact JSON, sorted keys. Used both for storage and for dedup compare.
+
+    Delegates to the shared serializer with ``ascii=True`` (``ensure_ascii``)
+    so payloads keep their historical byte encoding."""
+    return silver.canonical_json(obj, ascii=True)
 
 
 _FILENAME_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_")

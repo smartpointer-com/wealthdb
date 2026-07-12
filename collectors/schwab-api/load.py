@@ -87,8 +87,9 @@ def canonical_json(obj) -> str:
     """Return the canonical compact JSON serialization (sorted keys, no spaces).
 
     Used both for storage (one representation of equivalent objects) and for
-    dedup comparison."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    dedup comparison. Delegates to the shared serializer with ``ascii=True``
+    (``ensure_ascii``) so payloads keep their historical byte encoding."""
+    return silver.canonical_json(obj, ascii=True)
 
 
 def read_json(path: Path):

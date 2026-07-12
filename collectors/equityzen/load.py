@@ -63,7 +63,7 @@ ASSET_CLASS_KIND = {
 
 
 def canonical_json(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    return silver.canonical_json(obj, ascii=True)
 
 
 def read_json(path: Path):

@@ -7,6 +7,7 @@ into `schema_meta`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -148,3 +149,20 @@ def loaded_snapshots(conn: sqlite3.Connection) -> set[int]:
         int(r[0])
         for r in conn.execute("SELECT snapshot_at FROM dump_runs").fetchall()
     }
+
+
+def canonical_json(obj, *, ascii: bool = False) -> str:
+    """Stable, compact JSON for silver `payload` columns and content-based
+    dedup: sorted keys and no separator whitespace so two equivalent
+    payloads serialise byte-for-byte identically.
+
+    `default=str` lets non-JSON-native scalars a payload may carry — Decimal,
+    date/datetime — serialise as their string form rather than raising.
+
+    `ascii` selects the ``ensure_ascii`` behaviour: the default (False)
+    emits non-ASCII characters literally (UTF-8), while ``ascii=True``
+    escapes them to ``\\uXXXX`` — the form the older schwab-api / ubs-psn /
+    equityzen loaders produced.
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=ascii, default=str)
