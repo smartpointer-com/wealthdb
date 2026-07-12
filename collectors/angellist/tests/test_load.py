@@ -99,7 +99,7 @@ def test_load_basic(tmp_path):
         positions_capture([pos_node("p1", "acme-co-s"),
                            pos_node("p2", "acme-fund-f", total=None)]),
         dashboard_capture(), commitments_capture()])
-    assert load.main(["--dest", str(dest), "--db", str(db)]) == 0
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
     c = sqlite3.connect(db)
     assert c.execute("SELECT MAX(silver_schema_version) FROM schema_meta").fetchone()[0] == 7
 
@@ -159,7 +159,7 @@ def test_k1_documents(tmp_path):
     with open(docs / "Synthetic 2023 Consolidated Schedule K-1 Package.csv",
               "w", newline="") as f:
         _csv.writer(f).writerows([hdr, row])
-    assert load.main(["--dest", str(dest), "--db", str(db),
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db),
                       "--documents-dir", str(docs)]) == 0
     c = sqlite3.connect(db)
 
@@ -201,7 +201,7 @@ def test_funding(tmp_path):
         ]}}}}
     write_run(dest, "20240101T000000Z",
               [positions_capture([pos_node("p1", "acme-co-s")]), dashboard_capture(), cap])
-    assert load.main(["--dest", str(dest), "--db", str(db)]) == 0
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
     c = sqlite3.connect(db)
     assert c.execute("SELECT COUNT(*) FROM funding_transactions").fetchone()[0] == 3
     assert c.execute("SELECT balance_minor FROM funding_accounts").fetchone()[0] == 150000
@@ -243,7 +243,7 @@ def test_funding_links(tmp_path):
             pos_node("pMa", "multi-co-a-s", name="Multi Co", inv_date=D1),
             pos_node("pMb", "multi-co-b-s", name="Multi Co", inv_date=D2)]),
         dashboard_capture(), cap])
-    assert load.main(["--dest", str(dest), "--db", str(db)]) == 0
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
     c = sqlite3.connect(db)
     link = dict(c.execute(
         "SELECT transaction_external_id, position_external_id FROM funding_transactions").fetchall())
@@ -262,8 +262,8 @@ def test_idempotent_reload(tmp_path):
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
     write_run(dest, "20240101T000000Z",
               [positions_capture([pos_node("p1", "acme-co-s")]), dashboard_capture()])
-    load.main(["--dest", str(dest), "--db", str(db)])
+    load.main(["--bronze-dir", str(dest), "--silver-db", str(db)])
     n1 = sqlite3.connect(db).execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0]
-    load.main(["--dest", str(dest), "--db", str(db)])  # already loaded -> skip
+    load.main(["--bronze-dir", str(dest), "--silver-db", str(db)])  # already loaded -> skip
     n2 = sqlite3.connect(db).execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0]
     assert n1 == n2 == 2  # investment + valuation, no duplicates

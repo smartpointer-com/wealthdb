@@ -66,7 +66,7 @@ HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
 DEFAULT_BRONZE_DIR = Path("/data")
-DEFAULT_DB = Path("/data/carta.db")
+DEFAULT_SILVER_DB = Path("/data/carta.db")
 
 # bronze security-type filename -> silver security_type label.
 SECURITY_FILES = {
@@ -995,11 +995,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "--dest", type=Path, default=DEFAULT_BRONZE_DIR,
+        "--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
         help="Bronze root to ingest from. Default: %(default)s.",
     )
     p.add_argument(
-        "--db", type=Path, default=DEFAULT_DB,
+        "--silver-db", type=Path, default=DEFAULT_SILVER_DB,
         help="Silver SQLite DB path. Default: %(default)s.",
     )
     p.add_argument(
@@ -1014,12 +1014,12 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    conn = silver.open_db(args.db)
+    conn = silver.open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
     already = silver.loaded_snapshots(conn) if not args.force else set()
 
     n_loaded = 0
-    for run_dir in bronze.iter_run_dirs(args.dest):
+    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
         try:
             snap = bronze.parse_run_ts(run_dir.name)
         except ValueError:
@@ -1030,7 +1030,7 @@ def main(argv: list[str]) -> int:
         if load_run(conn, run_dir):
             n_loaded += 1
 
-    log.info("done: %d bronze run(s) loaded into %s", n_loaded, args.db)
+    log.info("done: %d bronze run(s) loaded into %s", n_loaded, args.silver_db)
     conn.close()
     return 0
 

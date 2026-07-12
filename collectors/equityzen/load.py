@@ -52,8 +52,8 @@ log = logging.getLogger("equityzen.load")
 HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
-DEFAULT_DEST = Path("/data")
-DEFAULT_DB = Path("/data/equityzen.db")
+DEFAULT_BRONZE_DIR = Path("/data")
+DEFAULT_SILVER_DB = Path("/data/equityzen.db")
 
 # EquityZen assetClass -> wealthdb offering kind (DESIGN.md §6.3).
 ASSET_CLASS_KIND = {
@@ -402,9 +402,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--dest", type=Path, default=DEFAULT_DEST,
+    p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
                    help="Bronze root to ingest from. Default: %(default)s.")
-    p.add_argument("--db", type=Path, default=DEFAULT_DB,
+    p.add_argument("--silver-db", type=Path, default=DEFAULT_SILVER_DB,
                    help="Silver SQLite DB path. Default: %(default)s.")
     p.add_argument("--force", action="store_true",
                    help="Re-load snapshots already recorded in dump_runs.")
@@ -416,11 +416,11 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    conn = open_db(args.db)
+    conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
 
-    runs = list(bronze.iter_run_dirs(args.dest))
-    log.info("found %d bronze run(s) under %s", len(runs), args.dest)
+    runs = list(bronze.iter_run_dirs(args.bronze_dir))
+    log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
     for run_dir in runs:
         stats = load_run(conn, run_dir, args.force)
         if stats.get("skipped"):

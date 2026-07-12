@@ -51,8 +51,8 @@ log = logging.getLogger("angellist.load")
 HERE = Path(__file__).resolve().parent
 MIGRATIONS = HERE / "migrations"
 
-DEFAULT_DEST = Path("/data")
-DEFAULT_DB = Path("/data/angellist.db")
+DEFAULT_BRONZE_DIR = Path("/data")
+DEFAULT_SILVER_DB = Path("/data/angellist.db")
 DEFAULT_DOCS = Path("/data/angellist-documents")
 
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
@@ -717,9 +717,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--dest", type=Path, default=DEFAULT_DEST,
+    p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
                    help="Bronze root to ingest from. Default: %(default)s.")
-    p.add_argument("--db", type=Path, default=DEFAULT_DB,
+    p.add_argument("--silver-db", type=Path, default=DEFAULT_SILVER_DB,
                    help="Silver SQLite DB path. Default: %(default)s.")
     p.add_argument("--documents-dir", type=Path, default=DEFAULT_DOCS,
                    help="Dir of downloaded tax documents (K-1 CSV/PDF, financial "
@@ -734,12 +734,12 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    conn = silver.open_db(args.db)
+    conn = silver.open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS)
     already = silver.loaded_snapshots(conn)
 
     n = 0
-    for run_dir in bronze.iter_run_dirs(args.dest):
+    for run_dir in bronze.iter_run_dirs(args.bronze_dir):
         try:
             snap = bronze.parse_run_ts(run_dir.name)
         except ValueError:
@@ -753,7 +753,7 @@ def main(argv: list[str]) -> int:
     build_k1_statement_snapshots(conn)
     link_funding_transactions(conn)
     conn.close()
-    log.info("loaded %d snapshot(s) into %s", n, args.db)
+    log.info("loaded %d snapshot(s) into %s", n, args.silver_db)
     return 0
 
 
