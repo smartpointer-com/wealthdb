@@ -39,6 +39,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import _txartefacts
 from collectorkit import cli, compress
 
 # schwab-py is a thin wrapper over the Schwab Trader API. We import it
@@ -428,34 +429,6 @@ def fetch_open_orders(client, since: date, until: date) -> list[dict]:
     return [o for o in all_orders if o.get("status") in OPEN_ORDER_STATUSES]
 
 
-def _resolve_transaction_artefacts(run_dir: Path) -> list[Path]:
-    """On-disk `transactions_*.json` artefacts in a run dir, resolving
-    compressed variants.
-
-    Each transactions file is zstd-compressed the moment it lands, so by
-    the time --with-instruments harvests symbols the artefacts are
-    already `.json.zst`; a plain glob would miss them. Enumerate the
-    LOGICAL names (strip any `.zst`/`.gz`), dedup, then resolve each
-    variant (plain wins). Mirrors load.py's `transaction_files`."""
-    logical_names: set[str] = set()
-    for entry in run_dir.iterdir():
-        if not entry.is_file():
-            continue
-        name = entry.name
-        for suffix in compress.VARIANT_SUFFIXES:
-            if name.endswith(suffix):
-                name = name[:-len(suffix)]
-                break
-        if name.startswith("transactions_") and name.endswith(".json"):
-            logical_names.add(name)
-    resolved: list[Path] = []
-    for name in sorted(logical_names):
-        variant = compress.resolve_variant(run_dir / name)
-        if variant is not None:
-            resolved.append(variant)
-    return resolved
-
-
 def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
     """Scan the bronze artefacts in `run_dir` for every distinct symbol.
 
@@ -477,7 +450,7 @@ def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
                     if sym:
                         symbols.add(sym)
 
-    for txn_path in _resolve_transaction_artefacts(run_dir):
+    for txn_path in _txartefacts.transaction_files(run_dir):
         with compress.open_text(txn_path) as f:
             data = json.load(f)
             for txn in data.get("transactions") or []:

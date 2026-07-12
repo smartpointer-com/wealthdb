@@ -27,16 +27,17 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import _txartefacts
 from collectorkit import bronze, cli, compress, silver
 
 log = logging.getLogger("schwab-load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 SNAPSHOT_DIR_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
-# Logical name of a numbered transactions artefact — matched after any
-# compression suffix (.zst/.gz) is stripped, so the .json.zst form
-# download now writes resolves alongside the plain .json.
-TRANSACTIONS_FILE_RE = re.compile(r"^transactions_.*\.json$")
+
+# Recover the LOGICAL (uncompressed) bronze name from an on-disk path;
+# shared with the downloader so both agree on artefact resolution.
+_logical_bronze_path = _txartefacts.logical_bronze_path
 
 # Balance kinds inside securitiesAccount, mapping silver-column value -> source key.
 SECURITIES_ACCOUNT_BALANCE_KINDS = (
@@ -107,40 +108,11 @@ def read_json(path: Path):
         return json.load(f)
 
 
-def _logical_bronze_path(path: Path) -> Path:
-    """Strip a compression suffix (`.zst` / `.gz`) to recover the LOGICAL
-    (uncompressed) bronze name. Plain paths pass through unchanged."""
-    for suffix in compress.VARIANT_SUFFIXES:
-        if path.name.endswith(suffix):
-            return path.with_name(path.name[:-len(suffix)])
-    return path
-
-
 def transaction_files(dump_dir: Path) -> list[Path]:
     """On-disk `transactions_*.json` artefacts in a dump, resolving
-    compressed variants.
-
-    download / recompress may write each numbered transactions file as
-    `.json.zst`, which a plain `dump_dir.glob("transactions_*.json")`
-    would miss. Enumerate the LOGICAL names (strip any `.zst`/`.gz`)
-    matching `transactions_*.json`, dedup, then resolve each variant —
-    plain wins over a coexisting `.zst` twin (a recompress interrupted
-    between verify and unlink), so each window ingests exactly once.
-    Sorted by logical name for deterministic ordering (matching the
-    prior `sorted(glob(...))`)."""
-    logical_names: set[str] = set()
-    for entry in dump_dir.iterdir():
-        if not entry.is_file():
-            continue
-        logical = _logical_bronze_path(entry)
-        if TRANSACTIONS_FILE_RE.match(logical.name):
-            logical_names.add(logical.name)
-    resolved: list[Path] = []
-    for name in sorted(logical_names):
-        variant = compress.resolve_variant(dump_dir / name)
-        if variant is not None:
-            resolved.append(variant)
-    return resolved
+    compressed variants. Thin wrapper over the shared enumerator so the
+    loader and downloader agree on artefact resolution."""
+    return _txartefacts.transaction_files(dump_dir)
 
 
 # --------------------------------------------------------------------------
