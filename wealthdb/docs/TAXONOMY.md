@@ -136,7 +136,7 @@ needed real classification logic; every other mapping is mechanical.
 
 | Source signal | Feeds | Notes |
 | --- | --- | --- |
-| CFI category + group (UBS) | vehicle | `E`→stock, `CE`→etf, `CI`/`CH`/…→fund, `D`→bond, `O`→option, `F`→future, `R`→right, `T`→structured_product |
+| CFI category + group (UBS, ISO 10962) | both | `E`→(public_equity, stock), group `EY` participation certs→structured_product; `CE`→etf, other `C`→fund; `D`→bond; `R`→right; `O`/`H`→option; `F`→future; `J`→forward (FX); `S`/`I`/`K`/`L`/`T`/`M`/unknown→other |
 | UAC asset-class code (UBS) | asset_class | 0100→cash, 0300→public_equity, 0400→private-markets family, 0600→metal |
 | `instrument.assetType` + `.type` (Schwab) | both | EQUITY→(public_equity, stock); COLLECTIVE_INVESTMENT+EXCHANGE_TRADED_FUND→(…, etf) |
 | Statement section headers (Swissquote) | vehicle-leaning | "ETFs"/"Funds"/"Bonds"/"Shares"/"Options" |

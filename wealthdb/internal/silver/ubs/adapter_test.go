@@ -662,6 +662,7 @@ func TestTaxonomyPairForInstrument(t *testing.T) {
 	}{
 		// Listed, classified by CFI first character.
 		{"equity", "ESVTFR", "", "Placeholder Co", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		{"equity structured-participation cert (AMC)", "EYAXXX", "", "Actively Managed Certificate on Placeholder Portfolio", canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct},
 		{"etf equity default", "CEOIXX", "", "World Index Tracker", canonical.AssetClassPublicEquity, canonical.VehicleETF},
 		{"etf crypto refined", "CEOIXX", "", "Spot Bitcoin ETP", canonical.AssetClassCrypto, canonical.VehicleETF},
 		{"etf metal refined", "CEOIXX", "", "Physical Gold ETC", canonical.AssetClassMetal, canonical.VehicleETF},
@@ -675,9 +676,26 @@ func TestTaxonomyPairForInstrument(t *testing.T) {
 		{"option", "OCASPS", "", "Call Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleOption},
 		{"future", "FFICSX", "", "Index Future", canonical.AssetClassPublicEquity, canonical.VehicleFuture},
 		{"right", "RSSXXX", "", "Subscription Right", canonical.AssetClassPublicEquity, canonical.VehicleRight},
-		{"structured equity-linked", "TCAXXX", "", "Equity-Linked Note", canonical.AssetClassPublicEquity, canonical.VehicleStructuredProduct},
-		{"structured currency-linked", "TCAXXX", "", "Dual Currency Note", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct},
-		{"structured fx-linked", "TCAXXX", "", "FX Autocall Certificate", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct},
+		// Depository receipts (ED) are still shares → stock.
+		{"equity depository receipt", "EDSXFR", "", "Depositary Receipt Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleStock},
+		// A structured participation certificate (EY) reads FX when its
+		// name is currency-/FX-linked.
+		{"participation cert fx-linked", "EYAXXX", "", "Dual Currency Certificate", canonical.AssetClassForeignExchange, canonical.VehicleStructuredProduct},
+		// Options: listed (O, above) and non-listed / complex (H).
+		{"complex option H", "HEXXXX", "", "OTC Option Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleOption},
+		// Forwards (J): the forward wrapper pairs only with FX.
+		{"forward J", "JFTXXX", "", "Currency Forward Placeholder", canonical.AssetClassForeignExchange, canonical.VehicleForward},
+		// Categories wealthdb does not model as custody holdings → other/other.
+		// T is referential (currencies/indices/rates): the CFI UBS's
+		// own currency rows carry (TCNXXX), which must NOT read as a
+		// structured product.
+		{"swap S", "SRXXXX", "", "Interest-Rate Swap Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"spot I", "IFXXXX", "", "Spot FX Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"referential currency T", "TCNXXX", "", "Currency Reference Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"strategy K", "KRXXXX", "", "Strategy Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"financing L", "LLXXXX", "", "Repo Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"misc M", "MCXXXX", "", "Miscellaneous Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
+		{"unknown / future ISO category", "ZZXXXX", "", "Unknown Placeholder", canonical.AssetClassOther, canonical.VehicleOther},
 		// Empty CFI → UAC fallback (non-listed custody items).
 		{"custody uac 0100", "", "0100", "Placeholder Deposit", canonical.AssetClassCash, canonical.VehicleFund},
 		{"custody uac 0300 equity", "", "0300", "Direct Share Placeholder", canonical.AssetClassPublicEquity, canonical.VehicleStock},
