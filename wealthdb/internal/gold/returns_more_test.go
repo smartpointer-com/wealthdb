@@ -232,7 +232,7 @@ func TestRunReturnsMWRFlags(t *testing.T) {
 // crypto_unclassified_transfers. (unknown_adapter_policy is unreachable through
 // the real pipeline — the silver_sources.silver_kind CHECK constraint admits
 // only known adapter kinds — so the policy default is unit-tested at the
-// FlowPolicyFor level instead; see RETURNS-NOTES.)
+// ReturnsPolicyFor level instead; see RETURNS-NOTES.)
 func TestRunReturnsRegimeFlags(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "fid", "fidelity")

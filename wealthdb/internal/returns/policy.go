@@ -69,7 +69,7 @@ func set(ks ...canonical.TxKind) map[canonical.TxKind]bool {
 // declare their co-located policy (the external/transferLike sets are unexported
 // map fields, so a constructor is required to build byte-identical sets from
 // outside the package). Known is set true — a registered policy is by definition
-// a recognised adapter; the Known=false shape is reserved for the FlowPolicyFor
+// a recognised adapter; the Known=false shape is reserved for the ReturnsPolicyFor
 // miss-fallback (see defaultFlowPolicy).
 func NewFlowPolicy(regime Regime, external, transferLike []canonical.TxKind) FlowPolicy {
 	return FlowPolicy{
@@ -108,25 +108,13 @@ func BankFlowPolicy() FlowPolicy {
 	return NewFlowPolicy(RegimeFlowComplete, BankExternal(), BankTransferLike())
 }
 
-// defaultFlowPolicy is the FlowPolicyFor miss-fallback: the conservative bank
+// defaultFlowPolicy is the ReturnsPolicyFor miss-fallback: the conservative bank
 // set with Known=false so the caller surfaces unknown_adapter_policy. It differs
 // from BankFlowPolicy ONLY by Known=false.
 func defaultFlowPolicy() FlowPolicy {
 	p := BankFlowPolicy()
 	p.Known = false
 	return p
-}
-
-// FlowPolicyFor returns the flow policy for a silver source's adapter kind
-// (gold silver_sources.silver_kind). Each kind's policy is co-located in its
-// silver package and registered via RegisterPolicy (from that package's init()).
-// An unregistered kind defaults to the bank set with Known=false so the caller
-// can flag it. It is a thin convenience wrapper over ReturnsPolicyFor exposing
-// just the Flow member — the body no longer enumerates sources, and the shared
-// registry lookup + miss-fallback lives once in ReturnsPolicyFor.
-func FlowPolicyFor(adapterKind string) FlowPolicy {
-	p, _ := ReturnsPolicyFor(adapterKind)
-	return p.Flow
 }
 
 // CapitalDirection returns the effect of an external flow kind on the entity's

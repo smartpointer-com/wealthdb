@@ -30,7 +30,7 @@ import (
 // never enumerates sources itself.
 type ReturnsPolicy struct {
 	// Flow is the flow-classification policy (regime + external / transfer-like
-	// kind sets); FlowPolicyFor returns exactly this member.
+	// kind sets); ReturnsPolicyFor(kind).Flow exposes exactly this member.
 	Flow FlowPolicy
 
 	// ---- consumed knobs (proposal §2/§3; live since the UBS migration) ----
@@ -205,8 +205,8 @@ func lookupPolicy(kind string) (ReturnsPolicy, bool) {
 // ReturnsPolicyFor returns the full ReturnsPolicy registered for a silver
 // source's adapter kind (gold silver_sources.silver_kind), so the compute
 // engine can read the forward knobs (OnboardScope, Inception, ConduitKinds,
-// ExternalOnly, …) — not just the Flow member that FlowPolicyFor exposes. An
-// unregistered kind returns DefaultReturnsPolicy(defaultFlowPolicy()) with ok
+// ExternalOnly, …) — not just its Flow member (the flow-classification policy).
+// An unregistered kind returns DefaultReturnsPolicy(defaultFlowPolicy()) with ok
 // false; the default knobs reproduce today's behavior, so a miss is a strict
 // no-op at every knob site. Because kind is resolved per source and the engine
 // carries each constituent's src, the policy is naturally source-scoped even

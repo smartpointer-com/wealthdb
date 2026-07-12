@@ -3,7 +3,7 @@ package gold
 // Test-only blank imports of the silver adapters. The returns policy for each
 // source is co-located in its silver package and registered from that package's
 // init() (returns.RegisterPolicy). RunReturns resolves it by kind via
-// returns.FlowPolicyFor, so the gold returns tests must trigger those init()s to
+// returns.ReturnsPolicyFor, so the gold returns tests must trigger those init()s to
 // see anything but the Known=false default — exactly as the real binary does by
 // blank-importing the adapters in cmd/wealthdb/main.go.
 //

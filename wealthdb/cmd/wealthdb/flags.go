@@ -14,7 +14,6 @@ import (
 type globalFlags struct {
 	ConfigPath    string
 	ForceReadOnly bool
-	Verbose       bool
 }
 
 // defaultConfigPath returns $HOME/.config/wealthdb.cfg, expanding
@@ -45,8 +44,6 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 	fs.StringVar(&g.ConfigPath, "config", g.ConfigPath, "path to wealthdb config file")
 	fs.BoolVar(&g.ForceReadOnly, "r", false, "force read-only access to the gold DB")
 	fs.BoolVar(&g.ForceReadOnly, "read-only", false, "force read-only access to the gold DB")
-	fs.BoolVar(&g.Verbose, "v", false, "verbose / DEBUG-level logging")
-	fs.BoolVar(&g.Verbose, "verbose", false, "verbose / DEBUG-level logging")
 
 	if err := fs.Parse(args); err != nil {
 		return g, nil, err
@@ -62,7 +59,6 @@ usage:
 global flags:
   -c, --config <path>   config file (default $HOME/.config/wealthdb.cfg)
   -r, --read-only       force read-only access to the gold DB
-  -v, --verbose         DEBUG-level logging
 
 subcommands:
   config                interactive first-time setup wizard

@@ -6,14 +6,15 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-// TestFlowPolicyForUnknownDefault pins the FlowPolicyFor miss-fallback. The
+// TestReturnsPolicyForUnknownDefault pins the ReturnsPolicyFor miss-fallback. The
 // per-kind assertions (ubs/fidelity/cointracking/angellist/manual/…) now live in
 // policy_registered_test.go (package returns_test), which blank-imports the
 // silver adapters so their init()-time RegisterPolicy calls run — here in bare
 // package returns no source is registered, so every kind would (correctly) fall
 // to the Known=false default.
-func TestFlowPolicyForUnknownDefault(t *testing.T) {
-	u := FlowPolicyFor("totally-new-source")
+func TestReturnsPolicyForUnknownDefault(t *testing.T) {
+	p, _ := ReturnsPolicyFor("totally-new-source")
+	u := p.Flow
 	if u.Known {
 		t.Error("unknown adapter must report Known=false")
 	}
