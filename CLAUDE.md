@@ -87,10 +87,10 @@ before committing anything derived from it. When in doubt, ask.
 - Commit messages must not reference user data even indirectly —
   no balances, holdings, account IDs, or "coverage before/after"
   framing. Bank names and example tickers are fine.
-- **Messages say WHAT changed and WHY, not HOW** — a tight subject
-  line plus a few high-level bullets (the behaviour and the
-  reason), not a blow-by-blow of the implementation. Match the
-  existing log's voice.
+- **Messages say WHAT changed and WHY, not HOW — and stay short.**
+  A tight subject line that carries the change; add at most a
+  sentence or two of context, and only when the subject can't stand
+  alone. No per-file blow-by-blow. Match the existing log's voice.
 - **No AI-attribution trailer** — no `Co-Authored-By: Claude`, no
   "generated with" line. Use the repo's normal git identity.
 - Stage specific files by name; avoid `git add -A` so stray
