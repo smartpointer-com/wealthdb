@@ -1,8 +1,11 @@
-# Shared base for camoufox-using collectors (fidelity-web, schwab-web).
-# Layers Xvfb/x11vnc, camoufox-pinned Playwright, and a pre-fetched
-# Firefox bundle onto base-playwright. Collectors FROM this skip their
-# own xvfb/camoufox setup; their requirements.txt only needs to add
-# per-collector extras (pdfplumber, pypdfium2, pytest).
+# Shared base for the camoufox-using collectors (the private-market
+# scrapers, schwab-web / schwab-api, fidelity-web). Layers Xvfb/x11vnc,
+# camoufox-pinned Playwright, and a pre-fetched Firefox bundle onto
+# base-playwright, and bakes the shared entrypoint bootstrap
+# (/opt/entrypoint-lib.sh) that each collector's entrypoint.sh sources.
+# Collectors FROM this skip their own xvfb/camoufox setup; their
+# requirements.txt only needs to add per-collector extras (pdfplumber,
+# pypdfium2, pytest).
 #
 # Build context is shared/ (so collectorkit/ in the base layers is
 # resolvable):
@@ -41,3 +44,7 @@ RUN pip install 'camoufox[geoip]>=0.4.11,<0.5' 'playwright==1.49.0'
 RUN python3 -m camoufox fetch && \
     cp -a /root/.cache/camoufox /opt/camoufox-cache && \
     chmod -R go+rX /opt/camoufox-cache
+
+# Shared Xvfb / x11vnc / camoufox-cache bootstrap, sourced by every
+# collector's entrypoint.sh so the ~50-line setup lives in one place.
+COPY images/entrypoint-lib.sh /opt/entrypoint-lib.sh

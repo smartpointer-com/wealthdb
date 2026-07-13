@@ -16,46 +16,11 @@
 
 set -euo pipefail
 
-VFB_DISPLAY=99
-
-# Symlink the pre-staged camoufox cache (baked at image-build time) into
-# the runtime user's $HOME/.cache so camoufox skips its ~700MB download.
-mkdir -p /tmp/.cache
-if [[ -d /opt/camoufox-cache && ! -e /tmp/.cache/camoufox ]]; then
-    ln -snf /opt/camoufox-cache /tmp/.cache/camoufox
-fi
-
-start_xvfb() {
-    Xvfb ":$VFB_DISPLAY" -screen 0 1280x800x24 -nolisten tcp \
-        >/tmp/xvfb.log 2>&1 &
-    for _ in $(seq 1 50); do
-        if [[ -S "/tmp/.X11-unix/X$VFB_DISPLAY" ]]; then
-            export DISPLAY=":$VFB_DISPLAY"
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "entrypoint: Xvfb failed to start within 5s; /tmp/xvfb.log:" >&2
-    tail -20 /tmp/xvfb.log >&2 || true
-    return 1
-}
-
-# Start x11vnc on the Xvfb display + print the tunnel instructions. Used
-# by `vnc-login` (the manual fallback).
-start_x11vnc() {
-    local pw host_port
-    pw=$(openssl rand -hex 8)
-    x11vnc -display ":$VFB_DISPLAY" -passwd "$pw" \
-        -forever -shared -rfbport 5900 -bg \
-        -o /tmp/x11vnc.log >/dev/null 2>&1
-    host_port="${VNC_HOST_PORT:-5900}"
-    echo "vnc-login: VNC ready on 127.0.0.1:${host_port}" >&2
-    echo "vnc-login: password (single-use):  $pw" >&2
-    echo "vnc-login: tunnel from your laptop with" >&2
-    echo "vnc-login:   ssh -L ${host_port}:127.0.0.1:${host_port} <mbp-host>" >&2
-    echo "vnc-login: then on the laptop:" >&2
-    echo "vnc-login:   open vnc://localhost:${host_port}" >&2
-}
+# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
+# start_x11vnc) is shared across the camoufox collectors, baked into
+# base-camoufox at /opt/entrypoint-lib.sh.
+# shellcheck source=/dev/null
+source /opt/entrypoint-lib.sh
 
 case "${1:-help}" in
     login)
@@ -81,7 +46,7 @@ case "${1:-help}" in
         # are still auto-ticked.
         shift
         start_xvfb
-        start_x11vnc
+        start_x11vnc vnc-login
         exec python3 /app/login.py --no-cli-mfa \
             --screenshot-dir /debug --trace "$@"
         ;;
