@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -430,4 +431,89 @@ func insertOne(ctx context.Context, db *sql.DB, p canonical.PositionChange) erro
 	tx, _ := db.BeginTx(ctx, nil)
 	defer tx.Rollback()
 	return NewWriter(tx).InsertPositions(ctx, []canonical.PositionChange{p})
+}
+
+// TestInsertPositionsChunkBoundaries exercises the multi-row VALUES
+// chunking across its edges: exactly one chunk, one row over, and a
+// multiple-chunks-plus-remainder batch. Every row must land, with
+// values intact at both ends of the batch.
+func TestInsertPositionsChunkBoundaries(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	for _, n := range []int{1, insertChunkRows - 1, insertChunkRows, insertChunkRows + 1, 2*insertChunkRows + 3} {
+		batch := make([]canonical.PositionChange, n)
+		for i := range batch {
+			qty := canonical.NewDecimalFromInt(int64(i))
+			batch[i] = canonical.PositionChange{
+				SilverSourceID: "test-src", SnapshotAt: int64(i),
+				AccountExternalID: "ACC", PositionKey: "VTI",
+				AssetClass: canonical.AssetClassPublicEquity,
+				Vehicle:    canonical.VehicleETF,
+				Currency:   "USD",
+				Quantity:   &qty,
+			}
+		}
+		inTx(t, db, ctx, func(w *Writer) error {
+			return w.InsertPositions(ctx, batch)
+		})
+
+		var count int
+		var firstQty, lastQty string
+		if err := db.QueryRowContext(ctx, `
+            SELECT COUNT(*),
+                   CAST(MIN(quantity) AS VARCHAR),
+                   CAST(MAX(quantity) AS VARCHAR)
+              FROM positions
+        `).Scan(&count, &firstQty, &lastQty); err != nil {
+			t.Fatalf("n=%d: read back: %v", n, err)
+		}
+		if count != n {
+			t.Errorf("n=%d: row count = %d", n, count)
+		}
+		wantLast := fmt.Sprintf("%d.00000000", n-1)
+		if firstQty != "0.00000000" || lastQty != wantLast {
+			t.Errorf("n=%d: quantity range = [%s,%s], want [0.00000000,%s]", n, firstQty, lastQty, wantLast)
+		}
+		if _, err := db.ExecContext(ctx, `DELETE FROM positions`); err != nil {
+			t.Fatalf("n=%d: clear: %v", n, err)
+		}
+	}
+}
+
+// TestInsertTransactionsChunked pushes one multi-chunk batch through
+// the widest remaining insert path and spot-checks both ends.
+func TestInsertTransactionsChunked(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	n := insertChunkRows + 7
+	batch := make([]canonical.TransactionChange, n)
+	for i := range batch {
+		amt := canonical.NewDecimalFromInt(int64(i))
+		batch[i] = canonical.TransactionChange{
+			SilverSourceID:        "test-src",
+			TransactionExternalID: fmt.Sprintf("TX%06d", i),
+			OccurredAt:            int64(i),
+			AccountExternalID:     "ACC",
+			Kind:                  canonical.TxKindDividend,
+			Currency:              "USD",
+			GrossAmount:           &amt,
+		}
+	}
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, batch)
+	})
+
+	var count int
+	var lastGross string
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*), CAST(MAX(gross_amount) AS VARCHAR) FROM transactions
+    `).Scan(&count, &lastGross); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if count != n {
+		t.Errorf("row count = %d, want %d", count, n)
+	}
+	if want := fmt.Sprintf("%d.0000", n-1); lastGross != want {
+		t.Errorf("max gross_amount = %s, want %s", lastGross, want)
+	}
 }

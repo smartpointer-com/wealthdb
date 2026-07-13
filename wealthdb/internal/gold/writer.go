@@ -4,20 +4,52 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // Writer wraps a *sql.Tx and inserts/upserts canonical *Change
-// records into the gold tables. Each method operates on a batch
-// to amortise prepare-statement overhead.
+// records into the gold tables. The insert-only fact tables
+// (positions, cash_balances, fx_rates, transactions) go in as
+// multi-row VALUES chunks — DuckDB's per-statement cost dwarfs its
+// per-row cost, so one statement per row is the slowest way to feed
+// it. The dimension tables upsert row-by-row (the §8.4 guard needs
+// ON CONFLICT per row); callers keep those batches small by folding
+// duplicate emissions first — see ChangeAccumulator.
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
 // use one per active transaction.
 type Writer struct {
 	tx *sql.Tx
+}
+
+// insertChunkRows is the row count per multi-row VALUES statement.
+// Large enough that per-statement setup is amortised into noise,
+// small enough that the bind-parameter count (rows × columns) stays
+// modest.
+const insertChunkRows = 500
+
+// insertChunked executes head + an n-row VALUES list in chunks of
+// insertChunkRows, collecting each row's bind args via appendRow
+// (which must append exactly one tuple's worth per call). op labels
+// errors.
+func (w *Writer) insertChunked(ctx context.Context, op, head, tuple string, n int, appendRow func(i int, args []any) []any) error {
+	argsPerRow := strings.Count(tuple, "?")
+	for off := 0; off < n; off += insertChunkRows {
+		end := min(off+insertChunkRows, n)
+		args := make([]any, 0, (end-off)*argsPerRow)
+		for i := off; i < end; i++ {
+			args = appendRow(i, args)
+		}
+		q := head + tuple + strings.Repeat(","+tuple, end-off-1)
+		if _, err := w.tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("%s rows %d..%d: %w", op, off, end-1, err)
+		}
+	}
+	return nil
 }
 
 // NewWriter constructs a Writer that writes into the given
@@ -87,14 +119,8 @@ ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
 
 	for i := range batch {
 		r := &batch[i]
-		if !r.AccountKind.Valid() {
-			return fmt.Errorf("UpsertAccounts row %d: invalid account_kind %q", i, r.AccountKind)
-		}
-		if r.TaxWrapper != nil && !r.TaxWrapper.Valid() {
-			return fmt.Errorf("UpsertAccounts row %d: invalid tax_wrapper %q", i, *r.TaxWrapper)
-		}
-		if r.ManagementStyle != nil && !r.ManagementStyle.Valid() {
-			return fmt.Errorf("UpsertAccounts row %d: invalid management_style %q", i, *r.ManagementStyle)
+		if err := validateAccountEnums("UpsertAccounts", i, r); err != nil {
+			return err
 		}
 		if _, err := stmt.ExecContext(ctx,
 			r.SilverSourceID, r.AccountExternalID, string(r.AccountKind),
@@ -227,6 +253,23 @@ ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
 	return nil
 }
 
+// validateAccountEnums validates an AccountChange's enum-typed
+// columns. Shared by the upsert (survivor rows) and the
+// ChangeAccumulator (every emission, so an invalid record fails the
+// load even when a later record supersedes it in the fold).
+func validateAccountEnums(op string, i int, r *canonical.AccountChange) error {
+	if !r.AccountKind.Valid() {
+		return fmt.Errorf("%s row %d: invalid account_kind %q", op, i, r.AccountKind)
+	}
+	if r.TaxWrapper != nil && !r.TaxWrapper.Valid() {
+		return fmt.Errorf("%s row %d: invalid tax_wrapper %q", op, i, *r.TaxWrapper)
+	}
+	if r.ManagementStyle != nil && !r.ManagementStyle.Valid() {
+		return fmt.Errorf("%s row %d: invalid management_style %q", op, i, *r.ManagementStyle)
+	}
+	return nil
+}
+
 // validateTaxonomyPair validates the 2-D taxonomy pair (exposure,
 // vehicle) on an instrument/position row before write: both are
 // required and must form a taxonomy-admitted combination
@@ -253,36 +296,29 @@ func (w *Writer) InsertPositions(ctx context.Context, batch []canonical.Position
 	if len(batch) == 0 {
 		return nil
 	}
-	const q = `
+	for i := range batch {
+		if err := validateTaxonomyPair("InsertPositions", i, batch[i].AssetClass, batch[i].Vehicle); err != nil {
+			return err
+		}
+	}
+	const head = `
 INSERT INTO positions (
     silver_source_id, snapshot_at, account_external_id, position_key,
     instrument_external_id, asset_class, vehicle, currency,
     quantity, market_value, book_value, accrued_interest,
     acquisition_date, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare InsertPositions: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range batch {
-		r := &batch[i]
-		if err := validateTaxonomyPair("InsertPositions", i, r.AssetClass, r.Vehicle); err != nil {
-			return err
-		}
-		if _, err := stmt.ExecContext(ctx,
-			r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey,
-			nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
-			nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
-			nullableDecimal(r.BookValue), nullableDecimal(r.AccruedInterest),
-			nullableTime(r.AcquisitionDate), nullableJSON(r.Payload),
-		); err != nil {
-			return fmt.Errorf("InsertPositions row %d: %w", i, err)
-		}
-	}
-	return nil
+) VALUES `
+	return w.insertChunked(ctx, "InsertPositions", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID, r.PositionKey,
+				nullableString(r.InstrumentExternalID), string(r.AssetClass), string(r.Vehicle), r.Currency,
+				nullableDecimal(r.Quantity), nullableDecimal(r.MarketValue),
+				nullableDecimal(r.BookValue), nullableDecimal(r.AccruedInterest),
+				nullableTime(r.AcquisitionDate), nullableJSON(r.Payload))
+		})
 }
 
 // InsertCashBalances inserts `cash_balances` rows.
@@ -290,31 +326,24 @@ func (w *Writer) InsertCashBalances(ctx context.Context, batch []canonical.CashB
 	if len(batch) == 0 {
 		return nil
 	}
-	const q = `
+	for i := range batch {
+		if !batch[i].BalanceKind.Valid() {
+			return fmt.Errorf("InsertCashBalances row %d: invalid balance_kind %q", i, batch[i].BalanceKind)
+		}
+	}
+	const head = `
 INSERT INTO cash_balances (
     silver_source_id, snapshot_at, account_external_id,
     currency, balance_kind, amount, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare InsertCashBalances: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range batch {
-		r := &batch[i]
-		if !r.BalanceKind.Valid() {
-			return fmt.Errorf("InsertCashBalances row %d: invalid balance_kind %q", i, r.BalanceKind)
-		}
-		if _, err := stmt.ExecContext(ctx,
-			r.SilverSourceID, r.SnapshotAt, r.AccountExternalID,
-			r.Currency, string(r.BalanceKind), r.Amount, nullableJSON(r.Payload),
-		); err != nil {
-			return fmt.Errorf("InsertCashBalances row %d: %w", i, err)
-		}
-	}
-	return nil
+) VALUES `
+	return w.insertChunked(ctx, "InsertCashBalances", head,
+		`(?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID,
+				r.Currency, string(r.BalanceKind), r.Amount, nullableJSON(r.Payload))
+		})
 }
 
 // InsertFxRates inserts `fx_rates` rows.
@@ -322,31 +351,22 @@ func (w *Writer) InsertFxRates(ctx context.Context, batch []canonical.FxRateChan
 	if len(batch) == 0 {
 		return nil
 	}
-	const q = `
+	const head = `
 INSERT INTO fx_rates (
     silver_source_id, snapshot_at,
     base_currency, quote_currency,
     mid_rate, bid_rate, ask_rate, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare InsertFxRates: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range batch {
-		r := &batch[i]
-		if _, err := stmt.ExecContext(ctx,
-			r.SilverSourceID, r.SnapshotAt,
-			r.BaseCurrency, r.QuoteCurrency,
-			r.MidRate, nullableDecimal(r.BidRate), nullableDecimal(r.AskRate),
-			nullableJSON(r.Payload),
-		); err != nil {
-			return fmt.Errorf("InsertFxRates row %d: %w", i, err)
-		}
-	}
-	return nil
+) VALUES `
+	return w.insertChunked(ctx, "InsertFxRates", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.SnapshotAt,
+				r.BaseCurrency, r.QuoteCurrency,
+				r.MidRate, nullableDecimal(r.BidRate), nullableDecimal(r.AskRate),
+				nullableJSON(r.Payload))
+		})
 }
 
 // InsertTransactions inserts `transactions` rows. Like positions,
@@ -355,37 +375,30 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 	if len(batch) == 0 {
 		return nil
 	}
-	const q = `
+	for i := range batch {
+		if !batch[i].Kind.Valid() {
+			return fmt.Errorf("InsertTransactions row %d: invalid kind %q", i, batch[i].Kind)
+		}
+	}
+	const head = `
 INSERT INTO transactions (
     silver_source_id, transaction_external_id, occurred_at,
     account_external_id, instrument_external_id, kind, currency,
     gross_amount, net_amount, quantity, price, description, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare InsertTransactions: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range batch {
-		r := &batch[i]
-		if !r.Kind.Valid() {
-			return fmt.Errorf("InsertTransactions row %d: invalid kind %q", i, r.Kind)
-		}
-		if _, err := stmt.ExecContext(ctx,
-			r.SilverSourceID, r.TransactionExternalID, r.OccurredAt,
-			r.AccountExternalID, nullableString(r.InstrumentExternalID),
-			string(r.Kind), r.Currency,
-			nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
-			nullableDecimal(r.Quantity), nullableDecimal(r.Price),
-			nullableString(r.Description),
-			nullableJSON(r.Payload),
-		); err != nil {
-			return fmt.Errorf("InsertTransactions row %d: %w", i, err)
-		}
-	}
-	return nil
+) VALUES `
+	return w.insertChunked(ctx, "InsertTransactions", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, r.TransactionExternalID, r.OccurredAt,
+				r.AccountExternalID, nullableString(r.InstrumentExternalID),
+				string(r.Kind), r.Currency,
+				nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
+				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
+				nullableString(r.Description),
+				nullableJSON(r.Payload))
+		})
 }
 
 // ---- nullable conversion helpers ------------------------------------------

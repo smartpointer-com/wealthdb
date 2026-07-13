@@ -1294,9 +1294,11 @@ continuous queries. We just trigger it manually.
        stream := plugin.Snapshots(window)
        loop:
            batch, more, err := stream.Next()
-           apply upserts:  batch.Accounts, batch.Instruments
-           insert facts:   batch.Positions, batch.CashBalances, batch.FxRates
+           fold dimensions: batch.Portfolios, batch.Accounts,
+                            batch.Instruments (one record per entity — §8.4)
+           insert facts:    batch.Positions, batch.CashBalances, batch.FxRates
            if not more: break
+       upsert the folded dimension records
 
        stream := plugin.Transactions(window)
        loop:
@@ -1404,6 +1406,22 @@ accounts.last_seen_at` at the end of the SET clause; that gated
 the whole UPDATE including `first_seen_at` expansion, defeating
 the union semantics. Per-column CASE keeps the two concerns
 independent.)
+
+The loader folds each load's dimension emissions down to one record
+per entity before the upsert runs (`gold.ChangeAccumulator`).
+Adapters re-emit accounts / instruments alongside every snapshot
+they walk — tens of thousands of emissions folding onto a few
+hundred entities — and executing the guard once per emission made
+dimension upserts dominate load time. The fold applies records in
+arrival order with the guard semantics above, so against an entity
+gold has not seen (every `reload -a` rebuild) the folded single
+upsert stores exactly what record-by-record upserts would. Against
+a pre-existing row the two can differ in one narrow interleave: an
+in-load record older than the stored row followed by a newer one
+missing a column — folded, the older in-load value fills that
+column. That only arises when an adapter emits observations
+predating already-loaded data (a historical backfill landing in an
+incremental window).
 
 ### 8.5 Silver-went-backwards detection
 

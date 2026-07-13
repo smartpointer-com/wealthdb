@@ -296,8 +296,16 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 }
 
 // applySnapshots drains conn.Snapshots into the gold writer.
-// Returns the total count of snapshot-grain rows written. The
-// override maps (any may be nil) are applied after stamping:
+// Fact rows (positions, cash, fx) are written per batch; dimension
+// rows (portfolios, accounts, instruments) fold into a
+// gold.ChangeAccumulator and upsert once after the stream drains —
+// adapters re-emit dimension rows alongside every snapshot, so
+// folding them to one record per entity removes the bulk of the
+// gold statements a load runs. Gold declares no FKs (DuckDB can't
+// defer), so facts landing before their dimensions is fine within
+// the transaction. Returns the total count of fact rows written.
+//
+// The override maps (any may be nil) are applied after stamping:
 // account/portfolio overrides to AccountChange records
 // (portfolio_overrides go first so per-account overrides win on
 // overlap), instrument overrides to InstrumentChange and
@@ -311,6 +319,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 	defer stream.Close()
 
 	writer := gold.NewWriter(tx)
+	dims := gold.NewChangeAccumulator()
 	total := 0
 	for {
 		batch, more, err := stream.Next(ctx)
@@ -328,16 +337,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		applyAccountOverrides(batch.Accounts, overrides)
 		applyInstrumentOverrides(batch.Instruments, batch.Positions, instrumentOverrides)
 
-		// Portfolios first so the FK semantics on
-		// accounts.portfolio_external_id are satisfied (though
-		// gold doesn't declare the FK because DuckDB can't defer).
-		if err := writer.UpsertPortfolios(ctx, batch.Portfolios); err != nil {
-			return total, err
-		}
-		if err := writer.UpsertAccounts(ctx, batch.Accounts); err != nil {
-			return total, err
-		}
-		if err := writer.UpsertInstruments(ctx, batch.Instruments); err != nil {
+		if err := dims.AddBatch(&batch); err != nil {
 			return total, err
 		}
 		if err := writer.InsertPositions(ctx, batch.Positions); err != nil {
@@ -353,7 +353,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, sourceID string, conn silve
 		total += len(batch.Positions) + len(batch.CashBalances) + len(batch.FxRates)
 
 		if !more {
-			return total, nil
+			return total, dims.Flush(ctx, writer)
 		}
 	}
 }
