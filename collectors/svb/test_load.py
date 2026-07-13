@@ -217,39 +217,24 @@ def test_parse_cache_reuse(tmp_path, monkeypatch):
     assert _snapshot_rows(cold) == _snapshot_rows(warm)
 
 
-def test_parser_change_invalidates_cache(tmp_path, monkeypatch):
-    """Folding the parser-source sha into the key means an edited parser forces
-    a re-parse even though the statement bytes are unchanged."""
+def test_parser_logic_change_invalidates_cache(tmp_path, monkeypatch):
+    """The cache key folds in _parser_logic_fingerprint (the parser's import
+    closure plus the pdfplumber / pdfminer.six versions), so any change to it —
+    a parser edit or an extraction-stack upgrade — forces a re-parse even though
+    the statement bytes are unchanged. What actually moves the fingerprint is
+    covered by collectorkit's test_srcfp."""
     bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
     cache_dir = tmp_path / "cache"
     B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-09-30",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
     calls.clear()
 
-    # Simulate a parser edit: a different source hash misses every prior entry.
-    monkeypatch.setattr(B, "_parser_source_sha", lambda: "edited-parser-sha")
-    B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-09-30",
-            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
-    assert sorted(calls) == sorted(_DISTINCT_STEMS), "parser edit must re-parse"
-
-
-def test_extractor_upgrade_invalidates_cache(tmp_path, monkeypatch):
-    """Folding the pdfplumber / pdfminer.six version into the key means an
-    extraction-stack upgrade forces a re-parse even though the statement bytes
-    and parser source are unchanged."""
-    bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
-    cache_dir = tmp_path / "cache"
-    B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-09-30",
-            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
-    calls.clear()
-
-    # Simulate an extractor upgrade: a different version string misses every
+    # A different fingerprint (parser edit or library upgrade) misses every
     # prior entry.
-    monkeypatch.setattr(
-        B, "_extractor_versions", lambda: "pdfplumber=9.9.9;pdfminer.six=99999999")
+    monkeypatch.setattr(B, "_parser_logic_fingerprint", lambda: "different-fingerprint")
     B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-09-30",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
-    assert sorted(calls) == sorted(_DISTINCT_STEMS), "extractor upgrade must re-parse"
+    assert sorted(calls) == sorted(_DISTINCT_STEMS), "changed fingerprint must re-parse"
 
 
 def test_parse_worker_is_picklable():

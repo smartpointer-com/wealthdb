@@ -1,0 +1,5 @@
+# Test venv built by `make test-collectorkit`, plus editable-install and
+# pytest byproducts.
+.venv/
+*.egg-info/
+.pytest_cache/

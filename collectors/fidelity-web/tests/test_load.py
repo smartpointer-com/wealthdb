@@ -14,6 +14,7 @@ In-memory SQLite plus a tmp_path bronze tree. Covers:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -784,25 +785,33 @@ def test_trust_parser_version_depends_on_signature_without_leaking_it():
     assert "PLACEHOLDER HOLDER" not in v_a                          # no PII
 
 
-def test_extractor_version_folded_into_cache_keys():
-    """The installed pdfplumber/pdfminer.six versions are part of both
-    parse-cache namespaces, so a library upgrade invalidates the cache
-    like a manual PARSER_VERSION bump. The fingerprint is a clean
-    filename component (no path/glob metacharacters)."""
-    fp = load._EXTRACTOR_FINGERPRINT
-    assert fp and set(fp) <= set(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    assert fp in load._STATEMENT_PARSER_VERSION
-    assert fp in load._trust_parser_version("PLACEHOLDER HOLDER")
+def test_parser_logic_fingerprint_in_cache_namespaces():
+    """Both parse-cache namespaces embed a hex parser-logic fingerprint
+    (srcfp.parser_fingerprint over the parser's import closure plus the
+    pdfplumber / pdfminer.six versions), so a parser edit, an imported-helper
+    edit, or a library upgrade invalidates the cache. The namespaces are clean
+    filename components, and the statement vs trust parsers get distinct
+    fingerprints. What moves the fingerprint is covered by test_srcfp."""
+    ok = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    stmt = load._STATEMENT_PARSER_VERSION
+    trust = load._TRUST_PARSER_FINGERPRINT
+    assert stmt.startswith("stmt529.v") and set(stmt) <= ok
+    assert trust.startswith("trust.v") and set(trust) <= ok
+    assert re.search(r"\.[0-9a-f]{32}$", stmt), "statement ns ends in a hex fingerprint"
+    assert re.search(r"\.[0-9a-f]{32}$", trust), "trust ns ends in a hex fingerprint"
+    # distinct parser modules -> distinct fingerprints
+    assert stmt.rsplit(".", 1)[-1] != trust.rsplit(".", 1)[-1]
+    # the trust key folds the signature hash on top of the trust namespace
+    assert load._trust_parser_version("PLACEHOLDER HOLDER").startswith(trust + ".")
 
 
-def test_changed_extractor_version_misses_cache(tmp_path):
-    """An entry written under one extractor-version string is not
-    served under another — a library upgrade forces a re-parse rather
-    than replaying stale text."""
+def test_changed_parser_version_misses_cache(tmp_path):
+    """An entry written under one parser-version namespace is not served under
+    another — a parser or library change forces a re-parse rather than replaying
+    stale text."""
     cache = load.ParseCache(sidecar_dir=tmp_path / "pc")
-    v_old = "stmt529.v1.pp0.11.0-pm20240101"
-    v_new = "stmt529.v1.pp0.11.10-pm20260107"
+    v_old = "stmt529.v1." + "a" * 32
+    v_new = "stmt529.v1." + "b" * 32
     cache.put("sha", v_old, {"ok": 1})
     assert cache.get("sha", v_old) == {"ok": 1}
     assert cache.get("sha", v_new) is None

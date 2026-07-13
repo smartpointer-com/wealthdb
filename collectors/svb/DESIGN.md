@@ -79,11 +79,12 @@ rebuild.
 PDF parsing dominates a rebuild and is CPU-bound, so `load.py` fans it out
 across a process pool and memoises each parse in a persistent sidecar cache
 (`$XDG_CACHE_HOME/wealthdb/svb/parse-cache.json` by default; overridable with
-`--cache-dir`). The cache is keyed by `(statement sha256, parser-source sha256,
-pdf-extractor version, signature)`, so editing `pdf_parsers_svbwa.py` OR
-upgrading the extraction stack (pdfplumber / pdfminer.six, which the
-requirements allow to bump) auto-invalidates every entry, and new/changed
-statements miss and re-parse. Against this static archive a warm
+`--cache-dir`). The cache is keyed by `(statement sha256, parser-logic
+fingerprint, signature)` — the fingerprint (`collectorkit.srcfp`) covers the
+parser's import closure and the pdfplumber / pdfminer.six versions, so editing
+`pdf_parsers_svbwa.py` (or anything it imports) or upgrading the extraction
+stack auto-invalidates every entry, while a comment / formatting / docstring
+edit does not. New/changed statements miss and re-parse. Against this static archive a warm
 rebuild replays every parse from the sidecar (sub-second) and emits
 byte-identical silver. The sidecar holds parsed statement data, so — like
 `svb.db` — it lives outside the repo and never under a secrets dir.

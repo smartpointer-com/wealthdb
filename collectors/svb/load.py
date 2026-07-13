@@ -17,12 +17,13 @@ statement supersedes it, rather than zeroing mid-stream. Real exits are modelled
 instead by a synthetic $0 closure injected for the still-held accounts at
 ``--closure-date``, so they zero out at that date.
 
-Runs on the host with stdlib sqlite3 + pdfplumber (no collectorkit). Idempotent
+Runs on the host with stdlib sqlite3 + pdfplumber. Idempotent
 and reproducible-from-bronze: re-running against the same bronze dir converges.
 
 Parsing the statement PDFs dominates the run and is CPU-bound, so it is fanned
 out across a process pool and memoised in a persistent sidecar cache keyed by
-(statement sha256, parser-source sha256, pdf-extractor version, signature).
+(statement sha256, parser-logic fingerprint, signature) — the fingerprint
+folds in the parser's import closure and the pdfplumber / pdfminer.six versions.
 Since the bronze is a static, closed-account archive, a warm run replays every
 parse from the sidecar and re-emits byte-identical silver. See
 :func:`parse_statements`.
@@ -38,10 +39,10 @@ import sqlite3
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from itertools import repeat
 from pathlib import Path
+
+from collectorkit import srcfp
 
 import pdf_parsers_svbwa
 
@@ -223,8 +224,8 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
 # Parsing the statement PDFs (pdfplumber text extraction) is ~99% of a load and
 # strictly CPU-bound. Two layers cut it down without touching what silver holds:
 #
-#   * a persistent sidecar cache keyed by (statement sha256, parser-source
-#     sha256, pdf-extractor version, signature) — bronze is a static,
+#   * a persistent sidecar cache keyed by (statement sha256, parser-logic
+#     fingerprint, signature) — bronze is a static,
 #     closed-account archive, so a warm run replays every parse from the sidecar
 #     and never opens a PDF; and
 #   * a process pool for the misses (a cold run, or after a parser edit), so the
@@ -260,39 +261,22 @@ def _default_cache_dir() -> Path:
     return Path(base) / "wealthdb" / "svb"
 
 
-def _parser_source_sha() -> str:
-    """sha256 of the parser module source, folded into every cache key so that
-    editing ``pdf_parsers_svbwa.py`` auto-invalidates every cached parse."""
-    return hashlib.sha256(
-        Path(pdf_parsers_svbwa.__file__).read_bytes()).hexdigest()
+_EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six")
 
 
-def _extractor_versions() -> str:
-    """Installed versions of the PDF text-extraction stack (pdfplumber on
-    pdfminer.six), folded into every cache key so that upgrading either — the
-    requirements allow a minor bump — auto-invalidates cached parses, exactly as
-    a parser edit does. A changed extraction path can shift the text and hence
-    the parsed rows, so a warm entry from the old version must not be reused.
-
-    Read from installed distribution metadata (no heavy ``import pdfplumber``),
-    so a warm run stays sub-second. Missing metadata yields a stable sentinel
-    rather than raising — a real load always has the stack installed; this only
-    guards the pure-text unit tests that never reach the cache.
-    """
-    parts = []
-    for dist in ("pdfplumber", "pdfminer.six"):
-        try:
-            parts.append(f"{dist}={_pkg_version(dist)}")
-        except PackageNotFoundError:
-            parts.append(f"{dist}=unavailable")
-    return ";".join(parts)
+def _parser_logic_fingerprint() -> str:
+    """Fingerprint of the parsing logic, folded into every cache key so a code
+    edit to ``pdf_parsers_svbwa.py`` (or anything in its import closure) or a
+    pdfplumber / pdfminer.six upgrade auto-invalidates cached parses, while a
+    comment / formatting / docstring edit — which can't change a parse — does
+    not. See :func:`collectorkit.srcfp.parser_fingerprint`."""
+    return srcfp.parser_fingerprint([pdf_parsers_svbwa], _EXTRACTOR_DISTS)
 
 
-def _cache_key(file_sha: str, parser_sha: str, extractor: str,
-               signature: str | None) -> str:
-    # Opaque key; components before the signature are hex or dotted versions
-    # (no ':'), and the signature is last, so the join stays unambiguous.
-    return f"{file_sha}:{parser_sha}:{extractor}:{signature or ''}"
+def _cache_key(file_sha: str, logic_fp: str, signature: str | None) -> str:
+    # Opaque key; the statement sha and logic fingerprint are hex (no ':'), and
+    # the signature is last, so the join stays unambiguous.
+    return f"{file_sha}:{logic_fp}:{signature or ''}"
 
 
 def _load_parse_cache(cache_dir: Path | None) -> dict[str, dict]:
@@ -337,14 +321,13 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
     pool when more than one needs parsing and ``max_workers`` allows it, else in
     process — and their results folded back into the sidecar.
     """
-    parser_sha = _parser_source_sha()
-    extractor = _extractor_versions()
+    logic_fp = _parser_logic_fingerprint()
     cached = _load_parse_cache(cache_dir)
 
     parsed: list[dict | None] = [None] * len(pdfs)
     misses: list[int] = []
     for i, sha in enumerate(shas):
-        hit = cached.get(_cache_key(sha, parser_sha, extractor, signature))
+        hit = cached.get(_cache_key(sha, logic_fp, signature))
         if hit is not None:
             parsed[i] = hit
         else:
@@ -364,7 +347,7 @@ def parse_statements(pdfs: list[Path], shas: list[str], *,
         for i, out in zip(misses, outputs):
             parsed[i] = out
             if not out.get("_error"):
-                fresh[_cache_key(shas[i], parser_sha, extractor, signature)] = out
+                fresh[_cache_key(shas[i], logic_fp, signature)] = out
         _save_parse_cache(cache_dir, fresh)
 
     return parsed  # type: ignore[return-value]
@@ -436,11 +419,11 @@ def main(argv=None) -> int:
     p.add_argument("--cache-dir", type=Path, default=_default_cache_dir(),
                    help="directory for the persistent parse cache sidecar "
                         "(default $XDG_CACHE_HOME/wealthdb/svb). Keyed by "
-                        "(statement sha256, parser-source sha256, pdf-extractor "
-                        "version, signature), so a parser edit or a pdfplumber / "
-                        "pdfminer.six upgrade auto-invalidates it; a warm run "
-                        "replays every parse from it. It holds parsed statement "
-                        "data, so it lives outside the repo like the silver DB.")
+                        "(statement sha256, parser-logic fingerprint, signature), "
+                        "so a parser edit or a pdfplumber / pdfminer.six upgrade "
+                        "auto-invalidates it; a warm run replays every parse from "
+                        "it. It holds parsed statement data, so it lives outside "
+                        "the repo like the silver DB.")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
     logging.basicConfig(

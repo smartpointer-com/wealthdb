@@ -10,6 +10,7 @@
 #   make test-wealthdb    run `go test ./...` in the wealthdb container
 #   make build-collectors build every collector
 #   make test-collectors  test every collector
+#   make test-collectorkit test the shared collectorkit library
 #   make build-<name>     build one collector   (e.g. make build-schwab-web)
 #   make test-<name>      test one collector    (e.g. make test-schwab-web)
 #   make install          symlink wealthdb + wealthdb-collect into ~/bin
@@ -19,6 +20,8 @@
 # collector (schwab-api, ubs-psn) builds its .venv from requirements.txt.
 # Collectors that ship no tests are a no-op for the test target. Each
 # test-<x> rebuilds its <x> first, so testing always runs current code.
+# `make test` also runs the shared collectorkit library's own suite
+# (test-collectorkit), which otherwise runs nowhere.
 
 # Auto-discover collectors: immediate subdirectories of collectors/.
 # The `/.` matches directories only (files like collectors/README.md
@@ -43,6 +46,7 @@ PYTHON := $(or \
         build-wealthdb test-wealthdb \
         build-web test-web clean-web cleanall-web \
         build-collectors test-collectors \
+        test-collectorkit clean-collectorkit cleanall-collectorkit \
         clean cleanall clean-wealthdb cleanall-wealthdb \
         clean-collectors cleanall-collectors base-images \
         update update-venvs update-wealthdb update-bases
@@ -51,7 +55,7 @@ PYTHON := $(or \
 
 all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-web test-collectors
+test: test-wealthdb test-web test-collectors test-collectorkit
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -100,11 +104,41 @@ base-images:
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
 # cleanall = clean + the heavy outputs (docker images, venvs)
-clean:    clean-wealthdb clean-web clean-collectors
-cleanall: cleanall-wealthdb cleanall-web cleanall-collectors
+clean:    clean-wealthdb clean-web clean-collectors clean-collectorkit
+cleanall: cleanall-wealthdb cleanall-web cleanall-collectors cleanall-collectorkit
 
 clean-collectors:    $(addprefix clean-,$(COLLECTORS))
 cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
+
+# ---- collectorkit (shared library) tests ------------------------------
+# collectorkit is a dependency-free library installed editable into every
+# collector's venv, but its own test suite (shared/collectorkit/tests) runs
+# nowhere else, so `make test` runs it here. Its venv adds pytest plus
+# zstandard so the compress / recompress suites execute rather than skip.
+CK_DIR  := shared/collectorkit
+CK_VENV := $(CK_DIR)/.venv
+
+test-collectorkit:
+	@echo "==> test collectorkit"
+	@if [ ! -x $(CK_VENV)/bin/python ] || \
+	   ! $(CK_VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then \
+		$(PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null || { \
+			echo "    ERROR: '$(PYTHON)' is older than 3.10; collectorkit needs >=3.10." >&2; \
+			echo "    Re-run with a newer interpreter, e.g.: make test-collectorkit PYTHON=python3.14" >&2; \
+			exit 1; }; \
+		rm -rf $(CK_VENV); \
+		$(PYTHON) -m venv $(CK_VENV); \
+	fi
+	@$(CK_VENV)/bin/pip install -q -e $(CK_DIR) pytest zstandard
+	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
+
+clean-collectorkit:
+	@echo "==> clean collectorkit"
+	@find $(CK_DIR) -name .venv -prune -o -type d \( -name __pycache__ -o -name .pytest_cache \) -exec rm -rf {} + 2>/dev/null || true
+
+cleanall-collectorkit: clean-collectorkit
+	@echo "==> cleanall collectorkit"
+	@rm -rf $(CK_VENV) $(CK_DIR)/collectorkit.egg-info
 
 # ---- wealthdb gold engine ---------------------------------------------
 
@@ -276,6 +310,7 @@ help:
 	@echo "  make test-web           run the web lifecycle unit tests"
 	@echo "  make build-collectors   build every collector"
 	@echo "  make test-collectors    test every collector"
+	@echo "  make test-collectorkit  run the shared collectorkit test suite"
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
 	@echo ""

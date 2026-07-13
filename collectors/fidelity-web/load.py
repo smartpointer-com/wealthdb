@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import importlib.metadata
 import json
 import logging
 import os
@@ -52,7 +51,7 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress, silver
+from collectorkit import bronze, cli, compress, silver, srcfp
 
 import pdf_parsers
 import pdf_parsers_supplied
@@ -64,35 +63,30 @@ apply_migrations = silver.apply_migrations
 log = logging.getLogger("fidelity-web.load")
 
 
-def _dist_version(name):
-    """Installed version of a distribution, or ``"?"`` when its
-    metadata can't be read (never fatal — the cache just can't
-    auto-invalidate on that library)."""
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        return "?"
+# A parse-cache entry must be invalidated whenever the logic that
+# produced it changes. srcfp.parser_fingerprint captures that logic
+# precisely: the normalised source (comment-, format- and
+# docstring-invariant) of the parser's whole first-party import
+# closure — pdf_parsers itself plus the collectorkit.pdf extractor and
+# the pdf_common helpers it imports, an edit to any of which shifts the
+# parsed rows — together with the installed versions of the third-party
+# extraction stack (pdfplumber on pdfminer.six, whose >=0.11,<1 pin
+# allows a text-shifting minor bump) and the running Python version. It
+# returns hex, so it drops straight into a sidecar filename.
+_EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six")
 
-
-# Both parsers extract text through pdfplumber (on pdfminer.six).
-# requirements.txt pins ``pdfplumber>=0.11,<1``, so a minor upgrade is
-# allowed and can change the extracted text for the same PDF bytes.
-# Folding both installed versions into the parse-cache key makes a
-# library upgrade auto-invalidate stale entries exactly as a manual
-# PARSER_VERSION bump would — no orphaned warm entries that would
-# replay text a fresh parse no longer produces. Sanitised to
-# ``[A-Za-z0-9.]`` so it stays a clean sidecar-filename component.
-_EXTRACTOR_FINGERPRINT = re.sub(
-    r"[^A-Za-z0-9.]+", "_",
-    f"pp{_dist_version('pdfplumber')}-pm{_dist_version('pdfminer.six')}",
-)
-
-# Parse-cache namespace for the 529 statement parser: the parser's
-# own PARSER_VERSION plus the extractor fingerprint. The trust
-# parser's namespace additionally folds in the signature guard (see
-# _trust_parser_version) because that guard changes the parsed rows.
+# Parse-cache namespace for the 529 statement parser: a coarse manual
+# PARSER_VERSION (a deliberate epoch lever) plus the automatic logic
+# fingerprint. The trust parser's namespace additionally folds in the
+# signature guard (see _trust_parser_version) because that guard changes
+# the parsed rows.
 _STATEMENT_PARSER_VERSION = (
-    f"stmt529.v{pdf_parsers.PARSER_VERSION}.{_EXTRACTOR_FINGERPRINT}"
+    f"stmt529.v{pdf_parsers.PARSER_VERSION}."
+    + srcfp.parser_fingerprint([pdf_parsers], _EXTRACTOR_DISTS)
+)
+_TRUST_PARSER_FINGERPRINT = (
+    f"trust.v{pdf_parsers_supplied.PARSER_VERSION}."
+    + srcfp.parser_fingerprint([pdf_parsers_supplied], _EXTRACTOR_DISTS)
 )
 
 
@@ -1420,16 +1414,14 @@ def _parse_supplied_statement_pdf_worker(args):
 
 
 def _trust_parser_version(signature):
-    """Parse-cache namespace for the trust parser: the parser's
-    PARSER_VERSION, the shared extractor fingerprint, and a hash of
-    the signature guard. The guard is folded in because it changes
-    which lines a statement's holdings block yields — a cache entry
-    parsed under one guard must not be replayed under another. The
-    signature itself (the trust's name, PII) never enters the key,
-    only its hash."""
+    """Parse-cache namespace for the trust parser: the parser-logic
+    fingerprint (_TRUST_PARSER_FINGERPRINT) plus a hash of the signature
+    guard. The guard is folded in because it changes which lines a
+    statement's holdings block yields — a cache entry parsed under one
+    guard must not be replayed under another. The signature itself (the
+    trust's name, PII) never enters the key, only its hash."""
     sig = hashlib.sha256((signature or "").encode("utf-8")).hexdigest()[:16]
-    return (f"trust.v{pdf_parsers_supplied.PARSER_VERSION}"
-            f".{_EXTRACTOR_FINGERPRINT}.{sig}")
+    return f"{_TRUST_PARSER_FINGERPRINT}.{sig}"
 
 
 def _trust_pdf_candidates(trust_dir):
