@@ -76,6 +76,18 @@ A bronze dir with no PDFs fails the load without touching the existing
 `svb.db` — a mis-pointed dir must never replace a good silver with an empty
 rebuild.
 
+PDF parsing dominates a rebuild and is CPU-bound, so `load.py` fans it out
+across a process pool and memoises each parse in a persistent sidecar cache
+(`$XDG_CACHE_HOME/wealthdb/svb/parse-cache.json` by default; overridable with
+`--cache-dir`). The cache is keyed by `(statement sha256, parser-source sha256,
+pdf-extractor version, signature)`, so editing `pdf_parsers_svbwa.py` OR
+upgrading the extraction stack (pdfplumber / pdfminer.six, which the
+requirements allow to bump) auto-invalidates every entry, and new/changed
+statements miss and re-parse. Against this static archive a warm
+rebuild replays every parse from the sidecar (sub-second) and emits
+byte-identical silver. The sidecar holds parsed statement data, so — like
+`svb.db` — it lives outside the repo and never under a secrets dir.
+
 The wrapper resolves `--data-dir` / `--silver-db` (CLI flag > `SVB_*` env >
 `WEALTHDB_*` env > default `<data-dir>/svb.db`) and forwards extra flags to
 `load.py`, e.g. `wealthdb-collect svb load --closure-date 2023-09-30`. Running

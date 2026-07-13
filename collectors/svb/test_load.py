@@ -44,8 +44,13 @@ def _build(tmp_path, monkeypatch):
         B.pdf_parsers_svbwa, "parse_svbwa_statement_pdf",
         lambda path, expected_signature=None: dict(_CANNED[Path(path).stem]))
     db = tmp_path / "svb.db"
+    # cache_dir=None + max_workers=1: parse the mocked parser in-process, per
+    # file. These fixtures deliberately give distinct logical statements the
+    # SAME bytes, which the content-keyed cache would (correctly, for real
+    # bronze) collapse; the modelling tests therefore run cache-off, and
+    # test_parse_cache_reuse covers the cache with distinct content.
     B.build(db, bronze, signature=None, closure_date="2023-09-30",
-            migrations_dir=MIGRATIONS)
+            migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
     return sqlite3.connect(str(db))
 
 
@@ -76,7 +81,7 @@ def test_empty_bronze_never_clobbers_existing_silver(tmp_path, monkeypatch):
         (tmp_path / "empty").mkdir(exist_ok=True)
         with pytest.raises(SystemExit, match="no statement PDFs"):
             B.build(db, bad, signature=None, closure_date="2023-09-30",
-                    migrations_dir=MIGRATIONS)
+                    migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
         assert db.read_bytes() == before, "existing silver was modified"
 
 
@@ -151,7 +156,7 @@ def test_duplicate_option_descriptions_all_survive(tmp_path, monkeypatch):
         lambda path, expected_signature=None: dict(canned["s"]))
     db = tmp_path / "svb.db"
     B.build(db, bronze, signature=None, closure_date="2023-09-30",
-            migrations_dir=MIGRATIONS)
+            migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
     conn = sqlite3.connect(str(db))
     rows = conn.execute(
         "SELECT market_value FROM historical_position_snapshots "
@@ -159,6 +164,99 @@ def test_duplicate_option_descriptions_all_survive(tmp_path, monkeypatch):
         "ORDER BY market_value", (B._CLOSURE_SHA,)).fetchall()
     assert len(rows) == 3, "all three legs must survive (no PK collapse)"
     assert sum(r[0] for r in rows) == 1000.0 - 50.0 - 60.0 == 890.0
+
+
+def _snapshot_rows(db):
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute(
+            "SELECT as_of_date, account_external_id, description, instrument_key,"
+            " quantity, price, market_value, source_sha256, payload "
+            "FROM historical_position_snapshots ORDER BY 1,2,3,8").fetchall()
+    finally:
+        conn.close()
+
+
+# Distinct bytes per statement (unlike the shared-bytes fixtures above) so each
+# maps to its own content-keyed cache entry.
+_DISTINCT_STEMS = ("2021-12-31_a", "2022-12-30_b")
+
+
+def _distinct_bronze(tmp_path, monkeypatch):
+    bronze = tmp_path / "bronze"
+    bronze.mkdir()
+    for stem in _DISTINCT_STEMS:
+        (bronze / f"{stem}.pdf").write_bytes(f"%PDF-{stem}".encode())
+    calls = []
+
+    def fake(path, expected_signature=None):
+        calls.append(Path(path).stem)
+        return dict(_CANNED[Path(path).stem])
+
+    monkeypatch.setattr(B.pdf_parsers_svbwa, "parse_svbwa_statement_pdf", fake)
+    return bronze, calls
+
+
+def test_parse_cache_reuse(tmp_path, monkeypatch):
+    """A warm run replays every parse from the sidecar (no parser call) and
+    re-emits byte-identical silver."""
+    bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+
+    cold = tmp_path / "cold.db"
+    B.build(cold, bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    assert sorted(calls) == sorted(_DISTINCT_STEMS)  # cold: each parsed once
+    assert (cache_dir / B._PARSE_CACHE_FILE).is_file()
+
+    calls.clear()
+    warm = tmp_path / "warm.db"
+    B.build(warm, bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    assert calls == [], "warm run must not re-parse any statement"
+    assert _snapshot_rows(cold) == _snapshot_rows(warm)
+
+
+def test_parser_change_invalidates_cache(tmp_path, monkeypatch):
+    """Folding the parser-source sha into the key means an edited parser forces
+    a re-parse even though the statement bytes are unchanged."""
+    bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+    B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    calls.clear()
+
+    # Simulate a parser edit: a different source hash misses every prior entry.
+    monkeypatch.setattr(B, "_parser_source_sha", lambda: "edited-parser-sha")
+    B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    assert sorted(calls) == sorted(_DISTINCT_STEMS), "parser edit must re-parse"
+
+
+def test_extractor_upgrade_invalidates_cache(tmp_path, monkeypatch):
+    """Folding the pdfplumber / pdfminer.six version into the key means an
+    extraction-stack upgrade forces a re-parse even though the statement bytes
+    and parser source are unchanged."""
+    bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
+    cache_dir = tmp_path / "cache"
+    B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    calls.clear()
+
+    # Simulate an extractor upgrade: a different version string misses every
+    # prior entry.
+    monkeypatch.setattr(
+        B, "_extractor_versions", lambda: "pdfplumber=9.9.9;pdfminer.six=99999999")
+    B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-09-30",
+            migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
+    assert sorted(calls) == sorted(_DISTINCT_STEMS), "extractor upgrade must re-parse"
+
+
+def test_parse_worker_is_picklable():
+    """The pool target must be module-level so it pickles under spawn."""
+    import pickle
+
+    assert pickle.loads(pickle.dumps(B._parse_statement)) is B._parse_statement
 
 
 def _real_sha(conn):

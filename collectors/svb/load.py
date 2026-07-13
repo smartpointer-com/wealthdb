@@ -19,6 +19,13 @@ instead by a synthetic $0 closure injected for the still-held accounts at
 
 Runs on the host with stdlib sqlite3 + pdfplumber (no collectorkit). Idempotent
 and reproducible-from-bronze: re-running against the same bronze dir converges.
+
+Parsing the statement PDFs dominates the run and is CPU-bound, so it is fanned
+out across a process pool and memoised in a persistent sidecar cache keyed by
+(statement sha256, parser-source sha256, pdf-extractor version, signature).
+Since the bronze is a static, closed-account archive, a warm run replays every
+parse from the sidecar and re-emits byte-identical silver. See
+:func:`parse_statements`.
 """
 from __future__ import annotations
 
@@ -26,9 +33,14 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+from itertools import repeat
 from pathlib import Path
 
 import pdf_parsers_svbwa
@@ -40,6 +52,8 @@ _SYNTHETIC_KIND = "other"  # gold default → taxable_personal; config sets the 
 _CLOSURE_SHA = "synthetic-closure"
 _CLOSURE_DESC = "Account closed — assets transferred"
 _SIGNATURE_SIDECAR = "signature.txt"
+_PARSE_CACHE_FILE = "parse-cache.json"
+_PARSE_CACHE_SCHEMA = 1  # bump whenever the sidecar's on-disk layout changes
 _MIGRATIONS = (
     "0001_initial.sql",
     "0002_currency_asset_class_core_position.sql",
@@ -202,8 +216,163 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
     )
 
 
+# ============================================================
+# Statement parsing: process pool + persistent parse cache
+# ============================================================
+#
+# Parsing the statement PDFs (pdfplumber text extraction) is ~99% of a load and
+# strictly CPU-bound. Two layers cut it down without touching what silver holds:
+#
+#   * a persistent sidecar cache keyed by (statement sha256, parser-source
+#     sha256, pdf-extractor version, signature) — bronze is a static,
+#     closed-account archive, so a warm run replays every parse from the sidecar
+#     and never opens a PDF; and
+#   * a process pool for the misses (a cold run, or after a parser edit), so the
+#     28 independent parses fan out across cores instead of running serially.
+#
+# The cached value is exactly the dict the parser returns and insert_statement
+# consumes it identically, so cached and freshly-parsed silver are byte-for-byte
+# identical. Statement sha256 is computed in the parent (statements are tens of
+# KB, so hashing is negligible) so a cache HIT can skip the parse entirely — a
+# warm run therefore never spawns a pool.
+
+
+def _parse_statement(path: str, signature: str | None) -> dict:
+    """Parse one statement PDF into the parser's structured dict.
+
+    Module-level (not a closure) so it pickles for
+    :class:`~concurrent.futures.ProcessPoolExecutor` under the ``spawn`` start
+    method used on macOS.
+    """
+    return pdf_parsers_svbwa.parse_svbwa_statement_pdf(
+        path, expected_signature=signature)
+
+
+def _default_cache_dir() -> Path:
+    """XDG cache location for the parse sidecar.
+
+    Defaults to ``$XDG_CACHE_HOME/wealthdb/svb`` (``~/.cache/wealthdb/svb`` when
+    the variable is unset). The sidecar holds parsed statement data — derived
+    PII — so it stays outside the repo, exactly like the silver DB, and never
+    under a secrets dir.
+    """
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "wealthdb" / "svb"
+
+
+def _parser_source_sha() -> str:
+    """sha256 of the parser module source, folded into every cache key so that
+    editing ``pdf_parsers_svbwa.py`` auto-invalidates every cached parse."""
+    return hashlib.sha256(
+        Path(pdf_parsers_svbwa.__file__).read_bytes()).hexdigest()
+
+
+def _extractor_versions() -> str:
+    """Installed versions of the PDF text-extraction stack (pdfplumber on
+    pdfminer.six), folded into every cache key so that upgrading either — the
+    requirements allow a minor bump — auto-invalidates cached parses, exactly as
+    a parser edit does. A changed extraction path can shift the text and hence
+    the parsed rows, so a warm entry from the old version must not be reused.
+
+    Read from installed distribution metadata (no heavy ``import pdfplumber``),
+    so a warm run stays sub-second. Missing metadata yields a stable sentinel
+    rather than raising — a real load always has the stack installed; this only
+    guards the pure-text unit tests that never reach the cache.
+    """
+    parts = []
+    for dist in ("pdfplumber", "pdfminer.six"):
+        try:
+            parts.append(f"{dist}={_pkg_version(dist)}")
+        except PackageNotFoundError:
+            parts.append(f"{dist}=unavailable")
+    return ";".join(parts)
+
+
+def _cache_key(file_sha: str, parser_sha: str, extractor: str,
+               signature: str | None) -> str:
+    # Opaque key; components before the signature are hex or dotted versions
+    # (no ':'), and the signature is last, so the join stays unambiguous.
+    return f"{file_sha}:{parser_sha}:{extractor}:{signature or ''}"
+
+
+def _load_parse_cache(cache_dir: Path | None) -> dict[str, dict]:
+    """Load the sidecar's parsed-dict entries, or ``{}`` when caching is off
+    (``cache_dir is None``), the sidecar is absent/corrupt, or its schema is
+    from an older layout (in which case it is ignored and rebuilt)."""
+    if cache_dir is None:
+        return {}
+    try:
+        blob = json.loads(
+            (cache_dir / _PARSE_CACHE_FILE).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+    if blob.get("schema") != _PARSE_CACHE_SCHEMA:
+        return {}
+    return blob.get("entries", {})
+
+
+def _save_parse_cache(cache_dir: Path | None, entries: dict[str, dict]) -> None:
+    """Persist the parsed-dict entries to the sidecar (atomic rename). No-op
+    when caching is off (``cache_dir is None``)."""
+    if cache_dir is None:
+        return
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / _PARSE_CACHE_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps({"schema": _PARSE_CACHE_SCHEMA, "entries": entries},
+                   separators=(",", ":")),
+        encoding="utf-8")
+    tmp.replace(path)
+
+
+def parse_statements(pdfs: list[Path], shas: list[str], *,
+                     signature: str | None, cache_dir: Path | None,
+                     max_workers: int | None) -> list[dict]:
+    """Return the parsed dict for each PDF in ``pdfs`` order.
+
+    Cache hits (matched against the sidecar's pre-run state only, so that two
+    statements with identical content are still each parsed rather than one
+    shadowing the other) are replayed directly; misses are parsed — in a process
+    pool when more than one needs parsing and ``max_workers`` allows it, else in
+    process — and their results folded back into the sidecar.
+    """
+    parser_sha = _parser_source_sha()
+    extractor = _extractor_versions()
+    cached = _load_parse_cache(cache_dir)
+
+    parsed: list[dict | None] = [None] * len(pdfs)
+    misses: list[int] = []
+    for i, sha in enumerate(shas):
+        hit = cached.get(_cache_key(sha, parser_sha, extractor, signature))
+        if hit is not None:
+            parsed[i] = hit
+        else:
+            misses.append(i)
+
+    if misses:
+        paths = [str(pdfs[i]) for i in misses]
+        workers = (max_workers if max_workers is not None
+                   else min(len(paths), os.cpu_count() or 1))
+        if workers > 1 and len(paths) > 1:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                outputs = list(pool.map(_parse_statement, paths,
+                                        repeat(signature)))
+        else:
+            outputs = [_parse_statement(p, signature) for p in paths]
+        fresh = dict(cached)
+        for i, out in zip(misses, outputs):
+            parsed[i] = out
+            if not out.get("_error"):
+                fresh[_cache_key(shas[i], parser_sha, extractor, signature)] = out
+        _save_parse_cache(cache_dir, fresh)
+
+    return parsed  # type: ignore[return-value]
+
+
 def build(silver_db: Path, bronze_dir: Path, *, signature: str | None,
-          closure_date: str, migrations_dir: Path) -> None:
+          closure_date: str, migrations_dir: Path,
+          cache_dir: Path | None = None, max_workers: int | None = None) -> None:
     # Validate the bronze BEFORE touching the existing silver: a mis-pointed
     # --bronze-dir must fail loudly, not silently replace a good svb.db with
     # an empty rebuild (which then zeroes the source out of gold).
@@ -214,16 +383,20 @@ def build(silver_db: Path, bronze_dir: Path, *, signature: str | None,
             f"svb load: no statement PDFs in {bronze_dir} — refusing to "
             f"rebuild {silver_db} from an empty bronze. Point --data-dir / "
             f"--bronze-dir at the archive (PDFs live in <data-dir>/bronze/).")
+    # Hash then parse every statement (cache replay + process pool) before the
+    # existing silver is touched, so a parse crash also leaves the good svb.db in
+    # place. Inserts still run serially below in sorted-PDF order, preserving the
+    # INSERT OR REPLACE last-writer semantics and the per-statement log order.
+    shas = [hashlib.sha256(pdf.read_bytes()).hexdigest() for pdf in pdfs]
+    results = parse_statements(pdfs, shas, signature=signature,
+                               cache_dir=cache_dir, max_workers=max_workers)
     if silver_db.exists():
         silver_db.unlink()  # full rebuild — reproducible from bronze
     conn = sqlite3.connect(str(silver_db))
     try:
         apply_migrations(conn, migrations_dir)
         inserted = parsed_ok = skipped = 0
-        for pdf in pdfs:
-            sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
-            res = pdf_parsers_svbwa.parse_svbwa_statement_pdf(
-                str(pdf), expected_signature=signature)
+        for pdf, sha, res in zip(pdfs, shas, results):
             if res.get("_error"):
                 log.warning("skip %s: %s", pdf.name, res["_error"])
                 skipped += 1
@@ -260,6 +433,14 @@ def main(argv=None) -> int:
                         "2023-09-30")
     p.add_argument("--migrations-dir", type=Path,
                    default=Path(__file__).parent / "migrations")
+    p.add_argument("--cache-dir", type=Path, default=_default_cache_dir(),
+                   help="directory for the persistent parse cache sidecar "
+                        "(default $XDG_CACHE_HOME/wealthdb/svb). Keyed by "
+                        "(statement sha256, parser-source sha256, pdf-extractor "
+                        "version, signature), so a parser edit or a pdfplumber / "
+                        "pdfminer.six upgrade auto-invalidates it; a warm run "
+                        "replays every parse from it. It holds parsed statement "
+                        "data, so it lives outside the repo like the silver DB.")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
     logging.basicConfig(
@@ -270,7 +451,8 @@ def main(argv=None) -> int:
         log.warning("no signature configured (--signature or signature.txt); "
                     "ingesting every PDF unverified")
     build(args.silver_db, args.bronze_dir, signature=sig,
-          closure_date=args.closure_date, migrations_dir=args.migrations_dir)
+          closure_date=args.closure_date, migrations_dir=args.migrations_dir,
+          cache_dir=args.cache_dir)
     return 0
 
 
