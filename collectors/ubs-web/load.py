@@ -227,8 +227,12 @@ def normalize_payload(data: dict) -> str:
 # ============================================================
 
 def load_dump(conn: sqlite3.Connection, dump_dir: Path,
-              schema_version: int) -> None:
-    """Load one bronze dump into silver. Single transaction."""
+              schema_version: int, parse_cache: dict) -> None:
+    """Load one bronze dump into silver. Single transaction.
+
+    `parse_cache` is shared across the whole load run so each document
+    in the cumulative archive is parsed once (see
+    `_load_historical_from_pdfs`)."""
     snapshot_at = ts_from_dir(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -240,7 +244,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
-        conn, snapshot_at, dump_dir)
+        conn, snapshot_at, dump_dir, parse_cache)
 
     log.info("loaded %s: positions=%d transactions=%d documents=%d "
              "hist_positions=%d hist_cash_balances=%d "
@@ -736,15 +740,15 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
 # Historical snapshots from PDF documents
 # ----------------------------------------------------------------
 
-def _parse_one_pdf(args: tuple[str, str, str]
-                   ) -> tuple[str, str, str, list[dict] | None, str | None]:
+def _parse_one_pdf(args: tuple[str, str, str, str | None]
+                   ) -> tuple[str, str, str, list[dict] | dict | None, str | None]:
     """Worker-side: parse one PDF and return its rows. Pure (no DB
     access) so it can run in a ProcessPoolExecutor worker. Returns
     (token, kind, file_name, rows, error_message); exactly one of
     `rows` or `error_message` is set on every non-skipped call."""
     from pdf_parsers import (
-        parse_statement_of_assets, parse_account_statement,
-        parse_account_statement_transactions, parse_maturity_notice,
+        parse_statement_of_assets, parse_account_statement_combined,
+        parse_maturity_notice,
     )
     token, fp, label, doc_type = args
     path = Path(fp)
@@ -757,12 +761,11 @@ def _parse_one_pdf(args: tuple[str, str, str]
         if doc_type == "Maturity notice":
             rows = parse_maturity_notice(path, token, label)
             return token, "mortgage", path.name, rows, None
-        # Account Statement: emit BOTH the summary balances (for
-        # historical_cash_balances) and the per-transaction movement
-        # rows (for the transactions backfill). One PDF read each,
-        # both CPU-bound, so we keep them in the same worker call.
-        cash = parse_account_statement(path, token, label)
-        txns = parse_account_statement_transactions(path, token, label)
+        # Account Statement: a single PDF open yields BOTH the summary
+        # balances (for historical_cash_balances) and the per-transaction
+        # movement rows (for the transactions backfill), reusing one
+        # page layout across both CPU-bound passes.
+        cash, txns = parse_account_statement_combined(path, token, label)
         return (token, "account_statement", path.name,
                 {"cash": cash, "transactions": txns}, None)
     except Exception as e:  # noqa: BLE001
@@ -770,7 +773,8 @@ def _parse_one_pdf(args: tuple[str, str, str]
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
-                               dump_dir: Path) -> tuple[int, int, int, int]:
+                               dump_dir: Path,
+                               parse_cache: dict) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, or a
     Maturity notice; parse it in a worker-pool of subprocesses,
@@ -780,15 +784,29 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
 
     pdfplumber / pdfminer text extraction is CPU-bound and largely
     GIL-bound, so the speedup comes from real OS processes, not
-    threads. SQLite writes stay on the main connection."""
+    threads. SQLite writes stay on the main connection.
+
+    The documents table accumulates across dumps, so each dump's SELECT
+    re-lists the whole archive. `parse_cache` (keyed by content_sha256,
+    shared across the load run) holds each document's successful parse
+    result so it is parsed once, by the first dump that references it;
+    later dumps replay the cached rows. A skipped (missing-file) or
+    errored parse is deliberately left uncached and re-attempted per
+    dump, matching the un-cached baseline. The per-dump inserts below
+    still run for every dump, so the silver tables stay byte-identical to
+    parsing every dump afresh — including the by-design per-dump
+    duplication of NULL-ISIN cash rows and the last-dump snapshot_at
+    stamping on statement-derived transaction upserts."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return 0, 0, 0, 0
 
-    # Pull (doc_token, file_path, label, doc_type) for relevant docs
-    # from the documents table — that's where bronze metadata lives.
+    # Pull (doc_token, file_path, label, doc_type, content_sha256) for
+    # relevant docs from the documents table — that's where bronze
+    # metadata lives. content_sha256 keys the cross-dump parse cache.
     cur = conn.execute(
-        "SELECT doc_token, file_path, label, doc_type FROM documents "
+        "SELECT doc_token, file_path, label, doc_type, content_sha256 "
+        "FROM documents "
         "WHERE label LIKE '%Statement of assets%' "
         "   OR doc_type = 'Account Statement' "
         "   OR doc_type = 'Maturity notice'"
@@ -806,32 +824,57 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     # independent of dump load order.
     mt940_floors = _mt940_floors_by_account(dump_dir)
 
+    # Split the archive into already-parsed docs (replay cached rows)
+    # and docs this run has not parsed yet (submit to the pool once).
+    results: list[tuple] = []
+    to_parse: dict[str, tuple] = {}
+    for token, fp, label, doc_type, sha in work:
+        cached = parse_cache.get(sha)
+        if cached is not None:
+            results.append(cached)
+        else:
+            to_parse.setdefault(sha, (token, fp, label, doc_type))
+
+    if to_parse:
+        n_workers = max(1, os.cpu_count() or 1)
+        log.info("parsing %d PDFs across %d workers", len(to_parse), n_workers)
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            futures = {ex.submit(_parse_one_pdf, args): sha
+                       for sha, args in to_parse.items()}
+            for fut in as_completed(futures):
+                res = fut.result()
+                # res = (token, kind, name, rows, err). Cache only a
+                # successful parse (err None, rows present); leave a skip
+                # (missing file) or an error uncached so a later dump
+                # re-attempts it, exactly as the un-cached baseline would.
+                # This keeps a transient in-worker failure (e.g. OOM under
+                # memory pressure) from being cached and permanently
+                # dropping a document's rows for the rest of the run.
+                if res[3] is not None and res[4] is None:
+                    parse_cache[futures[fut]] = res
+                results.append(res)
+
     pos_rows = 0
     cash_rows = 0
     mortgage_rows = 0
     txn_rows = 0
     txn_reject_stmts = 0
-    n_workers = max(1, os.cpu_count() or 1)
-    log.info("parsing %d PDFs across %d workers", len(work), n_workers)
-    with ProcessPoolExecutor(max_workers=n_workers) as ex:
-        futures = [ex.submit(_parse_one_pdf, w) for w in work]
-        for fut in as_completed(futures):
-            _, kind, name, rows, err = fut.result()
-            if err is not None:
-                log.warning("PDF parse failed for %s: %s", name, err)
-                continue
-            if kind == "positions":
-                pos_rows += _insert_hist_positions(conn, rows or [])
-            elif kind == "mortgage":
-                mortgage_rows += _insert_hist_mortgages(conn, rows or [])
-            elif kind == "account_statement":
-                cash_rows += _insert_hist_cash_balances(
-                    conn, (rows or {}).get("cash") or [])
-                n, rejected = _insert_hist_transactions(
-                    conn, snapshot_at, (rows or {}).get("transactions") or [],
-                    mt940_floors)
-                txn_rows += n
-                txn_reject_stmts += rejected
+    for _token, kind, name, rows, err in results:
+        if err is not None:
+            log.warning("PDF parse failed for %s: %s", name, err)
+            continue
+        if kind == "positions":
+            pos_rows += _insert_hist_positions(conn, rows or [])
+        elif kind == "mortgage":
+            mortgage_rows += _insert_hist_mortgages(conn, rows or [])
+        elif kind == "account_statement":
+            cash_rows += _insert_hist_cash_balances(
+                conn, (rows or {}).get("cash") or [])
+            n, rejected = _insert_hist_transactions(
+                conn, snapshot_at, (rows or {}).get("transactions") or [],
+                mt940_floors)
+            txn_rows += n
+            txn_reject_stmts += rejected
     if txn_reject_stmts:
         log.warning("%d Account-Statement PDF(s) failed movement "
                     "reconciliation; their transactions were NOT ingested",
@@ -1059,6 +1102,9 @@ def main(argv: list[str]) -> int:
              len(dumps), args.bronze_dir)
 
     n_loaded = n_skipped = 0
+    # Shared across dumps: parse each archived document once, replay the
+    # cached rows for the later dumps that re-list it.
+    parse_cache: dict = {}
     for dump_dir in dumps:
         if already_loaded(conn, dump_dir):
             n_skipped += 1
@@ -1066,7 +1112,7 @@ def main(argv: list[str]) -> int:
             continue
         try:
             conn.execute("BEGIN")
-            load_dump(conn, dump_dir, schema_version)
+            load_dump(conn, dump_dir, schema_version, parse_cache)
             conn.execute("COMMIT")
             n_loaded += 1
         except Exception:  # noqa: BLE001 — log + rollback + continue

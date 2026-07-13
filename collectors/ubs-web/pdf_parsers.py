@@ -1,12 +1,13 @@
 """PDF parsers for UBS Switzerland statement archive.
 
-Two parsers, both built on pdfplumber's `extract_text()`:
+Both parsers are built on pdfplumber's `extract_text()`:
 
   parse_statement_of_assets(pdf_path, doc_token, label)
       → list of position snapshots from one Statement-of-assets PDF.
 
-  parse_account_statement(pdf_path, doc_token, label)
-      → list of cash-balance snapshots from one Account-Statement PDF.
+  parse_account_statement_combined(pdf_path, doc_token, label)
+      → (cash-balance rows, movement rows) from one Account-Statement
+        PDF — opened once and laid out for both passes.
 
 Both return plain dicts ready for the loader to insert into the
 silver `historical_*` tables.
@@ -495,21 +496,12 @@ _TOTAL_CREDITS_RE = re.compile(rf"Totalcredits(?P<v>{_VAL})")
 _TOTAL_DEBITS_RE = re.compile(rf"Totaldebits(?P<v>{_VAL})")
 
 
-def parse_account_statement(pdf_path: Path, doc_token: str,
-                            label: str) -> list[dict]:
-    """Walk an Account-Statement PDF and emit ONE row with opening +
-    closing balance + period bounds for the covered cash account."""
-    with pdfplumber.open(pdf_path) as pdf:
-        text = "\n".join(
-            (p.extract_text(x_tolerance=2) or "") for p in pdf.pages[:2]
-        )
-    return parse_account_statement_text(text, doc_token)
-
-
 def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
-    """Pure-text variant of parse_account_statement — same row shape,
-    but takes already-extracted PDF text so tests can exercise the
-    regex layer without a real PDF on disk."""
+    """Account-Statement balance-summary parser: from the first-two-page
+    text emit ONE row with opening + closing balance + period bounds for
+    the covered cash account. Takes already-extracted PDF text so the
+    same text can serve both the summary and movement passes (and so
+    tests can exercise the regex layer without a real PDF on disk)."""
     # UBS Account-Statement PDFs render text with all the
     # whitespace squished out within tokens (e.g. `IBANCHKK...`,
     # `Openingbalance1234.56`). pdfplumber preserves that. We
@@ -770,8 +762,8 @@ def _to_float(s: str | None) -> float | None:
 # Account-Statement MOVEMENT parser (per-transaction ledger rows)
 # ============================================================
 #
-# The summary parser above (`parse_account_statement`) reads only
-# the opening/closing balances. This parser walks the ledger and
+# The summary parser above (`parse_account_statement_text`) reads
+# only the opening/closing balances. This parser walks the ledger and
 # emits every booking (movement) row, so the pre-MT940 transaction
 # history that the CSV feed hard-caps at 2024-01-02 can be
 # backfilled from the PDF archive.
@@ -931,20 +923,34 @@ def _stmt_counter_account(cont_lines: list[str]) -> str | None:
     return None
 
 
-def parse_account_statement_transactions(
-        pdf_path: Path, doc_token: str, label: str) -> list[dict]:
-    """Walk an Account-Statement PDF and emit one dict per booking
-    (movement) row. The loader maps these into the silver
-    `transactions` table (with a deterministic id + per-account
-    MT940 cut-over). Rows carry the statement-level reconciliation
-    result so the loader can gate on it."""
+def parse_account_statement_combined(
+        pdf_path: Path, doc_token: str, label: str
+        ) -> tuple[list[dict], list[dict]]:
+    """Open an Account-Statement PDF once and run both passes over it:
+    the movement-ledger pass (one dict per booking row) and the
+    balance-summary pass (opening/closing balance + period bounds). The
+    summary pass reuses the first-two-page text the movement pass
+    already extracted, so the PDF is laid out once instead of once per
+    pass. Returns (cash-balance rows, movement rows)."""
     with pdfplumber.open(pdf_path) as pdf:
-        return parse_account_statement_transactions_pages(pdf, doc_token)
+        movements, head_text = parse_account_statement_transactions_pages(
+            pdf, doc_token, return_head_text=True)
+    cash = parse_account_statement_text(head_text, doc_token)
+    return cash, movements
 
 
-def parse_account_statement_transactions_pages(pdf, doc_token: str) -> list[dict]:
-    """Core of parse_account_statement_transactions, taking an open
-    pdfplumber document so tests can feed a synthetic one."""
+def parse_account_statement_transactions_pages(
+        pdf, doc_token: str, return_head_text: bool = False):
+    """Emit one dict per booking (movement) row from an open pdfplumber
+    document (so tests can feed a synthetic one). The loader maps these
+    into the silver `transactions` table (deterministic id + per-account
+    MT940 cut-over); rows carry the statement-level reconciliation result
+    so the loader can gate on it.
+
+    With `return_head_text` set, also returns the concatenated
+    first-two-page `extract_text` — the text the balance-summary parser
+    consumes — so a single open serves both passes: returns
+    (movement rows, head text) instead of just the movement rows."""
     iban = None
     currency = None
     opening = None
@@ -952,9 +958,12 @@ def parse_account_statement_transactions_pages(pdf, doc_token: str) -> list[dict
     movements: list[dict] = []
     cur: dict | None = None
     seen_closing = False
+    head_texts: list[str] = []
 
     for page in pdf.pages:
         text = page.extract_text(x_tolerance=2) or ""
+        if return_head_text and len(head_texts) < 2:
+            head_texts.append(text)
         if iban is None:
             m = _STMT_IBAN_RE.search(text)
             if m:
@@ -1096,6 +1105,8 @@ def parse_account_statement_transactions_pages(pdf, doc_token: str) -> list[dict
                 "source": "account_statement_pdf",
             }, ensure_ascii=False),
         })
+    if return_head_text:
+        return out, "\n".join(head_texts)
     return out
 
 
