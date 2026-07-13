@@ -38,8 +38,10 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -239,12 +241,89 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
     return rows
 
 
+# ---- content-hash parse cache -------------------------------------------
+#
+# The same statement/K-1 PDF is hardlinked into every later dump, so a full
+# reload finds each blob many times (≈4.5× on the current corpus). Both the
+# content hash and the pdftotext parse are functions of the blob content
+# alone, so they are memoized process-wide and computed once per distinct
+# blob rather than once per (dump, document).
+
+_HASH_MEMO: dict[tuple[int, int], str] = {}   # (st_dev, st_ino) -> sha256 hex
+_PARSE_CACHE: dict[str, dict] = {}            # sha256 hex -> {kind, cap, k1}
+
+
+def _content_hash(blob: Path) -> str:
+    """sha256 of a bronze blob, memoized by (device, inode) so blobs
+    hardlinked across dumps are read and hashed once."""
+    st = blob.stat()
+    key = (st.st_dev, st.st_ino)
+    h = _HASH_MEMO.get(key)
+    if h is None:
+        h = bronze.sha256_file(blob)[0]
+        _HASH_MEMO[key] = h
+    return h
+
+
+def _parse_pdf(blob: Path, chash: str) -> dict:
+    """Extract, classify, and parse a PDF once per content hash. Returns
+    {"kind", "cap", "k1"} — the text classification plus both parsers'
+    output. All three are pure functions of the extracted text, so the
+    cached result equals a fresh parse; the caller selects cap vs k1 by
+    document type exactly as before."""
+    cached = _PARSE_CACHE.get(chash)
+    if cached is None:
+        text = statements.pdf_text(blob)
+        cached = {
+            "kind": statements.classify(text),
+            "cap": statements.parse_capital_account(text),
+            "k1": statements.parse_k1(text),
+        }
+        _PARSE_CACHE[chash] = cached
+    return cached
+
+
+def _pdf_blobs(run_dir: Path, nodes: dict) -> list[tuple[Path, str]]:
+    """(blob, content_hash) for every PDF document blob in a run's offerings
+    — the deduped input to the parallel pre-extraction below."""
+    out = []
+    for _stage, node, _body in nodes.values():
+        deal_id = _g(node, "deal", "id")
+        for doc in (node.get("documents") or []):
+            did = doc.get("id")
+            if not did:
+                continue
+            blob = _find_blob(run_dir, deal_id, did)
+            if blob and blob.suffix == ".pdf":
+                out.append((blob, _content_hash(blob)))
+    return out
+
+
+def _prewarm_parses(blobs: list[tuple[Path, str]]) -> None:
+    """Fill the parse cache for the blobs not yet seen, extracting their text
+    concurrently. pdftotext is a subprocess that releases the GIL while it
+    runs, so a thread pool overlaps the launches instead of the parent idling
+    in poll() through a strictly serial sequence. The subsequent serial load
+    loop then finds every blob already cached, leaving SQL order untouched."""
+    todo = {chash: blob for blob, chash in blobs if chash not in _PARSE_CACHE}
+    if not todo:
+        return
+    workers = min(max(1, (os.cpu_count() or 2) // 2), len(todo))
+    if workers == 1:
+        for chash, blob in todo.items():
+            _parse_pdf(blob, chash)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(lambda item: _parse_pdf(item[1], item[0]), todo.items()))
+
+
 def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
     """For each of an offering's documents: record the tax_documents metadata
     (with content_hash + local_path when the blob was fetched), and — when a
     PDF blob is present — parse capital-account statements and K-1s. Returns
     (tax_rows, capital_account_rows, k1_rows, parsed_statements) where the
-    last is the list fed to the positions replay for funds."""
+    last is the list fed to the positions replay for funds. Parse work is
+    served from the content-hash cache (see _prewarm_parses)."""
     deal_id = _g(node, "deal", "id")
     tax_rows, cap_rows, k1_rows, parsed = [], [], [], []
     for doc in (node.get("documents") or []):
@@ -253,7 +332,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
             continue
         dtype = doc.get("documentType")
         blob = _find_blob(run_dir, deal_id, did)
-        chash = bronze.sha256_file(blob)[0] if blob else None
+        chash = _content_hash(blob) if blob else None
         lpath = str(blob.relative_to(run_dir)) if blob else None
         retrieved = snapshot_at if blob else None
         tax_rows.append((
@@ -262,10 +341,10 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
 
         if not (blob and blob.suffix == ".pdf"):
             continue
-        text = statements.pdf_text(blob)
-        kind = statements.classify(text)
+        parse = _parse_pdf(blob, chash)
+        kind = parse["kind"]
         if dtype == "CAPITAL_ACCOUNT_STATEMENT" or kind == "capital_account":
-            p = statements.parse_capital_account(text)
+            p = parse["cap"]
             cap_rows.append((
                 did, deal_id, p["period_end"], p["beginning_balance"],
                 p["contributions"], p["withdrawals"], p["transfers"],
@@ -276,7 +355,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
                                "period_end": p["period_end"],
                                "ending_nav": p["ending_nav"]})
         elif dtype == "K1" or kind == "k1":
-            k = statements.parse_k1(text)
+            k = parse["k1"]
             k1_rows.append((
                 did, deal_id, k["tax_year"], 1 if k["is_final"] else 0,
                 k["beginning_capital"], k["current_year_income"],
@@ -318,6 +397,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path, force: bool) -> dict:
     stats = {"name": run_dir.name, "snapshot_at": snapshot_at, "skipped": False,
              "offerings": 0, "positions": 0, "cash_flows": 0, "tax_documents": 0,
              "capital_account_statements": 0, "k1_documents": 0}
+
+    # Extract+parse this run's PDF blobs concurrently before the serial load;
+    # the cache makes the per-offering loop below a pure cache read.
+    _prewarm_parses(_pdf_blobs(run_dir, nodes))
 
     with conn:  # BEGIN … COMMIT (ROLLBACK on error)
         if force:
