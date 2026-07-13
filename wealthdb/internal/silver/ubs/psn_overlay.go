@@ -130,10 +130,12 @@ func (r *psnReader) holdingsSnapshotRange(ctx context.Context) (first, last int6
 	return lo.Int64, hi.Int64, true, nil
 }
 
-// instrumentMetaByISIN is a thin wrapper over the existing
-// appendInstruments lookup-building logic, isolated here so the
-// overlay code can reuse it without dragging in the byTime
-// pipeline.
+// instrumentMetaByISIN builds the same isin→meta lookup as
+// appendInstruments, minus the in-window InstrumentChange emission the
+// overlay path doesn't need. It duplicates that loop on purpose:
+// sharing it would drag appendInstruments' byTime pipeline into the
+// overlay for no real gain. Keep the taxonomy mapping here in sync with
+// appendInstruments if it ever changes.
 func (r *psnReader) instrumentMetaByISIN(ctx context.Context) (map[string]instrumentMeta, error) {
 	const q = `SELECT snapshot_at, isin, payload FROM instruments ORDER BY snapshot_at ASC`
 	rows, err := r.db.QueryContext(ctx, q)
