@@ -67,6 +67,13 @@ from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
 
 from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
 
+# Identifies the parsed-holdings contract of this module for load.py's
+# content-addressed parse cache. Bump whenever a change to the
+# text-level parsers alters the parsed dict for the same PDF content,
+# so cached entries written by an older parser are keyed differently
+# and are never replayed under the new logic.
+PARSER_VERSION = "1"
+
 
 # ============================================================
 # Per-account blocks

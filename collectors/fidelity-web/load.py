@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -53,11 +54,46 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, compress, silver
 
+import pdf_parsers
+import pdf_parsers_supplied
+
 # Re-export for backward compatibility with existing tests that call
 # load.apply_migrations(...) directly.
 apply_migrations = silver.apply_migrations
 
 log = logging.getLogger("fidelity-web.load")
+
+
+def _dist_version(name):
+    """Installed version of a distribution, or ``"?"`` when its
+    metadata can't be read (never fatal — the cache just can't
+    auto-invalidate on that library)."""
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "?"
+
+
+# Both parsers extract text through pdfplumber (on pdfminer.six).
+# requirements.txt pins ``pdfplumber>=0.11,<1``, so a minor upgrade is
+# allowed and can change the extracted text for the same PDF bytes.
+# Folding both installed versions into the parse-cache key makes a
+# library upgrade auto-invalidate stale entries exactly as a manual
+# PARSER_VERSION bump would — no orphaned warm entries that would
+# replay text a fresh parse no longer produces. Sanitised to
+# ``[A-Za-z0-9.]`` so it stays a clean sidecar-filename component.
+_EXTRACTOR_FINGERPRINT = re.sub(
+    r"[^A-Za-z0-9.]+", "_",
+    f"pp{_dist_version('pdfplumber')}-pm{_dist_version('pdfminer.six')}",
+)
+
+# Parse-cache namespace for the 529 statement parser: the parser's
+# own PARSER_VERSION plus the extractor fingerprint. The trust
+# parser's namespace additionally folds in the signature guard (see
+# _trust_parser_version) because that guard changes the parsed rows.
+_STATEMENT_PARSER_VERSION = (
+    f"stmt529.v{pdf_parsers.PARSER_VERSION}.{_EXTRACTOR_FINGERPRINT}"
+)
 
 
 def _logical_bronze_path(path):
@@ -156,6 +192,17 @@ def parse_args(argv):
               "and out of any committed orchestration script). No "
               "guard is applied if neither is supplied."),
     )
+    p.add_argument(
+        "--parse-cache-dir", type=Path, default=None,
+        help=("Directory for the content-addressed PDF parse cache: "
+              "parsed statement/trust holdings keyed by content hash + "
+              "parser version, so a `--force` rebuild or nightly reload "
+              "replays unchanged PDFs instead of re-extracting them. "
+              "DEFAULT: `$XDG_CACHE_HOME/wealthdb/fidelity-web/"
+              "parse-cache` (falls back to `~/.cache/...`). A derived "
+              "cache, kept outside the bronze tree and outside "
+              "`~/.secrets`; safe to delete — it is rebuilt on demand."),
+    )
     p.add_argument("-v", "--verbose", action="store_true",
                    help="DEBUG-level logging.")
     cli.add_force_arg(p)
@@ -175,22 +222,7 @@ def main(argv=None):
         silver.apply_migrations(conn, migrations_dir)
         schema_version = silver.current_schema_version(conn)
         dumps = scan_bronze(args.bronze_dir)
-        loaded = skipped = 0
-        for dump in dumps:
-            if already_loaded(conn, dump):
-                log.debug("skipping already-loaded %s", dump.name)
-                skipped += 1
-                continue
-            try:
-                conn.execute("BEGIN")
-                load_dump(conn, dump, schema_version)
-                conn.commit()
-                loaded += 1
-            except Exception:
-                conn.rollback()
-                log.exception("load of %s failed; rolled back", dump.name)
-        log.info("loaded=%d skipped=%d total=%d",
-                 loaded, skipped, len(dumps))
+
         # Default the supplied-statements dir to a bronze-resident
         # location so a `--force` rebuild (which wipes silver and
         # reloads from bronze) re-ingests the trust historical
@@ -198,13 +230,61 @@ def main(argv=None):
         # they live only in silver and are sourced from outside the
         # timestamped-dump tree. Keeping them under <bronze-dir>
         # restores the "silver is reproducible from bronze" invariant.
+        # Resolve it (and its signature guard) up front so the trust
+        # PDFs join the same shared parse pool as the per-dump
+        # statement PDFs.
         trust_dir = args.supplied_statements_dir
         if trust_dir is None:
             trust_dir = args.bronze_dir / "supplied-statements"
-        _load_trust_statements_oneshot(
-            conn, trust_dir, schema_version,
-            signature=args.supplied_statement_signature,
-        )
+        trust_signature = args.supplied_statement_signature
+        if trust_signature is None and trust_dir.is_dir():
+            trust_signature = _read_signature_sidecar(trust_dir)
+
+        cache = ParseCache(
+            args.parse_cache_dir or _default_parse_cache_dir())
+        with PdfParseCoordinator(cache, os.cpu_count() or 1) as coord:
+            # Enqueue every pending dump's statement PDFs and the trust
+            # PDFs, deduplicated by content, then dispatch once so all
+            # unique parses run across a single pool (workers import
+            # pdfplumber once, all cores stay busy) instead of a fresh
+            # pool per dump. Cache hits are never enqueued, so a
+            # fully-warm run creates no pool at all.
+            for dump in dumps:
+                if already_loaded(conn, dump):
+                    continue
+                for path in _statement_pdf_candidates(dump):
+                    coord.enqueue(
+                        coord.sha_for(path), _STATEMENT_PARSER_VERSION,
+                        _parse_statement_pdf_worker, str(path))
+            if schema_version >= 4:
+                trust_version = _trust_parser_version(trust_signature)
+                for path in _trust_pdf_candidates(trust_dir):
+                    coord.enqueue(
+                        coord.sha_for(path), trust_version,
+                        _parse_supplied_statement_pdf_worker,
+                        (str(path), trust_signature))
+            coord.dispatch()
+
+            loaded = skipped = 0
+            for dump in dumps:
+                if already_loaded(conn, dump):
+                    log.debug("skipping already-loaded %s", dump.name)
+                    skipped += 1
+                    continue
+                try:
+                    conn.execute("BEGIN")
+                    load_dump(conn, dump, schema_version, coord)
+                    conn.commit()
+                    loaded += 1
+                except Exception:
+                    conn.rollback()
+                    log.exception("load of %s failed; rolled back", dump.name)
+            log.info("loaded=%d skipped=%d total=%d",
+                     loaded, skipped, len(dumps))
+            _load_trust_statements_oneshot(
+                conn, trust_dir, schema_version,
+                signature=trust_signature, coord=coord,
+            )
         validate(conn)
     finally:
         conn.close()
@@ -316,7 +396,7 @@ def _strip_none_keys(data):
 # Loaders
 # ============================================================
 
-def load_dump(conn, dump_dir, schema_version):
+def load_dump(conn, dump_dir, schema_version, coord=None):
     snapshot_at = ts_from_dir(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -329,7 +409,7 @@ def load_dump(conn, dump_dir, schema_version):
     pos_count = _load_positions(conn, snapshot_at, dump_dir)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
-    hist_pos_count = _load_historical_from_pdfs(conn, dump_dir)
+    hist_pos_count = _load_historical_from_pdfs(conn, dump_dir, coord)
 
     log.info(
         "loaded %s: portfolios=%d accounts=%d positions=%d "
@@ -974,8 +1054,10 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
 #      dropped the trust history. The bronze-resident default makes
 #      the ingest self-healing — no flag, no orchestration change.
 #
-# Both paths use a `ProcessPoolExecutor` since PDF text extraction
-# is CPU-bound, then insert rows serially.
+# PDF text extraction is CPU-bound, so both paths route their PDFs
+# through the run's shared PdfParseCoordinator (one ProcessPool + a
+# content-addressed parse cache) and insert the resulting rows
+# serially. See the coordinator section below.
 
 def _parse_statement_pdf_worker(path):
     """ProcessPoolExecutor target: parse one PDF and return its
@@ -983,60 +1065,231 @@ def _parse_statement_pdf_worker(path):
     log and continue rather than crashing the whole pool).
     Module-level so it pickles cleanly under spawn (macOS)."""
     try:
-        import pdf_parsers
         return pdf_parsers.parse_statement_pdf(path)
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
 
 
-def _load_historical_from_pdfs(conn, dump_dir):
-    """Walk every PDF in this dump's ``documents/`` whose filename
-    follows the ``Statement<MMDDYYYY>.pdf`` shape — those are
-    Fidelity's 529 quarterly + year-end statements — parse each
-    in a worker pool, and insert the holdings rows into
-    ``historical_position_snapshots`` keyed by
-    ``(as_of_date, account_external_id, description)``.
+# ------------------------------------------------------------
+# Content-addressed parse cache + shared parse pool
+# ------------------------------------------------------------
+#
+# PDF text extraction is the load's dominant cost. Two mechanisms
+# cut it without changing what silver contains:
+#
+#   * A parse cache keyed on (content_sha256, parser_version).
+#     Each unique PDF content is parsed once and its parsed dict
+#     replayed on every later sighting — across dumps within one
+#     `--force` rebuild (in-process) and across separate load runs
+#     (a JSON sidecar), so a nightly reload never re-extracts an
+#     unchanged trust statement. The cache stores exactly the
+#     parser's output, so a replayed insert is byte-identical to a
+#     fresh parse.
+#
+#   * One ProcessPoolExecutor per load run. Every unique PDF is
+#     submitted once as the dumps are scanned and resolved at each
+#     dump's insertion point, so workers import pdfplumber once and
+#     all cores stay busy — versus a fresh pool per dump (and
+#     single-PDF dumps parsed serially in the parent) before.
 
-    The CSV companions (`Statement<MMDDYYYY>.csv`) are also saved
-    in `documents/` but carry only summary cash-flow lines, not
-    holdings; we skip them. Tax-form PDFs share the directory and
-    are skipped via their filename prefix (`<YYYY>-…`)."""
+def _default_parse_cache_dir():
+    """Persistent parse-cache location: ``$XDG_CACHE_HOME`` (or
+    ``~/.cache``)``/wealthdb/fidelity-web/parse-cache``. A derived
+    cache — not source data — so it sits outside the bronze tree
+    and outside ``~/.secrets``; content-addressed, so a stale entry
+    is never mistaken for a different PDF."""
+    base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+    return Path(base) / "wealthdb" / "fidelity-web" / "parse-cache"
+
+
+class ParseCache:
+    """Maps ``(content_sha256, parser_version)`` to a parsed dict via
+    an in-process map plus an optional JSON sidecar directory
+    (``<dir>/<sha>.<version>.json``).
+
+    ``get`` checks memory then the sidecar; ``put`` writes both.
+    Sidecar I/O failures degrade to memory-only (logged at debug),
+    so a missing or read-only cache directory never fails a load.
+    Bumping a parser's version changes the key, leaving older
+    entries unreachable (harmless — they are simply never read)."""
+
+    def __init__(self, sidecar_dir=None):
+        self._mem = {}
+        self._dir = Path(sidecar_dir) if sidecar_dir is not None else None
+        self._dir_ready = None
+
+    def _sidecar_path(self, sha, version):
+        if self._dir is None:
+            return None
+        return self._dir / f"{sha}.{version}.json"
+
+    def get(self, sha, version):
+        key = (sha, version)
+        cached = self._mem.get(key)
+        if cached is not None:
+            return cached
+        path = self._sidecar_path(sha, version)
+        if path is None or not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            log.debug("parse-cache: unreadable %s: %s", path, e)
+            return None
+        self._mem[key] = data
+        return data
+
+    def put(self, sha, version, parsed):
+        self._mem[(sha, version)] = parsed
+        path = self._sidecar_path(sha, version)
+        if path is None or not self._ensure_dir():
+            return
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(parsed, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(path)
+        except OSError as e:
+            log.debug("parse-cache: could not write %s: %s", path, e)
+            tmp.unlink(missing_ok=True)
+
+    def _ensure_dir(self):
+        if self._dir_ready is None:
+            try:
+                self._dir.mkdir(parents=True, exist_ok=True)
+                self._dir_ready = True
+            except OSError as e:
+                log.debug("parse-cache: disabled (cannot create %s): %s",
+                          self._dir, e)
+                self._dir_ready = False
+        return self._dir_ready
+
+
+class PdfParseCoordinator:
+    """One ProcessPool + one ParseCache shared across a whole load run.
+
+    Lifecycle: ``enqueue`` every PDF as the dumps are scanned, call
+    ``dispatch`` once, then ``resolve`` each PDF at its insertion
+    point. Cache hits are never enqueued; work is deduplicated by
+    (sha, version); with fewer than two misses no pool is created —
+    a tiny corpus or a fully-warm cache parses inline. Used as a
+    context manager so the pool is always shut down.
+
+    Direct callers (unit tests) may skip enqueue/dispatch and call
+    ``resolve`` straight away — it parses inline when a content has
+    neither a cache entry nor a submitted future."""
+
+    def __init__(self, cache, max_workers):
+        self._cache = cache
+        self._max_workers = max(1, max_workers)
+        self._work = {}       # (sha, version) -> (worker, arg)
+        self._futures = {}    # (sha, version) -> Future
+        self._sha_by_path = {}
+        self._pool = None
+
+    def sha_for(self, path):
+        """sha256 of a PDF, memoized by path so the same file is
+        hashed once across enqueue, resolve and the row insert."""
+        key = str(path)
+        sha = self._sha_by_path.get(key)
+        if sha is None:
+            sha = bronze.sha256_file(path)[0]
+            self._sha_by_path[key] = sha
+        return sha
+
+    def enqueue(self, sha, version, worker, arg):
+        if self._cache.get(sha, version) is not None:
+            return
+        self._work.setdefault((sha, version), (worker, arg))
+
+    def dispatch(self):
+        if len(self._work) < 2:
+            return  # serial fallback: resolve() parses inline
+        workers = min(len(self._work), self._max_workers)
+        self._pool = ProcessPoolExecutor(max_workers=workers)
+        for key, (worker, arg) in self._work.items():
+            self._futures[key] = self._pool.submit(worker, arg)
+
+    def resolve(self, sha, version, worker, arg):
+        cached = self._cache.get(sha, version)
+        if cached is not None:
+            return cached
+        future = self._futures.get((sha, version))
+        result = future.result() if future is not None else worker(arg)
+        # Never cache an error dict — a parse failure or signature
+        # mismatch must be re-evaluated on the next run, not pinned.
+        if not (isinstance(result, dict) and "_error" in result):
+            self._cache.put(sha, version, result)
+        return result
+
+    def close(self):
+        if self._pool is not None:
+            self._pool.shutdown()
+            self._pool = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def _transient_coordinator():
+    """A pool-less, sidecar-less coordinator for direct callers of
+    the loader functions (unit tests): ``resolve`` parses inline and
+    nothing persists to disk."""
+    return PdfParseCoordinator(ParseCache(sidecar_dir=None), max_workers=1)
+
+
+def _statement_pdf_candidates(dump_dir):
+    """The 529 statement PDFs in a dump's ``documents/`` — files
+    matching ``Statement<MMDDYYYY>.pdf`` (the CSV companions carry
+    only cash-flow lines, tax forms use a ``<YYYY>-…`` prefix), in
+    the sorted order the rows are inserted."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
-        return 0
-    candidates = [
+        return []
+    return [
         p for p in sorted(docs_dir.glob("Statement*.pdf"))
         if not p.name.lower().endswith(".csv")
     ]
+
+
+def _load_historical_from_pdfs(conn, dump_dir, coord=None):
+    """Parse every 529 statement PDF in this dump's ``documents/``
+    and insert the holdings rows into ``historical_position_snapshots``
+    keyed by ``(as_of_date, account_external_id, description)``.
+
+    Parsing goes through the shared ``coord`` (cache + pool); when
+    called without one (direct test callers), a transient inline
+    coordinator is used. Rows are inserted in the sorted candidate
+    order so the ``INSERT OR REPLACE`` keeping the last writer per
+    key is deterministic."""
+    candidates = _statement_pdf_candidates(dump_dir)
     if not candidates:
         return 0
-
-    worker_count = max(1, min(len(candidates), os.cpu_count() or 1))
-    log.info(
-        "historical: parsing %d statement PDF(s) across %d worker(s)",
-        len(candidates), worker_count,
-    )
-    if worker_count == 1:
-        parsed = [_parse_statement_pdf_worker(str(p)) for p in candidates]
-    else:
-        with ProcessPoolExecutor(max_workers=worker_count) as pool:
-            parsed = list(pool.map(
-                _parse_statement_pdf_worker,
-                [str(p) for p in candidates],
-            ))
+    coord = coord or _transient_coordinator()
+    log.info("historical: ingesting %d statement PDF(s) from %s",
+             len(candidates), dump_dir.name)
     inserted = 0
-    for path, result in zip(candidates, parsed):
+    for path in candidates:
+        sha = coord.sha_for(path)
+        result = coord.resolve(
+            sha, _STATEMENT_PARSER_VERSION,
+            _parse_statement_pdf_worker, str(path),
+        )
         if "_error" in result:
             log.warning(
                 "historical: PDF parse failed for %s: %s",
                 path.name, result["_error"],
             )
             continue
-        inserted += _insert_historical_rows(conn, path, result)
+        inserted += _insert_historical_rows(conn, path, result, sha)
     return inserted
 
 
-def _insert_historical_rows(conn, pdf_path, parsed):
+def _insert_historical_rows(conn, pdf_path, parsed, sha):
     """Insert one ``historical_position_snapshots`` row per
     holding in the parsed statement. Cross-walks the human-
     readable fund description to an `instrument_key` when a
@@ -1051,7 +1304,6 @@ def _insert_historical_rows(conn, pdf_path, parsed):
     as_of = ts_from_iso(period_end)
     if as_of is None:
         return 0
-    sha = bronze.sha256_file(pdf_path)[0]
     inserted = 0
     for account in parsed.get("accounts", []):
         aid = account.get("account_external_id")
@@ -1160,7 +1412,6 @@ def _parse_supplied_statement_pdf_worker(args):
     only takes a single argument per call."""
     path, expected_signature = args
     try:
-        import pdf_parsers_supplied
         return pdf_parsers_supplied.parse_supplied_statement_pdf(
             path, expected_signature=expected_signature,
         )
@@ -1168,13 +1419,43 @@ def _parse_supplied_statement_pdf_worker(args):
         return {"_error": repr(e), "path": str(path)}
 
 
+def _trust_parser_version(signature):
+    """Parse-cache namespace for the trust parser: the parser's
+    PARSER_VERSION, the shared extractor fingerprint, and a hash of
+    the signature guard. The guard is folded in because it changes
+    which lines a statement's holdings block yields — a cache entry
+    parsed under one guard must not be replayed under another. The
+    signature itself (the trust's name, PII) never enters the key,
+    only its hash."""
+    sig = hashlib.sha256((signature or "").encode("utf-8")).hexdigest()[:16]
+    return (f"trust.v{pdf_parsers_supplied.PARSER_VERSION}"
+            f".{_EXTRACTOR_FINGERPRINT}.{sig}")
+
+
+def _trust_pdf_candidates(trust_dir):
+    """Monthly trust statement PDFs in ``trust_dir`` (matching the
+    ``<name> <M>.<YY> Statement.pdf`` convention), in the sorted
+    order the rows are inserted. Empty when the dir is None/absent."""
+    if trust_dir is None or not trust_dir.is_dir():
+        return []
+    return [
+        p for p in sorted(trust_dir.iterdir())
+        if p.is_file() and _TRUST_STATEMENT_FILENAME_RE.match(p.name)
+    ]
+
+
 def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
-                                    signature=None):
+                                    signature=None, coord=None):
     """Load every monthly trust statement from ``trust_dir`` into
     ``historical_position_snapshots``. No-op when ``trust_dir`` is
     None or empty. Idempotent — INSERT OR REPLACE keyed on
     ``(as_of_date, account_external_id, description)`` makes
     re-runs converge.
+
+    Parsing goes through the shared ``coord`` (cache + pool), so a
+    nightly reload replays the unchanged statements from cache
+    instead of re-extracting them; a transient inline coordinator is
+    used when called without one (direct test callers).
 
     Wrapped in its own transaction so a parser failure on one PDF
     doesn't half-commit and leave silver in an inconsistent state.
@@ -1207,31 +1488,25 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
             "unverified — a misfiled statement for another account "
             "would be loaded as trust history", trust_dir,
         )
-    candidates = [
-        p for p in sorted(trust_dir.iterdir())
-        if p.is_file() and _TRUST_STATEMENT_FILENAME_RE.match(p.name)
-    ]
+    candidates = _trust_pdf_candidates(trust_dir)
     if not candidates:
         log.info(
             "supplied-statements: no monthly statement PDFs in %s",
             trust_dir,
         )
         return
-    worker_count = max(1, min(len(candidates), os.cpu_count() or 1))
-    log.info(
-        "supplied-statements: parsing %d PDF(s) across %d worker(s)",
-        len(candidates), worker_count,
-    )
-    pool_args = [(str(p), signature) for p in candidates]
-    if worker_count == 1:
-        parsed = [_parse_supplied_statement_pdf_worker(a) for a in pool_args]
-    else:
-        with ProcessPoolExecutor(max_workers=worker_count) as pool:
-            parsed = list(pool.map(_parse_supplied_statement_pdf_worker, pool_args))
+    coord = coord or _transient_coordinator()
+    version = _trust_parser_version(signature)
+    log.info("supplied-statements: ingesting %d PDF(s)", len(candidates))
     try:
         conn.execute("BEGIN")
         inserted = skipped = 0
-        for path, result in zip(candidates, parsed):
+        for path in candidates:
+            sha = coord.sha_for(path)
+            result = coord.resolve(
+                sha, version, _parse_supplied_statement_pdf_worker,
+                (str(path), signature),
+            )
             err = result.get("_error")
             if err == "signature-mismatch":
                 log.warning(
@@ -1248,7 +1523,7 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
                 )
                 skipped += 1
                 continue
-            inserted += _insert_trust_historical_rows(conn, path, result)
+            inserted += _insert_trust_historical_rows(conn, path, result, sha)
         synth = _synthesize_missing_account_masters(conn)
         conn.commit()
         log.info(
@@ -1261,11 +1536,12 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
         log.exception("supplied-statements load failed; rolled back")
 
 
-def _insert_trust_historical_rows(conn, pdf_path, parsed):
+def _insert_trust_historical_rows(conn, pdf_path, parsed, sha):
     """Insert one ``historical_position_snapshots`` row per holding
     in the parsed trust statement. The trust parser surfaces the
     ticker (or CUSIP) directly as ``instrument_key`` so no
-    cross-walk against live ``positions`` is needed."""
+    cross-walk against live ``positions`` is needed. ``sha`` is the
+    source PDF's content hash, stored in ``source_sha256``."""
     period_end = parsed.get("period_end")
     if not period_end:
         log.debug(
@@ -1275,7 +1551,6 @@ def _insert_trust_historical_rows(conn, pdf_path, parsed):
     as_of = ts_from_iso(period_end)
     if as_of is None:
         return 0
-    sha = bronze.sha256_file(pdf_path)[0]
     inserted = 0
     for account in parsed.get("accounts", []):
         aid = account.get("account_external_id")

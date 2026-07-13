@@ -681,3 +681,130 @@ def test_logical_bronze_path_strips_compression_suffix():
         _P("a/x.csv")) == _P("a/x.csv")
     assert load._logical_bronze_path(
         _P("a/Statement.pdf")) == _P("a/Statement.pdf")
+
+
+# ============================================================
+# Content-addressed parse cache + shared parse pool
+# ============================================================
+#
+# The parse cache and coordinator replay a PDF's parsed dict on
+# every later sighting so a `--force` rebuild / nightly reload
+# re-parses nothing unchanged, while the inserts stay byte-identical
+# (verified end-to-end by an order-independent silver diff of a
+# cold vs warm rebuild). These unit tests cover the replay logic in
+# isolation: synthetic parsed dicts, no real PDFs or values.
+
+_PARSED = {
+    "period_end": "2026-03-31",
+    "accounts": [{
+        "account_external_id": "100000001",
+        "holdings": [{"description": "PLACEHOLDER FUND",
+                      "quantity": 1.5, "price": None, "market_value": 3.0}],
+    }],
+}
+
+
+def test_parse_cache_mem_and_sidecar_round_trip(tmp_path):
+    cache = load.ParseCache(sidecar_dir=tmp_path / "pc")
+    assert cache.get("abc", "v1") is None
+    cache.put("abc", "v1", _PARSED)
+    # Memory hit, and the sidecar is written under the versioned name.
+    assert cache.get("abc", "v1") == _PARSED
+    assert (tmp_path / "pc" / "abc.v1.json").is_file()
+    # A fresh instance (mimicking a later process) reads the sidecar…
+    reopened = load.ParseCache(sidecar_dir=tmp_path / "pc")
+    assert reopened.get("abc", "v1") == _PARSED
+    # …but a different version key is a miss (invalidation on version bump).
+    assert reopened.get("abc", "v2") is None
+
+
+def test_parse_cache_memory_only_when_no_sidecar():
+    cache = load.ParseCache(sidecar_dir=None)
+    cache.put("s", "v", {"ok": 1})
+    assert cache.get("s", "v") == {"ok": 1}
+
+
+def test_coordinator_resolve_parses_inline_then_caches(tmp_path):
+    """Without enqueue/dispatch (a transient coordinator, as tests
+    and tiny corpora use), resolve parses inline the first time and
+    serves the cache thereafter — the worker runs exactly once."""
+    calls = []
+
+    def worker(arg):
+        calls.append(arg)
+        return {"value": arg}
+
+    coord = load.PdfParseCoordinator(
+        load.ParseCache(sidecar_dir=tmp_path / "pc"), max_workers=1)
+    r1 = coord.resolve("sha1", "v1", worker, "A")
+    r2 = coord.resolve("sha1", "v1", worker, "A")
+    assert r1 == r2 == {"value": "A"}
+    assert calls == ["A"]
+
+
+def test_coordinator_never_caches_error_results(tmp_path):
+    """A parse failure / signature mismatch must be re-evaluated
+    every run, never pinned in the cache."""
+    calls = []
+
+    def worker(arg):
+        calls.append(arg)
+        return {"_error": "boom"}
+
+    coord = load.PdfParseCoordinator(
+        load.ParseCache(sidecar_dir=tmp_path / "pc"), max_workers=1)
+    coord.resolve("sha1", "v1", worker, "A")
+    coord.resolve("sha1", "v1", worker, "A")
+    assert calls == ["A", "A"]
+    assert not (tmp_path / "pc" / "sha1.v1.json").exists()
+
+
+def test_coordinator_sha_for_memoizes(tmp_path, monkeypatch):
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.4 placeholder\n")
+    coord = load.PdfParseCoordinator(load.ParseCache(None), max_workers=1)
+    real = load.bronze.sha256_file
+    calls = []
+
+    def counting(path, *a, **k):
+        calls.append(str(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(load.bronze, "sha256_file", counting)
+    assert coord.sha_for(pdf) == coord.sha_for(pdf)
+    assert len(calls) == 1  # hashed once, memoized by path
+
+
+def test_trust_parser_version_depends_on_signature_without_leaking_it():
+    v_none = load._trust_parser_version(None)
+    v_a = load._trust_parser_version("PLACEHOLDER HOLDER")
+    v_b = load._trust_parser_version("OTHER TRUST")
+    assert v_a == load._trust_parser_version("PLACEHOLDER HOLDER")  # stable
+    assert len({v_none, v_a, v_b}) == 3                            # distinct
+    assert "PLACEHOLDER HOLDER" not in v_a                          # no PII
+
+
+def test_extractor_version_folded_into_cache_keys():
+    """The installed pdfplumber/pdfminer.six versions are part of both
+    parse-cache namespaces, so a library upgrade invalidates the cache
+    like a manual PARSER_VERSION bump. The fingerprint is a clean
+    filename component (no path/glob metacharacters)."""
+    fp = load._EXTRACTOR_FINGERPRINT
+    assert fp and set(fp) <= set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    assert fp in load._STATEMENT_PARSER_VERSION
+    assert fp in load._trust_parser_version("PLACEHOLDER HOLDER")
+
+
+def test_changed_extractor_version_misses_cache(tmp_path):
+    """An entry written under one extractor-version string is not
+    served under another — a library upgrade forces a re-parse rather
+    than replaying stale text."""
+    cache = load.ParseCache(sidecar_dir=tmp_path / "pc")
+    v_old = "stmt529.v1.pp0.11.0-pm20240101"
+    v_new = "stmt529.v1.pp0.11.10-pm20260107"
+    cache.put("sha", v_old, {"ok": 1})
+    assert cache.get("sha", v_old) == {"ok": 1}
+    assert cache.get("sha", v_new) is None
+    reopened = load.ParseCache(sidecar_dir=tmp_path / "pc")
+    assert reopened.get("sha", v_new) is None
