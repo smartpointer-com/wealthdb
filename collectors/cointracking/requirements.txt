@@ -24,6 +24,18 @@ duckdb>=1.0,<2
 # DuckDB decompresses .csv.zst natively inside read_csv_auto.
 zstandard>=0.22,<1
 
+# pandas is not imported by any collector script — it's here to
+# short-circuit DuckDB's per-execute optional-module probe. Every
+# parameterized conn.execute() attempts `import pandas` to decide
+# whether a bound value might be a DataFrame; with pandas absent each
+# probe fails through the whole import machinery (find_spec + a burst
+# of filesystem stat() calls), and load.py issues thousands of
+# parameterized executes across the snapshot loop. Making pandas
+# importable lets the probe hit sys.modules on the first call, so the
+# repeated import storm collapses. Silver output is unchanged — the
+# loader only ever fetchall()/fetchone()s plain tuples.
+pandas>=2,<3
+
 # login.py + download.py use vanilla Playwright Firefox (headless)
 # rather than Camoufox. The Playwright Python package is already
 # installed in the base-camoufox image; the Firefox browser binary

@@ -504,17 +504,27 @@ def ingest_portfolio_prices(
     """Parse each portfolio's overview.csv (one row per day, wide-form
     pairs of `<SYM> Value in <FIAT>` + `<SYM> Amount` per held coin)
     into portfolio_prices. Price = value / amount; rows where amount
-    is 0/empty are dropped (the "beware of divisions by zero" gate).
+    is 0/empty are dropped (the division-by-zero guard).
 
     The quote currency varies between portfolios (CT's per-portfolio
     "main fiat" setting — EUR for some users/portfolios, USD for
     others) and is extracted from each column header at parse time.
 
-    ON CONFLICT DO NOTHING is the right semantics here: market prices
-    don't change retroactively, so re-running load.py against a
+    The whole overview lands in a single insert per portfolio: the
+    wide coin pairs are folded into one (date, sym, fiat, value,
+    amount) stream, so the price division / filters and the conflict
+    resolution run once for the portfolio rather than once per coin
+    column (the former shape issued a separate insert per pair, each
+    re-offering the full history to the growing conflict index).
+
+    A NOT EXISTS anti-join drops rows whose price key already exists
+    before the insert runs; the ON CONFLICT DO NOTHING clause backs
+    it up. Market prices don't change retroactively, so re-loading a
     fresh bronze snapshot adds new dates without touching the old
-    rows' snapshot_at — gold doesn't reprocess unchanged history.
-    Corruption-recovery re-fetch goes through fetch-prices, not load."""
+    rows' snapshot_at — gold doesn't reprocess unchanged history, and
+    the anti-join spares the write path from re-offering ~all of an
+    already-loaded history to the conflict index. Corruption-recovery
+    re-fetch goes through fetch-prices, not load."""
     for portfolio in manifest["portfolios"]:
         cu_id = portfolio["id"]
         portfolio_id = f"cu_{cu_id}"
@@ -550,54 +560,77 @@ def ingest_portfolio_prices(
                         "column pairs (%d cols total)", cu_id, len(cols))
             continue
 
-        n_inserted_total = 0
-        for sym, fiat in pairs:
+        # Fold the wide pairs into one long stream with a UNION ALL
+        # branch per coin column pair. sym/fiat are bound as query
+        # parameters; the value/amount column identifiers are
+        # interpolated, but COIN_VALUE_HEADER_RE constrains them to
+        # [A-Z0-9_]+ / [A-Z]+ (no quotes, no spaces), so they can't
+        # break out of the double-quoted identifier.
+        branches: list[str] = []
+        params: dict[str, object] = {
+            "portfolio": portfolio_id, "snap": snapshot_at,
+        }
+        for i, (sym, fiat) in enumerate(pairs):
             value_col = f"{sym} Value in {fiat}"
             amount_col = f"{sym} Amount"
-            # The Date column has one special value: "now" — a
-            # current-moment snapshot above the close-of-day rows;
-            # skip it. Real dates are YYYY/MM/DD.
-            #
-            # The TRY_CAST + > 0 filter is the division-by-zero
-            # guard: the row only contributes a price when the
-            # holding was non-zero on that day.
-            # CoinTracking's overview.csv emits the Date column in
-            # a per-portfolio locale: some portfolios come out as
-            # `YYYY/MM/DD`, others as `DD.MM.YYYY`. The COALESCE
-            # over TRY_STRPTIME handles both without needing to
-            # know which a given portfolio uses.
-            result = conn.execute(f"""
-                INSERT INTO portfolio_prices (
-                    as_of_date, portfolio_external_id,
-                    instrument_external_id, quote_currency,
-                    price, snapshot_at
-                )
+            branches.append(
+                f'SELECT "Date" AS d, $sym{i} AS sym, $fiat{i} AS fiat, '
+                f'"{value_col}" AS value_raw, "{amount_col}" AS amount_raw '
+                f'FROM raw_overview'
+            )
+            params[f"sym{i}"] = sym
+            params[f"fiat{i}"] = fiat
+        union_sql = "\n                UNION ALL\n                ".join(branches)
+
+        # The Date column has one special value: "now" — a current-
+        # moment snapshot above the close-of-day rows; drop it. The
+        # TRY_CAST + amount > 0 filter is the division-by-zero guard:
+        # a row only yields a price when the holding was non-zero that
+        # day. CoinTracking emits the Date in a per-portfolio locale
+        # (`YYYY/MM/DD` for some, `DD.MM.YYYY` for others); the
+        # COALESCE over TRY_STRPTIME parses either without knowing
+        # which a given portfolio uses.
+        conn.execute(f"""
+            INSERT INTO portfolio_prices (
+                as_of_date, portfolio_external_id,
+                instrument_external_id, quote_currency,
+                price, snapshot_at
+            )
+            WITH staged AS (
                 SELECT
                     COALESCE(
-                        TRY_STRPTIME("Date", '%Y/%m/%d')::DATE,
-                        TRY_STRPTIME("Date", '%d.%m.%Y')::DATE
+                        TRY_STRPTIME(d, '%Y/%m/%d')::DATE,
+                        TRY_STRPTIME(d, '%d.%m.%Y')::DATE
                     ) AS as_of_date,
-                    $portfolio AS portfolio_external_id,
-                    $sym       AS instrument_external_id,
-                    $fiat      AS quote_currency,
-                    TRY_CAST("{value_col}" AS DECIMAL(38, 18))
-                        / TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) AS price,
-                    $snap      AS snapshot_at
-                FROM raw_overview
-                WHERE "Date" != 'now'
-                  AND TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) IS NOT NULL
-                  AND TRY_CAST("{amount_col}" AS DECIMAL(38, 18)) > 0
-                  AND TRY_CAST("{value_col}"  AS DECIMAL(38, 18)) IS NOT NULL
-                ON CONFLICT DO NOTHING
-            """, {
-                "portfolio": portfolio_id,
-                "sym": sym,
-                "fiat": fiat,
-                "snap": snapshot_at,
-            })
-            # DuckDB INSERT returns affected rows in result.df()['Count'][0]
-            # but the API is awkward; cheaper to count net new rows
-            # in portfolio_prices at the end if we ever need it.
+                    sym, fiat,
+                    TRY_CAST(value_raw  AS DECIMAL(38, 18)) AS value_dec,
+                    TRY_CAST(amount_raw AS DECIMAL(38, 18)) AS amount_dec
+                FROM (
+                    {union_sql}
+                )
+                WHERE d != 'now'
+            )
+            SELECT
+                s.as_of_date,
+                $portfolio AS portfolio_external_id,
+                s.sym      AS instrument_external_id,
+                s.fiat     AS quote_currency,
+                s.value_dec / s.amount_dec AS price,
+                $snap      AS snapshot_at
+            FROM staged s
+            WHERE s.amount_dec IS NOT NULL
+              AND s.amount_dec > 0
+              AND s.value_dec IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM portfolio_prices pp
+                  WHERE pp.portfolio_external_id  = $portfolio
+                    AND pp.as_of_date             = s.as_of_date
+                    AND pp.instrument_external_id = s.sym
+                    AND pp.quote_currency         = s.fiat
+              )
+            ON CONFLICT DO NOTHING
+        """, params)
+
         # Diagnostic: log the (coin, fiat) pair count + total
         # portfolio_prices for this portfolio.
         n_rows_for_portfolio = conn.execute(

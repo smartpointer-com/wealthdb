@@ -264,3 +264,96 @@ def test_ingest_replaces_per_portfolio(tmp_path):
     loader.ingest_transactions(conn, manifest, run_dir, snapshot_at=1705312800)
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+# overview.csv header: the Date column, two coin pairs (each a
+# "<SYM> Value in <FIAT>" + "<SYM> Amount" pair), and one multi-word
+# aggregate column that the coin-pair regex must exclude.
+OVERVIEW_HEADER = (
+    '"Date","BTC Value in USD","BTC Amount",'
+    '"ETH Value in USD","ETH Amount","Account Total Value in USD"'
+)
+
+
+def _seed_overview(root: Path, slug: str, rows: list[str]) -> tuple[Path, dict]:
+    """Materialise a bronze run whose cu_<CU> overview.csv holds `rows`
+    under OVERVIEW_HEADER (all fields already quoted)."""
+    run_dir = root / slug
+    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
+    (run_dir / f"cu_{CU}" / "overview.csv").write_text(
+        OVERVIEW_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    manifest = {"portfolios": [{"id": CU, "name": "test"}]}
+    return run_dir, manifest
+
+
+def _prices(conn) -> dict[tuple[str, str, str], tuple[Decimal, int]]:
+    """(as_of_date, instrument, quote) → (price, snapshot_at) from
+    portfolio_prices."""
+    return {
+        (str(d), instr, q): (price, snap)
+        for d, instr, q, price, snap in conn.execute(
+            "SELECT as_of_date, instrument_external_id, quote_currency, "
+            "price, snapshot_at FROM portfolio_prices"
+        ).fetchall()
+    }
+
+
+def test_ingest_portfolio_prices_divides_filters_and_excludes_aggregate(
+        tmp_path):
+    # The folded price ingest: price = value / amount per coin pair,
+    # with the multi-word aggregate column excluded, the "now" row
+    # skipped, and the division-by-zero guard dropping rows whose
+    # amount is 0 or whose value/amount is empty. Both Date locales
+    # (YYYY/MM/DD and DD.MM.YYYY) parse. Amounts are synthetic.
+    rows = [
+        # "now" snapshot above the close-of-day rows — always skipped.
+        '"now","9","0.5","9","9","9"',
+        # Both coins priced: BTC 10000/0.5=20000, ETH 3000/10=300.
+        '"2024/01/01","10000","0.5","3000","10","13000"',
+        # BTC value empty → BTC dropped; ETH 6000/10=600.
+        '"2024/01/02","","","6000","10","6000"',
+        # BTC amount 0 → division-by-zero guard drops BTC; ETH 2000/5=400.
+        '"2024/01/03","5000","0","2000","5","2000"',
+        # DD.MM.YYYY locale row: BTC 1000/2=500; ETH empty → dropped.
+        '"15.01.2024","1000","2","","","1000"',
+    ]
+    run_dir, manifest = _seed_overview(tmp_path / "bronze", "20240201T000000Z",
+                                       rows)
+    conn = _fresh_db(tmp_path)
+    loader.ingest_portfolio_prices(conn, manifest, run_dir,
+                                   snapshot_at=1706745600)
+
+    prices = _prices(conn)
+    assert prices == {
+        ("2024-01-01", "BTC", "USD"): (Decimal("20000"), 1706745600),
+        ("2024-01-01", "ETH", "USD"): (Decimal("300"), 1706745600),
+        ("2024-01-02", "ETH", "USD"): (Decimal("600"), 1706745600),
+        ("2024-01-03", "ETH", "USD"): (Decimal("400"), 1706745600),
+        ("2024-01-15", "BTC", "USD"): (Decimal("500"), 1706745600),
+    }
+
+
+def test_ingest_portfolio_prices_first_writer_wins_across_snapshots(tmp_path):
+    # Re-ingesting a later snapshot must leave already-present price
+    # keys untouched (original value + snapshot_at kept) and only add
+    # genuinely new dates — the anti-join + ON CONFLICT DO NOTHING
+    # first-writer-wins semantics gold relies on to skip unchanged
+    # history. Amounts are synthetic.
+    conn = _fresh_db(tmp_path)
+    run1, manifest = _seed_overview(tmp_path / "b1", "20240201T000000Z",
+                                    ['"2024/01/01","10000","0.5","","","10000"'])
+    loader.ingest_portfolio_prices(conn, manifest, run1, snapshot_at=100)
+
+    # Later snapshot: same date with a different BTC value (must NOT
+    # overwrite) plus a brand-new date (must land).
+    run2, manifest = _seed_overview(
+        tmp_path / "b2", "20240202T000000Z",
+        ['"2024/01/01","11000","0.5","","","11000"',
+         '"2024/01/02","12000","0.5","","","12000"'])
+    loader.ingest_portfolio_prices(conn, manifest, run2, snapshot_at=200)
+
+    prices = _prices(conn)
+    # 2024-01-01 keeps the first snapshot's value (20000) and stamp.
+    assert prices[("2024-01-01", "BTC", "USD")] == (Decimal("20000"), 100)
+    # 2024-01-02 is new: second snapshot's value (24000) and stamp.
+    assert prices[("2024-01-02", "BTC", "USD")] == (Decimal("24000"), 200)
