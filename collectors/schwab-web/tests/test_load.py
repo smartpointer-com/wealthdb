@@ -1121,6 +1121,207 @@ class TestSha256ChurnTransactionIdempotency:
 
 
 # ============================================================
+# Cross-run parse-dedup (shared seen_logical_docs)
+# ============================================================
+
+class TestSeenLogicalDocsSharedAcrossRuns:
+    """A statement that yields no transactions never closes its own
+    transaction gate (there is no transaction row to detect on the next
+    run), so without a shared parse-dedup set the same logical statement
+    is re-parsed in every later bronze run. run_load shares the set
+    across an invocation's runs via load_run's `seen_logical_docs`
+    argument so each logical statement is parsed once. Silver is
+    identical either way — the skipped parse would only re-produce rows
+    already present.
+    """
+
+    # Zero transactions, but positions + cash present, so on a re-download
+    # the positions and cash gates close on existing rows and the
+    # transaction gate is the ONLY thing that would force a re-parse.
+    PARSED_ZERO_TX = {
+        "path": "<patched>",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28",
+        "transactions": [],
+        "positions": [
+            {"instrument_key": "SYN1", "description": "Synthetic One",
+             "quantity": 100.0, "market_price": 50.0,
+             "market_value": 5000.0, "cost_basis": 4000.0,
+             "unrealized_gain_loss": 1000.0, "accrued_interest": None,
+             "est_yield": None, "est_annual_income": None,
+             "pct_of_acct": "1%", "section": "Equities", "raw_lines": []},
+        ],
+        "cash_summary": {
+            "opening_balance": 100.0, "closing_balance": 100.0,
+            "deposits": 0.0, "withdrawals": 0.0, "purchases": 0.0,
+            "sales_redemptions": 0.0, "dividends_interest": 0.0,
+            "expenses": 0.0, "other_activity": 0.0,
+            "total_credits": 0.0, "total_debits": 0.0,
+            "currency_iso": "USD", "raw_line": "",
+        },
+        "account_registration": None,
+    }
+
+    def _bronze(self, tmp_path, run_ts, extra=b""):
+        """One bronze run holding a single logical statement. `extra`
+        appended to the PDF bytes forces a fresh sha256 (Schwab regen)
+        while the logical document — account + date + filename — is
+        unchanged."""
+        run = _make_bronze_run(tmp_path, run_ts, [
+            {"suffix": "NNN", "label": "L",
+             "documents": [{"date": "02/28/2026", "type": "Statements",
+                            "document": "Brokerage Statement",
+                            "filename": "Brokerage-Statement_2026-02-28_NNN.PDF"}]},
+        ])
+        if extra:
+            p = run / "statements" / "NNN" / \
+                "Brokerage-Statement_2026-02-28_NNN.PDF"
+            p.write_bytes(p.read_bytes() + extra)
+            new_sha = bronze.sha256_file(p)[0]
+            m = json.loads((run / "run.json").read_text())
+            m["statements"][0]["documents"][0]["sha256"] = new_sha
+            (run / "run.json").write_text(json.dumps(m))
+        return run
+
+    def _count_calls(self, monkeypatch):
+        calls: list[str] = []
+
+        def _counting(path, statement_year=None):
+            calls.append(path)
+            return dict(self.PARSED_ZERO_TX)
+
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", _counting)
+        return calls
+
+    def test_shared_set_parses_zero_tx_statement_once(
+            self, monkeypatch, migrated, tmp_path):
+        calls = self._count_calls(monkeypatch)
+        seen: set[tuple] = set()
+        run1 = self._bronze(tmp_path, "20260301T000000Z")
+        run2 = self._bronze(tmp_path, "20260302T000000Z",
+                            extra=b"%SCHWAB-REGEN-2%")
+        load.load_run(migrated, run1, workers=1, seen_logical_docs=seen)
+        stats2 = load.load_run(migrated, run2, workers=1,
+                               seen_logical_docs=seen)
+        migrated.commit()
+        # Parsed exactly once across both runs — the shared set caught the
+        # zero-transaction re-download in run 2.
+        assert len(calls) == 1
+        assert stats2["statements_logical_deduped"] == 1
+        # Positions written once; still no transactions — silver as if the
+        # re-parse had run.
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM historical_position_snapshots"
+        ).fetchone()[0] == 1
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+        ).fetchone()[0] == 0
+
+    def test_default_per_run_scope_reparses_zero_tx_statement(
+            self, monkeypatch, migrated, tmp_path):
+        # Without a shared set (the default), the zero-transaction
+        # statement is re-parsed in the second run — the wasted work the
+        # shared set removes — yet silver is unchanged (one position row,
+        # no transactions).
+        calls = self._count_calls(monkeypatch)
+        run1 = self._bronze(tmp_path, "20260301T000000Z")
+        run2 = self._bronze(tmp_path, "20260302T000000Z",
+                            extra=b"%SCHWAB-REGEN-2%")
+        load.load_run(migrated, run1, workers=1)
+        load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        assert len(calls) == 2
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM historical_position_snapshots"
+        ).fetchone()[0] == 1
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM transactions"
+        ).fetchone()[0] == 0
+
+
+class TestRollbackDoesNotPoisonSeenSet:
+    """A bronze run that rolls back must not leave its logical docs marked
+    seen in the invocation-scoped set. load_run marks a doc seen during
+    the manifest walk, before the run commits; run_load snapshots the set
+    before each run and restores it on failure. Without that restore, a
+    doc first seen in a run that later fails would be skipped by every
+    subsequent run, silently dropping its rows."""
+
+    PARSED = {
+        "path": "<patched>",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28",
+        "transactions": [],
+        "positions": [
+            {"instrument_key": "SYN1", "description": "Synthetic One",
+             "quantity": 100.0, "market_price": 50.0,
+             "market_value": 5000.0, "cost_basis": 4000.0,
+             "unrealized_gain_loss": 1000.0, "accrued_interest": None,
+             "est_yield": None, "est_annual_income": None,
+             "pct_of_acct": "1%", "section": "Equities", "raw_lines": []},
+        ],
+        "cash_summary": None,
+        "account_registration": None,
+    }
+
+    def test_failing_run_does_not_skip_doc_in_later_run(
+            self, monkeypatch, tmp_path):
+        import argparse
+
+        bronze = tmp_path / "bronze"
+        filename = "Brokerage-Statement_2026-02-28_NNN.PDF"
+        # Two runs carrying the same logical statement.
+        for ts in ("20260301T000000Z", "20260302T000000Z"):
+            _make_bronze_run(bronze, ts, [
+                {"suffix": "NNN", "label": "L",
+                 "documents": [{"date": "02/28/2026", "type": "Statements",
+                                "document": "Brokerage Statement",
+                                "filename": filename}]},
+            ])
+
+        parse_calls: list[str] = []
+
+        def _counting(path, statement_year=None):
+            parse_calls.append(path)
+            return dict(self.PARSED)
+
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", _counting)
+
+        # Fail the position insert on its first call (the first bronze
+        # run) so that run rolls back; succeed on every later call.
+        orig_insert = load._insert_position_snapshots
+        insert_calls = {"n": 0}
+
+        def _flaky_insert(*a, **k):
+            insert_calls["n"] += 1
+            if insert_calls["n"] == 1:
+                raise RuntimeError("synthetic insert failure")
+            return orig_insert(*a, **k)
+
+        monkeypatch.setattr(load, "_insert_position_snapshots", _flaky_insert)
+
+        db = tmp_path / "silver.db"
+        args = argparse.Namespace(
+            silver_db=db, bronze_dir=bronze, migrations=MIGRATIONS_DIR,
+            reparse=False, workers=1, verbose=False, force=False,
+        )
+        assert load.run_load(args) == 0
+
+        conn = sqlite3.connect(str(db))
+        try:
+            n_pos = conn.execute(
+                "SELECT COUNT(*) FROM historical_position_snapshots"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        # Run 1 marked the doc seen then rolled back; run 2 must re-parse
+        # and insert it — two parses, one surviving position row. With a
+        # poisoned seen-set run 2 would skip the doc and leave zero rows.
+        assert len(parse_calls) == 2
+        assert n_pos == 1
+
+
+# ============================================================
 # 1099-B + 3rd-Party-Distribution load integration
 # ============================================================
 

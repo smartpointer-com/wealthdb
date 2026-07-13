@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -46,6 +47,7 @@ import sqlite3
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -159,6 +161,95 @@ def _parse_pdf_worker(args: tuple[str, int]) -> dict:
         return pp.parse_statement_pdf(pdf_path, statement_year=year_hint)
     except Exception as e:
         return {"_error": repr(e)}
+
+
+def _resolve_worker_count(workers: int | None) -> int:
+    """Parse-worker process count: the requested value when positive,
+    otherwise one per CPU. PDF text extraction (PDFium in C++) is
+    CPU-bound, so the speedup comes from sharding PDFs across cores."""
+    if workers and workers > 0:
+        return workers
+    return os.cpu_count() or 1
+
+
+def _parse_chunksize(n_tasks: int) -> int:
+    """Group a few PDFs per pool hand-off on large runs so per-task IPC
+    doesn't dominate the tens-of-ms PDFium extraction; a chunksize of 1
+    keeps latency low on the small batches later bronze runs produce."""
+    return max(1, min(8, n_tasks // 20))
+
+
+class _ParsePoolManager:
+    """A process pool shared across an invocation's bronze runs that heals
+    after a worker crash.
+
+    The executor is created lazily on first use and reused for every run
+    (one pool per invocation instead of one per run). If a parse batch
+    trips BrokenProcessPool — a worker died, which under heavy host
+    contention can happen — the poisoned executor is discarded and re-
+    raised so the caller can retry that batch serially; the next batch
+    spins up a fresh executor. A transient worker death therefore
+    degrades to a slower run instead of failing the whole load."""
+
+    def __init__(self, worker_count: int):
+        self._worker_count = worker_count
+        self._pool: ProcessPoolExecutor | None = None
+
+    def map(self, fn, tasks: list, chunksize: int) -> list:
+        if self._pool is None:
+            self._pool = ProcessPoolExecutor(max_workers=self._worker_count)
+        try:
+            return list(self._pool.map(fn, tasks, chunksize=chunksize))
+        except BrokenProcessPool:
+            self.shutdown()  # drop the poisoned executor; next map recreates
+            raise
+
+    def shutdown(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._pool = None
+
+    def __enter__(self) -> "_ParsePoolManager":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.shutdown()
+        return False
+
+
+def _parse_statements(parse_jobs: list[dict],
+                      pool: "_ParsePoolManager | None",
+                      workers: int | None) -> list[dict]:
+    """Parse every collected statement PDF, returning results aligned
+    positionally with `parse_jobs`.
+
+    workers == 1 keeps the parse in-process (the path unit tests take so
+    a monkeypatched parser is honoured — pool workers run in subprocesses
+    that don't inherit the patch). Otherwise the work fans across a
+    process pool: a caller-supplied `pool` is reused across bronze runs
+    (one pool per invocation instead of one per run), and when none is
+    supplied a run-local pool is created so direct callers still get
+    parallelism. map preserves input order, so the serial insert phase —
+    and the resulting silver — is identical regardless of worker count.
+
+    If the shared pool loses a worker mid-batch, this run's PDFs are
+    re-parsed serially in-process so the run still completes; the manager
+    rebuilds the pool for later runs."""
+    tasks = [(j["pdf_path"], j["year_hint"]) for j in parse_jobs]
+    if workers != 1 and pool is not None:
+        try:
+            return pool.map(_parse_pdf_worker, tasks, _parse_chunksize(len(tasks)))
+        except BrokenProcessPool:
+            log.warning("parse pool lost a worker; parsing this run's %d "
+                        "PDF(s) serially", len(tasks))
+            return [_parse_pdf_worker(t) for t in tasks]
+    worker_count = 1 if workers == 1 else min(
+        _resolve_worker_count(workers), len(parse_jobs))
+    if worker_count == 1:
+        return [_parse_pdf_worker(t) for t in tasks]
+    with ProcessPoolExecutor(max_workers=worker_count) as local_pool:
+        return list(local_pool.map(_parse_pdf_worker, tasks,
+                                   chunksize=_parse_chunksize(len(tasks))))
 
 
 # ============================================================
@@ -372,8 +463,21 @@ def _account_nickname(label: str | None, suffix: str) -> str | None:
 
 def load_run(conn: sqlite3.Connection, run_dir: Path,
              reparse: bool = False,
-             workers: int | None = None) -> dict:
-    """Load one bronze-run dir. Returns a stats dict for logging."""
+             workers: int | None = None,
+             pool: "_ParsePoolManager | None" = None,
+             seen_logical_docs: set[tuple] | None = None) -> dict:
+    """Load one bronze-run dir. Returns a stats dict for logging.
+
+    `pool` and `seen_logical_docs`, when supplied by run_load, are shared
+    across all of an invocation's bronze runs so each logical statement
+    is parsed once. Left at their defaults (a run-local pool and a fresh
+    set) a direct call keeps the original per-run scope.
+
+    A logical doc marked here is recorded in `seen_logical_docs` during
+    the manifest walk, before this run's inserts commit. run_load owns
+    the rollback: it snapshots the set before the run and restores it if
+    the run fails, so a rolled-back run never leaves a doc marked seen
+    (which would wrongly skip it on every later run)."""
     snapshot_at = parse_snapshot_at(run_dir.name)
     stats = {
         "snapshot_at": snapshot_at,
@@ -395,15 +499,18 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "statements_logical_deduped": 0,
         "account_registration_updated": 0,
     }
-    # Per-run dedup set: (account_suffix, doc_date, doc_kind,
-    # filename). Schwab regenerates statement PDFs on every
-    # download (different sha256 each time — see INTEROP.md §3),
-    # but the parser output is byte-identical for the same logical
-    # document. We parse the first sha256 we see per logical doc,
-    # then skip subsequent re-downloads for positions / cash /
-    # transactions within THIS run. Across runs, each table uses
-    # its own natural gate (see below).
-    seen_logical_docs: set[tuple] = set()
+    # Parse-dedup set: (account_suffix, doc_date, doc_kind, filename).
+    # Schwab regenerates statement PDFs on every download (different
+    # sha256 each time — see INTEROP.md §3), but the parser output is
+    # byte-identical for the same logical document. The first sha256
+    # seen per logical doc is parsed; subsequent re-downloads skip the
+    # positions / cash / transactions parse. run_load shares this set
+    # across the invocation's bronze runs so a statement that yields no
+    # transactions (whose transaction gate never closes on its own) is
+    # not re-parsed in every later run; a run-local default restores the
+    # per-run scope for direct callers.
+    if seen_logical_docs is None:
+        seen_logical_docs = set()
 
     # Parse jobs accumulated during the manifest walk. Each entry
     # captures everything the serial-insert phase needs (suffix,
@@ -600,35 +707,19 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 "tx_reparse_delete": need_tx and tx_already and reparse,
             })
 
-    # Parallel-parse every collected statement PDF, then insert
-    # serially. PDF text extraction (pypdfium2 → PDFium C++) is
-    # the expensive step per job; SQLite's single-writer model
-    # makes inserts serial anyway, so the gain comes from
-    # sharding the parse work across cores. Worker count
-    # defaults to os.cpu_count(); pass workers=1 for serial.
+    # Parse every collected statement PDF, then insert serially. PDF
+    # text extraction (pypdfium2 → PDFium C++) is the expensive step per
+    # job; SQLite's single-writer model makes inserts serial anyway, so
+    # the gain comes from sharding the parse work across cores (see
+    # _parse_statements for the pool / serial dispatch).
     if parse_jobs:
-        worker_count = workers if workers and workers > 0 else (os.cpu_count() or 1)
-        worker_count = max(1, min(worker_count, len(parse_jobs)))
-        log.info(
-            "parallel-parsing %d statement PDF(s) across %d worker(s)",
-            len(parse_jobs), worker_count,
-        )
+        log.info("parsing %d statement PDF(s)", len(parse_jobs))
         t0 = time.monotonic()
-        if worker_count == 1:
-            parsed_results = [
-                _parse_pdf_worker((j["pdf_path"], j["year_hint"]))
-                for j in parse_jobs
-            ]
-        else:
-            with ProcessPoolExecutor(max_workers=worker_count) as pool:
-                parsed_results = list(pool.map(
-                    _parse_pdf_worker,
-                    [(j["pdf_path"], j["year_hint"]) for j in parse_jobs],
-                ))
+        parsed_results = _parse_statements(parse_jobs, pool, workers)
+        elapsed = time.monotonic() - t0
         log.info(
             "parsed %d PDF(s) in %.2fs (%.3fs/PDF wall)",
-            len(parse_jobs), time.monotonic() - t0,
-            (time.monotonic() - t0) / max(1, len(parse_jobs)),
+            len(parse_jobs), elapsed, elapsed / max(1, len(parse_jobs)),
         )
 
         # Harvest the account-registration label from one
@@ -1365,43 +1456,68 @@ def run_load(args: argparse.Namespace) -> int:
         runs = discover_bronze_runs(args.bronze_dir)
         log.info("found %d bronze run(s) under %s", len(runs), args.bronze_dir)
 
-        for run_dir in runs:
-            snapshot_at = parse_snapshot_at(run_dir.name)
-            if already_loaded(conn, snapshot_at) and not args.reparse:
-                log.info("skipping %s (already loaded)", run_dir.name)
-                continue
-            log.info("loading %s (snapshot_at=%d)", run_dir.name, snapshot_at)
-            try:
-                stats = load_run(
-                    conn, run_dir, reparse=args.reparse,
-                    workers=args.workers,
-                )
-                conn.commit()
-                log.info(
-                    "loaded %s: accts +%d/-%d, docs +%d/-%d, "
-                    "tx +%d (reparsed %d), positions +%d, cash +%d, "
-                    "logical-dup %d, registrations %d, pdf errors %d; "
-                    "1099-B +%d (pdf-only %d, errors %d), "
-                    "distributions +%d (errors %d)",
-                    run_dir.name,
-                    stats["accounts_inserted"], stats["accounts_deduped"],
-                    stats["documents_new"], stats["documents_dup"],
-                    stats["transactions_inserted"],
-                    stats["transactions_reparsed"],
-                    stats["positions_inserted"],
-                    stats["cash_balances_inserted"],
-                    stats["statements_logical_deduped"],
-                    stats["account_registration_updated"],
-                    stats["pdf_parse_errors"],
-                    stats["form_1099b_transactions_inserted"],
-                    stats["form_1099b_pdf_only"],
-                    stats["form_1099b_parse_errors"],
-                    stats["distribution_transactions_inserted"],
-                    stats["distribution_parse_errors"],
-                )
-            except Exception:
-                conn.rollback()
-                log.exception("load failed for %s; rolled back", run_dir.name)
+        # One parse pool and one parse-dedup set for the whole invocation.
+        # A per-run pool paid a spawn/teardown cycle for every bronze run;
+        # a per-run dedup set re-parsed every zero-transaction statement in
+        # each later run. Hoisting both here parses each logical statement
+        # once across a cumulative bronze archive. The pool is skipped when
+        # nothing needs loading or when serial parsing is forced.
+        seen_logical_docs: set[tuple] = set()
+        pending = [
+            r for r in runs
+            if args.reparse or not already_loaded(conn, parse_snapshot_at(r.name))
+        ]
+        pool_ctx: contextlib.AbstractContextManager = (
+            _ParsePoolManager(_resolve_worker_count(args.workers))
+            if pending and args.workers != 1
+            else contextlib.nullcontext(None)
+        )
+        with pool_ctx as pool:
+            for run_dir in runs:
+                snapshot_at = parse_snapshot_at(run_dir.name)
+                if already_loaded(conn, snapshot_at) and not args.reparse:
+                    log.info("skipping %s (already loaded)", run_dir.name)
+                    continue
+                log.info("loading %s (snapshot_at=%d)", run_dir.name, snapshot_at)
+                # load_run marks its docs seen during the walk, before the
+                # commit below. Snapshot the set so a rolled-back run's
+                # marks are undone — otherwise a doc first seen in a run
+                # that later fails would be skipped by every later run,
+                # silently dropping its rows.
+                seen_before = set(seen_logical_docs)
+                try:
+                    stats = load_run(
+                        conn, run_dir, reparse=args.reparse,
+                        workers=args.workers, pool=pool,
+                        seen_logical_docs=seen_logical_docs,
+                    )
+                    conn.commit()
+                    log.info(
+                        "loaded %s: accts +%d/-%d, docs +%d/-%d, "
+                        "tx +%d (reparsed %d), positions +%d, cash +%d, "
+                        "logical-dup %d, registrations %d, pdf errors %d; "
+                        "1099-B +%d (pdf-only %d, errors %d), "
+                        "distributions +%d (errors %d)",
+                        run_dir.name,
+                        stats["accounts_inserted"], stats["accounts_deduped"],
+                        stats["documents_new"], stats["documents_dup"],
+                        stats["transactions_inserted"],
+                        stats["transactions_reparsed"],
+                        stats["positions_inserted"],
+                        stats["cash_balances_inserted"],
+                        stats["statements_logical_deduped"],
+                        stats["account_registration_updated"],
+                        stats["pdf_parse_errors"],
+                        stats["form_1099b_transactions_inserted"],
+                        stats["form_1099b_pdf_only"],
+                        stats["form_1099b_parse_errors"],
+                        stats["distribution_transactions_inserted"],
+                        stats["distribution_parse_errors"],
+                    )
+                except Exception:
+                    conn.rollback()
+                    seen_logical_docs = seen_before  # undo this run's marks
+                    log.exception("load failed for %s; rolled back", run_dir.name)
 
         _log_registration_histogram(conn)
     finally:
