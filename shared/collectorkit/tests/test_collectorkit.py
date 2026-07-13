@@ -48,6 +48,24 @@ class MigrationsTest(unittest.TestCase):
     def test_open_db_pragmas(self):
         conn = silver.open_db(self.db)
         self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(
+            conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        # synchronous: 1 == NORMAL
+        self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1)
+        conn.close()
+
+    def test_open_db_default_isolation_pragmas(self):
+        # The implicit-transaction opener also gets WAL + synchronous=NORMAL
+        # (foreign keys stay on); isolation_level is left at sqlite3's
+        # default so `with conn:` callers keep their BEGIN/COMMIT semantics.
+        conn = silver.open_db_default_isolation(self.db)
+        # default isolation is sqlite3's "" (deferred implicit txns), not
+        # the manual None that open_db uses — the PRAGMAs must not change it.
+        self.assertEqual(conn.isolation_level, "")
+        self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(
+            conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1)
         conn.close()
 
     def test_apply_under_default_isolation(self):
@@ -119,6 +137,37 @@ class BronzeTest(unittest.TestCase):
             self.assertEqual(size, len(data))
             # small chunk size yields the same digest
             self.assertEqual(bronze.sha256_file(p, chunk_size=7)[0], digest)
+
+    def test_sha256_file_memoises_by_identity(self):
+        import hashlib as _h
+        from unittest import mock
+        # Distinct mtimes (also distinct at second resolution, so the test
+        # holds even on a filesystem that truncates sub-second mtime).
+        t1 = 1_600_000_000_000_000_000
+        t2 = 1_700_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "blob"
+            data = b"wealthdb" * 1000
+            p.write_bytes(data)
+            os.utime(p, ns=(t1, t1))
+            # (a) same content -> the correct digest and size.
+            first = bronze.sha256_file(p)
+            self.assertEqual(first, (_h.sha256(data).hexdigest(), len(data)))
+            # (b) a memo hit returns the cached tuple without re-reading:
+            # the (dev, inode, size, mtime) key is unchanged, so even with
+            # Path.open sabotaged the digest still comes back.
+            with mock.patch.object(
+                    Path, "open",
+                    side_effect=AssertionError("memo hit re-read the file")):
+                self.assertEqual(bronze.sha256_file(p), first)
+            # (c) an in-place rewrite advances mtime, busting the key so the
+            # new content is re-hashed rather than served stale.
+            new_data = b"rewritten-" * 500
+            p.write_bytes(new_data)
+            os.utime(p, ns=(t2, t2))
+            self.assertEqual(
+                bronze.sha256_file(p),
+                (_h.sha256(new_data).hexdigest(), len(new_data)))
 
     def test_parse_run_ts_roundtrips_ts_slug(self):
         from datetime import datetime as _dt, timezone as _tz

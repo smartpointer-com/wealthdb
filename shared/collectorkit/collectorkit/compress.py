@@ -139,6 +139,46 @@ def decompressed_sha256(path: Path) -> tuple[str, int]:
     return h.hexdigest(), size
 
 
+def read_text_and_sha(path: Path, encoding: str = "utf-8",
+                      newline: str = "") -> tuple[str, str, int]:
+    """Decompress/read ``path`` once, returning
+    ``(text, hex sha256, byte size)`` of its decompressed content.
+
+    Collapses the common loader two-pass — :func:`decompressed_sha256` to
+    stamp a source digest, then :func:`open_text` to parse — into a single
+    decompression. The sha256 and size are computed over the *decompressed*
+    bytes, so they equal :func:`decompressed_sha256` for the same artefact;
+    ``text`` equals what :func:`open_text` would read, decoded with
+    ``encoding`` (``newline=""`` suits ``csv``).
+
+    Intended use in a loader, replacing a hash pass plus a read pass::
+
+        text, src_sha, _ = compress.read_text_and_sha(
+            csv_path, encoding="utf-8-sig")
+        # store src_sha as the provenance column; parse text in-process
+        rows = csv.reader(io.StringIO(text, newline=""))
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    size = 0
+    raw = bytearray()
+    with open_bytes(path) as fh:
+        while True:
+            chunk = fh.read(_CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+            size += len(chunk)
+            raw += chunk
+    # Decode through the same TextIOWrapper machinery as open_text so the
+    # text is byte-for-byte what a separate open_text().read() would yield
+    # (identical encoding and newline handling), without a second read.
+    text = io.TextIOWrapper(io.BytesIO(bytes(raw)),
+                            encoding=encoding, newline=newline).read()
+    return text, h.hexdigest(), size
+
+
 def compress_file(path: Path, *, level: int = DEFAULT_LEVEL,
                   remove_original: bool = True,
                   preserve_mtime: bool = True) -> Path:

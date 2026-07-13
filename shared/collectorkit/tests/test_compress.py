@@ -147,3 +147,45 @@ def test_decompressed_sha256_matches_plain(tmp_path):
     out = compress.compress_file(f, remove_original=False)
     assert compress.decompressed_sha256(out) == (plain_digest, plain_size)
     assert compress.decompressed_sha256(f) == (plain_digest, plain_size)
+
+
+# ============================================================
+# read_text_and_sha (one-pass read + hash)
+# ============================================================
+
+@pytest.mark.parametrize("materialise", ["plain", "zst", "gz"])
+def test_read_text_and_sha_matches_two_pass(tmp_path, materialise):
+    from collectorkit import bronze
+    f = _seed(tmp_path)
+    plain_digest, plain_size = bronze.sha256_file(f)
+    if materialise == "zst":
+        f = compress.compress_file(f)             # original consumed
+    elif materialise == "gz":
+        with gzip.open(tmp_path / "trades.csv.gz", "wb") as fh:
+            fh.write(BODY)
+        (tmp_path / "trades.csv").unlink()
+        f = tmp_path / "trades.csv.gz"
+
+    text, sha, size = compress.read_text_and_sha(f)
+    # The one-pass digest/size equal the two-pass decompressed-content
+    # digest, and thus the plain original's digest.
+    assert (sha, size) == compress.decompressed_sha256(f)
+    assert (sha, size) == (plain_digest, plain_size)
+    # The text equals a separate open_text().read() over the same variant.
+    with compress.open_text(f) as fh:
+        assert text == fh.read()
+    assert text == BODY.decode("utf-8")
+
+
+def test_read_text_and_sha_encoding_over_raw_bytes(tmp_path):
+    # utf-8-sig strips a leading BOM from the returned text, but the sha and
+    # size are over the raw decompressed bytes (BOM included) — matching
+    # decompressed_sha256 exactly, so a loader can stamp the digest and parse
+    # the text from a single pass.
+    import hashlib
+    raw = ("\ufeff" + "Type,Buy\nTrade,0.5\n").encode("utf-8")
+    f = tmp_path / "x.csv"
+    f.write_bytes(raw)
+    text, sha, size = compress.read_text_and_sha(f, encoding="utf-8-sig")
+    assert text == "Type,Buy\nTrade,0.5\n"        # BOM stripped by decode
+    assert (sha, size) == (hashlib.sha256(raw).hexdigest(), len(raw))

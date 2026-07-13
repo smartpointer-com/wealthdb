@@ -105,11 +105,33 @@ def canonical_json(obj) -> str:
                       ensure_ascii=False, default=str)
 
 
+# Process-lifetime memo for sha256_file, keyed by file identity + version
+# (device, inode, size, mtime_ns) → (hexdigest, size). Bronze trees hardlink
+# identical artefacts across run dirs and a single load re-references the same
+# file many times, so without this the same content is hashed repeatedly per
+# run. Including st_mtime_ns means an in-place rewrite (new mtime) busts the
+# entry and forces a re-hash rather than serving a stale digest; the digest of
+# unchanged content is always correct.
+_SHA256_MEMO: dict[tuple[int, int, int, int], tuple[str, int]] = {}
+
+
 def sha256_file(path: Path, chunk_size: int = 1 << 20) -> tuple[str, int]:
     """Return (hex sha256, byte size) for a file, read in chunks so
     large bronze blobs don't load into memory. Callers that only
     want the digest take ``[0]``.
+
+    Results are memoised for the process lifetime keyed by file identity
+    and version (device, inode, size, mtime_ns): hardlinked duplicates and
+    repeat references within one load return the cached tuple without
+    re-reading the file. The mtime in the key means rewriting a file in
+    place re-hashes it. ``chunk_size`` only affects the cold-path read, so
+    a memo hit is transparent regardless of the size a later caller passes.
     """
+    st = os.stat(path)
+    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    cached = _SHA256_MEMO.get(key)
+    if cached is not None:
+        return cached
     h = hashlib.sha256()
     size = 0
     with Path(path).open("rb") as f:
@@ -119,4 +141,6 @@ def sha256_file(path: Path, chunk_size: int = 1 << 20) -> tuple[str, int]:
                 break
             h.update(chunk)
             size += len(chunk)
-    return h.hexdigest(), size
+    result = (h.hexdigest(), size)
+    _SHA256_MEMO[key] = result
+    return result

@@ -53,23 +53,39 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
+    # NORMAL fsyncs at checkpoints rather than every commit. It is
+    # corruption-safe under WAL (only that pairing guarantees it), trading
+    # only the durability of the last transaction on a power loss — which
+    # silver tolerates because it is rebuilt from bronze by re-running the
+    # load.
+    conn.execute("PRAGMA synchronous = NORMAL;")
     return conn
 
 
 def open_db_default_isolation(path: Path) -> sqlite3.Connection:
     """Open (creating parent dirs) the silver DB in sqlite3's default
-    (implicit-transaction) isolation model, with foreign keys enforced.
+    (implicit-transaction) isolation model, with foreign keys enforced and
+    WAL journalling.
 
     The counterpart to `open_db` for collectors whose load.py wraps each
     dump in the connection-as-context-manager (`with conn:` — BEGIN on
     entry, COMMIT/ROLLBACK on exit) rather than issuing explicit
     BEGIN/COMMIT under manual (`isolation_level=None`) control. No
-    row_factory or WAL: these collectors read result rows positionally and
-    never relied on either. `apply_migrations` works with either model.
+    row_factory: these collectors read result rows positionally. Journal
+    mode is a storage concern independent of that transaction model, so WAL
+    + synchronous=NORMAL apply here exactly as in `open_db`; the
+    `with conn:` BEGIN/COMMIT semantics and positional reads are unchanged.
+    `apply_migrations` works with either model.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL is set here (not just in open_db) because synchronous=NORMAL is
+    # only corruption-safe under WAL, and the PRAGMAs run before any DML so
+    # sqlite3's implicit transactions never wrap them. A torn last
+    # transaction on power loss is recoverable by re-loading from bronze.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
