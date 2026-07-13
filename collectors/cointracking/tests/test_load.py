@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pytest
 
 HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
@@ -357,3 +358,85 @@ def test_ingest_portfolio_prices_first_writer_wins_across_snapshots(tmp_path):
     assert prices[("2024-01-01", "BTC", "USD")] == (Decimal("20000"), 100)
     # 2024-01-02 is new: second snapshot's value (24000) and stamp.
     assert prices[("2024-01-02", "BTC", "USD")] == (Decimal("24000"), 200)
+
+
+def test_stage_work_db_seeds_from_existing_target(tmp_path):
+    # With a scratch dir, an existing silver DB is copied in so the
+    # incremental load sees prior state; without one, the silver DB is
+    # opened in place.
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+    silver.parent.mkdir()
+    silver.write_bytes(b"EXISTING-STATE")
+    scratch = tmp_path / "scratch"
+
+    work, promote = loader._stage_work_db(silver, scratch)
+    assert promote is True
+    assert work == scratch / silver.name
+    assert work.read_bytes() == b"EXISTING-STATE"  # prior state carried in
+
+    # No scratch dir → open in place, nothing to promote.
+    assert loader._stage_work_db(silver, None) == (silver, False)
+
+
+def _seed_complete_run(root: Path, slug: str) -> Path:
+    """A loadable bronze snapshot: run.json (complete) + a one-row
+    trades.csv, enough to drive main() end to end."""
+    run_dir = root / slug
+    (run_dir / f"cu_{CU}").mkdir(parents=True, exist_ok=True)
+    (run_dir / f"cu_{CU}" / "trades.csv").write_text(
+        TRADES_HEADER + "\n" + TRADE_ROW + "\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps(
+        {"portfolios": [{"id": CU, "name": "test"}], "status": "complete"}),
+        encoding="utf-8")
+    return run_dir
+
+
+def test_scratch_dir_promotes_finished_db_and_cleans_up(tmp_path):
+    # Driving main() with --scratch-dir builds the DB under scratch and
+    # moves it onto --silver-db, leaving no scratch copy or temp behind.
+    bronze = tmp_path / "bronze"
+    _seed_complete_run(bronze, "20240115T100000Z")
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+    scratch = tmp_path / "scratch"
+
+    rc = loader.main([
+        "--bronze-dir", str(bronze),
+        "--silver-db", str(silver),
+        "--scratch-dir", str(scratch),
+        "--force",
+    ])
+
+    assert rc == 0
+    assert silver.exists()                                # promoted onto target
+    assert not (scratch / silver.name).exists()           # scratch copy cleared
+    assert not silver.with_name(silver.name + ".tmp").exists()  # no temp left
+    conn = duckdb.connect(str(silver))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+def test_scratch_dir_cleans_temp_when_promote_fails(tmp_path, monkeypatch):
+    # If the promote raises between the copy and the atomic rename, the
+    # staging temp beside the target must not linger and the scratch copy
+    # must still be cleared — and the target is never a partial file (the
+    # rename never ran, so it stays absent here).
+    bronze = tmp_path / "bronze"
+    _seed_complete_run(bronze, "20240115T100000Z")
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+    scratch = tmp_path / "scratch"
+
+    def boom(src, dst):
+        raise OSError("simulated crash mid-promote")
+    monkeypatch.setattr(loader.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        loader.main([
+            "--bronze-dir", str(bronze),
+            "--silver-db", str(silver),
+            "--scratch-dir", str(scratch),
+            "--force",
+        ])
+
+    assert not silver.with_name(silver.name + ".tmp").exists()  # temp cleaned
+    assert not (scratch / silver.name).exists()                 # scratch cleaned
+    assert not silver.exists()                                  # target untouched

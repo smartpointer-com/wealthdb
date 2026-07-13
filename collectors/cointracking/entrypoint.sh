@@ -59,8 +59,16 @@ case "${1:-help}" in
         # reconciles vs balance.csv per portfolio. With --fetch-prices,
         # also pulls missing USDT-denominated prices from Binance at
         # the end.
+        #
+        # --scratch-dir /tmp writes the DuckDB silver to the container-
+        # local overlay instead of straight onto the /data VirtioFS
+        # bind mount: the existing DB is copied in once, DuckDB's
+        # per-statement writes stay local, and the finished file is
+        # moved back onto /data in a single bulk transfer. It goes
+        # before "$@" so an explicit --scratch-dir override still wins
+        # (argparse takes the last value).
         shift
-        exec python3 /app/load.py "$@"
+        exec python3 /app/load.py --scratch-dir /tmp "$@"
         ;;
     prune)
         # Delete non-complete dumps (crashed / in-progress) from the

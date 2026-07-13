@@ -35,7 +35,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import shutil
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -192,6 +194,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "subdirs containing run.json + "
               "cu_<id>/{trades,balance,overview}.csv[.zst]. "
               "Default: %(default)s."),
+    )
+    p.add_argument(
+        "--scratch-dir", type=Path, default=None,
+        help=("Directory for a working copy of the silver DB. When set, "
+              "an existing silver DB is copied here first, the load runs "
+              "against the copy, and the finished DB is moved back onto "
+              "--silver-db on success. In the container this keeps "
+              "DuckDB's per-statement writes off the slow VirtioFS bind "
+              "mount — the silver DB reaches it in one bulk move at the "
+              "end. Default: open --silver-db in place."),
     )
     p.add_argument(
         "--replay-only", action="store_true",
@@ -1239,65 +1251,131 @@ def process_snapshot(
     )
 
 
+def _stage_work_db(
+    silver_db: Path, scratch_dir: Path | None,
+) -> tuple[Path, bool]:
+    """Pick the path DuckDB actually opens for the load.
+
+    Without --scratch-dir the silver DB is opened in place. With it, an
+    existing silver DB is copied into scratch_dir so the incremental
+    load sees prior state, and the returned flag tells the caller to
+    move the finished copy back onto silver_db afterwards.
+
+    Returns (work_db, promote): work_db is the path to open, promote is
+    True when it must be copied back to silver_db on success."""
+    if scratch_dir is None:
+        return silver_db, False
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    work_db = scratch_dir / silver_db.name
+    if work_db.resolve() == silver_db.resolve():
+        # Scratch resolves to the silver location — nothing to stage.
+        return silver_db, False
+    if silver_db.exists():
+        shutil.copy2(silver_db, work_db)
+    elif work_db.exists():
+        # No source to seed from; drop a stale scratch copy so the load
+        # starts from a clean migration rather than leftover state.
+        work_db.unlink()
+    return work_db, True
+
+
+def _silver_tmp(silver_db: Path) -> Path:
+    """The staging path a promote copies to before its atomic rename —
+    a sibling of the silver DB so the rename stays on one filesystem."""
+    return silver_db.with_name(silver_db.name + ".tmp")
+
+
+def _promote_work_db(work_db: Path, silver_db: Path) -> None:
+    """Move the finished scratch DB onto the silver path. The copy lands
+    in a sibling temp first, then an atomic rename swaps it in, so the
+    silver target is only ever the previous complete DB or the new
+    complete one — never a half-written file. The caller clears the temp
+    (it survives here only if the rename never ran)."""
+    tmp = _silver_tmp(silver_db)
+    shutil.copy2(work_db, tmp)
+    os.replace(tmp, silver_db)
+
+
+def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
+    """Apply migrations and ingest bronze into the open silver
+    connection, honouring --replay-only / --fetch-prices. Returns the
+    process exit code."""
+    version = apply_migrations(conn)
+    log.info("silver schema at version %d (%s)", version, args.silver_db)
+
+    if args.replay_only:
+        tx_count = conn.execute(
+            "SELECT COUNT(*) FROM transactions").fetchone()[0]
+        if tx_count == 0:
+            log.info("0 transactions in silver — nothing to replay")
+            return 0
+        snapshot_at = conn.execute(
+            "SELECT COALESCE(MAX(snapshot_at), 0) FROM dump_runs"
+        ).fetchone()[0]
+        upsert_positions_daily(conn, snapshot_at)
+        warn_unhandled_transaction_types(conn)
+        return 0
+
+    snapshots = discover_bronze_snapshots(args.bronze_dir)
+    if not snapshots:
+        log.info("no bronze snapshots under %s; nothing to do",
+                 args.bronze_dir)
+        return 0
+
+    log.info("found %d bronze snapshot(s) to consider", len(snapshots))
+    for snap in snapshots:
+        try:
+            process_snapshot(conn, snap, args.force)
+        except Exception as exc:
+            log.error("snapshot %s failed: %s", snap.name, exc)
+            # Continue with the next snapshot — partial progress
+            # is better than a full rollback.
+            continue
+
+    if args.fetch_prices:
+        log.info("--fetch-prices: filling missing USD prices "
+                 "from %s + FX rates from %s",
+                 PRICE_PROVIDER, FX_PROVIDER)
+        client = BinanceClient(api_key=get_api_key())
+        coins, prices = fetch_coin_prices(conn, client, mode="missing")
+        log.info("--fetch-prices: %d coin(s) fetched, %d price "
+                 "row(s) written", coins, prices)
+        fx_client = FrankfurterClient()
+        fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode="missing")
+        log.info("--fetch-prices: %d fiat(s) fetched, %d FX "
+                 "rate row(s) written", fiats, fx_rows)
+        backfill_first_day_gaps(conn)
+
+    log.info("done")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(args.silver_db))
+    work_db, promote = _stage_work_db(args.silver_db, args.scratch_dir)
     try:
-        version = apply_migrations(conn)
-        log.info("silver schema at version %d (%s)",
-                 version, args.silver_db)
-
-        if args.replay_only:
-            tx_count = conn.execute(
-                "SELECT COUNT(*) FROM transactions").fetchone()[0]
-            if tx_count == 0:
-                log.info("0 transactions in silver — nothing to replay")
-                return 0
-            snapshot_at = conn.execute(
-                "SELECT COALESCE(MAX(snapshot_at), 0) FROM dump_runs"
-            ).fetchone()[0]
-            upsert_positions_daily(conn, snapshot_at)
-            warn_unhandled_transaction_types(conn)
-            return 0
-
-        snapshots = discover_bronze_snapshots(args.bronze_dir)
-        if not snapshots:
-            log.info("no bronze snapshots under %s; nothing to do",
-                     args.bronze_dir)
-            return 0
-
-        log.info("found %d bronze snapshot(s) to consider",
-                 len(snapshots))
-        for snap in snapshots:
-            try:
-                process_snapshot(conn, snap, args.force)
-            except Exception as exc:
-                log.error("snapshot %s failed: %s", snap.name, exc)
-                # Continue with the next snapshot — partial progress
-                # is better than a full rollback.
-                continue
-
-        if args.fetch_prices:
-            log.info("--fetch-prices: filling missing USD prices "
-                     "from %s + FX rates from %s",
-                     PRICE_PROVIDER, FX_PROVIDER)
-            client = BinanceClient(api_key=get_api_key())
-            coins, prices = fetch_coin_prices(conn, client, mode="missing")
-            log.info("--fetch-prices: %d coin(s) fetched, %d price "
-                     "row(s) written", coins, prices)
-            fx_client = FrankfurterClient()
-            fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode="missing")
-            log.info("--fetch-prices: %d fiat(s) fetched, %d FX "
-                     "rate row(s) written", fiats, fx_rows)
-            backfill_first_day_gaps(conn)
-
-        log.info("done")
+        conn = duckdb.connect(str(work_db))
+        try:
+            rc = run_load(conn, args)
+        finally:
+            conn.close()
+        if promote:
+            # Only reached on a clean run — a hard failure propagates
+            # before this and leaves the original silver DB untouched.
+            _promote_work_db(work_db, args.silver_db)
+        return rc
     finally:
-        conn.close()
-    return 0
+        # Clear scratch artefacts on every exit path: the working copy,
+        # and the promote's staging temp should it linger (a successful
+        # rename consumes it; a promote that raised between the copy and
+        # the rename leaves it behind). The silver target is never
+        # touched here.
+        if promote:
+            work_db.unlink(missing_ok=True)
+            _silver_tmp(args.silver_db).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
