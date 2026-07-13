@@ -129,15 +129,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def resolve_env_file(arg_path: Path | None) -> Path | None:
-    if arg_path is not None:
-        return arg_path
-    for candidate in DEFAULT_ENV_FILE_CANDIDATES:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 def check_session(state_path: Path) -> int:
     """Probe an existing state file. Returns process exit code."""
     if not state_path.is_file():
@@ -298,7 +289,7 @@ def main(argv: list[str]) -> int:
         return check_session(args.state_path)
 
     # Full login: source env file, pull credentials.
-    env_path = resolve_env_file(args.env_file)
+    env_path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
     if env_path is None:
         log.info("no env file path resolved; relying on process env vars.")
     else:

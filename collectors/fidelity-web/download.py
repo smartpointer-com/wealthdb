@@ -2102,17 +2102,13 @@ def _load_env_file(path):
 
 
 def maybe_source_env_files(args):
-    if args.env_file is not None:
-        if not args.env_file.exists():
-            raise SystemExit(
-                f"--env-file does not exist: {args.env_file}"
-            )
-        _load_env_file(args.env_file)
-        return
-    for path in DEFAULT_ENV_FILE_CANDIDATES:
-        if path.exists():
-            _load_env_file(path)
-            return
+    if args.env_file is not None and not args.env_file.exists():
+        raise SystemExit(
+            f"--env-file does not exist: {args.env_file}"
+        )
+    path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
+    if path is not None:
+        _load_env_file(path)
 
 
 # ---------------------------------------------------------------------------
