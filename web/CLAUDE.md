@@ -70,15 +70,23 @@ port-forward; auth is Metabase's own login.
     a toggleable `(all sources)` line) and **Data Freshness**
     (deliberately unfiltered, so stale sources stay visible).
   - a **privacy twin** of each dashboard (same layout and filters,
-    switch links between the two views), whose cards run over `_pct`
-    models that normalize every monetary column to % of peak — peak
-    daily global net worth for holdings, the widget's own peak month
-    for income/fee flows — and drop columns that would leak absolute
-    values (base-currency totals, quantities, amounts, prices). Still
-    definitions only: the scale factors are computed by the queries at
-    run time, never stored. The Returns twin redacts instead of
-    normalizing (returns are already scale-free ratios): its cards run
-    over `report_returns_redacted`, which drops the absolute money
+    switch links between the two views), whose cards show shares (%)
+    instead of money. The twins' charts are native SQL over the gold
+    `web_*` serving views (migration 0032), with the dashboard pickers
+    landing on them as field filters; each card computes its
+    normalization denominator in-query with those filters applied —
+    holdings as % of the selected sources' total at the window's end
+    (a subset still totals 100), income/fee flows as % of their own
+    peak month within the selected window (the tallest bar reads
+    100). The scalars are MBQL ratios of sums over `_pct` models that
+    pre-scale every monetary column to % of the latest global net
+    worth and drop columns that would leak absolute values
+    (base-currency totals, quantities, amounts, prices), so a
+    drill-through stays leak-free. Still definitions only: the scale
+    factors are computed by the queries at run time, never stored.
+    The Returns twin redacts instead of normalizing (returns are
+    already scale-free ratios): its cards run over
+    `report_returns_redacted`, which drops the absolute money
     columns and keeps only the sources and global grains.
   Provisioning is idempotent (updates in place, archives retired names)
   and **converges the pre-defined collection to spec on every start** —

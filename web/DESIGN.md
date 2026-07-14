@@ -97,10 +97,20 @@ required currency picker (returns are stored one row set per currency),
 **Data Freshness** is deliberately unfiltered — all of them
 MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
-row): same layout and filters, but its cards run over `_pct` models that
-normalize monetary values to % of peak — peak daily global net worth for
-holdings, the widget's own peak month for income/fee flows (a self-join
-against the aggregate's max) — and drop absolute-value columns entirely.
+row): same layout and filters, but every card shows shares (%) instead of
+money. The twins' charts are native SQL over the gold `web_*` serving views
+(migration 0032 — TIMESTAMP-cast reductions of the report macros to the
+grain each card reads, some folding cash in as a class of its own; Metabase
+syncs views like tables and assigns their columns field ids), with the
+dashboard pickers landing on the cards as field filters. Each card computes
+its normalization denominator in-query with those same filters applied:
+holdings divide by the *selected* sources' total at the selected window's
+end (the net-worth envelope ends at 100, and a subset still totals 100),
+the income/fee flows by their own peak month within the selected window
+(the tallest bar always reads 100). The scalars are MBQL ratios of sums — net
+worth reads a constant 100, positions + cash split it — over `_pct` models
+that pre-scale values to % of the latest global net worth, so a scalar's
+drill-through never exposes absolute amounts.
 Idempotent — re-running updates cards and dashboards in place and archives
 retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is

@@ -95,10 +95,13 @@ def main():
     if db_id is None:
         return 1
 
-    global CURRENCY_FIELD_ID, SOURCE_FIELD_ID
-    field_ids = resolve_returns_field_ids(a.base, sid, db_id)
-    CURRENCY_FIELD_ID = field_ids.get("currency")
-    SOURCE_FIELD_ID = field_ids.get("silver_source_id")
+    tables = ensure_synced(a.base, sid, db_id)
+    if tables is None:
+        return 1
+    global FIELD_IDS, CURRENCY_FIELD_ID, SOURCE_FIELD_ID
+    FIELD_IDS = field_ids_from(tables)
+    CURRENCY_FIELD_ID = FIELD_IDS.get(("report_returns", "currency"))
+    SOURCE_FIELD_ID = FIELD_IDS.get(("report_returns", "silver_source_id"))
 
     coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
     by_name = pre_defined_cards(a.base, sid, coll_id)
@@ -121,120 +124,76 @@ MAX_BIGINT = 9223372036854775807
 COLLECTION_NAME = "wealthdb (pre-defined)"
 
 # Un-suffixed model names retired when the snapshot reports gained the
-# `_latest` suffix; archived on provision so a re-run cleans them up.
+# `_latest` suffix, plus the per-widget flow models retired when the
+# privacy flow charts moved to native SQL over web_transactions;
+# archived on provision so a re-run cleans them up.
 RETIRED_MODEL_NAMES = ["report_global", "report_portfolios",
-                       "report_accounts", "report_positions"]
+                       "report_accounts", "report_positions",
+                       "report_income_monthly_pct", "report_costs_monthly_pct"]
 
 
 def report_models():
     """model name -> (native SQL, description). The report_*_multi DuckDB
     macros (migration 0024) are the single source of truth; each model only
     wraps a macro to bind the as-of and to render epoch columns as TIMESTAMP
-    (`to_timestamp` -> naive-UTC) for Metabase. The macros already emit DECIMAL
+    (`to_timestamp` -> naive-UTC) for Metabase — except the taxonomy models,
+    which wrap the web_* serving views (migration 0032) that do that
+    rendering and the cash fold-in themselves. The macros already emit DECIMAL
     money/quantity columns and one value column set per reporting currency
     (USD/CHF/EUR), so no value casting is needed here. The `_latest` reports
     are as of each source's latest snapshot; the `_history` reports carry value
-    forward per day; the `_pct` family are the privacy variants backing the
-    privacy dashboards (values as % of peak, absolute-value columns dropped).
-    The returns models wrap the materialized report_returns TABLE (migration
-    0026) instead of a macro, with the same epoch-to-TIMESTAMP rendering."""
+    forward per day; the `_pct` family are the privacy variants for standalone
+    privacy browsing (values as % of the latest global net worth,
+    absolute-value columns dropped) — the privacy dashboards' charts are
+    native SQL over the gold web_* serving views instead, recomputing their
+    denominator per query so the dashboard pickers rescale them (see
+    privacy_card_defs). The returns models wrap the materialized
+    report_returns TABLE (migration 0026) instead of a macro, with the same
+    epoch-to-TIMESTAMP rendering."""
     def wrap(from_expr, ts_cols=(), exclude=(), where=""):
         parts = [f"CAST(to_timestamp({c}) AS TIMESTAMP) AS {c}" for c in ts_cols]
         excl = f" EXCLUDE ({', '.join(exclude)})" if exclude else ""
         cond = f" WHERE {where}" if where else ""
         return f"SELECT *{excl} REPLACE ({', '.join(parts)}) FROM {from_expr}{cond}"
 
-    # Scalar subquery with the peak daily global net worth per currency —
-    # the shared normalization constant of the privacy (_pct) models.
-    NW_PEAK = ("(SELECT max(total_value_usd) AS peak_usd, "
-               "max(total_value_chf) AS peak_chf, "
-               "max(total_value_eur) AS peak_eur "
-               "FROM report_global_history_multi()) AS peak")
+    # Scalar subquery with the latest global net worth per currency — the
+    # shared normalization constant of the privacy (_pct) models. A fixed
+    # constant keeps every aggregate's shape; the privacy dashboards'
+    # charts recompute a selection-aware denominator per query instead
+    # (privacy_card_defs), so this constant only backs standalone model
+    # browsing and the privacy scalars' drill-through. Guarded to NULL
+    # when the latest total is zero or negative (empty or under-water
+    # gold): dividing would render inf/NaN resp. sign-flipped
+    # percentages, where NULL just blanks the values.
+    NW_LATEST = ("(SELECT " + ", ".join(
+        f"CASE WHEN total_value_{c} > 0 THEN total_value_{c} END AS nw_{c}"
+        for c in ("usd", "chf", "eur")) +
+        f" FROM report_global_multi({MAX_BIGINT})) AS nw")
 
     def pct_wrap(from_expr, value_cols, ts_cols=(), exclude=()):
-        """Privacy wrapper: every monetary column becomes % of the peak
-        daily global net worth in its currency (one constant scale per
+        """Privacy wrapper: every monetary column becomes % of the latest
+        global net worth in its currency (one constant scale per
         currency, so every aggregate keeps its shape), and columns that
         would leak absolute values are dropped."""
         repl = [f"CAST(to_timestamp({c}) AS TIMESTAMP) AS {c}" for c in ts_cols]
-        repl += [f"{c} / peak.peak_{c.rsplit('_', 1)[1]} * 100 AS {c}"
+        repl += [f"{c} / nw.nw_{c.rsplit('_', 1)[1]} * 100 AS {c}"
                  for c in value_cols]
-        excl = ", ".join(["peak_usd", "peak_chf", "peak_eur", *exclude])
+        excl = ", ".join(["nw_usd", "nw_chf", "nw_eur", *exclude])
         return (f"SELECT * EXCLUDE ({excl}) REPLACE ({', '.join(repl)}) "
-                f"FROM {from_expr}, {NW_PEAK}")
+                f"FROM {from_expr}, {NW_LATEST}")
 
-    def flow_pct(kinds, sign=""):
-        """Privacy wrapper for monthly transaction flows, normalized by the
-        widget's own peak: aggregate to (month, kind, source), self-join the
-        peak monthly total, and express each cell as % of that peak — so the
-        tallest bar of the widget reads 100 regardless of the flows' size
-        relative to net worth. `sign` negates debit kinds (fees, taxes) so
-        costs read as positive bars."""
-        ks = ", ".join(f"'{k}'" for k in kinds)
-        sums = ", ".join(f"{sign}sum(value_{c}) AS value_{c}"
+    def taxonomy_history(view, pct=False):
+        """Breakdown-by-taxonomy models over the gold web_* serving views
+        (migration 0032), which already render as_of_day as TIMESTAMP and
+        fold each source's cash balance into a class/vehicle of its own so
+        the rows sum exactly to net worth. pct=True rescales to % of the
+        latest global net worth (per currency)."""
+        if not pct:
+            return f"SELECT * FROM {view}"
+        vals = ", ".join(f"value_{c} / nw.nw_{c} * 100 AS value_{c}"
                          for c in ("usd", "chf", "eur"))
-        tots = ", ".join(f"sum(value_{c}) AS value_{c}"
-                         for c in ("usd", "chf", "eur"))
-        peaks = ", ".join(f"max(value_{c}) AS peak_{c}"
-                          for c in ("usd", "chf", "eur"))
-        pcts = ", ".join(f"value_{c} / p.peak_{c} * 100 AS value_{c}"
-                         for c in ("usd", "chf", "eur"))
-        return (f"WITH m AS (SELECT date_trunc('month', to_timestamp(occurred_at)) "
-                f"AS occurred_at, kind, silver_source_id, {sums} "
-                f"FROM report_transactions_multi(0, {MAX_BIGINT}) "
-                f"WHERE kind IN ({ks}) GROUP BY 1, 2, 3), "
-                f"p AS (SELECT {peaks} FROM "
-                f"(SELECT {tots} FROM m GROUP BY occurred_at)) "
-                f"SELECT CAST(occurred_at AS TIMESTAMP) AS occurred_at, kind, "
-                f"silver_source_id, {pcts} FROM m, p")
-
-    def asset_classes(pct=False):
-        """Positions grouped by asset class, unioned with each source's
-        cash balance as a 'cash' class — so the class values sum exactly
-        to net worth (liability classes stay negative). pct=True scales
-        to % of the peak daily global net worth (per currency)."""
-        vals = ", ".join(f"value_{c}" for c in ("usd", "chf", "eur"))
-        if pct:
-            vals = ", ".join(f"value_{c} / peak.peak_{c} * 100 AS value_{c}"
-                             for c in ("usd", "chf", "eur"))
-        peak = f", {NW_PEAK}" if pct else ""
-        # asset_class is the 2-D exposure (TAXONOMY.md); the cash
-        # union uses the literal 'cash' exposure, so money-market-fund
-        # positions (asset_class=cash) and the cash balances sum
-        # together under one 'cash' class, as they should.
-        return (f"WITH u AS ("
-                f"SELECT as_of_day, silver_source_id, asset_class, "
-                f"sum(value_usd) AS value_usd, sum(value_chf) AS value_chf, "
-                f"sum(value_eur) AS value_eur "
-                f"FROM report_positions_history_multi() GROUP BY 1, 2, 3 "
-                f"UNION ALL "
-                f"SELECT as_of_day, silver_source_id, 'cash', "
-                f"cash_balance_usd, cash_balance_chf, cash_balance_eur "
-                f"FROM report_sources_history_multi()) "
-                f"SELECT CAST(to_timestamp(as_of_day) AS TIMESTAMP) AS as_of_day, "
-                f"silver_source_id, asset_class, {vals} FROM u{peak}")
-
-    def vehicles(pct=False):
-        """Positions grouped by the 2-D wrapper (vehicle), unioned with
-        each source's cash balance as a 'demand_deposit' vehicle — so the
-        vehicle values sum exactly to net worth, the wrapper-dimension
-        counterpart of asset_classes()."""
-        vals = ", ".join(f"value_{c}" for c in ("usd", "chf", "eur"))
-        if pct:
-            vals = ", ".join(f"value_{c} / peak.peak_{c} * 100 AS value_{c}"
-                             for c in ("usd", "chf", "eur"))
-        peak = f", {NW_PEAK}" if pct else ""
-        return (f"WITH u AS ("
-                f"SELECT as_of_day, silver_source_id, vehicle, "
-                f"sum(value_usd) AS value_usd, sum(value_chf) AS value_chf, "
-                f"sum(value_eur) AS value_eur "
-                f"FROM report_positions_history_multi() GROUP BY 1, 2, 3 "
-                f"UNION ALL "
-                f"SELECT as_of_day, silver_source_id, 'demand_deposit', "
-                f"cash_balance_usd, cash_balance_chf, cash_balance_eur "
-                f"FROM report_sources_history_multi()) "
-                f"SELECT CAST(to_timestamp(as_of_day) AS TIMESTAMP) AS as_of_day, "
-                f"silver_source_id, vehicle, {vals} FROM u{peak}")
+        return (f"SELECT * EXCLUDE (nw_usd, nw_chf, nw_eur) "
+                f"REPLACE ({vals}) FROM {view}, {NW_LATEST}")
 
     V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
           for c in ("usd", "chf", "eur")]
@@ -303,7 +262,7 @@ def report_models():
         # variant backs the privacy dashboards: twr/mwr are scale-free
         # ratios, so privacy = redaction (drop the absolute money columns
         # and the account/portfolio grains, whose labels would leak) rather
-        # than %-of-peak normalization.
+        # than share normalization.
         "report_returns": (
             wrap("report_returns", ["computed_at", "start_day", "end_day"]),
             "Materialized TWR/MWR returns, refreshed on every `wealthdb web "
@@ -322,75 +281,68 @@ def report_models():
             "are kept (no account / portfolio labels)."),
         # Privacy (_pct) variants of the models the pre-defined cards are
         # built on: same columns and grain, but monetary values are % of
-        # the peak daily global net worth (per currency) and columns that
+        # the latest global net worth (per currency) and columns that
         # would leak absolute values (base-currency totals, quantities,
-        # amounts, prices) are dropped. The privacy dashboards use these.
+        # amounts, prices) are dropped. These back standalone privacy
+        # browsing and the privacy scalars' drill-through; the privacy
+        # dashboards' charts are native SQL over the web_* serving views
+        # (privacy_card_defs), whose denominators follow the pickers.
         "report_sources_latest_pct": (
             pct_wrap(f"report_sources_multi{L}", V3, ["snapshot_at"], BASE3),
-            "Privacy variant of report_sources_latest: totals as % of the peak "
-            "daily global net worth (per currency); base-currency columns "
+            "Privacy variant of report_sources_latest: totals as % of the "
+            "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_sources_history_pct": (
             pct_wrap("report_sources_history_multi()", V3, ["as_of_day"], BASE3),
-            "Privacy variant of report_sources_history: totals as % of the peak "
-            "daily global net worth (per currency); base-currency columns "
+            "Privacy variant of report_sources_history: totals as % of the "
+            "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_accounts_history_pct": (
             pct_wrap("report_accounts_history_multi()", V3, ["as_of_day"], BASE3),
-            "Privacy variant of report_accounts_history: totals as % of the peak "
-            "daily global net worth (per currency); base-currency columns "
+            "Privacy variant of report_accounts_history: totals as % of the "
+            "latest global net worth (per currency); base-currency columns "
             "dropped."),
         "report_positions_history_pct": (
             pct_wrap("report_positions_history_multi()", V1,
                      ["as_of_day", "snapshot_at"], ("quantity", "market_value")),
             "Privacy variant of report_positions_history: values as % of the "
-            "peak daily global net worth (per currency); quantity and "
+            "latest global net worth (per currency); quantity and "
             "native-currency market value dropped."),
         "report_transactions_pct": (
             pct_wrap(f"report_transactions_multi(0, {MAX_BIGINT})", V1,
                      ["occurred_at"],
                      ("gross_amount", "net_amount", "quantity", "price")),
-            "Privacy variant of report_transactions: values as % of the peak "
-            "daily global net worth (per currency); native-currency amounts, "
-            "quantity and price dropped."),
-        # Flow widgets normalize by their own peak (max monthly total),
-        # not by net worth — flows are orders of magnitude smaller, and
-        # per-widget peaks keep the bars readable (tallest bar = 100).
-        "report_income_monthly_pct": (
-            flow_pct(INCOME_KINDS),
-            "Monthly investment income by kind and source, as % of the peak "
-            "month's total income (privacy view of the income widget)."),
-        "report_costs_monthly_pct": (
-            flow_pct(COST_KINDS, sign="-"),
-            "Monthly fees and withheld taxes by kind and source (negated to "
-            "positive), as % of the peak month's total costs (privacy view "
-            "of the fees widget)."),
+            "Privacy variant of report_transactions: values as % of the "
+            "latest global net worth (per currency); native-currency "
+            "amounts, quantity and price dropped."),
         # Asset classes incl. cash, so the asset-class widget sums exactly
-        # to net worth: positions grouped by class, unioned with each
-        # source's cash balance as a 'cash' class. Liability classes (e.g.
-        # mortgages) stay negative — the widget must be a bar chart, not a
-        # pie (pies silently drop negative slices).
+        # to net worth: positions grouped by class, with each source's
+        # cash balance folded in as a 'cash' class (money-market-fund
+        # positions and cash balances share it — see migration 0032).
+        # Liability classes (e.g. mortgages) stay negative — the widget
+        # must be a bar chart, not a pie (pies silently drop negative
+        # slices).
         "report_asset_classes_history": (
-            asset_classes(),
+            taxonomy_history("web_asset_classes_history"),
             "One row per asset class (incl. a 'cash' class) per source per "
             "day, carried forward, in USD/CHF/EUR. Sums to net worth by "
             "construction; liability classes are negative."),
         "report_asset_classes_history_pct": (
-            asset_classes(pct=True),
+            taxonomy_history("web_asset_classes_history", pct=True),
             "Privacy variant of report_asset_classes_history: values as % of "
-            "the peak daily global net worth (per currency)."),
+            "the latest global net worth (per currency)."),
         # Vehicle (wrapper) breakdown — the second taxonomy dimension.
         # Same construction as asset classes: sums to net worth, cash
         # balances counted as a 'demand_deposit' vehicle.
         "report_vehicles_history": (
-            vehicles(),
+            taxonomy_history("web_vehicles_history"),
             "One row per vehicle (wrapper, incl. a 'demand_deposit' vehicle "
             "for cash) per source per day, carried forward, in USD/CHF/EUR. "
             "Sums to net worth by construction."),
         "report_vehicles_history_pct": (
-            vehicles(pct=True),
+            taxonomy_history("web_vehicles_history", pct=True),
             "Privacy variant of report_vehicles_history: values as % of the "
-            "peak daily global net worth (per currency)."),
+            "latest global net worth (per currency)."),
     }
 
 
@@ -428,14 +380,31 @@ RETIRED_CARD_NAMES = ["net_worth_usd_current", "net_worth_chf_current",
                       "Monthly returns (TWR) (privacy)",
                       "Annual returns (TWR) (privacy)",
                       "Returns by source since inception (privacy)",
-                      "Quarterly returns by source (TWR) (privacy)"]
+                      "Quarterly returns by source (TWR) (privacy)",
+                      # "% of peak" -> "(privacy)": the privacy cards'
+                      # normalization moved from a fixed %-of-all-time-peak
+                      # to selection-aware shares of the latest total.
+                      "Net worth (% of peak)", "Positions value (% of peak)",
+                      "Cash balance (% of peak)",
+                      "Net worth — monthly trend (% of peak)",
+                      "Net worth over time (% of peak)",
+                      "Cash vs positions over time (% of peak)",
+                      "Income by month (% of peak)",
+                      "Fees & taxes by month (% of peak)",
+                      "Allocation by asset class (% of peak)",
+                      "Allocation by vehicle (% of peak)",
+                      "Allocation by currency (% of peak)",
+                      "Value by tax wrapper (% of peak)",
+                      "Value by management style (% of peak)",
+                      "Top 100 positions (% of peak)",
+                      "Source freshness (% of peak)"]
 
 # Dashboard names retired by renames ("Net Worth" undersold the income /
 # cost flow tiles); archived on provision so a re-run cleans them up.
 RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 
-# Every dashboard has a privacy twin whose cards run over the _pct models
-# (monetary values as % of the peak daily global net worth). Cards listed
+# Every dashboard has a privacy twin whose cards show shares (%) of the
+# latest total across the selected sources instead of money. Cards listed
 # here show no monetary values (percentages, indices, source names), so the
 # twin reuses them as-is. The returns scalars and charts are all
 # percentage/index-only; only the by-source table carries money.
@@ -444,27 +413,9 @@ PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)",
                         "Cumulative return (log scale)", "Monthly returns (TWR)",
                         "Quarterly returns (TWR)", "Annual returns (TWR)"}
 
-# Which privacy model replaces which model when building the privacy cards
-# (the _pct normalizers; returns swap to the redacted model instead).
-PCT_MODEL_MAP = {
-    "report_sources_latest": "report_sources_latest_pct",
-    "report_sources_history": "report_sources_history_pct",
-    "report_accounts_history": "report_accounts_history_pct",
-    "report_positions_history": "report_positions_history_pct",
-    "report_transactions": "report_transactions_pct",
-    "report_asset_classes_history": "report_asset_classes_history_pct",
-    "report_vehicles_history": "report_vehicles_history_pct",
-    "report_returns": "report_returns_redacted",
-}
-
-PRIVACY_DESC = (" Privacy view: values are % of the peak daily global net "
-                "worth, not absolute amounts.")
-
-# The one returns card that carries money is the by-source table; its privacy
-# variant redacts (runs over report_returns_redacted, which drops the absolute
-# money columns) instead of normalizing to % of peak — hence the "(privacy)"
-# suffix and its own description tail. The scalars and charts are exempt.
-RETURNS_CARDS = {"Returns by source"}
+# Denominator-neutral by design: each card's body text names its own
+# denominator (latest total, chosen day's total, or peak month).
+PRIVACY_DESC = " Privacy view: values are shares (%), not absolute amounts."
 
 # The native-SQL returns charts: the Currency / Start-year pickers map onto
 # their {{currency}} / {{start_year}} template variables (the MBQL returns
@@ -482,12 +433,9 @@ RETURNS_PRIVACY_DESC = (" Privacy view: returns are scale-free ratios and "
 
 
 def privacy_name(name):
-    """Card title for the privacy variant of card `name`."""
-    if name in RETURNS_CARDS:
-        return f"{name} (privacy)"
-    if " (USD)" in name:
-        return name.replace(" (USD)", " (% of peak)")
-    return f"{name} (% of peak)"
+    """Card title for the privacy variant of card `name`: a uniform
+    '(privacy)' suffix, displacing a USD marker in the base name."""
+    return f"{name.replace(' (USD)', '')} (privacy)"
 
 
 def _f(col, btype, unit=None):
@@ -528,11 +476,24 @@ START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "display-name": "Start year", "type": "number",
                   "default": "0", "required": True}
 
-# Gold field ids backing the native charts' Currency / Source field filters
-# (so the pickers are dropdowns, not free-text), resolved at provision time
-# (field ids are per-Metabase-instance, so they can't be hard-coded). None ⇒
-# the gold DB isn't synced yet; the chart filter is then a plain variable and
-# the next provision — post-sync — upgrades it to the field-filter dropdown.
+# The gold columns backing the native cards' field filters: the returns
+# charts filter report_returns; the privacy cards filter the web_* serving
+# views (gold migration 0032). Field ids are per-Metabase-instance
+# (assigned when the DB syncs), so main() resolves them at provision time
+# into FIELD_IDS — they can't be hard-coded. A missing id (fresh install
+# before the first sync) leaves that filter off the affected cards; the
+# next provision — post-sync — wires it up.
+FILTER_FIELD_COLUMNS = {
+    "report_returns": ("currency", "silver_source_id"),
+    "web_sources_history": ("as_of_day", "silver_source_id"),
+    "web_transactions": ("occurred_at", "silver_source_id"),
+    "web_asset_classes_history": ("as_of_day", "silver_source_id"),
+    "web_vehicles_history": ("as_of_day", "silver_source_id"),
+    "web_accounts_history": ("as_of_day", "silver_source_id"),
+    "web_positions_history": ("as_of_day", "silver_source_id",
+                              "asset_class", "vehicle"),
+}
+FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 CURRENCY_FIELD_ID = None
 SOURCE_FIELD_ID = None
 
@@ -985,7 +946,7 @@ VEHICLE_PARAM_ID = "aa5df106"
 # linked only to these tiles: the Top-positions widgets, which list
 # individual holdings. The breakdown widgets each already group by one of
 # the dimensions, so filtering them by it would mostly self-select.
-POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (% of peak)"}
+POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (privacy)"}
 
 
 def base_dashboards():
@@ -1068,89 +1029,369 @@ def base_dashboards():
     }
 
 
-def privacy_card_names():
-    """Every card on a base dashboard that needs a %-of-peak variant."""
-    return {t[0] for _, _, tiles in base_dashboards().values()
-            for t in tiles} - PRIVACY_EXEMPT_CARDS
+def view_tags(table, spec):
+    """Field-filter template tags for a native privacy card over serving
+    view `table`. spec maps tag name -> (column, widget-type); a tag
+    whose field id has not synced yet is omitted — the SQL builders then
+    drop the matching [[AND {{tag}}]] clause (referencing an undefined
+    tag would invalidate the query) and PRIVACY_PARAM_TARGETS skips its
+    picker mapping until a later provision."""
+    tags = {}
+    for name, (col, widget) in spec.items():
+        fid = FIELD_IDS.get((table, col))
+        if fid is None:
+            continue
+        tags[name] = {"id": f"{table}.{name}", "name": name,
+                      "display-name": name.replace("_", " ").title(),
+                      "type": "dimension", "dimension": ["field", fid, None],
+                      "widget-type": widget, "default": None}
+    return tags
+
+
+def _cl(tags, name):
+    """The optional filter clause for tag `name`; empty when the tag is
+    absent (field id not yet synced)."""
+    return "\n     [[AND {{%s}}]]" % name if name in tags else ""
+
+
+# Dashboard picker -> template tag wiring for the native privacy cards,
+# rebuilt by privacy_card_defs (only tags whose field id resolved are
+# included). ensure_dashboards reads it to map the privacy twins'
+# pickers; cards absent here take the default MBQL dimension mappings.
+PRIVACY_PARAM_TARGETS = {}
 
 
 def privacy_card_defs(db_id, model_ids):
     """name -> (card type, display, description, dataset_query, viz
-    settings) for the privacy variants of every card the base
-    dashboards show: the base defs re-run against the privacy models,
-    plus per-widget-peak overrides for the flow charts (whose _pct
-    models pre-filter kinds and pre-negate costs, so the cards are
-    plain sums) and a money-column-free field list for the returns
-    by-source table."""
-    wanted = privacy_card_names()
-    pmid = {n: model_ids[PCT_MODEL_MAP.get(n, n)] for n in model_ids}
+    settings) for the privacy variants of every card the base dashboards
+    show. The three scalars are MBQL ratios over the _pct sources model:
+    a ratio of sums is scale-free and both legs see the dashboard's
+    filters, so they read as shares of the selected sources' latest
+    total (net worth itself always 100). Every chart is native SQL over
+    the gold web_* serving views, recomputing its normalization
+    denominator in-query with the same filters applied: holdings charts
+    divide by the latest total across the selected sources, the flow
+    charts by their own peak month within the selected window and
+    sources (the tallest bar always reads 100). The returns twin
+    redacts instead — returns are already scale-free ratios."""
+    PRIVACY_PARAM_TARGETS.clear()
+
+    def register(name, tags, pairs):
+        PRIVACY_PARAM_TARGETS[name] = [(pid, t) for pid, t in pairs
+                                       if t in tags]
+
     out = {}
-    for name, (display, desc, query) in metric_defs(db_id, pmid).items():
-        if name in wanted:
-            out[privacy_name(name)] = ("metric", display,
-                                       desc + PRIVACY_DESC, query, {})
-    for name, (display, desc, query, viz) in question_defs(db_id, pmid).items():
-        if name in wanted:
-            suffix = (RETURNS_PRIVACY_DESC if name in RETURNS_CARDS
-                      else PRIVACY_DESC)
-            out[privacy_name(name)] = ("question", display,
-                                       desc + suffix, query, viz)
-    for name, model in (
-            ("Income by month (% of peak)", "report_income_monthly_pct"),
-            ("Fees & taxes by month (% of peak)", "report_costs_monthly_pct")):
-        out[name] = ("question", "bar", out[name][2],
-                     _mbql(db_id, model_ids[model],
-                           {"aggregation": [["sum", _dec("value_usd")]],
-                            "breakout": [_f("occurred_at", "type/DateTime", "month"),
-                                         _f("kind", "type/Text")]}),
-                     {"stackable.stack_type": "stacked"})
-    # report_returns_redacted drops the money columns, so the by-source
-    # table's privacy variant re-lists its fields without them (the base
-    # card's start/end/net-flow refs would error against it) and gets a
-    # description that doesn't promise the dropped columns.
-    name = privacy_name("Returns by source")
-    out[name] = ("question", "table",
-                 "Returns per source over the chosen window: TWR and MWR, "
-                 "plain and annualized, with the quality flags that explain "
-                 "every n/a." + RETURNS_PRIVACY_DESC,
-                 _mbql(db_id, model_ids["report_returns_redacted"],
-                       {"filter": ["and",
-                            ["=", _f("grain", "type/Text"), "sources"],
-                            ["=", _f("granularity", "type/Text"), "total"]],
-                        "fields": [_f("silver_source_id", "type/Text"),
-                                   _f("entity_label", "type/Text"),
-                                   _f("twr", "type/Float"),
-                                   _f("twr_annualized", "type/Float"),
-                                   _f("mwr", "type/Float"),
-                                   _f("mwr_annualized", "type/Float"),
-                                   _f("quality", "type/Text")],
-                        "order-by": [["asc", _f("silver_source_id",
-                                                "type/Text")]]}),
-                 out[name][4])
+
+    # -- Wealth Overview scalars (MBQL ratios; filters land on the
+    # snapshot_at / silver_source_id dimensions as usual).
+    latest = model_ids["report_sources_latest_pct"]
+
+    def share(num_col):
+        return _mbql(db_id, latest,
+                     {"aggregation": [["*", ["/",
+                          ["sum", _dec(num_col)],
+                          ["sum", _dec("total_value_usd")]], 100]]})
+
+    out["Net worth (privacy)"] = ("question", "scalar",
+        "Always 100 by construction — the selected sources' latest net "
+        "worth as a share of itself, the anchor every other percentage "
+        "on this dashboard is relative to." + PRIVACY_DESC,
+        share("total_value_usd"), {})
+    out["Positions value (privacy)"] = ("question", "scalar",
+        "Market value of all positions as % of the selected sources' "
+        "latest net worth; sums to 100 with the cash share." + PRIVACY_DESC,
+        share("positions_value_usd"), {})
+    out["Cash balance (privacy)"] = ("question", "scalar",
+        "Cash as % of the selected sources' latest net worth; sums to "
+        "100 with the positions share." + PRIVACY_DESC,
+        share("cash_balance_usd"), {})
+
+    # -- The holdings time series: % of the total at the END of the
+    # selected window — the last charted day, which is today whenever
+    # the window is open-ended. The nw CTE re-applies both pickers: the
+    # time filter picks the anchor day, the source filter makes a subset
+    # rescale to its own anchor total — so the envelope ends at 100 at
+    # the window's last day and tops 100 wherever it previously peaked
+    # higher. The > 0 guard blanks a selection whose anchor total is
+    # zero or negative — dividing would render inf/NaN resp.
+    # sign-flipped bands.
+    sh_tags = view_tags("web_sources_history",
+                        {"time_range": ("as_of_day", "date/all-options"),
+                         "source": ("silver_source_id", "string/=")})
+    nw_cte = (
+        "WITH nw AS (\n"
+        "  SELECT CASE WHEN sum(total_value_usd) > 0\n"
+        "              THEN sum(total_value_usd)::DOUBLE END AS denom\n"
+        "    FROM web_sources_history\n"
+        "   WHERE as_of_day = (SELECT max(as_of_day) FROM web_sources_history\n"
+        "                       WHERE TRUE" + _cl(sh_tags, "time_range") + ")"
+        + _cl(sh_tags, "source") + ")\n")
+    sh_where = ("\n WHERE TRUE" + _cl(sh_tags, "time_range")
+                + _cl(sh_tags, "source"))
+    out["Net worth — monthly trend (privacy)"] = ("question", "smartscalar",
+        "Average daily net worth per month as % of the selected sources' "
+        "net worth at the window's end, with the change vs the month "
+        "before." + PRIVACY_DESC,
+        _native(db_id, nw_cte +
+            "SELECT CAST(date_trunc('month', as_of_day) AS TIMESTAMP) AS month,\n"
+            "       sum(total_value_usd)::DOUBLE / count(DISTINCT as_of_day)\n"
+            "           / (SELECT denom FROM nw) * 100 AS avg_pct\n"
+            "  FROM web_sources_history" + sh_where + "\n"
+            " GROUP BY 1\n ORDER BY 1", sh_tags),
+        {})
+    out["Net worth over time (privacy)"] = ("question", "area",
+        "Daily net worth as % of the selected sources' total at the "
+        "window's end, stacked by source: the envelope ends at 100 and "
+        "exceeds 100 wherever earlier net worth topped the window-end "
+        "total." + PRIVACY_DESC,
+        _native(db_id, nw_cte +
+            "SELECT as_of_day, silver_source_id,\n"
+            "       sum(total_value_usd)::DOUBLE / (SELECT denom FROM nw)"
+            " * 100 AS total_value_pct\n"
+            "  FROM web_sources_history" + sh_where + "\n"
+            " GROUP BY 1, 2\n ORDER BY 1", sh_tags),
+        {**_series_viz("as_of_day", "silver_source_id", "total_value_pct"),
+         "stackable.stack_type": "stacked"})
+    out["Cash vs positions over time (privacy)"] = ("question", "area",
+        "Daily cash and positions shares of the selected sources' total "
+        "at the window's end, stacked; the two bands sum to 100 at the "
+        "window's last day." + PRIVACY_DESC,
+        _native(db_id, nw_cte +
+            "SELECT as_of_day,\n"
+            "       sum(cash_balance_usd)::DOUBLE / (SELECT denom FROM nw)"
+            " * 100 AS cash_pct,\n"
+            "       sum(positions_value_usd)::DOUBLE / (SELECT denom FROM nw)"
+            " * 100 AS positions_pct\n"
+            "  FROM web_sources_history" + sh_where + "\n"
+            " GROUP BY 1\n ORDER BY 1", sh_tags),
+        {"graph.dimensions": ["as_of_day"],
+         "graph.metrics": ["cash_pct", "positions_pct"],
+         "stackable.stack_type": "stacked"})
+    for name in ("Net worth — monthly trend (privacy)",
+                 "Net worth over time (privacy)",
+                 "Cash vs positions over time (privacy)"):
+        register(name, sh_tags, [(TIME_PARAM_ID, "time_range"),
+                                 (SOURCE_PARAM_ID, "source")])
+
+    # -- The flow charts: % of the peak month WITHIN the selected window
+    # and sources, so the tallest bar always reads exactly 100. The peak
+    # is the biggest month's POSITIVE-kind sum, not its net: stacked
+    # bars render positives up and negatives down, so the visible bar
+    # top is the positive sum — a net peak would push a mixed-sign
+    # month's bar past 100 (and a big-income-but-net-negative window to
+    # blank). The peak > 0 guard blanks a window with no positive flow
+    # at all — better blank than sign-flipped bars.
+    tx_tags = view_tags("web_transactions",
+                        {"time_range": ("occurred_at", "date/all-options"),
+                         "source": ("silver_source_id", "string/=")})
+
+    def flow_sql(kinds, sign=""):
+        ks = ", ".join(f"'{k}'" for k in kinds)
+        return (
+            "WITH m AS (\n"
+            "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
+            " AS month,\n"
+            f"         kind, {sign}sum(value_usd)::DOUBLE AS v\n"
+            "    FROM web_transactions\n"
+            f"   WHERE kind IN ({ks})"
+            + _cl(tx_tags, "time_range") + _cl(tx_tags, "source") + "\n"
+            "   GROUP BY 1, 2),\n"
+            "p AS (SELECT max(t) AS peak FROM"
+            " (SELECT sum(v) FILTER (WHERE v > 0) AS t FROM m GROUP BY month))\n"
+            "SELECT month, kind,\n"
+            "       v / (SELECT CASE WHEN peak > 0 THEN peak END FROM p)"
+            " * 100 AS value_pct\n"
+            "  FROM m\n ORDER BY 1")
+
+    flow_viz = {"graph.dimensions": ["month", "kind"],
+                "graph.metrics": ["value_pct"],
+                "stackable.stack_type": "stacked"}
+    out["Income by month (privacy)"] = ("question", "bar",
+        "Investment income (dividends, interest, distributions, coupons, "
+        "staking) per month, stacked by kind, as % of the biggest income "
+        "month within the selected window and sources — the tallest bar "
+        "reads 100. A kind can dip negative (e.g. margin interest); a "
+        "window with no positive income shows blank." + PRIVACY_DESC,
+        _native(db_id, flow_sql(INCOME_KINDS), tx_tags), flow_viz)
+    out["Fees & taxes by month (privacy)"] = ("question", "bar",
+        "Fees and withheld taxes per month (negated so costs read as "
+        "positive bars), stacked by kind, as % of the costliest month "
+        "within the selected window and sources — the tallest bar reads "
+        "100." + PRIVACY_DESC,
+        _native(db_id, flow_sql(COST_KINDS, sign="-"), tx_tags), flow_viz)
+    for name in ("Income by month (privacy)", "Fees & taxes by month (privacy)"):
+        register(name, tx_tags, [(TIME_PARAM_ID, "time_range"),
+                                 (SOURCE_PARAM_ID, "source")])
+
+    # -- The Allocation breakdowns: each bucket as % of the summed total
+    # over the same filtered rows, so the buckets total 100 across the
+    # selected sources as of the chosen day (liability buckets read
+    # negative; the sum <> 0 guard blanks a degenerate zero day). Built
+    # for the Allocation twin, which supplies the required as-of day;
+    # run standalone they aggregate across all days, so filter As Of Day
+    # to a single day first.
+    day_src = {"as_of_day": ("as_of_day", "date/single"),
+               "source": ("silver_source_id", "string/=")}
+    standalone = (" Built for the Allocation dashboard, which supplies "
+                  "the as-of day; opened standalone, set the As Of Day "
+                  "filter to a single day first.")
+
+    def breakdown_sql(view, dim, val, tags):
+        return (
+            "WITH r AS (\n"
+            f"  SELECT {dim}, sum({val})::DOUBLE AS v\n"
+            f"    FROM {view}\n"
+            "   WHERE TRUE" + _cl(tags, "as_of_day") + _cl(tags, "source") + "\n"
+            "   GROUP BY 1)\n"
+            f"SELECT {dim},\n"
+            "       v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r)"
+            " * 100 AS value_pct\n"
+            "  FROM r\n ORDER BY 2 DESC")
+
+    def breakdown(name, view, dim, val, display, desc, viz=None):
+        tags = view_tags(view, day_src)
+        out[name] = ("question", display, desc + standalone + PRIVACY_DESC,
+                     _native(db_id, breakdown_sql(view, dim, val, tags), tags),
+                     viz if viz is not None else
+                     {"graph.dimensions": [dim], "graph.metrics": ["value_pct"]})
+        register(name, tags, [(ASOF_PARAM_ID, "as_of_day"),
+                              (SOURCE_PARAM_ID, "source")])
+
+    breakdown("Allocation by asset class (privacy)",
+              "web_asset_classes_history", "asset_class", "value_usd", "row",
+              "Asset-class shares (%) of the selected sources' net worth "
+              "as of a day, including a 'cash' class — always sums to 100; "
+              "liability classes (e.g. mortgages) read negative, which is "
+              "why this is a bar chart and not a pie.")
+    breakdown("Allocation by vehicle (privacy)",
+              "web_vehicles_history", "vehicle", "value_usd", "row",
+              "Vehicle shares (%) of the selected sources' net worth as of "
+              "a day, including a 'demand_deposit' vehicle for cash — "
+              "always sums to 100. The wrapper-dimension companion to "
+              "Allocation by asset class.")
+    breakdown("Allocation by currency (privacy)",
+              "web_positions_history", "currency", "value_usd", "row",
+              "Native-currency shares (%) of the selected sources' "
+              "positions value (cash not included) as of a day — the FX "
+              "exposure of the invested part; always sums to 100.")
+    breakdown("Value by tax wrapper (privacy)",
+              "web_accounts_history", "tax_wrapper", "total_value_usd", "pie",
+              "Tax-wrapper shares (%) of the selected sources' total "
+              "account value (incl. cash) as of a day; always sums to 100.",
+              viz={"pie.dimension": "tax_wrapper", "pie.metric": "value_pct"})
+    breakdown("Value by management style (privacy)",
+              "web_accounts_history", "management_style", "total_value_usd",
+              "row",
+              "Management-style shares (%) of the selected sources' total "
+              "account value (incl. cash) as of a day; always sums to 100.")
+
+    # -- Top positions: each position's share of the selected sources'
+    # TOTAL positions value at the day. The inline asset-class / vehicle
+    # pickers narrow the list but not the denominator, so a position's
+    # share reads the same however the list is narrowed.
+    top_tags = view_tags("web_positions_history",
+                         {**day_src,
+                          "asset_class": ("asset_class", "string/="),
+                          "vehicle": ("vehicle", "string/=")})
+    out["Top 100 positions (privacy)"] = ("question", "table",
+        "The hundred largest positions as of a day, each as % of the "
+        "selected sources' total positions value; the widget's "
+        "asset-class and vehicle filters narrow the list but not the "
+        "denominator." + standalone + PRIVACY_DESC,
+        _native(db_id,
+            "WITH tot AS (\n"
+            "  SELECT sum(value_usd)::DOUBLE AS t\n"
+            "    FROM web_positions_history\n"
+            "   WHERE TRUE" + _cl(top_tags, "as_of_day")
+            + _cl(top_tags, "source") + "),\n"
+            "p AS (\n"
+            "  SELECT symbol, name, asset_class, vehicle,"
+            " sum(value_usd)::DOUBLE AS v\n"
+            "    FROM web_positions_history\n"
+            "   WHERE TRUE" + _cl(top_tags, "as_of_day")
+            + _cl(top_tags, "source") + _cl(top_tags, "asset_class")
+            + _cl(top_tags, "vehicle") + "\n"
+            "   GROUP BY 1, 2, 3, 4)\n"
+            "SELECT symbol, name, asset_class, vehicle,\n"
+            "       v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
+            " * 100 AS value_pct\n"
+            "  FROM p\n ORDER BY 5 DESC\n LIMIT 100", top_tags),
+        {})
+    register("Top 100 positions (privacy)", top_tags,
+             [(ASOF_PARAM_ID, "as_of_day"), (SOURCE_PARAM_ID, "source"),
+              (ASSET_PARAM_ID, "asset_class"), (VEHICLE_PARAM_ID, "vehicle")])
+
+    # -- Data Freshness twin: the freshness table re-run over the _pct
+    # sources model. The dashboard is unfiltered by design, so the
+    # model's fixed %-of-latest scale IS the selected-sources scale, and
+    # the source rows total 100. Own description: the base card's
+    # promises a USD value column, which here holds shares.
+    pmid = {**model_ids,
+            "report_sources_latest": model_ids["report_sources_latest_pct"]}
+    display, _desc, query, viz = question_defs(db_id, pmid)["Source freshness"]
+    out["Source freshness (privacy)"] = ("question", display,
+        "Per source: latest snapshot, its age in days, and the share (%) "
+        "of the latest total riding on it." + PRIVACY_DESC, query, viz)
+
+    # -- Returns twin: report_returns_redacted drops the money columns,
+    # so the by-source table's privacy variant re-lists its fields
+    # without them (the base card's start/end/net-flow refs would error
+    # against it) and gets a description that doesn't promise the
+    # dropped columns.
+    out["Returns by source (privacy)"] = ("question", "table",
+        "Returns per source over the chosen window: TWR and MWR, "
+        "plain and annualized, with the quality flags that explain "
+        "every n/a." + RETURNS_PRIVACY_DESC,
+        _mbql(db_id, model_ids["report_returns_redacted"],
+              {"filter": ["and",
+                   ["=", _f("grain", "type/Text"), "sources"],
+                   ["=", _f("granularity", "type/Text"), "total"]],
+               "fields": [_f("silver_source_id", "type/Text"),
+                          _f("entity_label", "type/Text"),
+                          _f("twr", "type/Float"),
+                          _f("twr_annualized", "type/Float"),
+                          _f("mwr", "type/Float"),
+                          _f("mwr_annualized", "type/Float"),
+                          _f("quality", "type/Text")],
+               "order-by": [["asc", _f("silver_source_id",
+                                       "type/Text")]]}),
+        _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
     return out
 
 
 def dashboard_defs():
     """dashboard name -> (description, filter mode, sibling dashboard
     name, tiles). Every base dashboard gets a privacy twin: same layout
-    and filters, cards swapped for their %-of-peak variants. The sibling
-    name links the two views — ensure_dashboards renders it as a switch
-    link at the top of each dashboard."""
+    and filters, cards swapped for their share-normalized '(privacy)'
+    variants. The sibling name links the two views — ensure_dashboards
+    renders it as a switch link at the top of each dashboard."""
+    # The twin blurb names each mode's denominator; absolute amounts
+    # never show on any of them.
+    pdesc = {
+        "returns": (
+            "Privacy view: returns are scale-free ratios and show "
+            "unchanged; the absolute money columns and the account / "
+            "portfolio grains are redacted. "),
+        "range": (
+            "Privacy view: values are shares (%) of the selected "
+            "sources' total at the window's end — the holdings charts "
+            "end at 100, the flow charts peak at 100 within the selected "
+            "window; absolute amounts never show. "),
+        "asof": (
+            "Privacy view: every breakdown shows shares (%) of the "
+            "selected sources' total as of the chosen day, summing to "
+            "100; absolute amounts never show. "),
+        None: (
+            "Privacy view: values are shares (%) of the latest total "
+            "across all sources, not absolute amounts. "),
+    }
     out = {}
     for name, (desc, mode, tiles) in base_dashboards().items():
         pname = f"{name} (privacy)"
         out[name] = (desc, mode, pname, tiles)
         ptiles = [(c if c in PRIVACY_EXEMPT_CARDS else privacy_name(c),
                    r, col, sx, sy, t) for c, r, col, sx, sy, t in tiles]
-        pdesc = (
-            "Privacy view: returns are scale-free ratios and show "
-            "unchanged; the absolute money columns and the account / "
-            "portfolio grains are redacted. " if mode == "returns" else
-            "Privacy view: monetary values are % of peak (peak daily "
-            "global net worth for holdings, the widget's peak month for "
-            "flows), so shapes and shares show but absolute amounts do "
-            "not. ")
-        out[pname] = (pdesc + desc, mode, name, ptiles)
+        out[pname] = (pdesc[mode] + desc, mode, name, ptiles)
     return out
 
 
@@ -1242,25 +1483,96 @@ def dashboard_parameters(model_ids, mode):
     ]
 
 
-def resolve_returns_field_ids(base, sid, db_id):
-    """Gold field ids for report_returns.{currency, silver_source_id}, for the
-    native returns charts' field filters — which render the Currency / Source
-    dashboard pickers as dropdowns populated from those columns (a plain
-    template variable would be a free-text box instead). Field ids are
-    per-Metabase-instance (assigned when the DB is synced), so they must be
-    looked up, never hard-coded. Missing ids (a fresh install before the first
-    scan) leave the corresponding filter off the charts; the next provision —
-    post-sync — wires it up. Returns {column_name: field_id}."""
+def gold_metadata(base, sid, db_id, tries=3, delay=2):
+    """The synced gold tables metadata, with a short retry. A transient
+    failure here must fail the run loudly rather than resolve zero field
+    ids — an empty resolution would silently converge a working install
+    down to the degraded no-filters card shape. Returns the tables list,
+    or None when the metadata stays unreadable."""
+    for i in range(tries):
+        st, meta = req(base, f"/api/database/{db_id}/metadata", session=sid)
+        if st == 200 and isinstance(meta, dict):
+            return meta.get("tables", [])
+        time.sleep(delay)
+    return None
+
+
+def field_ids_from(tables):
+    """{(table, column): field id} for every column named in
+    FILTER_FIELD_COLUMNS present in `tables` — the ids behind the native
+    cards' field filters, which render the dashboard pickers as
+    dropdowns / date widgets (a plain template variable would be a
+    free-text box instead)."""
     ids = {}
-    st, meta = req(base, f"/api/database/{db_id}/metadata", session=sid)
-    if st != 200 or not isinstance(meta, dict):
-        return ids
-    for t in meta.get("tables", []):
-        if t.get("name") == "report_returns":
-            for f in t.get("fields", []):
-                if f.get("name") in ("currency", "silver_source_id"):
-                    ids[f["name"]] = f.get("id")
+    for t in tables:
+        cols = FILTER_FIELD_COLUMNS.get(t.get("name"))
+        if not cols:
+            continue
+        for f in t.get("fields", []):
+            if f.get("name") in cols:
+                ids[(t["name"], f["name"])] = f.get("id")
     return ids
+
+
+def missing_filter_columns(tables):
+    """The FILTER_FIELD_COLUMNS tables not fully synced in `tables` —
+    checked per COLUMN, not per table: Metabase's sync can expose a
+    table before its fields, and a provision that ran in that gap would
+    wire zero filters."""
+    ids = field_ids_from(tables)
+    return sorted({t for t, cols in FILTER_FIELD_COLUMNS.items()
+                   for c in cols if (t, c) not in ids})
+
+
+def snapshot_has_web_views(base, sid, db_id):
+    """Whether the mounted gold snapshot carries the web_* serving views
+    (migration 0032), probed through the driver itself. A pre-0032
+    snapshot cannot be fixed by a Metabase schema sync — only `wealthdb
+    web refresh` re-materializes and re-snapshots gold."""
+    want = sum(1 for t in FILTER_FIELD_COLUMNS if t.startswith("web_"))
+    st, res = req(base, "/api/dataset", "POST",
+                  {"type": "native", "database": db_id,
+                   "native": {"query":
+                              "SELECT count(*) FROM duckdb_views() "
+                              "WHERE NOT internal AND view_name LIKE 'web!_%' "
+                              "ESCAPE '!'",
+                              "template-tags": {}}}, session=sid)
+    rows = (res.get("data") or {}).get("rows") if st == 202 else None
+    return bool(rows) and rows[0][0] >= want
+
+
+def ensure_synced(base, sid, db_id, tries=20, delay=3):
+    """Make every column behind FILTER_FIELD_COLUMNS available: when
+    some are missing from the synced metadata, either Metabase simply
+    has not synced the new gold DDL yet (trigger a sync, wait bounded)
+    or the snapshot predates the web_* serving views — which no sync
+    can fix. Returns the tables metadata to resolve field ids from, or
+    None when provisioning must not proceed (metadata unreadable, or a
+    stale snapshot that would break the view-backed models)."""
+    tables = gold_metadata(base, sid, db_id)
+    if tables is None:
+        print("provision: cannot read the gold metadata — aborting before "
+              "converging cards to a degraded shape", file=sys.stderr)
+        return None
+    gone = missing_filter_columns(tables)
+    if not gone:
+        return tables
+    if not snapshot_has_web_views(base, sid, db_id):
+        print("provision: the gold snapshot predates the web_* serving "
+              "views (migration 0032) — run `wealthdb web refresh` to "
+              "re-snapshot; leaving the existing cards untouched",
+              file=sys.stderr)
+        return None
+    print(f"provision: syncing gold schema (missing: {', '.join(gone)})")
+    req(base, f"/api/database/{db_id}/sync_schema", "POST", {}, session=sid)
+    for _ in range(tries):
+        time.sleep(delay)
+        tables = gold_metadata(base, sid, db_id)
+        if tables is not None and not missing_filter_columns(tables):
+            return tables
+    print("provision: gold schema sync incomplete — some dashboard filters "
+          "will wire up on a later provision", file=sys.stderr)
+    return tables or []
 
 
 def ensure_database(base, sid, db_name, gold_path):
@@ -1503,12 +1815,20 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
         else:
             link = (f"🔓 [Switch to absolute values](/dashboard/{dash_ids[sibling]})"
                     if name.endswith(" (privacy)") else
-                    f"🔒 [Switch to the privacy view — values as % of peak]"
-                    f"(/dashboard/{dash_ids[sibling]})")
+                    f"🔒 [Switch to the privacy view — values as shares (%), "
+                    f"not amounts](/dashboard/{dash_ids[sibling]})")
 
         def tile_mappings(card, tcol):
             if not mode:
                 return []
+            # Native privacy cards take the pickers as field-filter
+            # template tags (registered when their SQL was built; only
+            # tags whose field id resolved are present).
+            native = PRIVACY_PARAM_TARGETS.get(card)
+            if native is not None:
+                return [{"parameter_id": pid, "card_id": card_ids[card],
+                         "target": ["dimension", ["template-tag", tag]]}
+                        for pid, tag in native]
             if mode == "returns":
                 # Currency + Start-year land on every returns tile. The
                 # native charts take them as template variables ({{currency}}
