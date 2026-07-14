@@ -340,7 +340,12 @@ DOC_LINK_SELECTOR = 'a[href*="/api/v1/digital-banking/files/"]'
 # CSS class with no individual handle, so we locate by index. The
 # Status filter happens to carry a `data-tour-target`; the others
 # do not.
-DOC_FILTER_BUTTON_SELECTOR = "button.UWR_FilterItem_filter-content_GXm9A"
+#
+# The class is CSS-modules generated: a stable `UWR_FilterItem_
+# filter-content_` prefix plus a build hash that rotates whenever
+# UBS redeploys the docs micro-frontend (observed 2026-07: _GXm9A
+# → _TzYzX). Match on the stable prefix only, never a full class.
+DOC_FILTER_BUTTON_SELECTOR = 'button[class*="UWR_FilterItem_filter-content_"]'
 DOC_FILTER_INDEX_PERIOD = 0
 DOC_FILTER_INDEX_CATEGORY = 1
 DOC_FILTER_INDEX_BANKING_RELATIONSHIP = 2
