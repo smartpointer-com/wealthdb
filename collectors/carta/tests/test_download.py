@@ -29,6 +29,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import download  # noqa: E402
@@ -424,3 +426,13 @@ def test_tally_unmapped_code_goes_to_other():
     download._tally(counts, "totally-unexpected-code")
     assert counts["other"] == 1
     assert counts["fetched"] == 0
+
+
+def test_lookback_flag():
+    # Accepted for wealthdb-refresh uniformity: carta's download captures a full
+    # holdings snapshot, so --lookback only drives a warning; the
+    # value is still validated against the shared presets so a typo fails loudly.
+    assert download.parse_args(["--lookback", "6m"]).lookback == "6m"
+    assert download.parse_args([]).lookback is None
+    with pytest.raises(SystemExit):
+        download.parse_args(["--lookback", "1m"])  # not a preset

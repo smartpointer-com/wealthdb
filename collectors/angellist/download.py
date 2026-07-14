@@ -225,6 +225,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "write nothing); exit 0 if valid, non-zero if stale. "
                         "`login` uses this to decide whether a fresh sign-in is "
                         "needed — a cookie can be unexpired yet server-rejected.")
+    cli.add_full_download_lookback_arg(p)
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -232,6 +233,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+
+    if not args.check_session:
+        cli.warn_lookback_ignored(args.lookback, log,
+                                  what="the full AngelList portfolio snapshot")
 
     if not args.cookies.is_file():
         log.error("cookie jar not found: %s — run `./angellist login` "

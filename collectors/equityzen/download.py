@@ -125,6 +125,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "/debug HAR/trace/click log, never the bronze tree) — so this flag "
                         "currently gates nothing bronze-resident; it exists so the gate is "
                         "uniform across collectors and any future capture stays off by default.")
+    cli.add_full_download_lookback_arg(p)
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -292,6 +293,8 @@ def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    cli.warn_lookback_ignored(args.lookback, log,
+                              what="every offering, position and cash flow")
     if args.debug:
         log.info("--debug: download writes no bronze-resident debug artefacts; "
                  "external diagnostics live under `login --debug-dir` and "

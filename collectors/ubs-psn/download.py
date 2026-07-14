@@ -147,6 +147,7 @@ def parse_args() -> argparse.Namespace:
                         "-v/--verbose, which writes to stderr, not bronze.)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="Enable DEBUG logging (incl. paramiko transport).")
+    cli.add_full_download_lookback_arg(p)
     return p.parse_args()
 
 
@@ -225,6 +226,8 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    cli.warn_lookback_ignored(args.lookback, log,
+                              what="whatever PSN data UBS currently has queued")
 
     # Validate the destination up front, before connecting. UBS deletes
     # each per-order-type zip immediately on a successful download, so a

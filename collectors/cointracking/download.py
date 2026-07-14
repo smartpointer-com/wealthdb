@@ -458,6 +458,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "discovery diagnostics live in explore.py's /debug mount, "
               "never in a bronze run dir."),
     )
+    cli.add_full_download_lookback_arg(p)
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -465,6 +466,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    cli.warn_lookback_ignored(
+        args.lookback, log,
+        what="the complete trade history its holdings replay requires")
     if args.debug:
         log.debug("--debug set; cointracking's download writes no "
                   "bronze-resident debug artefacts, so no extra capture "

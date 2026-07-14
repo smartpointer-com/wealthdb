@@ -24,6 +24,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import download  # noqa: E402
@@ -347,3 +349,14 @@ def test_real_fetch_failure_is_error(tmp_path):
     counts = download._empty_doc_counts()
     download._tally(counts, status)
     assert counts["errors"] == 1 and counts["no_blob"] == 0
+
+
+def test_lookback_flag():
+    # Accepted for wealthdb-refresh uniformity: equityzen always captures every
+    # offering/position/cash-flow (no date surface), so --lookback only drives
+    # a warning; the value is still validated against the shared
+    # presets so a typo fails loudly.
+    assert download.parse_args(["--lookback", "1y"]).lookback == "1y"
+    assert download.parse_args([]).lookback is None
+    with pytest.raises(SystemExit):
+        download.parse_args(["--lookback", "1m"])  # not a preset

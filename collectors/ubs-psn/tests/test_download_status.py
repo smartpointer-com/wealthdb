@@ -101,3 +101,16 @@ def test_debug_flag_accepted(tmp_path, monkeypatch):
         return 1, 0
 
     assert _run_main(tmp_path, monkeypatch, dl, "--debug") == 0
+
+
+def test_lookback_flag_accepted(tmp_path, monkeypatch):
+    # An SFTP pull takes whatever UBS has queued; --lookback cannot narrow it,
+    # so it is accepted for wealthdb-refresh uniformity and only logs a note —
+    # the pull still runs in full.
+    def dl(sftp, run_dir, verbose=False):
+        (run_dir / "ZAH.zip").write_bytes(b"PK\x03\x04")
+        return 1, 0
+
+    assert _run_main(tmp_path, monkeypatch, dl, "--lookback", "4w") == 0
+    d = _run_dirs(tmp_path)[0]
+    assert json.loads((d / "run.json").read_text())["status"] == "complete"

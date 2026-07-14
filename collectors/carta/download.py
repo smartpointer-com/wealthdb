@@ -709,6 +709,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "help-text uniformity; `prune` therefore only reclaims whole "
               "non-complete dumps, not per-run debug subdirs."),
     )
+    cli.add_full_download_lookback_arg(p)
     cli.add_common_args(p)
     return p.parse_args(argv)
 
@@ -716,6 +717,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
+    cli.warn_lookback_ignored(args.lookback, log,
+                              what="the full holdings snapshot")
 
     if args.debug:
         log.info("--debug set: carta captures browser diagnostics externally "

@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import download  # noqa: E402
@@ -50,3 +52,14 @@ def test_debug_flag():
     # nothing — it exists so the flag surface is uniform across collectors.
     assert download.parse_args(["--debug"]).debug is True
     assert download.parse_args([]).debug is False
+
+
+def test_lookback_flag():
+    # Accepted for wealthdb-refresh uniformity: angellist always captures the
+    # full portfolio snapshot (no server-side date filter), so --lookback only
+    # drives a warning; the value is still validated against the
+    # shared presets so a typo fails loudly.
+    assert download.parse_args(["--lookback", "4w"]).lookback == "4w"
+    assert download.parse_args([]).lookback is None
+    with pytest.raises(SystemExit):
+        download.parse_args(["--lookback", "1m"])  # not a preset

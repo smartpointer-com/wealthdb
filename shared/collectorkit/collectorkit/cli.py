@@ -90,7 +90,7 @@ def add_lookback_args(parser: argparse.ArgumentParser, *,
     Adds:
       --since YYYY-MM-DD          earliest transaction/activity date
       --until YYYY-MM-DD          latest (default: today UTC)
-      --lookback {3m,6m,1y,2y,5y,all}
+      --lookback {1w,4w,3m,6m,1y,2y,5y,all}
                                    named window shortcut
 
     With ``has_documents=True``, also adds:
@@ -190,3 +190,45 @@ def resolve_lookback(args: argparse.Namespace, *,
         )
 
     return since, until, documents_since, documents_until
+
+
+def add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
+    """Accept ``--lookback`` on a collector that always fetches its full
+    history and structurally cannot honour a narrower window.
+
+    ``wealthdb-refresh`` forwards ``--lookback`` to every collector's
+    ``download``; the ones that can bound their fetch wire up the full
+    contract via :func:`add_lookback_args` + :func:`resolve_lookback`.
+    The ones that always pull everything — a passive SPA capture with no
+    server-side date filter, a full-history export whose downstream replay
+    needs every row, an SFTP drop of whatever the server has queued — use
+    this instead. ``--lookback`` is a *lower bound* ("fetch at least this
+    far back"), and a full download trivially satisfies any window, so the
+    flag is validated (for a clean error on a typo) but only drives a
+    warning via :func:`warn_lookback_ignored`; the download is unaffected.
+
+    Only ``--lookback`` is added, not ``--since`` / ``--until``: the
+    orchestrator never sends those, and silently ignoring an explicit date
+    range would surprise more than rejecting it.
+    """
+    parser.add_argument(
+        "--lookback", choices=LOOKBACK_CHOICES, default=None,
+        help=("Accepted for wealthdb-refresh uniformity. This collector "
+              "always downloads its full history (a superset of any "
+              "window); --lookback cannot narrow that, so it is logged "
+              "and otherwise ignored."),
+    )
+
+
+def warn_lookback_ignored(lookback: str | None, log: logging.Logger, *,
+                          what: str = "its full history") -> None:
+    """Warn that a full-download collector (see
+    :func:`add_full_download_lookback_arg`) cannot narrow to the requested
+    ``--lookback``. No-op when ``lookback`` is None. Worded to hold on every
+    path — a real download, a ``--dry-run`` walk, or a session probe — since
+    it states the collector's nature, not that bytes were fetched this run."""
+    if lookback:
+        log.warning(
+            "--lookback %s cannot narrow this collector — it always fetches "
+            "%s (a superset of any window); the flag has no effect.",
+            lookback, what)
