@@ -70,6 +70,12 @@ DEFAULT_ENV_FILE_CANDIDATES = (
 # `UBS_CONTRACT_NUMBER=<digits>`.
 CONTRACT_NUMBER_ENV = "UBS_CONTRACT_NUMBER"
 
+# Canonical storageState location: the wrapper mounts the secrets
+# dir (default ~/.secrets, overridable via UBS_WEB_SECRETS_DIR /
+# WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
+# there by default and survives across container runs.
+DEFAULT_STATE_PATH = Path("/secrets/ubs_web_state.json")
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -77,8 +83,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "--state-path", required=True, type=Path,
-        help="Path to read/write the Playwright storageState.json file.",
+        "--state-path", type=Path, default=DEFAULT_STATE_PATH,
+        help=("Path to read/write the Playwright storageState.json file "
+              "(default: %(default)s, in the wrapper's /secrets mount)."),
     )
     p.add_argument(
         "--contract-number", default=None,

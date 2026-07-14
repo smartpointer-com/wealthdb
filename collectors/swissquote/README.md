@@ -179,9 +179,7 @@ fingerprint, the script completes silently in milliseconds.
 Initial mint (and re-mint when the session expires):
 
 ```sh
-./swissquote login \
-    --state-path /secrets/swissquote_state.json \
-    --username <USERNAME>
+./swissquote login --username <USERNAME>
 ```
 
 `--username` may also be provided via `SWISSQUOTE_USERNAME`. The
@@ -195,14 +193,14 @@ Check whether the current session cookie still authenticates (no
 new MFA push, no fresh login):
 
 ```sh
-./swissquote login --state-path /secrets/swissquote_state.json --check
+./swissquote login --check
 ```
 
 #### Flags
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--state-path` | _(required)_ | Path to read/write the Playwright `storageState.json` file. |
+| `--state-path` | `/secrets/swissquote_state.json` (wrapper mount) | Path to read/write the Playwright `storageState.json` file. |
 | `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
 | `--mfa-timeout` | `300` | Seconds to wait for the Mobile Level 3 push to be approved. |
@@ -302,22 +300,20 @@ confirm landmark selectors match, exits without exporting any
 artefacts:
 
 ```sh
-./swissquote download \
-    --state-path /secrets/swissquote_state.json \
-    --dry-run
+./swissquote download --dry-run
 ```
 
 Real download (last 90 days, the default):
 
 ```sh
-./swissquote download --state-path /secrets/swissquote_state.json
+./swissquote download
 ```
 
 Wider backfill via the shared `--lookback` shortcut, or explicit dates:
 
 ```sh
-./swissquote download --state-path /secrets/swissquote_state.json --lookback 1y
-./swissquote download --state-path /secrets/swissquote_state.json --since 2010-01-01
+./swissquote download --lookback 1y
+./swissquote download --since 2010-01-01
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
@@ -338,7 +334,7 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--state-path` | _(required)_ | Path to the Playwright `storageState.json` file. |
+| `--state-path` | `/secrets/swissquote_state.json` (wrapper mount) | Path to the Playwright `storageState.json` file minted by `login.py`. |
 | `--dest` | `/data` (wrapper mount) | Local destination directory (must be writable). |
 | `--since` | _today − 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
 | `--until` | _today (UTC)_ | Latest transaction date to fetch (YYYY-MM-DD, inclusive). |

@@ -17,7 +17,7 @@ CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
-    download.py --state-path <file> --dest <dir>
+    download.py [--state-path <file>] [--dest <dir>]
                 [--since YYYY-MM-DD] [--until YYYY-MM-DD]
                 [--documents-since YYYY-MM-DD] [--documents-until YYYY-MM-DD]
                 [--dry-run] [--screenshot-dir <dir>] [--trace]
@@ -52,6 +52,10 @@ NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
 
+# Canonical storageState location — must match login.py, which
+# mints the file there (the wrapper's /secrets mount).
+DEFAULT_STATE_PATH = Path("/secrets/swissquote_state.json")
+
 # --since / --until / --lookback / --documents-* defaults are all
 # resolved through collectorkit.cli.resolve_lookback (default
 # DEFAULT_LOOKBACK_DAYS = 90). Sensible for incremental runs because
@@ -69,8 +73,9 @@ POSITIONS_FILENAME_RE = re.compile(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--state-path", required=True, type=Path,
-                   help="Path to the Playwright storageState.json.")
+    p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH,
+                   help="Path to the Playwright storageState.json minted by "
+                        "login.py (default: %(default)s).")
     p.add_argument("--dest", type=Path, default=Path("/data"),
                    help="Output directory (default: %(default)s, the wrapper's "
                         "/data mount); a UTC-timestamped subdir is created per run.")

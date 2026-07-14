@@ -12,7 +12,7 @@ CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
-    download.py --state-path <file> --dest <dir>
+    download.py [--state-path <file>] [--dest <dir>]
                 [--since YYYY-MM-DD] [--until YYYY-MM-DD]
                 [--documents-since YYYY-MM-DD] [--documents-until YYYY-MM-DD]
                 [--dry-run] [--screenshot-dir <dir>] [--trace]
@@ -47,6 +47,10 @@ NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 DOWNLOAD_TIMEOUT_MS = 60_000
 
+# Canonical storageState location — must match login.py, which
+# mints the file there (the wrapper's /secrets mount).
+DEFAULT_STATE_PATH = Path("/secrets/ubs_web_state.json")
+
 # Date-window defaults resolve through collectorkit.cli (default
 # DEFAULT_LOOKBACK_DAYS = 90). Important context for UBS:
 # - transactions UI defaults to "Maximum (current year and last 2
@@ -79,8 +83,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--state-path", required=True, type=Path,
-                   help="Path to the Playwright storageState.json.")
+    p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH,
+                   help="Path to the Playwright storageState.json minted by "
+                        "login.py (default: %(default)s).")
     p.add_argument("--dest", type=Path, default=Path("/data"),
                    help="Output dir (default: %(default)s, the wrapper's /data "
                         "mount); a UTC-timestamped subdir is created per run.")
