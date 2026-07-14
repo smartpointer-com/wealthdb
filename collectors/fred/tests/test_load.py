@@ -100,14 +100,28 @@ def test_load_is_idempotent(tmp_path):
     assert _rows(db) == before
 
 
-def test_force_reloads_and_upserts(tmp_path):
+def test_force_rebuild_equals_incremental(tmp_path):
+    # --force deletes the silver DB and rebuilds from all bronze. For
+    # UNCHANGED bronze the clean rebuild must reproduce the incremental
+    # result exactly (silver is reproducible from bronze alone).
+    bronze = tmp_path / "bronze"
+    _seed_bronze(bronze)
+    db = tmp_path / "fred.db"
+    loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)])
+    incremental = _rows(db)
+    loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze), "--force"])
+    assert _rows(db) == incremental
+
+
+def test_force_rebuild_picks_up_revision(tmp_path):
     bronze = tmp_path / "bronze"
     run = _seed_bronze(bronze)
     db = tmp_path / "fred.db"
     loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze)])
 
-    # FRED revises 2020-01-02 CHF; a re-fetch (same run dir here) + --force
-    # must overwrite the existing (date, base, quote) row, not duplicate it.
+    # FRED revises 2020-01-02 CHF; --force deletes the silver and rebuilds
+    # from the (revised) bronze, so the new value lands as the single
+    # (date, base, quote) row — a rebuild, no stale duplicate.
     (run / "DEXSZUS.json").write_text(json.dumps(_obs_doc([
         ("2020-01-02", "0.9050"),
         ("2020-01-03", "0.9100"),
@@ -115,7 +129,7 @@ def test_force_reloads_and_upserts(tmp_path):
     loader.main(["--silver-db", str(db), "--bronze-dir", str(bronze), "--force"])
 
     rows = _rows(db)
-    assert len(rows) == 4  # still 4 — upsert, not append
+    assert len(rows) == 4  # still 4 — rebuilt from bronze, not appended
     revised = [r for r in rows
                if r["base_currency_iso"] == "CHF"
                and r["snapshot_at"] == _epoch("2020-01-02")]

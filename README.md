@@ -124,10 +124,11 @@ wealthdb-collect viac load --data-dir /mnt/bronze/viac --silver-db /mnt/silver/v
 WEALTHDB_DATA_ROOT=/mnt/bronze wealthdb-collect schwab-api download
 ```
 
-Every collector also accepts the same `--since` / `--until` /
-`--documents-since` / `--documents-until` flags plus a `--lookback`
-shortcut (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`, `all`); without
-any of them, downloads default to a 90-day window. Orchestration
+Every collector accepts the same single window flag, `--lookback`,
+taking either a preset (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`,
+`all`) or an ISO date (`2020-01-01`). It names where to start; the
+window runs from there to today and covers everything the source
+offers in it. Without it, downloads default to a 90-day window. Orchestration
 helpers in `~/bin` (`wealthdb-nightly` for the unattended sources,
 `wealthdb-refresh` for the interactive ones) drive the fleet through
 `wealthdb-collect` and forward `--lookback` to every collector; see

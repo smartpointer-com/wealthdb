@@ -25,17 +25,27 @@
 # flags:
 #   --secrets-dir <dir>   where credentials / sessions live (default ~/.secrets)
 #   --data-dir <dir>      where downloaded data is written (default $XDG_DATA_HOME/wealthdb/<source>)
-#   --silver-db <path>    the database file to build (default <data-dir>/<source>.db)
-#   --debug               (download) also write diagnostic captures into the
-#                         bronze dump; off by default so a routine dump holds
-#                         only what load reads. prune reclaims what it writes.
+#   --silver-db <path>    the database file to build (default <data-dir>/<source>.db;
+#                         cointracking's is <data-dir>/cointracking.duckdb).
+#                         Only load reads it (plus cointracking fetch-prices),
+#                         so passing it to another subcommand is an error
+#                         rather than a silent no-op. ${PREFIX}_SILVER_DB is
+#                         ambient config and is simply unused elsewhere.
+#   --debug               (download) request bronze-resident diagnostic
+#                         captures. Honoured by the browser collectors that
+#                         write them (schwab-web, fidelity-web); on the others
+#                         it warns that no captures are implemented yet (TODO).
+#                         Off by default; prune reclaims any it writes.
 #   --dry-run             (prune) print the deletion plan without removing
 #                         anything; (download) walk without exporting.
 #
-# Flags are accepted on any subcommand (or set the matching env var — see
-# the README). Run login -> download -> load in order the first time, then
-# download + load to refresh. Narrow a download with --since / --until or
-# --lookback (1w 4w 3m 6m 1y 2y 5y all; default ~90 days); reclaim disk
+# Flags are accepted on the subcommands they mean something on (or set the
+# matching env var — see the README); a flag that does nothing on the verb
+# being run is rejected rather than ignored. The exception is a flag the
+# fleet forwards everywhere: --lookback is accepted by every source, and a
+# source that cannot narrow its fetch warns instead of failing. Run login -> download -> load in order the first time, then
+# download + load to refresh. Widen a download with --lookback (a preset:
+# 1w 4w 3m 6m 1y 2y 5y all; or an ISO date; default ~90 days); reclaim disk
 # afterward with prune (--dry-run first). For a source's own options, run
 # `wealthdb-collect <source> --help`.
 set -euo pipefail

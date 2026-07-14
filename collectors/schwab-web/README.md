@@ -78,7 +78,7 @@ template; subcommand names and roles are the same:
 | Script | Status | Purpose |
 | --- | --- | --- |
 | [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` keeps the legacy VNC-driven flow where the operator drives Log In + 2FA. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
-| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<dest>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<dest>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<dest>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode both` runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). `--with-more-detail`: also drive each transaction's "More" modal and stash the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) in a sidecar — off by default, see DESIGN.md §4.4 for why. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §4.4 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions, positions, cash) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
@@ -114,9 +114,11 @@ The CLI is intentionally minimal:
   `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-submits, prompts
   on stdin for the 2FA code, runs the statements + tx-history
   download in the same Firefox session, exits. Defaults to a
-  3-month range; the shared `--lookback {1w,4w,3m,6m,1y,2y,5y,all}`
-  shortcut maps to the closest Schwab preset, or pass `--range
-  Last10Years` for an explicit preset.
+  3-month range; the shared `--lookback` flag — a preset
+  (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date — names
+  the window's start, which maps to the narrowest Schwab preset that
+  still covers it. A window wider than `Last10Years` is capped at
+  ~10 years, with a warning.
 * `load` — parse the bronze tree into the silver SQLite DB.
 * `vnc-login` — fallback to a VNC-driven login + scrape when the
   CLI-MFA selectors drift or a non-code challenge is required.
@@ -131,9 +133,9 @@ The CLI is intentionally minimal:
 ./schwab-web download \
     --screenshot-dir /debug/login-$(date +%Y%m%dT%H%M%SZ) -v
 
-# Full backfill (10 years of statements). Either of:
-./schwab-web download --lookback all --with-more-detail
-./schwab-web download --range Last10Years --with-more-detail  # explicit preset (escape hatch)
+# Full backfill (capped at Schwab's 10 years of statements, with a warning):
+./schwab-web download --lookback all
+./schwab-web download --lookback 2016-01-01  # explicit starting point
 
 # Fallback path: VNC. Start the container with VNC enabled, then
 # tunnel + open the display from your laptop. Use this if the
@@ -192,8 +194,8 @@ cd collectors/schwab-web
 
 ```sh
 ./schwab-web download                                  # CLI-MFA login + scrape (default: 3 months)
-./schwab-web download --lookback all --with-more-detail  # full backfill via shared shortcut
-./schwab-web download --range Last10Years              # explicit preset (escape hatch)
+./schwab-web download --lookback all                   # full backfill (capped at ~10y, warns)
+./schwab-web download --lookback 2016-01-01            # explicit starting point
 ./schwab-web download --dry-run --screenshot-dir /debug/download
 ./schwab-web download --debug                          # + tx-history landing HTML baseline under <run>/screenshots/
 ./schwab-web vnc-login                                 # VNC fallback
@@ -258,9 +260,9 @@ challenge.
 │   │       ├── …_Transactions_…csv        Schwab "Export Transactions Data"
 │   │       ├── …_Transactions_…json       CSV / JSON / XML of the
 │   │       ├── …_Transactions_…xml        full filtered tx set
-│   │       └── more-details.json          optional sidecar with per-row
-│   │                                       "More"-modal data (only when
-│   │                                       --with-more-detail is set)
+│   │       └── more-details.json          sidecar with per-row "More"-modal
+│   │                                       data (written by default; absent
+│   │                                       with --no-more-detail)
 │   ├── screenshots/                       debug-only (download --debug):
 │   │   └── tx-<suffix>-landing.html        tx-history landing HTML baseline.
 │   │                                       Never read by load; `prune`
@@ -320,14 +322,14 @@ container), so it bypasses the single-writer safety guard and can
 reclaim disk while a `download` is mid-flight — the in-flight dump
 is protected by the age guard.
 
-## Reclaiming disk (`dedup`)
+## Reclaiming disk (`collapse-statements`)
 
 Schwab re-renders a statement PDF on **every** download, so the same
 logical statement comes back with fresh bytes each run and the
 `statements/` tree grows one full copy per run (see
-[DESIGN.md §4.4](DESIGN.md)). The byte-identical `collectorkit.dedup`
-sweep can't touch these — the bytes differ. `dedup` reclaims them by
-**parse-equivalence**: it parses each statement PDF exactly as `load`
+[DESIGN.md §4.4](DESIGN.md)). The byte-identical `wealthdb-collect dedup`
+sweep can't touch these — the bytes differ. `collapse-statements` reclaims
+them by **parse-equivalence**: it parses each statement PDF exactly as `load`
 does and, within one logical statement across runs, hardlinks every
 copy whose parsed content is identical onto the oldest copy.
 
@@ -342,14 +344,14 @@ silver. Copies of one logical statement that do NOT parse alike (a
 genuine restatement, or parser nondeterminism) are reported as
 **DIVERGENT** and left entirely alone.
 
-Unlike `prune`, `dedup` needs the image's PDF parser, so it runs
-in-container like `load`. It is a deliberate manual one-off (not wired
+Unlike `prune`, `collapse-statements` needs the image's PDF parser, so it
+runs in-container like `load`. It is a deliberate manual one-off (not wired
 into orchestration): run it once after a backlog of re-downloaded
 statements has built up.
 
 ```sh
-./schwab-web dedup --dry-run     # evidence report; collapses nothing
-./schwab-web dedup               # collapse the parse-equivalent copies
+./schwab-web collapse-statements --dry-run   # evidence report; collapses nothing
+./schwab-web collapse-statements             # collapse the parse-equivalent copies
 ```
 
 `--dry-run` prints the per-group plan, any DIVERGENT groups, and the

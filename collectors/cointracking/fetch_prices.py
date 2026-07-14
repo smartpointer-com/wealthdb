@@ -10,10 +10,10 @@ Two modes:
 
   - --missing: fetch only (held, unpriced) gaps + the previous
     run's latest priced day (always re-fetched because it was an
-    intraday snapshot when first stored). Identical to the
-    behaviour of `load --fetch-prices`. Useful when load was run
-    without --fetch-prices (e.g. by cron) and prices need to be
-    brought up to date without re-running the bronze ingest.
+    intraday snapshot when first stored). Identical to the price
+    fill `load` runs by default. Useful when load was run with
+    --no-fetch-prices and prices need to be brought up to date
+    without re-running the bronze ingest.
 
 The "held" set comes from positions_daily.amount > 0 — every coin
 held on at least one day across any portfolio. Prices outside

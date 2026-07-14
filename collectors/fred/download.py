@@ -15,14 +15,14 @@ the api_key query parameter. The newer v2 API uses a different
 read-only time-series fetch, so v1 is the default. Point --base-url
 elsewhere (e.g. a proxy or a future endpoint) if needed.
 
-Backfill: the shared --since / --until / --lookback flags bound the
-observation window (default ~90 days; `--lookback all` or an explicit
-`--since 1971-01-01` for a full historic backfill — FRED clamps to each
-series' own start).
+Backfill: the shared --lookback flag bounds the observation window,
+running from the starting point it names to today (default ~90 days;
+`--lookback all` or `--lookback 1971-01-01` for a full historic
+backfill — FRED clamps to each series' own start).
 
 Usage:
-    download.py --dest <dir> [--api-key KEY]
-                [--since YYYY-MM-DD | --lookback all] [--dry-run]
+    download.py --bronze-dir <dir> [--api-key KEY]
+                [--lookback PRESET|YYYY-MM-DD] [--dry-run]
 """
 
 from __future__ import annotations
@@ -30,10 +30,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 from collectorkit import bronze, cli, envfile
@@ -71,8 +73,23 @@ FX_SERIES: dict[str, tuple[str, str]] = {
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument(
-        "--dest", type=Path, required=True,
-        help="Bronze destination root; one run dir is created per invocation.",
+        "--bronze-dir", type=Path, default=None,
+        help="One run dir is created here per invocation.",
+    )
+    p.add_argument(
+        "--check", action="store_true",
+        help=("Probe the configured credential and exit: resolve the API "
+              "key, then ask FRED for a single observation. Exit 0 when the "
+              "key is accepted, non-zero when it is missing or rejected. "
+              "Writes nothing. This is what `fred login --check` runs — "
+              "FRED has no session to mint, so the key IS the session."),
+    )
+    p.add_argument(
+        "--env-file", type=Path, default=None,
+        help="KEY=VALUE credentials env file, sourced before the API key is "
+             "resolved (also honours the FRED_ENV_FILE env var). The wrapper "
+             "already sources <secrets-dir>/fred.env, so this is for running "
+             "download.py directly.",
     )
     p.add_argument(
         "--api-key", default=None,
@@ -88,7 +105,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Comma-separated subset of the built-in series IDs to fetch "
              "(default: all of them). IDs must be present in FX_SERIES.",
     )
-    cli.add_lookback_args(p, has_documents=False)
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--dry-run", action="store_true",
         help="Fetch and report row counts but write no bronze.",
@@ -101,7 +118,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "so every collector's `download` shares the flag. See "
              "collectors/README.md.",
     )
-    cli.add_common_args(p)
     return p.parse_args(argv)
 
 
@@ -122,6 +138,54 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _source_env_file(explicit: Path | None) -> None:
+    """Source an explicit --env-file (or $FRED_ENV_FILE) before credentials
+    are resolved, so a direct `download.py` run needs no wrapper. The wrapper
+    already sources <secrets-dir>/fred.env; this one is sourced last, so its
+    values win. A path that was asked for but is absent is an error, not a
+    silent fallback to whatever the environment happened to hold."""
+    path = explicit or (Path(os.environ["FRED_ENV_FILE"])
+                        if os.environ.get("FRED_ENV_FILE") else None)
+    if path is None:
+        return
+    if not path.is_file():
+        raise SystemExit(f"--env-file does not exist: {path}")
+    envfile.load_env_file(path, ("FRED_API_KEY",), logger=log)
+
+
+def _check_credential(base_url: str, api_key: str) -> int:
+    """Ask FRED for one observation to prove the key is accepted.
+
+    The fleet's `login --check` contract is "probe the stored session without
+    minting a new one". FRED has no session — the API key is the credential —
+    so the equivalent is the cheapest possible authenticated read. A key that
+    is merely present but rejected is the failure this catches; checking the
+    env var alone would not.
+    """
+    probe_series = next(iter(FX_SERIES))
+    today = date.today()
+    try:
+        doc = fetch_observations(base_url, probe_series, api_key,
+                                 today - timedelta(days=7), today, timeout=30)
+    except urllib.error.HTTPError as e:
+        # FRED answers a bad key with 400 + an error_message body.
+        if e.code in (400, 403):
+            log.error("credential rejected by FRED (HTTP %d) — check "
+                      "FRED_API_KEY in the env file", e.code)
+            return 1
+        log.error("probe failed: HTTP %d %s", e.code, e.reason)
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        log.error("probe could not reach FRED: %s", e)
+        return 1
+    if "observations" not in doc:
+        log.error("unexpected FRED response (no observations): %s",
+                  sorted(doc)[:5])
+        return 1
+    log.info("credential accepted — FRED answered the %s probe", probe_series)
+    return 0
+
+
 def _dated_count(doc: dict) -> int:
     """Number of observations with a real value (a NO_DATA member is FRED's
     no-data / holiday sentinel)."""
@@ -132,9 +196,19 @@ def _dated_count(doc: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
+
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("fred", log)
+    _source_env_file(args.env_file)
     api_key = envfile.resolve_credential(args.api_key, "FRED_API_KEY",
                                          "--api-key")
-    since, until, _, _ = cli.resolve_lookback(args, has_documents=False)
+    if args.check:
+        return _check_credential(args.base_url, api_key)
+    if args.bronze_dir is None:
+        raise SystemExit("--bronze-dir is required (or pass --check to probe "
+                         "the credential without writing).")
+    since, until = cli.resolve_lookback(args)
 
     if args.series:
         series_ids = [s.strip() for s in args.series.split(",") if s.strip()]
@@ -150,9 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     log.info("FRED FX download: %s … %s, %d series", since, until,
              len(series_ids))
 
-    args.dest.mkdir(parents=True, exist_ok=True)
+    args.bronze_dir.mkdir(parents=True, exist_ok=True)
     slug = bronze.ts_slug()
-    run = None if args.dry_run else bronze.run_dir(args.dest, slug)
+    run = None if args.dry_run else bronze.run_dir(args.bronze_dir, slug)
     manifest = {
         "slug": slug,
         "since": since.isoformat(),

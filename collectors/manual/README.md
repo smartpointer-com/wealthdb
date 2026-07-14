@@ -59,7 +59,7 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 
 | path | flag | env var | default |
 | --- | --- | --- | --- |
-| CSV dir | `--bronze-dir` | `MANUAL_BRONZE_DIR` | `$XDG_DATA_HOME/wealthdb/manual` |
+| CSV dir | `--bronze-dir` | `MANUAL_DATA_DIR` (via the wrapper) | `$XDG_DATA_HOME/wealthdb/manual` |
 | silver DB | `--silver-db` | `MANUAL_SILVER_DB` | `<bronze-dir>/manual.db` |
 
 (The silver DB follows the resolved CSV dir unless overridden on its own.)

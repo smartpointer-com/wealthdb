@@ -65,7 +65,7 @@ names and roles are the same:
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | implemented | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs_web_state.json`, chmod 0600). `--check` validates an existing state file without a new QR push. |
+| [`login.py`](login.py) | implemented | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; a legacy `ubs_web_state.json` is still read if the new-named file is absent). `--check` validates an existing state file without a new QR push. |
 | [`download.py`](download.py) | implemented | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Writes a `run.json` manifest. Credit-card transactions are intentionally skipped — this is a wealth-management toolkit. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
 
@@ -96,7 +96,7 @@ bisecting the request window:
 
 | Surface | Cap | Behaviour at the cap | Workaround |
 | --- | --- | --- | --- |
-| Documents list (`#/documents/bank-documents`) | 999 rows displayed | Banner "Not all documents are displayed right now" | `_walk_window` bisects `[--documents-since..-until]` recursively until each leaf window has < 999 docs |
+| Documents list (`#/documents/bank-documents`) | 999 rows displayed | Banner "Not all documents are displayed right now" | `_walk_window` bisects `[--lookback..today]` recursively until each leaf window has < 999 docs |
 | MT940 export dialog | 1000 transactions | Info-only dialog "A maximum of 1000 transactions can be exported" with no Export button | `_export_mt940_with_split` reads the rendered trx count for the current period; if > 1000, bisects in half and emits one MT940 file per leaf window. Output filename includes the window: `<kind>_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940` |
 
 Both bisections cap at `WINDOW_MAX_DEPTH = 20` and won't sub-divide
@@ -105,7 +105,7 @@ below `WINDOW_MIN_DAYS = 1`.
 ### Bronze layout
 
 ```
-<dest>/
+<bronze-dir>/
 └── 20260518T220332Z/                                              one run = one UTC-timestamped dir
     ├── run.json                                                   manifest (status, accounts, windows, file inventory)
     ├── transactions/
@@ -185,7 +185,8 @@ The repo ships a thin `ubs-web` shell wrapper around
 `docker run`; the standard `~/.secrets → /secrets` and
 `$XDG_DATA_HOME/wealthdb/<source> → /data` bind-mounts and the run lifecycle are
 described in [collectors/README.md](../README.md#conventions-shared-across-collectors).
-Credentials go in `~/.secrets/ubs.env`; see
+Credentials go in `~/.secrets/ubs-web.env` (the bank-level `~/.secrets/ubs.env`
+still works as a legacy fallback); see
 [collectors/README.md](../README.md#conventions-shared-across-collectors)
 for the shared env-file rules.
 
@@ -253,7 +254,7 @@ run scripted afterwards.
 ```
 <bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/ubs-web/
 ├── 20260518T210504Z/               one bronze dump per run
-│   ├── transactions_<account>.csv  per-account transactions for --since..--until
+│   ├── transactions_<account>.csv  per-account transactions for --lookback..today
 │   ├── documents/
 │   │   ├── <sha256>.pdf            eDocuments (account/custody statements,
 │   │   │                           tax PDFs, trade confirms, fee notes, ...)

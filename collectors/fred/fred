@@ -5,11 +5,13 @@
 # .venv, like ubs-psn. Pulls daily USD-centric FX reference rates (US Fed
 # H.10) from the FRED API. Subcommands:
 #   login               No-op (FRED uses an API key, not a session). The
-#                       key is read from FRED_API_KEY.
+#                       key is read from FRED_API_KEY. `login --check`
+#                       probes it: it asks FRED for one observation, so a
+#                       key that is present but rejected fails here.
 #   download [args...]  Fetch FX rates into bronze. Bound the window with
-#                       --since/--until/--lookback (default ~90 days;
-#                       `--lookback all` or `--since 1971-01-01` for a full
-#                       historic backfill).
+#                       --lookback (default ~90 days; `--lookback all` or
+#                       `--lookback 1971-01-01` for a full historic
+#                       backfill).
 #   load [args...]      Parse bronze into the silver SQLite DB.
 #   prune [args...]     Delete non-complete (crashed / in-flight) bronze run
 #                       dirs; complete dumps are kept. --dry-run to preview.
@@ -37,23 +39,34 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login)
-        cat >&2 <<'EOF'
-fred: no-op. FRED is an API-key-authenticated REST source — there is no
-interactive login / session to mint. Put your key in ~/.secrets/fred.env
-(FRED_API_KEY=...), then run `./fred download`.
-EOF
-        exit 0
-        ;;
 esac
 
-host_resolve_dirs "$@"
+host_resolve_dirs "$cmd" "$@"
 host_source_env_file
 py="$(host_python)"
 
 case "$cmd" in
+    login)
+        # FRED mints no session — the API key IS the credential — so a bare
+        # `login` is a no-op. `--check` is a real probe: download.py resolves
+        # the key and asks FRED for one observation, so a key that is present
+        # but rejected fails here rather than at the next download.
+        case " ${FORWARD_ARGS[*]-} " in
+            *" --check "*)
+                exec "$py" "$HERE/download.py" \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+        esac
+        cat >&2 <<'EOF'
+fred: no-op. FRED is an API-key-authenticated REST source — there is no
+interactive login / session to mint. Put your key in ~/.secrets/fred.env
+(FRED_API_KEY=...), then run `./fred download`. To verify the key is
+accepted, run `./fred login --check`.
+EOF
+        exit 0
+        ;;
     download)
-        exec "$py" "$HERE/download.py" --dest "$DATA_DIR" \
+        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     load)

@@ -47,6 +47,7 @@ PYTHON := $(or \
         build-web test-web clean-web cleanall-web \
         build-collectors test-collectors \
         test-collectorkit clean-collectorkit cleanall-collectorkit \
+        test-wrappers \
         clean cleanall clean-wealthdb cleanall-wealthdb \
         clean-collectors cleanall-collectors base-images \
         update update-venvs update-wealthdb update-bases
@@ -55,7 +56,7 @@ PYTHON := $(or \
 
 all: build-wealthdb build-web build-collectors
 build: all
-test: test-wealthdb test-web test-collectors test-collectorkit
+test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers
 
 # ---- install -----------------------------------------------------------
 # Symlink the two top-level entry points onto PATH so they work from any
@@ -131,6 +132,10 @@ test-collectorkit:
 	fi
 	@$(CK_VENV)/bin/pip install -q -e $(CK_DIR) pytest zstandard
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
+
+test-wrappers:
+	@echo "==> test wrappers (shared/wrappers)"
+	@for t in shared/wrappers/tests/*.sh; do bash "$$t" || exit 1; done
 
 clean-collectorkit:
 	@echo "==> clean collectorkit"

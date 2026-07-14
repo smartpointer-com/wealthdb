@@ -108,7 +108,7 @@ those rows.
 | `positions` | `historical_position_snapshots` | api has live per-dump positions; web parses the monthly/quarterly statement holdings block into `historical_position_snapshots` |
 | `open_orders` | — | api-only |
 | `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2 |
-| `instruments` | — | api-only (and only when `--with-instruments`) |
+| `instruments` | — | api-only (present unless `--no-instruments`) |
 | — | `documents` | web-only. One row per downloaded PDF/XML/CSV, sha256-deduped |
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
@@ -208,10 +208,10 @@ representative row per logical doc (e.g. `MIN(snapshot_at)` —
 the first time we saw the logical doc). The `transactions` table
 is clean.
 
-**Bronze-disk mitigation (`dedup` verb)**: the per-download re-render
-also means the `statements/` tree grows one full PDF copy per run, and
-the byte-identical `collectorkit.dedup` sweep can never collapse them
-(the bytes differ). The [dedup](dedup.py) verb reclaims that: it parses
+**Bronze-disk mitigation (`collapse-statements` verb)**: the per-download
+re-render also means the `statements/` tree grows one full PDF copy per run,
+and the byte-identical `wealthdb-collect dedup` sweep can never collapse them
+(the bytes differ). The [collapse-statements](dedup.py) verb reclaims that: it parses
 each statement PDF exactly as `load` does and, within one logical
 statement across runs, hardlinks every copy whose parsed content is
 identical onto the oldest copy. This is **silver-safe but lossy at the
@@ -287,9 +287,9 @@ silver doesn't strictly need any of them.
     │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.csv
     │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.json   ← row source
     │       ├── <Nick>_XXX<suffix>_Transactions_<ts>.xml
-    │       └── more-details.json   optional: per-row "More"-modal
-    │                               contents when `download` was
-    │                               invoked with --with-more-detail
+    │       └── more-details.json   per-row "More"-modal contents,
+    │                               written by default; absent when
+    │                               download ran --no-more-detail
     └── screenshots/                debug-only (download --debug):
         └── tx-<suffix>-landing.html   landing-view HTML baseline. Never
                                     read by load; `prune` reclaims the
@@ -430,10 +430,10 @@ and with no extra system dependency).
   `third_party_distribution` (§6b). These are mostly new data the
   other feeds lack; cash transfers may overlap a statement cash
   debit and are gold's to dedupe (INTEROP.md §8).
-- **`--with-more-detail` is implemented but not enabled by
-  default** — it adds ~1 modal click per transaction, on the
-  order of an hour for a high-activity account. Use it for a one-off
-  enrichment pass; routine runs should leave it off.
+- **The per-row "More" detail pass runs by default; `--no-more-detail`
+  opts out** — it adds ~1 modal click per transaction, on the order
+  of an hour for a high-activity account, so `--no-more-detail` skips
+  it when that cost isn't warranted.
 
 ## 8. `account_registration` column (migration 0003)
 

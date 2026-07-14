@@ -53,7 +53,7 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 // classifyHistoricalPair matches. The shared, cross-adapter shapes
 // (option / CUSIP / bond-coupon / money-market ticker / ETF /
 // mutual-fund / ETF-issuer) live in silver.Stmt*Re; only the shapes
-// unique to fidelity's trust-statement and SVB Wealth Advisory
+// unique to fidelity's supplied-statement and SVB Wealth Advisory
 // statement-PDF families are declared here.
 var (
 	histPlanKeyRe = regexp.MustCompile(`^[A-Z]{3}[0-9]{6}$`)

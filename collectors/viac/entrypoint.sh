@@ -19,9 +19,9 @@ case "${1:-help}" in
         # Bronze dump against /rest/web/. Loads the persisted
         # cookie jar from /secrets/viac-state.json (mint with
         # `login` first). --dry-run walks JSON endpoints but
-        # skips PDF binaries; --with-transaction-documents
-        # downloads the per-event TRANSACTION PDFs in addition
-        # to the default-tier documents.
+        # skips PDF binaries. The per-event TRANSACTION PDFs are
+        # downloaded by default in addition to the default-tier
+        # documents; --no-transaction-documents skips them.
         shift
         exec python3 /app/download.py "$@"
         ;;
@@ -58,9 +58,9 @@ Subcommands:
             session without triggering a new mTAN.
   download  Bronze dump against /rest/web/. Requires a
             session minted by `login`. Use --dry-run to
-            walk JSON endpoints without fetching PDFs;
-            --with-transaction-documents to also download
-            the per-event TRANSACTION PDFs.
+            walk JSON endpoints without fetching PDFs. The
+            per-event TRANSACTION PDFs download by default;
+            --no-transaction-documents skips them.
   load      Parse bronze into silver SQLite. Idempotent:
             skips dumps already loaded.
   prune     Delete non-complete dumps (crashed/in-progress

@@ -260,12 +260,12 @@ def test_dry_run_deletes_nothing(tmp_path):
 
 def test_non_run_entries_never_touched(tmp_path):
     make_dump(tmp_path, OLD_TS)
-    trust = tmp_path / "supplied-statements"
-    trust.mkdir()
-    (trust / "signature.txt").write_text("sig")
+    supplied = tmp_path / "supplied-statements"
+    supplied.mkdir()
+    (supplied / "signature.txt").write_text("sig")
     (tmp_path / "fidelity-web.db").write_bytes(b"sqlite fake")
     run_main(tmp_path)
-    assert (trust / "signature.txt").exists()
+    assert (supplied / "signature.txt").exists()
     assert (tmp_path / "fidelity-web.db").exists()
 
 

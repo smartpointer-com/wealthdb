@@ -177,6 +177,27 @@ def _snapshot_rows(db):
         conn.close()
 
 
+def test_force_is_accepted_noop_rebuild(tmp_path, monkeypatch):
+    # svb always rebuilds the silver from bronze, so --force (accepted for
+    # fleet uniformity) is a documented no-op: it parses cleanly and yields
+    # the identical silver as a plain load of the same bronze. Mock the parse
+    # layer in-process — main() otherwise fans out to a process pool the
+    # per-file monkeypatch wouldn't reach.
+    bronze = tmp_path / "bronze"
+    bronze.mkdir()
+    for stem in _CANNED:
+        (bronze / f"{stem}.pdf").write_bytes(b"%PDF-fake\n")
+    monkeypatch.setattr(
+        B, "parse_statements",
+        lambda pdfs, shas, **kw: [dict(_CANNED[Path(p).stem]) for p in pdfs])
+    db = tmp_path / "svb.db"
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze)]
+    assert B.main(argv) == 0
+    plain = _snapshot_rows(db)
+    assert B.main(argv + ["--force"]) == 0
+    assert _snapshot_rows(db) == plain
+
+
 # Distinct bytes per statement (unlike the shared-bytes fixtures above) so each
 # maps to its own content-keyed cache entry.
 _DISTINCT_STEMS = ("2021-12-31_a", "2022-12-30_b")

@@ -17,7 +17,7 @@ artefacts in a versioned bronze tree:
     │   └── sso-claims.json
     ├── portfolios/
     │   └── <sha256(externalId)[:16]>/
-    │       ├── deposits.json         (or deposits-YYYY.json per year if --year-from is set)
+    │       ├── deposits-YYYY.json    one per year the --lookback window spans
     │       ├── performance.json
     │       ├── fees.json
     │       ├── investment-allocation.json
@@ -44,7 +44,7 @@ keeps its fresh bytes). Every run dir stays self-contained (a
 hardlink is a real in-run file), so the loader needs no cross-run
 fallback. --documents-force bypasses the index entirely.
 
-Iteration-cheap flags: --mode / --skip-documents /
+Iteration-cheap flags: --mode / --no-documents /
 --limit-portfolios / --limit-documents let one section of the
 work be re-run without paying for the others. --dry-run hits
 only the master listing endpoints (investment-overview +
@@ -91,7 +91,7 @@ PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
 DASHBOARD_REFERER = f"{BASE}/dashboard/"
 
 DEFAULT_STATE_PATH = Path("/secrets/relevate-state.json")
-DEFAULT_DEST = Path("/data")
+DEFAULT_BRONZE_DIR = Path("/data")
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -150,11 +150,6 @@ ANCILLARY_ACCOUNTS = (
     ("contact-risk-protection.json", EP_CONTACT_RISK_PROTECTION),
     ("sso-claims.json", EP_SSO_CLAIMS),
 )
-
-# Relevate uses 0001-01-01 as a sentinel for "unknown / never" on
-# firstInvestmentDate. Don't try to parse that as a year.
-SENTINEL_DATE_PREFIX = "0001-"
-
 
 logger = logging.getLogger("download")
 
@@ -519,12 +514,16 @@ def fetch_portfolio(
     run_dir: Path,
     manifest: Manifest,
     *,
-    year_from: int | None,
-    year_to: int | None,
+    year_from: int,
+    year_to: int,
 ) -> None:
     """
     Fetch every observed per-portfolio endpoint into
     /data/<run>/portfolios/<slug>/.
+
+    ``year_from`` / ``year_to`` bound the /deposits iteration: year is the
+    smallest granularity that endpoint accepts, so the run's window is
+    expressed as the years it spans.
     """
     pid = portfolio.get("id")
     external_id = portfolio.get("externalId")
@@ -543,37 +542,13 @@ def fetch_portfolio(
     first_investment_date = portfolio.get("firstInvestmentDate")
     currency = (portfolio.get("currency") or {}).get("currencyCode")
 
-    # Resolve the deposits-iteration policy:
-    # - --year-from + --year-to override: iterate that explicit
-    #   range.
-    # - firstInvestmentDate is plausible (not the 0001-01-01
-    #   sentinel): default to the current year only. Year is the
-    #   smallest granularity /deposits accepts, so it's the closest
-    #   analog of "last 3 months" the other collectors default to.
-    #   wealthdb-refresh --lookback widens the window uniformly;
-    #   pass --year-from explicitly (e.g. --year-from 1900) for a
-    #   one-off historical backfill.
-    # - Otherwise (sentinel or unparseable firstInvestmentDate):
-    #   call once without ?year=. The first real run showed that
-    #   /deposits returns the same empty {transactions:[]} envelope
-    #   regardless of ?year=YYYY for these account types —
-    #   transactions are exposed via credit-note PDFs, not this
-    #   endpoint (see DESIGN §11). One call is enough to record
-    #   "asked, empty".
-    year_window: tuple[int, int] | None = None
-    current_year = datetime.now(timezone.utc).year
-    if year_from is not None:
-        year_window = (year_from, year_to or current_year)
-    elif (first_investment_date
-          and not str(first_investment_date).startswith(SENTINEL_DATE_PREFIX)):
-        year_window = (current_year, year_to or current_year)
+    year_window = (year_from, year_to)
 
     logger.info(
         "portfolio id=%s slug=%s product=%s proposal=%s "
-        "deposits=%s",
+        "deposits=years %s-%s",
         pid, slug, product.get("key"), proposal_id,
-        f"years {year_window[0]}-{year_window[1]}"
-        if year_window else "single-call",
+        year_window[0], year_window[1],
     )
 
     manifest.add_account({
@@ -591,20 +566,11 @@ def fetch_portfolio(
         "deposits_year_window": list(year_window) if year_window else None,
     })
 
-    if year_window:
-        for year in range(year_window[0], year_window[1] + 1):
-            get_and_save_json(
-                session,
-                ep_deposits(pid) + f"?year={year}",
-                pdir / f"deposits-{year}.json",
-                manifest,
-                relative_to=run_dir,
-            )
-    else:
+    for year in range(year_window[0], year_window[1] + 1):
         get_and_save_json(
             session,
-            ep_deposits(pid),
-            pdir / "deposits.json",
+            ep_deposits(pid) + f"?year={year}",
+            pdir / f"deposits-{year}.json",
             manifest,
             relative_to=run_dir,
         )
@@ -916,19 +882,13 @@ def do_dry_run(
 
 
 def do_download(args: argparse.Namespace) -> int:
-    # Translate the shared --since/--until/--lookback contract into
-    # relevate's year-granularity. Explicit --year-from / --year-to
-    # always wins; otherwise we derive year_from = since.year,
-    # year_to = until.year.
-    since, until, docs_since, docs_until = cli.resolve_lookback(args)
-    if args.year_from is None:
-        args.year_from = since.year
-    if args.year_to is None:
-        args.year_to = until.year
-    # --documents-since / --documents-until are honoured client-side:
-    # the /middlelayer/v2/documents endpoint returns the full index
-    # on every call, so we apply the window in fetch_documents() to
-    # avoid the PDF-binary fetches for docs outside it.
+    # Translate the one window into relevate's year granularity for
+    # /deposits, and keep the exact dates for the client-side document
+    # filter: /middlelayer/v2/documents returns the full index on every
+    # call, so fetch_documents() applies the window itself to avoid the
+    # PDF-binary fetches for entries outside it.
+    since, until = cli.resolve_lookback(args)
+    year_from, year_to = since.year, until.year
 
     try:
         sess, state_minted_at = new_session_from_state(args.state_path)
@@ -953,7 +913,7 @@ def do_download(args: argparse.Namespace) -> int:
         # point the run dir at a throwaway temp dir instead of a bronze
         # one. TemporaryDirectory removes it on exit — even on a crash,
         # via the context manager — so nothing is ever persisted under
-        # --dest and `load` never picks up a dry-run shell. The walk +
+        # --bronze-dir and `load` never picks up a dry-run shell. The walk +
         # manifest code is otherwise identical to a real run; only the
         # output target differs.
         with tempfile.TemporaryDirectory(prefix="relevate-dryrun-") as scratch:
@@ -963,23 +923,23 @@ def do_download(args: argparse.Namespace) -> int:
             manifest = Manifest(run_dir, mode=args.mode, dry_run=True)
             manifest.set_state_minted_at(state_minted_at)
             manifest.set_windows(since=since, until=until,
-                                 documents_since=docs_since,
-                                 documents_until=docs_until)
+                                 documents_since=since,
+                                 documents_until=until)
             rc = do_dry_run(session, run_dir, manifest,
-                            documents_since=docs_since,
-                            documents_until=docs_until)
+                            documents_since=since,
+                            documents_until=until)
             manifest.finish(status="dry-run")
             return rc
 
-    run_dir = args.dest / ts
+    run_dir = args.bronze_dir / ts
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("bronze run dir: %s", run_dir)
 
     manifest = Manifest(run_dir, mode=args.mode, dry_run=args.dry_run)
     manifest.set_state_minted_at(state_minted_at)
     manifest.set_windows(since=since, until=until,
-                         documents_since=docs_since,
-                         documents_until=docs_until)
+                         documents_since=since,
+                         documents_until=until)
 
     overview = None
     if args.mode in ("all", "accounts", "portfolios"):
@@ -1002,16 +962,16 @@ def do_download(args: argparse.Namespace) -> int:
         for portfolio in portfolios:
             fetch_portfolio(
                 session, portfolio, run_dir, manifest,
-                year_from=args.year_from,
-                year_to=args.year_to,
+                year_from=year_from,
+                year_to=year_to,
             )
 
-    if args.mode in ("all", "documents") and not args.skip_documents:
+    if args.mode in ("all", "documents") and not args.no_documents:
         fetch_documents(
             session, run_dir, manifest,
             limit=args.limit_documents,
-            documents_since=docs_since,
-            documents_until=docs_until,
+            documents_since=since,
+            documents_until=until,
             force=args.documents_force,
         )
 
@@ -1038,9 +998,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Persisted Airlock cookie jar (default: %(default)s).",
     )
     p.add_argument(
-        "--dest", type=Path, default=DEFAULT_DEST,
+        "--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
         help=(
-            "Parent dir for the per-run timestamped bronze dir "
+            "A UTC-timestamped run dir is created here per invocation "
             "(default: %(default)s, mounted from "
             "$XDG_DATA_HOME/wealthdb/relevate)."
         ),
@@ -1065,8 +1025,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--skip-documents", action="store_true",
-        help="Even in --mode all, skip document PDFs.",
+        "--no-documents", dest="no_documents", action="store_true",
+        help="Skip document PDFs (fetched by default in --mode all).",
     )
     p.add_argument(
         "--documents-force", action="store_true",
@@ -1078,26 +1038,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "without, and diff silver under `load --force`)."
         ),
     )
-    # Shared date-window contract — collector-fleet-wide flag set.
-    # relevate's /deposits endpoint takes year-granularity only; the
-    # CLI translates --since.year → --year-from. --year-from is kept
-    # as the explicit-year escape hatch (e.g. --year-from 1900 for a
-    # full backfill). --documents-since/--documents-until are
-    # currently no-ops (logged at WARN); documents are fetched via a
-    # listing endpoint that has no date filter, see DESIGN §11. TODO.
-    cli.add_lookback_args(p)
-    p.add_argument(
-        "--year-from", type=int, default=None,
-        help=("Explicit earliest year for /deposits iteration "
-              "(escape hatch). Overrides --since's year. Default: "
-              "derived from --since (or its --lookback shortcut)."),
-    )
-    p.add_argument(
-        "--year-to", type=int, default=None,
-        help=("Explicit latest year for /deposits iteration. "
-              "Overrides --until's year. Default: derived from "
-              "--until."),
-    )
+    # The one window flag drives every facet. relevate's /deposits
+    # endpoint takes year granularity only, so the window's start year
+    # bounds the iteration; documents are filtered client-side, since
+    # the /middlelayer/v2/documents listing has no server-side date
+    # filter (do_download applies it to each entry's createDate in
+    # fetch_documents() — see DESIGN §11). There is deliberately no
+    # explicit-year escape hatch: a second window knob is what let a
+    # bare year silently override the resolved window.
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--limit-portfolios", type=int, default=None,
         help="Process at most N portfolios. For iteration.",
@@ -1117,10 +1066,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "already logs to stderr. It exists so the help is uniform "
               "and `prune` has a consistent contract."),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
     return p.parse_args(argv)
 
 
@@ -1130,6 +1075,10 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("relevate", logger)
     return do_download(args)
 
 

@@ -21,13 +21,13 @@ Login, bronze fetch, and silver loader are operational.
 | --- | --- |
 | [`download.py`](download.py) login + logout | one-shot: Camoufox + Akamai trust + Fidelity device-trust + CLI-MFA prompt; best-effort logout before context teardown |
 | [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts) |
-| [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--since/--until` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
+| [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
 | [`download.py`](download.py) documents — statements | implemented (per-row popover → "Download as PDF" via popup-tab + `context.request`, "Download as CSV" via canonical download event; scroll-into-view + JS-click fallback for rows below the fold). |
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
-| [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Trust accounts get no statement PDFs from Fidelity (see [DESIGN.md §4.5](DESIGN.md)) so they aren't covered by this path. |
+| [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Accounts whose statements Fidelity does not serve (see [DESIGN.md §4.5](DESIGN.md)) are back-filled from `pdf_parsers_supplied.py` instead. |
 | `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).
@@ -169,11 +169,13 @@ Once the profile dir is seeded, every run is one-shot:
 ./fidelity-web download --mode balances    # balances.html (no CSV export)
 ./fidelity-web download --mode performance # HTML snapshot (no structured export)
 ./fidelity-web download --mode activity \
-  --since 2022-06-01 --until 2025-12-31    # Custom-range backfill (chunked
-                                            # into ≤93-day windows, clamped
-                                            # to Fidelity's ~4-year retention)
-./fidelity-web download --lookback 1y    # shared --lookback shortcut (1w/4w/3m/6m/1y/2y/5y/all);
-                                          # also widens --documents-since (stmts + tax-forms)
+  --lookback 2022-06-01                  # Custom-range backfill from that date to
+                                          # today (chunked into ≤93-day windows,
+                                          # clamped to Fidelity's ~4-year retention)
+./fidelity-web download --lookback 1y    # shared window flag: a preset
+                                          # (1w/4w/3m/6m/1y/2y/5y/all) or an ISO date;
+                                          # also widens the documents scope
+                                          # (stmts + tax-forms, at year granularity)
 ./fidelity-web download --dry-run      # walk + enumerate, no artefact writes
 ./fidelity-web download --check        # validate session, no walk
 ./fidelity-web download --debug        # also save per-landmark HTML+PNG captures
@@ -225,9 +227,14 @@ non-complete run dirs (a `--dry-run` shell, or a walk that crashed
 before writing a terminal `run.json`). Load inputs of complete
 dumps are never touched, so silver stays reproducible; deleting a
 non-complete dump surfaces on the next `load --force` rebuild.
-Runs host-side like `load`, and an in-flight guard
-(`--min-age-hours`, default 1, keyed on recent write activity)
-keeps it from removing a download that is still running.
+
+It also reclaims the `/debug` cache outside bronze
+(`~/.cache/fidelity-web-debug`, or `$FIDELITY_WEB_DEBUG_DIR`) — the
+screenshots and traces the container writes there, which nothing else
+clears out. Runs host-side like `load`, and one in-flight guard
+(`--min-age-hours`, default 1, keyed on recent write activity) covers
+both: it keeps `prune` from removing a download that is still running,
+or the captures of one.
 
 #### Compressing the pre-compression backlog
 

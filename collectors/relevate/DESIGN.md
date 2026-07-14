@@ -352,18 +352,19 @@ browser-class consumer to Airlock:
 6. **Portfolios phase** (run when `--mode` ∈ `{all, portfolios}`):
    for each `portfolios[i]` in the overview, in order:
    - Resolve the deposits-iteration policy:
-     - If `--year-from` is set: iterate that explicit range
-       (`--year-to` defaults to current year), saving
-       `deposits-YYYY.json` per year. `--year-from` is the
-       explicit-year escape hatch; the shared `--since` /
-       `--lookback` contract drives the default via
-       `year_from = since.year` (current year by default,
-       since `--since` defaults to today − 90 days).
+     - Iterate from the window's start year to the current
+       year, saving `deposits-YYYY.json` per year. Year is the
+       smallest granularity `/deposits` accepts, so the start
+       year of the `--lookback` window is the closest analog of
+       the fleet's date window (current year by default, since
+       `--lookback` defaults to today − 90 days). This is the
+       path the download always takes — it derives the years
+       from `--lookback` — so the fallbacks below serve direct
+       callers of `do_download`.
      - Else if `firstInvestmentDate` is plausible (parses to
        a year ≥ 1900, not the `0001-01-01` sentinel Relevate
-       uses for "unknown"): iterate from `--since.year` to
-       `--until.year` (current year by default), saving
-       `deposits-YYYY.json` per year.
+       uses for "unknown"): the current year only, saved as
+       `deposits-YYYY.json`.
      - Else: single call to `/deposits` with no `?year=` param,
        saved as `deposits.json`. The first real run revealed
        that for the FZ products observed so far, the endpoint
@@ -385,7 +386,7 @@ browser-class consumer to Airlock:
      stays inside the JSON files (under the bronze tree, which is
      gitignored); it never appears in path strings.
 7. **Documents phase** (run when `--mode` ∈ `{all, documents}` and
-   not `--skip-documents`):
+   not `--no-documents`):
    - `GET /middlelayer/v2/documents` → `documents/index.json`.
    - Each in-window `documents[].id` is routed through the shared
      `collectorkit.docdedup` download-avoidance engine (keyed
@@ -468,29 +469,27 @@ Manifest shape (as written):
 ### 4.2 CLI surface
 
 ```
-download.py [--state-path PATH] [--dest DIR]
+download.py [--state-path PATH] [--bronze-dir DIR]
             [--dry-run]
             [--mode {all, accounts, portfolios, documents}]
-            [--skip-documents] [--documents-force]
-            [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-            [--lookback {1w,4w,3m,6m,1y,2y,5y,all}]
-            [--documents-since YYYY-MM-DD]
-            [--documents-until YYYY-MM-DD]
-            [--year-from YYYY] [--year-to YYYY]
+            [--no-documents] [--documents-force]
+            [--lookback PRESET|YYYY-MM-DD]
             [--limit-portfolios N]
             [--limit-documents N]
             [--verbose]
 ```
 
-Date-window contract: `--since` / `--until` / `--lookback` drive
-the default `/deposits` year iteration (`year_from = since.year`,
-`year_to = until.year`); `--year-from` / `--year-to` remain as
-explicit-year escape hatches. `--documents-since` /
-`--documents-until` filter the per-PDF fetch by `createDate` (the
-full index is still written for traceability).
+Date-window contract: `--lookback` is the one window flag — a
+named preset (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO
+date naming the window's start, which runs from there to today.
+Its start year bounds the `/deposits` year iteration
+(`year_from = since.year`, `year_to = until.year`), since the
+endpoint takes year granularity only. The same window filters the
+per-PDF fetch by `createDate` (the full index is still written for
+traceability).
 
 Iteration discipline: the
-`--mode`, `--skip-documents`, and `--limit-*` flags let an operator
+`--mode`, `--no-documents`, and `--limit-*` flags let an operator
 re-run one phase cheaply while iterating on the silver loader or
 investigating a specific portfolio's response shape.
 

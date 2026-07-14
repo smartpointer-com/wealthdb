@@ -56,7 +56,8 @@ CREATE TABLE schema_meta (
 
 -- One row per ingested bronze dump. snapshot_at is parsed from the run dir
 -- name (YYYYMMDDTHHMMSSZ). The idempotency anchor: the loader skips dumps
--- whose snapshot_at already exists here (unless --force).
+-- whose snapshot_at already exists here; --force deletes the silver DB and
+-- rebuilds it from all bronze.
 CREATE TABLE dump_runs (
     snapshot_at           INTEGER NOT NULL PRIMARY KEY,
     silver_schema_version INTEGER NOT NULL,

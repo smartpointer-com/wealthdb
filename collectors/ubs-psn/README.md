@@ -102,9 +102,10 @@ directory (marker and all) is removed.
 | `--host` | `sftp-keyport-ch.ubs.com` | UBS SFTP hostname or IP |
 | `--port` | `26701` | UBS SFTP port |
 | `--client-id` | _(required)_ | UBS customer / SFTP login ID |
-| `--dest` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Local destination directory |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Bronze tree root |
 | `--key` | `~/.secrets/ubs_psn_key` | Private RSA key path |
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
+| `--check` | off | Probe the credential and exit: connect, authenticate, disconnect. Consumes no files. Backs `login --check`. |
 | `--dry-run` | off | Skip downloads |
 | `--debug` | off | Capture debug artefacts into the bronze run dir. An SFTP pull produces none, so today this gates nothing; present so the fleet's `--debug` convention is uniform. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
 | `-v`, `--verbose` | off | DEBUG-level logging |

@@ -30,7 +30,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 schwab-web — host wrapper
 
@@ -41,13 +41,17 @@ Subcommands:
                         auto-submits, prompts on stdin for the 2FA
                         code, runs the statements + tx-history
                         download, exits. Default range: 3 months
-                        (override with --range; --range Last10Years
-                        for a full backfill). Stdin must be a TTY.
+                        (widen with --lookback; --lookback all for a
+                        full backfill, capped at Schwab's ~10 years).
+                        Stdin must be a TTY.
   load [args...]        Parse bronze into the silver SQLite DB.
-  dedup [args...]       One-off reclaim of the statement-PDF bloat
+  collapse-statements [args...]
+                        One-off reclaim of the statement-PDF bloat
                         Schwab creates by re-rendering each statement
                         on every download: collapse copies that parse
-                        identically onto the oldest. Runs in-container
+                        identically onto the oldest. Distinct from the
+                        fleet \`wealthdb-collect dedup\` sweep (which only
+                        hardlinks byte-identical files). Runs in-container
                         (needs the PDF parser). --dry-run prints the
                         evidence report (per-group plan + any divergent
                         groups) and collapses nothing.
@@ -89,6 +93,20 @@ Credentials:
   chmod 600 the file. Password may also be left out and supplied
   interactively at \`login\` time.
 EOF
+    exit 0
+fi
+
+# `./schwab-web login` → clean host-side no-op (exit 0), never a container
+# spin. schwab-web is a one-shot scraper: the Firefox session is minted
+# inside `download` (CLI-MFA on stdin) and persists nothing separately, so
+# there is no standalone login step. Trapping it here keeps an
+# orchestrator's login → download → load from tripping (and stops `login`
+# from reaching the container's util-linux /bin/login).
+if [[ "${1:-}" == "login" ]]; then
+    echo "schwab-web: 'login' folds into 'download' — nothing to persist." >&2
+    echo "  This one-shot scraper mints its session inside 'download'" >&2
+    echo "  (CLI-MFA prompt on stdin). Run 'download' directly, or" >&2
+    echo "  'vnc-login' when the CLI-MFA selectors drift." >&2
     exit 0
 fi
 

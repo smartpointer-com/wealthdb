@@ -19,7 +19,7 @@ HAS_DEBUG=1
 HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
-VNC_SUBCOMMANDS=(explore login)   # extends the default {vnc-login}
+VNC_SUBCOMMANDS=(explore login)   # replaces the default {vnc-login} — no vnc-login verb here
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -30,7 +30,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 angellist — host wrapper
 
@@ -60,7 +60,7 @@ Subcommands:
                       there is no unattended login.
                         --check   probe only; exit 0 if the saved session is
                                   valid, 1 otherwise — never opens Firefox.
-                        --force   skip the check and always re-login.
+                        --fresh   skip the check and always re-login.
   download [args...]  Capture bronze for every LP investment: portfolio
                       summary, per-vehicle detail (commitment / called /
                       FMV / distributions), the funding-account cash ledger,
@@ -74,7 +74,7 @@ Subcommands:
                       portfolio_summary / timeseries, commitments,
                       funding_accounts + funding_transactions,
                       k1_capital_accounts, tax_documents.
-                      --force re-loads snapshots already in dump_runs.
+                      --force deletes the silver DB and rebuilds from all bronze.
   prune [args...]     Delete non-complete dumps (crashed / interrupted
                       downloads that never wrote a terminal run.json)
                       from the bronze tree. Runs host-side (pure stdlib;

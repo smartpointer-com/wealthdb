@@ -21,7 +21,7 @@ Every collector exposes the same three steps:
 | `login` | a session/token in `~/.secrets/` | Authenticate; usually prompts for MFA. (Omitted where the runtime mints the session inside `download` — see each tool.) |
 | `download` | **bronze** under `$XDG_DATA_HOME/wealthdb/<source>/<UTC-ts>/` | Fetch raw artefacts (JSON / CSV / XLS / PDF / zip), exactly as the source returns them. |
 | `load` | **silver** `$XDG_DATA_HOME/wealthdb/<source>/<source>.db` | Parse bronze into a source-shaped SQLite. Idempotent — already-loaded dumps are skipped. |
-| `prune` | reclaimed bronze disk | Delete debug artefacts from complete dumps + whole non-complete dumps. Never touches a `load` input. See [Debug artefacts, run status, and pruning bronze](#debug-artefacts-run-status-and-pruning-bronze). |
+| `prune` | reclaimed disk | Delete debug artefacts from complete dumps + whole non-complete dumps, plus aged-out entries of the host-side debug cache. Never touches a `load` input. See [Debug artefacts, run status, and pruning bronze](#debug-artefacts-run-status-and-pruning-bronze). |
 
 Bronze is immutable raw capture; silver is the parsed, queryable
 form and the **input contract** to gold. One silver DB per source.
@@ -142,8 +142,11 @@ The wrapper therefore:
   (`$XDG_DATA_HOME` defaults to `~/.local/share` per the XDG Base
   Directory spec, so the default data root is `~/.local/share/wealthdb`.)
 
-- forwards the `download` date-window flags (`--since`, `--until`,
-  `--lookback`, `--documents-*`) to the inner `download.py`.
+- forwards `--lookback` to every `download` — the one window flag, accepted
+  everywhere; see the date contract under
+  [Collector CLI conventions](#collector-cli-conventions). A full-history
+  source accepts it for uniformity but warns it can't narrow its fetch,
+  rather than silently ignoring or rejecting it.
 
 That precedence is not hand-written; it comes from sourcing the matching
 shared library and setting a small config block.
@@ -168,31 +171,137 @@ browser) sources
 `<secrets>/<name>.env`), and `host_python` (the collector's `.venv`),
 then execs the right `.py` with the resolved paths and `FORWARD_ARGS`.
 
+### Collector CLI conventions
+
+The same concept wears the same flag, default, and env var on every
+collector — the principle of least surprise, and the one precedent a new
+collector author copies. The **default no-optional-flags path always pulls
+everything**: `wealthdb-collect <source> download` (then `load`) fetches all
+documents and all detail with nothing to remember; the `--no-*` flags below
+are the escape, not opt-ins. The canonical spelling per concept:
+
+| Concept | Canonical spelling | Default |
+| --- | --- | --- |
+| bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
+| documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
+| force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
+| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. | — |
+| human-MFA wait | `--mfa-timeout SECONDS` | ≥ 600 |
+| MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
+| login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
+| `--mode` "everything" token | `all` | `all` |
+| login identity env | `${PREFIX}_USERNAME` | — |
+| other credentials env | under `${PREFIX}_*`, unless a share is deliberate and documented | — |
+| env file | `/secrets/<source>.env` (container) / `~/.secrets/<source>.env` (host) | — |
+| env-file override | `--env-file` flag **and** `${PREFIX}_ENV_FILE` env var | — |
+| credential precedence | the env file wins over an inherited shell env value | — |
+| session-state file | `<source>-state.json` / `<source>-token.json` / `<source>-profile/` | — |
+| load-only bronze layout | `<data-dir>/bronze/` (the svb shape) | — |
+| credential value on argv | never — env-var fallback only, never a `--password VALUE` flag | — |
+
+(The directory-override flags `--secrets-dir` / `--data-dir` /
+`--silver-db` and their `${PREFIX}_*` / fleet-env forms are in the wrapper
+contract table above. `--secrets-dir` / `--data-dir` hold on every verb;
+`--silver-db` is read only by `load` — plus cointracking's `fetch-prices` —
+and is **rejected** on any other verb rather than silently dropped. The
+`${PREFIX}_SILVER_DB` env var is not symmetric with the flag: it is ambient
+config naming where silver lives, so a verb with no use for it ignores it
+rather than failing.)
+
+**Unknown or inapplicable flags fail; they are never ignored.** The one
+exception is uniformity: a flag the fleet orchestrator forwards to every
+source must PARSE everywhere, so `--lookback` is accepted by every
+`download` and a collector that cannot narrow its fetch warns rather than
+rejecting. A wrapper declares its silver-consuming verbs with
+`SILVER_SUBCOMMANDS` (default `(load)`), the same convention
+`VNC_SUBCOMMANDS` uses.
+
+**There is exactly one window flag: `--lookback`.** Every `download`
+accepts it, so `wealthdb-refresh` hands the same flag to every source. It
+takes either a named preset (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`,
+`all`) or an ISO date (`2020-01-01`), and it names a **starting point**:
+the window always runs from there to today, and everything the source
+offers inside it — transactions, documents, snapshots — is fetched. The
+default is ≈ 90 days; `all` reaches back 30 years.
+
+There is deliberately **no upper-bound flag and no per-facet window**. A
+second window knob is what lets a preset or a bare year silently override
+the resolved window, and a per-facet window multiplies the ways a run can
+under-fetch without saying so. One flag, one window, one answer to "what
+did this run cover".
+
+- **Bounded collectors** honour the window.
+- **Full-history collectors** (a passive SPA capture, a full export whose
+  downstream replay needs every row, an SFTP drop) accept the *same* flag
+  for uniformity but structurally cannot narrow the fetch. They **warn
+  loudly** that it has no effect and pull their complete history — a
+  superset of any window — rather than either silently ignoring it or
+  rejecting it at parse time.
+- A collector whose source can't express the window exactly (Schwab's
+  preset-driven UI, relevate's year-granularity endpoint) maps it to the
+  narrowest thing that covers it, and **warns when it has to cap**.
+
+Both tiers wire the one shared group,
+[`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
+`add_standard_args(parser, verb=…)` + `resolve_standard(args, …)`, so a
+standard optional flag always parses cleanly — it never argparse-rejects —
+and a flag a collector doesn't yet honour degrades to a `warn_not_implemented`
+warning (plus a `TODO` in that collector's code and docs), never a silent
+no-op or a stack trace.
+
+**Deliberate exceptions** (recorded so they read as intentional, not drift):
+
+- **cointracking** silver is a `.duckdb` file (window-function balance
+  replay, `DECIMAL(38,18)` amounts) — a recorded one-off; its `--silver-db`
+  default is that file, not `<data-dir>/<name>.db`.
+- **schwab-web** and **schwab-api** deliberately share
+  `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD` (one consent login for two
+  silvers whose identifier spaces are disjoint).
+- **ubs-web** reads the bank-level `ubs.env` (contract number, shared with
+  a future ubs-* sibling) as a legacy fallback behind its own
+  `ubs-web.env`.
+- **viac** `--no-transaction-documents` opts out of only the per-event
+  receipt PDFs — a narrower concept than `--no-documents`; viac's document
+  centre always downloads on its date window.
+
 ### login.py — the session
 
 `login.py` authenticates and persists session state to
 `<secrets>/<name>-state.json` (cookies/CSRF) or `<name>-token.json`
 (OAuth) at chmod `0600`, via
 [`collectorkit.session`](../shared/collectorkit/collectorkit/session.py)
-(`save_state`, `secure_file`, `load_state`). Credentials come **only**
-from env vars (sourced from `<secrets>/<name>.env`), never a
-`--password` flag;
-[`collectorkit.envfile`](../shared/collectorkit/collectorkit/envfile.py)
-(`load_env`, `resolve_credential`) resolves a `--client-id` with an
-env-var fallback. A `--check` mode probes the stored session without a
-new MFA push. The full authentication policy is in root
-[CLAUDE.md](../CLAUDE.md) §3.
+(`save_state`, `secure_file`, `load_state`). Secrets come **only** from env
+vars (sourced from `<secrets>/<name>.env`), never a `--password` flag, and
+an **OTP / 2FA code is read from stdin, never accepted on argv** (equityzen's
+`--totp` is a documented non-interactive escape hatch — a precedent to weigh,
+not the pattern to copy).
+
+Which **identity** surface to copy for a new collector:
+
+- a **browser / session** collector takes **no identity flag** — the login
+  id lives in the env file (`${PREFIX}_USERNAME`), same as the password;
+- an **API / key** collector may expose a *non-secret* identity flag
+  (`--client-id`, `--contract-number`) with an env-var fallback — the
+  value-with-env-fallback pattern via
+  [`collectorkit.envfile`](../shared/collectorkit/collectorkit/envfile.py)
+  `resolve_credential`, never the `--x-env NAME` indirection.
+
+A `--check` mode probes the stored session without a new MFA push. It never
+merely asserts the credential is *present* — a key that exists but is
+rejected is exactly what it exists to catch — so it makes the cheapest
+authenticated call the source allows and maps the answer onto its exit code.
+The full authentication policy is in root [CLAUDE.md](../CLAUDE.md) §3.
 
 ### download.py — bronze
 
 `download.py` writes raw artefacts, exactly as the source returns them,
-into a fresh UTC-stamped run dir under `--dest` (the resolved data dir),
+into a fresh UTC-stamped run dir under `--bronze-dir` (the resolved data dir),
 via [`collectorkit.bronze`](../shared/collectorkit/collectorkit/bronze.py)
 (`ts_slug` / `run_dir` for the directory; `atomic_write_bytes` /
 `atomic_write_json` so an interrupted run leaves no half-written file).
-The shared date-window flags come from
+The shared window flag comes from
 [`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
-(`add_lookback_args` + `resolve_lookback`). A `--dry-run` mode walks the
+(`add_lookback_arg` + `resolve_lookback`). A `--dry-run` mode walks the
 source but exports nothing.
 
 ### load.py — silver
@@ -222,9 +331,10 @@ uniform convention:
   become the bulk of the tree; off by default, a routine dump writes only
   what `load` reads. A collector's `--explore` (where it has one) implies
   `--debug`. External diagnostics that already write **outside** bronze
-  (`--screenshot-dir`, `--trace` into a `/debug` mount) are unchanged —
-  the invariant is only that nothing debug-related lands in a bronze run
-  dir uninvited.
+  (`--screenshot-dir`, `--trace` into a `/debug` mount) keep their own
+  flags — the invariant is only that nothing debug-related lands in a
+  bronze run dir uninvited. `prune` reclaims that external dir too (see
+  below), so opting into a trace still costs nothing permanently.
 
 - **`run.json` `status` lifecycle.** A `download` writes
   `{"status": "in-progress"}` when it creates the run dir, then
@@ -245,6 +355,20 @@ uniform convention:
   multi-hour backfill whose slug is old but whose files are fresh is
   protected.
 
+- **`prune --debug-dir`** extends the same reclaim to the **host-side
+  debug cache**: the `/debug` mount source (`~/.cache/<source>-debug`, or
+  `${PREFIX}_DEBUG_DIR`) that `--screenshot-dir` / `--trace` write to.
+  That dir lives outside bronze, holds no `load` input, and nothing else
+  reclaims it — left alone it grows for the life of the checkout. Each
+  entry directly under it (a loose screenshot, a whole Playwright trace
+  bundle) is removed once quiet for `--min-age-hours`, so the captures of
+  a login happening right now survive. The wrappers pass the flag for the
+  collectors that have a debug dir (`HAS_DEBUG=1`); a dir that was never
+  written is a no-op, since debug output is opt-in and a routine run
+  leaves none. A `--debug-dir` overlapping the bronze tree is refused —
+  the cache is reclaimed with no completeness check, which is right for a
+  cache and would be fatal for a run dir.
+
 The safety envelope is **identical everywhere** because it lives in one
 place — [`collectorkit.prune`](../shared/collectorkit/collectorkit/prune.py),
 a reviewed, unit-tested engine. Each collector ships a **thin `prune.py`**
@@ -254,9 +378,10 @@ predicate (most delegate to `prune.status_classification`, which encodes
 the `status` lifecycle plus a per-collector legacy fallback). The engine
 guarantees, for every collector:
 
-- a **`load` input is never deleted** — the only paths removed are the
-  configured debug subdirs of *complete* dumps and whole *non-complete*
-  run dirs; a complete dump's data is out of scope by construction;
+- a **`load` input is never deleted** — inside bronze the only paths
+  removed are the configured debug subdirs of *complete* dumps and whole
+  *non-complete* run dirs; a complete dump's data is out of scope by
+  construction, and the debug cache holds no `load` input at all;
 - an **unreadable or corrupt manifest is UNKNOWN and never deleted** — an
   I/O error or corrupt bytes is an environmental failure, not proof of
   incompleteness, so it is skipped before the collector predicate runs;
@@ -266,8 +391,12 @@ guarantees, for every collector:
 - a whole-dir deletion **rechecks completeness + quiescence immediately
   before `rmtree`**, closing the window between planning and deletion.
 
-Load-only collectors with no `<UTC-ts>/` run-dir layout ([`manual`](manual/),
-[`svb`](svb/)) document a scoped `prune` or a justified no-op instead.
+Load-only collectors have no `<UTC-ts>/` run-dir layout, and the two ship
+**different on-disk shapes** (both user-visible, don't move the data):
+[`manual`](manual/) keeps its CSVs flat in the data dir, while [`svb`](svb/)
+takes its statement PDFs in a `<data-dir>/bronze/` subdir. Each documents a
+`prune` that is a justified no-op (nothing to reclaim; the inputs are the
+only copy).
 
 ### Build scaffolding
 

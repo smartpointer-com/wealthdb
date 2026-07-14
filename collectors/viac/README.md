@@ -95,21 +95,22 @@ CSRF metadata) at `/secrets`, and bronze artefacts + silver DB at
 ./viac login                               # mints a fresh session; SMS goes to your phone
 ./viac download --dry-run                  # walk JSON endpoints, skip PDFs
 ./viac download                            # bronze dump (default tier; last 90 days)
-./viac download --with-transaction-documents  # also pull the per-event TRANSACTION PDFs
-./viac download --lookback 1y              # wider window (also: 1w/4w/3m/6m/2y/5y/all)
+./viac download --no-transaction-documents  # skip the per-event TRANSACTION PDFs (downloaded by default)
+./viac download --lookback 1y              # wider window (also: 1w/4w/3m/6m/2y/5y/all, or an ISO date)
 ./viac load                                # parse bronze → silver SQLite
 ./viac prune --dry-run                     # preview which non-complete dumps would be reclaimed
 ./viac prune                               # delete crashed/in-progress walks + --dry-run shells
 ```
 
-The shared `--since` / `--until` / `--documents-since` /
-`--documents-until` flags scope the run client-side: the documents
-walk only fetches PDFs whose `timestamp` falls in the window (the
-full index is still written to bronze for traceability), and the
-transactions filter is applied at silver-load time using the window
-recorded in `run.json` (the REST endpoint always returns the full
-history, so bronze stays a faithful copy). Old bronze dumps without
-the window block fall through to a no-bound load.
+The shared `--lookback` flag scopes the run client-side. It names the
+window's start — a preset (`1w` / `4w` / `3m` / `6m` / `1y` / `2y` /
+`5y` / `all`) or an ISO date (`YYYY-MM-DD`) — and the window runs from
+there to today: the documents walk only fetches PDFs whose `timestamp`
+falls in it (the full index is still written to bronze for
+traceability), and the transactions filter is applied at silver-load
+time using the window recorded in `run.json` (the REST endpoint always
+returns the full history, so bronze stays a faithful copy). Old bronze
+dumps without the window block fall through to a no-bound load.
 
 Override the host mounts via env: `VIAC_SECRETS_DIR`, `VIAC_DATA_DIR`.
 
@@ -151,15 +152,17 @@ for the shared env-file rules.
 ```
 
 **Document gating** — `download.py` classifies the index by
-`type` and applies the `--with-transaction-documents` flag:
+`type` and applies the `--no-transaction-documents` opt-out:
 
-- **Default**: download the non-TRANSACTION docs (statements,
-  Pillar-3a Bescheinigungen, contracts, investment profiles) plus
-  the `SECURITY_FUSION` TRANSACTION docs (the only place the
-  old→new ISIN mapping lives).
-- **`--with-transaction-documents`**: also download the per-event
-  TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE, INTEREST,
-  …), which are the bulk of the archive.
+- **Default**: download everything — the non-TRANSACTION docs
+  (statements, Pillar-3a Bescheinigungen, contracts, investment
+  profiles), the `SECURITY_FUSION` TRANSACTION docs (the only place
+  the old→new ISIN mapping lives), and the per-event TRANSACTION
+  PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE, INTEREST, …), which are
+  the bulk of the archive.
+- **`--no-transaction-documents`**: skip the per-event TRANSACTION
+  PDFs, keeping the non-TRANSACTION docs plus the `SECURITY_FUSION`
+  TRANSACTION docs (the ISIN-mapping source is always fetched).
 
 **Cross-run download-avoidance** — in-gate PDF fetches run through
 the shared `collectorkit.docdedup` engine, keyed by document number

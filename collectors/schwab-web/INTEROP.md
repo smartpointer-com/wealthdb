@@ -206,7 +206,7 @@ the web feed is and isn't carrying:
 | --- | --- |
 | pdf_parsers occasionally returns `amount=None` on Sale rows (≈1% — concentrated on money-market-fund proceeds and a handful of early-2025 fee rows) | A handful of missing transactions per year; gold can detect via a row-count sanity check |
 | Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and lets `form_1099b` supersede sales in its tax year (§8) |
-| Per-row "More"-modal data not captured by default | The opt-in `--with-more-detail` flag enables it (~1 click/transaction). When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
+| Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold must bridge name → instrument (its symbol/CUSIP map), §8 |
 | `third_party_distribution` cash transfers may overlap a statement cash debit | Gold dedupes cash distributions against external flows; securities distributions are new data (§8) |
 | Account-number → suffix mapping not yet auto-extracted | Manual map maintenance for now (see §1) |

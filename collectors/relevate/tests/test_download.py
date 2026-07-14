@@ -3,10 +3,11 @@ download-avoidance wiring.
 
 Part 1 — dry-run contract. Root CLAUDE.md §2: `download --dry-run` walks the
 read-only export surfaces (verify the session, enumerate the overview +
-document index) but must persist NOTHING under the bronze root (`--dest`). A
-dry-run that left a run dir — even a run.json-only shell — could be picked up
-by `load` and land as a dry-run snapshot in silver. These tests mock the
-session (no real Relevate calls, no state file) and assert the invariant.
+document index) but must persist NOTHING under the bronze root
+(`--bronze-dir`). A dry-run that left a run dir — even a run.json-only shell —
+could be picked up by `load` and land as a dry-run snapshot in silver. These
+tests mock the session (no real Relevate calls, no state file) and assert the
+invariant.
 
 Part 2 — the document download-avoidance walk (`collectorkit.docdedup`), with
 no network. Exercises the per-document class mapping, the disk-driven extract
@@ -90,7 +91,7 @@ def test_dry_run_persists_nothing_to_bronze(tmp_path, monkeypatch):
 
     rc = download.main([
         "--dry-run",
-        "--dest", str(bronze),
+        "--bronze-dir", str(bronze),
         "--state-path", str(tmp_path / "state.json"),
     ])
 
@@ -99,21 +100,21 @@ def test_dry_run_persists_nothing_to_bronze(tmp_path, monkeypatch):
     assert any(u.endswith(download.EP_INVESTMENT_OVERVIEW) for u in sess.urls)
     assert any(u.endswith(download.EP_DOCUMENTS_INDEX) for u in sess.urls)
 
-    # ...but NOTHING was written under the bronze dest: no run dir, no
+    # ...but NOTHING was written under the bronze root: no run dir, no
     # run.json shell, no endpoint dumps. This is the invariant.
     assert list(bronze.rglob("*")) == []
 
 
-def test_dry_run_does_not_create_dest(tmp_path, monkeypatch):
+def test_dry_run_does_not_create_bronze_dir(tmp_path, monkeypatch):
     # Even the bronze root itself must not be materialised by a dry-run:
     # a real run's run_dir.mkdir(parents=True) would create it, a dry-run
-    # must not touch --dest at all.
+    # must not touch --bronze-dir at all.
     _patch_session(monkeypatch)
     bronze = tmp_path / "bronze_absent"
 
     rc = download.main([
         "--dry-run",
-        "--dest", str(bronze),
+        "--bronze-dir", str(bronze),
         "--state-path", str(tmp_path / "state.json"),
     ])
 

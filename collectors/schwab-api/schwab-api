@@ -18,8 +18,10 @@
 #   download [args...] Fetch accounts / positions / transactions to bronze.
 #   load [args...]     Parse bronze into the silver SQLite DB.
 #   prune [args...]    Delete non-complete dumps (crashed / interrupted
-#                      downloads) from the bronze tree. Host-side;
-#                      --dry-run prints the plan without deleting.
+#                      downloads) from the bronze tree, and aged-out
+#                      entries from the login trace cache
+#                      (~/.cache/schwab-api-debug). Host-side; --dry-run
+#                      prints the plan without deleting.
 #   recompress [args]  One-time backlog sweep: replace plain data JSON
 #                      (account_numbers / user_preference /
 #                      accounts_positions / transactions_NNN /
@@ -34,6 +36,9 @@
 #   --secrets-dir DIR  credentials + OAuth token  (default ~/.secrets)
 #   --data-dir    DIR  bronze dumps root          (default $XDG_DATA_HOME/wealthdb/schwab-api)
 #   --silver-db   PATH silver DB path             (default <data-dir>/schwab-api.db)
+# The debug/trace cache `login` writes and `prune` reclaims is
+# ~/.cache/schwab-api-debug, or $SCHWAB_API_DEBUG_DIR when set.
+#
 # OAuth app creds (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) come from
 # <secrets-dir>/schwab-api.env; the Schwab login id/password pre-filled
 # into the consent page come from <secrets-dir>/schwab-web.env.
@@ -77,26 +82,28 @@ case "$cmd" in
         ;;
     download|load|prune|recompress)
         # Host venv (schwab-py REST + SQLite). `prune` and `recompress`
-        # are siblings of `load`: pure file walks over bronze, no
-        # container, run under the same venv (collectorkit is
-        # editable-installed there, so `from collectorkit import prune`
-        # resolves with no PYTHONPATH hack). `recompress` is the one-time
-        # manual sweep converting the pre-compression backlog to the
-        # .json.zst form download now writes. The default --bronze-dir
-        # comes first so an explicit flag in the forwarded args overrides
-        # it (argparse last-wins); the in-flight dump is protected by the
-        # verb's own age guard.
+        # are siblings of `load`: pure file walks, no container, run
+        # under the same venv (collectorkit is editable-installed there,
+        # so `from collectorkit import prune` resolves with no PYTHONPATH
+        # hack). `recompress` is the one-time manual sweep converting the
+        # pre-compression backlog to the .json.zst form download now
+        # writes. `prune` walks the bronze tree plus the trace cache the
+        # containerised `login` writes — DEBUG_DIR resolves the same there
+        # as it does in wrapper-lib, so both halves name one dir. The
+        # default dir flags come first so an explicit flag in the
+        # forwarded args overrides them (argparse last-wins); in-flight
+        # dumps and captures are protected by the verb's own age guard.
         # shellcheck disable=SC1091
         source "$HERE/../../shared/wrappers/host-lib.sh"
         shift
-        host_resolve_dirs "$@"
+        host_resolve_dirs "$cmd" "$@"
         host_source_env_file
         py="$(host_python)"
         token="$SECRETS_DIR/schwab-api-token.json"
         case "$cmd" in
             download)
                 exec "$py" "$HERE/download.py" --token-path "$token" \
-                    --dest "$DATA_DIR" \
+                    --bronze-dir "$DATA_DIR" \
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
             load)
@@ -106,6 +113,7 @@ case "$cmd" in
                 ;;
             prune)
                 exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+                    --debug-dir "$DEBUG_DIR" \
                     ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
                 ;;
             recompress)

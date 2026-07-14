@@ -1002,11 +1002,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--silver-db", type=Path, default=DEFAULT_SILVER_DB,
         help="Silver SQLite DB path. Default: %(default)s.",
     )
-    p.add_argument(
-        "--force", action="store_true",
-        help="Re-load snapshots already recorded in dump_runs.",
-    )
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -1014,9 +1010,14 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    # --force = delete the silver DB, then rebuild from all bronze (the
+    # fleet-wide meaning). After a reset the DB is empty, so the
+    # already-loaded skip below naturally re-ingests every run.
+    if args.force:
+        silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
-    already = silver.loaded_snapshots(conn) if not args.force else set()
+    already = silver.loaded_snapshots(conn)
 
     n_loaded = 0
     for run_dir in bronze.iter_run_dirs(args.bronze_dir):

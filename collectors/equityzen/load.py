@@ -3,7 +3,8 @@
 
 Parses the bronze captured by download.py into the source-shaped SQLite
 silver DB, the input contract to the gold engine. Idempotent: bronze runs
-already recorded in `dump_runs` are skipped unless --force.
+already recorded in `dump_runs` are skipped; --force deletes the silver DB
+and rebuilds it from all bronze.
 
 Per bronze run (`$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/`):
 
@@ -489,9 +490,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Bronze root to ingest from. Default: %(default)s.")
     p.add_argument("--silver-db", type=Path, default=DEFAULT_SILVER_DB,
                    help="Silver SQLite DB path. Default: %(default)s.")
-    p.add_argument("--force", action="store_true",
-                   help="Re-load snapshots already recorded in dump_runs.")
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -499,6 +498,11 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    # --force = delete the silver DB, then rebuild from all bronze (the
+    # fleet-wide meaning). After a reset the DB is empty, so load_run's
+    # already-loaded skip naturally re-ingests every run.
+    if args.force:
+        silver.reset(args.silver_db)
     conn = open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS_DIR)
 

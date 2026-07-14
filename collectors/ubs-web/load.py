@@ -84,9 +84,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
                    help="Directory containing UTC-timestamped bronze dump dirs "
                         "(default: %(default)s).")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="DEBUG-level logging.")
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -263,20 +261,20 @@ def _read_run_json(dump_dir: Path) -> dict:
 def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
                      schema_version: int, dump_dir: Path,
                      run_meta: dict) -> None:
-    txn = run_meta.get("transactions") or {}
-    docs = run_meta.get("documents") or {}
+    # One window per run (run.json `window`). Dumps written before the
+    # single-window CLI carry a per-facet window on each block instead;
+    # their `transactions` pair is the equivalent, so old bronze keeps
+    # loading with the same values it always produced.
+    window = run_meta.get("window") or run_meta.get("transactions") or {}
     conn.execute(
         "INSERT INTO dump_runs ("
         "snapshot_at, silver_schema_version, run_dir, "
-        "transactions_since, transactions_until, "
-        "documents_since, documents_until"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "window_since, window_until"
+        ") VALUES (?, ?, ?, ?, ?)",
         (
             snapshot_at, schema_version, str(dump_dir),
-            ts_from_iso(txn.get("since")),
-            ts_from_iso(txn.get("until")),
-            ts_from_iso(docs.get("since")),
-            ts_from_iso(docs.get("until")),
+            ts_from_iso(window.get("since")),
+            ts_from_iso(window.get("until")),
         ),
     )
 

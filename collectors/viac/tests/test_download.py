@@ -2,7 +2,7 @@
 
 Root CLAUDE.md §2: `download --dry-run` walks the export surfaces with
 the existing session but must **export nothing** — it may not create a
-bronze run dir or write any artefact under `--dest`. A dry-run that
+bronze run dir or write any artefact under `--bronze-dir`. A dry-run that
 leaves even a `run.json`-only shell is a violation: `load`/`prune` would
 then have to reason about it, and for a real download the shell already
 carries endpoint JSON.
@@ -11,7 +11,7 @@ These tests drive the real ``download.main`` with a fake ViacClient
 (no network, no browser) whose GETs return synthetic JSON, and assert:
 
   * dry-run: the walk still reaches every endpoint (session verified,
-    surfaces enumerated) but NOTHING lands under the bronze dest.
+    surfaces enumerated) but NOTHING lands under the bronze root.
   * real run (contrast): the same walk DOES write the run dir + JSON +
     a terminal ``status="complete"`` manifest — i.e. the dry-run gate
     did not change what a real download persists.
@@ -107,7 +107,7 @@ def _under_dest(dest: Path) -> list[Path]:
 
 
 # ============================================================
-# dry-run: nothing persisted under --dest
+# dry-run: nothing persisted under --bronze-dir
 # ============================================================
 
 def test_dry_run_persists_nothing_to_bronze(tmp_path, patched_client):
@@ -116,11 +116,11 @@ def test_dry_run_persists_nothing_to_bronze(tmp_path, patched_client):
     state = _state_file(tmp_path)
 
     rc = download.main(
-        ["--dry-run", "--dest", str(dest), "--state-path", str(state)])
+        ["--dry-run", "--bronze-dir", str(dest), "--state-path", str(state)])
 
     assert rc == 0
     # The invariant: no run dir, no manifest, no JSON — nothing at all
-    # under the bronze dest after a dry-run.
+    # under the bronze root after a dry-run.
     assert _under_dest(dest) == []
     assert list(bronze.iter_run_dirs(dest)) == []
     assert not (dest / "run.json").exists()
@@ -133,14 +133,14 @@ def test_dry_run_persists_nothing_to_bronze(tmp_path, patched_client):
     assert any("/rest/web/document/" in c for c in patched_client.calls)
 
 
-def test_dry_run_creates_no_dest_when_absent(tmp_path, patched_client):
+def test_dry_run_creates_no_bronze_dir_when_absent(tmp_path, patched_client):
     # Even the bronze root itself is not conjured: a dry-run touches
-    # nothing under --dest, whether or not the dir pre-exists.
+    # nothing under --bronze-dir, whether or not the dir pre-exists.
     dest = tmp_path / "bronze-absent"          # deliberately not created
     state = _state_file(tmp_path)
 
     rc = download.main(
-        ["--dry-run", "--dest", str(dest), "--state-path", str(state)])
+        ["--dry-run", "--bronze-dir", str(dest), "--state-path", str(state)])
 
     assert rc == 0
     assert not dest.exists()
@@ -158,7 +158,7 @@ def test_real_run_writes_complete_bronze_dump(tmp_path, patched_client):
     state = _state_file(tmp_path)
 
     rc = download.main(
-        ["--dest", str(dest), "--state-path", str(state)])
+        ["--bronze-dir", str(dest), "--state-path", str(state)])
 
     assert rc == 0
     run_dirs = list(bronze.iter_run_dirs(dest))

@@ -33,7 +33,7 @@ case "${1:-help}" in
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --cli-mfa --dest /data "$@"
+            --cli-mfa --bronze-dir /data "$@"
         ;;
     vnc-login)
         # Fallback: start x11vnc on the same Xvfb display and
@@ -51,18 +51,21 @@ case "${1:-help}" in
         shift
         exec python3 /app/login.py \
             --profile-dir /secrets/schwab-web-profile \
-            --no-cli-mfa --dest /data "$@"
+            --no-cli-mfa --bronze-dir /data "$@"
         ;;
     load)
         shift
         exec python3 /app/load.py "$@"
         ;;
-    dedup)
-        # Parse-equivalence dedup of the statement bronze: collapse
+    collapse-statements)
+        # Parse-equivalence collapse of the statement bronze: fold
         # re-rendered statement PDFs that parse identically onto the
-        # oldest copy. Needs the image's pypdfium2 for text extraction,
-        # so it runs in-container like `load` (no browser, no Xvfb).
-        # --dry-run emits the evidence report and collapses nothing.
+        # oldest copy. Distinct from the fleet `wealthdb-collect dedup`
+        # sweep (byte-identical hardlinks) — this deletes non-identical
+        # bytes that merely parse the same. Needs the image's pypdfium2
+        # for text extraction, so it runs in-container like `load` (no
+        # browser, no Xvfb). --dry-run emits the evidence report and
+        # collapses nothing.
         shift
         exec python3 /app/dedup.py "$@"
         ;;
@@ -90,13 +93,16 @@ Subcommands:
               auto-submits, prompts for the 2FA code on stdin,
               runs the statements + tx-history download in the
               same Firefox session, exits. Default range: 3
-              months (override with --range; --range Last10Years
-              for a full backfill). Stdin must be a TTY.
+              months (widen with --lookback; --lookback all for a
+              full backfill, capped at Schwab's ~10 years). Stdin
+              must be a TTY.
   load        Parse bronze into the silver SQLite database.
-  dedup       Collapse re-rendered statement PDFs that parse
+  collapse-statements
+              Collapse re-rendered statement PDFs that parse
               identically onto the oldest copy (reclaims the
-              per-download byte churn the byte-identical sweep
-              can't). --dry-run prints the evidence report first.
+              per-download byte churn the fleet `wealthdb-collect
+              dedup` byte-identical sweep can't). --dry-run prints
+              the evidence report first.
   prune       Delete debug artefacts (<run>/screenshots/) and
               non-complete dumps from the bronze tree. --dry-run
               prints the plan first.
@@ -109,6 +115,17 @@ Subcommands:
 
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
+        ;;
+    login)
+        # `login` is a natural thing to type, but schwab-web mints its
+        # session inside `download` (one-shot CLI-MFA scrape) and persists
+        # nothing separately — so login is a clean no-op (exit 0). Catch it
+        # explicitly: the host wrapper already traps it, and this closes the
+        # direct-`docker run schwab-web login` path, which would otherwise
+        # fall through to the container's util-linux /bin/login and die.
+        echo "schwab-web: 'login' folds into 'download' — nothing to persist." >&2
+        echo "  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'." >&2
+        exit 0
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,

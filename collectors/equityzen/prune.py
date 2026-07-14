@@ -5,7 +5,7 @@ Prune non-complete dumps from the equityzen bronze tree.
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
 prune engine) with equityzen's configuration. equityzen writes **no**
 bronze-resident debug artefact — download.py's only diagnostics live
-externally (``login --debug-dir`` screenshots and the ``explore`` verb's
+externally (``login --screenshot-dir`` screenshots and the ``explore`` verb's
 ``/debug/<UTC-ts>/`` HAR/trace/click log), never in a ``<UTC-ts>/`` run
 dir — so ``debug_subdirs`` is empty and the sole reclaim category is:
 

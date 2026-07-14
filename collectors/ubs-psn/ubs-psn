@@ -4,8 +4,9 @@
 # Host-venv collector (no Docker): runs the collector's own .py under its
 # .venv, like schwab-api. UBS PSN is an SFTP file delivery authenticated by
 # an SSH key — there is no interactive MFA login. Subcommands:
-#   login               No-op (key-based; no session to mint). Verify
-#                       connectivity with `download --dry-run` instead.
+#   login               No-op (key-based; no session to mint).
+#                       `login --check` probes the key: it opens and closes
+#                       one authenticated SSH session, consuming no files.
 #   download [args...]  Pull the nightly PSN files over SFTP into bronze.
 #                       (UBS deletes each file server-side on success.)
 #   load [args...]      Parse bronze into the silver SQLite DB.
@@ -36,26 +37,39 @@ case "$cmd" in
         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
         exit 0
         ;;
-    login)
-        cat >&2 <<'EOF'
-ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
-no interactive login / MFA session to mint. Verify connectivity (connect +
-host-key check, no files consumed) with:
-  ./ubs-psn download --dry-run
-EOF
-        exit 0
-        ;;
 esac
 
-host_resolve_dirs "$@"
+host_resolve_dirs "$cmd" "$@"
 host_source_env_file
 py="$(host_python)"
 
 case "$cmd" in
+    login)
+        # PSN mints no session — the RSA key IS the credential — so a bare
+        # `login` is a no-op. `--check` is a real probe: download.py opens and
+        # closes one authenticated SSH session, consuming no files.
+        case " ${FORWARD_ARGS[*]-} " in
+            *" --check "*)
+                client_args=()
+                [[ -n "${UBS_PSN_CLIENT_ID:-}" ]] && client_args=(--client-id "$UBS_PSN_CLIENT_ID")
+                exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
+                    --key "$SECRETS_DIR/ubs_psn_key" \
+                    ${client_args[@]+"${client_args[@]}"} \
+                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+                ;;
+        esac
+        cat >&2 <<'EOF'
+ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
+no interactive login / MFA session to mint. To verify the key is accepted
+(connect + host-key check, no files consumed), run:
+  ./ubs-psn login --check
+EOF
+        exit 0
+        ;;
     download)
         client_args=()
         [[ -n "${UBS_PSN_CLIENT_ID:-}" ]] && client_args=(--client-id "$UBS_PSN_CLIENT_ID")
-        exec "$py" "$HERE/download.py" --dest "$DATA_DIR" \
+        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
             --key "$SECRETS_DIR/ubs_psn_key" \
             ${client_args[@]+"${client_args[@]}"} \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}

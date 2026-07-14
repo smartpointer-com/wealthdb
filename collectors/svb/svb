@@ -22,7 +22,8 @@
 #   --data-dir  DIR     data dir; PDFs in <data-dir>/bronze/
 #                       (default $XDG_DATA_HOME/wealthdb/svb)
 #   --silver-db PATH    silver DB path (default <data-dir>/svb.db)
-# Extra `load` flags pass through to load.py (e.g. --closure-date, --signature).
+# Extra `load` flags pass through to load.py (e.g. --closure-date,
+# --statement-signature).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +32,7 @@ ENV_PREFIX=SVB
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
-cmd="${1:-load}"
+cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 
 case "$cmd" in
@@ -40,6 +41,9 @@ case "$cmd" in
         exit 0
         ;;
     download|login)
+        # F41: --check is accepted for fleet uniformity; this collector is
+        # load-only with no session, so --check is inherently a no-op.
+        case " $* " in *" --check "*) echo "svb: login --check not implemented (TODO); no session to probe." >&2 ;; esac
         cat >&2 <<'EOF'
 svb: no-op. This collector has no live source — the SVB Wealth Advisory
 statements are a fixed historical archive (SVB wound down in 2023). Drop the
@@ -50,6 +54,9 @@ EOF
         exit 0
         ;;
     prune)
+        # F32: prune is a no-op here; acknowledge any flags rather than
+        # swallowing them silently.
+        [[ $# -gt 0 ]] && echo "svb: prune flags ignored — nothing to reclaim." >&2
         # No-op. Unlike the scraper collectors, svb's bronze is a FLAT archive:
         # the SVB Wealth Advisory statement PDFs (+ an optional signature.txt)
         # sit directly at the bronze root, with no timestamped run dirs and no
@@ -70,7 +77,7 @@ EOF
         exit 0
         ;;
     load)
-        host_resolve_dirs "$@"
+        host_resolve_dirs "$cmd" "$@"
         py="$(host_python)"
         exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR/bronze" --silver-db "$SILVER_DB" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}

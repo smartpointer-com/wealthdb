@@ -724,9 +724,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--documents-dir", type=Path, default=DEFAULT_DOCS,
                    help="Dir of downloaded tax documents (K-1 CSV/PDF, financial "
                         "statements) to parse. Default: %(default)s.")
-    p.add_argument("--force", action="store_true",
-                   help="Re-load snapshots already recorded in dump_runs.")
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -734,6 +732,11 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    # --force = delete the silver DB, then rebuild from all bronze (the
+    # fleet-wide meaning). After a reset the DB is empty, so the
+    # already-loaded skip below naturally re-ingests every run.
+    if args.force:
+        silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     silver.apply_migrations(conn, MIGRATIONS)
     already = silver.loaded_snapshots(conn)
@@ -744,7 +747,7 @@ def main(argv: list[str]) -> int:
             snap = bronze.parse_run_ts(run_dir.name)
         except ValueError:
             continue
-        if snap in already and not args.force:
+        if snap in already:
             log.debug("skip already-loaded %s", run_dir.name)
             continue
         load_snapshot(conn, snap, run_dir)

@@ -23,7 +23,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 swissquote — host wrapper
 

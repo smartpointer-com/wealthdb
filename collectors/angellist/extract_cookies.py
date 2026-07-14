@@ -125,7 +125,7 @@ def has_valid_session(cookies: list[dict]) -> bool:
     """True if the jar carries a non-expired AngelList session cookie. This is
     a CLIENT-SIDE check only — a cheap pre-filter: the cookie can be unexpired
     yet rejected by the server, so `login` follows this with a headless server
-    probe (`download.py --check-session`). A session-scoped (`expires == -1`)
+    probe (`download.py --check`). A session-scoped (`expires == -1`)
     cookie counts as present; otherwise the expiry must be in the future."""
     now = time.time()
     for c in cookies:

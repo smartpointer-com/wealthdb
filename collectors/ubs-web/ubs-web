@@ -21,7 +21,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 ubs-web — host wrapper
 
@@ -46,9 +46,11 @@ Override mounts via env:
 
 Credentials:
   The contract number is read from \$UBS_CONTRACT_NUMBER inside the
-  container. The login script sources /secrets/ubs.env automatically
-  (= \$HOME/.secrets/ubs.env on the host), so dropping a single line
-  UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough.
+  container. The login script sources /secrets/ubs-web.env automatically
+  (= \$HOME/.secrets/ubs-web.env on the host), so dropping a single line
+  UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough. The
+  bank-level ubs.env is still read as a legacy fallback when no
+  ubs-web.env exists.
 EOF
     exit 0
 fi

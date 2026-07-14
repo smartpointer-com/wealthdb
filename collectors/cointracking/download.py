@@ -435,8 +435,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
-        help=("Bronze tree root. Each invocation creates a UTC-"
-              "timestamped subdir under this. Default: %(default)s."),
+        help=("Each invocation creates a UTC-timestamped subdir "
+              "under this. Default: %(default)s."),
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -458,8 +458,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "discovery diagnostics live in explore.py's /debug mount, "
               "never in a bronze run dir."),
     )
-    cli.add_full_download_lookback_arg(p)
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
 
@@ -470,9 +469,9 @@ def main(argv: list[str]) -> int:
         args.lookback, log,
         what="the complete trade history its holdings replay requires")
     if args.debug:
-        log.debug("--debug set; cointracking's download writes no "
-                  "bronze-resident debug artefacts, so no extra capture "
-                  "is retained")
+        # TODO(second pass): write bronze-resident debug captures under
+        # --debug. cointracking's download retains no extra capture today.
+        cli.warn_debug_noop("cointracking", log)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.bronze_dir / ts

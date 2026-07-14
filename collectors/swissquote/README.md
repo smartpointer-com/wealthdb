@@ -106,7 +106,7 @@ port-forwarding), then run scripted afterwards.
 ```
 <bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/swissquote/
 ├── 20260514T093122Z/               one bronze dump per run
-│   ├── transactions_000.csv        single CSV covering --since..--until
+│   ├── transactions_000.csv        single CSV covering --lookback..today
 │   ├── positions.xls               Trading Platform Positions export (.xls binary; securities only)
 │   ├── position_details.json       DOM scrape: per-position long `name` + `isin` (joined into silver)
 │   ├── list_of_assets.xls          Trading Platform List of Assets export (.xls binary; per-currency cash + FX)
@@ -200,7 +200,7 @@ new MFA push, no fresh login):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--state-path` | `/secrets/swissquote_state.json` (wrapper mount) | Path to read/write the Playwright `storageState.json` file. |
+| `--state-path` | `/secrets/swissquote-state.json` (wrapper mount) | Path to read/write the Playwright `storageState.json` file (a legacy `swissquote_state.json` is still read if absent). |
 | `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
 | `--mfa-timeout` | `300` | Seconds to wait for the Mobile Level 3 push to be approved. |
@@ -255,18 +255,17 @@ Per run, the script:
    single CSV — no chunking.
 5. Navigates to the eBanking SPA's `#documents` route (loaded by
    mutating `location.hash` after the SPA bootstraps; direct
-   navigation strips the hash), widens the Period filter to
-   `--documents-since..--documents-until` (default: ~25 years), and
-   waits for the `.LoadingTable` spinner to clear.
+   navigation strips the hash), sets the Period filter to the same
+   `--lookback..today` window the transactions run used, and waits
+   for the `.LoadingTable` spinner to clear.
 6. Scrapes the rendered DOM for `a[href*='getPdfDocument']` anchors,
    parses each URL into `(customer, doc_id, doc_type, contract_no,
    date, target_user)`, skips any IDs already present in prior bronze
    runs (filename-based dedup), and fetches each new PDF via
    Playwright's request API (cookie reused, no per-row clicking) into
    `documents/<doc_id>.pdf`.
-7. Writes `run.json` with the customer ID, accounts entries,
-   transaction window bounds, documents window bounds, and per-document
-   metadata.
+7. Writes `run.json` with the customer ID, accounts entries, the
+   fetched window bounds, and per-document metadata.
 
 The run dir carries a `run.json` **status** through its life: a
 `{"status": "in-progress"}` marker is dropped the moment the dir is
@@ -309,11 +308,12 @@ Real download (last 90 days, the default):
 ./swissquote download
 ```
 
-Wider backfill via the shared `--lookback` shortcut, or explicit dates:
+Wider backfill via the shared `--lookback` flag — a named preset or an
+ISO start date:
 
 ```sh
 ./swissquote download --lookback 1y
-./swissquote download --since 2010-01-01
+./swissquote download --lookback 2010-01-01
 ```
 
 Files land in `/data/<UTC-timestamp>/` inside the container, which
@@ -328,19 +328,15 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | `account_overview.pdf` | Trading Platform → `#portfoliooverview` → Export account overview (server-rendered PDF) |
 | `accounts.json` | eBanking `#accountOverview/main` → DOM scrape (per-account `<TYPE> <CUSTOMER_ID>` lines) |
 | `documents/<docid>.pdf` | eBanking `#documents` → `getPdfDocument` REST endpoint (cookie reused) |
-| `run.json` | metadata: customer ID, accounts entries, transaction window, documents window, per-doc metadata |
+| `run.json` | metadata: customer ID, accounts entries, fetched window bounds, per-doc metadata |
 
 #### Flags
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--state-path` | `/secrets/swissquote_state.json` (wrapper mount) | Path to the Playwright `storageState.json` file minted by `login.py`. |
-| `--dest` | `/data` (wrapper mount) | Local destination directory (must be writable). |
-| `--since` | _today − 90d_ | Earliest transaction date to fetch (YYYY-MM-DD). Swissquote does not enforce a window cap; for a one-off bulk backfill pass an older date explicitly (e.g. `--since 2010-01-01`). |
-| `--until` | _today (UTC)_ | Latest transaction date to fetch (YYYY-MM-DD, inclusive). |
-| `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` (and `--documents-since` if unset) to `until − X`; overridden by explicit `--since` / `--documents-since`. |
-| `--documents-since` | _same as `--since`_ | Earliest document date (YYYY-MM-DD). Content-sha256 dedup means re-runs don't re-download already-captured PDFs. |
-| `--documents-until` | _same as `--until`_ | Latest document date (YYYY-MM-DD, inclusive). |
+| `--state-path` | `/secrets/swissquote-state.json` (wrapper mount) | Path to the Playwright `storageState.json` file minted by `login.py` (a legacy `swissquote_state.json` is still read if absent). |
+| `--bronze-dir` | `/data` (wrapper mount) | Bronze tree root (must be writable). |
+| `--lookback` | _today − 90d_ | How far back to fetch: a preset (`1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`) or an ISO date (`YYYY-MM-DD`). The window runs from there to today and covers transactions, documents and positions alike. Swissquote does not enforce a window cap, so an older start (e.g. `--lookback 2010-01-01`) triggers a one-off bulk backfill; content-sha256 dedup means a wider re-run does not re-download already-captured PDFs. |
 | `--dry-run` | off | Skip exports; only validate session and selectors. Returns before creating a run dir, so a dry run leaves no bronze artefacts (and no `run.json`) behind. |
 | `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. Writes outside bronze (the `/debug` mount). |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. |

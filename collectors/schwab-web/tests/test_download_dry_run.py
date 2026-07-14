@@ -72,11 +72,11 @@ def test_walk_dry_run_writes_nothing_to_bronze(tmp_path):
     summary = download.walk(
         _mock_page_no_accounts(),
         dest,
-        mode="both",
+        mode="all",
         dry_run=True,
         screenshot_dir=None,
     )
 
     assert summary["dry_run"] is True
-    # The invariant: a dry-run leaves no run dir / no file under --dest.
+    # The invariant: a dry-run leaves no run dir / no file under --bronze-dir.
     assert list(dest.iterdir()) == []

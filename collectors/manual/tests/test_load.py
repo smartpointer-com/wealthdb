@@ -182,24 +182,30 @@ def test_unknown_column_is_rejected(tmp_path):
 
 
 def test_resolve_paths_precedence(tmp_path, monkeypatch):
-    """flag > env var > default; the silver DB follows the resolved bronze
-    dir unless overridden itself."""
-    monkeypatch.delenv(loader.ENV_BRONZE_DIR, raising=False)
+    """bronze: --bronze-dir else default (the wrapper resolves the data dir /
+    MANUAL_DATA_DIR and passes --bronze-dir). silver: flag > $MANUAL_SILVER_DB
+    > manual.db beside the resolved bronze dir."""
     monkeypatch.delenv(loader.ENV_SILVER_DB, raising=False)
 
-    # default
+    # default bronze; silver beside it
     b, s = loader.resolve_paths(loader.parse_args([]))
     assert b == loader.DEFAULT_BRONZE_DIR
     assert s == loader.DEFAULT_BRONZE_DIR / loader.SILVER_DB_NAME
 
-    # env var — silver follows the env-set bronze dir
-    monkeypatch.setenv(loader.ENV_BRONZE_DIR, str(tmp_path / "data"))
-    b, s = loader.resolve_paths(loader.parse_args([]))
+    # --bronze-dir sets the bronze dir; silver follows it
+    b, s = loader.resolve_paths(
+        loader.parse_args(["--bronze-dir", str(tmp_path / "data")]))
     assert b == tmp_path / "data"
     assert s == tmp_path / "data" / loader.SILVER_DB_NAME
 
-    # flag beats env var (for both paths)
+    # $MANUAL_SILVER_DB overrides only the silver path
     monkeypatch.setenv(loader.ENV_SILVER_DB, str(tmp_path / "env.db"))
+    b, s = loader.resolve_paths(
+        loader.parse_args(["--bronze-dir", str(tmp_path / "data")]))
+    assert b == tmp_path / "data"
+    assert s == tmp_path / "env.db"
+
+    # --silver-db beats $MANUAL_SILVER_DB
     b, s = loader.resolve_paths(loader.parse_args(
         ["--bronze-dir", str(tmp_path / "flag"),
          "--silver-db", str(tmp_path / "flag.db")]))

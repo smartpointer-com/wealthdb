@@ -426,76 +426,67 @@ class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
                 self.assertEqual(hand, bash, msg=name)
 
 
-def _build_parser(has_documents=True):
+def _build_parser():
+    # The bounded download group, through the public entry point.
     p = argparse.ArgumentParser()
-    cli.add_lookback_args(p, has_documents=has_documents)
+    cli.add_standard_args(p, verb="download")
     return p
 
 
 class LookbackTest(unittest.TestCase):
+    """The window contract: one --lookback flag naming a start, taking
+    either a preset or a date, with the window always running to today."""
+
     def test_default_with_no_flags(self):
-        from datetime import date, timedelta
+        from datetime import timedelta
         ns = _build_parser().parse_args([])
-        since, until, ds, du = cli.resolve_lookback(ns)
-        # Defaults: until=today, since=today-90d, docs mirror.
-        self.assertEqual(until - since, timedelta(days=cli.DEFAULT_LOOKBACK_DAYS))
-        self.assertEqual(ds, since)
-        self.assertEqual(du, until)
+        since, until = cli.resolve_lookback(ns)
+        self.assertEqual(until, cli._today_utc())
+        self.assertEqual(until - since,
+                         timedelta(days=cli.DEFAULT_LOOKBACK_DAYS))
 
-    def test_explicit_since_wins_over_lookback(self):
-        from datetime import date
-        ns = _build_parser().parse_args(
-            ["--since", "2020-01-01", "--lookback", "1y", "--until", "2020-12-31"])
-        since, until, ds, du = cli.resolve_lookback(ns)
-        self.assertEqual(since, date(2020, 1, 1))
-        self.assertEqual(until, date(2020, 12, 31))
-
-    def test_lookback_shortcuts(self):
-        from datetime import date, timedelta
-        for preset, days in [("3m", 90), ("6m", 180), ("1y", 365),
-                              ("2y", 730), ("5y", 1825)]:
+    def test_lookback_presets(self):
+        from datetime import timedelta
+        for preset, days in [("1w", 7), ("4w", 28), ("3m", 90), ("6m", 180),
+                             ("1y", 365), ("2y", 730), ("5y", 1825)]:
             ns = _build_parser().parse_args(["--lookback", preset])
-            since, until, _, _ = cli.resolve_lookback(ns)
+            since, until = cli.resolve_lookback(ns)
             self.assertEqual(until - since, timedelta(days=days), preset)
 
     def test_lookback_all_is_30_years(self):
         from datetime import timedelta
         ns = _build_parser().parse_args(["--lookback", "all"])
-        since, until, ds, du = cli.resolve_lookback(ns)
+        since, until = cli.resolve_lookback(ns)
         self.assertEqual(until - since, timedelta(days=365 * 30))
-        self.assertEqual(du - ds, timedelta(days=365 * 30))
 
-    def test_documents_since_inherits_from_since(self):
-        ns = _build_parser().parse_args(["--since", "2020-01-01"])
-        _, _, ds, _ = cli.resolve_lookback(ns)
+    def test_lookback_accepts_an_iso_date(self):
         from datetime import date
-        self.assertEqual(ds, date(2020, 1, 1))
+        ns = _build_parser().parse_args(["--lookback", "2020-01-01"])
+        since, until = cli.resolve_lookback(ns)
+        self.assertEqual(since, date(2020, 1, 1))
+        self.assertEqual(until, cli._today_utc())
 
-    def test_documents_since_overrides(self):
-        from datetime import date
-        ns = _build_parser().parse_args(
-            ["--since", "2020-01-01", "--documents-since", "2018-01-01",
-             "--until", "2021-01-01"])
-        _, _, ds, _ = cli.resolve_lookback(ns)
-        self.assertEqual(ds, date(2018, 1, 1))
+    def test_until_is_always_today(self):
+        # There is no upper-bound flag: every window ends now, so a
+        # collector never has to reason about a stale right edge.
+        for argv in ([], ["--lookback", "all"], ["--lookback", "2020-01-01"]):
+            _, until = cli.resolve_lookback(_build_parser().parse_args(argv))
+            self.assertEqual(until, cli._today_utc(), argv)
 
-    def test_since_after_until_raises(self):
-        ns = _build_parser().parse_args(
-            ["--since", "2021-01-01", "--until", "2020-01-01"])
+    def test_rejects_a_value_that_is_neither_preset_nor_date(self):
+        # argparse turns an ArgumentTypeError into exit 2.
+        with self.assertRaises(SystemExit):
+            _build_parser().parse_args(["--lookback", "last-tuesday"])
+
+    def test_rejects_a_start_in_the_future(self):
+        ns = _build_parser().parse_args(["--lookback", "2999-01-01"])
         with self.assertRaises(SystemExit):
             cli.resolve_lookback(ns)
-
-    def test_has_documents_false(self):
-        ns = _build_parser(has_documents=False).parse_args(
-            ["--since", "2020-01-01", "--until", "2020-12-31"])
-        since, until, ds, du = cli.resolve_lookback(ns, has_documents=False)
-        self.assertIsNone(ds)
-        self.assertIsNone(du)
 
     def test_default_days_override(self):
         from datetime import timedelta
         ns = _build_parser().parse_args([])
-        since, until, _, _ = cli.resolve_lookback(ns, default_days=30)
+        since, until = cli.resolve_lookback(ns, default_days=30)
         self.assertEqual(until - since, timedelta(days=30))
 
 

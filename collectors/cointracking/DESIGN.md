@@ -243,9 +243,9 @@ positions_daily incremental upsert against whatever's already
 in `transactions`. Useful when iterating on the type-handler
 rules.
 
-`--force` re-loads snapshots already in `dump_runs`. Useful for
-re-validating after a load.py change without manually clearing
-the table.
+`--force` deletes the silver DB and rebuilds it from all bronze (the
+fleet-wide meaning). Useful for re-validating after a load.py change
+without manually clearing the silver.
 
 ## Prune — reclaiming bronze disk
 
@@ -352,8 +352,8 @@ the same engine):
 
 | Trigger | Mode | Behaviour |
 |---|---|---|
-| `load --fetch-prices` | missing | Fill (held, unpriced) gaps + always re-fetch the latest priced day per coin |
-| `fetch-prices --missing` | missing | Same as above; for use after a `load` without `--fetch-prices` |
+| `load` (default) | missing | Fill (held, unpriced) gaps + always re-fetch the latest priced day per coin |
+| `fetch-prices --missing` | missing | Same as above; for use after a `load --no-fetch-prices` |
 | `fetch-prices` (no flag) | full | Drop every coin_prices row sourced from Binance, re-fetch the full held range. Corruption recovery. |
 
 The "always re-fetch the latest priced day" rule exists because

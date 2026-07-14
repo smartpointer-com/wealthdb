@@ -218,7 +218,7 @@ recorded so they are not re-litigated:
   response (matched on `variables.dealId`) — which carries the
   `primaryTransaction` + `distributedTransactions` + `transfers` cash-flow
   ledger plus `security`.
-- **Documents (optional, `--documents`)** — fetches each offering's document
+- **Documents (default; `--no-documents` opts out)** — fetches each offering's document
   PDF blobs (capital-account statements, K-1s, …) via
   `node.documents[].downloadUrl` through the authenticated request API into
   `documents/<deal-slug>/<doc-slug>.pdf`; load.py parses them (§5). Fetches are
@@ -269,7 +269,7 @@ Layout (`collectorkit.bronze`; deal-slug = `sha256(deal.id)[:16]` so no
 company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/` with
 `investments.json` (`{stage: getBuyerInvestments body}`),
 `offerings/<deal-slug>/detail.json` (`getMyInvestmentDetails`),
-`documents.json` (metadata, with `--documents`), and a `run.json` manifest
+`documents.json` (metadata, present unless `--no-documents`), and a `run.json` manifest
 (slugs + counts only — no names/ids/amounts). `--dry-run` captures the list
 across all stages, logs what it would fetch, and writes nothing
 (CLAUDE.md-sanctioned read-only smoke test).
@@ -290,7 +290,7 @@ statusless legacy manifest (written only at the end pre-change) is treated as
 complete. There are **no** bronze-resident debug artefacts to prune —
 `download` writes none, and the uniform `--debug` gate (default off) exists
 only to keep it that way; all diagnostics live externally under
-`login --debug-dir` and the `explore` verb's `/debug/<UTC-ts>/`, never in a
+`login --screenshot-dir` and the `explore` verb's `/debug/<UTC-ts>/`, never in a
 `<UTC-ts>/` bronze run dir.
 
 #### Why no `/equity/<uuid>/` capture (investigated, then removed)
@@ -344,12 +344,12 @@ lives in `positions`; the ledgers key by stable source id.
 | `offerings` | deal_external_id (immutable, upserted) | Identity + entry terms, fixed at purchase: `kind` (`spv` ← `ASSET_COMPANY` / `private_fund` ← `ASSET_MULTI_COMPANY_FUND`), `asset_class`, `company_*`, `fund_*`, `parent_deal_name`, `ticker_symbol`, `flavor`, `date_start`, `deal_share_price`, **`basis`** (`investmentSize`), **`purchase_price`** (`pricePostSplit`), **`shares_original`** (`sharesPostSplit`), `currency`, `last_seen_at`, `payload`. Company/fund names are PII. |
 | `positions` | (deal_external_id, event_seq) | **EVENT-SOURCED valuation history** — one row per capital *event* (changes only, not a per-date portfolio snapshot): `event_seq 0` = the original investment, then each disposition (tender) in date order, then a terminal `exit` event when `EXITED`. Per row: `as_of_date`, `event_type`, `status`, `is_open`, `shares_held`, `cost_basis_remaining`, `price_per_share`, `market_value` (= `shares_held × price_per_share`), `distributions_cumulative`, `total_value`. **Closed-deal prices only** (entry + tender prices), so the mark steps on real transactions; for **funds**, each parsed capital-account statement is injected as a `statement` revaluation event (NAV); un-tendered SPVs carry cost. **Reconstruct holdings as of any date D**: each position's latest event with `as_of_date ≤ D` (`MAX(event_seq)`), keep `is_open=1` (drops exited). Full query inline in `migrations/0001_initial.sql`. |
 | `cash_flows` | cash_flow_external_id | One row per purchase / distribution (CLOSED transactions): `deal_external_id`, `flow_date`, `kind` (`purchase` / `distribution`), `method` (e.g. `ACH`), `amount`, `execution_fee` (informative), `currency`, `description`, `payload`. From `primaryTransaction` + `primaryTransaction.distributedTransactions`. |
-| `tax_documents` | document_external_id | Per-offering document metadata + archive: `document_type`, `download_url`, and once `download --documents` fetches the blob, `local_path` + `content_hash` + `retrieved_at`. |
+| `tax_documents` | document_external_id | Per-offering document metadata + archive: `document_type`, `download_url`, and once `download` fetches the blob (by default; `--no-documents` skips it), `local_path` + `content_hash` + `retrieved_at`. |
 | `capital_account_statements` | document_external_id | Parsed quarterly partner's Statement of Capital Account: `period_end`, `beginning_balance`, `contributions`, `withdrawals`, `transfers`, `profit_loss`, `carried_interest`, **`ending_nav`** (Net Ending Capital Account Balance = the fund's fair-value NAV). Funds only in practice (SPVs issue no capital-account statements). |
 | `k1_documents` | document_external_id | Parsed Schedule K-1 (Form 1065): `tax_year`, `is_final`, and Item L tax-basis capital account (`beginning_capital`, `current_year_income`, `withdrawals_distributions`, **`ending_capital`**). Part III box amounts are not extracted (form-grid; see statements.py). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. |
 
-**Document parsing** (`statements.py`, via `pdftotext`): `download --documents`
+**Document parsing** (`statements.py`, via `pdftotext`): `download` (default)
 fetches each offering's document PDFs (`node.documents[].downloadUrl`) into
 `documents/<deal-slug>/<doc-slug>.pdf`; `load` parses them. **Capital-account
 statements give the multi-company funds the fair-value NAV the holdings API
@@ -495,8 +495,8 @@ the funding account's transactions sum to 0.
 
 ## 7. Future work
 
-The collector ingests offerings + positions + cash flows (§2, §5) and, with
-`download --documents`, the tax-document PDFs (§4, §5); the gold adapter
+The collector ingests offerings + positions + cash flows (§2, §5) and, by
+default, the tax-document PDFs (§4, §5); the gold adapter
 (§6) is implemented and registered. What remains:
 
 - **Enabling the source in a gold run.** Build, test, gold-adapter

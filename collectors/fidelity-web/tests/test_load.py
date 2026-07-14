@@ -197,7 +197,7 @@ def test_portfolios_classified(migrated, tmp_path):
 def test_positions_merge_summary_and_dividend(migrated, tmp_path):
     _write_dump(tmp_path, "20260101T120000Z")
     load.load_dump(migrated, tmp_path / "20260101T120000Z", 1)
-    # The trust row has both summary and dividend views; merge
+    # The Authorized row has both summary and dividend views; merge
     # must populate ex_date + amount_per_share from dividend.
     row = migrated.execute(
         "SELECT instrument_key, cost_basis_total, ex_date, "
@@ -342,23 +342,23 @@ def test_read_signature_sidecar_first_real_line(tmp_path):
     # First non-empty, non-comment line wins; the registration (PII)
     # lives in the data dir, never in argv or a committed script.
     (tmp_path / "signature.txt").write_text(
-        "# guard substring\n\nPLACEHOLDER HOLDER\nIGNORED SECOND LINE\n"
+        "# guard substring\n\nPLACEHOLDER REGISTRATION\nIGNORED SECOND LINE\n"
     )
-    assert load._read_signature_sidecar(tmp_path) == "PLACEHOLDER HOLDER"
+    assert load._read_signature_sidecar(tmp_path) == "PLACEHOLDER REGISTRATION"
 
 
 def test_read_signature_sidecar_absent_returns_none(tmp_path):
     assert load._read_signature_sidecar(tmp_path) is None
 
 
-def test_trust_statements_default_dir_missing_is_noop(migrated, tmp_path):
+def test_supplied_statements_default_dir_missing_is_noop(migrated, tmp_path):
     # The bronze-resident default (<bronze>/supplied-statements) simply
-    # not existing must be a clean no-op — deployments without trust
-    # accounts never create it.
+    # not existing must be a clean no-op — deployments with no
+    # out-of-band statements never create it.
     missing = tmp_path / "supplied-statements"
     # schema_version 4 so the historical table exists; the guard is
     # the directory check, not the schema.
-    load._load_trust_statements_oneshot(migrated, missing, 4)
+    load._load_supplied_statements_oneshot(migrated, missing, 4)
     n = migrated.execute(
         "SELECT COUNT(*) FROM historical_position_snapshots"
     ).fetchone()[0]
@@ -776,13 +776,13 @@ def test_coordinator_sha_for_memoizes(tmp_path, monkeypatch):
     assert len(calls) == 1  # hashed once, memoized by path
 
 
-def test_trust_parser_version_depends_on_signature_without_leaking_it():
-    v_none = load._trust_parser_version(None)
-    v_a = load._trust_parser_version("PLACEHOLDER HOLDER")
-    v_b = load._trust_parser_version("OTHER TRUST")
-    assert v_a == load._trust_parser_version("PLACEHOLDER HOLDER")  # stable
+def test_supplied_parser_version_depends_on_signature_without_leaking_it():
+    v_none = load._supplied_parser_version(None)
+    v_a = load._supplied_parser_version("PLACEHOLDER REGISTRATION")
+    v_b = load._supplied_parser_version("OTHER REGISTRATION")
+    assert v_a == load._supplied_parser_version("PLACEHOLDER REGISTRATION")  # stable
     assert len({v_none, v_a, v_b}) == 3                            # distinct
-    assert "PLACEHOLDER HOLDER" not in v_a                          # no PII
+    assert "PLACEHOLDER REGISTRATION" not in v_a                   # no PII
 
 
 def test_parser_logic_fingerprint_in_cache_namespaces():
@@ -790,19 +790,21 @@ def test_parser_logic_fingerprint_in_cache_namespaces():
     (srcfp.parser_fingerprint over the parser's import closure plus the
     pdfplumber / pdfminer.six versions), so a parser edit, an imported-helper
     edit, or a library upgrade invalidates the cache. The namespaces are clean
-    filename components, and the statement vs trust parsers get distinct
-    fingerprints. What moves the fingerprint is covered by test_srcfp."""
+    filename components, and the 529-statement vs supplied-statement parsers
+    get distinct fingerprints. What moves the fingerprint is covered by
+    test_srcfp."""
     ok = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
     stmt = load._STATEMENT_PARSER_VERSION
-    trust = load._TRUST_PARSER_FINGERPRINT
+    supplied = load._SUPPLIED_PARSER_FINGERPRINT
     assert stmt.startswith("stmt529.v") and set(stmt) <= ok
-    assert trust.startswith("trust.v") and set(trust) <= ok
+    assert supplied.startswith("supplied.v") and set(supplied) <= ok
     assert re.search(r"\.[0-9a-f]{32}$", stmt), "statement ns ends in a hex fingerprint"
-    assert re.search(r"\.[0-9a-f]{32}$", trust), "trust ns ends in a hex fingerprint"
+    assert re.search(r"\.[0-9a-f]{32}$", supplied), "supplied ns ends in a hex fingerprint"
     # distinct parser modules -> distinct fingerprints
-    assert stmt.rsplit(".", 1)[-1] != trust.rsplit(".", 1)[-1]
-    # the trust key folds the signature hash on top of the trust namespace
-    assert load._trust_parser_version("PLACEHOLDER HOLDER").startswith(trust + ".")
+    assert stmt.rsplit(".", 1)[-1] != supplied.rsplit(".", 1)[-1]
+    # the supplied key folds the signature hash on top of its namespace
+    assert load._supplied_parser_version(
+        "PLACEHOLDER REGISTRATION").startswith(supplied + ".")
 
 
 def test_changed_parser_version_misses_cache(tmp_path):

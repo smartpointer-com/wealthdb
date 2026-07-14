@@ -53,6 +53,22 @@ def load_state(path: Path) -> dict | None:
         return None
 
 
+def resolve_state_path(state_path: Path, default: Path, legacy: Path) -> Path:
+    """Pick the session-state path to READ from, honouring a renamed default.
+
+    When ``state_path`` is the ``default`` and that file is absent but a
+    ``legacy``-named sibling exists, returns ``legacy`` — so changing a
+    collector's default state filename (e.g. ``<source>_state.json`` →
+    ``<source>-state.json``) keeps finding a session written under the old
+    name. Otherwise returns ``state_path`` unchanged, so an explicit
+    ``--state-path`` is never redirected. Writes always use ``state_path``
+    (the new default), so the next re-mint migrates the session to it.
+    """
+    if state_path == default and not default.exists() and legacy.exists():
+        return legacy
+    return state_path
+
+
 def secure_file(path: Path, mode: int = STATE_FILE_MODE) -> bool:
     """Best-effort chmod for files written by external libraries
     (Playwright `storage_state`, schwab-py's token file). Returns True

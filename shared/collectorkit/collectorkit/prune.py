@@ -25,14 +25,31 @@ bronze root:
   holds; after pruning one, the next ``load --force`` rebuild reflects
   the removal.
 
+A third category lives OUTSIDE the bronze tree: the **host-side debug
+cache** (``--debug-dir``) — the dir a collector's ``--screenshot-dir`` /
+``--trace`` writes to, mounted at ``/debug`` for the containerised
+collectors and defaulting to ``~/.cache/<name>-debug`` on the host.
+Nothing else reclaims it, so it grows for the life of the checkout;
+``prune``'s job is already "reclaim this collector's disk", so entries
+there age out under the same ``--min-age-hours`` guard. Nothing in it is
+a ``load`` input by construction — it is not part of bronze — so an entry
+is removed as soon as it has been quiet for the guard window, with no
+completeness question to answer. The flag is optional: without it, or
+when the dir does not exist (debug output is opt-in, so a routine run
+writes none), the step is a no-op.
+
 The safety envelope is non-negotiable and identical for every collector:
 
-* **A ``load`` input is never deleted.** The only paths ever removed are
-  ``<run>/<debug-subdir>`` entries inside a *complete* dump, and whole
-  *non-complete* run dirs. A complete dump's data (positions/activity
-  CSVs, document PDFs, JSON payloads, the manifest) is out of scope by
-  construction. Each collector's ``debug_subdirs`` must list only paths
-  its ``load.py`` never reads.
+* **A ``load`` input is never deleted.** Inside bronze the only paths ever
+  removed are ``<run>/<debug-subdir>`` entries inside a *complete* dump,
+  and whole *non-complete* run dirs. A complete dump's data
+  (positions/activity CSVs, document PDFs, JSON payloads, the manifest) is
+  out of scope by construction. Each collector's ``debug_subdirs`` must
+  list only paths its ``load.py`` never reads. The debug cache holds no
+  ``load`` input at all, and a ``--debug-dir`` that overlaps the bronze
+  tree is refused outright — its entries are reclaimed with no
+  completeness check, which is correct for a cache and catastrophic for a
+  run dir.
 
 * **An unreadable or corrupt manifest is UNKNOWN → never deleted.** A
   manifest that could not be *read* (permission / I/O error) or *parsed*
@@ -68,16 +85,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from collectorkit import bronze
+from collectorkit import bronze, cli
 
 # Classification states returned by an is_complete predicate and by
 # classify().
+log = logging.getLogger("collectorkit.prune")
+
 COMPLETE = "complete"          # keep load inputs; prune only debug artefacts
 NON_COMPLETE = "non-complete"  # whole-dir deletion candidate (once quiescent)
 UNKNOWN = "unknown"            # manifest unreadable/corrupt — never a candidate
@@ -398,6 +418,10 @@ def plan_prune(bronze_dir: Path, config: PruneConfig, min_age_s: float,
                           "creates one)"})
             continue
         state, reason = classify(run_dir, config)
+        # The plan itself only prints what is deleted or explicitly skipped;
+        # a COMPLETE dump is kept without a word. -v traces every dir the
+        # walk examined and why, which is otherwise only readable in code.
+        log.debug("examined %s -> %s (%s)", run_dir.name, state, reason)
         if state == COMPLETE:
             for name in config.debug_subdirs:
                 entry = run_dir / name
@@ -539,6 +563,115 @@ def _remove(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Host-side debug cache (outside the bronze tree)
+# ---------------------------------------------------------------------------
+
+def plan_debug_reclaim(debug_dir: Path | None, min_age_s: float,
+                       now: float | None = None):
+    """Build the deletion plan for the host-side debug cache.
+
+    Returns ``(targets, skipped)`` in :func:`plan_prune`'s shape. Every entry
+    directly under ``debug_dir`` is a candidate — a file (a screenshot, a
+    trace zip) or a dir (a trace bundle, one run's captures) — and becomes a
+    target once it has been quiet for ``min_age_s``. Quiescence keys on the
+    newest mtime anywhere under the entry, the same signal the bronze
+    in-flight guard uses: a run writing its captures right now keeps that
+    fresh, so its output is skipped instead of deleted out from under it.
+
+    No completeness question arises (the cache holds no ``load`` input), and
+    the walk is one level deep: an entry is reclaimed whole, never picked
+    apart. ``debug_dir`` of ``None`` (no ``--debug-dir``) or one that does
+    not exist yields nothing — debug output is opt-in, so most runs leave no
+    cache at all. Symlinked entries are neither followed nor deleted, as
+    everywhere else in this engine.
+    """
+    if debug_dir is None or not debug_dir.is_dir():
+        return [], []
+    now = time.time() if now is None else now
+    targets = []
+    skipped = []
+    for entry in sorted(debug_dir.iterdir()):
+        if entry.is_symlink():
+            skipped.append({
+                "path": entry, "age_s": None,
+                "reason": "symlinked debug entry (foreign; never followed)"})
+            continue
+        files, size, newest = entry_stats(entry)
+        age_s = now - newest
+        if age_s < min_age_s:
+            skipped.append({"path": entry, "age_s": age_s,
+                            "reason": "debug cache"})
+            continue
+        targets.append({"path": entry, "kind": "debug cache",
+                        "files": files, "bytes": size})
+    return targets, skipped
+
+
+def validate_debug_target(path: Path, debug_dir: Path) -> None:
+    """Refuse anything but a non-symlink entry DIRECTLY under ``debug_dir``.
+    The bronze-shaped :func:`validate_target` cannot vet a path outside the
+    bronze tree, so the debug reclaim gets its own belt-and-braces gate
+    against a planner bug before an irreversible delete."""
+    if path.is_symlink():
+        raise SystemExit(f"refusing to delete symlink: {path}")
+    if path.parent != debug_dir:
+        raise SystemExit(f"refusing to delete unexpected path: {path}")
+
+
+def _check_debug_dir_disjoint(bronze_dir: Path, debug_dir: Path | None) -> None:
+    """Refuse a ``--debug-dir`` that overlaps the bronze tree, in either
+    direction. The debug reclaim deletes every aged-out entry it finds with
+    no completeness question asked — correct for a cache, catastrophic if
+    pointed at bronze, where the entries are run dirs holding ``load``
+    inputs. Nothing legitimate lands debug output inside bronze (the
+    external diagnostics this reclaims write outside it by construction), so
+    an overlap is a mistyped flag, and the engine's never-delete-a-load-input
+    invariant is worth more than honouring it."""
+    if debug_dir is None:
+        return
+    d = debug_dir.resolve()
+    b = bronze_dir.resolve()
+    if d == b or b in d.parents or d in b.parents:
+        raise SystemExit(
+            f"--debug-dir must not overlap --bronze-dir: {debug_dir} vs "
+            f"{bronze_dir}. The debug cache is reclaimed without a "
+            f"completeness check, so it must be a separate tree.")
+
+
+def _reclaim_debug_dir(debug_dir: Path | None, min_age_s: float, *,
+                       dry_run: bool, verb: str) -> tuple[int, int, int]:
+    """Print — and unless ``dry_run``, perform — the debug-cache reclaim, in
+    the same line format as the bronze reclaim. Returns
+    ``(files, bytes, paths)`` for the caller's totals.
+
+    Paths print absolute: the cache is a root of its own, so a name relative
+    to it would read as a bronze path in the shared output. A whole-dir
+    deletion is not re-checked immediately before the ``rmtree`` the way a
+    non-complete bronze dump is — that recheck defends ``load`` inputs, and
+    the cache holds none.
+    """
+    targets, skipped = plan_debug_reclaim(debug_dir, min_age_s)
+    total_files = 0
+    total_bytes = 0
+    for t in targets:
+        print(f"{verb}  {t['path']}{'/' if t['path'].is_dir() else ''}"
+              f"  [{t['kind']}]"
+              f"  ({t['files']} files, {human_size(t['bytes'])})")
+        total_files += t["files"]
+        total_bytes += t["bytes"]
+        if not dry_run:
+            validate_debug_target(t["path"], debug_dir)
+            _remove(t["path"])
+    for s in skipped:
+        if s["age_s"] is None:
+            print(f"skipping  {s['path']}  [{s['reason']}]")
+        else:
+            print(f"skipping  {s['path']}  [{s['reason']}; only "
+                  f"{s['age_s'] / 60:.0f} min old — possibly a run in flight]")
+    return total_files, total_bytes, len(targets)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -547,9 +680,20 @@ def build_parser(description: str, prog: str | None = None) -> argparse.Argument
         prog=prog, description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    cli.add_standard_args(p, verb="prune")
     p.add_argument(
         "--bronze-dir", type=Path, default=Path("/data"),
         help="Bronze tree root. Default: /data.",
+    )
+    p.add_argument(
+        "--debug-dir", type=Path, default=None,
+        help=("Also reclaim the host-side debug/trace cache rooted here — "
+              "the screenshots, HTML captures and Playwright trace bundles "
+              "that --screenshot-dir/--trace write OUTSIDE the bronze tree "
+              "(the /debug mount; ~/.cache/<collector>-debug by default). "
+              "Entries older than --min-age-hours are deleted; none of them "
+              "is a `load` input. Omitted, or pointed at a dir that does not "
+              "exist: nothing to reclaim."),
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -557,21 +701,23 @@ def build_parser(description: str, prog: str | None = None) -> argparse.Argument
     )
     p.add_argument(
         "--min-age-hours", type=float, default=1.0,
-        help=("Leave non-complete dumps written within this window alone "
-              "— the guard keys on the newest mtime in the dir, so a long "
-              "download in flight is protected while an abandoned one ages "
-              "out. Default: 1."),
+        help=("Leave non-complete dumps — and --debug-dir entries — touched "
+              "within this window alone. The guard keys on the newest mtime "
+              "in the dir, so a long download in flight is protected while "
+              "an abandoned one ages out. Default: 1."),
     )
     return p
 
 
 def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
-        min_age_hours: float) -> int:
-    """Execute (or preview) the prune against ``bronze_dir``. Returns an
+        min_age_hours: float, debug_dir: Path | None = None) -> int:
+    """Execute (or preview) the prune against ``bronze_dir``, then against
+    the host-side debug cache at ``debug_dir`` when one is named. Returns an
     exit code. Prints the plan/outcome in the format shared by every
     collector's ``prune``."""
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
+    _check_debug_dir_disjoint(bronze_dir, debug_dir)
 
     min_age_s = min_age_hours * 3600.0
     targets, skipped = plan_prune(bronze_dir, config, min_age_s)
@@ -607,12 +753,17 @@ def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
                   f"  [{s['reason']}; only {s['age_s'] / 60:.0f} min old "
                   f"— possibly a download in flight]")
 
-    if not targets:
+    debug_files, debug_bytes, debug_paths = _reclaim_debug_dir(
+        debug_dir, min_age_s, dry_run=dry_run, verb=verb)
+    total_files += debug_files
+    total_bytes += debug_bytes
+
+    if not targets and not debug_paths:
         print("nothing to prune")
         return 0
     print(f"{'would free' if dry_run else 'freed'}: "
           f"{human_size(total_bytes)} ({total_files} files, "
-          f"{len(targets)} paths)")
+          f"{len(targets) + debug_paths} paths)")
     if dumps_deleted and not dry_run:
         print(f"note: {dumps_deleted} non-complete {config.dump_label}(s) "
               "removed — silver rows sourced from them persist until the "
@@ -627,5 +778,6 @@ def main(config: PruneConfig, argv=None, *, description: str | None = None,
     collector-specific detail."""
     parser = build_parser(description or __doc__, prog=prog)
     args = parser.parse_args(argv)
+    cli.configure_logging(args.verbose)
     return run(config, args.bronze_dir, dry_run=args.dry_run,
-               min_age_hours=args.min_age_hours)
+               min_age_hours=args.min_age_hours, debug_dir=args.debug_dir)

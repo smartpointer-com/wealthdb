@@ -10,7 +10,7 @@ PDFs, not scraped on a schedule.
 | File | Role |
 |---|---|
 | `svb` | Host wrapper. `load` rebuilds the silver; `login`/`download` are no-ops (no live source). |
-| `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the trust statements, whose parser lives in the `fidelity-web` collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form. |
+| `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser lives in the `fidelity-web` collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form. |
 | `load.py` | Standalone host builder: parses the bronze PDFs into a `svb.db` that uses the **fidelity-web silver schema**, injects the closures, and synthesises account/portfolio masters. Stdlib `sqlite3` + `pdfplumber`; no `collectorkit`/docker. |
 | `migrations/*.sql` | Copies of the four fidelity-web silver migrations. `svb.db` is read by the Fidelity gold adapter (`kind: "fidelity"`), so these MUST stay schema-compatible with it — keep them in lockstep with `collectors/fidelity-web/migrations/`. |
 
@@ -79,7 +79,7 @@ rebuild.
 PDF parsing dominates a rebuild and is CPU-bound, so `load.py` fans it out
 across a process pool and memoises each parse in a persistent sidecar cache
 (`$XDG_CACHE_HOME/wealthdb/svb/parse-cache.json` by default; overridable with
-`--cache-dir`). The cache is keyed by `(statement sha256, parser-logic
+`--parse-cache-dir`). The cache is keyed by `(statement sha256, parser-logic
 fingerprint, signature)` — the fingerprint (`collectorkit.srcfp`) covers the
 parser's import closure and the pdfplumber / pdfminer.six versions, so editing
 `pdf_parsers_svbwa.py` (or anything it imports) or upgrading the extraction

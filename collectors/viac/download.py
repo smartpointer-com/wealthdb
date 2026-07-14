@@ -7,7 +7,7 @@ VIAC REST API, and writes a timestamped bronze dump to disk.
 
 Bronze layout (mirrors the sibling toolkits):
 
-    <dest>/<UTC-ts>/
+    <bronze-dir>/<UTC-ts>/
     ├── run.json                          manifest
     ├── customer.json                     customer profile
     ├── wealth/
@@ -25,9 +25,9 @@ Bronze layout (mirrors the sibling toolkits):
     └── (manual/ ... user-uploaded artefacts, ingested by load.py)
 
 PDF gating (in order):
-  - DATE gate: doc `timestamp` must fall in [documents-since,
-    documents-until]. The shared --since/--until/--lookback contract
-    defaults to a 90-day window; --lookback all lifts it to ~30y.
+  - DATE gate: doc `timestamp` must fall in the run's window. The
+    shared --lookback contract names its start and runs to today,
+    defaulting to the last 90 days; --lookback all lifts it to ~30y.
     Docs with a missing/unparseable timestamp are kept (better to
     over-fetch than silently lose data the source didn't time-stamp).
   - TYPE gate, applied to in-window docs:
@@ -37,9 +37,8 @@ PDF gating (in order):
       record carries `amountInChf: 0`; the old→new ISIN mapping is
       ONLY in the PDF.
     * Other TRANSACTION docs (TRADE_REPORT, FEE_CHARGE, INTEREST,
-      DIVIDEND, DIVIDEND_CANCELLATION) gated by
-      `--with-transaction-documents`. Default is off (skip the ~950
-      per-event PDFs; load only when needed).
+      DIVIDEND, DIVIDEND_CANCELLATION) downloaded by default (~950
+      per-event PDFs); `--no-transaction-documents` skips them.
 
 Transactions are written FULL to bronze (the REST envelope is one
 small JSON; keeping it complete preserves bronze faithfulness). The
@@ -48,7 +47,7 @@ loader can re-apply it without taking its own CLI args.
 
 `--dry-run` walks every URL (verifying the session and enumerating
 the export surfaces) and logs the plan, but persists NOTHING under
-`--dest`: no run dir, no manifest, no JSON, no PDFs. It leaves no
+`--bronze-dir`: no run dir, no manifest, no JSON, no PDFs. It leaves no
 bronze dump for load/prune to see — useful for checking that
 selectors/endpoints still match landmarks without touching bronze.
 
@@ -95,7 +94,7 @@ from viac_client import ViacClient
 log = logging.getLogger("viac.download")
 
 DEFAULT_STATE_PATH = Path("/secrets/viac-state.json")
-DEFAULT_DEST = Path("/data")
+DEFAULT_BRONZE_DIR = Path("/data")
 
 # Build-bound endpoint version suffixes. The SPA appends these
 # (e.g. `customer/current/7-5`); the digits are bundle-build-
@@ -111,7 +110,7 @@ ENDPOINT_SUFFIXES = {
 PORTFOLIO_FEES_SUFFIX = "70"  # /p3a/portfolio/<num>/fees-<this>
 
 # Document types that always get downloaded regardless of the
-# --with-transaction-documents flag (PDF content not derivable
+# --no-transaction-documents opt-out (PDF content not derivable
 # from the JSON API).
 ALWAYS_DOWNLOAD_TX_SUBTYPES = frozenset({"SECURITY_FUSION"})
 
@@ -274,16 +273,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=f"Session-state JSON from login.py. Default: {DEFAULT_STATE_PATH}.",
     )
     p.add_argument(
-        "--dest", default=DEFAULT_DEST, type=Path,
-        help=(f"Bronze destination root. Each run lands under "
-              f"<dest>/<UTC-ts>/. Default: {DEFAULT_DEST}."),
+        "--bronze-dir", default=DEFAULT_BRONZE_DIR, type=Path,
+        help=(f"Bronze tree root. Each run lands under "
+              f"<bronze-dir>/<UTC-ts>/. Default: {DEFAULT_BRONZE_DIR}."),
     )
     p.add_argument(
-        "--with-transaction-documents", action="store_true",
-        help=("Download per-event TRANSACTION PDFs (TRADE_REPORT, "
-              "FEE_CHARGE, INTEREST, DIVIDEND, "
-              "DIVIDEND_CANCELLATION). ~950 PDFs at present. "
-              "SECURITY_FUSION is downloaded regardless of this flag."),
+        "--no-transaction-documents", dest="with_transaction_documents",
+        action="store_false",
+        help=("Skip the per-event TRANSACTION PDFs (TRADE_REPORT, "
+              "FEE_CHARGE, INTEREST, DIVIDEND, DIVIDEND_CANCELLATION; "
+              "~950 PDFs). These are downloaded by DEFAULT; pass this to "
+              "skip them. This is the narrower per-event-receipt opt-out — "
+              "distinct from the always-on document centre. SECURITY_FUSION "
+              "is downloaded regardless of this flag."),
     )
     p.add_argument(
         "--documents-force", action="store_true",
@@ -304,13 +306,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # loader re-derive any window without a re-download). Both
     # windows are persisted into run.json's `windows` block so the
     # loader doesn't need its own CLI args.
-    cli.add_lookback_args(p)
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--dry-run", action="store_true",
         help=("Walk the REST API (verify the session, enumerate the "
-              "surfaces, log the plan) but persist NOTHING under --dest "
-              "— no run dir, manifest, JSON, or PDFs. Useful for landmark "
-              "checks without touching bronze."),
+              "surfaces, log the plan) but persist NOTHING under "
+              "--bronze-dir — no run dir, manifest, JSON, or PDFs. "
+              "Useful for landmark checks without touching bronze."),
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -319,10 +321,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "bronze-resident debug artefacts, so this currently gates "
               "nothing; use -v/--verbose for DEBUG logging to stderr. The "
               "flag exists so `--debug` means the same thing everywhere."),
-    )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
     )
     return p.parse_args(argv)
 
@@ -454,7 +452,7 @@ def walk(client: ViacClient, dest_root: Path, *,
     if dry_run:
         # Export-nothing dry-run (root CLAUDE.md §2): still walk every
         # endpoint (verify the session, enumerate the surfaces, log the
-        # plan) but persist nothing under --dest — no run dir, no
+        # plan) but persist nothing under --bronze-dir — no run dir, no
         # in-progress marker, no JSON. A dry-run therefore leaves NO
         # bronze dump for load/prune to pick up.
         log.info("dry-run: walking endpoints, nothing written to bronze")
@@ -577,12 +575,16 @@ def main(argv: list[str]) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Resolve the shared --since/--until/--lookback/--documents-*
-    # contract once; pass concrete dates into walk(). Documents are
+
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("viac", log)
+    # Resolve the shared --lookback contract once into the concrete
+    # [since..today] window; pass the dates into walk(). Documents are
     # filtered AT FETCH (avoid wasted PDF binaries); transactions
     # carry the window through bronze run.json so the silver loader
     # can re-apply it without taking its own CLI args.
-    since, until, docs_since, docs_until = cli.resolve_lookback(args)
+    since, until = cli.resolve_lookback(args)
 
     if not args.state_path.is_file():
         log.error(
@@ -606,13 +608,13 @@ def main(argv: list[str]) -> int:
                     "re-run login.py.", resp.status_code)
                 return 1
             manifest = walk(
-                client, args.dest,
+                client, args.bronze_dir,
                 with_tx_docs=args.with_transaction_documents,
                 dry_run=args.dry_run,
                 documents_force=args.documents_force,
                 since=since, until=until,
-                documents_since=docs_since,
-                documents_until=docs_until,
+                documents_since=since,
+                documents_until=until,
             )
     except httpx.HTTPError as e:
         log.error("HTTP error during walk: %s", e)
@@ -622,18 +624,18 @@ def main(argv: list[str]) -> int:
     # the in-progress marker, so a prune racing the finalisation never
     # reads a half-written manifest and the run's state is legible
     # throughout. status="complete" is the forward signal load and prune
-    # key on. A --dry-run persists NOTHING under --dest (root CLAUDE.md
+    # key on. A --dry-run persists NOTHING under --bronze-dir (root CLAUDE.md
     # §2 "export nothing"): the walk left no run dir, so there is no
     # in-progress marker to finalise — skip the terminal write entirely
     # rather than resurrect a "dry-run" shell that load/prune would then
     # have to reason about.
     if args.dry_run:
         log.info("dry-run complete: nothing written to bronze under %s",
-                 args.dest)
+                 args.bronze_dir)
         return 0
     manifest["status"] = "complete"
-    bronze_dir = args.dest / manifest["timestamp"]
-    bronze.atomic_write_json(bronze_dir / "run.json", manifest)
+    run_dir = args.bronze_dir / manifest["timestamp"]
+    bronze.atomic_write_json(run_dir / "run.json", manifest)
     log.info("done. documents: %s",
              docdedup.audit_summary(manifest["documents"]))
     return 0

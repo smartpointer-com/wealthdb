@@ -739,8 +739,8 @@ def load_documents_phase(
             continue
         pdf_path = run_dir / "documents" / f"{doc_id}.pdf"
         if not pdf_path.is_file():
-            # Indexed but not downloaded — either gated by
-            # `--with-transaction-documents` or a fetch failure.
+            # Indexed but not downloaded — either skipped via
+            # `--no-transaction-documents` or a fetch failure.
             # The next dump that does download it will catch up.
             missing += 1
             continue
@@ -934,11 +934,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "(default: %(default)s)."
         ),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 

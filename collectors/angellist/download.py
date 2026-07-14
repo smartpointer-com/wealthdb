@@ -64,7 +64,7 @@ VENTURE = "https://venture.angellist.com"
 GRAPHQL_RE = re.compile(r"/venture/graphql")
 
 DEFAULT_COOKIES = Path("/secrets/angellist-cookies.json")
-DEFAULT_DEST = Path("/data")
+DEFAULT_BRONZE_DIR = Path("/data")
 DEFAULT_DOCS = Path("/data/angellist-documents")
 
 # Ops we want per invest account, and the route that fires them.
@@ -198,8 +198,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--cookies", type=Path, default=DEFAULT_COOKIES,
                    help="BYO cookie JSON from extract_cookies.py. Default: %(default)s.")
-    p.add_argument("--dest", type=Path, default=DEFAULT_DEST,
-                   help="Bronze root; a UTC-timestamped run dir is created beneath it. "
+    p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
+                   help="A UTC-timestamped run dir is created here per invocation. "
                         "Default: %(default)s.")
     p.add_argument("--documents-dir", type=Path, default=DEFAULT_DOCS,
                    help="Where to save downloaded tax documents (K-1 CSV/PDF, "
@@ -219,14 +219,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "exists so the flag surface is uniform across "
                         "collectors and reserves the name for any future "
                         "bronze-resident diagnostic.")
-    p.add_argument("--check-session", action="store_true",
+    p.add_argument("--check", action="store_true",
                    help="Probe only whether the BYO session is still accepted by "
                         "the server (bootstrap identity, navigate nothing else, "
                         "write nothing); exit 0 if valid, non-zero if stale. "
                         "`login` uses this to decide whether a fresh sign-in is "
                         "needed — a cookie can be unexpired yet server-rejected.")
-    cli.add_full_download_lookback_arg(p)
-    cli.add_common_args(p)
+    p.add_argument(
+        # The fleet-wide document opt-out. Skips the tax-document fetches,
+        # which dominate the run, so one iteration on the captures needn't
+        # pay for them.
+        "--no-documents", dest="no_documents", action="store_true",
+        help="Skip tax-document capture. The captures and run.json are "
+             "still written.")
+    cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
 
@@ -234,7 +240,11 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    if not args.check_session:
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("angellist", log)
+
+    if not args.check:
         cli.warn_lookback_ignored(args.lookback, log,
                                   what="the full AngelList portfolio snapshot")
 
@@ -337,7 +347,7 @@ def main(argv: list[str]) -> int:
             log.info("identity: userSlug=%s, %d invest account(s)",
                      user_slug, len(accounts))
 
-            if args.check_session:
+            if args.check:
                 # The server accepted the cookie (identity established) — the
                 # session is live. Nothing to capture or write.
                 log.info("session valid — the saved cookie is still accepted; "
@@ -439,13 +449,16 @@ def main(argv: list[str]) -> int:
                   "`./angellist login`.")
         return 1
 
-    download_documents(cookies, captures, args.documents_dir, args.dry_run)
+    if args.no_documents:
+        log.info("--no-documents: skipping the tax-document fetches")
+    else:
+        download_documents(cookies, captures, args.documents_dir, args.dry_run)
 
     if args.dry_run:
         log.info("--dry-run: not writing bronze")
         return 0
 
-    run_dir = bronze.run_dir(args.dest)
+    run_dir = bronze.run_dir(args.bronze_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     # Drop an "in-progress" marker before serialising artefacts, to be
     # atomically overwritten with the terminal manifest below. All GraphQL

@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from itertools import repeat
 from pathlib import Path
 
-from collectorkit import srcfp
+from collectorkit import cli, srcfp
 
 import pdf_parsers_svbwa
 
@@ -408,7 +408,7 @@ def main(argv=None) -> int:
                    help="output svb silver SQLite path")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="directory of SVB statement PDFs + signature.txt")
-    p.add_argument("--signature", default=None,
+    p.add_argument("--statement-signature", default=None,
                    help="page-1 signature substring (else read signature.txt)")
     p.add_argument("--closure-date", default="2023-09-30",
                    help="synthetic $0 closure date for still-held accounts "
@@ -416,7 +416,7 @@ def main(argv=None) -> int:
                         "2023-09-30")
     p.add_argument("--migrations-dir", type=Path,
                    default=Path(__file__).parent / "migrations")
-    p.add_argument("--cache-dir", type=Path, default=_default_cache_dir(),
+    p.add_argument("--parse-cache-dir", type=Path, default=_default_cache_dir(),
                    help="directory for the persistent parse cache sidecar "
                         "(default $XDG_CACHE_HOME/wealthdb/svb). Keyed by "
                         "(statement sha256, parser-logic fingerprint, signature), "
@@ -424,18 +424,20 @@ def main(argv=None) -> int:
                         "auto-invalidates it; a warm run replays every parse from "
                         "it. It holds parsed statement data, so it lives outside "
                         "the repo like the silver DB.")
-    p.add_argument("-v", "--verbose", action="store_true")
+    # svb has no incremental path — build() always deletes and rebuilds —
+    # so --force parses but cannot change the outcome.
+    cli.add_standard_args(p, verb="load", always_rebuilds=True)
     args = p.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(message)s")
-    sig = read_signature(args.bronze_dir, args.signature)
+    sig = read_signature(args.bronze_dir, args.statement_signature)
     if sig is None:
-        log.warning("no signature configured (--signature or signature.txt); "
-                    "ingesting every PDF unverified")
+        log.warning("no signature configured (--statement-signature or "
+                    "signature.txt); ingesting every PDF unverified")
     build(args.silver_db, args.bronze_dir, signature=sig,
           closure_date=args.closure_date, migrations_dir=args.migrations_dir,
-          cache_dir=args.cache_dir)
+          cache_dir=args.parse_cache_dir)
     return 0
 
 

@@ -65,6 +65,7 @@ Runs **host-side** as a single sweep over the whole tree.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
@@ -72,7 +73,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from collectorkit import bronze, prune
+from collectorkit import bronze, cli, prune
+
+log = logging.getLogger("collectorkit.dedup")
 
 # Files below one filesystem allocation block (typically 4 KiB) can't free
 # a whole block, and hashing a swarm of tiny JSON/marker files costs more
@@ -180,7 +183,11 @@ def plan(bronze_dir: Path, *, min_age_s: float, min_size: int,
         for ref in refs:
             try:
                 sha = bronze.sha256_file(ref.path)[0]
-            except OSError:
+            except OSError as e:
+                # A file that cannot be read is dropped from the plan
+                # silently — it is not a duplicate anyone can act on. -v
+                # is the only way to see it happened.
+                log.debug("unreadable, not considered: %s (%s)", ref.path, e)
                 continue
             by_sha.setdefault(sha, []).append(ref)
         for sha, group in by_sha.items():
@@ -514,7 +521,12 @@ def _collector_subtrees(data_dir: Path, source: str | None):
                 and any(bronze.iter_run_dirs(p)))
 
     if source is not None:
-        cand = data_dir / source
+        # The collector's own ${PREFIX}_DATA_DIR override wins (the wrappers
+        # honour it first, so download may have written outside --data-dir);
+        # else <data_dir>/<source> (F5).
+        prefix = source.upper().replace("-", "_")
+        override = os.environ.get(f"{prefix}_DATA_DIR")
+        cand = Path(override) if override else data_dir / source
         return [cand] if _is_tree(cand) else []
     return [c for c in sorted(data_dir.iterdir()) if _is_tree(c)]
 
@@ -540,6 +552,9 @@ def main(argv=None) -> int:
     else:
         xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
         default_data = Path(xdg) / "wealthdb"
+    # `dedup` is not one of the STANDARD_VERBS, so it takes the common
+    # flags directly rather than through the standard group.
+    cli.add_common_args(p)
     p.add_argument("--data-dir", type=Path, default=default_data,
                    help="Parent dir holding per-collector bronze subtrees "
                         "(default: $WEALTHDB_DATA_ROOT, else "
@@ -561,6 +576,7 @@ def main(argv=None) -> int:
                    help="Ignore files smaller than this many bytes "
                         "(default: %(default)s).")
     args = p.parse_args(argv)
+    cli.configure_logging(args.verbose)
 
     if not args.data_dir.is_dir():
         raise SystemExit(f"--data-dir does not exist: {args.data_dir}")

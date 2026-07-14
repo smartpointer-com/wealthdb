@@ -302,7 +302,8 @@ legal name + fund name → slug on capture; never let them reach the repo.
 Mirrors the `cointracking` / `fidelity-web` pattern: launch a persistent
 browser context on `/secrets/carta-profile/`, navigate to Carta,
 short-circuit if a prior session is still valid, else fill credentials
-(`CARTA_EMAIL` / `CARTA_PASSWORD`), submit, read the 2FA code from stdin,
+(`CARTA_USERNAME`, or the legacy `CARTA_EMAIL` / `CARTA_PASSWORD`), submit,
+read the 2FA code from stdin,
 tick any "trust this device" box, and `context.close()` to flush the
 session back to the profile. `--check` probes the dashboard and exits 0/1
 with no 2FA push — safe for cron healthchecks.
@@ -329,9 +330,10 @@ convertible_notes,security_transactions,fair_market_value}.json`,
 `documents/<id>.pdf`, and a `run.json` manifest. Path slugs are
 `sha256(id)[:16]` (relevate's pattern) so raw portfolio/issuer ids — which
 embed private-company identifiers — never appear in a path; raw ids stay
-inside the JSON. The holdings snapshot is always pulled in full; activity
-and documents can be windowed via the shared `--since/--until` +
-`--documents-since/until` contract. `--dry-run` walks navigation without
+inside the JSON. Everything is pulled in full — holdings, activity and
+documents alike — so the shared `--lookback` flag is accepted for
+`wealthdb-refresh` uniformity but cannot narrow the walk: it is validated,
+warned about, and otherwise ignored. `--dry-run` walks navigation without
 firing any export.
 
 ### run.json status lifecycle + prune

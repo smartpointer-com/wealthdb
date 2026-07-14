@@ -29,7 +29,9 @@ from pathlib import Path
 
 import landmarks as sq  # local module: DOM landmarks + URL constants
 
-from collectorkit import session
+import subprocess
+
+from collectorkit import cli, envfile, session
 
 log = logging.getLogger("swissquote.login")
 
@@ -56,7 +58,17 @@ STATE_FILE_MODE = 0o600
 # dir (default ~/.secrets, overridable via SWISSQUOTE_SECRETS_DIR /
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
-DEFAULT_STATE_PATH = Path("/secrets/swissquote_state.json")
+DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
+# Legacy default (underscore) — read when the new-named file is absent so an
+# existing session isn't orphaned by the rename (F18); login writes the new name.
+LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
+
+# Default credentials env-file locations (the wrapper mounts ~/.secrets at
+# /secrets). --env-file wins; else the first existing candidate (F47).
+DEFAULT_ENV_FILE_CANDIDATES = (
+    Path("/secrets/swissquote.env"),
+    Path.home() / ".secrets" / "swissquote.env",
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -69,6 +81,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--username", default=None,
         help="Swissquote login username. Falls back to SWISSQUOTE_USERNAME env.",
+    )
+    p.add_argument(
+        "--env-file", default=None, type=Path,
+        help=("KEY=VALUE env file with SWISSQUOTE_USERNAME / "
+              "SWISSQUOTE_PASSWORD, sourced before resolving credentials. "
+              "Defaults to /secrets/swissquote.env, else ~/.secrets/swissquote.env."),
     )
     p.add_argument(
         "--check", action="store_true",
@@ -92,9 +110,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "the bundle is written there alongside screenshots. Never "
              "auto-writes to the secrets dir.",
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
-    )
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -291,15 +307,17 @@ def check_session(args: argparse.Namespace) -> int:
     """Return 0 if the saved session still authenticates, 1 otherwise."""
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-    if not args.state_path.is_file():
+    state_path = session.resolve_state_path(
+        args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH)
+    if not state_path.is_file():
         raise SystemExit(
-            f"No state file at {args.state_path}. Nothing to check; "
+            f"No state file at {state_path}. Nothing to check; "
             f"run login.py without --check to mint one."
         )
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     with sync_playwright() as p:
-        browser, context = _new_context(p, storage_state=args.state_path)
+        browser, context = _new_context(p, storage_state=state_path)
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:
@@ -604,6 +622,18 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Source the credentials env file before resolving SWISSQUOTE_USERNAME /
+    # _PASSWORD, so a plain env file works without a manual `source` and the
+    # login isn't forced to getpass-prompt (F47; matches viac). --env-file
+    # wins, else the first existing default candidate.
+    env_path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
+    if env_path is not None:
+        try:
+            if envfile.source_env_file(env_path, prefer_file=True):
+                log.info("env sourced from %s", env_path)
+        except (subprocess.CalledProcessError, ValueError) as e:
+            log.error("env file %s failed to source: %s", env_path, e)
+
     # --trace must be paired with --screenshot-dir. The trace bundle
     # lands inside that directory; there is no implicit fallback to
     # the state-file's directory (which would pollute the secrets

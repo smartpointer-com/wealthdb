@@ -48,7 +48,7 @@ from pathlib import Path
 
 import oauth_landmarks as lm
 
-from collectorkit import envfile, session
+from collectorkit import cli, envfile, session
 
 log = logging.getLogger("schwab-login")
 
@@ -90,6 +90,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "Default: /secrets/schwab-api-token.json.",
     )
     p.add_argument(
+        "--env-file", type=Path, default=None,
+        help="Extra KEY=VALUE credentials env file, sourced last so its "
+             "values win over the default schwab-api.env / schwab-web.env "
+             "(also honours the SCHWAB_API_ENV_FILE env var).",
+    )
+    p.add_argument(
         "--client-id", default=None,
         help="Schwab OAuth Client ID (falls back to SCHWAB_CLIENT_ID).",
     )
@@ -121,12 +127,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.set_defaults(cli_mfa=True)
     p.add_argument(
-        "--auth-timeout", type=float, default=600.0,
-        help="Seconds to wait for the consent redirect to the callback URL "
-             "(default 600 — gives the operator time to log in over VNC).",
+        "--mfa-timeout", type=float, default=600.0,
+        help="Seconds to wait for the human MFA + consent redirect to the "
+             "callback URL (default 600 — time to complete login over VNC).",
     )
     p.add_argument(
-        "--mfa-timeout", type=float, default=300.0,
+        "--mfa-page-timeout", type=float, default=300.0,
         help="With --cli-mfa: seconds to wait for the 2FA input to appear.",
     )
     p.add_argument(
@@ -135,8 +141,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "NEVER commit these — see CLAUDE.md §4.",
     )
     p.add_argument(
-        "--trace", action="store_true",
-        help="Capture a Playwright trace bundle. Requires --screenshot-dir.",
+        # BooleanOptionalAction yields --trace / --no-trace, so the trace the
+        # entrypoint injects on login can be turned off through the wrapper.
+        "--trace", action=argparse.BooleanOptionalAction, default=False,
+        help="Capture a Playwright trace bundle (requires --screenshot-dir); "
+             "--no-trace disables it (the entrypoint injects --trace on login).",
     )
     p.add_argument(
         "--explore", action="store_true",
@@ -153,9 +162,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--check", action="store_true",
         help="Inspect the existing token file's age. No browser, no network.",
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
-    )
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -163,15 +170,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # Env-file loading (mirrors schwab-web)
 # ============================================================
 
-def source_env_files() -> None:
+def source_env_files(explicit: Path | None = None) -> None:
     """Source the first existing path of each env-file set (schwab-api
     then schwab-web), so the OAuth app creds and the Schwab login creds
-    are both available. Absent files are fine."""
+    are both available. Absent files are fine. An explicit --env-file (or
+    the SCHWAB_API_ENV_FILE env var) is then sourced last and wins (F19)."""
     for candidates in _ENV_FILE_SETS:
         for path in candidates:
             if path.exists():
                 envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log)
                 break
+    # An explicit --env-file / ${SCHWAB_API}_ENV_FILE is sourced LAST so its
+    # credential values win over the defaults (F19).
+    lead = explicit or (Path(os.environ["SCHWAB_API_ENV_FILE"])
+                        if os.environ.get("SCHWAB_API_ENV_FILE") else None)
+    if lead is not None:
+        if not lead.exists():
+            raise SystemExit(f"--env-file does not exist: {lead}")
+        envfile.load_env_file(lead, _CRED_OVERRIDE_VARS, logger=log)
 
 
 # Credential resolution (value-with-env-fallback) is
@@ -615,7 +631,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
             sys.stderr.flush()
 
         received_url = _wait_for_callback(page, captured, args.callback_url,
-                                          args.auth_timeout,
+                                          args.mfa_timeout,
                                           args.screenshot_dir, args.cli_mfa,
                                           args.explore)
         maybe_capture_html(page, args.screenshot_dir, "03-postconsent")
@@ -623,7 +639,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
             stop_trace_if_active(context, args.trace, args.screenshot_dir,
                                  "login-timeout")
             log.error("Did not reach the callback URL within %ss. The grant "
-                      "was not completed.", args.auth_timeout)
+                      "was not completed.", args.mfa_timeout)
             return 6
 
         log.info("Captured callback redirect; exchanging for tokens.")
@@ -661,7 +677,7 @@ def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
     if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):
         log.warning("login submit button not found; complete login over VNC")
         return
-    code_loc = _wait_for_mfa_input(page, args.mfa_timeout, args.callback_url)
+    code_loc = _wait_for_mfa_input(page, args.mfa_page_timeout, args.callback_url)
     if code_loc is None:
         log.info("no 2FA prompt detected (trusted device or already past it)")
     else:
@@ -720,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §4).")
     if args.check:
         return cmd_check(args)
-    source_env_files()
+    source_env_files(args.env_file)
     if args.manual:
         return cmd_login_manual(args)
     return cmd_login_browser(args)

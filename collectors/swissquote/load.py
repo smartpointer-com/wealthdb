@@ -1081,9 +1081,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
                    help="Directory containing bronze dump subdirectories and "
                         "the manual/ subdirectory (default: %(default)s).")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="DEBUG-level logging.")
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 

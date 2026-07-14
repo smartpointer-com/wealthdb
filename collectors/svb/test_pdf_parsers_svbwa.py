@@ -2,7 +2,7 @@
 Unit tests for pdf_parsers_svbwa.py — text-level parsers only.
 
 The PDF I/O entry-point (``parse_svbwa_statement_pdf``) is exercised
-here through the same seam the trust-parser tests use: the
+here through the same seam the supplied-statement parser tests use: the
 ``_extract_pdf_text`` extractor is monkeypatched to return synthetic
 statement text, so no real PDF bytes are needed.
 

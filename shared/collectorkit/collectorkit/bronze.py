@@ -32,13 +32,13 @@ def parse_run_ts(name: str) -> int:
     return int(dt.timestamp())
 
 
-def run_dir(dest: Path, slug: str | None = None) -> Path:
-    """`<dest>/<slug>` (slug defaults to a fresh UTC timestamp)."""
-    return Path(dest) / (slug or ts_slug())
+def run_dir(bronze_dir: Path, slug: str | None = None) -> Path:
+    """`<bronze-dir>/<slug>` (slug defaults to a fresh UTC timestamp)."""
+    return Path(bronze_dir) / (slug or ts_slug())
 
 
 def ensure_writable_dir(path: Path) -> Path:
-    """Validate that `path` exists and is writable (used for --dest before
+    """Validate that `path` exists and is writable (used for --bronze-dir before
     a download begins, so a late write failure can't lose fetched data)."""
     path = Path(path)
     if not path.is_dir():
@@ -48,12 +48,12 @@ def ensure_writable_dir(path: Path) -> Path:
     return path
 
 
-def iter_run_dirs(dest: Path):
-    """Yield the timestamped bronze run dirs under `dest`, sorted."""
-    dest = Path(dest)
-    if not dest.is_dir():
+def iter_run_dirs(bronze_dir: Path):
+    """Yield the timestamped bronze run dirs under `bronze_dir`, sorted."""
+    bronze_dir = Path(bronze_dir)
+    if not bronze_dir.is_dir():
         return
-    for child in sorted(dest.iterdir()):
+    for child in sorted(bronze_dir.iterdir()):
         if child.is_dir() and RUN_DIR_RE.match(child.name):
             yield child
 

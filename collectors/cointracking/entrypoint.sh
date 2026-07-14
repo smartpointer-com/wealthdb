@@ -56,9 +56,9 @@ case "${1:-help}" in
         # overview), recomputes positions_daily via the aggregate-
         # then-window replay (incremental upsert from first deviation
         # day), populates portfolio_prices from overview.csv, and
-        # reconciles vs balance.csv per portfolio. With --fetch-prices,
-        # also pulls missing USDT-denominated prices from Binance at
-        # the end.
+        # reconciles vs balance.csv per portfolio. By default also
+        # pulls missing USDT-denominated prices from Binance at the
+        # end (--no-fetch-prices skips it).
         #
         # --scratch-dir /tmp writes the DuckDB silver to the container-
         # local overlay instead of straight onto the /data VirtioFS
@@ -132,12 +132,12 @@ Subcommands:
               portfolio_prices from overview.csv, reconcile final
               balances vs the balance.csv. Pass --replay-only to
               re-run the holdings replay without re-ingesting
-              bronze; --force to re-load already-processed
-              snapshots; --fetch-prices to also pull missing USDT-
-              denominated prices from Binance after ingest.
+              bronze; --force to delete the silver DB and rebuild
+              it from all bronze. Missing USDT-denominated prices are pulled
+              from Binance after ingest by default; --no-fetch-prices skips it.
   fetch-prices Fetch USDT-denominated prices for every held coin
               from Binance public spot. --missing fills gaps (same
-              as `load --fetch-prices`); no flag re-fetches the
+              as the default `load` price fill); no flag re-fetches the
               full held range (corruption recovery). Either mode
               always re-fetches the latest priced day so an intraday
               snapshot from a previous run gets upgraded to the

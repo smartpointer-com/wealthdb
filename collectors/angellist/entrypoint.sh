@@ -47,19 +47,34 @@ case "${1:-help}" in
         # Flags:
         #   --check  probe only; report whether the session is valid, never
         #            open Firefox (exit 1 if not).
-        #   --force  skip the check and always re-login.
+        #   --fresh  skip the check and always re-login (the `load --force`
+        #            spelling is reserved for the delete-and-rebuild loader).
         # Otherwise launch a genuine, un-instrumented stock Firefox under
         # Xvfb + VNC so the operator clears the login by hand; on a clean
         # close, lift the session from its plaintext cookies.sqlite.
         shift
-        FXPROFILE="${ANGELLIST_FXPROFILE:-/secrets/angellist-fxprofile}"
-        COOKIES="${ANGELLIST_COOKIES:-/secrets/angellist-cookies.json}"
+        # Fixed in-container paths under the /secrets mount. These were once
+        # ${ANGELLIST_FXPROFILE} / ${ANGELLIST_COOKIES} overridable, but those
+        # vars are read only here (never forwarded with -e), so a host-set
+        # value never reached the container — demoted to constants (F49). To
+        # relocate them, override the /secrets mount (ANGELLIST_SECRETS_DIR).
+        FXPROFILE="/secrets/angellist-fxprofile"
+        COOKIES="/secrets/angellist-cookies.json"
         login_mode=auto
         case "${1:-}" in
             --check) login_mode=check; shift ;;
-            --force) login_mode=force; shift ;;
+            --fresh) login_mode=fresh; shift ;;
+            -h|--help)
+                # A help request must never probe the server or open Firefox.
+                echo "angellist login — BYO-cookie auth path." >&2
+                echo "  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox." >&2
+                echo "  --fresh  skip the check and always re-login by hand over VNC." >&2
+                echo "  (no flag) probe; if stale, open Firefox under VNC for a by-hand login." >&2
+                exit 0 ;;
+            -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
+                exit 2 ;;
         esac
-        if [[ "$login_mode" != "force" ]]; then
+        if [[ "$login_mode" != "fresh" ]]; then
             # 1. Cheap client-side filter: lift the cookie only if a non-expired
             #    session cookie is present in the saved profile.
             if python3 /app/extract_cookies.py \
@@ -68,9 +83,9 @@ case "${1:-help}" in
                 #    rejected by AngelList (stale/revoked session). Confirm it
                 #    actually establishes identity (headless, no VNC) before
                 #    skipping the sign-in — otherwise `download` would fail.
-                if python3 /app/download.py --cookies "$COOKIES" --check-session; then
+                if python3 /app/download.py --cookies "$COOKIES" --check; then
                     echo "login: existing AngelList session still valid — cookie lifted to" >&2
-                    echo "login:   $COOKIES. No VNC login needed (pass --force to re-login)." >&2
+                    echo "login:   $COOKIES. No VNC login needed (pass --fresh to re-login)." >&2
                     exit 0
                 fi
                 echo "login: saved cookie is unexpired but the server rejected it (stale session)." >&2
@@ -168,7 +183,7 @@ Subcommands:
               no unattended login (the SPA is bot-walled). Optionally grab
               K-1 / financial docs while logged in (they save to the mounted
               documents dir). Flags: --check (probe only, never opens Firefox,
-              exit 1 if stale), --force (always re-login).
+              exit 1 if stale), --fresh (always re-login).
   download    Headless Camoufox + injected cookie: navigate the LP-portfolio
               routes and capture the venture GraphQL (positions / summary /
               commitments / funding-account cash ledger) the SPA signs

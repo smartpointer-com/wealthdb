@@ -55,9 +55,10 @@ HERE = Path(__file__).resolve().parent
 MIGRATIONS_DIR = HERE / "migrations"
 
 # Default data layout: $XDG_DATA_HOME/wealthdb/manual/{positions,valuations}.csv
-# with the silver DB (manual.db) alongside them. Both paths are overridable,
-# in precedence order: CLI flag > env var > default.
-ENV_BRONZE_DIR = "MANUAL_BRONZE_DIR"
+# with the silver DB (manual.db) alongside them. The bronze dir comes from
+# --bronze-dir (the wrapper resolves --data-dir / MANUAL_DATA_DIR /
+# WEALTHDB_DATA_ROOT and passes it through), else the default; the silver DB
+# is --silver-db > $MANUAL_SILVER_DB > <bronze-dir>/manual.db.
 ENV_SILVER_DB = "MANUAL_SILVER_DB"
 DEFAULT_BRONZE_DIR = cli.default_data_root() / "manual"
 SILVER_DB_NAME = "manual.db"
@@ -69,10 +70,12 @@ def _env_path(name: str) -> Path | None:
 
 
 def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
-    """Resolve (bronze_dir, silver_db) with precedence flag > env var >
-    default. The silver DB defaults to manual.db inside the *resolved* bronze
-    dir, so overriding only the bronze dir keeps the DB beside the CSVs."""
-    bronze = args.bronze_dir or _env_path(ENV_BRONZE_DIR) or DEFAULT_BRONZE_DIR
+    """Resolve (bronze_dir, silver_db). The bronze dir is --bronze-dir (the
+    wrapper resolves the data dir + MANUAL_DATA_DIR / WEALTHDB_DATA_ROOT and
+    passes it) else the default; the silver DB is flag > $MANUAL_SILVER_DB >
+    manual.db inside the *resolved* bronze dir, so overriding only the bronze
+    dir keeps the DB beside the CSVs."""
+    bronze = args.bronze_dir or DEFAULT_BRONZE_DIR
     silver_db = (args.silver_db or _env_path(ENV_SILVER_DB)
                  or Path(bronze) / SILVER_DB_NAME)
     return Path(bronze), Path(silver_db)
@@ -382,14 +385,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                     "manual SQLite silver.")
     p.add_argument("--bronze-dir", type=Path, default=None,
                    help=f"Directory holding positions.csv / valuations.csv. "
-                        f"Precedence: this flag > "
-                        f"${ENV_BRONZE_DIR} env var > {DEFAULT_BRONZE_DIR}.")
+                        f"Precedence: this flag (the wrapper passes it from "
+                        f"--data-dir / MANUAL_DATA_DIR / WEALTHDB_DATA_ROOT) > "
+                        f"{DEFAULT_BRONZE_DIR}.")
     p.add_argument("--silver-db", type=Path, default=None,
                    help=f"SQLite silver path. Precedence: this flag > "
                         f"${ENV_SILVER_DB} env var > "
                         f"<bronze-dir>/{SILVER_DB_NAME}.")
-    cli.add_force_arg(p)
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 

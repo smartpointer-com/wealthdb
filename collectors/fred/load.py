@@ -100,15 +100,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="Path to the silver SQLite DB (created if missing).")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Directory containing bronze run subdirectories.")
-    p.add_argument("--force", action="store_true",
-                   help="Reload all bronze runs, even ones already loaded.")
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     args = p.parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
 
+    # --force = delete the silver DB, then rebuild from all bronze (the
+    # fleet-wide meaning). After a reset the DB is empty, so the normal
+    # loaded-snapshots skip below naturally re-ingests every run.
+    if args.force:
+        silver.reset(args.silver_db)
     conn = silver.open_db(args.silver_db)
     version = silver.apply_migrations(conn, MIGRATIONS)
-    loaded = set() if args.force else silver.loaded_snapshots(conn)
+    loaded = silver.loaded_snapshots(conn)
 
     n_runs = n_rows = 0
     for run_dir in bronze.iter_run_dirs(args.bronze_dir):

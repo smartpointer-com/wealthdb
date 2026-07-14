@@ -20,7 +20,10 @@ through EUR — so USD-base deployments need no conversion.
 | [`prune.py`](prune.py) | Reclaim bronze disk: delete non-complete (crashed / in-flight) run dirs. Complete dumps are never touched. |
 
 There is **no `login`** — FRED authenticates with an API key, not a
-session.
+session. `login --check` still works as the credential probe: it resolves
+the key and asks FRED for a single observation, so a key that is present
+but rejected fails there rather than at the next `download`. It writes
+nothing.
 
 ## Currencies
 
@@ -51,13 +54,14 @@ KRW, `DEXINUS` INR, `DEXSFUS` ZAR — verify the quote direction) to
 ```sh
 ./fred download                       # last ~90 days (default)
 ./fred download --lookback all        # full history (1971→, per series)
-./fred download --since 2010-01-01    # explicit backfill start
+./fred download --lookback 2010-01-01 # explicit backfill start
 ./fred load
 ./fred prune --dry-run                # preview reclaimable bronze
 ```
 
-`download` accepts the shared `--since` / `--until` / `--lookback`
-window flags; FRED clamps to each series' own start date. The directory
+`download` accepts the shared `--lookback` window flag — a preset
+(`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date, running from
+there to today; FRED clamps to each series' own start date. The directory
 overrides (`--secrets-dir` / `--data-dir` / `--silver-db`) follow the
 [shared contract](../README.md#anatomy-of-a-collector).
 

@@ -57,9 +57,12 @@ def _stub_schwab(monkeypatch, *, open_orders_raises: bool = False) -> None:
 
 
 def _argv(token: Path, dest: Path, *extra: str) -> list[str]:
-    return ["--token-path", str(token), "--dest", str(dest),
+    # --no-instruments: the instrument lookup is default-on, but these tests
+    # cover the run-status lifecycle, not the marketdata fetch — skip it so
+    # they stay offline and their terminal-artefact assertions hold.
+    return ["--token-path", str(token), "--bronze-dir", str(dest),
             "--client-id", "synthetic-id", "--client-secret", "synthetic-secret",
-            *extra]
+            "--no-instruments", *extra]
 
 
 def _run_dirs(dest: Path) -> list[Path]:

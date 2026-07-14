@@ -349,3 +349,94 @@ def test_load_loads_statusless_legacy_dump(tmp_path, conn):
                   entities=False, documents=False)
     assert load.load_run(conn, d) is True
     assert _dump_runs_count(conn) == 1
+
+
+# ============================================================
+# Force-rebuild equivalence: `load --force` reproduces the incremental load
+# ============================================================
+
+# schema_meta is excluded from the row-level equivalence check: it is the
+# migration-version ledger, not silver data, and each row's `applied_at`
+# records the wall-clock second the migration ran (strftime('%s','now')). A
+# from-scratch rebuild re-applies the migrations later than the incremental
+# load did, so that column differs by construction — comparing it would make
+# the test flaky (pass only when both loads land in the same second). Every
+# `*_at` column in the DATA tables derives from bronze content / run slugs, so
+# those stay identical across a rebuild.
+_NON_DATA_TABLES = {"schema_meta"}
+
+
+def _dump_silver(db_path: Path) -> dict[str, list[tuple]]:
+    """Snapshot every silver DATA table for an order-independent equivalence
+    check: {table -> its rows as sorted plain tuples}. Introspects
+    sqlite_master for the table set (skipping sqlite internals and the
+    bookkeeping tables above), reads `SELECT *` from each, and sorts the rows
+    — the order bronze runs are ingested in must not affect the final state,
+    so the comparison is over row multisets, not insertion order. The sort key
+    stringifies each column and ranks NULLs first, giving a total order across
+    the mixed (text / int / real / NULL) column types without a None-vs-str
+    comparison error."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()]
+        return {
+            t: sorted(conn.execute(f'SELECT * FROM "{t}"').fetchall(),
+                      key=lambda row: [(v is None, str(v)) for v in row])
+            for t in names if t not in _NON_DATA_TABLES
+        }
+    finally:
+        conn.close()
+
+
+def _seed_holdings(run_dir: Path) -> Path:
+    """Enrich a reused make_dump run with a couple of synthetic share
+    certificates so the load populates the value-bearing tables (securities +
+    the cash_flows exercise ledger), not just entities / dump_runs — that
+    cross-run cash_flows overwrite path is the part most sensitive to a
+    rebuild diverging from an incremental load. Placeholder ids and round
+    figures only, no real holdings. Returns the run dir."""
+    (run_dir / "entities" / "corp_100" / "shares.json").write_text(
+        json.dumps({"rows": [
+            {"id": 1, "label": "CS-1", "issue_date": "01/15/2025",
+             "quantity": 1000, "cost": 500.0, "currency": "$"},
+            {"id": 2, "label": "CS-2", "issue_date": "06/01/2025",
+             "quantity": 500, "cost": 1000.0, "currency": "$"},
+        ], "totals": {}}))
+    return run_dir
+
+
+def test_force_rebuild_equals_incremental(tmp_path):
+    # The reworked --force contract (load.main): --force DELETEs the silver DB
+    # and rebuilds it from ALL bronze, superseding the old "re-load only the
+    # already-seen snapshots" behaviour. For UNCHANGED bronze that rebuild must
+    # land exactly where a plain incremental load did — a faithful replay,
+    # table for table, not a subtly different result.
+    bronze_root = tmp_path / "bronze"
+    bronze_root.mkdir()
+    db = tmp_path / "carta.db"
+
+    # Two complete runs at distinct timestamps: --force rebuilds BOTH (each is
+    # its own dump_runs row), exercising the multi-run ingest + the cross-run
+    # cash_flows overwrite where a divergent rebuild would surface.
+    for slug in ("20260101T010000Z", "20260401T010000Z"):
+        _seed_holdings(make_dump(bronze_root, slug))
+
+    # 1) Plain incremental load into a fresh DB → ingests every run.
+    assert load.main(["--bronze-dir", str(bronze_root),
+                      "--silver-db", str(db)]) == 0
+    incremental = _dump_silver(db)
+    # Guard against a vacuous pass: the load must actually have populated the
+    # value-bearing tables, else "identical" below proves nothing.
+    assert (incremental["dump_runs"] and incremental["securities"]
+            and incremental["cash_flows"])
+
+    # 2) --force over the SAME unchanged bronze: wipe the DB, rebuild from all
+    # bronze.
+    assert load.main(["--bronze-dir", str(bronze_root),
+                      "--silver-db", str(db), "--force"]) == 0
+    rebuilt = _dump_silver(db)
+
+    # The rebuild reproduces the incremental state exactly, every data table.
+    assert rebuilt == incremental

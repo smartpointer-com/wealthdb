@@ -1302,7 +1302,7 @@ class TestRollbackDoesNotPoisonSeenSet:
 
         db = tmp_path / "silver.db"
         args = argparse.Namespace(
-            silver_db=db, bronze_dir=bronze, migrations=MIGRATIONS_DIR,
+            silver_db=db, bronze_dir=bronze, migrations_dir=MIGRATIONS_DIR,
             reparse=False, workers=1, verbose=False, force=False,
         )
         assert load.run_load(args) == 0

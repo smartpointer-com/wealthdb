@@ -77,15 +77,15 @@ _EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six")
 
 # Parse-cache namespace for the 529 statement parser: a coarse manual
 # PARSER_VERSION (a deliberate epoch lever) plus the automatic logic
-# fingerprint. The trust parser's namespace additionally folds in the
-# signature guard (see _trust_parser_version) because that guard changes
-# the parsed rows.
+# fingerprint. The supplied-statement parser's namespace additionally
+# folds in the signature guard (see _supplied_parser_version) because
+# that guard changes the parsed rows.
 _STATEMENT_PARSER_VERSION = (
     f"stmt529.v{pdf_parsers.PARSER_VERSION}."
     + srcfp.parser_fingerprint([pdf_parsers], _EXTRACTOR_DISTS)
 )
-_TRUST_PARSER_FINGERPRINT = (
-    f"trust.v{pdf_parsers_supplied.PARSER_VERSION}."
+_SUPPLIED_PARSER_FINGERPRINT = (
+    f"supplied.v{pdf_parsers_supplied.PARSER_VERSION}."
     + srcfp.parser_fingerprint([pdf_parsers_supplied], _EXTRACTOR_DISTS)
 )
 
@@ -156,40 +156,42 @@ def parse_args(argv):
                         "(default: %(default)s).")
     p.add_argument(
         "--supplied-statements-dir", type=Path, default=None,
-        help=("Directory of user-supplied trust statement PDFs "
-              "(filenames `<trust-name> <M>.<YY> Statement.PDF`; "
+        help=("Directory of statement PDFs supplied out-of-band "
+              "(filenames `<registration> <M>.<YY> Statement.PDF`; "
               "Fidelity's naming convention for legacy monthly "
               "statements). Monthly statements are parsed via "
               "pdf_parsers_supplied and their per-account holdings land "
-              "in `historical_position_snapshots`. Trust accounts "
-              "are outside the live web-scraper's reach, so this is "
-              "the only path to populate their pre-toolkit-era "
-              "snapshots. Year-end statements in the same directory "
-              "are skipped (redundant with the December monthly "
-              "statement). DEFAULT: `<bronze-dir>/supplied-statements` "
-              "— keeping the PDFs under the bronze tree makes silver "
-              "reproducible from bronze, so `--force` rebuilds and "
-              "nightly reloads re-ingest them automatically. No-op "
-              "when the directory doesn't exist."),
+              "in `historical_position_snapshots`. Accounts whose "
+              "statements Fidelity does not serve are outside the live "
+              "web-scraper's reach, so this is the only path to "
+              "populate their pre-toolkit-era snapshots. Year-end "
+              "statements in the same directory are skipped (redundant "
+              "with the December monthly statement). DEFAULT: "
+              "`<bronze-dir>/supplied-statements` — keeping the PDFs "
+              "under the bronze tree makes silver reproducible from "
+              "bronze, so `--force` rebuilds and nightly reloads "
+              "re-ingest them automatically. No-op when the directory "
+              "doesn't exist."),
     )
     p.add_argument(
-        "--supplied-statement-signature", type=str, default=None,
-        help=("Substring that must appear on a trust statement's "
-              "page-1 text (typically the trust's name in upper "
-              "case) for the file to be ingested. Defends against "
-              "PDFs that match the filename pattern but belong to "
-              "an unrelated account (misfiled or sent in "
-              "error by Fidelity); mismatched files are logged + "
-              "skipped. When omitted, falls back to the first line "
-              "of `<supplied-statements-dir>/signature.txt` if present "
-              "(keeps the trust name out of argv / shell history "
+        "--statement-signature", type=str, default=None,
+        help=("Substring that must appear on a supplied statement's "
+              "page-1 text (typically the account registration in "
+              "upper case) for the file to be ingested. Defends "
+              "against PDFs that match the filename pattern but "
+              "belong to an unrelated account (misfiled or sent in "
+              "error); mismatched files are logged + skipped. When "
+              "omitted, falls back to the first line of "
+              "`<supplied-statements-dir>/signature.txt` if present "
+              "(keeps the registration out of argv / shell history "
               "and out of any committed orchestration script). No "
               "guard is applied if neither is supplied."),
     )
     p.add_argument(
         "--parse-cache-dir", type=Path, default=None,
         help=("Directory for the content-addressed PDF parse cache: "
-              "parsed statement/trust holdings keyed by content hash + "
+              "parsed 529 + supplied statement holdings keyed by "
+              "content hash + "
               "parser version, so a `--force` rebuild or nightly reload "
               "replays unchanged PDFs instead of re-extracting them. "
               "DEFAULT: `$XDG_CACHE_HOME/wealthdb/fidelity-web/"
@@ -197,9 +199,7 @@ def parse_args(argv):
               "cache, kept outside the bronze tree and outside "
               "`~/.secrets`; safe to delete — it is rebuilt on demand."),
     )
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="DEBUG-level logging.")
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -219,26 +219,26 @@ def main(argv=None):
 
         # Default the supplied-statements dir to a bronze-resident
         # location so a `--force` rebuild (which wipes silver and
-        # reloads from bronze) re-ingests the trust historical
-        # snapshots automatically — they'd otherwise be lost, since
-        # they live only in silver and are sourced from outside the
+        # reloads from bronze) re-ingests the historical snapshots
+        # automatically — they'd otherwise be lost, since they live
+        # only in silver and are sourced from outside the
         # timestamped-dump tree. Keeping them under <bronze-dir>
         # restores the "silver is reproducible from bronze" invariant.
-        # Resolve it (and its signature guard) up front so the trust
-        # PDFs join the same shared parse pool as the per-dump
-        # statement PDFs.
-        trust_dir = args.supplied_statements_dir
-        if trust_dir is None:
-            trust_dir = args.bronze_dir / "supplied-statements"
-        trust_signature = args.supplied_statement_signature
-        if trust_signature is None and trust_dir.is_dir():
-            trust_signature = _read_signature_sidecar(trust_dir)
+        # Resolve it (and its signature guard) up front so the
+        # supplied PDFs join the same shared parse pool as the
+        # per-dump statement PDFs.
+        supplied_dir = args.supplied_statements_dir
+        if supplied_dir is None:
+            supplied_dir = args.bronze_dir / "supplied-statements"
+        signature = args.statement_signature
+        if signature is None and supplied_dir.is_dir():
+            signature = _read_signature_sidecar(supplied_dir)
 
         cache = ParseCache(
             args.parse_cache_dir or _default_parse_cache_dir())
         with PdfParseCoordinator(cache, os.cpu_count() or 1) as coord:
-            # Enqueue every pending dump's statement PDFs and the trust
-            # PDFs, deduplicated by content, then dispatch once so all
+            # Enqueue every pending dump's statement PDFs and the
+            # supplied PDFs, deduplicated by content, then dispatch once so all
             # unique parses run across a single pool (workers import
             # pdfplumber once, all cores stay busy) instead of a fresh
             # pool per dump. Cache hits are never enqueued, so a
@@ -251,12 +251,12 @@ def main(argv=None):
                         coord.sha_for(path), _STATEMENT_PARSER_VERSION,
                         _parse_statement_pdf_worker, str(path))
             if schema_version >= 4:
-                trust_version = _trust_parser_version(trust_signature)
-                for path in _trust_pdf_candidates(trust_dir):
+                supplied_version = _supplied_parser_version(signature)
+                for path in _supplied_pdf_candidates(supplied_dir):
                     coord.enqueue(
-                        coord.sha_for(path), trust_version,
+                        coord.sha_for(path), supplied_version,
                         _parse_supplied_statement_pdf_worker,
-                        (str(path), trust_signature))
+                        (str(path), signature))
             coord.dispatch()
 
             loaded = skipped = 0
@@ -275,9 +275,9 @@ def main(argv=None):
                     log.exception("load of %s failed; rolled back", dump.name)
             log.info("loaded=%d skipped=%d total=%d",
                      loaded, skipped, len(dumps))
-            _load_trust_statements_oneshot(
-                conn, trust_dir, schema_version,
-                signature=trust_signature, coord=coord,
+            _load_supplied_statements_oneshot(
+                conn, supplied_dir, schema_version,
+                signature=signature, coord=coord,
             )
         validate(conn)
     finally:
@@ -1032,21 +1032,22 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
 #      scrapes into `<dump>/documents/Statement<MMDDYYYY>.pdf`.
 #      Text-level parsing in `pdf_parsers.py`. Runs once per dump.
 #
-#   2. Trust statements — monthly PDFs obtained directly
-#      from Fidelity (the web scraper doesn't surface them; see
-#      DESIGN.md §4.5). These default to `<bronze-dir>/trust-
-#      statements/` (override with `--supplied-statements-dir`) and
-#      are read once per load run regardless of dump cadence.
-#      Text-level parsing in `pdf_parsers_supplied.py`.
+#   2. Supplied statements — monthly PDFs obtained out-of-band
+#      (the web scraper doesn't surface them; see DESIGN.md §4.5).
+#      These default to `<bronze-dir>/supplied-statements/`
+#      (override with `--supplied-statements-dir`) and are read once
+#      per load run regardless of dump cadence. Text-level parsing
+#      in `pdf_parsers_supplied.py`.
 #
-#      Keeping the trust PDFs UNDER the bronze tree is deliberate:
-#      it preserves the "silver is reproducible from bronze alone"
-#      invariant that `silver.reset()` (i.e. `load --force`) relies
-#      on. An earlier design sourced them from an arbitrary
-#      external dir reachable only via the CLI flag, so every
-#      `--force` rebuild or flag-less nightly reload silently
-#      dropped the trust history. The bronze-resident default makes
-#      the ingest self-healing — no flag, no orchestration change.
+#      Keeping the supplied PDFs UNDER the bronze tree is
+#      deliberate: it preserves the "silver is reproducible from
+#      bronze alone" invariant that `silver.reset()` (i.e.
+#      `load --force`) relies on. An earlier design sourced them
+#      from an arbitrary external dir reachable only via the CLI
+#      flag, so every `--force` rebuild or flag-less nightly reload
+#      silently dropped that history. The bronze-resident default
+#      makes the ingest self-healing — no flag, no orchestration
+#      change.
 #
 # PDF text extraction is CPU-bound, so both paths route their PDFs
 # through the run's shared PdfParseCoordinator (one ProcessPool + a
@@ -1076,7 +1077,7 @@ def _parse_statement_pdf_worker(path):
 #     replayed on every later sighting — across dumps within one
 #     `--force` rebuild (in-process) and across separate load runs
 #     (a JSON sidecar), so a nightly reload never re-extracts an
-#     unchanged trust statement. The cache stores exactly the
+#     unchanged supplied statement. The cache stores exactly the
 #     parser's output, so a replayed insert is byte-identical to a
 #     fresh parse.
 #
@@ -1357,34 +1358,34 @@ def _crosswalk_description_to_instrument(conn, account_external_id,
 
 
 # ------------------------------------------------------------
-# Trust statements (legacy monthly statements)
+# Supplied statements (legacy monthly statements)
 # ------------------------------------------------------------
 
-# Monthly trust statements follow Fidelity's legacy naming
-# convention: ``<TrustName> <M>.<YY> Statement.PDF`` (e.g.
+# Monthly supplied statements follow Fidelity's legacy naming
+# convention: ``<Registration> <M>.<YY> Statement.PDF`` (e.g.
 # ``Example 1.24 Statement.PDF`` for January 2024). Year-end
 # statements in the same directory carry ``Year End`` between the
-# trust name and ``Statement.PDF`` (e.g. ``Example 2024 Year End
+# registration and ``Statement.PDF`` (e.g. ``Example 2024 Year End
 # Statement.PDF``) — those use a different per-asset-class layout
 # the parser doesn't handle yet and are excluded here (the
 # December monthly statement covers the same period end).
-_TRUST_STATEMENT_FILENAME_RE = re.compile(
+_SUPPLIED_STATEMENT_FILENAME_RE = re.compile(
     r"^[A-Za-z][A-Za-z\s]*?\s+\d{1,2}\.\d{2}\s+Statement\.pdf$",
     re.IGNORECASE,
 )
 
 
-_TRUST_SIGNATURE_SIDECAR = "signature.txt"
+_SIGNATURE_SIDECAR = "signature.txt"
 
 
-def _read_signature_sidecar(trust_dir):
-    """Resolve the trust-statement signature from
-    ``<trust_dir>/signature.txt`` (first non-empty, non-``#``-comment
-    line). This keeps the trust name — which is PII — in the local
-    data directory next to the PDFs, rather than in argv / shell
+def _read_signature_sidecar(supplied_dir):
+    """Resolve the supplied-statement signature from
+    ``<supplied_dir>/signature.txt`` (first non-empty, non-``#``-comment
+    line). This keeps the account registration — which is PII — in the
+    local data directory next to the PDFs, rather than in argv / shell
     history or a committed orchestration script. Returns None when
     the file is absent or carries no usable line."""
-    sidecar = trust_dir / _TRUST_SIGNATURE_SIDECAR
+    sidecar = supplied_dir / _SIGNATURE_SIDECAR
     if not sidecar.is_file():
         return None
     try:
@@ -1398,7 +1399,7 @@ def _read_signature_sidecar(trust_dir):
 
 
 def _parse_supplied_statement_pdf_worker(args):
-    """ProcessPoolExecutor target: parse one trust PDF and return
+    """ProcessPoolExecutor target: parse one supplied PDF and return
     its parsed dict, or ``{"_error": "<repr>"}`` so the parent can
     log and continue. Module-level so it pickles under spawn.
 
@@ -1413,33 +1414,33 @@ def _parse_supplied_statement_pdf_worker(args):
         return {"_error": repr(e), "path": str(path)}
 
 
-def _trust_parser_version(signature):
-    """Parse-cache namespace for the trust parser: the parser-logic
-    fingerprint (_TRUST_PARSER_FINGERPRINT) plus a hash of the signature
-    guard. The guard is folded in because it changes which lines a
-    statement's holdings block yields — a cache entry parsed under one
-    guard must not be replayed under another. The signature itself (the
-    trust's name, PII) never enters the key, only its hash."""
+def _supplied_parser_version(signature):
+    """Parse-cache namespace for the supplied-statement parser: the
+    parser-logic fingerprint (_SUPPLIED_PARSER_FINGERPRINT) plus a hash of
+    the signature guard. The guard is folded in because it changes which
+    lines a statement's holdings block yields — a cache entry parsed under
+    one guard must not be replayed under another. The signature itself (the
+    account registration, PII) never enters the key, only its hash."""
     sig = hashlib.sha256((signature or "").encode("utf-8")).hexdigest()[:16]
-    return f"{_TRUST_PARSER_FINGERPRINT}.{sig}"
+    return f"{_SUPPLIED_PARSER_FINGERPRINT}.{sig}"
 
 
-def _trust_pdf_candidates(trust_dir):
-    """Monthly trust statement PDFs in ``trust_dir`` (matching the
+def _supplied_pdf_candidates(supplied_dir):
+    """Monthly supplied statement PDFs in ``supplied_dir`` (matching the
     ``<name> <M>.<YY> Statement.pdf`` convention), in the sorted
     order the rows are inserted. Empty when the dir is None/absent."""
-    if trust_dir is None or not trust_dir.is_dir():
+    if supplied_dir is None or not supplied_dir.is_dir():
         return []
     return [
-        p for p in sorted(trust_dir.iterdir())
-        if p.is_file() and _TRUST_STATEMENT_FILENAME_RE.match(p.name)
+        p for p in sorted(supplied_dir.iterdir())
+        if p.is_file() and _SUPPLIED_STATEMENT_FILENAME_RE.match(p.name)
     ]
 
 
-def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
-                                    signature=None, coord=None):
-    """Load every monthly trust statement from ``trust_dir`` into
-    ``historical_position_snapshots``. No-op when ``trust_dir`` is
+def _load_supplied_statements_oneshot(conn, supplied_dir, schema_version, *,
+                                      signature=None, coord=None):
+    """Load every monthly supplied statement from ``supplied_dir`` into
+    ``historical_position_snapshots``. No-op when ``supplied_dir`` is
     None or empty. Idempotent — INSERT OR REPLACE keyed on
     ``(as_of_date, account_external_id, description)`` makes
     re-runs converge.
@@ -1452,17 +1453,18 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
     Wrapped in its own transaction so a parser failure on one PDF
     doesn't half-commit and leave silver in an inconsistent state.
     After the inserts land, synthesises a placeholder row in
-    ``accounts`` for any trust account that historical statements
+    ``accounts`` for any account that historical statements
     mention but the live scraper hasn't seen; without that row, gold's
     historical-account projection JOIN would drop those positions
     on the floor."""
-    if trust_dir is None:
+    if supplied_dir is None:
         return
-    if not trust_dir.is_dir():
+    if not supplied_dir.is_dir():
         # The default (<bronze-dir>/supplied-statements) simply not
-        # existing is the normal case for deployments without trust
-        # accounts — debug, not info, so it isn't noise on every run.
-        log.debug("supplied-statements: %s not a directory; skipping", trust_dir)
+        # existing is the normal case for deployments with no
+        # out-of-band statements — debug, not info, so it isn't
+        # noise on every run.
+        log.debug("supplied-statements: %s not a directory; skipping", supplied_dir)
         return
     if schema_version < 4:
         log.info(
@@ -1471,24 +1473,24 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
         )
         return
     if signature is None:
-        signature = _read_signature_sidecar(trust_dir)
+        signature = _read_signature_sidecar(supplied_dir)
     if signature is None:
         log.warning(
             "supplied-statements: no signature guard configured "
-            "(pass --supplied-statement-signature or add a "
+            "(pass --statement-signature or add a "
             "signature.txt to %s); ingesting every matching PDF "
             "unverified — a misfiled statement for another account "
-            "would be loaded as trust history", trust_dir,
+            "would be loaded as this account's history", supplied_dir,
         )
-    candidates = _trust_pdf_candidates(trust_dir)
+    candidates = _supplied_pdf_candidates(supplied_dir)
     if not candidates:
         log.info(
             "supplied-statements: no monthly statement PDFs in %s",
-            trust_dir,
+            supplied_dir,
         )
         return
     coord = coord or _transient_coordinator()
-    version = _trust_parser_version(signature)
+    version = _supplied_parser_version(signature)
     log.info("supplied-statements: ingesting %d PDF(s)", len(candidates))
     try:
         conn.execute("BEGIN")
@@ -1515,7 +1517,7 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
                 )
                 skipped += 1
                 continue
-            inserted += _insert_trust_historical_rows(conn, path, result, sha)
+            inserted += _insert_supplied_historical_rows(conn, path, result, sha)
         synth = _synthesize_missing_account_masters(conn)
         conn.commit()
         log.info(
@@ -1528,9 +1530,9 @@ def _load_trust_statements_oneshot(conn, trust_dir, schema_version, *,
         log.exception("supplied-statements load failed; rolled back")
 
 
-def _insert_trust_historical_rows(conn, pdf_path, parsed, sha):
+def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
     """Insert one ``historical_position_snapshots`` row per holding
-    in the parsed trust statement. The trust parser surfaces the
+    in the parsed supplied statement. That parser surfaces the
     ticker (or CUSIP) directly as ``instrument_key`` so no
     cross-walk against live ``positions`` is needed. ``sha`` is the
     source PDF's content hash, stored in ``source_sha256``."""
@@ -1589,10 +1591,11 @@ def _insert_trust_historical_rows(conn, pdf_path, parsed, sha):
 # promotes the kind to TaxWrapperTrustNonGrantor +
 # ManagementStyleDiscretionary. The synthesised row pre-fills the
 # same shape, so an account that no live download returns still
-# rolls up under that portfolio and wrapper.
-_TRUST_SYNTHETIC_PORTFOLIO = "Authorized"
-_TRUST_SYNTHETIC_KIND = "trust_managed"
-_TRUST_SYNTHETIC_MANAGEMENT = "discretionary"
+# rolls up under that portfolio and wrapper. Groups the web document
+# center serves statements for need no synthesis.
+_SUPPLIED_SYNTHETIC_PORTFOLIO = "Authorized"
+_SUPPLIED_SYNTHETIC_KIND = "trust_managed"
+_SUPPLIED_SYNTHETIC_MANAGEMENT = "discretionary"
 
 
 def _synthesize_missing_account_masters(conn):
@@ -1620,10 +1623,10 @@ SELECT h.account_external_id, MAX(h.as_of_date)
     missing = cur.fetchall()
     if not missing:
         return 0
-    payload = normalize_payload({"source": "trust-statement-synthetic"})
+    payload = normalize_payload({"source": "supplied-statement-synthetic"})
     inserted = 0
     portfolio_payload = normalize_payload({
-        "source": "trust-statement-synthetic",
+        "source": "supplied-statement-synthetic",
     })
     for aid, latest_as_of in missing:
         # Portfolio master too: the historical projection joins
@@ -1636,16 +1639,16 @@ SELECT h.account_external_id, MAX(h.as_of_date)
                 "INSERT OR IGNORE INTO portfolios ("
                 "snapshot_at, portfolio_external_id, kind, payload"
                 ") VALUES (?, ?, ?, ?)",
-                (latest_as_of, _TRUST_SYNTHETIC_PORTFOLIO,
-                 _TRUST_SYNTHETIC_KIND, portfolio_payload),
+                (latest_as_of, _SUPPLIED_SYNTHETIC_PORTFOLIO,
+                 _SUPPLIED_SYNTHETIC_KIND, portfolio_payload),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO accounts ("
                 "snapshot_at, account_external_id, portfolio_external_id, "
                 "nickname, payload, management_style"
                 ") VALUES (?, ?, ?, ?, ?, ?)",
-                (latest_as_of, aid, _TRUST_SYNTHETIC_PORTFOLIO,
-                 None, payload, _TRUST_SYNTHETIC_MANAGEMENT),
+                (latest_as_of, aid, _SUPPLIED_SYNTHETIC_PORTFOLIO,
+                 None, payload, _SUPPLIED_SYNTHETIC_MANAGEMENT),
             )
             inserted += 1
             log.info(

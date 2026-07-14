@@ -91,8 +91,8 @@ Subcommands:
   download    Browse the investor surfaces and capture bronze: offerings +
               positions + cash flows (getBuyerInvestments per stage +
               getMyInvestmentDetails per offering). Pass --dry-run for a
-              read-only smoke test (writes nothing); --documents to also
-              record doc/tax-centre metadata.
+              read-only smoke test (writes nothing); document blobs +
+              tax-centre metadata are recorded by default, --no-documents skips them.
   load        Ingest bronze snapshots into the SQLite silver: offerings,
               positions, cash_flows, tax_documents. Pass --force to
               re-load snapshots already recorded in dump_runs.

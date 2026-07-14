@@ -22,9 +22,9 @@ browser login; run `login.py` to mint a fresh token when this script
 reports refresh failure.
 
 Usage:
-    download.py --token-path <file> --dest <dir> \\
+    download.py --token-path <file> --bronze-dir <dir> \\
                 [--client-id <id>] [--client-secret <secret>] \\
-                [--since YYYY-MM-DD] [--until YYYY-MM-DD] \\
+                [--lookback PRESET|YYYY-MM-DD] \\
                 [--dry-run]
 """
 
@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import _txartefacts
-from collectorkit import cli, compress
+from collectorkit import cli, compress, envfile
 
 # schwab-py is a thin wrapper over the Schwab Trader API. We import it
 # inside main() so that --help works on a fresh checkout without the
@@ -49,7 +49,7 @@ from collectorkit import cli, compress
 log = logging.getLogger("schwab-api")
 
 # Read-only artefact names. Filenames never contain account numbers (plain
-# or hashed) so that ls'ing a dest dir does not leak identifiers.
+# or hashed) so that ls'ing a bronze dir does not leak identifiers.
 ARTIFACT_ACCOUNT_NUMBERS = "account_numbers.json"
 ARTIFACT_USER_PREFERENCE = "user_preference.json"
 ARTIFACT_ACCOUNTS_POSITIONS = "accounts_positions.json"
@@ -144,10 +144,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "~/.secrets/schwab-api-token.json.",
     )
     p.add_argument(
-        "--dest",
+        "--bronze-dir",
         type=Path,
         default=cli.default_data_root() / "schwab-api",
-        help="Output directory (default: %(default)s). Each run "
+        help="Bronze tree root (default: %(default)s). Each run "
              "creates a <UTC-timestamp> subdirectory under this path.",
     )
     p.add_argument(
@@ -163,21 +163,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "environment variable if omitted. Avoid passing on the command "
              "line in shared environments — prefer the env var.",
     )
-    # --since / --until / --lookback — shared contract. No
-    # --documents-* (Schwab API has no document archive surface).
-    # Schwab caps each transactions call at 1 year; the loader
-    # chunks longer ranges automatically via TRANSACTION_WINDOW_DAYS.
-    cli.add_lookback_args(p, has_documents=False)
+    # --lookback — the shared contract's one window flag; it names a
+    # start and the window runs from there to today. Schwab caps each
+    # transactions call at 1 year; the loader chunks longer ranges
+    # automatically via TRANSACTION_WINDOW_DAYS.
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
-        "--with-instruments",
-        action="store_true",
-        help="After fetching positions and transactions, look up "
-             "metadata (symbol, cusip, description, exchange, type, "
-             "assetType) for every instrument that appeared in either, "
-             "via /marketdata/v1/instruments. Writes a separate "
-             "instruments.json artefact. Off by default — instrument "
-             "metadata changes rarely, so this is typically run on a "
-             "reduced schedule.",
+        "--no-instruments",
+        dest="with_instruments",
+        action="store_false",
+        help="Skip the instrument-metadata lookup. By DEFAULT, after "
+             "fetching positions and transactions, metadata (symbol, cusip, "
+             "description, exchange, type, assetType) is looked up for every "
+             "instrument that appeared in either, via "
+             "/marketdata/v1/instruments, and written to a separate "
+             "instruments.json artefact. Pass this to skip that lookup.",
     )
     p.add_argument(
         "--dry-run",
@@ -204,26 +204,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "flag currently gates nothing. Off by default. (Use --verbose "
              "for DEBUG-level logging.)",
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
-    )
     return p.parse_args(argv)
-
-
-def resolve_credential(value: str | None, env_name: str, flag_name: str) -> str:
-    """Return the credential value, falling back to the env var.
-
-    Prefers the explicit CLI argument when provided; otherwise reads the
-    environment variable. Raises SystemExit if neither is available."""
-    if value:
-        return value
-    env_value = os.environ.get(env_name)
-    if env_value:
-        return env_value
-    raise SystemExit(
-        f"Missing credential: pass {flag_name} or set {env_name}. "
-        f"Source your Schwab credentials env file before running."
-    )
 
 
 def oauth_error_types() -> tuple[type, ...]:
@@ -547,8 +528,8 @@ def run(args: argparse.Namespace) -> int:
             f"Run login.py first to mint one (interactive browser flow)."
         )
 
-    client_id = resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")
-    client_secret = resolve_credential(args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
+    client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")
+    client_secret = envfile.resolve_credential(args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
 
     # schwab-py's parameter names (api_key, app_secret) are a historical
     # quirk; they accept the OAuth Client ID / Client Secret that Schwab
@@ -585,11 +566,11 @@ def run(args: argparse.Namespace) -> int:
     # explicit windows are split into <=365-day chunks downstream to
     # respect Schwab's per-request cap.
     today = datetime.now(timezone.utc).date()
-    since, until, _, _ = cli.resolve_lookback(args, has_documents=False)
+    since, until = cli.resolve_lookback(args)
     log.info("Transaction window: %s -> %s", since, until)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.dest / ts
+    run_dir = args.bronze_dir / ts
     log.info("Writing artefacts to %s", run_dir)
 
     # Drop an "in-progress" manifest up front and overwrite it with the
@@ -689,6 +670,10 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("schwab-api", log)
     return run(args)
 
 

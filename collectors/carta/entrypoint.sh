@@ -97,8 +97,8 @@ Subcommands:
               to walk the navigation without firing exports/downloads.
   load        Ingest bronze snapshots into the SQLite silver: portfolios,
               issuers, securities, vesting_events, transactions,
-              fair_market_values, tax_documents. Pass --force to re-load
-              snapshots already recorded in dump_runs.
+              fair_market_values, tax_documents. Pass --force to delete
+              the silver DB and rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
               tree. carta writes no bronze-resident debug artefact, so
               prune only reclaims whole non-complete run dirs. --dry-run

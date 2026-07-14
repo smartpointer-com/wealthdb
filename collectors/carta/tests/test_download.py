@@ -436,3 +436,21 @@ def test_lookback_flag():
     assert download.parse_args([]).lookback is None
     with pytest.raises(SystemExit):
         download.parse_args(["--lookback", "1m"])  # not a preset
+
+
+def test_no_documents_flag():
+    # The fleet-wide document opt-out, now a real skip rather than an
+    # accepted-and-warned no-op: the walk runs capture_documents only when
+    # it is absent, and run.json's documents block records skipped=true so a
+    # partial run is not read as one that found no documents. Default off.
+    assert download.parse_args(["--bronze-dir", "/tmp", "--no-documents"]).no_documents is True
+    assert download.parse_args(["--bronze-dir", "/tmp"]).no_documents is False
+
+
+def test_no_documents_help_promises_a_skip(capsys):
+    # Guards against the flag regressing to a warn-only stub.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--no-documents" in out
+    assert "NOT YET IMPLEMENTED" not in out

@@ -34,7 +34,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 relevate — host wrapper
 
@@ -92,11 +92,20 @@ fi
 
 # Source the credentials env file (RELEVATE_LOGIN / RELEVATE_PASSWORD)
 # if present so the subsequent docker-run can forward them. Absence is
-# fine for help / sh / build paths.
+# fine for help / sh / build paths. `set -a` auto-exports every assignment
+# so plain `KEY=VALUE` lines work (not just `export KEY=VALUE`) — matching
+# the fleet-standard env-file format; `bash -n` fails loudly on a malformed
+# file instead of silently leaving credentials unset (F43).
 RELEVATE_ENV_FILE="${RELEVATE_ENV_FILE:-$HOST_SECRETS/relevate.env}"
 if [[ -f "$RELEVATE_ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$RELEVATE_ENV_FILE"
+    if bash -n "$RELEVATE_ENV_FILE" 2>/dev/null; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$RELEVATE_ENV_FILE"
+        set +a
+    else
+        echo "relevate: env file $RELEVATE_ENV_FILE has a bash syntax error; not sourcing it" >&2
+    fi
 fi
 
 # `prune [args...]` runs host-side (like fidelity-web), not in the

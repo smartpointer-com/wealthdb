@@ -12,14 +12,13 @@ Reuses the Playwright session minted by login.py to export:
   - eDocuments PDFs            — eBanking #documents (REST endpoint)
   - run.json                   — metadata index for the dump
 
-Files land in <dest>/<UTC-timestamp>/<artefact>. Read-only — see
+Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
-    download.py [--state-path <file>] [--dest <dir>]
-                [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-                [--documents-since YYYY-MM-DD] [--documents-until YYYY-MM-DD]
+    download.py [--state-path <file>] [--bronze-dir <dir>]
+                [--lookback PRESET|YYYY-MM-DD]
                 [--dry-run] [--screenshot-dir <dir>] [--trace]
 """
 
@@ -36,7 +35,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, session
 
 log = logging.getLogger("swissquote.download")
 
@@ -54,10 +53,13 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 
 # Canonical storageState location — must match login.py, which
 # mints the file there (the wrapper's /secrets mount).
-DEFAULT_STATE_PATH = Path("/secrets/swissquote_state.json")
+DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
+# Legacy default (underscore) — read when the new-named file is absent so an
+# existing session isn't orphaned by the rename (F18); login writes the new name.
+LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
 
-# --since / --until / --lookback / --documents-* defaults are all
-# resolved through collectorkit.cli.resolve_lookback (default
+# The --lookback default is resolved through
+# collectorkit.cli.resolve_lookback (default
 # DEFAULT_LOOKBACK_DAYS = 90). Sensible for incremental runs because
 # silver's window-DELETE-INSERT replaces overlapping rows on each
 # load, and the content-sha256 dedup means a wider re-run does not
@@ -76,14 +78,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH,
                    help="Path to the Playwright storageState.json minted by "
                         "login.py (default: %(default)s).")
-    p.add_argument("--dest", type=Path, default=Path("/data"),
-                   help="Output directory (default: %(default)s, the wrapper's "
+    p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
+                   help="Bronze tree root (default: %(default)s, the wrapper's "
                         "/data mount); a UTC-timestamped subdir is created per run.")
-    # Shared date-window contract: --since/--until/--lookback +
-    # --documents-since/--documents-until. Swissquote enforces no
-    # window cap, so an explicit older --since (or --lookback all)
-    # triggers a bulk backfill.
-    cli.add_lookback_args(p)
+    # Shared date-window contract: a single --lookback naming the
+    # start of the [start..today] window that transactions and
+    # documents alike are fetched for. Swissquote enforces no window
+    # cap, so an older ISO date (or --lookback all) triggers a bulk
+    # backfill.
+    cli.add_standard_args(p, verb="download")
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -104,8 +107,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "this flag gates nothing new — it exists so the "
                         "flag is uniform across collectors and so any "
                         "future bronze-resident capture is opt-in.")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="DEBUG-level logging.")
     return p.parse_args(argv)
 
 
@@ -531,7 +532,7 @@ def export_list_of_assets(page, run_dir: Path) -> Path:
 # Documents
 # ============================================================
 
-def collect_existing_doc_ids(dest: Path) -> set[str]:
+def collect_existing_doc_ids(bronze_dir: Path) -> set[str]:
     """Walk prior run dirs and collect document IDs already downloaded.
 
     Files are named `<doc_id>.pdf`. The set is used to skip docs
@@ -540,9 +541,9 @@ def collect_existing_doc_ids(dest: Path) -> set[str]:
     optimisation, not a correctness mechanism.
     """
     seen: set[str] = set()
-    if not dest.is_dir():
+    if not bronze_dir.is_dir():
         return seen
-    for pdf in dest.glob("*/documents/*.pdf"):
+    for pdf in bronze_dir.glob("*/documents/*.pdf"):
         seen.add(pdf.stem)
     return seen
 
@@ -718,20 +719,21 @@ def cleanup_incomplete_run_dir(run_dir: Path) -> bool:
 def run(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
-    if not args.dest.is_dir():
-        raise SystemExit(f"Destination does not exist: {args.dest}")
+    if not args.bronze_dir.is_dir():
+        raise SystemExit(f"--bronze-dir does not exist: {args.bronze_dir}")
 
-    since, until, documents_since, documents_until = cli.resolve_lookback(args)
+    since, until = cli.resolve_lookback(args)
 
     run_ts_str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.dest / run_ts_str
+    run_dir = args.bronze_dir / run_ts_str
 
-    existing_doc_ids = collect_existing_doc_ids(args.dest)
+    existing_doc_ids = collect_existing_doc_ids(args.bronze_dir)
     log.info("Bronze tree contains %d already-downloaded document(s)",
              len(existing_doc_ids))
 
     with sync_playwright() as p:
-        browser, context = _new_context(p, args.state_path)
+        browser, context = _new_context(p, session.resolve_state_path(
+            args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:
@@ -821,8 +823,8 @@ def run(args: argparse.Namespace) -> int:
             navigate_to_documents(page)
             _screenshot(page, args.screenshot_dir, "30_documents_page_default")
             log.info("Widening documents Period filter to %s..%s",
-                     documents_since, documents_until)
-            set_documents_period(page, documents_since, documents_until)
+                     since, until)
+            set_documents_period(page, since, until)
             _screenshot(page, args.screenshot_dir, "31_documents_page_wide")
 
             docs = discover_documents(page)
@@ -861,8 +863,8 @@ def run(args: argparse.Namespace) -> int:
                 "transactions": txn_entries,
                 "documents": doc_entries,
                 "documents_window": {
-                    "start": documents_since.isoformat(),
-                    "end": documents_until.isoformat(),
+                    "start": since.isoformat(),
+                    "end": until.isoformat(),
                 },
                 "positions": {"file": "positions.xls"},
                 "position_details": {
@@ -905,6 +907,10 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("swissquote", log)
     if args.trace and not args.screenshot_dir:
         raise SystemExit(
             "--trace requires --screenshot-dir. The trace bundle is "

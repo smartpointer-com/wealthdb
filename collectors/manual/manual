@@ -25,7 +25,7 @@ ENV_PREFIX=MANUAL
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
-cmd="${1:-load}"
+cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 
 case "$cmd" in
@@ -37,6 +37,9 @@ case "$cmd" in
         exit 0
         ;;
     download|login)
+        # F41: --check is accepted for fleet uniformity; this collector is
+        # load-only with no session, so --check is inherently a no-op.
+        case " $* " in *" --check "*) echo "manual: login --check not implemented (TODO); no session to probe." >&2 ;; esac
         cat >&2 <<'EOF'
 manual: no-op. This collector has no source to fetch from — you are the
 source of truth. Maintain the CSVs by hand in the data dir (default
@@ -46,6 +49,9 @@ EOF
         exit 0
         ;;
     prune)
+        # F32: prune is a no-op here; acknowledge any flags rather than
+        # swallowing them silently.
+        [[ $# -gt 0 ]] && echo "manual: prune flags ignored — nothing to reclaim." >&2
         # The fleet-wide `prune` verb (forwarded by the wealthdb-collect
         # dispatcher) is a documented no-op here: manual is load-only, so
         # there is nothing to reclaim. See README.md / DESIGN.md §1.
@@ -61,7 +67,7 @@ EOF
         exit 0
         ;;
     load)
-        host_resolve_dirs "$@"
+        host_resolve_dirs "$cmd" "$@"
         py="$(host_python)"
         exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}

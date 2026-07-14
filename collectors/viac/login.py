@@ -44,7 +44,7 @@ from pathlib import Path
 
 import httpx
 
-from collectorkit import envfile
+from collectorkit import cli, envfile
 
 from viac_client import ViacClient
 
@@ -122,10 +122,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Probe an existing state file. No credential submit, "
               "no SMS push. Exits 0 if the session is alive, 1 if dead."),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -294,7 +291,7 @@ def main(argv: list[str]) -> int:
         log.info("no env file path resolved; relying on process env vars.")
     else:
         try:
-            if envfile.source_env_file(env_path):
+            if envfile.source_env_file(env_path, prefer_file=True):
                 log.info("env sourced from %s", env_path)
         except (subprocess.CalledProcessError, ValueError) as e:
             log.error("env file %s failed to source: %s", env_path, e)

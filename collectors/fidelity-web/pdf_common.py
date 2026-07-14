@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Statement-period and account-header helpers shared by the two
-Fidelity statement parsers (``pdf_parsers`` for 529 accounts,
-``pdf_parsers_supplied`` for trust accounts).
+statement parsers (``pdf_parsers`` for the 529 statements Fidelity
+serves, ``pdf_parsers_supplied`` for statements supplied
+out-of-band).
 
 Both statement families carry the period as ``Month D, YYYY -
 Month D, YYYY`` on page 1 and stamp a ``Account # NNN-NNNNNN``
 header on their per-account pages, so the period regex, month map,
 period parser and account-header regex are identical across the two.
-The per-account *splitting* differs (the trust parser glues headers
-re-stamped on every page), so ``parse_account_blocks`` stays in each
-parser module and only anchors on ``_ACCOUNT_HEADER_RE`` from here.
+The per-account *splitting* differs (the supplied-statement parser
+glues headers re-stamped on every page), so ``parse_account_blocks``
+stays in each parser module and only anchors on
+``_ACCOUNT_HEADER_RE`` from here.
 """
 from __future__ import annotations
 

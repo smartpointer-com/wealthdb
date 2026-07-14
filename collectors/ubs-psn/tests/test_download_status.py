@@ -40,7 +40,7 @@ def _run_main(tmp_path, monkeypatch, download_all_impl, *extra_argv):
     monkeypatch.setattr(
         sys, "argv",
         ["download.py", "--client-id", "CH000000",
-         "--dest", str(tmp_path), *extra_argv])
+         "--bronze-dir", str(tmp_path), *extra_argv])
     return download.main()
 
 

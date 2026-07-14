@@ -23,7 +23,7 @@ CLI surface (shared with the other carta subcommands):
                        /secrets/carta-profile/, shared with explore /
                        download). Holds the session + device-trust cookie.
                        Treat the dir as a credential.
-  --env-file PATH      Bash-sourced env with CARTA_EMAIL / CARTA_PASSWORD.
+  --env-file PATH      Bash-sourced env with CARTA_USERNAME (or legacy CARTA_EMAIL) / CARTA_PASSWORD.
   --check              Probe the existing profile (load app.carta.com), exit
                        0 if authenticated, 1 if not. No credentials posted,
                        no 2FA push — safe for cron healthchecks.
@@ -50,7 +50,9 @@ BASE = "https://app.carta.com"
 # unauthenticated → login.app.carta.com/credentials/login/.
 LOGIN_HOST = "login.app.carta.com"
 
-USER_ENV = "CARTA_EMAIL"
+# Canonical login-id env first, the legacy alias second (F20): read
+# CARTA_USERNAME, falling back to CARTA_EMAIL.
+USER_ENVS = ("CARTA_USERNAME", "CARTA_EMAIL")
 PASS_ENV = "CARTA_PASSWORD"
 
 DEFAULT_PROFILE_DIR = Path("/secrets/carta-profile")
@@ -238,7 +240,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", type=Path, default=DEFAULT_ENV_FILE,
-        help=("Bash-sourced env file with CARTA_EMAIL / CARTA_PASSWORD. "
+        help=("Bash-sourced env file with CARTA_USERNAME (or legacy CARTA_EMAIL) / CARTA_PASSWORD. "
               "Skipped silently if absent. Default: %(default)s."),
     )
     p.add_argument(
@@ -247,7 +249,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "authenticated, 1 if not. No credentials posted, no 2FA push — "
               "safe to call from cron / healthcheck."),
     )
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -255,7 +257,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    envfile.source_env_file(args.env_file)
+    envfile.source_env_file(args.env_file, prefer_file=True)
     args.profile_dir.mkdir(parents=True, exist_ok=True)
     # 0700 on the profile dir — it holds the session + device-trust cookie.
     try:
@@ -289,11 +291,11 @@ def main(argv: list[str]) -> int:
             log.info("existing profile is still valid — no re-login needed")
             return 0
 
-        email = os.environ.get(USER_ENV)
+        email = next((os.environ[k] for k in USER_ENVS if os.environ.get(k)), None)
         password = os.environ.get(PASS_ENV)
         if not email or not password:
             log.error("%s / %s not set in env; cannot log in. Populate %s "
-                      "and retry.", USER_ENV, PASS_ENV, args.env_file)
+                      "and retry.", USER_ENVS[0], PASS_ENV, args.env_file)
             return 1
 
         try:

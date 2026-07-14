@@ -274,6 +274,21 @@ def test_collector_subtrees_discovers_bronze_trees(tmp_path):
     assert dedup._collector_subtrees(tmp_path, "nope") == []
 
 
+def test_source_honours_per_collector_data_dir_override(tmp_path, monkeypatch):
+    # ${PREFIX}_DATA_DIR points a collector's bronze outside --data-dir (the
+    # wrappers honour it first). A --source sweep must follow it there (F5),
+    # not sweep <data-dir>/<source>. Prefix = source upper, hyphens -> _.
+    override = tmp_path / "custom-viac-root"
+    override.mkdir()
+    _run(override, OLD_A, {"documents/x.pdf": BIG})
+    monkeypatch.setenv("VIAC_DATA_DIR", str(override))
+    trees = dedup._collector_subtrees(tmp_path / "elsewhere", "viac")
+    assert trees == [override]
+    # Without the override it falls back to <data-dir>/<source>.
+    monkeypatch.delenv("VIAC_DATA_DIR", raising=False)
+    assert dedup._collector_subtrees(tmp_path / "elsewhere", "viac") == []
+
+
 def test_source_requires_real_tree_with_run_dirs(tmp_path):
     (tmp_path / "empty").mkdir()                      # a dir with no run dirs
     assert dedup._collector_subtrees(tmp_path, "empty") == []

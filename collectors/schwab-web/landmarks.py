@@ -83,8 +83,8 @@ STATEMENTS_URL = "https://client.schwab.com/app/accounts/statements/"
 
 # Transaction History page. download.py's transactions mode selects
 # each account, applies the date-range filter, and drives the Export
-# modal to save CSV/JSON/XML of the full tx-history; with
-# --with-more-detail it also walks each row's "More" detail modal.
+# modal to save CSV/JSON/XML of the full tx-history; by default (unless
+# --no-more-detail) it also walks each row's "More" detail modal.
 TRANSACTION_HISTORY_URL = "https://client.schwab.com/app/accounts/history/"
 
 
@@ -152,7 +152,7 @@ PAGINATION_HIDDEN_LI_CLASS = "sdps-hide"
 # snapshot in samples/ shows "Last10Years" selected — so we
 # explicitly drive select_option rather than trusting the default.
 # "Custom" exposes two date inputs whose DOM we don't have a
-# sample of yet; --range custom is TODO.
+# sample of yet; a custom date range is TODO.
 DATE_RANGE_SELECT_ID = "date-range-select-id"
 DATE_RANGE_VALUES = (
     "Today",
@@ -165,7 +165,7 @@ DATE_RANGE_VALUES = (
 )
 # 3-month default matches the convention of the sibling
 # collectors (schwab-api, ubs-psn, ubs-web).
-# Bump explicitly with `--range Last10Years` for a full backfill.
+# Widen with `--lookback` (e.g. `--lookback all`) for a full backfill.
 DATE_RANGE_DEFAULT = "Last3Months"
 
 

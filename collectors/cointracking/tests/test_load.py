@@ -404,6 +404,7 @@ def test_scratch_dir_promotes_finished_db_and_cleans_up(tmp_path):
         "--silver-db", str(silver),
         "--scratch-dir", str(scratch),
         "--force",
+        "--no-fetch-prices",  # price fill is default-on; this test is offline
     ])
 
     assert rc == 0
@@ -435,8 +436,76 @@ def test_scratch_dir_cleans_temp_when_promote_fails(tmp_path, monkeypatch):
             "--silver-db", str(silver),
             "--scratch-dir", str(scratch),
             "--force",
+            "--no-fetch-prices",  # price fill is default-on; this test is offline
         ])
 
     assert not silver.with_name(silver.name + ".tmp").exists()  # temp cleaned
     assert not (scratch / silver.name).exists()                 # scratch cleaned
     assert not silver.exists()                                  # target untouched
+
+
+# Tables excluded from the force-rebuild equivalence dump below.
+# `schema_meta` is migration bookkeeping, not silver data: its
+# `applied_at` column defaults to CURRENT_TIMESTAMP, so it records the
+# wall-clock instant each load applied the migrations and necessarily
+# differs between two runs. Every genuine data table instead stamps its
+# rows with the snapshot's deterministic run timestamp, so those match
+# exactly.
+_NON_DATA_TABLES = {"schema_meta"}
+
+
+def _dump_silver_state(silver: Path) -> dict[str, list[tuple]]:
+    """Every base data table's full row set, each deterministically
+    sorted, keyed by table name — a structure two loads can be compared
+    on. A fresh read connection keeps connection-scoped staging temps out
+    of scope, so only the persistent silver tables are dumped."""
+    conn = duckdb.connect(str(silver))
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' "
+            "ORDER BY table_name").fetchall()]
+        state: dict[str, list[tuple]] = {}
+        for t in tables:
+            if t in _NON_DATA_TABLES:
+                continue
+            rows = conn.execute(f'SELECT * FROM "{t}"').fetchall()
+            # Sort on a string projection of each row so NULL / JSON /
+            # Decimal cells order without type-comparison errors; the
+            # rows themselves keep their native typed values for the
+            # equality assertion, making the comparison exact.
+            rows.sort(key=lambda r: [str(c) for c in r])
+            state[t] = rows
+        return state
+    finally:
+        conn.close()
+
+
+def test_force_rebuild_equals_incremental(tmp_path):
+    # `load --force` deletes the silver DB and rebuilds it from all bronze
+    # (silver.reset runs in main() before the work DB is staged, so the
+    # load seeds empty and every snapshot re-ingests). For UNCHANGED
+    # bronze that rebuild must reproduce a plain incremental load exactly
+    # across every data table — the guarantee that makes --force a safe
+    # repair rather than a state-altering operation. --no-fetch-prices
+    # keeps both loads offline (the post-ingest USD price fill is
+    # default-on and would otherwise reach the network).
+    bronze = tmp_path / "bronze"
+    _seed_complete_run(bronze, "20240115T100000Z")
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+
+    argv = ["--bronze-dir", str(bronze), "--silver-db", str(silver),
+            "--no-fetch-prices"]
+
+    # Plain incremental load into a fresh silver DB, then capture state.
+    assert loader.main(argv) == 0
+    incremental = _dump_silver_state(silver)
+    # Guard against a vacuous pass: the load must actually have populated
+    # silver, so the equivalence below compares real state, not two empties.
+    assert incremental["transactions"], "incremental load wrote no transactions"
+
+    # Force rebuild over the SAME unchanged bronze, then re-capture.
+    assert loader.main(argv + ["--force"]) == 0
+    rebuilt = _dump_silver_state(silver)
+
+    assert rebuilt == incremental

@@ -40,12 +40,15 @@ every lifecycle tool keys on.
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from collectorkit import bronze, compress, prune
+from collectorkit import bronze, cli, compress, prune
+
+log = logging.getLogger("collectorkit.recompress")
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,11 @@ def plan_recompress(bronze_dir: Path, config: RecompressConfig,
     targets = []
     skipped = []
     for e in prune.iter_run_eligibility(bronze_dir, pcfg, min_age_s, now):
+        # An eligible run dir whose files all already carry a .zst twin
+        # yields nothing and is reported nowhere. -v traces every dir the
+        # sweep examined and the verdict it reached.
+        log.debug("examined %s -> %s (%s)", e.run_dir.name, e.verdict,
+                  e.reason)
         if e.verdict == prune.SKIP_SYMLINK:
             skipped.append({
                 "path": e.run_dir, "age_s": None,
@@ -207,6 +215,9 @@ def build_parser(description: str,
         prog=prog, description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # `recompress` is not one of the STANDARD_VERBS, so it takes the common
+    # flags directly rather than through the standard group.
+    cli.add_common_args(p)
     p.add_argument(
         "--bronze-dir", type=Path, default=Path("/data"),
         help="Bronze tree root. Default: /data.",
@@ -228,5 +239,6 @@ def main(config: RecompressConfig, argv=None, *,
     """argparse entry point for a collector's thin ``recompress.py``."""
     parser = build_parser(description or __doc__, prog=prog)
     args = parser.parse_args(argv)
+    cli.configure_logging(args.verbose)
     return run(config, args.bronze_dir, dry_run=args.dry_run,
                min_age_hours=args.min_age_hours)

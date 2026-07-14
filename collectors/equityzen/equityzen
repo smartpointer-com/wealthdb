@@ -14,12 +14,15 @@ set -euo pipefail
 
 NAME=equityzen
 ENV_PREFIX=EQUITYZEN
-ENV_VARS=(EQUITYZEN_USERNAME EQUITYZEN_PASSWORD)
+# EQUITYZEN_EMAIL is the documented legacy alias for EQUITYZEN_USERNAME;
+# forwarded so a host-exported alias reaches the container (login.py already
+# reads either from /secrets/equityzen.env). Canonical is EQUITYZEN_USERNAME.
+ENV_VARS=(EQUITYZEN_USERNAME EQUITYZEN_EMAIL EQUITYZEN_PASSWORD)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # /app live-mount while iterating on explore.py
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 HAS_VNC=1           # forward a free 5900-6000 port
-VNC_SUBCOMMANDS=(explore)   # extends the default {vnc-login}
+VNC_SUBCOMMANDS=(explore)   # replaces the default {vnc-login} — no vnc-login verb here
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -30,7 +33,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 equityzen — host wrapper
 
@@ -59,11 +62,11 @@ Subcommands:
                       stage + getMyInvestmentDetails per offering). Writes
                       a UTC-timestamped subdir + run.json manifest under the
                       data dir ($HOST_DATA). --dry-run is a read-only smoke
-                      test (writes nothing); --documents also records
-                      doc/tax-centre metadata.
+                      test (writes nothing); document blobs + tax-centre
+                      metadata are recorded by default, --no-documents skips them.
   load [args...]      Ingest bronze snapshots into the SQLite silver:
                       offerings, positions, cash_flows, tax_documents.
-                      --force re-loads snapshots already in dump_runs.
+                      --force deletes the silver DB and rebuilds from all bronze.
   prune [args...]     Reclaim bronze disk: delete non-complete dumps
                       (crashed downloads with no terminal run.json). No
                       bronze-resident debug artefacts exist, so that is the

@@ -2,20 +2,20 @@
 Parser for SVB Wealth Advisory / NFS brokerage-statement PDFs.
 
 A third statement layout, distinct from the 529 statements
-(``pdf_parsers.py``) and the trust statements
+(``pdf_parsers.py``) and the supplied statements
 (``pdf_parsers_supplied.py``):
 
 * Masthead is ``SVB WEALTH ADVISORY, INC.`` (a brokerage carried
   by National Financial Services LLC — every page footer reads
   ``Account carried with National Financial Services LLC``). There
   is **no** ``svb> Private | Wealth | Trust | Banking`` banner.
-* **One account per PDF** (unlike the multi-account trust
+* **One account per PDF** (unlike the multi-account supplied
   statements), but the ``Account Number:`` header is still
   re-stamped on every page; the parser splits on that header and
   keeps the single logical account.
 * The account id keeps its literal SVB form — ``SV[MRT]-NNNNNN``
   (e.g. ``SVM-000000``) — dash and letters preserved, *not*
-  collapsed to 9 digits like the trust parser does.
+  collapsed to 9 digits like the supplied-statement parser does.
 * Period line is upper-case with the word ``TO`` and may span a
   quarter, not just a calendar month:
   ``STATEMENT FOR THE PERIOD JANUARY 1, 2021 TO MARCH 31, 2021``.
@@ -38,7 +38,7 @@ those keys are always ``None`` in the output):
   ``DESCRIPTION  SYMBOL  qty  $price  $mv  [$eai]``. The symbol is
   a *mid-line* column (the token immediately before the numeric
   tail), **not** parenthesised at the description tail as in the
-  trust layout. ``instrument_key`` is that symbol. Continuation
+  supplied layout. ``instrument_key`` is that symbol. Continuation
   sub-lines carrying ``Estimated Yield …`` / ``Dividend Option …``
   / ``Capital Gain Option …`` / ``7 DAY YIELD …`` (and a bare
   ``CASH`` / ``MARGIN`` account-type token) are skipped.
@@ -65,8 +65,8 @@ those keys are always ``None`` in the output):
   value ``($8,000.00)`` → ``-8000.00``. Long legs print plain.
   Mapping parens → negative for *both* quantity and market value is
   essential — a short option leg read as positive overstates the
-  total by the entire option premium. (The trust parser does not do
-  this, which is why it cannot be reused here.)
+  total by the entire option premium. (The supplied-statement parser
+  does not do this, which is why it cannot be reused here.)
 * **Closing / $0 statements** render no table, just the sentence
   ``There were no positions in your account at the close of the
   statement period.`` → the account is returned with an empty
@@ -78,7 +78,7 @@ The text-level parsers (``parse_statement_period``,
 functions of strings, exercised by unit tests against synthetic
 fixtures. ``parse_svbwa_statement_pdf(path, expected_signature=…)``
 is the orchestration entry-point; it opens the PDF via pdfplumber
-and returns the same dict shape as the trust parser's
+and returns the same dict shape as the supplied-statement parser's
 ``parse_supplied_statement_pdf``.
 """
 
@@ -152,8 +152,8 @@ def parse_account_blocks(text):
     consecutive headers sharing the same account id into one logical
     block. SVB-WA statements carry exactly one account, so this
     normally yields a single block, but the run-length grouping is
-    kept (mirroring the trust parser) so a stray multi-account drop
-    would still split correctly.
+    kept (mirroring the supplied-statement parser) so a stray
+    multi-account drop would still split correctly.
     """
     matches = list(_ACCOUNT_HEADER_RE.finditer(text))
     if not matches:
@@ -590,7 +590,7 @@ def _parse_number(tok):
 
 def parse_svbwa_statement_pdf(path, *, expected_signature=None):
     """Open an SVB-WA statement PDF and return a structured dict
-    with the same shape as the trust parser::
+    with the same shape as the supplied-statement parser::
 
         {
             "path": "<absolute path>",

@@ -184,7 +184,7 @@ Filename conventions:
   in-scope accounts** (consolidated; account-selector state does
   NOT scope the export). Account dimension lives in the CSV's
   `Account Number` column, same shape as positions. With a
-  `--since/--until` window, the request is bisected into ≤93-day
+  `--lookback` window, the request is bisected into ≤93-day
   chunks (Fidelity's per-export cap, configurable via
   `MAX_ACTIVITY_WINDOW_DAYS`); one CSV per chunk, named
   `activity_<YYYYMMDD>__<YYYYMMDD>.csv`. With no window, the
@@ -305,7 +305,7 @@ databases always conform to the latest schema.
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's full normalized payload + a per-file occurrence index; file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
-| `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and user-supplied trust statements under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
+| `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
 
 Notes:
 - `currency` defaults to `'USD'` on both `positions` and
@@ -420,11 +420,11 @@ account UI signals (Fidelity emits none — see §11.6):
 statement-PDF archives**, each with its own parser, both feeding
 the same silver table:
 
-**(a) 529 statements — auto-scraped.** Fidelity's *web document
-center* exposes monthly / quarterly statement PDFs for the
-account groups it serves statements for, such as 529 plan accounts. `download.py`
-scrapes these into `<dump>/documents/Statement<MMDDYYYY>.pdf`,
-parsed by `pdf_parsers.parse_statement_pdf()` and wired into
+**(a) Document-center statements — auto-scraped.** Fidelity's *web
+document center* exposes monthly / quarterly statement PDFs for the
+account groups it serves statements for, such as 529 plan accounts.
+`download.py` scrapes these into
+`<dump>/documents/Statement<MMDDYYYY>.pdf`, parsed by `pdf_parsers.parse_statement_pdf()` and wired into
 `load.py` via a `ProcessPoolExecutor` worker pool (PDF text
 extraction is CPU-bound; SQLite insert stays on the main thread).
 The cross-walk from the human-readable fund description to an
@@ -435,36 +435,36 @@ preserved for downstream resolution.
 
 **(b) Supplied statements — sourced out-of-band.** An account group
 the web document center serves no statements for can still have
-statement PDFs supplied out-of-band and dropped in.
-These use a different layout (`pdf_parsers_supplied.py`) and
-are loaded from a directory rather than the scraped dump tree.
+statement PDFs supplied out-of-band and dropped in. These use a
+different layout (`pdf_parsers_supplied.py`) and are loaded from a
+directory rather than the scraped dump tree.
 
-> **Reproducible-from-bronze.** The trust PDFs default to
+> **Reproducible-from-bronze.** The supplied PDFs default to
 > **`<bronze-dir>/supplied-statements/`** — *under* the bronze tree —
 > precisely so `load --force` (which wipes silver and rebuilds from
 > bronze) re-ingests them automatically. An earlier design sourced
 > them from an arbitrary external dir reachable only via
 > `--supplied-statements-dir`; every `--force` rebuild or flag-less
-> nightly reload then silently dropped the entire trust history,
+> nightly reload then silently dropped that entire history,
 > since it lived only in silver and nothing under bronze could
 > rebuild it. Keeping the PDFs bronze-resident restores the "silver
 > is reproducible from bronze alone" invariant that `silver.reset()`
 > depends on. The flag still works as an override.
 >
-> A misfiled PDF (a statement for an unrelated account that Fidelity
-> bundled into the batch) is rejected by a page-1 **signature** check
-> — a substring (the account registration) that must appear in the document.
-> The signature is read from `--supplied-statement-signature` or, when
+> A misfiled PDF (a statement for an unrelated account) is rejected by
+> a page-1 **signature** check — a substring (the account registration)
+> that must appear in the document. The signature is read from `--statement-signature` or, when
 > omitted, the first line of **`<supplied-statements-dir>/signature.txt`**
 > so the registration (PII) stays in the local data dir, never in
 > argv / shell history / a committed orchestration script.
 
 An account that appears in historical statements but in no live
-download gets a placeholder `accounts` (+ `portfolios`) master row at the account's
-last historical `as_of_date` so gold's historical-account projection
-has something to join against. Gold's per-source latest-snapshot
-semantics then zero the account out automatically for every date
-after its final statement (no zombie balances).
+download gets a placeholder `accounts` (+ `portfolios`) master row.
+The loader synthesises it at the account's last historical
+`as_of_date`, so gold's historical-account projection has something
+to join against. Gold's per-source latest-snapshot semantics then
+zero the account out automatically for every date after its final
+statement (no zombie balances).
 
 ### 4.6 Tax-form structured data
 
@@ -749,7 +749,8 @@ each in its own section, including **EDUCATION (529)** sections.
 (`Statement*.pdf` glob → `pdf_parsers.parse_statement_pdf`) parses the
 529 holdings into `historical_position_snapshots` (§4.5). An account
 outside the household surfaces as interested-party instead, which the
-walk leaves alone; its history can come from `<bronze-dir>/supplied-statements/`.
+walk leaves alone; its history can come from
+`<bronze-dir>/supplied-statements/`.
 
 ### 8.6 Balances + Performance
 

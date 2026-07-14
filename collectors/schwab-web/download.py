@@ -17,13 +17,13 @@ walk() drives two read-only surfaces (CLAUDE.md §1):
   Trade Confirms intentionally skipped).
 
   Transaction History — drive the Export modal to save CSV / JSON
-  / XML of the full tx-history per account; with --with-more-detail,
-  also click each row's "More" link and capture the per-row detail
-  modal (Settle Date / CUSIP / Principal / Commission / Industry
-  Fee) into a sidecar more-details.json the loader merges into
+  / XML of the full tx-history per account; by default (unless
+  --no-more-detail), also click each row's "More" link and capture
+  the per-row detail modal (Settle Date / CUSIP / Principal /
+  Commission / Industry Fee) into a sidecar more-details.json the loader merges into
   silver.
 
-Bronze tree: <dest>/<UTC-timestamp>/ with one PDF per document
+Bronze tree: <bronze-dir>/<UTC-timestamp>/ with one PDF per document
 under statements/<account>/ plus a run.json manifest.
 """
 
@@ -49,7 +49,7 @@ log = logging.getLogger("schwab-web.download")
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
 
-# Bronze run-directory naming: <dest>/<UTC-timestamp>/
+# Bronze run-directory naming: <bronze-dir>/<UTC-timestamp>/
 RUN_DIR_FMT = "%Y%m%dT%H%M%SZ"
 
 # ============================================================
@@ -1115,9 +1115,9 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     """Per-account: select the account, set the date-range
     filter, click Search, then drive the Export modal to save
     CSV + JSON + XML of the full filtered transaction set under
-    <dest>/transactions/<suffix>/. With ``debug``, also captures
+    <bronze-dir>/transactions/<suffix>/. With ``debug``, also captures
     one HTML snapshot of the rendered landing page as a debug
-    baseline under <dest>/screenshots/ (never read by load;
+    baseline under <bronze-dir>/screenshots/ (never read by load;
     reclaimed by `prune`).
 
     When `with_more_detail=True`, additionally walks every
@@ -1321,7 +1321,7 @@ def _open_run_dir(dest_root: Path, run_ts: str, *, dry_run: bool):
         run_dir.mkdir(parents=True, exist_ok=True)
         yield run_dir
 
-def walk(page, dest_root: Path, *, mode: str = "both",
+def walk(page, dest_root: Path, *, mode: str = "all",
          dry_run: bool = False,
          screenshot_dir: Path | None = None,
          date_range: str = schwab.DATE_RANGE_DEFAULT,
@@ -1409,7 +1409,7 @@ def walk(page, dest_root: Path, *, mode: str = "both",
             _write_manifest(run_dir, run_summary)
             return run_summary
 
-        if mode in ("statements", "both"):
+        if mode in ("statements", "all"):
             for acct in accounts:
                 try:
                     per_acct = download_account(
@@ -1433,7 +1433,7 @@ def walk(page, dest_root: Path, *, mode: str = "both",
                 run_summary["statements"].append(per_acct)
                 _write_manifest(run_dir, run_summary)
 
-        if mode in ("transactions", "both"):
+        if mode in ("transactions", "all"):
             tx_entries = run_transactions(
                 page, accounts, run_dir, screenshot_dir, date_range,
                 with_more_detail=with_more_detail, debug=debug,

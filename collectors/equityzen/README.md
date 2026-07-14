@@ -44,8 +44,8 @@ silver DB.
 | --- | --- | --- |
 | `explore`  | **implemented** | Camoufox + VNC discovery harness (HAR + crash-safe network log + trace + click log). Pre-fills the login form (login-path-gated, fill-once + clear/verify, Firefox password-manager disabled; never submits). Already run; re-run only when a selector changes. |
 | `login`    | **implemented** | Headless CLI flow: headed Camoufox under Xvfb (no VNC), email/password (`submitLogIn`) + stdin TOTP prompt → Submit-button click (`loginTotp`), persistent profile. Renews silently if the session is still valid. Verified end-to-end. |
-| `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; `--documents` fetches each offering's document PDF blobs (capital-account statements, K-1s) via the session. **Download-avoidant** (`collectorkit.docdedup`), chosen per document class: parsed / restatement-prone documents (statements, K-1s, reports) are always fetched and content-compared (a restated one is kept, an unchanged one hardlinked for disk reclaim), while executed-once legal / offering documents (an explicit, curated allow-list) are hardlinked in rather than re-fetched. `--documents-force` bypasses it. |
-| `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` re-loads). |
+| `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; each offering's document PDF blobs (capital-account statements, K-1s) are fetched via the session by default, with a `--no-documents` opt-out. **Download-avoidant** (`collectorkit.docdedup`), chosen per document class: parsed / restatement-prone documents (statements, K-1s, reports) are always fetched and content-compared (a restated one is kept, an unchanged one hardlinked for disk reclaim), while executed-once legal / offering documents (an explicit, curated allow-list) are hardlinked in rather than re-fetched. `--documents-force` bypasses it. |
+| `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` deletes silver + rebuilds from bronze). |
 | `prune`    | **implemented** | Reclaims bronze disk via the shared `collectorkit.prune` engine. Deletes non-complete dumps (crashed downloads with no terminal `run.json`); keeps every load input. No bronze-resident debug artefacts exist, so that is the sole target. `--dry-run` previews; `--min-age-hours` guards an in-flight download. |
 
 The gold adapter is registered with the gold engine and projects this
@@ -75,14 +75,15 @@ run is then just the `wealthdb.cfg` `silver_sources` entry above
 #    until an explicit logout).
 ./equityzen login
 
-# 5. Pull a fresh bronze dump (offerings + positions + cash flows). Add
-#    --documents to also fetch the document PDFs (capital-account
-#    statements, K-1s) that load parses for fund NAVs + tax-basis capital.
-#    Re-runs are download-avoidant: executed-once legal/offering docs are
-#    hardlinked from a prior bronze run instead of re-fetched; parsed /
-#    restatement-prone docs (statements, K-1s, reports) are always
-#    re-fetched and content-compared. --documents-force re-fetches all.
-./equityzen download --documents
+# 5. Pull a fresh bronze dump (offerings + positions + cash flows). The
+#    document PDFs (capital-account statements, K-1s) that load parses
+#    for fund NAVs + tax-basis capital are fetched by default; pass
+#    --no-documents to skip them. Re-runs are download-avoidant:
+#    executed-once legal/offering docs are hardlinked from a prior bronze
+#    run instead of re-fetched; parsed / restatement-prone docs
+#    (statements, K-1s, reports) are always re-fetched and
+#    content-compared. --documents-force re-fetches all.
+./equityzen download
 
 # 6. Ingest bronze into the SQLite silver.
 ./equityzen load
@@ -93,7 +94,7 @@ Probe / iterate without firing a 2FA push or writing data:
 ```sh
 ./equityzen login --check          # exits 0 if session valid, 1 if not
 ./equityzen download --dry-run     # walks the GraphQL reads, exports nothing
-./equityzen load --force           # re-ingest snapshots already in dump_runs
+./equityzen load --force           # delete silver + rebuild from all bronze
 ```
 
 Override host mounts via env: `EQUITYZEN_SECRETS_DIR`,
@@ -115,7 +116,7 @@ walk that crashed before writing its terminal `run.json` (its
 / `offerings/` such a dir holds; deleting one surfaces on the next
 `load --force` rebuild. There is nothing else to reclaim: `download`
 writes **no** bronze-resident debug artefact (its diagnostics live
-externally — `login --debug-dir` screenshots and the `explore` verb's
+externally — `login --screenshot-dir` screenshots and the `explore` verb's
 `/debug` HAR/trace/click log), so `debug_subdirs` is empty and a
 complete dump has nothing pruned. Every load input is therefore
 untouched — the `investments.json`, `offerings/*/detail.json`, and the

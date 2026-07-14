@@ -58,12 +58,12 @@ Schwab specifics:
 - One HTTPS round-trip per artefact kind: accounts, user prefs,
   positions, transactions (chunked into ≤1-year windows because the
   endpoint caps that), open orders.
-- Optional `--with-instruments` extends the run with a `/instruments`
-  lookup for every symbol seen in positions and transactions. Default
-  off because instrument metadata changes rarely; intended for a
-  reduced schedule (weekly, monthly). See §4.9.
+- By default the run extends with a `/instruments` lookup for every
+  symbol seen in positions and transactions; `--no-instruments` opts
+  out. Because instrument metadata changes rarely, a high-cadence
+  schedule can skip the extra round-trip via the opt-out. See §4.9.
 - Writes one JSON file per (artefact kind, account, window) into a
-  `<dest>/<UTC-timestamp>/` directory. Timestamp is the run-start
+  `<bronze-dir>/<UTC-timestamp>/` directory. Timestamp is the run-start
   time; subsequent runs get a new directory, never overwrite.
 - Drops a `run.json` status manifest into the run dir: `in-progress`
   at run-dir creation, atomically overwritten with `complete` (plus a
@@ -452,9 +452,10 @@ silver and pass it downstream. Two coherent ways out:
 2. Fill it in for equities by hitting a second Schwab endpoint that
    *does* return descriptions (`/marketdata/v1/instruments`).
 
-We chose (2) — and made it opt-in via `download.py --with-instruments`
-because the metadata is slow-changing and you don't want to pay for
-the extra round-trip on every dump. The fetched payload lands in a
+We chose (2) — the `/instruments` lookup runs by default, with a
+`download.py --no-instruments` opt-out, because the metadata is
+slow-changing and the extra round-trip needn't fire on every dump.
+The fetched payload lands in a
 separate bronze file (`instruments.json`), consistent with the
 "one Schwab response per file" convention. The silver loader populates
 an `instruments` table when that bronze file is present; absence is
@@ -462,13 +463,14 @@ not an error.
 
 **Generalisable pattern: optional enrichment bronze artefacts.**
 
-- Triggered by an explicit flag on the dump tool, not by default.
+- Gated by a dedicated flag on the dump tool (here default-on, with a `--no-instruments` opt-out).
 - Live in their own bronze file; don't get merged into the
   state/event artefacts.
 - Map to their own silver table; do not back-fill columns into
   existing tables.
-- Run on a slower cadence than the state/event dump (Schwab's
-  instrument metadata only really changes on corporate-naming events).
+- The opt-out lets it run on a slower cadence than the state/event
+  dump (Schwab's instrument metadata only really changes on
+  corporate-naming events).
 
 This pattern accepts a small deviation from "silver mirrors source
 faithfully": silver may *add* missing data when the source supplies

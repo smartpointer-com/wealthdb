@@ -25,8 +25,8 @@ queryable silver).
 
 | Verb | Status | Notes |
 | --- | --- | --- |
-| `login` | implemented | The auth path (formerly `byo-login`). If the saved profile still holds a valid session (cookie unexpired **and** confirmed live by a quick headless server probe — a cookie can be unexpired yet stale), the cookie is lifted and it exits immediately — no VNC. Otherwise: stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). No unattended login (the SPA is bot-walled). `--check` probes only; `--force` re-logs in. Any K-1 / financial docs you download in the session save to `$XDG_DATA_HOME/wealthdb/angellist/angellist-documents/`. |
-| `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. |
+| `login` | implemented | The auth path (formerly `byo-login`). If the saved profile still holds a valid session (cookie unexpired **and** confirmed live by a quick headless server probe — a cookie can be unexpired yet stale), the cookie is lifted and it exits immediately — no VNC. Otherwise: stock Mozilla Firefox under VNC; you log in by hand (clears the anti-bot challenge); on close, the session cookie is lifted to `~/.secrets/angellist-cookies.json`. ~monthly (session ≈27 days). No unattended login (the SPA is bot-walled). `--check` probes only; `--fresh` re-logs in. Any K-1 / financial docs you download in the session save to `$XDG_DATA_HOME/wealthdb/angellist/angellist-documents/`. |
+| `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. `--no-documents` is accepted for fleet-wide flag uniformity but not yet honoured — the tax documents are downloaded unconditionally. |
 | `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
 | `prune`     | implemented | Reclaims bronze disk: deletes whole non-complete dumps (a crashed / interrupted `download`). angellist writes no bronze-resident debug artefact, so complete dumps are left intact. Runs host-side; `--dry-run` previews. |
@@ -62,7 +62,7 @@ Iterate / probe without a fresh login:
 
 ```sh
 ./angellist download --dry-run    # navigate + capture, write no bronze
-./angellist load --force          # re-load snapshots already in dump_runs
+./angellist load --force          # delete silver + rebuild from all bronze
 ```
 
 Override host mounts via env: `ANGELLIST_SECRETS_DIR`,

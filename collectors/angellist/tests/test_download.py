@@ -39,11 +39,11 @@ def test_abs_url():
     assert download._abs_url("") == ""
 
 
-def test_check_session_flag():
-    # `login` uses `download --check-session` as the authoritative server
+def test_check_flag():
+    # `login` uses `download --check` as the authoritative server
     # probe (a cookie can be unexpired yet server-rejected).
-    assert download.parse_args(["--check-session"]).check_session is True
-    assert download.parse_args([]).check_session is False
+    assert download.parse_args(["--check"]).check is True
+    assert download.parse_args([]).check is False
 
 
 def test_debug_flag():
@@ -63,3 +63,21 @@ def test_lookback_flag():
     assert download.parse_args([]).lookback is None
     with pytest.raises(SystemExit):
         download.parse_args(["--lookback", "1m"])  # not a preset
+
+
+def test_no_documents_flag():
+    # The fleet-wide document opt-out, now a real skip rather than an
+    # accepted-and-warned no-op: main() calls download_documents only when
+    # it is absent. Default off, so a bare run still fetches.
+    assert download.parse_args(["--no-documents"]).no_documents is True
+    assert download.parse_args([]).no_documents is False
+
+
+def test_no_documents_help_promises_a_skip(capsys):
+    # Guards against the flag regressing to a warn-only stub: the help must
+    # still declare it and must not advertise it as unimplemented.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--no-documents" in out
+    assert "NOT YET IMPLEMENTED" not in out

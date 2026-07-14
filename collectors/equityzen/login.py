@@ -132,10 +132,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "extra detail (which submit mechanism fired, visible buttons)."),
     )
     p.add_argument(
-        "--debug-dir", type=Path, default=DEFAULT_DEBUG_DIR,
-        help="Where --debug writes screenshots. Default: %(default)s.",
+        "--screenshot-dir", type=Path, default=DEFAULT_DEBUG_DIR,
+        help="Where --debug writes login failure screenshots. "
+             "Default: %(default)s.",
     )
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -366,7 +367,7 @@ def main(argv: list[str]) -> int:
 
     username = password = ""
     if not args.check:
-        if envfile.source_env_file(args.env_file):
+        if envfile.source_env_file(args.env_file, prefer_file=True):
             log.info("env file:    %s (sourced)", args.env_file)
         username = next((os.environ[k] for k in USER_ENVS if os.environ.get(k)), "")
         password = os.environ.get(PASS_ENV, "")
@@ -407,7 +408,7 @@ def main(argv: list[str]) -> int:
             return 0
 
         _do_login(page, username, password, args.totp, timeout_ms,
-                  args.debug, args.debug_dir)
+                  args.debug, args.screenshot_dir)
         log.info("login complete — session persisted to %s", args.profile_dir)
         return 0
 

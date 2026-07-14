@@ -267,3 +267,76 @@ def test_idempotent_reload(tmp_path):
     load.main(["--bronze-dir", str(dest), "--silver-db", str(db)])  # already loaded -> skip
     n2 = sqlite3.connect(db).execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0]
     assert n1 == n2 == 2  # investment + valuation, no duplicates
+
+
+def _dump_silver(db):
+    """Full snapshot of every user table's rows, for asserting two silver
+    builds carry identical data. Tables are discovered via sqlite_master (a
+    newly added one is picked up automatically). Columns whose default is the
+    current wall-clock time — the datetime('now') ingest stamps
+    schema_meta.applied_at and dump_runs.loaded_at — are dropped: they record
+    WHEN a load ran, not the bronze-derived data, so they legitimately differ
+    between two builds and form no part of "silver is reproducible from
+    bronze". Each table's rows are ordered by their repr, a stable total order
+    independent of insertion sequence and of NULL/int column mixing."""
+    c = sqlite3.connect(db)
+    try:
+        tables = [r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        state = {}
+        for t in tables:
+            keep = [name for _cid, name, _ty, _nn, dflt, _pk
+                    in c.execute(f'PRAGMA table_info("{t}")')
+                    if not (dflt and "now" in dflt.lower())]
+            sel = ", ".join(f'"{col}"' for col in keep)
+            state[t] = sorted(c.execute(f'SELECT {sel} FROM "{t}"'), key=repr)
+        return state
+    finally:
+        c.close()
+
+
+def test_force_rebuild_equals_incremental(tmp_path):
+    """`load --force` deletes the silver DB and rebuilds it from all bronze;
+    for UNCHANGED bronze that reproduces the plain incremental load exactly
+    (silver is a pure function of bronze). Guards the silver.reset wiring in
+    main(): a forced rebuild must land on identical data, never drift or
+    duplicate."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    # One complete run spanning every populated table: two positions (an SPV
+    # and a fund), the dashboard summary + its NAV time series, an open
+    # commitment, and the funding cash ledger — an account-level deposit, an
+    # investment matched to a current position, and one into an exited company
+    # that derives a thin offering from the ledger.
+    funding = {"op": "InvestmentEntityQuery", "data": {"invest": {"investmentEntity": {
+        "entityId": "e1", "slugName": "acct-individual", "legalName": "X",
+        "balance": m(120000),
+        "transactions": [
+            {"id": "t1", "date": 100, "type": "deposit", "amount": m(200000),
+             "balance": m(200000), "description": "Deposit from bank", "syndicateName": None},
+            {"id": "t2", "date": 200, "type": "investment", "amount": m(-50000),
+             "balance": m(150000), "description": "Investment in Synthetic Co",
+             "syndicateName": "Synth SPV"},
+            {"id": "t3", "date": 300, "type": "investment", "amount": m(-30000),
+             "balance": m(120000), "description": "Investment in Exited Co",
+             "syndicateName": "Exit SPV"},
+        ]}}}}
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([pos_node("p1", "acme-co-s", name="Synthetic Co"),
+                           pos_node("p2", "acme-fund-f", name="Fund One", total=None)]),
+        dashboard_capture(), commitments_capture(), funding])
+
+    # Plain incremental load, then snapshot the whole silver DB.
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    before = _dump_silver(db)
+    # Sanity: the load actually populated the core tables, so the equality
+    # below can't pass vacuously on two empty builds.
+    assert before["offerings"] and before["position_snapshots"] \
+        and before["funding_transactions"]
+
+    # Force = reset + full rebuild from the same, unchanged bronze.
+    assert load.main(
+        ["--bronze-dir", str(dest), "--silver-db", str(db), "--force"]) == 0
+    after = _dump_silver(db)
+
+    assert after == before

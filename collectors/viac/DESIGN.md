@@ -16,7 +16,7 @@ conventions. This document only covers what's VIAC-specific.
 | Verb | Status |
 | --- | --- |
 | `login.py` | implemented (pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600) |
-| `download.py` | implemented (pure httpx; `--with-transaction-documents` gate; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry) |
+| `download.py` | implemented (pure httpx; per-event TRANSACTION receipts on by default with a `--no-transaction-documents` opt-out; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry) |
 | `load.py` + `migrations/0001_initial.sql` | implemented (idempotent on `dump_runs.snapshot_at`) |
 
 What's NOT implemented: PVB (Pillar-2 vested-benefits) per-
@@ -200,13 +200,15 @@ code would need to change beyond the underlying HTTP client.
 
 **PDF gating** (`download.py`):
 
-- **Default**: download non-TRANSACTION docs (statements,
-  Bescheinigungen, contracts, investment profiles) plus
-  `SECURITY_FUSION` TRANSACTION docs — the only place the
-  old→new ISIN mapping for fund mergers lives.
-- **`--with-transaction-documents`**: also download the per-
-  event TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE,
-  INTEREST, DIVIDEND_CANCELLATION).
+- **Default**: download everything — the non-TRANSACTION docs
+  (statements, Bescheinigungen, contracts, investment profiles),
+  the `SECURITY_FUSION` TRANSACTION docs (the only place the
+  old→new ISIN mapping for fund mergers lives), and the per-event
+  TRANSACTION PDFs (TRADE_REPORT, DIVIDEND, FEE_CHARGE, INTEREST,
+  DIVIDEND_CANCELLATION).
+- **`--no-transaction-documents`**: skip the per-event TRANSACTION
+  PDFs, keeping the non-TRANSACTION docs and the `SECURITY_FUSION`
+  TRANSACTION docs (the ISIN-mapping source is always fetched).
 
 **Cross-run download-avoidance** — in-gate PDF fetches run
 through the shared [`collectorkit.docdedup`](../../shared/collectorkit/collectorkit/docdedup.py)

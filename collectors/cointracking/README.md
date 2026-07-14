@@ -62,18 +62,19 @@ otherwise unattended.
 #    [day, portfolio, coin, quote_currency] — CT-derived, used so the
 #    gold layer can match CT's per-portfolio totals byte-exactly).
 #    Reconciles final balances vs the balance CSV per portfolio.
-#    Pass --fetch-prices to also pull missing USDT-denominated
-#    prices from Binance at the end (rolls fetch-prices --missing in).
-./cointracking load --fetch-prices
+#    The post-ingest USD price fill runs by default: it pulls missing
+#    USDT-denominated prices from Binance at the end (rolls
+#    fetch-prices --missing in). Pass --no-fetch-prices to skip it.
+./cointracking load
 
-# 6. Cron / launchd: a nightly `./cointracking download && ./cointracking load --fetch-prices`
+# 6. Cron / launchd: a nightly `./cointracking download && ./cointracking load`
 #    is unattended for the multi-year lifetime of the device-trust cookie.
 ```
 
 Standalone USD-price tools:
 
 ```sh
-./cointracking fetch-prices --missing   # fill gaps (e.g. after load without --fetch-prices)
+./cointracking fetch-prices --missing   # fill gaps (e.g. after load --no-fetch-prices)
 ./cointracking fetch-prices             # full re-fetch (corruption recovery)
 ```
 
@@ -83,7 +84,7 @@ fetches USDT-denominated daily closes into `coin_prices` via
 Binance's `/api/v3/klines?symbol=<TICKER>USDT&interval=1d` endpoint.
 The CT-ticker → Binance-symbol mapping is built lazily from
 `/api/v3/exchangeInfo` (filter for USDT pairs) and cached in
-`coin_mapping`. Both `fetch-prices --missing` and `load --fetch-prices`
+`coin_mapping`. Both `fetch-prices --missing` and `load`'s default price fill
 always re-fetch the latest priced day so the previous run's intraday
 snapshot gets upgraded to the close price.
 
@@ -113,7 +114,7 @@ Probe the session without firing a 2FA push:
 ./cointracking login --check    # exits 0 if session is valid, 1 if not
 ./cointracking download --dry-run    # walks navigation, skips exports
 ./cointracking load --replay-only    # re-runs the holdings replay only
-./cointracking load --force          # re-ingest snapshots already in dump_runs
+./cointracking load --force          # delete silver + rebuild from all bronze
 ```
 
 ## Re-discovery: when cointracking changes their UI

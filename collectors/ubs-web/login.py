@@ -32,7 +32,7 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-from collectorkit import bronze, envfile, session
+from collectorkit import bronze, cli, envfile, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -55,12 +55,14 @@ LANDMARK_TIMEOUT_MS = 30_000
 # storageState file mode. CLAUDE.md §3 — never relax below 0600.
 STATE_FILE_MODE = 0o600
 
-# Default env-file locations. The wrapper mounts ~/.secrets to
-# /secrets inside the container, so /secrets/ubs.env is the
-# canonical place to drop the contract-number env var. We also
-# look at $HOME/.secrets/ubs.env so the script works outside the
-# container for local dev.
+# Default env-file locations (the wrapper mounts ~/.secrets at /secrets).
+# ubs-web owns `<source>.env` (ubs-web.env) for the contract number; the
+# bank-level `ubs.env` is a legacy fallback (shared with a future ubs-*
+# sibling). First existing wins (F48). Host paths let the script run outside
+# the container for local dev.
 DEFAULT_ENV_FILE_CANDIDATES = (
+    Path("/secrets/ubs-web.env"),
+    Path.home() / ".secrets" / "ubs-web.env",
     Path("/secrets/ubs.env"),
     Path.home() / ".secrets" / "ubs.env",
 )
@@ -74,7 +76,11 @@ CONTRACT_NUMBER_ENV = "UBS_CONTRACT_NUMBER"
 # dir (default ~/.secrets, overridable via UBS_WEB_SECRETS_DIR /
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
-DEFAULT_STATE_PATH = Path("/secrets/ubs_web_state.json")
+DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
+# Legacy default (underscore) — still read when the new-named file is absent,
+# so an existing session isn't orphaned by the rename (F18). New logins write
+# DEFAULT_STATE_PATH, migrating the session to the hyphenated name.
+LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -130,9 +136,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "--screenshot-dir; the bundle lands there alongside "
               "screenshots. Never auto-writes to the secrets dir."),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
-    )
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -149,14 +153,16 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
     """
     env_files: list[Path]
     if args.env_file is not None:
+        if not args.env_file.exists():
+            raise SystemExit(f"--env-file does not exist: {args.env_file}")
         env_files = [args.env_file]
     else:
-        env_files = [p for p in DEFAULT_ENV_FILE_CANDIDATES if p.exists()]
+        # First existing candidate wins (ubs-web.env over legacy ubs.env);
+        # don't source both, which would let the legacy file override.
+        env_files = [p for p in DEFAULT_ENV_FILE_CANDIDATES if p.exists()][:1]
 
     for env_file in env_files:
-        if not env_file.exists():
-            raise SystemExit(f"--env-file does not exist: {env_file}")
-        envfile.source_env_file(env_file)
+        envfile.source_env_file(env_file, prefer_file=True)
 
     if args.contract_number:
         return args.contract_number.strip()
@@ -686,7 +692,8 @@ def main(argv: list[str]) -> int:
 
     if args.check:
         return run_check(
-            state_path=args.state_path,
+            state_path=session.resolve_state_path(
+                args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH),
             screenshot_dir=args.screenshot_dir,
             trace=args.trace,
         )

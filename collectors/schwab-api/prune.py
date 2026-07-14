@@ -12,8 +12,12 @@ REST collector: a bronze run dir is a flat set of JSON artefacts
 manifest, and there are no bronze-resident debug artefacts (the
 browser-flow page captures / Playwright traces belong to ``login.py``
 and land in a separate ``/debug`` dir, never in bronze). So
-``debug_subdirs`` is empty and the verb's sole effect is reclaiming
-whole run dirs that are not complete dumps.
+``debug_subdirs`` is empty and the verb's sole effect *inside bronze* is
+reclaiming whole run dirs that are not complete dumps.
+
+That separate ``/debug`` dir is reclaimed too — the wrapper passes it as
+the engine's ``--debug-dir``, since every ``login --trace`` leaves a
+bundle there and nothing else ever clears them out.
 
 The data artefacts are now zstd-compressed as they land
 (``accounts_positions.json.zst`` etc.; plain ``.json`` in

@@ -1,10 +1,11 @@
 """
-Parsers for Fidelity legacy / trust-account statement PDFs.
+Parsers for legacy statement PDFs supplied out-of-band.
 
-These trust statements aren't covered by the standard positions /
+Fidelity does not serve these statements through the positions /
 activity scraper feeds, so the historical archive is reconstructed by
-parsing the statement PDFs. The layout differs from the retail 529
-statements parsed in `pdf_parsers.py`:
+parsing PDFs dropped into the supplied-statements directory. The
+layout differs from the retail 529 statements parsed in
+`pdf_parsers.py`:
 
 * The page header is a private-wealth masthead rather than the
   retail Fidelity layout.
@@ -69,7 +70,7 @@ from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
 
 # A coarse, human-readable epoch for load.py's parse-cache namespace.
 # Automatic invalidation is handled by the source fingerprint (see
-# load._TRUST_PARSER_FINGERPRINT / collectorkit.srcfp), which re-keys the
+# load._SUPPLIED_PARSER_FINGERPRINT / collectorkit.srcfp), which re-keys the
 # cache whenever this module or its import closure changes, so an edit to
 # the text-level parsers cannot be replayed under stale cache entries.
 # Bumping this constant is an optional manual override to force a
@@ -84,7 +85,7 @@ PARSER_VERSION = "1"
 # The statement period parser, month map and the ``Account #``
 # header regex (``_ACCOUNT_HEADER_RE``) are shared with the 529
 # parser — see pdf_common. ``parse_account_blocks`` below glues the
-# header Fidelity re-stamps on every page of a trust account.
+# header Fidelity re-stamps on every page of an account section.
 
 
 @dataclass
@@ -94,7 +95,8 @@ class AccountBlock:
 
 
 def parse_account_blocks(text):
-    """Split a statement's full text into one ``AccountBlock`` per sub-account.
+    """Split a statement's full text into one ``AccountBlock`` per
+    sub-account.
 
     Fidelity re-stamps the ``Account #`` header on **every page**
     of an account's section, so a naive split would emit one block
@@ -199,7 +201,7 @@ _NONDATA_LINE_PREFIXES = (
 
 
 @dataclass
-class TrustHoldingRow:
+class SuppliedHoldingRow:
     """One holdings line from a per-account section.
 
     ``instrument_key`` is the ticker for equities/funds (extracted
@@ -315,7 +317,7 @@ def parse_holdings_block(account_text, *, expected_signature=None):
             if cusip is not None:
                 ticker = cusip
         clean_desc = _TICKER_RE.sub("", desc).strip() or desc
-        row = TrustHoldingRow(
+        row = SuppliedHoldingRow(
             description=clean_desc,
             instrument_key=ticker,
             quantity=_parse_number(numeric_tokens[0]),
@@ -336,8 +338,8 @@ def parse_holdings_block(account_text, *, expected_signature=None):
 def _is_boilerplate(line, signature=None):
     if line in _SECTION_HEADERS:
         return True
-    # The per-account registrant header (the trust/registration
-    # name Fidelity re-stamps at every page break) can land inside
+    # The per-account registrant header (the registration name
+    # Fidelity re-stamps at every page break) can land inside
     # a Holdings block. Skip it by matching the runtime
     # ``expected_signature`` rather than embedding the name here.
     if signature and line.startswith(signature):
@@ -379,7 +381,7 @@ def _parse_core_account_row(line, all_lines, idx, signature=None):
         consumed += 1
         ticker = _extract_ticker(desc)
     clean_desc = _TICKER_RE.sub("", desc).strip() or desc
-    return TrustHoldingRow(
+    return SuppliedHoldingRow(
         description=clean_desc,
         instrument_key=ticker,
         quantity=_parse_number(qty_str),
@@ -440,7 +442,7 @@ def _parse_number(tok):
 # ============================================================
 
 def parse_supplied_statement_pdf(path, *, expected_signature=None):
-    """Open a trust statement PDF and return a structured dict:
+    """Open a supplied statement PDF and return a structured dict:
 
         {
             "path": "<absolute path>",
@@ -455,13 +457,13 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
             ],
         }
 
-    ``expected_signature`` (e.g. ``"EXAMPLE TRUST"``) is an
+    ``expected_signature`` (e.g. ``"EXAMPLE REGISTRATION"``) is an
     optional string the page-1 text must contain for the PDF to
     parse. Defends against misfiled statements (a statement for a
     different person dropped into the supplied-statements directory
-    will still match the ``<trust-name> *.PDF`` filename filter);
-    the
-    returned dict carries ``{"_error": "signature-mismatch", ...}``
+    will still match the ``<registration> *.PDF`` filename filter);
+    the returned dict carries
+    ``{"_error": "signature-mismatch", ...}``
     so the loader can log + skip without bailing the whole run.
 
     pdfplumber is imported inside the function so the text-level
@@ -520,7 +522,7 @@ def _main(argv):
     import json as _json
     p = argparse.ArgumentParser(
         description="Extract per-account Holdings rows from one or "
-                    "more Fidelity legacy trust statement PDFs "
+                    "more legacy supplied statement PDFs "
                     "and emit JSON.",
     )
     p.add_argument("pdf", nargs="+", help="One or more PDF paths.")

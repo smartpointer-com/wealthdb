@@ -16,8 +16,8 @@ and captures the investor GraphQL responses as raw bronze.
     holdings surface carries everything valuation needs, including the
     reliable CLOSED-deal prices (your purchase + your tenders). See the
     "Why no /equity/ capture" note in DESIGN.md §4.
-  * document blobs (with --documents) — each offering's PDFs (capital-
-    account statements, K-1s, etc.) fetched via node.documents[].downloadUrl
+  * document blobs (default; --no-documents skips) — each offering's PDFs
+    (capital-account statements, K-1s, etc.) fetched via node.documents[].downloadUrl
     through the authenticated request API. load.py parses the capital-account
     statements (fund NAV) and K-1s (tax-basis capital); see statements.py.
 
@@ -50,7 +50,7 @@ id is filesystem-safe):
     $XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/
       investments.json                     {stage: getBuyerInvestments body}
       offerings/<deal-slug>/detail.json    getMyInvestmentDetails
-      documents/<deal-slug>/<doc-slug>.pdf document blobs (with --documents)
+      documents/<deal-slug>/<doc-slug>.pdf document blobs (default; --no-documents skips)
       run.json                             manifest for the silver loader
 
 Read-only (CLAUDE.md): only the read queries above are issued — never a
@@ -81,7 +81,7 @@ PORTFOLIO_URL = f"{BASE}/portfolio/"
 
 DEFAULT_PROFILE_DIR = Path("/secrets/equityzen-profile")
 DEFAULT_ENV_FILE = Path("/secrets/equityzen.env")
-DEFAULT_DEST = Path("/data")
+DEFAULT_BRONZE_DIR = Path("/data")
 
 # Document metadata (id / type / downloadUrl) rides on getMyInvestmentDetails
 # (node.documents[]), so no separate document-centre query is needed.
@@ -93,20 +93,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--dest", type=Path, default=DEFAULT_DEST,
-                   help="Bronze root; a UTC-timestamped run dir is created beneath it. Default: %(default)s.")
+    p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
+                   help="A UTC-timestamped run dir is created here per invocation. Default: %(default)s.")
     p.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR,
                    help="Persistent browser profile from login.py. Default: %(default)s.")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE,
                    help="Bash-sourced env file. Default: %(default)s.")
-    p.add_argument("--documents", action="store_true",
-                   help="Also fetch each offering's document PDF blobs (capital-account "
-                        "statements, K-1s, etc.) via downloadUrl into bronze documents/. "
-                        "Heavy (fetches every offering's document PDFs); off by default. "
-                        "Download-avoidant: an executed-once legal/offering document "
-                        "identical to a prior run is hardlinked in rather than re-fetched; "
-                        "parsed / restatement-prone documents (statements, K-1s, reports) "
-                        "are always fetched and content-compared (see collectorkit.docdedup).")
+    p.add_argument("--no-documents", dest="documents", action="store_false",
+                   help="Skip fetching each offering's document PDF blobs (capital-account "
+                        "statements, K-1s, etc.). Documents are fetched by DEFAULT via "
+                        "downloadUrl into bronze documents/; pass this to skip that heavy "
+                        "pass (~200 PDFs). Download-avoidant when on: an executed-once "
+                        "legal/offering document identical to a prior run is hardlinked in "
+                        "rather than re-fetched; parsed / restatement-prone documents "
+                        "(statements, K-1s, reports) are always fetched and content-compared "
+                        "(see collectorkit.docdedup).")
     p.add_argument("--documents-force", action="store_true",
                    help="Bypass the document download-avoidance index: fetch every blob "
                         "even when a byte-identical copy exists in a prior bronze run "
@@ -121,12 +122,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--debug", action="store_true",
                    help="Uniform debug gate: keep any debug artefact out of a bronze run "
                         "dir unless set. download.py writes none today — its diagnostics "
-                        "live externally (`login --debug-dir` screenshots and `explore`'s "
+                        "live externally (`login --screenshot-dir` screenshots and `explore`'s "
                         "/debug HAR/trace/click log, never the bronze tree) — so this flag "
                         "currently gates nothing bronze-resident; it exists so the gate is "
                         "uniform across collectors and any future capture stays off by default.")
-    cli.add_full_download_lookback_arg(p)
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
 
@@ -296,14 +296,15 @@ def main(argv: list[str]) -> int:
     cli.warn_lookback_ignored(args.lookback, log,
                               what="every offering, position and cash flow")
     if args.debug:
-        log.info("--debug: download writes no bronze-resident debug artefacts; "
-                 "external diagnostics live under `login --debug-dir` and "
-                 "`explore`'s /debug.")
+        # TODO(second pass): write bronze-resident debug captures under
+        # --debug. External diagnostics live under `login --screenshot-dir`
+        # and `explore`'s /debug today, so download honours nothing here yet.
+        cli.warn_debug_noop("equityzen", log)
     timeout_ms = args.timeout * 1000
 
     envfile.source_env_file(args.env_file)  # aligns mounts; no creds used here
     if not args.dry_run:
-        bronze.ensure_writable_dir(args.dest)
+        bronze.ensure_writable_dir(args.bronze_dir)
 
     from camoufox.sync_api import Camoufox
 
@@ -339,7 +340,7 @@ def main(argv: list[str]) -> int:
         return None
 
     snapshot_at = int(time.time())
-    run = bronze.run_dir(args.dest, bronze.ts_slug())
+    run = bronze.run_dir(args.bronze_dir, bronze.ts_slug())
 
     with Camoufox(
         persistent_context=True, user_data_dir=str(args.profile_dir),

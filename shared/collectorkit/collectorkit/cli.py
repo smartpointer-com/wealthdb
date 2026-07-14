@@ -1,13 +1,15 @@
 """Shared CLI helpers: logging format, common flags, and the unified
-date-window contract every bounded-data collector exposes.
+date-window contract every collector exposes.
 
-Every collector that has any kind of date-bounded surface accepts the
-same vocabulary — `--since`, `--until`, `--lookback`, plus the
-`--documents-{since,until}` pair for collectors that scrape a document
-archive separately from transactions. `add_lookback_args` adds the
-flags; `resolve_lookback` returns the concrete `(since, until,
-documents_since, documents_until)` dates with consistent defaulting
-and precedence."""
+There is exactly ONE window flag, `--lookback`, and it takes either a
+named preset (`4w`, `1y`, `all`, …) or an ISO date (`2020-01-01`). It
+names a single starting point; the window always runs from there to
+today, and everything the source offers inside it — transactions,
+documents, snapshots — is fetched. There is no upper-bound flag and no
+per-facet window: a collector either covers the window or says so.
+
+`add_standard_args(verb="download")` adds the flag; `resolve_lookback`
+turns it into a concrete `(since, until)` pair."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +23,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 def default_data_root() -> Path:
     """The default wealthdb data root for host-side collectors when no
-    --data-dir / --dest / --silver-db flag is given: the XDG data dir
+    --data-dir / --bronze-dir / --silver-db flag is given: the XDG data dir
     ($XDG_DATA_HOME/wealthdb, falling back to ~/.local/share/wealthdb per
     the XDG Base Directory spec). The wrappers normally pass an explicit
     path (which also honours WEALTHDB_DATA_ROOT); this is the bare
@@ -65,154 +67,138 @@ def configure_logging(verbose: bool = False) -> None:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add the flags every collector CLI shares."""
+    """Add the flags every collector CLI shares, on any verb.
+
+    ``add_standard_args`` folds this in for the standard verbs; call it
+    directly only for a collector-specific verb outside that set (``explore``,
+    cointracking's ``fetch-prices``)."""
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
     )
 
 
-def add_force_arg(parser: argparse.ArgumentParser) -> None:
-    """Add the standard ``--force`` flag for `load` commands: rebuild the
+def _add_force_arg(parser: argparse.ArgumentParser, *,
+                   always_rebuilds: bool = False) -> None:
+    """The standard ``--force`` flag for `load` commands: rebuild the
     silver DB from scratch (delete it first, then re-ingest all bronze).
     Pair with ``collectorkit.silver.reset(db_path)`` in the loader, called
-    before the DB is opened when ``args.force`` is set."""
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Rebuild the silver DB from scratch: delete it, then "
-             "re-ingest all bronze.",
-    )
+    before the DB is opened when ``args.force`` is set.
+
+    ``always_rebuilds=True`` is for a loader that has no incremental path —
+    every run already deletes and rebuilds, so ``--force`` cannot change the
+    outcome. The flag still parses (the fleet passes it everywhere); only the
+    help text differs, the same way ``full_history`` handles a ``--lookback``
+    that cannot narrow.
+    """
+    if always_rebuilds:
+        help_text = ("Accepted for fleet uniformity; this collector always "
+                     "rebuilds the silver DB from bronze (delete + full "
+                     "rebuild), so --force is a documented no-op.")
+    else:
+        help_text = ("Rebuild the silver DB from scratch: delete it, then "
+                     "re-ingest all bronze.")
+    parser.add_argument("--force", action="store_true", help=help_text)
 
 
-def add_lookback_args(parser: argparse.ArgumentParser, *,
-                      has_documents: bool = True) -> None:
-    """Add the unified date-window flags.
+LOOKBACK_METAVAR = "PRESET|YYYY-MM-DD"
 
-    Adds:
-      --since YYYY-MM-DD          earliest transaction/activity date
-      --until YYYY-MM-DD          latest (default: today UTC)
-      --lookback {1w,4w,3m,6m,1y,2y,5y,all}
-                                   named window shortcut
 
-    With ``has_documents=True``, also adds:
-      --documents-since YYYY-MM-DD  (default: same as --since)
-      --documents-until YYYY-MM-DD  (default: same as --until)
+def lookback_value(raw: str) -> str:
+    """argparse ``type`` for ``--lookback``: a named preset or an ISO date.
 
-    Defaults are deliberately handled in ``resolve_lookback`` rather
-    than as argparse ``default=``: each collector that wraps these
-    flags through to wealthdb-refresh needs to be able to detect
-    "user passed nothing" so the shortcut precedence stays sane.
+    Returns the raw string unchanged — :func:`resolve_lookback` turns it
+    into a date. Keeping the raw form on the Namespace means a warning can
+    echo what was actually typed (``--lookback 4w``, not the date it
+    resolved to), and it defers "what is today" to resolve time.
+    """
+    if raw in LOOKBACK_PRESETS:
+        return raw
+    try:
+        date.fromisoformat(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is neither a named preset "
+            f"({', '.join(LOOKBACK_CHOICES)}) nor an ISO date (YYYY-MM-DD)"
+        ) from None
+    return raw
+
+
+def _add_lookback_arg(parser: argparse.ArgumentParser) -> None:
+    """The one date-window flag, for a collector that can bound its fetch. A
+    full-history collector gets :func:`_add_full_download_lookback_arg`
+    instead — same flag, help text that says it cannot narrow. Reached via
+    ``add_standard_args(verb="download")``.
+
+    The default is deliberately handled in :func:`resolve_lookback` rather
+    than as an argparse ``default=``, so a collector can still tell "user
+    passed nothing" apart from "user passed the default".
     """
     parser.add_argument(
-        "--since", type=date.fromisoformat, default=None,
-        help=("Earliest transaction/activity date (YYYY-MM-DD). "
-              f"Default: {DEFAULT_LOOKBACK_DAYS} days before --until. "
-              "For a one-off backfill pass an older date explicitly; "
-              "--lookback offers named shortcuts."),
+        "--lookback", type=lookback_value, default=None,
+        metavar=LOOKBACK_METAVAR,
+        help=("How far back to fetch: a named preset "
+              f"({', '.join(LOOKBACK_CHOICES)}) or an ISO date "
+              "(YYYY-MM-DD). The window runs from there to today and "
+              "covers everything the source offers in it — transactions, "
+              "documents, snapshots alike. 'all' reaches back 30 years. "
+              f"Default: the last {DEFAULT_LOOKBACK_DAYS} days."),
     )
-    parser.add_argument(
-        "--until", type=date.fromisoformat, default=None,
-        help=("Latest transaction/activity date (YYYY-MM-DD, "
-              "inclusive). Default: today UTC."),
-    )
-    parser.add_argument(
-        "--lookback", choices=LOOKBACK_CHOICES, default=None,
-        help=("Named window shortcut. Sets --since (and "
-              "--documents-since if applicable) to today - X. "
-              "'all' lifts the lower bound entirely. An explicit "
-              "--since wins over --lookback."),
-    )
-    if has_documents:
-        parser.add_argument(
-            "--documents-since", type=date.fromisoformat, default=None,
-            help=("Earliest document date (YYYY-MM-DD). Default: "
-                  "same as --since."),
-        )
-        parser.add_argument(
-            "--documents-until", type=date.fromisoformat, default=None,
-            help=("Latest document date (YYYY-MM-DD, inclusive). "
-                  "Default: same as --until."),
-        )
 
 
 def _today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def lookback_start(value: str, *, today: date) -> date:
+    """The concrete start date a validated ``--lookback`` value names."""
+    if value in LOOKBACK_PRESETS:
+        return today - timedelta(days=LOOKBACK_PRESETS[value])
+    return date.fromisoformat(value)
+
+
 def resolve_lookback(args: argparse.Namespace, *,
                      default_days: int = DEFAULT_LOOKBACK_DAYS,
-                     has_documents: bool = True,
-                     ) -> tuple[date, date, date | None, date | None]:
-    """Translate the date-window args added by :func:`add_lookback_args`
-    into concrete dates.
+                     ) -> tuple[date, date]:
+    """Translate ``--lookback`` into the concrete ``(since, until)`` window.
 
-    Returns ``(since, until, documents_since, documents_until)``. With
-    ``has_documents=False`` the last two are ``None``.
+    ``until`` is always today (UTC): the window runs from the requested
+    starting point to now, and there is no flag to pull it back. ``since``
+    is the ``--lookback`` value resolved against today, or
+    ``today - default_days`` when the flag is absent.
 
-    Precedence for the transaction window:
-      1. explicit ``--since`` wins
-      2. ``--lookback`` shortcut
-      3. ``until - default_days``
-
-    Documents inherit ``--since`` unless ``--documents-since`` is set
-    explicitly. ``--lookback all`` evaluates to ``until − 30 years``
-    (wider than any realistic Swiss / US retail brokerage history)
-    so loaders never have to deal with a sentinel ``date.min``.
+    ``--lookback all`` evaluates to ``today − 30 years`` (wider than any
+    realistic Swiss / US retail brokerage history) so loaders never have to
+    deal with a sentinel ``date.min``.
     """
     today = _today_utc()
-    until = args.until or today
-
-    if args.since is not None:
-        since: date = args.since
-    elif args.lookback is not None:
-        since = until - timedelta(days=LOOKBACK_PRESETS[args.lookback])
-    else:
-        since = until - timedelta(days=default_days)
-
-    if since > until:
-        raise SystemExit(f"--since {since} is after --until {until}")
-
-    if not has_documents:
-        return since, until, None, None
-
-    documents_until = args.documents_until or until
-    if args.documents_since is not None:
-        documents_since: date = args.documents_since
-    elif args.lookback is not None:
-        documents_since = documents_until - timedelta(
-            days=LOOKBACK_PRESETS[args.lookback])
-    else:
-        documents_since = since
-
-    if documents_since > documents_until:
+    if args.lookback is None:
+        return today - timedelta(days=default_days), today
+    since = lookback_start(args.lookback, today=today)
+    if since > today:
         raise SystemExit(
-            f"--documents-since {documents_since} is after "
-            f"--documents-until {documents_until}"
+            f"--lookback {args.lookback} starts after today ({since} > {today})"
         )
+    return since, today
 
-    return since, until, documents_since, documents_until
 
-
-def add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
-    """Accept ``--lookback`` on a collector that always fetches its full
+def _add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
+    """``--lookback`` on a collector that always fetches its full
     history and structurally cannot honour a narrower window.
 
     ``wealthdb-refresh`` forwards ``--lookback`` to every collector's
-    ``download``; the ones that can bound their fetch wire up the full
-    contract via :func:`add_lookback_args` + :func:`resolve_lookback`.
-    The ones that always pull everything — a passive SPA capture with no
-    server-side date filter, a full-history export whose downstream replay
-    needs every row, an SFTP drop of whatever the server has queued — use
-    this instead. ``--lookback`` is a *lower bound* ("fetch at least this
-    far back"), and a full download trivially satisfies any window, so the
-    flag is validated (for a clean error on a typo) but only drives a
-    warning via :func:`warn_lookback_ignored`; the download is unaffected.
-
-    Only ``--lookback`` is added, not ``--since`` / ``--until``: the
-    orchestrator never sends those, and silently ignoring an explicit date
-    range would surprise more than rejecting it.
+    ``download``; the ones that can bound their fetch get
+    :func:`_add_lookback_arg` + :func:`resolve_lookback`. The ones that
+    always pull everything — a passive SPA capture with no server-side date
+    filter, a full-history export whose downstream replay needs every row,
+    an SFTP drop of whatever the server has queued — use this instead.
+    ``--lookback`` is a *lower bound* ("fetch at least this far back"), and
+    a full download trivially satisfies any window, so the flag is
+    validated (for a clean error on a typo) but only drives a warning via
+    :func:`warn_lookback_ignored`; the download is unaffected.
     """
     parser.add_argument(
-        "--lookback", choices=LOOKBACK_CHOICES, default=None,
+        "--lookback", type=lookback_value, default=None,
+        metavar=LOOKBACK_METAVAR,
         help=("Accepted for wealthdb-refresh uniformity. This collector "
               "always downloads its full history (a superset of any "
               "window); --lookback cannot narrow that, so it is logged "
@@ -223,7 +209,8 @@ def add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
 def warn_lookback_ignored(lookback: str | None, log: logging.Logger, *,
                           what: str = "its full history") -> None:
     """Warn that a full-download collector (see
-    :func:`add_full_download_lookback_arg`) cannot narrow to the requested
+    :func:`add_standard_args` with ``full_history=True``) cannot narrow to the
+    requested
     ``--lookback``. No-op when ``lookback`` is None. Worded to hold on every
     path — a real download, a ``--dry-run`` walk, or a session probe — since
     it states the collector's nature, not that bytes were fetched this run."""
@@ -232,3 +219,104 @@ def warn_lookback_ignored(lookback: str | None, log: logging.Logger, *,
             "--lookback %s cannot narrow this collector — it always fetches "
             "%s (a superset of any window); the flag has no effect.",
             lookback, what)
+
+
+# ----------------------------------------------------------------------
+# The standard argument group
+# ----------------------------------------------------------------------
+#
+# ``add_standard_args`` is the single entry point every collector entry
+# script wires in. Defining the standard set in one place makes uniform
+# acceptance *structural* — a standard optional flag parses cleanly on every
+# collector, it never triggers an argparse "unrecognized arguments" exit 2 —
+# rather than a matter of per-collector discipline. It folds the per-concept
+# adders above so a collector never wires the standard flags by hand. Only
+# ``add_common_args`` stays public, for the collector-specific verbs outside
+# STANDARD_VERBS (``explore``, cointracking's ``fetch-prices``).
+
+STANDARD_VERBS = ("login", "download", "load", "prune")
+
+
+def add_standard_args(parser: argparse.ArgumentParser, *, verb: str,
+                      full_history: bool = False,
+                      always_rebuilds: bool = False) -> None:
+    """Add the standard optional flags that ``verb`` owns to ``parser``.
+
+    Every entry script calls this once so the standard vocabulary is
+    accepted uniformly. The set per verb:
+
+      ``download``  ``-v/--verbose`` + ``--lookback``. A full-history
+                    collector (``full_history=True``) gets the *same* flag —
+                    it parses cleanly everywhere — with help text saying it
+                    cannot narrow; :func:`resolve_standard` emits the runtime
+                    warning. Pass the same ``full_history`` to both.
+      ``load``      ``-v/--verbose`` + ``--force`` (delete the silver DB,
+                    then rebuild it from all bronze). ``always_rebuilds=True``
+                    marks a loader with no incremental path, where ``--force``
+                    parses but cannot change the outcome.
+      ``login``     ``-v/--verbose``.
+      ``prune``     ``-v/--verbose`` (the shared prune parser adds its own
+                    ``--bronze-dir`` / ``--dry-run`` / ``--min-age-hours``).
+    """
+    if verb not in STANDARD_VERBS:
+        raise ValueError(f"unknown standard verb: {verb!r}")
+    add_common_args(parser)
+    if verb == "download":
+        if full_history:
+            _add_full_download_lookback_arg(parser)
+        else:
+            _add_lookback_arg(parser)
+    elif verb == "load":
+        _add_force_arg(parser, always_rebuilds=always_rebuilds)
+
+
+def resolve_standard(args: argparse.Namespace, *, verb: str,
+                     full_history: bool = False,
+                     log: logging.Logger | None = None,
+                     what: str = "its full history",
+                     ) -> tuple[date | None, date | None]:
+    """Resolve the standard ``download`` window added by
+    :func:`add_standard_args`.
+
+    Returns ``(since, until)``.
+
+    - **Bounded** (``full_history=False``): delegates to
+      :func:`resolve_lookback`.
+    - **Full history** (``full_history=True``): the flag was accepted for
+      ``wealthdb-refresh`` uniformity but cannot narrow the fetch. Returns
+      ``(None, None)`` and, given a ``log``, warns via
+      :func:`warn_lookback_ignored` — neither a silent ignore nor an
+      argparse reject.
+
+    For any verb other than ``download`` this is a no-op returning
+    ``(None, None)`` (a ``load`` / ``login`` / ``prune`` parser has no
+    window).
+    """
+    if verb != "download":
+        return None, None
+    if not full_history:
+        return resolve_lookback(args)
+    if log is not None:
+        warn_lookback_ignored(args.lookback, log, what=what)
+    return None, None
+
+
+def warn_not_implemented(flag: str, source: str, log: logging.Logger) -> None:
+    """Uniform "accepted but not implemented here (TODO)" warning for a
+    standard flag a collector doesn't yet honour.
+
+    Under the unification's principle 2 the uniform *surface* lands first:
+    the flag parses cleanly (never an argparse reject) and the run
+    continues, but the uniform *behaviour* is a deliberate second pass. A
+    matching ``TODO`` lives in the collector's code + docs. A silent no-op
+    is a defect; this warning is the deliberate degrade."""
+    log.warning("%s accepted but not implemented for %s (TODO)", flag, source)
+
+
+def warn_debug_noop(source: str, log: logging.Logger) -> None:
+    """``--debug`` special case of :func:`warn_not_implemented`: the flag is
+    accepted fleet-wide for uniformity, but only the collectors that write
+    bronze debug captures honour it. On the rest it parses and warns here
+    rather than silently doing nothing (principle 2; TODO in code + docs)."""
+    log.warning("--debug: no bronze captures implemented for %s (TODO)",
+                source)

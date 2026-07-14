@@ -34,7 +34,7 @@ collectors/svb/svb load
 through to `load.py`, e.g.:
 
 ```sh
-collectors/svb/svb load --closure-date 2023-09-30 --signature "<page-1 substring>"
+collectors/svb/svb load --closure-date 2023-09-30 --statement-signature "<page-1 substring>"
 ```
 
 `login` / `download` are no-ops (there is nothing to fetch), and so is

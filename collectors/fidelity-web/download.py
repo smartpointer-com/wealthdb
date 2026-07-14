@@ -6,7 +6,7 @@ Boots Camoufox (a stealth-patched Firefox fork) against
 ``digital.fidelity.com``, runs the read-only login + MFA flow,
 walks whichever export phases were selected, attempts a clean
 logout, and exits. Bronze artefacts land in a timestamped
-``<dest>/<UTC-ts>/`` directory.
+``<bronze-dir>/<UTC-ts>/`` directory.
 
 Each HTML/CSV artefact is zstd-compressed in place as it lands
 (``balances.html`` → ``balances.html.zst``, ``positions_*.csv`` /
@@ -28,7 +28,7 @@ order, otherwise the named single phase):
 * ``activity`` — Navigate to Activity & Orders once, drive the
   page-level timepicker filter (preset 'Past 90 days' for the
   rolling default; Custom-tab + per-window bisection for a
-  historic ``--since/--until`` backfill), then for each window
+  historic ``--lookback`` backfill), then for each window
   click the Download trigger and grab the CSV. The export is
   consolidated across all visible accounts — the
   ``Account Number`` column inside the CSV is the per-row
@@ -71,9 +71,9 @@ Modes:
 Usage:
     download.py --profile-dir /secrets/fidelity-web-profile
                 [--env-file /secrets/fidelity-web.env]
-                [--dest /data]
+                [--bronze-dir /data]
                 [--mode all|positions|activity|documents|balances|performance]
-                [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                [--lookback PRESET|YYYY-MM-DD]
                 [--exclude-accounts <a,b>]
                 [--dry-run]
                 [--debug]
@@ -186,12 +186,15 @@ MAX_ACTIVITY_WINDOW_DAYS = 93
 LANDMARK_TIMEOUT_MS = 60_000
 PROFILE_DIR_MODE = 0o700
 
-USERNAME_ENV = "FIDELITY_USERNAME"
-PASSWORD_ENV = "FIDELITY_PASSWORD"
+# Canonical ${PREFIX}_ credential envs first, the legacy FIDELITY_* names
+# second (F21): read FIDELITY_WEB_USERNAME/PASSWORD, falling back to the older
+# FIDELITY_USERNAME/PASSWORD so an existing env file keeps working.
+USERNAME_ENVS = ("FIDELITY_WEB_USERNAME", "FIDELITY_USERNAME")
+PASSWORD_ENVS = ("FIDELITY_WEB_PASSWORD", "FIDELITY_PASSWORD")
 # Credentials whose file value overrides anything inherited from the
 # host env (defeats the source-mangling-on-$ pitfall — see
 # collectorkit.envfile.load_env_file).
-_CRED_OVERRIDE_VARS = (USERNAME_ENV, PASSWORD_ENV)
+_CRED_OVERRIDE_VARS = USERNAME_ENVS + PASSWORD_ENVS
 
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/fidelity-web.env"),
@@ -776,7 +779,7 @@ def _probe_activity_date_bounds(page, capture_dir):
     no bounds set). Doesn't click Apply — purely a read.
 
     Called once at the start of an activity backfill so the
-    chunker can clamp the requested ``--since`` / ``--until`` to
+    chunker can clamp the requested ``--lookback`` window to
     Fidelity's available retention window. Without this clamp, a
     ``--lookback all`` against multi-decade history burns one
     pointless round-trip per 93-day window walking from the
@@ -1253,9 +1256,9 @@ def scrape_activity(page, since_date, until_date,
       90 days') for a single CSV at Fidelity's rolling default.
 
     The preset path is the fast option for routine recurring
-    dumps; the Custom-range path is the historic-backfill option
-    a user runs once over an explicit ``--since <YYYY-MM-DD>
-    --until <YYYY-MM-DD>`` window. Bounded by Fidelity's
+    dumps; the Custom-range path serves a one-off historic
+    backfill over an explicit ``--lookback <PRESET|YYYY-MM-DD>``
+    window, which runs from that start to today. Bounded by Fidelity's
     documented ~4-year retention on Activity exports (the Custom
     tab's date-input ``min`` attribute is the authoritative
     boundary; ``_select_activity_custom_range`` clamps to it)."""
@@ -1655,7 +1658,7 @@ def scrape_statements(page, context, docs_dir, capture_dir,
 
     ``target_days`` is kept for signature compatibility; the new UI
     filters by whole year, so the effective floor is ``min_year``
-    (derived by walk() from ``--documents-since``)."""
+    (derived by walk() from the ``--lookback`` window's start year)."""
     return _doccenter_walk_type(
         page, context, "statements", "Personal", "statements",
         docs_dir, capture_dir, min_year)
@@ -1680,7 +1683,7 @@ def scrape_documents(page, context, bronze_dir, capture_dir,
 
     ``min_year`` (forwarded to both sub-scrapers) drops rows / year
     selections older than that — see walk()'s default-derivation
-    from ``--documents-since``. ``target_days`` is the requested
+    from the ``--lookback`` window's start year. ``target_days`` is the requested
     documents window length, used to pick the Statements page's
     ``Time Period`` filter (narrowest exposed option that covers
     the window; ``None`` widens to the full archive).
@@ -2009,13 +2012,13 @@ def walk(context, page, config):
     # archive + every available tax year. The sub-scrapers filter
     # at year granularity (label parsing for statements; year-
     # selector for tax forms), so the effective floor is the year
-    # of documents_since. wealthdb-refresh --lookback widens it.
-    documents_since = parse_iso_date(config.get("documents_since"))
+    # the window starts in. --lookback widens it.
+    documents_since = parse_iso_date(config.get("since"))
     if documents_since is None:
         documents_since = (
             datetime.now(timezone.utc).date() - timedelta(days=90)
         )
-    documents_until = parse_iso_date(config.get("documents_until"))
+    documents_until = parse_iso_date(config.get("until"))
     if documents_until is None:
         documents_until = datetime.now(timezone.utc).date()
     docs_min_year = documents_since.year
@@ -2498,12 +2501,12 @@ def login(page, args, username, password):
             "  3. Wait for the post-auth landing page to load.\n"
             f"This script will detect the post-auth URL and "
             f"continue automatically (up to "
-            f"{args.vnc_wait_timeout:.0f}s wait).\n"
+            f"{args.mfa_timeout:.0f}s wait).\n"
         )
         sys.stderr.write("=" * 60 + "\n")
         sys.stderr.flush()
         if wait_for_post_auth_url(
-            page, timeout_s=args.vnc_wait_timeout,
+            page, timeout_s=args.mfa_timeout,
         ):
             maybe_capture(page, args.screenshot_dir, "08-post-auth")
             return True
@@ -2512,7 +2515,7 @@ def login(page, args, username, password):
         )
         log.error(
             "did not see %s* within %.0fs after VNC handoff.",
-            POST_AUTH_PREFIX, args.vnc_wait_timeout,
+            POST_AUTH_PREFIX, args.mfa_timeout,
         )
         return False
 
@@ -2647,18 +2650,18 @@ def run_check(args):
 
 def run_oneshot(args):
     """Full path: login → walk → logout → exit."""
-    username = os.environ.get(USERNAME_ENV)
-    password = os.environ.get(PASSWORD_ENV)
+    username = next((os.environ[k] for k in USERNAME_ENVS if os.environ.get(k)), None)
+    password = next((os.environ[k] for k in PASSWORD_ENVS if os.environ.get(k)), None)
     if not username or not password:
         log.error(
             "%s and %s must be set (or sourced from --env-file / "
             "default env-file paths). See README.md.",
-            USERNAME_ENV, PASSWORD_ENV,
+            USERNAME_ENVS[0], PASSWORD_ENVS[0],
         )
         return 2
     log.info(
         "creds loaded: %s (len=%d), %s (len=%d)",
-        USERNAME_ENV, len(username), PASSWORD_ENV, len(password),
+        USERNAME_ENVS[0], len(username), PASSWORD_ENVS[0], len(password),
     )
     prepare_profile_dir(args.profile_dir)
     with open_camoufox_context(args.profile_dir, args.trace) as context:
@@ -2674,9 +2677,9 @@ def run_oneshot(args):
                     "at %s", args.profile_dir,
                 )
                 return 0
-            since, until, docs_since, docs_until = cli.resolve_lookback(args)
+            since, until = cli.resolve_lookback(args)
             config = {
-                "dest": str(args.dest),
+                "dest": str(args.bronze_dir),
                 "mode": args.mode,
                 "dry_run": "true" if args.dry_run else "false",
                 "explore": "true" if args.explore else "false",
@@ -2688,8 +2691,6 @@ def run_oneshot(args):
                 ),
                 "since": since.isoformat(),
                 "until": until.isoformat(),
-                "documents_since": docs_since.isoformat(),
-                "documents_until": docs_until.isoformat(),
             }
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
@@ -2726,7 +2727,8 @@ def parse_args(argv):
         help=("KEY=VALUE env file. When omitted, falls back to "
               "/secrets/fidelity-web.env then "
               "$HOME/.secrets/fidelity-web.env. Supplies "
-              "FIDELITY_USERNAME / FIDELITY_PASSWORD."),
+              "FIDELITY_WEB_USERNAME / FIDELITY_WEB_PASSWORD (the "
+              "unprefixed FIDELITY_* names are a legacy fallback)."),
     )
     p.add_argument(
         "--check", action="store_true",
@@ -2742,8 +2744,9 @@ def parse_args(argv):
               "(unless --mode none)."),
     )
     p.add_argument(
-        "--vnc-wait-timeout", type=float, default=600.0,
-        help="VNC wait timeout in seconds. Default 600 (10 min).",
+        "--mfa-timeout", type=float, default=600.0,
+        help="Seconds to wait for the human login + MFA over VNC. "
+             "Default 600 (10 min).",
     )
     p.add_argument(
         "--trust-this-browser",
@@ -2761,7 +2764,7 @@ def parse_args(argv):
     )
     # --- Walk args ---
     p.add_argument(
-        "--dest", type=Path, default=Path("/data"),
+        "--bronze-dir", type=Path, default=Path("/data"),
         help="Bronze tree root. Default: /data.",
     )
     p.add_argument(
@@ -2776,7 +2779,7 @@ def parse_args(argv):
     # range into ≤93-day chunks internally; the statements +
     # tax-forms walk filters at YEAR granularity (row labels are
     # mixed monthly / quarterly / annual).
-    cli.add_lookback_args(p)
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
         "--exclude-accounts", default=None,
         help="Comma-separated account ids to skip.",
@@ -2815,10 +2818,6 @@ def parse_args(argv):
         "--trace", action="store_true",
         help="Capture a Playwright trace bundle (requires "
              "--screenshot-dir).",
-    )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
     )
     return p.parse_args(argv)
 

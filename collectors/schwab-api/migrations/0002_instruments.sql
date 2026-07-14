@@ -8,8 +8,8 @@
 -- response of Schwab's /marketdata/v1/instruments endpoint (projection
 -- = symbol-search), which returns descriptions for every asset class.
 --
--- Populated only when download.py is invoked with --with-instruments.
--- Default daily runs do not touch this table.
+-- Populated by download.py's default instrument lookup; --no-instruments
+-- suppresses it, leaving this table empty for that run.
 -- ============================================================
 
 -- One row per (snapshot, symbol). Loader dedup: insert only when the

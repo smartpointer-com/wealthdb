@@ -87,6 +87,25 @@ wrapper_init() {
     fi
 }
 
+# wrapper_verb_takes_silver — is `$1` a subcommand that consumes the silver
+# DB? The set defaults to just `load`. A wrapper with another
+# silver-consuming verb sets SILVER_SUBCOMMANDS to REPLACE that default —
+# e.g. SILVER_SUBCOMMANDS=(load fetch-prices) for cointracking. Mirrors the
+# VNC_SUBCOMMANDS convention below.
+wrapper_verb_takes_silver() {
+    local want="$1" v
+    local -a verbs
+    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
+        verbs=(${SILVER_SUBCOMMANDS[@]+"${SILVER_SUBCOMMANDS[@]}"})
+    else
+        verbs=(load)
+    fi
+    for v in ${verbs[@]+"${verbs[@]}"}; do
+        [[ "$want" == "$v" ]] && return 0
+    done
+    return 1
+}
+
 # Parse the uniform directory-override flags out of the forwarded args:
 #   --secrets-dir DIR   override HOST_SECRETS (the /secrets mount source)
 #   --data-dir    DIR   override HOST_DATA    (the /data mount source —
@@ -97,23 +116,42 @@ wrapper_init() {
 #                       load.py accepts --silver-db, default /data/<name>.db)
 # Both `--flag VALUE` and `--flag=VALUE` forms are accepted. Recognised
 # flags are CONSUMED; everything else is collected into FORWARD_ARGS for the
-# container. SILVER_MOUNT holds the extra `-v` args (empty unless --silver-db
-# was given). bash 3.2 safe (no namerefs / associative arrays).
+# container. SILVER_MOUNT holds the extra `-v` args (empty unless a silver
+# path is in play).
+#
+# --silver-db only means something on a verb that builds the silver DB, so
+# on any other verb it is REJECTED here (F29) rather than forwarded into a
+# parser that would reject it with an in-container path the caller never
+# typed. The ${PREFIX}_SILVER_DB env var is different: it is ambient config
+# that names where silver lives, so a non-silver verb ignores it silently
+# instead of failing every `login` in a shell that exports it.
+# bash 3.2 safe (no namerefs / associative arrays).
 wrapper_resolve_dir_args() {
     FORWARD_ARGS=()
     SILVER_MOUNT=()
-    local silver=""
+    local silver silver_from_flag=0
+    silver="$(_envvar SILVER_DB "")"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --secrets-dir)   HOST_SECRETS="$2"; shift 2 ;;
             --secrets-dir=*) HOST_SECRETS="${1#*=}"; shift ;;
             --data-dir)      HOST_DATA="$2"; shift 2 ;;
             --data-dir=*)    HOST_DATA="${1#*=}"; shift ;;
-            --silver-db)     silver="$2"; shift 2 ;;
-            --silver-db=*)   silver="${1#*=}"; shift ;;
+            --silver-db)     silver="$2"; silver_from_flag=1; shift 2 ;;
+            --silver-db=*)   silver="${1#*=}"; silver_from_flag=1; shift ;;
             *)               FORWARD_ARGS+=("$1"); shift ;;
         esac
     done
+    # The subcommand is the first arg that isn't one of the dir flags.
+    local sub="${FORWARD_ARGS[0]:-}"
+    if ! wrapper_verb_takes_silver "$sub"; then
+        if [[ $silver_from_flag == 1 ]]; then
+            echo "$NAME: --silver-db does not apply to '${sub:-<no subcommand>}'" \
+                 "— it is only read by: $(wrapper_silver_verbs_str)." >&2
+            exit 2
+        fi
+        return
+    fi
     if [[ -n "$silver" ]]; then
         local d b
         d="$(cd "$(dirname "$silver")" 2>/dev/null && pwd)" || d="$(dirname "$silver")"
@@ -121,6 +159,15 @@ wrapper_resolve_dir_args() {
         mkdir -p "$d"
         SILVER_MOUNT=(-v "$d:/silver")
         FORWARD_ARGS+=(--silver-db "/silver/$b")
+    fi
+}
+
+# The silver-consuming verbs as a display string, for the reject message.
+wrapper_silver_verbs_str() {
+    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
+        echo "${SILVER_SUBCOMMANDS[*]}"
+    else
+        echo "load"
     fi
 }
 
@@ -156,10 +203,46 @@ wrapper_build() {
 # guard protects an in-flight dump). The container entrypoints keep a
 # `prune)` arm too, for a direct `docker run`. Caller dispatches on
 # $1 == "prune".
+#
+# With HAS_DEBUG=1 the reclaim extends past bronze to $HOST_DEBUG (the
+# /debug mount source), passed as --debug-dir: the screenshots / traces
+# written there accumulate outside the bronze tree and nothing else
+# reclaims them. It is only forwarded for HAS_DEBUG=1 collectors —
+# HOST_DEBUG is unset otherwise (see wrapper_init), and the rest have no
+# debug dir to reclaim.
+#
+# The uniform directory-override flags are honoured here too (the
+# dispatcher promises them on every verb): --data-dir retargets the
+# bronze root, while --secrets-dir and --silver-db are meaningless to a
+# bronze file-walk and are absorbed rather than forwarded (prune.py's
+# parser knows only --bronze-dir/--debug-dir/--dry-run/--min-age-hours,
+# so a forwarded --silver-db would argparse-reject). Both `--flag VALUE`
+# and `--flag=VALUE`; everything else forwards to prune.py.
 wrapper_host_prune() {
     shift  # drop "prune"
+    local bronze="$HOST_DATA"
+    local -a rest=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --data-dir)      bronze="$2"; shift 2 ;;
+            --data-dir=*)    bronze="${1#*=}"; shift ;;
+            --secrets-dir)   shift 2 ;;
+            --secrets-dir=*) shift ;;
+            --silver-db)     shift 2 ;;
+            --silver-db=*)   shift ;;
+            *)               rest+=("$1"); shift ;;
+        esac
+    done
+    # Before "$rest" so an explicit --debug-dir in the forwarded args wins
+    # (argparse last-wins), matching --bronze-dir's treatment.
+    local -a debug_args=()
+    if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
+        debug_args=(--debug-dir "$HOST_DEBUG")
+    fi
     exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+        python3 "$HERE/prune.py" --bronze-dir "$bronze" \
+        ${debug_args[@]+"${debug_args[@]}"} \
+        ${rest[@]+"${rest[@]}"}
 }
 
 # ----------------------------------------------------------------------
@@ -266,10 +349,20 @@ wrapper_main() {
     local -a extra_args=()
     if [[ "${HAS_VNC:-0}" == "1" ]]; then
         local sub="${1:-}" need_vnc=0 v
-        # Caller may declare extra subcommands that need VNC by setting
-        # VNC_SUBCOMMANDS=(vnc-login explore …). 'vnc-login' is always
-        # in the set so existing wrappers keep working without the var.
-        for v in vnc-login ${VNC_SUBCOMMANDS[@]+"${VNC_SUBCOMMANDS[@]}"}; do
+        # The set of subcommands that get a forwarded VNC port. When unset it
+        # defaults to just `vnc-login` (the collectors that implement that
+        # verb). A wrapper whose VNC surface is different sets VNC_SUBCOMMANDS
+        # to REPLACE that default — e.g. VNC_SUBCOMMANDS=(explore login) for a
+        # collector whose VNC verbs are explore/login and which has NO
+        # vnc-login — so it never allocates a port for (nor advertises) a
+        # vnc-login it doesn't implement.
+        local -a vnc_set
+        if [[ -n "${VNC_SUBCOMMANDS+x}" ]]; then
+            vnc_set=(${VNC_SUBCOMMANDS[@]+"${VNC_SUBCOMMANDS[@]}"})
+        else
+            vnc_set=(vnc-login)
+        fi
+        for v in ${vnc_set[@]+"${vnc_set[@]}"}; do
             [[ "$sub" == "$v" ]] && { need_vnc=1; break; }
         done
         if [[ $need_vnc == 1 ]]; then

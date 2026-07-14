@@ -24,7 +24,7 @@ Modes:
                Log In + 2FA from stdin, with --no-cli-mfa wait
                for the operator to do it over VNC. Then hand
                off to download.walk() against the same page.
-               --dest is required (the bronze tree root).
+               --bronze-dir is required (the bronze tree root).
 
 Browser choice: Firefox rather than Chromium. Schwab's Akamai
 rejects every Chromium-family automation surface we tried
@@ -123,18 +123,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "restyles the gateway DOM and the CLI selectors miss."),
     )
     p.add_argument(
-        "--dest", default=None, type=Path,
+        "--bronze-dir", default=None, type=Path,
         help=("Bronze tree root. Required for the scrape path; the "
-              "script chains into download.walk(page, dest, ...) "
+              "script chains into download.walk(page, bronze_dir, ...) "
               "after login completes. A new <UTC-timestamp>/ run "
               "dir is created under it. Canonical container "
               "path: /data."),
     )
     p.add_argument(
-        "--mode", choices=("statements", "transactions", "both"),
-        default="both",
+        "--mode", choices=("statements", "transactions", "all"),
+        default="all",
         help=("Scrape mode for the post-login walk. "
-              "See download.py --mode help. Ignored when --dest "
+              "'all' runs both passes (the everything-token). "
+              "See download.py --mode help. Ignored when --bronze-dir "
               "is unset."),
     )
     p.add_argument(
@@ -143,35 +144,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "PDF download button. Forwarded to download.walk()."),
     )
     p.add_argument(
-        "--with-more-detail", action="store_true",
-        help=("On the Transaction History pass, also click each "
-              "row's 'More' link and capture the per-row detail "
-              "modal contents. See download.py --with-more-detail "
-              "help. Off by default."),
+        "--no-more-detail", dest="with_more_detail", action="store_false",
+        help=("Skip the per-row transaction detail pass. By DEFAULT the "
+              "Transaction History pass also clicks each row's 'More' link "
+              "and captures the per-row detail modal contents; pass this to "
+              "skip that heavier pass. See download.py walk()."),
     )
-    # Shared --since / --until / --lookback / --documents-since /
-    # --documents-until contract. schwab-web's UI is preset-driven
-    # (Last3Months / Last6Months / Last5Years / Last10Years), so the
-    # CLI maps an explicit --since (or its --lookback shortcut) to
-    # the closest preset that covers it. --range is kept as the
-    # explicit-preset escape hatch and wins when set.
-    cli.add_lookback_args(p)
+    # The shared --lookback contract is the only window knob. Schwab's
+    # UI is preset-driven (Last3Months / Last6Months / Last5Years /
+    # Last10Years) rather than date-ranged, so the resolved window is
+    # mapped to the narrowest preset that still covers it. There is
+    # deliberately no raw-preset escape hatch: a second window flag is
+    # exactly what let a preset silently override the resolved window.
+    cli.add_standard_args(p, verb="download")
     p.add_argument(
-        "--range", dest="date_range",
-        choices=tuple(v for v in schwab.DATE_RANGE_VALUES if v != "Custom"),
-        default=None,
-        help=("Explicit Schwab Statements preset (escape hatch). "
-              "Overrides any --since / --lookback. Common values: "
-              "Last3Months (default if no --since/--lookback set), "
-              "Last6Months, Last5Years, Last10Years (full backfill)."),
-    )
-    p.add_argument(
-        "--post-auth-timeout", type=int, default=7200,
-        help=("Seconds to wait for login + 2FA to complete "
+        "--mfa-timeout", type=int, default=7200,
+        help=("Seconds to wait for the human login + 2FA to complete "
               "via VNC (default: 7200 = 2 hours). The default is "
-              "deliberately generous — vnc-login is human-in-the-loop "
-              "and the operator should not have to drop everything to "
-              "stay under the deadline. Exits with rc=7 on timeout."),
+              "deliberately generous — vnc-login is human-in-the-loop, "
+              "so the wait must not force racing a deadline. Exits with "
+              "rc=7 on timeout."),
     )
     p.add_argument(
         "--debug", action="store_true",
@@ -195,9 +187,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Capture a Playwright trace bundle. Requires "
               "--screenshot-dir; the bundle lands there alongside "
               "screenshots."),
-    )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging.",
     )
     return p.parse_args(argv)
 
@@ -471,13 +460,13 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
 def run_manual(profile_dir: Path,
                screenshot_dir: Path | None,
                *,
-               dest: Path,
-               mode: str = "both",
+               bronze_dir: Path,
+               mode: str = "all",
                dry_run: bool = False,
                date_range: str = schwab.DATE_RANGE_DEFAULT,
                with_more_detail: bool = False,
                cli_mfa: bool = True,
-               post_auth_timeout_s: int = 600,
+               mfa_timeout_s: int,
                debug: bool = False) -> int:
     """One-shot: CLI-MFA login → scrape → exit.
 
@@ -506,8 +495,8 @@ def run_manual(profile_dir: Path,
             "set" if login_id_value else "MISSING",
             "set" if password_value else "MISSING",
         )
-    log.info("scrape config: dest=%s mode=%s dry_run=%s range=%s more=%s",
-             dest, mode, dry_run, date_range, with_more_detail)
+    log.info("scrape config: bronze_dir=%s mode=%s dry_run=%s range=%s more=%s",
+             bronze_dir, mode, dry_run, date_range, with_more_detail)
 
     log.info("opening Firefox")
     with open_camoufox_context(profile_dir, trace=False) as context:
@@ -547,14 +536,14 @@ def run_manual(profile_dir: Path,
                     "takes over and scrapes."
                 )
             auth_page = _wait_for_post_auth(
-                page, context, post_auth_timeout_s,
+                page, context, mfa_timeout_s,
             )
             if auth_page is None:
                 maybe_screenshot(page, screenshot_dir, "post-auth-timeout")
                 log.error(
-                    "post-auth URL not detected within %ds; either you "
-                    "didn't finish logging in, or Firefox was closed.",
-                    post_auth_timeout_s,
+                    "post-auth URL not detected within %ds; either the "
+                    "login didn't finish, or Firefox was closed.",
+                    mfa_timeout_s,
                 )
                 return 7
             if auth_page is not page:
@@ -580,7 +569,7 @@ def run_manual(profile_dir: Path,
             import download
             try:
                 summary = download.walk(
-                    page, dest,
+                    page, bronze_dir,
                     mode=mode, dry_run=dry_run,
                     screenshot_dir=screenshot_dir,
                     date_range=date_range,
@@ -1037,13 +1026,19 @@ def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> Non
 # Entry point
 # ============================================================
 
-def _since_to_schwab_preset(since, until) -> str:
-    """Map a (since, until) date pair to the closest Statements preset.
+# Schwab's Statements filter tops out at Last10Years. A window reaching
+# further back cannot be honoured, so the walk covers less than was asked
+# for — worth one warning rather than a silent shortfall.
+LAST_10_YEARS_DAYS = 3650
 
-    Schwab's filter is preset-driven, not date-range, so the shared
-    --since/--lookback contract translates to whichever preset
-    fully covers the requested window. Same buckets the old
-    SCHWAB_PRESET dict in wealthdb-refresh used."""
+
+def _since_to_schwab_preset(since, until, log=None) -> str:
+    """Map a (since, until) window to the narrowest Statements preset that
+    still covers it.
+
+    Schwab's filter is preset-driven, not date-ranged, so the shared
+    --lookback window translates to whichever preset covers it. A window
+    wider than the longest preset is capped, with a warning."""
     days = (until - since).days
     if days <= 90:
         return "Last3Months"
@@ -1051,6 +1046,11 @@ def _since_to_schwab_preset(since, until) -> str:
         return "Last6Months"
     if days < 1825:  # i.e. up to and incl. 4y; 5y → Last10Years per legacy mapping
         return "Last5Years"
+    if days > LAST_10_YEARS_DAYS and log is not None:
+        log.warning(
+            "requested window reaches back to %s (%d days), but Schwab's "
+            "filter stops at Last10Years — coverage is capped at ~10 years.",
+            since, days)
     return "Last10Years"
 
 
@@ -1062,30 +1062,27 @@ def main(argv: list[str]) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
-    # Translate the shared date-window contract into a Schwab preset.
-    # --range wins (explicit-preset escape hatch); otherwise pick the
-    # preset that covers the resolved (since, until) window.
-    if args.date_range is None:
-        since, until, _, _ = cli.resolve_lookback(args)
-        args.date_range = _since_to_schwab_preset(since, until)
+    # Translate the one window flag into the Schwab preset that covers it.
+    since, until = cli.resolve_lookback(args)
+    args.date_range = _since_to_schwab_preset(since, until, log=log)
     maybe_source_env_files(args)
     prepare_profile_dir(args.profile_dir)
     if args.check:
         return run_check(args.profile_dir, args.screenshot_dir, args.trace)
-    if args.dest is None:
+    if args.bronze_dir is None:
         raise SystemExit(
-            "--dest is required for the scrape path (or pass --check "
+            "--bronze-dir is required for the scrape path (or pass --check "
             "to validate the existing profile)."
         )
     return run_manual(
         args.profile_dir, args.screenshot_dir,
-        dest=args.dest,
+        bronze_dir=args.bronze_dir,
         mode=args.mode,
         dry_run=args.dry_run,
         date_range=args.date_range,
         with_more_detail=args.with_more_detail,
         cli_mfa=args.cli_mfa,
-        post_auth_timeout_s=args.post_auth_timeout,
+        mfa_timeout_s=args.mfa_timeout,
         debug=args.debug,
     )
 

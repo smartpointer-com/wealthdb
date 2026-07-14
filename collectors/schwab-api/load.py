@@ -364,9 +364,9 @@ def load_transactions(conn, dump_dir: Path) -> int:
 def load_instruments(conn, snapshot_at: int, dump_dir: Path) -> int:
     """Insert one row per symbol from instruments.json when present.
 
-    Optional artefact — populated only when download.py was invoked with
-    --with-instruments. Dedup per symbol: insert only when the new
-    canonical payload differs from the most recent row for that symbol.
+    Optional artefact — written by download.py's default instrument lookup
+    (suppressed only by --no-instruments). Dedup per symbol: insert only when
+    the new canonical payload differs from the most recent row for that symbol.
     Direct text comparison, matches the accounts/user_preference pattern."""
     path = dump_dir / "instruments.json"
     if compress.resolve_variant(path) is None:
@@ -670,8 +670,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Directory containing snapshot subdirectories. "
              "Default: $XDG_DATA_HOME/wealthdb/schwab-api.",
     )
-    p.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging.")
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 

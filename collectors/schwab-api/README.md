@@ -14,7 +14,7 @@ raw JSON into a queryable SQLite silver database.
 | [`login.py`](login.py) | implemented | Interactive OAuth login flow; mints the token file that `download.py` consumes. Required once initially and once per 7-day refresh window thereafter. |
 | [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
 | [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree. Host-side, like `load`. `--dry-run` previews the plan. |
+| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree, plus aged-out entries of the login trace cache (`~/.cache/schwab-api-debug`). Host-side, like `load`. `--dry-run` previews the plan. |
 | [`recompress.py`](recompress.py) | implemented | One-time backlog sweep: replaces the plain data JSON inside pre-compression complete dumps with sha256-verified `.json.zst` twins — the form `download` now writes. `run.json` is never compressed. Host-side, manual only, never scheduled. `--dry-run` previews the plan. |
 
 See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
@@ -81,7 +81,8 @@ Schwab accounts to link" page, so a newly opened account is linked
 without anyone remembering to tick it. It captures the `?code=…` redirect
 straight from the browser and exchanges it for the token bundle (chmod
 `0600`). All browser activity is traced to the debug dir
-(`~/.cache/schwab-api-debug`).
+(`~/.cache/schwab-api-debug`), which sits outside bronze and is reclaimed
+by [`prune`](#prunepy) once a bundle has aged past `--min-age-hours`.
 
 This is why schwab-api is a **hybrid** collector: `login` runs in a
 Camoufox container while `download` and `load` run on the host venv
@@ -127,7 +128,8 @@ remaining refresh-window life (no browser):
 | `--callback-url` | `https://127.0.0.1:8182` | OAuth callback URL. Must exactly match the value registered in your Schwab app. |
 | `--profile-dir` | `/secrets/schwab-api-oauth-profile` | Persistent Camoufox profile dir for the browser flow. |
 | `--cli-mfa` / `--no-cli-mfa` | on | Automate login + stdin 2FA + consent (default; `login` uses it) vs. drive it yourself over VNC (`--no-cli-mfa`; the `vnc-login` subcommand uses it). |
-| `--auth-timeout` | `600` | Seconds to wait for the consent redirect to the callback URL. |
+| `--mfa-timeout` | `600` | Seconds to wait for the human MFA + consent redirect to the callback URL. |
+| `--mfa-page-timeout` | `300` | With `--cli-mfa`: seconds to wait for the 2FA input field to appear. |
 | `--screenshot-dir` / `--trace` | — | Capture page HTML/screenshots, and (with `--trace`) a Playwright trace bundle, to the dir. The container passes `--screenshot-dir /debug --trace` by default. NEVER commit these. |
 | `--explore` | off | Debug: dump each distinct page's DOM to `--screenshot-dir` (for pinning selectors). |
 | `--manual` | off | No-browser paste-the-URL flow (schwab-py). |
@@ -192,9 +194,10 @@ contract (`--secrets-dir` / `--data-dir` / `--silver-db` and the
 Source-specific defaults:
 
 - Transaction window: last 90 days (`--lookback 1w|4w|3m|6m|1y|2y|5y|all`
-  for a named shortcut, or `--since YYYY-MM-DD` for an explicit
-  lower bound; Schwab caps each API request at 1 year, so the loader
-  chunks longer windows automatically).
+  for a named preset, or `--lookback YYYY-MM-DD` for an explicit
+  starting point; the window runs from there to today. Schwab caps each
+  API request at 1 year, so the loader chunks longer windows
+  automatically).
 - Client ID / Client Secret: passed via `--client-id` / `--client-secret`,
   or read from `SCHWAB_CLIENT_ID` / `SCHWAB_CLIENT_SECRET` env vars as
   fallback.
@@ -214,12 +217,12 @@ Real download (last 90 days, the default):
 ./schwab-api download
 ```
 
-Wider backfill via the shared `--lookback` shortcut, or an explicit
-date:
+Wider backfill via the shared `--lookback` flag — a named preset or an
+explicit date:
 
 ```sh
 ./schwab-api download --lookback 1y
-./schwab-api download --since 2024-01-01
+./schwab-api download --lookback 2024-01-01
 ```
 
 Files land in `./data/<UTC-timestamp>/`:
@@ -232,7 +235,7 @@ Files land in `./data/<UTC-timestamp>/`:
 | `accounts_positions.json.zst` | `/accounts?fields=positions` |
 | `transactions_NNN.json.zst` | `/accounts/{hash}/transactions` (one file per account × window) |
 | `open_orders.json.zst` | `/orders` (cross-account), filtered to non-terminal statuses |
-| `instruments.json.zst` | `/marketdata/v1/instruments` (only when `--with-instruments` is passed) — basic metadata (symbol, cusip, description, exchange, type, assetType) for every symbol seen in positions and transactions |
+| `instruments.json.zst` | `/marketdata/v1/instruments` (written by default; pass `--no-instruments` to skip) — basic metadata (symbol, cusip, description, exchange, type, assetType) for every symbol seen in positions and transactions |
 
 Each data artefact is zstd-compressed in place the moment it lands
 (`.json.zst`), best-effort — a compression failure leaves the plain
@@ -254,13 +257,11 @@ the dump layer; full order history is intentionally not captured.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--token-path` | `~/.secrets/schwab-api-token.json` | Path to the OAuth token JSON file. |
-| `--dest` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Local destination directory. |
+| `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root. |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
-| `--since` | _today − 90d_ | Earliest transaction date (YYYY-MM-DD). Schwab caps the API window at 1 year per request; the loader chunks longer ranges automatically. |
-| `--until` | _today (UTC)_ | Latest transaction date (YYYY-MM-DD, inclusive). |
-| `--lookback` | _unset_ | Named shortcut: `1w` / `4w` / `3m` / `6m` / `1y` / `2y` / `5y` / `all`. Sets `--since` to `until − X`; overridden by an explicit `--since`. |
-| `--with-instruments` | off | After positions and transactions, look up metadata for every symbol seen and write a separate `instruments.json` artefact. Schwab omits `description` on equity positions/transactions; this fills the gap consistently across asset classes. Intended for reduced-schedule runs (instrument metadata changes rarely). |
+| `--lookback` | _today − 90d_ | How far back to fetch: a preset (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date (`YYYY-MM-DD`). The window runs from there to today. Schwab caps the API window at 1 year per request; the loader chunks longer ranges automatically. |
+| `--no-instruments` | off | Skip the instrument-metadata lookup that otherwise runs after positions and transactions. By default that lookup fetches metadata for every symbol seen and writes a separate `instruments.json` artefact — Schwab omits `description` on equity positions/transactions, and this fills the gap consistently across asset classes. The opt-out suppresses the extra round-trip on high-cadence runs, since instrument metadata changes rarely. |
 | `--dry-run` | off | Skip data fetch; only validate auth and list accounts. Creates no bronze run dir. |
 | `--debug` | off | Fleet-wide debug-artefact gate. This is a pure REST collector that writes no bronze-resident debug artefacts (browser-flow captures belong to `login.py` and land outside bronze), so the flag currently gates nothing — it exists for help-text parity across collectors. Use `--verbose` for DEBUG-level logging. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
@@ -313,9 +314,9 @@ Reload semantics:
     noise fields (e.g. `schwabClientCorrelId`, which Schwab
     regenerates on every API call). Bronze keeps the original.
   - `instruments` deduplicates per symbol, same direct payload
-    comparison. Populated only when bronze contains an
-    `instruments.json` (i.e. when `download.py --with-instruments`
-    was used).
+    comparison. Populated whenever bronze contains an
+    `instruments.json` (written by default; absent only when
+    `download.py --no-instruments` was used).
 - **Events** (`transactions`) use window-DELETE-then-INSERT per
   `(account, time-window)`. The dump emits non-overlapping windows;
   the loader replaces exactly that range, which catches upstream
@@ -371,14 +372,20 @@ wrapper over the shared, unit-tested prune engine in
 ```
 
 Unlike the browser-driven collectors, schwab-api has no bronze-resident
-debug artefacts to sweep: a run dir is a flat set of JSON load inputs,
-and the browser-flow page captures / traces belong to `login.py` and
-land in a separate debug dir outside bronze. So `prune`'s only effect is
-removing whole run dirs that are **not complete dumps** — a download that
-crashed or was interrupted before it finished. Such a dir may still hold
-a partial `account_numbers.json` (and some transactions), which `load`
-would otherwise ingest as a truncated snapshot; after pruning one, the
-next `load --force` rebuild reflects the removal.
+debug artefacts to sweep: a run dir is a flat set of JSON load inputs.
+So inside bronze, `prune`'s only effect is removing whole run dirs that
+are **not complete dumps** — a download that crashed or was interrupted
+before it finished. Such a dir may still hold a partial
+`account_numbers.json` (and some transactions), which `load` would
+otherwise ingest as a truncated snapshot; after pruning one, the next
+`load --force` rebuild reflects the removal.
+
+The browser-flow page captures and traces belong to `login.py` and land
+in a separate debug dir *outside* bronze — `~/.cache/schwab-api-debug`,
+or `$SCHWAB_API_DEBUG_DIR`. The wrapper passes it as `--debug-dir`, so
+`prune` reclaims it as well: every `login --trace` leaves a bundle there
+and nothing else clears them out. Entries idle for `--min-age-hours` go;
+a live login's captures are still being written, so they stay.
 
 Completeness is read from each dump's `run.json` status: `in-progress`
 (a crashed walk) is non-complete, `complete` is kept. Dumps that predate
@@ -396,8 +403,9 @@ never touched, so silver stays reproducible. An in-flight guard
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root (the wrapper passes the resolved data dir). |
+| `--debug-dir` | `~/.cache/schwab-api-debug` | Login trace/capture cache, outside bronze (the wrapper passes the resolved debug dir). Absent on disk = nothing to reclaim. |
 | `--dry-run` | off | Print the deletion plan; remove nothing. |
-| `--min-age-hours` | `1` | Leave non-complete dumps touched within this window alone (protects an in-flight download). |
+| `--min-age-hours` | `1` | Leave non-complete dumps, and debug-cache entries, touched within this window alone (protects an in-flight download or login). |
 
 ## recompress.py
 

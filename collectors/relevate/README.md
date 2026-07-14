@@ -94,27 +94,29 @@ Iteration-cheap reruns of `download` for one slice:
 ./relevate download --mode accounts                 # master listing + ancillaries
 ./relevate download --mode portfolios --limit-portfolios 1
 ./relevate download --mode documents --limit-documents 3
-./relevate download --skip-documents                # everything except PDFs
+./relevate download --no-documents                  # everything except PDFs
 ./relevate download --documents-force               # re-fetch every PDF (no hardlink reuse)
 ```
 
 Date-window flags (the shared collector-fleet contract):
 
 ```sh
-./relevate download                             # default: last 90 days; --year-from = current year
+./relevate download                             # default: last 90 days
 ./relevate download --lookback 1y               # 1w/4w/3m/6m/1y/2y/5y/all
-./relevate download --since 2020-01-01          # explicit --since drives both the
-                                                 # /deposits year iteration AND the docs filter
-./relevate download --year-from 2010            # explicit-year escape hatch (overrides --since.year)
-./relevate download --documents-since 2018-01-01  # narrower docs scope only
+./relevate download --lookback 2020-01-01       # an ISO date works too; the window's
+                                                 # start drives both the /deposits year
+                                                 # iteration AND the docs filter
 ```
+
+`--lookback` names the window's starting point; the window runs from
+there to today and covers everything the source offers in it. The
+`/deposits` endpoint takes year granularity only, so the window's
+start year bounds the iteration.
 
 Documents are filtered AT FETCH: `download.py` reads
 `/middlelayer/v2/documents` (always full index), skips PDF binaries
-whose `createDate` falls outside `[--documents-since,
---documents-until]`, and writes the full index to bronze for
-traceability. The `--year-from` / `--year-to` escape hatches remain
-for one-off year-explicit backfills.
+whose `createDate` falls outside the window, and writes the full
+index to bronze for traceability.
 
 In-window PDFs are download-avoidant across runs via the shared
 `collectorkit.docdedup` engine: an executed-once immutable doc `load`

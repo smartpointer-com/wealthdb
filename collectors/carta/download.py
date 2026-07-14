@@ -632,13 +632,17 @@ def run(context, args, run_dir: Path, snapshot_at: int) -> int:
     # so the in-flight dump never seeds itself. link-mode reuses an identical
     # prior copy for immutable archival notices; fetch-verify re-reads statements
     # / tax / unknown docs. See _document_class. --documents-force bypasses it.
-    skip = docdedup.SkipSet.derive(
-        run_dir.parent, extract_carta,
-        freshness_days=None,   # no reliable pre-fetch doc_date (extract_carta)
-        exclude_run=run_dir)
-    n_docs, n_pdf, doc_counts = capture_documents(
-        api, iid, run_dir / "documents",
-        skip=skip, force=args.documents_force)
+    if args.no_documents:
+        log.info("--no-documents: skipping the documents pass")
+        n_docs, n_pdf, doc_counts = 0, 0, _empty_doc_counts()
+    else:
+        skip = docdedup.SkipSet.derive(
+            run_dir.parent, extract_carta,
+            freshness_days=None,   # no reliable pre-fetch doc_date (extract_carta)
+            exclude_run=run_dir)
+        n_docs, n_pdf, doc_counts = capture_documents(
+            api, iid, run_dir / "documents",
+            skip=skip, force=args.documents_force)
 
     write_json(run_dir / "run.json", {
         "schema": 1,
@@ -662,7 +666,10 @@ def run(context, args, run_dir: Path, snapshot_at: int) -> int:
         # `indexed`/`pdf_on_disk` are the historical counts (load.py reads
         # `indexed`); the merged docdedup audit block adds the per-outcome
         # breakdown (total/fetched/linked/verified/changed/errors/no_blob/other).
-        "documents": {"indexed": n_docs, "pdf_on_disk": n_pdf, **doc_counts},
+        # `skipped` distinguishes --no-documents (counts are zero because
+        # the pass never ran) from a real walk that found nothing.
+        "documents": {"indexed": n_docs, "pdf_on_disk": n_pdf,
+                      **doc_counts, "skipped": args.no_documents},
         "errors": api.errors,
     })
     log.info("done → %s (%d entit(ies), %d doc(s) indexed, %d PDF(s) on disk, "
@@ -681,8 +688,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Persistent Camoufox profile from login.py. Default: %(default)s.",
     )
     p.add_argument(
-        "--dest", type=Path, default=DEFAULT_BRONZE_DIR,
-        help=("Bronze root; a UTC-timestamped run dir is created beneath it. "
+        "--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
+        help=("A UTC-timestamped run dir is created here per invocation. "
               "Default: %(default)s."),
     )
     p.add_argument(
@@ -700,6 +707,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "then diff silver under `load --force`)."),
     )
     p.add_argument(
+        # The fleet-wide document opt-out. Skips the whole documents pass
+        # (index walk + PDF fetches), which is the run's dominant cost —
+        # so one iteration on the entities pass needn't pay for it.
+        "--no-documents", dest="no_documents", action="store_true",
+        help=("Skip document capture. The run still writes entities + "
+              "run.json; the documents block records skipped=true so a "
+              "partial run is not mistaken for one that found no "
+              "documents."),
+    )
+    p.add_argument(
         "--debug", action="store_true",
         help=("Uniform debug gate. carta's browser diagnostics (HAR, "
               "Playwright trace, click log) are captured externally by "
@@ -709,8 +726,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "help-text uniformity; `prune` therefore only reclaims whole "
               "non-complete dumps, not per-run debug subdirs."),
     )
-    cli.add_full_download_lookback_arg(p)
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
 
@@ -721,12 +737,13 @@ def main(argv: list[str]) -> int:
                               what="the full holdings snapshot")
 
     if args.debug:
-        log.info("--debug set: carta captures browser diagnostics externally "
-                 "via `./carta explore` (/debug); no additional "
-                 "bronze-resident debug artefacts are written this run.")
+        # TODO(second pass): write bronze-resident debug captures under
+        # --debug. carta's browser diagnostics live in `./carta explore`
+        # (/debug) today, so download honours nothing here yet.
+        cli.warn_debug_noop("carta", log)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.dest / ts
+    run_dir = args.bronze_dir / ts
     if not args.dry_run:
         run_dir.mkdir(parents=True, exist_ok=True)
         # Stamp the run dir in-progress from birth so its lifecycle is

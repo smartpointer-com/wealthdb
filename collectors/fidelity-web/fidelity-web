@@ -17,9 +17,10 @@
 #     zstandard + pdfplumber. Running host-side saves the docker-spin
 #     overhead and lets the loader run while a `download` container is
 #     mid-flight.
-#   * `prune` / `recompress` are the same: pure bronze file walks, run
-#     under the venv, bypassing the single-writer safety guard (their
-#     own age guard protects an in-flight dump).
+#   * `prune` / `recompress` are the same: pure file walks, run under
+#     the venv, bypassing the single-writer safety guard (their own age
+#     guard protects an in-flight dump). `prune` walks the bronze tree
+#     plus the /debug cache, which nothing else reclaims.
 #   * `vnc-login` forwards a free 5900-6000 host port for the
 #     human-driven first-time profile-seed.
 #
@@ -30,7 +31,7 @@ set -euo pipefail
 
 NAME=fidelity-web
 ENV_PREFIX=FIDELITY_WEB
-ENV_VARS=(FIDELITY_USERNAME FIDELITY_PASSWORD)
+ENV_VARS=(FIDELITY_WEB_USERNAME FIDELITY_WEB_PASSWORD FIDELITY_USERNAME FIDELITY_PASSWORD)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # /app live-mount during iteration
 HAS_SAFETY=1        # refuse to evict a live MFA / VNC handoff
@@ -51,7 +52,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 fidelity-web — host wrapper
 
@@ -69,7 +70,8 @@ Subcommands:
                         zstd bronze in Python; no Docker spawn).
   prune [args...]       Delete debug artefacts (<run>/screenshots/,
                         written only by download --debug/--explore)
-                        and non-complete dumps from the bronze tree.
+                        and non-complete dumps from the bronze tree,
+                        plus aged-out entries of the /debug cache.
                         Runs host-side. --dry-run prints the plan
                         without deleting anything.
   recompress [args...]  One-time backlog sweep: replace plain
@@ -99,89 +101,83 @@ Override mounts via env:
   FIDELITY_WEB_DEBUG_DIR=/path/to/debug
 
 Credentials:
-  Read from \$FIDELITY_USERNAME / \$FIDELITY_PASSWORD inside the
-  container. The script sources /secrets/fidelity-web.env
-  automatically (= \$HOME/.secrets/fidelity-web.env on the host).
+  Read from \$FIDELITY_WEB_USERNAME / \$FIDELITY_WEB_PASSWORD inside
+  the container (the unprefixed \$FIDELITY_USERNAME / \$FIDELITY_PASSWORD
+  still work as a legacy fallback). The script sources
+  /secrets/fidelity-web.env automatically
+  (= \$HOME/.secrets/fidelity-web.env on the host).
 
   Use SINGLE QUOTES around values containing \$, \!, backtick, or
   other shell metacharacters. Double quotes would let the host
   shell do \$-expansion when sourcing the file, which silently
   mangles the password before it reaches the container:
-    FIDELITY_USERNAME='your-username'
-    FIDELITY_PASSWORD='your-password-with-\$pecial-chars'
+    FIDELITY_WEB_USERNAME='your-username'
+    FIDELITY_WEB_PASSWORD='your-password-with-\$pecial-chars'
   chmod 600 the file.
 EOF
     exit 0
 fi
 
-# `./fidelity-web load [args...]` → host-venv python invocation.
-#
-# The silver loader needs no Camoufox / Playwright / container, but it
-# DOES decompress zstd bronze in Python (SQLite silver — no native .zst
-# streaming), so it runs on the collector's .venv python via
-# host_python (zstandard + pdfplumber + collectorkit editable-installed;
-# no PYTHONPATH hack). Running host-side avoids docker-spin overhead for
-# a file walk + SQLite writes, and bypasses the safety guard so it can
-# run while a `download` container is mid-flight.
-#
-# Defaults match the container layout (silver under <data>/...,
-# bronze tree = <data>). Forward all flags through.
+# `./fidelity-web login` → clean host-side no-op (exit 0), never a container
+# spin. The Fidelity session lives only for the browser's lifetime, so a
+# login-and-exit persists nothing. Trapping it here keeps an orchestrator's
+# login → download → load from tripping (and stops `login` from reaching the
+# container's util-linux /bin/login). Use `download` (login is folded in) or
+# `vnc-login` for the first-time / re-auth VNC-assisted profile seed.
+if [[ "${1:-}" == "login" ]]; then
+    echo "fidelity-web: 'login' folds into 'download' — nothing to persist." >&2
+    echo "  The Fidelity session is browser-lifetime only. Use instead:" >&2
+    echo "    vnc-login   first-time / re-auth via VNC-assisted MFA" >&2
+    echo "    download    one-shot login -> walk (login is folded in)" >&2
+    exit 0
+fi
+
+# The file-only verbs (load / prune / recompress) run host-side on the
+# collector's .venv python (via host_python): pure file walks + SQLite /
+# zstd work that needs no Camoufox / Playwright / container, and running
+# host-side bypasses the single-writer safety guard so it can run while a
+# `download` container is mid-flight (an in-flight dump is protected by
+# prune's own age guard). Each resolves the uniform directory-override
+# flags through the shared host helper — `host_resolve_dirs <verb> "$@"`
+# consumes --data-dir / --secrets-dir / --silver-db (both `--flag VALUE` and
+# `--flag=VALUE`), sets DATA_DIR (the bronze tree), SILVER_DB
+# (<data>/fidelity-web.db by default, or ${FIDELITY_WEB_SILVER_DB}) and
+# DEBUG_DIR (the /debug mount source), and leaves the rest in FORWARD_ARGS. It takes the verb so --silver-db is
+# rejected on prune / recompress, which never read it — so these verbs honour the dir flags
+# like every other, and --help / the real flags reach the inner .py's
+# argparse rather than a hand-rolled help that hides --force et al.
+
+# `./fidelity-web load [args...]` — parse bronze → silver SQLite.
 if [[ "${1:-}" == "load" ]]; then
-    mkdir -p "$HOST_DATA"
     shift
-    SILVER_DB="$HOST_DATA/fidelity-web.db"
-    BRONZE_DIR="$HOST_DATA"
-    PASSTHRU=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --silver-db) shift; SILVER_DB="$1" ;;
-            --bronze-dir) shift; BRONZE_DIR="$1" ;;
-            -h|--help)
-                cat <<EOH
-fidelity-web load — parse bronze into silver SQLite
-
-Runs host-side on the venv python (decompresses zstd bronze in
-Python). Default silver DB lives at \$HOST_DATA/fidelity-web.db;
-default bronze tree is \$HOST_DATA itself.
-
-Flags:
-  --silver-db <file>    SQLite path (default: \$HOST_DATA/fidelity-web.db)
-  --bronze-dir <dir>    Bronze tree root (default: \$HOST_DATA)
-  -v, --verbose         DEBUG-level logging
-EOH
-                exit 0
-                ;;
-            *) PASSTHRU+=("$1") ;;
-        esac
-        shift
-    done
+    host_resolve_dirs load "$@"
     exec "$(host_python)" "$HERE/load.py" \
         --silver-db "$SILVER_DB" \
-        --bronze-dir "$BRONZE_DIR" \
-        ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+        --bronze-dir "$DATA_DIR" \
+        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 fi
 
-# `./fidelity-web prune [args...]` → host-venv python invocation.
-# Same rationale as `load`: a pure file walk needs no container,
-# and host-side execution bypasses the single-writer safety guard
-# so it can run while a `download` container is mid-flight (the
-# in-flight dump is protected by prune's own age guard). The
-# default --bronze-dir comes first so an explicit flag in [args...]
-# overrides it (argparse last-wins).
+# `./fidelity-web prune [args...]` — reclaim disk (host-side walk): the
+# bronze tree, plus the /debug cache the container's --screenshot-dir /
+# --trace write to. host_resolve_dirs resolves DEBUG_DIR exactly as
+# wrapper-lib resolves HOST_DEBUG, so both halves name the same dir.
 if [[ "${1:-}" == "prune" ]]; then
     shift
-    exec "$(host_python)" "$HERE/prune.py" --bronze-dir "$HOST_DATA" "$@"
+    host_resolve_dirs prune "$@"
+    exec "$(host_python)" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
+        --debug-dir "$DEBUG_DIR" \
+        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 fi
 
-# `./fidelity-web recompress [args...]` → host-venv python invocation.
-# One-time backlog sweep converting pre-compression HTML/CSV bronze to
-# the .zst form download now writes (verify-then-unlink per file, under
-# prune's completeness envelope). Same host-side rationale as prune; the
-# default --bronze-dir comes first so an explicit flag overrides it.
+# `./fidelity-web recompress [args...]` — one-time backlog sweep converting
+# pre-compression HTML/CSV bronze to the .zst form download now writes
+# (verify-then-unlink per file, under prune's completeness envelope).
 # Manual only — never schedule; review --dry-run first.
 if [[ "${1:-}" == "recompress" ]]; then
     shift
-    exec "$(host_python)" "$HERE/recompress.py" --bronze-dir "$HOST_DATA" "$@"
+    host_resolve_dirs recompress "$@"
+    exec "$(host_python)" "$HERE/recompress.py" --bronze-dir "$DATA_DIR" \
+        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 fi
 
 wrapper_main "$@"

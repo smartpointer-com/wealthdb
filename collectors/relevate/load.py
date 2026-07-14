@@ -740,11 +740,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "(default: %(default)s)."
         ),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 

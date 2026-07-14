@@ -7,14 +7,13 @@ Reuses the Playwright session minted by login.py to export:
   - per-account transactions MT940 — `button-swiftMt940Export`
   - bank-document PDFs             — `/api/v1/digital-banking/files/…`
 
-Files land in <dest>/<UTC-timestamp>/<artefact>. Read-only — see
+Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
 explicitly authorised.
 
 Usage:
-    download.py [--state-path <file>] [--dest <dir>]
-                [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-                [--documents-since YYYY-MM-DD] [--documents-until YYYY-MM-DD]
+    download.py [--state-path <file>] [--bronze-dir <dir>]
+                [--lookback PRESET|YYYY-MM-DD]
                 [--dry-run] [--screenshot-dir <dir>] [--trace]
 """
 
@@ -29,7 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, session
 
 import landmarks as ubs  # local module
 
@@ -49,15 +48,20 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 
 # Canonical storageState location — must match login.py, which
 # mints the file there (the wrapper's /secrets mount).
-DEFAULT_STATE_PATH = Path("/secrets/ubs_web_state.json")
+DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
+# Legacy default (underscore) — read when the new-named file is absent so an
+# existing session isn't orphaned by the rename (F18); login writes the new name.
+LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
-# Date-window defaults resolve through collectorkit.cli (default
-# DEFAULT_LOOKBACK_DAYS = 90). Important context for UBS:
+# The --lookback window resolves through collectorkit.cli (default
+# DEFAULT_LOOKBACK_DAYS = 90). Important context for UBS: every
+# surface is driven to the resolved window rather than left on its
+# own default, because those defaults disagree with each other and
+# with the requested window.
 # - transactions UI defaults to "Maximum (current year and last 2
-#   years)" — so without --since we would accidentally fetch ~3y
-#   of data on every cron-style run.
-# - documents page defaults to last 3 months; without
-#   --documents-since older PDFs would be missed.
+#   years)" — left alone it would fetch ~3y on every cron-style run.
+# - documents page defaults to last 3 months — left alone it would
+#   miss older PDFs on a wider run.
 
 # Minimum window when bisecting either the documents list (999-row
 # cap) or the MT940 export (1000-trx cap). If a single day still
@@ -86,13 +90,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH,
                    help="Path to the Playwright storageState.json minted by "
                         "login.py (default: %(default)s).")
-    p.add_argument("--dest", type=Path, default=Path("/data"),
-                   help="Output dir (default: %(default)s, the wrapper's /data "
-                        "mount); a UTC-timestamped subdir is created per run.")
-    # Shared date-window contract. UBS's UI caps the 'Maximum' preset
-    # to ~3 years; for older transactions pass an explicit older
-    # --since (e.g. 2015-01-01) or use --lookback all (~30y).
-    cli.add_lookback_args(p)
+    p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
+                   help="Bronze tree root (default: %(default)s, the wrapper's "
+                        "/data mount); a UTC-timestamped subdir is created per run.")
+    # Shared date-window contract: a single --lookback naming the
+    # start of the [start..today] window. UBS's UI caps its own
+    # 'Maximum' preset to ~3 years; older transactions are reached by
+    # an ISO start date (e.g. --lookback 2015-01-01) or
+    # --lookback all (~30y).
+    cli.add_standard_args(p, verb="download")
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -112,15 +118,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "in bronze. This flag is accepted so the CLI surface "
                         "matches the other collectors; it currently gates "
                         "nothing bronze-resident.")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="DEBUG-level logging.")
     return p.parse_args(argv)
-
-
-def resolve_windows(args: argparse.Namespace) -> tuple[date, date, date, date]:
-    """Resolve --since/--until/--documents-{since,until}/--lookback."""
-    since, until, docs_since, docs_until = cli.resolve_lookback(args)
-    return since, until, docs_since, docs_until
 
 
 # ============================================================
@@ -1016,7 +1014,6 @@ def _strip_apikey(href: str) -> str:
 # ============================================================
 
 def write_run_json(run_dir: Path, since: date, until: date,
-                   docs_since: date, docs_until: date,
                    accounts: list[dict], documents: list[dict],
                    positions: list[dict],
                    dry_run: bool) -> None:
@@ -1031,14 +1028,17 @@ def write_run_json(run_dir: Path, since: date, until: date,
         # classification of pre-change dumps.
         "status": "dry-run" if dry_run else "complete",
         "dry_run": dry_run,
-        "transactions": {
+        # One window for the whole run: transactions, documents and
+        # positions are all fetched over it. (Dumps predating the single
+        # --lookback flag carry a separate since/until on each block.)
+        "window": {
             "since": since.isoformat(),
             "until": until.isoformat(),
+        },
+        "transactions": {
             "accounts": accounts,
         },
         "documents": {
-            "since": docs_since.isoformat(),
-            "until": docs_until.isoformat(),
             "count": len(documents),
             "items": documents,
         },
@@ -1051,25 +1051,27 @@ def write_run_json(run_dir: Path, since: date, until: date,
     bronze.atomic_write_json(run_dir / "run.json", payload)
 
 
-def _prepare_run_dir(dest: Path, dry_run: bool) -> Path | None:
+def _prepare_run_dir(bronze_dir: Path, dry_run: bool) -> Path | None:
     """Create the bronze run dir and drop the "in-progress" marker.
 
-    Real run: make `dest`, create a fresh UTC-timestamped run dir under
-    it, and atomically write ``run.json`` with ``status="in-progress"``
-    up front — so a walk that crashes before ``write_run_json`` leaves a
-    non-complete dump that `prune` reclaims and `load` can classify.
+    Real run: make `bronze_dir`, create a fresh UTC-timestamped run dir
+    under it, and atomically write ``run.json`` with
+    ``status="in-progress"`` up front — so a walk that crashes before
+    ``write_run_json`` leaves a non-complete dump that `prune` reclaims
+    and `load` can classify.
 
-    Dry-run: create NOTHING under `dest` and return ``None``. A dry-run
-    is the read-only walk (CLAUDE.md §2) and must persist nothing to
-    bronze — not even a `run.json` shell, since `load`'s `scan_bronze`
+    Dry-run: create NOTHING under `bronze_dir` and return ``None``. A
+    dry-run is the read-only walk (CLAUDE.md §2) and must persist nothing
+    to bronze — not even a `run.json` shell, since `load`'s `scan_bronze`
     has no status guard and would otherwise ingest it as a dump run.
     """
     if dry_run:
-        log.info("dry-run: nothing written to bronze (--dest %s untouched)",
-                 dest)
+        log.info(
+            "dry-run: nothing written to bronze (--bronze-dir %s untouched)",
+            bronze_dir)
         return None
-    dest.mkdir(parents=True, exist_ok=True)
-    run_dir = dest / bronze.ts_slug()
+    bronze_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = bronze_dir / bronze.ts_slug()
     run_dir.mkdir(parents=True, exist_ok=False)
     log.info("bronze dir: %s", run_dir)
     bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
@@ -1235,12 +1237,15 @@ def main(argv: list[str]) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.debug:
+        # TODO(second pass): write bronze-resident debug captures under --debug.
+        cli.warn_debug_noop("ubs-web", log)
+
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir.")
 
-    since, until, docs_since, docs_until = resolve_windows(args)
-    log.info("transactions window: [%s..%s]; documents window: [%s..%s]",
-             since, until, docs_since, docs_until)
+    since, until = cli.resolve_lookback(args)
+    log.info("window: [%s..%s]", since, until)
 
     # A real run gets a bronze run dir plus an "in-progress" manifest,
     # atomically overwritten with the terminal status by write_run_json.
@@ -1250,14 +1255,15 @@ def main(argv: list[str]) -> int:
     # dir, and closes the window where a run dir carries no run.json at
     # all. A --dry-run persists nothing to bronze, so run_dir is None and
     # every export (and write_run_json) is skipped below.
-    run_dir = _prepare_run_dir(args.dest, args.dry_run)
+    run_dir = _prepare_run_dir(args.bronze_dir, args.dry_run)
 
     from playwright.sync_api import sync_playwright
 
     rc = 0
     try:
         with sync_playwright() as pw:
-            browser, context = _new_context(pw, args.state_path)
+            browser, context = _new_context(pw, session.resolve_state_path(
+                args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
             if args.trace:
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
             page = context.new_page()
@@ -1275,10 +1281,8 @@ def main(argv: list[str]) -> int:
                     # so there is no bronze dump and load never sees one.
                     log.info("--dry-run set; skipping exports")
                     log.info("dry-run plan: would export positions + "
-                             "transactions for %d account(s) in [%s..%s]; "
-                             "documents in [%s..%s]",
-                             len(accounts), since, until,
-                             docs_since, docs_until)
+                             "transactions + documents for %d account(s) "
+                             "in [%s..%s]", len(accounts), since, until)
                     txn_results = accounts  # echo discovery only
                 else:
                     positions_meta = export_positions(
@@ -1299,11 +1303,11 @@ def main(argv: list[str]) -> int:
                                           account["kind"],
                                           account["account_id"][:12], e)
                     doc_results = harvest_documents(
-                        page, docs_since, docs_until, run_dir,
+                        page, since, until, run_dir,
                         context, args.screenshot_dir,
                     )
-                    write_run_json(run_dir, since, until, docs_since,
-                                   docs_until, txn_results, doc_results,
+                    write_run_json(run_dir, since, until,
+                                   txn_results, doc_results,
                                    positions_meta, args.dry_run)
             finally:
                 if args.trace:

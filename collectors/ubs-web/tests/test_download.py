@@ -2,7 +2,7 @@
 
 The load-bearing guarantee: ``download --dry-run`` is the read-only
 walk (root CLAUDE.md §2) and must persist NOTHING under the bronze
-``--dest`` — not even a ``run.json`` shell, because ``load``'s
+``--bronze-dir`` — not even a ``run.json`` shell, because ``load``'s
 ``scan_bronze`` has no status guard and would ingest such a shell as a
 dump run. These tests pin that invariant plus the real-run counterpart.
 """
@@ -23,7 +23,7 @@ def test_prepare_run_dir_dry_run_creates_nothing(tmp_path):
     dest = tmp_path / "bronze"
     run_dir = download._prepare_run_dir(dest, dry_run=True)
     assert run_dir is None
-    # --dest must be left entirely untouched (not even created).
+    # --bronze-dir must be left entirely untouched (not even created).
     assert not dest.exists()
 
 
@@ -91,11 +91,12 @@ def test_dry_run_download_persists_nothing_to_bronze(tmp_path, monkeypatch):
     state.write_text("{}")
 
     rc = download.main(
-        ["--state-path", str(state), "--dest", str(dest), "--dry-run"]
+        ["--state-path", str(state), "--bronze-dir", str(dest), "--dry-run"]
     )
 
     assert rc == 0
-    # The core regression: no run dir — and nothing at all — under --dest.
+    # The core regression: no run dir — and nothing at all — under
+    # --bronze-dir.
     if dest.exists():
         assert list(dest.iterdir()) == []
     # Belt and suspenders: no UTC-timestamped dump dir anywhere below it.

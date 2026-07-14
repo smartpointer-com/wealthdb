@@ -22,7 +22,7 @@ if [[ "${1:-}" == "build" ]]; then
     wrapper_build "$@"
 fi
 
-if [[ "${1:-}" == "help" || $# -eq 0 ]]; then
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
     cat <<EOF
 viac — host wrapper
 
@@ -32,10 +32,9 @@ Subcommands:
                       CSRF metadata. Use --check for a cheap
                       liveness probe (no MFA push).
   download [args...]  Bronze dump. Use --dry-run to walk JSON
-                      endpoints without fetching PDFs;
-                      --with-transaction-documents to also pull
-                      the per-event TRANSACTION PDFs (adds ~950
-                      docs to the run).
+                      endpoints without fetching PDFs. The per-event
+                      TRANSACTION PDFs (~950 docs) are pulled by
+                      default; --no-transaction-documents skips them.
   load [args...]      Parse bronze into the silver SQLite DB.
   prune [args...]     Delete non-complete dumps (crashed/in-progress
                       walks and --dry-run shells) from the bronze

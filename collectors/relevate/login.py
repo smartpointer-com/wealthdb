@@ -53,7 +53,7 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
-from collectorkit import session
+from collectorkit import cli, session
 
 BASE = "https://portal.pens-expert.ch"
 
@@ -494,11 +494,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "don't count against this."
         ),
     )
-    p.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="DEBUG-level logging.",
-    )
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 

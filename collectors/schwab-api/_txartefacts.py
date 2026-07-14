@@ -1,6 +1,6 @@
 """Shared resolution of per-run `transactions_*.json` bronze artefacts.
 
-Both the downloader (symbol harvesting for `--with-instruments`) and the
+Both the downloader (symbol harvesting for the default instrument lookup) and the
 silver loader need the same enumeration of numbered transactions
 artefacts in a run dir, resolving compressed variants. Extracting it here
 keeps the two entry points byte-identical and avoids a download<->load

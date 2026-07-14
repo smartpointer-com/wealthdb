@@ -45,7 +45,7 @@ from pathlib import Path
 
 import duckdb
 
-from collectorkit import bronze, cli, compress
+from collectorkit import bronze, cli, compress, silver
 
 from binance import (
     BinanceClient, build_mapping, get_api_key, PROVIDER as PRICE_PROVIDER,
@@ -212,25 +212,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "for iterating on the type-handler rules."),
     )
     p.add_argument(
-        "--force", action="store_true",
-        help=("Re-load snapshots already present in `dump_runs`. "
-              "Without --force, previously-loaded snapshots are "
-              "skipped."),
+        "--no-fetch-prices", dest="fetch_prices", action="store_false",
+        help=("Skip the post-ingest USD price fill. By DEFAULT, after "
+              "ingest, missing USD prices are fetched from the active price "
+              "provider (Binance, USDT-denominated) for every coin held in "
+              "any portfolio on every day, inserted into coin_prices with ON "
+              "CONFLICT DO NOTHING (already-fetched dates untouched); the "
+              "previous run's latest priced day is always re-fetched (an "
+              "intraday snapshot upgraded to the close). Equivalent to "
+              "running `fetch-prices --missing` immediately after load. Pass "
+              "this to skip the price fill (e.g. an offline reload)."),
     )
-    p.add_argument(
-        "--fetch-prices", action="store_true",
-        help=("After ingest, fetch missing USD prices from the "
-              "active price provider (Binance, USDT-denominated) "
-              "for every coin held in any portfolio on every day. "
-              "Inserts into "
-              "coin_prices with ON CONFLICT DO NOTHING, so already-"
-              "fetched dates are left untouched. The previous run's "
-              "latest priced day is always re-fetched (it was an "
-              "intraday snapshot at that time; this upgrades it to "
-              "the close). Equivalent to running "
-              "`fetch-prices --missing` immediately after load."),
-    )
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -906,8 +899,8 @@ def fetch_coin_prices(
         re-fetches the latest priced day too — the price stored
         for "today" on any previous run was an INTRADAY snapshot,
         not a close, so the next run upgrades it to the close
-        price. Used by `load --fetch-prices` and
-        `fetch-prices --missing`.
+        price. Used by `load` (price fill is default; --no-fetch-prices
+        to skip) and `fetch-prices --missing`.
       - 'full':    drop every coin_prices row sourced from the
         active provider, then re-fetch the full held range per
         coin. Used by `fetch-prices` (no flag) for corruption
@@ -1220,7 +1213,7 @@ def process_snapshot(
         "SELECT 1 FROM dump_runs WHERE snapshot_at = ?",
         [snapshot_at]).fetchone()
     if already and not force:
-        log.info("  already loaded; skipping (use --force to re-load)")
+        log.info("  already loaded; skipping (use --force to rebuild)")
         return
 
     manifest = json.loads((run_dir / "run.json").read_text())
@@ -1298,8 +1291,8 @@ def _promote_work_db(work_db: Path, silver_db: Path) -> None:
 
 def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
     """Apply migrations and ingest bronze into the open silver
-    connection, honouring --replay-only / --fetch-prices. Returns the
-    process exit code."""
+    connection, honouring --replay-only and the default price fill
+    (--no-fetch-prices to skip). Returns the process exit code."""
     version = apply_migrations(conn)
     log.info("silver schema at version %d (%s)", version, args.silver_db)
 
@@ -1333,16 +1326,16 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
             continue
 
     if args.fetch_prices:
-        log.info("--fetch-prices: filling missing USD prices "
+        log.info("price-fill: filling missing USD prices "
                  "from %s + FX rates from %s",
                  PRICE_PROVIDER, FX_PROVIDER)
         client = BinanceClient(api_key=get_api_key())
         coins, prices = fetch_coin_prices(conn, client, mode="missing")
-        log.info("--fetch-prices: %d coin(s) fetched, %d price "
+        log.info("price-fill: %d coin(s) fetched, %d price "
                  "row(s) written", coins, prices)
         fx_client = FrankfurterClient()
         fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode="missing")
-        log.info("--fetch-prices: %d fiat(s) fetched, %d FX "
+        log.info("price-fill: %d fiat(s) fetched, %d FX "
                  "rate row(s) written", fiats, fx_rows)
         backfill_first_day_gaps(conn)
 
@@ -1355,6 +1348,12 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
+    # --force = delete the silver DB, then rebuild from all bronze (the
+    # fleet-wide meaning). Reset before staging so the work DB seeds empty
+    # and every snapshot re-ingests; silver.reset clears the DuckDB file and
+    # its .wal sidecar.
+    if args.force:
+        silver.reset(args.silver_db)
     work_db, promote = _stage_work_db(args.silver_db, args.scratch_dir)
     try:
         conn = duckdb.connect(str(work_db))

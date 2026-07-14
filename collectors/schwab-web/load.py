@@ -31,7 +31,7 @@ Idempotency:
 
 Usage:
     load.py --silver-db <path.db> --bronze-dir <root>
-            [--migrations <dir>] [--reparse] [-v]
+            [--migrations-dir <dir>] [--reparse] [-v]
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ _RUN_TS_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$")
 # convert to Unix seconds UTC at midnight.
 _DOC_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 
-# Where to look for migrations when --migrations isn't passed.
+# Where to look for migrations when --migrations-dir isn't passed.
 DEFAULT_MIGRATIONS_DIRS = (
     Path("/app/migrations"),                              # in-container
     Path(__file__).resolve().parent / "migrations",       # local dev
@@ -108,12 +108,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--bronze-dir", type=Path, default=Path("/data"),
-        help=("Bronze tree root (the same path passed to download.py "
-              "--dest). Default: %(default)s. The loader scans every "
-              "<UTC-ts>/ subdir under it."),
+        help=("Bronze tree root — the same --bronze-dir download writes to. "
+              "Default: %(default)s. The loader scans every <UTC-ts>/ "
+              "subdir under it."),
     )
     p.add_argument(
-        "--migrations", default=None, type=Path,
+        "--migrations-dir", default=None, type=Path,
         help=("Directory of migration SQL files. Defaults to "
               "/app/migrations (in-container) or ./migrations "
               "(local dev)."),
@@ -134,11 +134,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "cores). Pass --workers 1 to force serial — useful for "
               "debugging."),
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="DEBUG-level logging.",
-    )
-    cli.add_force_arg(p)
+    cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
 
@@ -305,13 +301,13 @@ def parse_iso_date(s: str | None) -> int | None:
 def _resolve_migrations_dir(arg: Path | None) -> Path:
     if arg is not None:
         if not arg.is_dir():
-            raise SystemExit(f"--migrations dir does not exist: {arg}")
+            raise SystemExit(f"--migrations-dir does not exist: {arg}")
         return arg
     for cand in DEFAULT_MIGRATIONS_DIRS:
         if cand.is_dir():
             return cand
     raise SystemExit(
-        "no migrations dir found; pass --migrations or create "
+        "no migrations dir found; pass --migrations-dir or create "
         f"one of: {[str(p) for p in DEFAULT_MIGRATIONS_DIRS]}"
     )
 
@@ -842,8 +838,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         if not acct_dir.is_dir():
             continue
         # Optional per-account More-detail sidecar (written by
-        # download.py when --with-more-detail is set). We merge
-        # its fields into matching transactions' payload.
+        # download.py's default per-row detail pass, unless
+        # --no-more-detail). We merge its fields into matching
+        # transactions' payload.
         more_details = _load_more_details(acct_dir)
         for export in acct.get("exports", []):
             sha256 = export.get("sha256")
@@ -932,8 +929,8 @@ def _load_more_details(acct_dir: Path) -> dict:
     results for this tx-history account, or {} when the sidecar
     is absent.
 
-    `download.py --with-more-detail` writes
-    `<acct_dir>/more-details.json` as a list of
+    download.py's per-row detail pass (default; --no-more-detail skips)
+    writes `<acct_dir>/more-details.json` as a list of
     `{"row_key": "...", "fields": {...}}` records. row_key is a
     deterministic SHA-256 prefix over the row's promoted columns
     (date|amount|description|symbol|action) that the loader can
@@ -1446,7 +1443,7 @@ def _insert_cash_balance(conn: sqlite3.Connection,
 # ============================================================
 
 def run_load(args: argparse.Namespace) -> int:
-    migrations_dir = _resolve_migrations_dir(args.migrations)
+    migrations_dir = _resolve_migrations_dir(args.migrations_dir)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(args.silver_db))
     try:

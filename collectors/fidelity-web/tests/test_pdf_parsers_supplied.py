@@ -74,7 +74,7 @@ FIXED COUPON MOODYS Aa1 SEMIANNUALLY CUSIP: ABC123456
 Activity
 """
 
-# Trust statements re-stamp the per-account header on every page;
+# Supplied statements re-stamp the per-account header on every page;
 # this fixture demonstrates the gluing: two physical "pages" for
 # the same account should produce one logical block, with the
 # Holdings table living on the second page.

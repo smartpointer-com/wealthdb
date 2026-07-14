@@ -38,7 +38,7 @@ mapped Carta's internal cookie-session **REST/JSON** API, which both
 | --- | --- | --- |
 | `explore`  | implemented | Camoufox + VNC discovery harness (HAR + crash-safe network log + trace + click log). Re-run if Carta changes its UI / endpoints. |
 | `login`    | implemented | Camoufox SPA login + CLI-2FA on stdin, persistent profile; `--check` probes the session (no 2FA push). Clears Carta's Cloudflare front. |
-| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival notices (quarterly/annual financials, capital-call & distribution notices) identical to a prior run are hardlinked in rather than re-fetched, while parsed statements and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. Read-only (GET only). `--dry-run` verifies discovery without writing. |
+| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival notices (quarterly/annual financials, capital-call & distribution notices) identical to a prior run are hardlinked in rather than re-fetched, while parsed statements and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. `--no-documents` is accepted for fleet-wide flag uniformity but not yet honoured — the document archive is captured unconditionally. Read-only (GET only). `--dry-run` verifies discovery without writing. |
 | `load`     | implemented | SQLite silver as **event-dated change deltas** (DESIGN.md §5.1): entities / securities (valued) / vesting / fund_metrics (quarterly NAV parsed from the statements) / capital_events / documents. Idempotent; migrations on startup. |
 
 The top-level `Makefile` auto-discovers this collector (`make build-carta` /
@@ -55,7 +55,7 @@ adapter is being updated to consume the event-dated delta model (DESIGN.md §6).
 
 # 2. Drop credentials into the env file. chmod 0600.
 #    cat > ~/.secrets/carta.env <<'EOF'
-#    CARTA_EMAIL=your-carta-email
+#    CARTA_USERNAME=your-carta-login-email
 #    CARTA_PASSWORD=your-carta-password
 #    EOF
 
@@ -81,7 +81,7 @@ Probe / iterate without firing a 2FA push or writing data:
 ```sh
 ./carta login --check          # exits 0 if session valid, 1 if not
 ./carta download --dry-run     # walks navigation, exports nothing
-./carta load --force           # re-ingest snapshots already in dump_runs
+./carta load --force           # delete silver + rebuild from all bronze
 ```
 
 Override host mounts via env: `CARTA_SECRETS_DIR`, `CARTA_DATA_DIR`,

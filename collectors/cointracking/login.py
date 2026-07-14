@@ -245,7 +245,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "if authenticated, 1 if not. No credentials posted, "
               "no 2FA push — safe to call from cron / healthcheck."),
     )
-    cli.add_common_args(p)
+    cli.add_standard_args(p, verb="login")
     return p.parse_args(argv)
 
 
@@ -253,7 +253,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    envfile.source_env_file(args.env_file)
+    envfile.source_env_file(args.env_file, prefer_file=True)
     args.profile_dir.mkdir(parents=True, exist_ok=True)
     # 0700 on the profile dir. The wrapper bind-mounts ~/.secrets/
     # (already 0700 by convention) onto /secrets/, but inside the

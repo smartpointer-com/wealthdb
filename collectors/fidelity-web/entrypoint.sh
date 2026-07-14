@@ -106,20 +106,21 @@ EOF
         ;;
     login)
         # `login` is a natural thing to type (most collectors have
-        # it) but fidelity-web has none: the Fidelity session lives
-        # only for the browser's lifetime, so a login that exits
-        # leaves nothing reusable. Catch it explicitly — otherwise it
-        # falls through to the pass-through below and execs the
-        # container's /bin/login (util-linux), which aborts with the
-        # baffling "Cannot possibly work without effective root"
-        # (it needs euid 0; the container runs as a non-root user).
-        echo "fidelity-web: no standalone 'login' subcommand." >&2
+        # it) but fidelity-web folds it into `download`: the Fidelity
+        # session lives only for the browser's lifetime, so a login that
+        # exits leaves nothing reusable — a clean no-op (exit 0). Catch it
+        # explicitly — otherwise it falls through to the pass-through below
+        # and execs the container's /bin/login (util-linux), which aborts
+        # with the baffling "Cannot possibly work without effective root"
+        # (it needs euid 0; the container runs as a non-root user). The host
+        # wrapper traps it first; this closes the direct-`docker run` path.
+        echo "fidelity-web: 'login' folds into 'download' — nothing to persist." >&2
         echo "  The Fidelity session is browser-lifetime only, so" >&2
         echo "  there's nothing to persist from a login-and-exit." >&2
         echo "  Use instead:" >&2
         echo "    vnc-login   first-time / re-auth via VNC-assisted MFA" >&2
         echo "    download    one-shot login -> walk (login is folded in)" >&2
-        exit 2
+        exit 0
         ;;
     *)
         # Pass-through for ad-hoc commands inside the container,
