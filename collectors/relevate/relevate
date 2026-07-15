@@ -95,7 +95,7 @@ fi
 # fine for help / sh / build paths. `set -a` auto-exports every assignment
 # so plain `KEY=VALUE` lines work (not just `export KEY=VALUE`) — matching
 # the fleet-standard env-file format; `bash -n` fails loudly on a malformed
-# file instead of silently leaving credentials unset (F43).
+# file instead of silently leaving credentials unset.
 RELEVATE_ENV_FILE="${RELEVATE_ENV_FILE:-$HOST_SECRETS/relevate.env}"
 if [[ -f "$RELEVATE_ENV_FILE" ]]; then
     if bash -n "$RELEVATE_ENV_FILE" 2>/dev/null; then

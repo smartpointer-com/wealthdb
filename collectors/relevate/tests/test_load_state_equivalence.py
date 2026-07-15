@@ -1,11 +1,10 @@
-"""Equivalence proof for the P14 refactor: download.load_state now
-delegates to collectorkit.session.load_state instead of carrying its own
-inline reader. This asserts the delegating version returns the identical
-value to the ORIGINAL inline implementation (reproduced below) across a
+"""Equivalence proof for download.load_state, which delegates to
+collectorkit.session.load_state. This asserts the delegating version
+returns the identical value to a reference inline reader (below) across a
 battery of inputs — missing file, valid JSON, corrupt JSON, empty file,
 non-dict JSON, and the pathological directory-at-path case.
 
-The original and the shared helper differ only in two non-return-value
+The reference and the shared helper differ only in two non-return-value
 respects (a warning-log side effect on a non-file path, and the warning
 text/logger on the error path); both produce the identical return value
 for every input, which is what callers consume.
@@ -22,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import download  # noqa: E402
 
 
-# Verbatim copy of download.load_state as it stood BEFORE the P14 refactor,
-# used purely as the equivalence oracle.
+# Reference implementation of the state reader, used purely as the
+# equivalence oracle.
 def original_load_state(path: Path):
     logger = logging.getLogger("download")
     if not path.exists():

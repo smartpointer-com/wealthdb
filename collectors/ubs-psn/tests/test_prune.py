@@ -70,7 +70,7 @@ def make_dump(root: Path, slug: str, *,
     ``zips`` are the flat ``<ORDERTYPE>.zip`` files inside the run dir
     (empty tuple → a zip-less shell). ``status`` is the run.json status
     field (``None`` writes a statusless ``{}`` manifest); ``run_json``
-    False omits the manifest entirely (every pre-change dump).
+    False omits the manifest entirely.
     ``screenshots`` adds the ``--debug`` SFTP listing, off by default to
     mirror a pull without ``--debug``. ``age_s`` backdates every mtime so
     the write-activity guard sees an abandoned dump; the default (0)

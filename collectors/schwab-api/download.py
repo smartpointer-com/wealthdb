@@ -589,12 +589,12 @@ def run(args: argparse.Namespace) -> int:
     run_dir = None if args.dry_run else args.bronze_dir / ts
     trace = debugcap.HttpTrace(run_dir, log=log, enabled=args.debug)
 
-    # schwab-py's parameter names (api_key, app_secret) are a historical
-    # quirk; they accept the OAuth Client ID / Client Secret that Schwab
-    # issues in its developer portal. Both building the client and the
-    # first request force a token refresh, which is where an expired or
-    # revoked refresh token surfaces — catch the authlib error and explain
-    # it rather than letting a raw traceback escape.
+    # schwab-py's api_key / app_secret parameters take the OAuth Client ID
+    # and Client Secret that Schwab issues in its developer portal — the
+    # names do not match Schwab's own terminology. Both building the
+    # client and the first request force a token refresh, which is where an
+    # expired or revoked refresh token surfaces — catch the authlib error
+    # and explain it rather than letting a raw traceback escape.
     oauth_errors = oauth_error_types()
     try:
         log.info("Loading client from token at %s", args.token_path)

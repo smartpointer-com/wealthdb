@@ -175,10 +175,9 @@ non-complete run dirs: a `download` that crashed or was interrupted
 before finishing.
 
 Completeness comes from the `run.json` status (`in-progress` ⇒
-non-complete, `complete` ⇒ keep). A dump with no `run.json` predates the
-manifest; its legacy terminal signal is the presence of
-`open_orders.json`, the last unconditional artefact a complete run
-writes. The safety envelope is the engine's: an unreadable/corrupt
+non-complete, `complete` ⇒ keep). A dump carrying no status falls back to
+the presence of `open_orders.json`, the last unconditional artefact a
+complete run writes. The safety envelope is the engine's: an unreadable/corrupt
 manifest is UNKNOWN and never deleted; a complete dump's load inputs are
 never touched; symlinks and non-run entries at the bronze root (the
 silver DB) are skipped; and an in-flight guard keyed on recent write
@@ -187,15 +186,14 @@ backfill that is still writing `transactions_NNN.json`. Deleting a
 non-complete dump only removes bronze — silver rows already sourced from
 it persist until the next `load --force` rebuild.
 
-Bronze compression is inert to `prune` for forward (manifest-bearing)
-dumps — classification is status-based, and the data artefacts are load
-inputs whether `.json` or `.json.zst`. The one interaction: a *legacy*
-dump (no `run.json`) is judged complete by the presence of its terminal
-data artefact `open_orders.json`, which a `recompress` sweep may leave as
-`open_orders.json.zst`. So `_is_complete`'s legacy fallback resolves the
-on-disk variant (plain **or** `.zst`), not a fixed `.json` name —
-otherwise a recompressed legacy dump would flip to NON_COMPLETE and be
-pruned. Converting the pre-compression backlog to the `.json.zst` form is
+Bronze compression is inert to `prune` for a manifest-bearing dump —
+classification is status-based, and the data artefacts are load inputs
+whether `.json` or `.json.zst`. The one interaction: a dump carrying no
+status is judged complete by the presence of its terminal data artefact
+`open_orders.json`, which a `recompress` sweep may leave as
+`open_orders.json.zst`. So `_is_complete` resolves the on-disk variant
+(plain **or** `.zst`), not a fixed `.json` name — a fixed name would flip
+a recompressed dump to NON_COMPLETE and prune it. Compressing a dump is
 the separate manual `recompress` verb's job — it rewrites load inputs
 (which `prune` never does), so it lives behind the same completeness
 envelope plus a verify-then-unlink rule and is never scheduled (§3.2).

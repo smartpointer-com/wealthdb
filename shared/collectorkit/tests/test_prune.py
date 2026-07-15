@@ -867,7 +867,7 @@ def test_validate_debug_target_refuses_symlink(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# -v / --verbose (F36)
+# -v / --verbose
 #
 # Every login/download/load surface takes -v; prune/recompress/dedup did not,
 # so `wealthdb-collect <source> prune -v` died at argparse. It is wired to a

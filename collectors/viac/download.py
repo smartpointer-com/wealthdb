@@ -542,11 +542,11 @@ def walk(client: ViacClient, dest_root: Path, *,
     }
     # Drop an "in-progress" manifest up front; main() overwrites it with
     # the terminal status once the walk returns. A crash mid-walk leaves
-    # status="in-progress", which load skips (only "complete" and legacy
-    # statusless dumps load) and prune reclaims once quiescent — a
-    # stronger signal than the older "no run.json = incomplete" heuristic,
-    # which a partial run.json write could defeat. Skipped on a dry-run:
-    # that path writes nothing at all.
+    # status="in-progress", which load skips (only "complete" and
+    # statusless dumps load) and prune reclaims once quiescent. Keying on
+    # the status rather than on run.json's mere presence is what makes a
+    # partial manifest write legible. Skipped on a dry-run: that path
+    # writes nothing at all.
     if not dry_run:
         bronze.atomic_write_json(bronze_dir / "run.json", manifest)
 

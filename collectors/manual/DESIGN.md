@@ -114,12 +114,11 @@ needs no new file and no schema change.
   `{appraisal_source}`, convertible_note `{mark_source}`, spv/private_fund
   `{post_money_valuation}` / NAV provenance.
 
-**No transactions file.** An earlier draft had a `transactions.csv` (cash
-flows projected to a funding-sentinel). It was **dropped** (§6): every such
-event is a real wire in the bank accounts, already captured by the
-bank collectors, so it added only duplication. The one datum it carried that
-positions/valuations didn't — the acquisition date — already lives on the
-position (`acquired_at`). The collector is positions + valuations only.
+**No transactions file.** The collector is positions + valuations only
+(§6). A cash-flow file would add nothing but duplication: every such event
+is a real wire in the bank accounts, already captured by the bank
+collectors. The one datum it would carry that positions/valuations don't —
+the acquisition date — already lives on the position (`acquired_at`).
 
 **Conversion (convertible_note → equity)** is therefore modelled **purely
 position-side**, no transaction:
@@ -239,9 +238,7 @@ the bank accounts, already captured by the bank collectors; re-representing it
 on a sentinel only duplicates them. The one datum the acquisition transaction
 carried that positions/valuations don't (the acquisition date) already rides on
 the position. carta/equityzen *need* their funding sentinel because those
-sources' cash is invisible to everything else; manual's is not. (An earlier
-draft mirrored that sentinel; it was reversed once it was clear every manual
-cash flow is already a wire in the bank collectors.)
+sources' cash is invisible to everything else; manual's is not.
 
 **Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
 widens the `silver_sources` `silver_kind` whitelist (the 0007–0015

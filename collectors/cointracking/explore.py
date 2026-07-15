@@ -28,8 +28,8 @@ so login.py + download.py can be written from real traces:
                                      `COINTRACKING_USERNAME` /
                                      `COINTRACKING_PASSWORD` (sourced
                                      from `/secrets/cointracking.env`
-                                     inside the container). Operator
-                                     still clicks Login + handles 2FA.
+                                     inside the container). Login + 2FA
+                                     are still driven by hand.
 
 Recording stops when the last browser window is closed
 (Camoufox's persistent context fires `close`) or after
@@ -74,11 +74,12 @@ EVENT_PREFIX = "__CT_EVENT__ "
 # never leak into an embedded third-party iframe.
 HOST_RE = re.compile(r"(^|\.)cointracking\.info$", re.I)
 
-# Locators tried in order. The explore phase will tell us which one
-# actually matches cointracking.info's form — we keep a few common
-# variants as a starting set, anchored on standard HTML conventions
+# Locators tried in order. Deliberately broad — this harness runs when
+# cointracking.info's form has moved and login.py's concrete selectors
+# no longer match, so it anchors on standard HTML conventions
 # (input[type=email] / autocomplete=username) plus name-substring
-# fallbacks. Same approach for the password input.
+# fallbacks rather than on any one observed id. Same for the password
+# input.
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "
@@ -254,7 +255,7 @@ def _maybe_prefill_login(page, username: str, password: str) -> bool:
     except Exception:
         return False
     if existing_user or existing_pwd:
-        # Operator has already typed something; don't overwrite.
+        # Something was already typed here; don't overwrite it.
         return False
     try:
         user_field.fill(username, timeout=2000)

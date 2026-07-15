@@ -48,9 +48,9 @@ escalation chain.
 
 A 2FA approval (Symantec VIP / Google Authenticator / similar
 TOTP-style code) is required on every truly-fresh login. Once
-the operator ticks "Trust this browser," subsequent logins from
-the same Camoufox profile dir skip MFA for the duration of
-Fidelity's device-trust cookie (~30 days nominal).
+"Trust this browser" is ticked, subsequent logins from the same
+Camoufox profile dir skip MFA for the duration of Fidelity's
+device-trust cookie (~30 days nominal).
 
 The first-ever login from a fresh profile dir on a new IP needs
 a one-time **VNC handoff** so Akamai sees a real human-generated

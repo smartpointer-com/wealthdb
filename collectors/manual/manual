@@ -2,8 +2,8 @@
 # manual — host wrapper for the wealthdb "manual" collector.
 #
 # Unlike every other collector, `manual` has NO source to fetch from: the
-# user maintains the bronze CSVs (positions.csv / valuations.csv) by hand
-# in the data dir (default $XDG_DATA_HOME/wealthdb/manual/). So there is no `login` and
+# bronze CSVs (positions.csv / valuations.csv) are maintained by hand in
+# the data dir (default $XDG_DATA_HOME/wealthdb/manual/). So there is no `login` and
 # no `download` — only `load`, which validates those CSVs and rebuilds the
 # SQLite silver from them. Host-venv collector (no Docker).
 #
@@ -37,9 +37,9 @@ case "$cmd" in
         exit 0
         ;;
     download|login)
-        # F41: --check is accepted for fleet uniformity; this collector is
-        # load-only with no session, so --check is inherently a no-op.
-        case " $* " in *" --check "*) echo "manual: login --check not implemented (TODO); no session to probe." >&2 ;; esac
+        # --check is accepted for fleet uniformity; this collector is
+        # load-only with no session, so there is nothing to probe.
+        case " $* " in *" --check "*) echo "manual: no session to probe — --check has nothing to check here." >&2 ;; esac
         cat >&2 <<'EOF'
 manual: no-op. This collector has no source to fetch from — you are the
 source of truth. Maintain the CSVs by hand in the data dir (default
@@ -49,12 +49,8 @@ EOF
         exit 0
         ;;
     prune)
-        # F32: prune is a no-op here; acknowledge any flags rather than
-        # swallowing them silently.
+        # Acknowledge any flags rather than swallowing them silently.
         [[ $# -gt 0 ]] && echo "manual: prune flags ignored — nothing to reclaim." >&2
-        # The fleet-wide `prune` verb (forwarded by the wealthdb-collect
-        # dispatcher) is a documented no-op here: manual is load-only, so
-        # there is nothing to reclaim. See README.md / DESIGN.md §1.
         cat >&2 <<'EOF'
 manual: prune is a no-op — nothing to reclaim. This collector is load-only:
 it has no timestamped bronze run-dirs and writes no debug or diagnostic

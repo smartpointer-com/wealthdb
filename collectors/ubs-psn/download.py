@@ -357,7 +357,7 @@ def main() -> int:
     )
     # value-with-env-fallback (CLAUDE.md §3): --client-id VALUE else
     # UBS_PSN_CLIENT_ID, so a direct `download.py` with the env var exported
-    # works, matching fred (F4).
+    # works, matching fred.
     _source_env_file(args.env_file)
     args.client_id = envfile.resolve_credential(
         args.client_id, "UBS_PSN_CLIENT_ID", "--client-id")

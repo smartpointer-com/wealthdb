@@ -408,9 +408,9 @@ wealthdb UBS adapter resolves them is owned by
 listed here because they are properties of the feeds, not of gold.
 
 - **Multi-relationship sweep.** The web SPA only exposes the
-  currently-selected relationship; the toolkit currently
-  produces one silver per relationship per session — the operator
-  has to switch + re-run. Could be automated in download.py later.
+  currently-selected relationship, so a session captures exactly
+  one: covering a second one takes a relationship switch and
+  another run. Could be automated in download.py later.
 - **Cost basis is web-only.** Web carries `cost_price`; PSN does
   not. Past the PSN cutover the web cost basis stops refreshing
   unless web is re-run or cost basis is derived from web's

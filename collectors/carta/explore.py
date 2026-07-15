@@ -33,11 +33,11 @@ download.py can be written from real traces:
                                      a `MutationObserver` watch that signals
                                      when a login form has mounted — the
                                      Python side then pre-fills it from
-                                     `CARTA_EMAIL` / `CARTA_PASSWORD`
+                                     `CARTA_USERNAME` / `CARTA_PASSWORD`
                                      (sourced from `/secrets/carta.env`).
-                                     Operator still clicks Sign in + handles
-                                     2FA. Pass --no-prefill to type the
-                                     credentials yourself.
+                                     Sign in + 2FA are still driven by hand.
+                                     Pass --no-prefill to skip the pre-fill
+                                     and type the credentials manually.
 
 This is read-only observation. Per CLAUDE.md, never click an Exercise /
 Sell / Transfer / Accept / wire / e-sign / confirm control, and stay out
@@ -85,7 +85,10 @@ DEFAULT_URL = "https://app.carta.com"
 DEFAULT_PROFILE_DIR = Path("/secrets/carta-profile")
 DEFAULT_DEBUG_ROOT = Path("/debug")
 DEFAULT_ENV_FILE = Path("/secrets/carta.env")
-USER_ENV = "CARTA_EMAIL"
+# Same order login.py resolves: canonical name first, legacy alias second.
+# They must agree — an env file carrying only the canonical name would
+# otherwise log in fine and silently fail to pre-fill here.
+USER_ENVS = ("CARTA_USERNAME", "CARTA_EMAIL")
 PASS_ENV = "CARTA_PASSWORD"
 EVENT_PREFIX = "__CARTA_EVENT__ "
 
@@ -94,13 +97,13 @@ EVENT_PREFIX = "__CARTA_EVENT__ "
 # third-party iframe.
 HOST_RE = re.compile(r"(^|\.)carta\.com$", re.I)
 
-# Locators tried in order. The explore phase will tell us which one
-# actually matches Carta's form — we keep a few common variants as a
-# starting set, anchored on standard HTML conventions (input[type=email] /
-# autocomplete=username) plus name-substring fallbacks. Carta's login may
-# be a two-step form (email screen, then password); in that case both
-# fields aren't present at once and pre-fill simply no-ops — the operator
-# types by hand, which is fine for discovery.
+# Locators tried in order. Deliberately broad — this harness runs when
+# Carta's form has moved and the concrete ids in login.py no longer match,
+# so it anchors on standard HTML conventions (input[type=email] /
+# autocomplete=username) plus name-substring fallbacks rather than on any
+# one observed id. On a two-step form (email screen, then password) both
+# fields aren't present at once and pre-fill simply no-ops — the
+# credentials get typed by hand, which is fine for discovery.
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "
@@ -216,7 +219,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--env-file", type=Path, default=DEFAULT_ENV_FILE,
-        help=("Path to a bash-sourced env file with CARTA_EMAIL / "
+        help=("Path to a bash-sourced env file with CARTA_USERNAME / "
               "CARTA_PASSWORD. Skipped silently if absent. "
               "Default: %(default)s."),
     )
@@ -257,7 +260,7 @@ def _maybe_prefill_login(page, email: str, password: str) -> bool:
     forms, and SPA client-side route changes: each field is filled
     independently, so the email lands on step 1 and the password lands on
     step 2 when it mounts. Idempotent — a field that already has content is
-    left alone (so it never clobbers what the operator typed, and re-polling
+    left alone (so it never clobbers a hand-typed value, and re-polling
     is a no-op once filled). Never submits — Sign in + 2FA are driven
     manually in the VNC session. Returns True iff at least one field was
     filled this call."""
@@ -283,7 +286,7 @@ def _maybe_prefill_login(page, email: str, password: str) -> bool:
             if not field.is_visible():
                 continue
             if field.input_value(timeout=1000):
-                continue  # operator (or a prior poll) already filled it
+                continue  # already filled (by hand, or a prior poll)
             field.fill(value, timeout=2000)
             filled = True
         except Exception as e:
@@ -326,7 +329,7 @@ def main(argv: list[str]) -> int:
     # `export CARTA_PASSWORD=…` ahead of the invocation.
     if envfile.source_env_file(args.env_file):
         log.info("env file:    %s (sourced)", args.env_file)
-    username = os.environ.get(USER_ENV, "")
+    username = next((os.environ[k] for k in USER_ENVS if os.environ.get(k)), "")
     password = os.environ.get(PASS_ENV, "")
     prefill_enabled = (
         not args.no_prefill

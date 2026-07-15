@@ -1042,12 +1042,11 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
 #      Keeping the supplied PDFs UNDER the bronze tree is
 #      deliberate: it preserves the "silver is reproducible from
 #      bronze alone" invariant that `silver.reset()` (i.e.
-#      `load --force`) relies on. An earlier design sourced them
-#      from an arbitrary external dir reachable only via the CLI
-#      flag, so every `--force` rebuild or flag-less nightly reload
-#      silently dropped that history. The bronze-resident default
-#      makes the ingest self-healing — no flag, no orchestration
-#      change.
+#      `load --force`) relies on. Source them from an external dir
+#      reachable only via the CLI flag and every `--force` rebuild
+#      or flag-less nightly reload silently drops that history. The
+#      bronze-resident default makes the ingest self-healing — no
+#      flag, no orchestration change.
 #
 # PDF text extraction is CPU-bound, so both paths route their PDFs
 # through the run's shared PdfParseCoordinator (one ProcessPool + a

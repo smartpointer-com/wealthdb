@@ -38,13 +38,12 @@ def run_status(run_dir: Path) -> str | None:
     """The ``run.json`` ``status`` field for a bronze run, or ``None`` when
     there is no ``run.json`` (or it carries no ``status``).
 
-    A statusless or absent manifest predates the status lifecycle and stays
-    loadable (legacy: download historically wrote ``run.json`` only at the
-    end, so its presence meant the walk finished). A present, non-
-    ``"complete"`` status marks a crashed, still-running, or dry-run dump
-    whose partial series ``load`` must not ingest — the download now drops a
-    ``status="in-progress"`` marker at run-dir creation, so a manifest can
-    exist while the walk is unfinished."""
+    ``None`` stays loadable: a manifest with no ``status`` key is only ever
+    written at the end of a walk, so it means the walk finished. A present,
+    non-``"complete"`` status marks a crashed, still-running, or dry-run
+    dump whose partial series ``load`` must not ingest — the
+    ``status="in-progress"`` marker is dropped at run-dir creation, so a
+    manifest can exist while the walk is unfinished."""
     try:
         meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -124,8 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             # A crashed / in-flight / dry-run dump (status="in-progress" or
             # similar). Skip it WITHOUT recording it in dump_runs so that if
             # the walk later finalises to status="complete" a subsequent
-            # load still picks it up. A statusless manifest is legacy and
-            # loads as before.
+            # load still picks it up.
             log.info("run %s: status=%s — not a complete dump; skipping",
                      run_dir.name, status)
             continue

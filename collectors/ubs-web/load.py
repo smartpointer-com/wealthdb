@@ -261,10 +261,9 @@ def _read_run_json(dump_dir: Path) -> dict:
 def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
                      schema_version: int, dump_dir: Path,
                      run_meta: dict) -> None:
-    # One window per run (run.json `window`). Dumps written before the
-    # single-window CLI carry a per-facet window on each block instead;
-    # their `transactions` pair is the equivalent, so old bronze keeps
-    # loading with the same values it always produced.
+    # One window per run (run.json `window`). Older dumps carry a per-facet
+    # window on each block instead; their `transactions` pair is the
+    # equivalent, so that bronze still loads.
     window = run_meta.get("window") or run_meta.get("transactions") or {}
     conn.execute(
         "INSERT INTO dump_runs ("

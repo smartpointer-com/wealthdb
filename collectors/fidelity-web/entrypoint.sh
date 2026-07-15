@@ -32,8 +32,8 @@ case "${1:-help}" in
         ;;
     vnc-login)
         # First-time profile-dir seed: drive Camoufox to the
-        # pre-filled login form, then HAND OFF to the operator via
-        # VNC. Start x11vnc on the Xvfb display; the wrapper publishes
+        # pre-filled login form, then HAND OFF to a VNC session.
+        # Start x11vnc on the Xvfb display; the wrapper publishes
         # the port on 127.0.0.1 only (typically 5900, but moves +1
         # each time 5900 is already taken on the host) — tunnel from
         # your laptop with ssh -L. A VNC password is required

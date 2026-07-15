@@ -66,8 +66,8 @@ def make_dump(root: Path, slug: str, *,
               screenshots: bool = False,
               age_s: float = 0.0) -> Path:
     """Build a synthetic relevate bronze run dir with the real load-
-    input layout. ``status=None`` writes a pre-`status` (legacy)
-    manifest keyed only on ``ended_at`` / ``dry_run``. ``screenshots``
+    input layout. ``status=None`` writes a statusless manifest,
+    classified on ``ended_at`` / ``dry_run`` alone. ``screenshots``
     adds the ``--debug`` HTTP trace, off by default to mirror a download
     without ``--debug``. ``age_s`` backdates every mtime so the
     write-activity guard sees an abandoned dump; the default (0) leaves

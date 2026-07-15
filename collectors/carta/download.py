@@ -675,7 +675,7 @@ def run(context, args, run_dir: Path, snapshot_at: int,
              "entity_type": e.get("entity_type")}
             for e in investments
         ],
-        # `indexed`/`pdf_on_disk` are the historical counts (load.py reads
+        # `indexed`/`pdf_on_disk` are the top-level counts (load.py reads
         # `indexed`); the merged docdedup audit block adds the per-outcome
         # breakdown (total/fetched/linked/verified/changed/errors/no_blob/other).
         # `skipped` distinguishes --no-documents (counts are zero because

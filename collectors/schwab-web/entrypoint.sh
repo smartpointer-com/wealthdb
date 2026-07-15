@@ -37,8 +37,8 @@ case "${1:-help}" in
         ;;
     vnc-login)
         # Fallback: start x11vnc on the same Xvfb display and
-        # run the login + scrape flow with --no-cli-mfa, so the
-        # operator can drive Log In + 2FA from a local VNC
+        # run the login + scrape flow with --no-cli-mfa, so Log In
+        # + 2FA are driven by hand from a local VNC
         # client. Use when CLI-MFA selectors drift or a non-
         # code challenge (security question, push-to-device) is
         # required. A fresh VNC password is generated each

@@ -5,7 +5,7 @@
 # in single-writer mode (named container, refuse-to-clobber-running
 # safety guard) because Schwab's Firefox profile + 2FA prompts can't
 # tolerate concurrent invocations. `vnc-login` forwards a 5900-6000
-# host port so the operator can drive the live browser. `prune` runs
+# host port so the live browser can be driven by hand. `prune` runs
 # host-side (pure-stdlib file walk) so it bypasses the safety guard
 # and reclaims bronze disk even while a download is mid-flight.
 #

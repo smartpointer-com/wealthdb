@@ -1,16 +1,16 @@
 #!/bin/bash
-# SCAFFOLD — container entrypoint. Dispatches a single positional
-# subcommand to the corresponding Python script under /app/.
+# Container entrypoint. Dispatches a single positional subcommand to
+# the corresponding Python script under /app/.
 #
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb +
 #   x11vnc started below.
-# - `login`:   drives the SPA login form + 2FA. Browser engine (Camoufox
-#   headed-under-Xvfb vs vanilla Firefox headless) is TBD pending the
-#   explore phase; if it ends up needing a display, add `start_xvfb`
-#   to the login case (VNC not required).
-# - `download` (TBD): same per-surface browse pattern as explore; needs
-#   a display if it uses Camoufox, no VNC.
+# - `login`:   SPA login form + 2FA, headed Camoufox under Xvfb (no VNC;
+#   the 2FA code is read from stdin). Camoufox clears Carta's Cloudflare
+#   challenge.
+# - `download`: reuses the login session profile; headed Camoufox under
+#   Xvfb, then the JSON endpoints via the context request API. No VNC.
 # - `load`:    pure SQLite + Python, no browser.
+# - `prune`:   pure file walk, no browser.
 #
 # When Xvfb IS started, it's started directly rather than via `xvfb-run`:
 # the Ubuntu Noble xvfb-run script's SIGUSR1 ready-signaling hangs under

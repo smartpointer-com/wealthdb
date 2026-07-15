@@ -10,7 +10,7 @@ rates only — no real FX data. Covers:
 
   * complete dump (status="complete"): load inputs kept, screenshots/ (the
     --debug trace) reclaimed
-  * statusless manifest (pre-`status` legacy dump): COMPLETE, kept
+  * statusless manifest: COMPLETE, kept
   * non-complete dumps (absent run.json / status="in-progress" /
     status="dry-run") deleted whole once quiescent
   * in-flight guard keyed on write activity, not slug age: a long walk
@@ -143,9 +143,8 @@ def test_fresh_complete_dump_kept(tmp_path):
 
 
 def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle. fred
-    # historically wrote run.json only once (at the end of the walk), so
-    # its presence means the dump finished: classify COMPLETE, keep it.
+    # A statusless run.json is written once, at the end of the walk, so its
+    # presence means the dump finished: classify COMPLETE, keep it.
     d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
     assert run_main(tmp_path) == 0
     assert d.exists()

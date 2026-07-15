@@ -188,9 +188,8 @@ _FETCH_VERIFY_TYPES = frozenset({
 # link (fetch-avoidance): executed-once legal / offering documents that are
 # immutable once signed/issued and are NOT parsed by load.py, so linking a prior
 # identical copy realizes the fetch-avoidance win at zero silver-correctness
-# risk. This allow-list is the OWNER-CONFIRMABLE set (Move 1 plan §8 doc-type
-# inventory is the owner's call) — an explicit allow-list, never a default:
-# anything not named here is fetched, not linked.
+# risk. An explicit allow-list, never a default: anything not named here is
+# fetched, not linked.
 _LINK_TYPES = frozenset({
     "SUB_AGT",
     "COUNTERSIGN_SUB_AGT",
@@ -212,7 +211,7 @@ def _document_class(doc: dict) -> str | None:
     fetch-verify-dedup: always re-read and content-compare, because they can be
     re-issued/corrected under a stable Relay doc.id and link-mode would risk
     serving a superseded copy — a correctness bug. Executed-once legal / offering
-    documents (``_LINK_TYPES``, an explicit owner-confirmable allow-list) are
+    documents (``_LINK_TYPES``, an explicit allow-list) are
     immutable and unparsed → `immutable` → link-mode (hardlink the prior
     identical copy, skip the fetch). Any other / unrecognised type is left
     unclassified → the helper fetch-verifies it (the safe default: always

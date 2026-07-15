@@ -330,13 +330,14 @@ class TestSynthesizeActivityId:
         b = load._synthesize_activity_id("000", self.BASE_TX, 1)
         assert a != b
 
-    def test_sha256_independent(self):
-        """activity_id must be identical regardless of which sha256
-        (i.e. which download of the same logical PDF) produced the row.
-        This is the core fix for the sha256-churn duplication bug."""
+    def test_is_deterministic(self):
+        """activity_id is a pure function of its inputs: the same
+        logical row yields the same id on every download, so a
+        re-fetched PDF cannot duplicate transactions. Guards against a
+        clock/counter/uuid sneaking into the id."""
         a = load._synthesize_activity_id("000", self.BASE_TX, 0)
         b = load._synthesize_activity_id("000", self.BASE_TX, 0)
-        assert a == b  # trivially true — sha256 is no longer a param
+        assert a == b
 
     def test_different_account_differs(self):
         a = load._synthesize_activity_id("000", self.BASE_TX, 0)

@@ -286,8 +286,8 @@ before even that first write, no `run.json` at all) — either way a
 leaves no shell. The `prune` verb (shared `collectorkit.prune` engine, thin
 `prune.py`) reclaims those non-complete dumps once they are quiescent past
 `--min-age-hours`; a **complete** dump keeps every load input, and a
-statusless legacy manifest (written only at the end pre-change) is treated as
-complete. The one thing prune strips from a complete dump is `screenshots/`
+statusless manifest counts as complete — such a dump only ever got a
+`run.json` at the end, so its presence alone means the walk finished. The one thing prune strips from a complete dump is `screenshots/`
 (`debug_subdirs`), where the opt-in `--debug` gate puts its captures: the
 portfolio list page — which carries both the auth verdict and the Ant stage
 tabs the sweep clicks — plus any offering page whose `getMyInvestmentDetails`
@@ -507,8 +507,8 @@ default, the tax-document PDFs (§4, §5); the gold adapter
 - **Enabling the source in a gold run.** Build, test, gold-adapter
   registration (`cmd/wealthdb/main.go`), and the gold `silver_sources`
   whitelist (migration `0015`) are all in place; pulling EquityZen into a
-  run is then just the operator's `wealthdb.cfg` `silver_sources` entry
-  pointing at the silver DB.
+  run is then just a `wealthdb.cfg` `silver_sources` entry pointing at the
+  silver DB.
 - **K-1 Part III box amounts** (income / gains / distributions) — the IRS
   form grid defeats a naive `pdftotext` parse (it grabs box *numbers*, not
   amounts), so only Item L (the tax-basis capital account) is extracted

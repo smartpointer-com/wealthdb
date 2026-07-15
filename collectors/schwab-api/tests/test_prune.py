@@ -7,9 +7,9 @@ load inputs plus, only under `download --debug`, a screenshots/ HTTP trace
 dirs, never a load input. Covers:
   * complete dump (run.json status=complete): load inputs untouched, the
     --debug trace reclaimed
-  * legacy complete dump (no run.json, open_orders.json present):
-    kept, load inputs survive
-  * statusless manifest + open_orders present → legacy COMPLETE, kept;
+  * no run.json, open_orders.json present: COMPLETE, kept, load inputs
+    survive
+  * statusless manifest + open_orders present → COMPLETE, kept;
     statusless manifest + open_orders absent → NON_COMPLETE
   * non-complete dumps (absent run.json + absent open_orders / status
     != complete) deleted whole once quiescent
@@ -146,9 +146,9 @@ def test_fresh_complete_dump_kept(tmp_path):
 
 
 def test_legacy_complete_dump_no_manifest_kept(tmp_path):
-    # A pre-change dump has no run.json (meta is None); the legacy
-    # terminal signal is open_orders.json, the last unconditional
-    # artefact a complete run writes. Present ⇒ COMPLETE, kept.
+    # No run.json at all (meta is None); the terminal signal is
+    # open_orders.json, the last unconditional artefact a complete run
+    # writes. Present ⇒ COMPLETE, kept.
     d = make_dump(tmp_path, OLD_TS, run_json=False, open_orders=True,
                   age_s=STALE_S)
     run_main(tmp_path)
@@ -158,7 +158,7 @@ def test_legacy_complete_dump_no_manifest_kept(tmp_path):
 
 def test_statusless_manifest_with_open_orders_kept(tmp_path):
     # A run.json with no `status` key + open_orders.json present: the
-    # legacy fallback (open_orders exists) classifies COMPLETE.
+    # fallback (open_orders exists) classifies COMPLETE.
     d = make_dump(tmp_path, OLD_TS, status=None, open_orders=True,
                   age_s=STALE_S)
     run_main(tmp_path)
@@ -167,11 +167,11 @@ def test_statusless_manifest_with_open_orders_kept(tmp_path):
 
 
 def test_legacy_complete_dump_compressed_open_orders_kept(tmp_path):
-    # Regression: a pre-manifest (no run.json) dump whose terminal
-    # artefact open_orders.json was recompressed to open_orders.json.zst
-    # must still classify COMPLETE. _is_complete resolves the on-disk
-    # variant, so the `recompress` sweep does not turn a legacy complete
-    # dump into a prune target (which would silently delete its bronze).
+    # Regression: a dump with no run.json whose terminal artefact
+    # open_orders.json was recompressed to open_orders.json.zst must
+    # still classify COMPLETE. _is_complete resolves the on-disk variant,
+    # so the `recompress` sweep does not turn a complete dump into a
+    # prune target (which would silently delete its bronze).
     from collectorkit import compress
 
     d = make_dump(tmp_path, OLD_TS, run_json=False, open_orders=True,
@@ -184,7 +184,7 @@ def test_legacy_complete_dump_compressed_open_orders_kept(tmp_path):
     # the dir BEFORE _is_complete is ever consulted, masking a reverted
     # fix. Re-backdate so the age guard passes and completeness is what
     # actually decides this dump's fate (without this the test is vacuous:
-    # it stays green even with the legacy .exists() bug reintroduced).
+    # it stays green even with the plain-name .exists() bug reintroduced).
     backdate(d, STALE_S)
 
     run_main(tmp_path)
@@ -199,7 +199,7 @@ def test_legacy_complete_dump_compressed_open_orders_kept(tmp_path):
 
 def test_crashed_dump_no_manifest_no_open_orders_deleted(tmp_path):
     # Crashed before open_orders.json and before any manifest existed:
-    # no forward status, legacy signal absent ⇒ NON_COMPLETE.
+    # no status, fallback signal absent ⇒ NON_COMPLETE.
     d = make_dump(tmp_path, OLD_TS, run_json=False, open_orders=False,
                   age_s=STALE_S)
     run_main(tmp_path)
@@ -207,7 +207,7 @@ def test_crashed_dump_no_manifest_no_open_orders_deleted(tmp_path):
 
 
 def test_statusless_manifest_without_open_orders_deleted(tmp_path):
-    # Statusless manifest but no open_orders.json: legacy signal absent
+    # Statusless manifest but no open_orders.json: fallback signal absent
     # ⇒ NON_COMPLETE.
     d = make_dump(tmp_path, OLD_TS, status=None, open_orders=False,
                   age_s=STALE_S)

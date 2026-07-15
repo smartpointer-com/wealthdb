@@ -1,14 +1,13 @@
-"""Equivalence guard for the bronze run-dir enumeration swap.
+"""Guards on bronze run-dir enumeration in `list_pending_dumps()`.
 
-`list_pending_dumps()` used to enumerate run dirs with a local
-`sorted(iterdir())` loop guarded by `RUN_DIR_RE`; it now defers to
-`collectorkit.bronze.iter_run_dirs` for the enumeration while keeping
-its extra filters (run.json presence + status). Two guards:
+`list_pending_dumps()` defers to `collectorkit.bronze.iter_run_dirs` for
+the enumeration and layers its own filters (run.json presence + status)
+on top. Two guards:
 
-  * the enumeration itself is byte-identical to the inlined original
-    over a mixed fixture tree, and
-  * the surrounding run.json / status filter is *preserved* — an
-    in-progress / dry-run / manifest-less dump is still skipped.
+  * the shared iterator matches a local reference implementation of the
+    slug rule over a mixed fixture tree, and
+  * the surrounding run.json / status filter drops an in-progress /
+    dry-run / manifest-less dump.
 
 Synthetic slugs / ids only.
 """
@@ -27,7 +26,7 @@ sys.path.insert(0, str(COLLECTOR))
 import load as loader  # noqa: E402
 from collectorkit import bronze, silver  # noqa: E402
 
-# --- verbatim copy of the pre-refactor local enumeration ------------
+# --- reference implementation of the run-dir slug rule --------------
 _ORIG_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 
@@ -85,8 +84,8 @@ def _run_json(root: Path, slug: str, status) -> None:
 
 
 def test_status_filter_preserved(tmp_path):
-    """The run.json + status guard around the shared iterator must
-    still drop incomplete dumps."""
+    """The run.json + status guard around the shared iterator drops
+    incomplete dumps."""
     bronze_dir = tmp_path / "bronze"
     bronze_dir.mkdir()
     _run_json(bronze_dir, "20240101T000000Z", "complete")

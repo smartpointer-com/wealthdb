@@ -1,5 +1,5 @@
-"""maybe_source_env_files now resolves the env file via
-collectorkit.envfile.resolve_env_file (P9). These pin the resolution
+"""maybe_source_env_files resolves the env file via
+collectorkit.envfile.resolve_env_file. These pin the resolution
 behaviour: explicit-path existence guard, first-existing candidate, and
 the directory-skip that comes with is_file(). Synthetic fixtures only."""
 import argparse

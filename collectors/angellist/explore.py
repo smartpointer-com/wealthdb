@@ -86,15 +86,14 @@ EVENT_PREFIX = "__AL_EVENT__ "
 # Pre-fill is restricted to this host (and subdomains) so credentials
 # never leak into an embedded third-party iframe. angellist.com covers
 # the main site and any fund-branded *.angellist.com investor portal; a
-# white-label domain (if any) simply won't pre-fill and the operator
-# types the credentials by hand.
+# white-label domain (if any) simply won't pre-fill, leaving the
+# credentials to be typed by hand.
 HOST_RE = re.compile(r"(^|\.)angellist\.com$", re.I)
 
-# Locators tried in order. The explore phase will tell us which one
-# actually matches the Investor Portal's form — we keep a few common
-# variants as a starting set, anchored on standard HTML conventions
-# (input[type=email] / autocomplete=username) plus name-substring
-# fallbacks. Same approach for the password input.
+# Locators tried in order: several variants anchored on standard HTML
+# conventions (input[type=email] / autocomplete=username) plus
+# name-substring fallbacks, so a restyled Investor Portal form still
+# matches. Same approach for the password input.
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "

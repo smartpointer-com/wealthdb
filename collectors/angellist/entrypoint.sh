@@ -4,9 +4,9 @@
 #
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb +
 #   x11vnc started below.
-# - `login`:   the auth path (formerly `byo-login`) — a genuine stock
-#   Firefox the operator drives by hand over VNC (the SPA login is
-#   bot-walled), lifting the session cookie on close. Needs Xvfb + x11vnc.
+# - `login`:   the auth path — a genuine stock Firefox driven by hand
+#   over VNC (the SPA login is bot-walled), lifting the session cookie
+#   on close. Needs Xvfb + x11vnc.
 # - `download`: headless Camoufox + the injected cookie; needs a display.
 # - `load`:    pure SQLite + Python, no browser.
 #
@@ -34,7 +34,7 @@ case "${1:-help}" in
         exec python3 /app/explore.py "$@"
         ;;
     login)
-        # The auth path (a BYO-session bootstrap — formerly `byo-login`).
+        # The auth path (a BYO-session bootstrap).
         # AngelList's venture login is gated by an invisible Turnstile/
         # reCAPTCHA challenge that flags the Camoufox/Playwright automation
         # stack, so there is no unattended login.
@@ -50,14 +50,12 @@ case "${1:-help}" in
         #   --fresh  skip the check and always re-login (the `load --force`
         #            spelling is reserved for the delete-and-rebuild loader).
         # Otherwise launch a genuine, un-instrumented stock Firefox under
-        # Xvfb + VNC so the operator clears the login by hand; on a clean
-        # close, lift the session from its plaintext cookies.sqlite.
+        # Xvfb + VNC so the login is cleared by hand; on a clean close,
+        # lift the session from its plaintext cookies.sqlite.
         shift
-        # Fixed in-container paths under the /secrets mount. These were once
-        # ${ANGELLIST_FXPROFILE} / ${ANGELLIST_COOKIES} overridable, but those
-        # vars are read only here (never forwarded with -e), so a host-set
-        # value never reached the container — demoted to constants (F49). To
-        # relocate them, override the /secrets mount (ANGELLIST_SECRETS_DIR).
+        # Fixed in-container paths under the /secrets mount. To relocate
+        # them, override the mount itself (ANGELLIST_SECRETS_DIR) — an env
+        # var read only here would never reach the container.
         FXPROFILE="/secrets/angellist-fxprofile"
         COOKIES="/secrets/angellist-cookies.json"
         login_mode=auto
@@ -101,7 +99,7 @@ case "${1:-help}" in
         mkdir -p "$FXPROFILE"
         # Seed prefs: persist session cookies on shutdown (restore-
         # session), and skip onboarding/default-browser/telemetry noise so
-        # the operator lands straight on the login page.
+        # the login page comes up straight away.
         cat > "$FXPROFILE/user.js" <<'PREFS'
 user_pref("browser.startup.page", 3);
 user_pref("browser.aboutwelcome.enabled", false);
@@ -173,7 +171,7 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
-  login       The auth path (formerly byo-login). Fast path: if the saved
+  login       The auth path. Fast path: if the saved
               profile holds a valid session — cookie unexpired AND a headless
               probe confirms the server still accepts it — it's lifted to
               /secrets/angellist-cookies.json and login exits — no VNC.

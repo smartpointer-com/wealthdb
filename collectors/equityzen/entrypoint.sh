@@ -37,7 +37,7 @@ case "${1:-help}" in
         # SPA login form + TOTP, reading the 2FA code from stdin. Runs
         # headed Camoufox in the Xvfb virtual display (the proven stealth
         # fingerprint) — no VNC. Xvfb is needed for the headed browser; the
-        # operator interacts only via the CLI TOTP prompt.
+        # only interaction is the CLI TOTP prompt.
         start_xvfb
         shift
         exec python3 /app/login.py "$@"

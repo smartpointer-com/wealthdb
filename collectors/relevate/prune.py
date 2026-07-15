@@ -31,18 +31,17 @@ The second is whole run dirs that are **not complete dumps**:
 dir holds; after pruning one, the next ``load --force`` rebuild
 reflects the removal.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` / ``"dry-run"`` / ``"incomplete"`` at the end).
-Dumps predating the field carry a manifest with no ``status`` key —
-and because relevate's manifest is written *incrementally* from the
-start (flushed after every fetch), the mere presence of ``run.json``
-does NOT mean the walk finished. So the legacy fallback classifies a
-statusless dump COMPLETE only when its original terminal signal is
-genuinely present: ``ended_at`` stamped (``finish()`` ran) on a real,
-non-``dry_run`` run. A crashed pre-``status`` walk (``run.json``
-present, ``ended_at: null``) is correctly NON_COMPLETE. An unreadable
-or corrupt ``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` /
+``"dry-run"`` / ``"incomplete"`` at the end). A manifest with no
+``status`` key falls back to ``ended_at``: relevate's manifest is
+written *incrementally* from the start (flushed after every fetch), so
+the mere presence of ``run.json`` does NOT mean the walk finished. The
+fallback therefore classifies a statusless dump COMPLETE only on the
+terminal signal — ``ended_at`` stamped (``finish()`` ran) on a real,
+non-``dry_run`` run. A statusless crashed walk (``run.json`` present,
+``ended_at: null``) is correctly NON_COMPLETE. An unreadable or corrupt
+``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir

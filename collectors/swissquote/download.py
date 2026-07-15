@@ -54,8 +54,8 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 # Canonical storageState location — must match login.py, which
 # mints the file there (the wrapper's /secrets mount).
 DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
-# Legacy default (underscore) — read when the new-named file is absent so an
-# existing session isn't orphaned by the rename (F18); login writes the new name.
+# Fallback state location (underscore) — read when the canonical file is absent,
+# so a session stored under this name keeps working. login writes the canonical name.
 LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
 
 # The --lookback default is resolved through
@@ -673,9 +673,9 @@ def dump_is_complete(run_dir: Path) -> bool:
     * ``status == "complete"``            -> complete;
     * any other status (``"in-progress"``) -> not complete (a crashed
       or still-running walk);
-    * a statusless run.json                -> complete (a legacy dump:
-      download.py historically wrote run.json only once, at the very
-      end, so its mere presence meant the walk finished);
+    * a statusless run.json                -> complete (predates the
+      status field, where the manifest was written only at the end so
+      its presence alone marked completion);
     * no run.json / unreadable / corrupt   -> not complete.
 
     Both the crash-cleanup trap and load's dump selection key on this

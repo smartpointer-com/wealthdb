@@ -1,6 +1,7 @@
 """Equivalence tests for the consolidated money/number-string parser.
 
-Before P10, four near-identical parsers lived in the collector:
+``numparse.parse_amount`` covers four call sites with three flags, each
+with its own input dialect:
 
   * ``load._parse_money``                    (money strings; leading $, -,
                                               and (parens) negatives)
@@ -10,15 +11,14 @@ Before P10, four near-identical parsers lived in the collector:
   * ``pdf_parsers._parse_cash_summary_new``'s nested ``_clean``
                                              (cash cells; $ + paren negatives)
 
-They collapsed into ``numparse.parse_amount`` with three flags. These
-tests pin the consolidated parser to the ORIGINAL behaviour two ways:
+These tests pin the consolidated parser two ways:
 
-1. hard-coded expected outputs for every input SHAPE each parser handles
+1. hard-coded expected outputs for every input SHAPE each dialect handles
    (negatives, paren-negatives, leading $, thousands commas, blank/None,
-   plus the divergent edge cases where the four originals disagreed), and
-2. a fuzz cross-check against verbatim inline copies of the four originals
-   over an exhaustive small-alphabet battery + random strings, asserting
-   byte-identical output (NaN-sign aware).
+   plus the divergent edge cases where the four dialects disagree), and
+2. a fuzz cross-check against inline reference implementations of the four
+   dialects over an exhaustive small-alphabet battery + random strings,
+   asserting byte-identical output (NaN-sign aware).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from numparse import parse_amount  # noqa: E402
 
 
 # ------------------------------------------------------------
-# Verbatim copies of the four pre-consolidation originals.
+# Inline reference implementations of the four dialects.
 # ------------------------------------------------------------
 
 def _orig_parse_money(s):  # load._parse_money
@@ -129,11 +129,11 @@ def _byte_same(a, b):
 
 
 # ------------------------------------------------------------
-# 1. Hard-coded expected outputs, per shape, per original.
+# 1. Hard-coded expected outputs, per shape, per dialect.
 # ------------------------------------------------------------
 
 # (input, money, to_float, number, clean) — expected float | None.
-# Derived by hand from the ORIGINAL implementations above; where the
+# Derived by hand from the reference implementations above; where the
 # four disagree the columns differ (that is the point of the pin).
 _TABLE = [
     # input           money      to_float   number     clean
@@ -178,14 +178,14 @@ def test_hardcoded_shapes():
                 f"parse_amount({inp!r}, {_CFG[name]}) -> {got!r}, "
                 f"expected {expected[name]!r} (shape={name})"
             )
-            # and the pin genuinely matches the original impl too
+            # and the pin genuinely matches the reference impl too
             assert _byte_same(_ORIG[name](inp), expected[name]), (
                 f"table wrong for {name}({inp!r})"
             )
 
 
 # ------------------------------------------------------------
-# 2. Fuzz: consolidated == original, byte for byte.
+# 2. Fuzz: consolidated == reference, byte for byte.
 # ------------------------------------------------------------
 
 def _battery():

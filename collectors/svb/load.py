@@ -221,16 +221,6 @@ def mark_dump_run(conn: sqlite3.Connection) -> None:
 # Statement parsing: process pool + persistent parse cache
 # ============================================================
 #
-# Parsing the statement PDFs (pdfplumber text extraction) is ~99% of a load and
-# strictly CPU-bound. Two layers cut it down without touching what silver holds:
-#
-#   * a persistent sidecar cache keyed by (statement sha256, parser-logic
-#     fingerprint, signature) — bronze is a static,
-#     closed-account archive, so a warm run replays every parse from the sidecar
-#     and never opens a PDF; and
-#   * a process pool for the misses (a cold run, or after a parser edit), so the
-#     28 independent parses fan out across cores instead of running serially.
-#
 # The cached value is exactly the dict the parser returns and insert_statement
 # consumes it identically, so cached and freshly-parsed silver are byte-for-byte
 # identical. Statement sha256 is computed in the parent (statements are tens of

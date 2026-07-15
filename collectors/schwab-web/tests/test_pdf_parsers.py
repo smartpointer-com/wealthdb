@@ -539,8 +539,8 @@ def _wrap_equities_block(rows_text: str) -> str:
 
 class TestParsePositions:
     def test_full_row_with_pct_int_suffix(self):
-        # Trailing "1%" (integer-percent, no decimal) — used to
-        # break the trailing-column scan; now handled.
+        # Trailing "1%" (integer-percent, no decimal) must not break
+        # the trailing-column scan.
         text = _wrap_equities_block(
             "SYN1 SyntheticOneInc(M) 100.0000 50.00000 5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
         )

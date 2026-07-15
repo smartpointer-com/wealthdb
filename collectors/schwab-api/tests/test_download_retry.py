@@ -59,8 +59,8 @@ def test_retries_transient_timeout_then_succeeds():
 
 
 def test_retries_unmapped_httpcore_timeout():
-    # The failure the user actually hit: httpcore.ReadTimeout leaking
-    # un-mapped past httpx. Must still be treated as retryable.
+    # A failure seen in the wild: httpcore.ReadTimeout leaking un-mapped
+    # past httpx. Must still be treated as retryable.
     calls = {"n": 0}
 
     def call():

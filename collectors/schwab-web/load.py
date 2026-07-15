@@ -528,8 +528,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     # or a --dry-run shell leaves a partial manifest present that we
     # must NOT ingest (partial balances would leak into gold as a
     # snapshot; a dry-run's tx-history exports still fire). A
-    # statusless manifest predates the status field and is treated as
-    # loadable for backward compat.
+    # statusless manifest is treated as loadable.
     status = manifest.get("status")
     if status in ("in-progress", "dry-run"):
         log.warning(

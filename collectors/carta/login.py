@@ -50,8 +50,8 @@ BASE = "https://app.carta.com"
 # unauthenticated → login.app.carta.com/credentials/login/.
 LOGIN_HOST = "login.app.carta.com"
 
-# Canonical login-id env first, the legacy alias second (F20): read
-# CARTA_USERNAME, falling back to CARTA_EMAIL.
+# Canonical login-id env first, the alias second: read CARTA_USERNAME,
+# falling back to CARTA_EMAIL.
 USER_ENVS = ("CARTA_USERNAME", "CARTA_EMAIL")
 PASS_ENV = "CARTA_PASSWORD"
 

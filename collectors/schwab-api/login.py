@@ -174,14 +174,14 @@ def source_env_files(explicit: Path | None = None) -> None:
     """Source the first existing path of each env-file set (schwab-api
     then schwab-web), so the OAuth app creds and the Schwab login creds
     are both available. Absent files are fine. An explicit --env-file (or
-    the SCHWAB_API_ENV_FILE env var) is then sourced last and wins (F19)."""
+    the SCHWAB_API_ENV_FILE env var) is then sourced last and wins."""
     for candidates in _ENV_FILE_SETS:
         for path in candidates:
             if path.exists():
                 envfile.load_env_file(path, _CRED_OVERRIDE_VARS, logger=log)
                 break
     # An explicit --env-file / ${SCHWAB_API}_ENV_FILE is sourced LAST so its
-    # credential values win over the defaults (F19).
+    # credential values win over the defaults.
     lead = explicit or (Path(os.environ["SCHWAB_API_ENV_FILE"])
                         if os.environ.get("SCHWAB_API_ENV_FILE") else None)
     if lead is not None:
@@ -340,8 +340,8 @@ def prefill_login(page, login_id: str | None, password: str | None,
     page. The exact DOM is uncharted (the consent login may differ from
     schwab.com's) and the form may only appear after a redirect, so this
     polls for a login-id input across the top-level page and every frame,
-    fills it plus the password, and is non-fatal — the operator can type
-    the creds over VNC if it misses."""
+    fills it plus the password, and is non-fatal — a miss leaves the creds
+    to be typed by hand over VNC."""
     if not login_id or not password:
         log.info("login credentials not set (SCHWAB_LOGIN_ID / "
                  "SCHWAB_PASSWORD); skipping pre-fill")
@@ -522,7 +522,7 @@ def _drive_consent(page) -> None:
     """For --cli-mfa: tick the Terms agreement box (on the T&C page) and
     the account boxes (on the link page), then click the advance button
     (Continue / Done / Allow). Never clicks Cancel; .check() never
-    unchecks. Best-effort — the operator can take over via VNC."""
+    unchecks. Best-effort — the step can be driven by hand over VNC."""
     try:
         if page.get_by_text(lm.TERMS_HEADING, exact=False).count() > 0:
             _check_visible_checkboxes(page)
@@ -672,8 +672,8 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
 
 def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
     """Experimental: auto-submit login, prompt for 2FA on stdin, click
-    through consent. Best-effort — on selector drift, the operator can
-    take over via VNC and the redirect capture still completes."""
+    through consent. Best-effort — on selector drift the flow can be
+    driven by hand over VNC and the redirect capture still completes."""
     if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):
         log.warning("login submit button not found; complete login over VNC")
         return

@@ -24,14 +24,13 @@ removed:
   are the point — so under that flag this category is the backstop that
   reclaims it.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` at the end). Dumps that predate the ``status``
-field carry a full manifest with no ``status`` key — those are
-pre-change complete dumps (download.py wrote run.json only once, at
-the very end), so a statusless-but-readable manifest is classified
-COMPLETE and its load inputs are kept. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A statusless-but-readable manifest predates the ``status`` field,
+where the manifest was written only at the end so its presence alone
+marked completion; it is classified COMPLETE and its load inputs are
+kept. An unreadable or corrupt ``run.json`` is UNKNOWN and never
+deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
@@ -55,13 +54,12 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete
-    # dump: download.py historically wrote run.json only once, at the
-    # end, so its presence means the walk finished. New walks always
-    # carry a status key (in-progress -> complete), which
-    # status_classification resolves before the legacy fallback is
-    # consulted. Identical shape to fidelity-web because both use
-    # run.json-presence as the legacy completeness signal.
+    # A statusless-but-readable run.json is a pre-`status` complete dump:
+    # the manifest was written only at the end, so its presence means the
+    # walk finished. Current walks always carry a status key
+    # (in-progress -> complete), which status_classification resolves
+    # before this legacy fallback is consulted. Identical shape to
+    # fidelity-web, which uses the same completeness signal.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

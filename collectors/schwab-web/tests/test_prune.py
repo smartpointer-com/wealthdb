@@ -7,8 +7,8 @@ tmp_path bronze trees matching download.walk()'s layout. Covers:
   * complete dump without screenshots/: no-op
   * non-complete dumps (absent run.json / status != complete /
     status="dry-run") deleted whole once quiescent
-  * legacy statusless manifests: a real dump (dry_run=false) is
-    kept as complete; a --dry-run shell (dry_run=true) is pruned
+  * statusless manifests: a real dump (dry_run=false) is kept as
+    complete; a --dry-run shell (dry_run=true) is pruned
   * in-flight guard keyed on write activity, not slug age: a long
     walk (old slug, fresh writes) is protected
   * unreadable / corrupt run.json is UNKNOWN → skipped, never
@@ -22,8 +22,8 @@ tmp_path bronze trees matching download.walk()'s layout. Covers:
 The debug_subdirs = ("screenshots",) config mirrors the
 tx-history landing HTML baseline download.walk() writes under
 <run>/screenshots/ only with --debug. debug_globs =
-("transactions/*/page-*.html",) additionally reclaims the LEGACY
-pre-5c3ffe4 orphans that ungated capture left inside the
+("transactions/*/page-*.html",) additionally reclaims the orphans
+an older ungated capture left inside the
 transactions/<suffix>/ load-input dir; every other file in that
 dir (the .csv/.json/.xml exports + more-details.json) is a load
 input and must NEVER be a prune target.
@@ -66,8 +66,8 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
     """Build a bronze run dir shaped like download.walk() output.
 
     ``status`` is the run.json ``status`` field (``None`` ⇒ a
-    statusless legacy manifest). ``dry_run`` sets the manifest's
-    legacy ``dry_run`` bool (the legacy completeness signal).
+    statusless manifest). ``dry_run`` sets the manifest's ``dry_run``
+    bool (the fallback completeness signal).
     ``age_s`` backdates every file/dir mtime so the write-activity
     guard sees an abandoned dump; the default (0) leaves it fresh.
     """
@@ -146,17 +146,17 @@ def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
 
 
 def test_legacy_page_html_orphan_reclaimed_inputs_kept(tmp_path):
-    # Pre-5c3ffe4 dumps wrote the ungated landing HTML INSIDE the
+    # An older ungated capture wrote the landing HTML INSIDE the
     # tx-history load-input dir as page-001.html. It is a debug orphan
     # `load` never reads, reclaimed via debug_globs — while every
     # load-input sibling in that SAME dir (the .json/.csv exports)
     # stays byte-identical.
     d = make_dump(tmp_path, OLD_TS)
-    legacy_html = d / "transactions" / SUFFIX / "page-001.html"
-    legacy_html.write_text("<html>legacy landing</html>")
+    orphan_html = d / "transactions" / SUFFIX / "page-001.html"
+    orphan_html.write_text("<html>landing</html>")
     run_main(tmp_path)
     assert not (d / "screenshots").exists()
-    assert not legacy_html.exists()          # the orphan is reclaimed
+    assert not orphan_html.exists()          # the orphan is reclaimed
     _load_inputs_intact(d)                    # its load-input siblings stay
 
 
@@ -177,11 +177,11 @@ def test_legacy_page_html_kept_in_non_complete_dump_dir(tmp_path):
     # glob only fires from complete dumps. A fresh (age-guarded)
     # non-complete dump keeps everything, page-html included.
     d = make_dump(tmp_path, fresh_slug(age_s=60), run_json=False)
-    legacy_html = d / "transactions" / SUFFIX / "page-001.html"
-    legacy_html.write_text("<html>legacy landing</html>")
+    orphan_html = d / "transactions" / SUFFIX / "page-001.html"
+    orphan_html.write_text("<html>landing</html>")
     run_main(tmp_path)
     assert d.exists()
-    assert legacy_html.exists()
+    assert orphan_html.exists()
 
 
 def test_page_html_symlink_in_transactions_not_deleted(tmp_path):
@@ -225,14 +225,14 @@ def test_in_progress_status_dump_deleted_when_stale(tmp_path):
 
 
 # ============================================================
-# Legacy statusless manifests: dry_run splits keep vs prune
+# Statusless manifests: dry_run splits keep vs prune
 # ============================================================
 
-def test_statusless_real_dump_kept_as_legacy_complete(tmp_path):
-    # A statusless run.json with dry_run=false predates the status
-    # lifecycle. schwab-web wrote run.json incrementally, so the
-    # legacy signal is dry_run=false → a real dump: classify
-    # COMPLETE, keep its load inputs, prune only its debug captures.
+def test_statusless_real_dump_kept_as_complete(tmp_path):
+    # schwab-web writes run.json incrementally, so presence alone
+    # proves nothing; for a statusless manifest the signal is
+    # dry_run=false → a real dump: classify COMPLETE, keep its load
+    # inputs, prune only its debug captures.
     d = make_dump(tmp_path, OLD_TS, status=None, dry_run=False,
                   screenshots=True, age_s=STALE_S)
     run_main(tmp_path)

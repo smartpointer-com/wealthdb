@@ -60,7 +60,7 @@ class TestDebugFlag(unittest.TestCase):
         self.assertIsNone(args.screenshot_dir)
 
     def test_debug_help_promises_bronze_captures(self):
-        # Guards against the flag regressing to the warn-only stub it was.
+        # Guards against the flag regressing to a warn-only stub.
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             download.parse_args(["--help"])

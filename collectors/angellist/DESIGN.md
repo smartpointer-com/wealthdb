@@ -195,10 +195,10 @@ export is redundant) into `funding_transactions` + `funding_accounts`.
 By contrast the venture positions GraphQL exposes only **cumulative**
 contributed/realized per position (no dated events), the "activity" feed is
 unstructured `VenturePost`s, and `portfolio_timeseries` is portfolio-level
-monthly NAV. The Schedule K-1 **Line 19(a)** annual distribution is now
-redundant with the dated disbursements and is **no longer emitted as a
-transaction** (`k1_capital_accounts` is kept only for the position tax-basis
-statement valuations).
+monthly NAV. The Schedule K-1 **Line 19(a)** annual distribution restates the
+dated disbursements, so it is **deliberately not emitted as a transaction** —
+emitting it would double-count every distribution. `k1_capital_accounts`
+serves only the position tax-basis statement valuations.
 
 ### Historical valuations & K-1s
 

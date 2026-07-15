@@ -22,7 +22,7 @@ Modes:
   default      pre-fill the form from SCHWAB_LOGIN_ID /
                SCHWAB_PASSWORD; with --cli-mfa (default) drive
                Log In + 2FA from stdin, with --no-cli-mfa wait
-               for the operator to do it over VNC. Then hand
+               for them to be done by hand over VNC. Then hand
                off to download.walk() against the same page.
                --bronze-dir is required (the bronze tree root).
 
@@ -118,9 +118,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--cli-mfa", action=argparse.BooleanOptionalAction, default=True,
         help=("Auto-submit the login form and prompt for the 2FA "
               "code on stdin. Default on. Pass --no-cli-mfa to "
-              "fall back to the VNC-driven flow (the operator "
-              "drives Log In + 2FA themselves) — useful if Schwab "
-              "restyles the gateway DOM and the CLI selectors miss."),
+              "fall back to the VNC-driven flow (Log In + 2FA "
+              "driven by hand) — useful if Schwab restyles the "
+              "gateway DOM and the CLI selectors miss."),
     )
     p.add_argument(
         "--bronze-dir", default=None, type=Path,
@@ -330,8 +330,8 @@ def wait_for_dom_in_frame(frame_locator, selector: str,
 def open_page(context):
     """Return a usable page on the persistent context. Uses
     new_page() rather than context.pages[0] — the auto-created
-    initial page has historically had a partially-bound internal
-    state that broke page.evaluate(). new_page() avoids the trap.
+    initial page can carry a partially-bound internal state that
+    breaks page.evaluate(). new_page() avoids the trap.
     """
     return context.new_page()
 
@@ -345,9 +345,8 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
     fingerprint surfaces (canvas, WebGL, audio, fonts, navigator.*,
     TLS) Schwab's anti-bot scoring uses to detect Playwright-driven
     Firefox. `os="macos"` runs the full macOS-pretend mode so the
-    fingerprint is internally consistent — much stronger than the
-    piecemeal UA + navigator.platform overrides we used to set on
-    upstream Playwright Firefox.
+    fingerprint is internally consistent all the way down the stack,
+    not just at the UA-string layer.
 
     Headed + window=(1280, 800) avoids Schwab's mobile responsive
     layout; the Xvfb display from entrypoint.sh provides the X11
@@ -477,9 +476,9 @@ def run_manual(profile_dir: Path,
     operational simplicity: no daemon to babysit, no trigger
     files, no idle timeouts to tune.
 
-    Pre-fill is best-effort and non-fatal; if creds aren't in
-    the env we log a warning and (with --no-cli-mfa) let the
-    operator drive Log In + 2FA via VNC.
+    Pre-fill is best-effort and non-fatal; creds missing from the
+    env log a warning and (with --no-cli-mfa) leave Log In + 2FA
+    to be driven by hand over VNC.
     """
     login_id_value = (os.environ.get(LOGIN_ID_ENV) or "").strip()
     password_value = os.environ.get(PASSWORD_ENV) or ""
@@ -558,9 +557,9 @@ def run_manual(profile_dir: Path,
                 "move your mouse out of the browser window",
                 _live_url(page),
             )
-            # Tiny grace period so the operator has a moment to
-            # retract their pointer before Playwright starts
-            # dispatching synthetic events. Without it, a stray
+            # Tiny grace period leaving a moment for the pointer to
+            # be retracted before Playwright starts dispatching
+            # synthetic events. Without it, a stray
             # hover-tooltip on the account selector can intercept
             # the next click.
             time.sleep(3)
@@ -636,8 +635,8 @@ def _wait_for_post_auth(page, context, timeout_s: float,
     propagate frame-navigated events — `p.url` stays stuck on the
     pre-login value indefinitely.
 
-    Returns the matching Page object, or None on timeout or if the
-    operator closed all pages before logging in.
+    Returns the matching Page object, or None on timeout or if all
+    pages were closed before login completed.
     """
     deadline = time.monotonic() + timeout_s
     last_state = None
@@ -1044,7 +1043,14 @@ def _since_to_schwab_preset(since, until, log=None) -> str:
         return "Last3Months"
     if days <= 180:
         return "Last6Months"
-    if days < 1825:  # i.e. up to and incl. 4y; 5y → Last10Years per legacy mapping
+    # FIXME: the shared 5y preset is exactly 1825 days, so `--lookback 5y`
+    # fails this test and lands on Last10Years — it over-fetches rather
+    # than under-fetching, so the window is still covered. Left as-is
+    # because `<` may be deliberate: if Schwab measures Last5Years in
+    # calendar years it can fall a leap day short of 1825, and `<=`
+    # would then under-fetch, which is the direction that loses data.
+    # Confirm against the live filter before tightening.
+    if days < 1825:
         return "Last5Years"
     if days > LAST_10_YEARS_DAYS and log is not None:
         log.warning(

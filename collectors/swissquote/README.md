@@ -44,7 +44,7 @@ persisted session cookie across runs until it expires.
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | implemented | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes the on-screen Operation No. (TAN) so the operator can compare against their phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
+| [`login.py`](login.py) | implemented | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes and prints the on-screen Operation No. (TAN) for comparison against the phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
 | [`download.py`](download.py) | implemented | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`load.py`](load.py) | implemented | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
 
@@ -163,9 +163,9 @@ many times as you like during the cookie's lifetime. When
 a protected eBanking URL (`/sqc-web-client-portal/`); the F5 BIG-IP
 gateway redirects to `/my.policy` with the login form. The script
 fills the form, waits for the Mobile Level 3 MFA page to appear, and
-prints the on-screen Operation No. (TAN) to the terminal so the
-operator can compare it against the value shown on their phone
-before tapping approve. Once F5 redirects away from `/my.policy`,
+prints the on-screen Operation No. (TAN) to the terminal, so it can
+be compared against the value shown on the phone before approval is
+tapped. Once F5 redirects away from `/my.policy`,
 the resulting browser context (cookies + localStorage) is persisted
 to a JSON state file (chmod `0600`).
 
@@ -390,12 +390,9 @@ Reload semantics mirror the Schwab loader:
   - `accounts` does content-dedup per `(account_external_id, account_product)`
     (only inserts when the canonical-JSON payload differs from the
     most recent row for that account). The `account_product` column
-    is populated from `accounts.json`; older bronze dumps without it
-    fall back to `account_product=''`. The bronze key was previously
-    `account_type` (migration 0002); migration 0005 renamed the
-    silver column to `account_product` for cross-bank gold-layer
-    clarity, and `load.py` reads either bronze key for backward
-    compatibility.
+    is populated from `accounts.json` — `load.py` accepts either the
+    `account_product` or the older `account_type` bronze key, and a
+    dump carrying neither falls back to `account_product=''`.
   - `positions` rows get their `name` and `isin` columns populated
     from `position_details.json` when present (joined on
     `(symbol, currency)`); older bronze dumps without the sidecar

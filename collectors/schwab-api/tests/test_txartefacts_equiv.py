@@ -1,13 +1,11 @@
 """Equivalence proof for the shared transactions-artefact enumerator.
 
-WI P11 hoisted the per-run `transactions_*.json` resolution out of
-download.py's `_resolve_transaction_artefacts` and load.py's
-`transaction_files` into `_txartefacts.transaction_files`. These tests
-assert the shared helper is byte-identical to BOTH original inlined
-implementations across a battery of fixture run-dirs (compression
-variants, coexisting twins, decoys, non-file entries), and that the two
-surviving entry points (`download` via the harvester, `load` via the
-wrapper) agree.
+Both `download` (via the harvester) and `load` (via the wrapper) resolve
+a run's `transactions_*.json` set through
+`_txartefacts.transaction_files`. These tests assert the shared helper
+matches local reference implementations of the rule across a battery of
+fixture run-dirs (compression variants, coexisting twins, decoys,
+non-file entries), and that the two entry points agree.
 
 Synthetic filenames / values only.
 """
@@ -27,7 +25,7 @@ import load as loader  # noqa: E402
 from collectorkit import compress  # noqa: E402
 
 
-# --- Verbatim copies of the two ORIGINAL implementations (pre-refactor) ---
+# --- Reference implementations of the artefact-resolution rule ---
 
 _ORIG_TRANSACTIONS_FILE_RE = re.compile(r"^transactions_.*\.json$")
 

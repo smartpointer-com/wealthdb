@@ -375,12 +375,11 @@ def do_login(args: argparse.Namespace) -> int:
             "proceeding to mTAN anyway",
         )
 
-    # Surface the phone number so the operator knows which device
-    # to look at. Airlock returns the FULL number (unmasked), so
-    # mask it here before display — the operator already knows
-    # their own number, and a partially-redacted version is enough
-    # to confirm "yes, that's the right phone" without leaking
-    # digits if the log is shared.
+    # Surface the phone number so the target device is identifiable.
+    # Airlock returns the FULL number (unmasked), so mask it here
+    # before display — a partially-redacted version is enough to
+    # confirm the right phone without leaking digits if the log is
+    # shared.
     if phone:
         print(
             f"login: mTAN sent to {mask_phone(phone)}.  next_step={next_step}",
@@ -393,12 +392,12 @@ def do_login(args: argparse.Namespace) -> int:
         )
 
     # Loop the OTP prompt so a fat-finger doesn't burn the session.
-    # The wrapper's wider 1-hour expectation is honoured by the
-    # operator simply taking their time at this prompt. Typing
-    # "resend" (or "r") re-runs /password/check to ask Airlock for
-    # a fresh mTAN — necessary when the first SMS doesn't arrive
-    # or when the prior code has timed out. Resends don't count
-    # against --max-otp-attempts.
+    # The prompt blocks indefinitely, which is what honours the
+    # wrapper's wider 1-hour expectation. Typing "resend" (or "r")
+    # re-runs /password/check to ask Airlock for a fresh mTAN —
+    # necessary when the first SMS doesn't arrive or when the prior
+    # code has timed out. Resends don't count against
+    # --max-otp-attempts.
     max_attempts = args.max_otp_attempts
     attempt = 0
     while True:

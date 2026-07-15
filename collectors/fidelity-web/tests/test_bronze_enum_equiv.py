@@ -1,15 +1,12 @@
-"""Equivalence guard for the bronze run-dir enumeration swap.
+"""Ordering + filtering contract for the bronze run-dir enumeration.
 
-`scan_bronze()` used to enumerate dump dirs with a local
-`sorted((p for p in iterdir() if p.is_dir() and DUMP_DIR_RE.match(...)),
-key=lambda p: p.name)` comprehension; it now defers to
-`collectorkit.bronze.iter_run_dirs`. The one subtlety is the sort key:
-the original sorted by `p.name`, the helper sorts full `Path`s — for
-siblings under a single parent these orders coincide, and this test
-pins that. It inlines a byte-for-byte copy of the original and asserts
-`scan_bronze` yields the identical ordered list over a mixed fixture
-tree, plus that `ts_from_dir` matches the original strptime. Synthetic
-slugs only.
+`scan_bronze()` defers to `collectorkit.bronze.iter_run_dirs`, which
+sorts full `Path`s rather than bare names. For run dirs that are all
+siblings under one parent the two orders coincide — this pins that, so
+a helper change that breaks the equivalence fails here rather than
+silently reordering snapshot ingest. The reference implementation
+below sorts by `p.name` directly; `ts_from_dir` is pinned against a
+plain strptime the same way. Synthetic slugs only.
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
 
-# --- verbatim copy of the pre-refactor local logic ------------------
+# --- reference implementation: sort by name, not by Path ------------
 _ORIG_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 

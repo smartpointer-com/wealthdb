@@ -4,12 +4,14 @@
 #
 # - `explore`: drives Camoufox over VNC for discovery — needs Xvfb
 #   + x11vnc started below.
-# - `login`: pure-HTTP CLI-MFA, no browser. Skips Xvfb entirely.
-# - `download` (TBD): same SPA blob-download pattern as `explore`,
-#   needs Xvfb but not VNC.
+# - `login`: headless Playwright Firefox driving the SPA login form,
+#   2FA code on stdin. No Xvfb, no VNC (Playwright manages its own
+#   headless display).
+# - `download`: headless Playwright Firefox per-portfolio loop, same
+#   persistent profile as `login`. No Xvfb, no VNC.
 # - `load`: pure DuckDB + Python, no browser.
 #
-# When Xvfb IS started (explore + future download), it's started
+# When Xvfb IS started (explore only), it's started
 # directly rather than via `xvfb-run`. The Ubuntu
 # Noble xvfb-run script's SIGUSR1 ready-signaling hangs when the
 # parent shell is non-root: it sets the parent SIGUSR1 handler to

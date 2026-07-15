@@ -1,5 +1,5 @@
 """Unit tests for collectorkit.session.resolve_state_path — the
-renamed-default legacy read-fallback (F18). Stdlib unittest, matching the
+renamed-default legacy read-fallback. Stdlib unittest, matching the
 rest of the collectorkit suite."""
 import tempfile
 import unittest

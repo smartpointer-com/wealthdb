@@ -88,7 +88,8 @@ def canonical_json(obj) -> str:
 
     Used both for storage (one representation of equivalent objects) and for
     dedup comparison. Delegates to the shared serializer with ``ascii=True``
-    (``ensure_ascii``) so payloads keep their historical byte encoding."""
+    (``ensure_ascii``): the byte encoding is part of the dedup key, so it
+    has to stay stable across runs."""
     return silver.canonical_json(obj, ascii=True)
 
 

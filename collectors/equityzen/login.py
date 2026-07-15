@@ -15,9 +15,9 @@ Flow:
      container's Xvfb virtual display (no VNC) — matching the exact
      stealth fingerprint the explore session proved EquityZen accepts,
      rather than risking a headless bot-challenge on the one flow that
-     submits credentials. The operator sees only the CLI; the browser is
-     invisible. Firefox's password manager is disabled so a saved
-     credential can't autofill on top of our fill.
+     submits credentials. Only the CLI is visible; the browser is not.
+     Firefox's password manager is disabled so a saved credential can't
+     autofill on top of our fill.
   2. Navigate to /accounts/login/. EquityZen keeps a session alive until an
      explicit logout (TOTP-only 2FA, no "remember this device" checkbox),
      so if the profile already holds a valid session the portal bounces
@@ -180,10 +180,9 @@ def _authenticated(page) -> bool:
     """True when the current page is an authenticated surface. EquityZen
     keeps the whole login + TOTP flow on /accounts/login/ and only leaves
     that path once fully authenticated (→ /welcome/), so the URL path is the
-    reliable signal. We deliberately do NOT treat "#email field absent" as
+    reliable signal. Deliberately does NOT treat "#email field absent" as
     authenticated — the TOTP step is also on /accounts/login/ with no #email,
-    and that false-positive previously reported a half-finished login as
-    complete."""
+    so that check would report a half-finished login as complete."""
     try:
         return LOGIN_PATH not in (urlparse(page.url).path or "")
     except Exception:

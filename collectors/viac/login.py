@@ -24,7 +24,7 @@ phone number in E.164 format (`+CC<digits>`).
 
 `--check` probes existing state with one cheap GET against the
 heartbeat endpoint. No credential submit, no MFA push. Allowed
-without operator authorisation per CLAUDE.md §2.
+without prior authorisation per CLAUDE.md §2.
 
 Non-`--check` invocation mints a fresh session AND sends an SMS
 to the registered phone. Only allowed with explicit
@@ -64,16 +64,16 @@ def normalize_login(raw: str) -> str:
 
     VIAC's API expects the mobile number in E.164 form with a
     country-code prefix. Strip whitespace, dashes, and parens
-    after the leading `+` so the operator can use the prettified
-    form (e.g. `+CC XX XXX XX XX`) in their viac.env. Validation
+    after the leading `+`, so a prettified form (e.g.
+    `+CC XX XXX XX XX`) in viac.env is accepted. Validation
     that the result is actually E.164-shaped happens in main()
     via `looks_like_e164`.
     """
     s = raw.strip()
     if s.startswith("+"):
         return "+" + "".join(c for c in s[1:] if c.isdigit())
-    # Preserve whatever the operator entered for the error
-    # message; main() will reject it as non-E.164.
+    # Preserve the raw input for the error message; main() will
+    # reject it as non-E.164.
     return s
 
 
@@ -91,8 +91,8 @@ def looks_like_e164(s: str) -> bool:
 
 def _redact_login(s: str) -> str:
     """Mask the middle of a phone-number-shaped string for logs.
-    Shows first 4 + last 2 chars so the operator can recognise
-    their own number without it landing in terminal scrollback."""
+    Shows first 4 + last 2 chars — enough to recognise which number
+    was used, without the full value landing in terminal scrollback."""
     if len(s) < 6:
         return "<too short>"
     return s[:4] + "*" * (len(s) - 6) + s[-2:]
@@ -175,8 +175,8 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
             log.warning("DELETE flow returned %d (expected 204)", resp.status_code)
 
         # Step 3: submit credentials. Response carries the masked
-        # phone number that the SMS goes to — we echo it back so
-        # the operator can sanity-check.
+        # phone number the SMS goes to; it is echoed back as a
+        # sanity-check.
         log.info("POST /external-login/.../password/check")
         resp = client.post(
             "/external-login/public/authentication/password/check/",
@@ -206,16 +206,15 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
                       next_step)
             return 2
 
-        # Step 4: prompt the operator for the OTP. Long timeout so
-        # they can find their phone — see the [No immediate-response
-        # interactive flows] memory.
+        # Step 4: prompt for the OTP. The read blocks indefinitely
+        # rather than timing out, so fetching the phone is never a race.
         print(f"\nVIAC sent an SMS code to {phone}.", file=sys.stderr, flush=True)
         print("Enter the 6-digit OTP (or Ctrl-C to abort):",
               file=sys.stderr, flush=True)
         try:
             otp = input("OTP: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\naborted by operator.", file=sys.stderr)
+            print("\naborted.", file=sys.stderr)
             return 130
 
         # Step 5: submit OTP.

@@ -22,14 +22,13 @@ reclaimed:
   ``load --force`` rebuild reflects the removal. ``--dry-run`` never
   creates a run dir, so there is no dry-run shell to reclaim.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` at the end). Dumps that predate the ``status`` field
-carry a full manifest with no ``status`` key — those are pre-change
-complete dumps (the walk historically wrote ``run.json`` only once, at the
-very end, after every artefact), so a statusless-but-readable manifest is
-classified COMPLETE and keeps its load inputs. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A manifest with no ``status`` key predates the field and is
+classified COMPLETE, keeping its load inputs: such a dump only ever got a
+``run.json`` at the very end, after every artefact, so its presence alone
+means the walk finished. An unreadable or corrupt ``run.json`` is UNKNOWN
+and never deleted.
 
 A COMPLETE dump's load inputs (``investments.json``,
 ``offerings/*/detail.json``, and the ``documents/<deal-slug>/*.pdf`` /
@@ -55,12 +54,9 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # the walk historically wrote run.json only once, at the very end
-    # (after investments.json + every offering + every document blob), so
-    # its mere presence means the walk finished. New walks always carry a
-    # status key (in-progress → complete), so status_classification
-    # resolves those before this legacy fallback is consulted.
+    # Statusless-but-readable run.json → COMPLETE (see module docstring).
+    # A status key, when present, resolves in status_classification before
+    # this fallback is consulted.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

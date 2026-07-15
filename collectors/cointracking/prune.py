@@ -22,15 +22,13 @@ timestamped run dir under ``--bronze-dir``, ``prune`` removes:
   silver. (The discovery harness ``explore.py`` writes its traces to an
   external ``/debug`` mount, never into a bronze run dir.)
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` at the end). ``--dry-run`` materialises no run dir,
-so no ``"dry-run"`` shell is ever produced. Dumps that predate the
-``status`` field carry a full manifest with no ``status`` key — the walk
-historically wrote ``run.json`` only once, at the very end, so a
-statusless-but-readable manifest means the dump finished: it is
-classified COMPLETE and kept. An unreadable or corrupt ``run.json`` is
-UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). ``--dry-run`` materialises no run dir, so no ``"dry-run"`` shell is
+ever produced. A manifest with no ``status`` key predates the field and
+is classified COMPLETE: such a dump only ever got a ``run.json`` at the
+very end, so its presence alone means the walk finished. An unreadable or
+corrupt ``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so
@@ -53,13 +51,11 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete
-    # dump: the walk historically wrote run.json only once, at the end,
-    # so its presence means the walk finished. New walks always carry a
-    # status key (in-progress → complete), which status_classification
-    # resolves before this legacy fallback is consulted. A crashed new
-    # walk leaves status="in-progress" (NON_COMPLETE); a crash before
-    # the marker leaves no run.json at all (meta is None → NON_COMPLETE).
+    # Statusless-but-readable run.json → COMPLETE (see module docstring).
+    # A status key, when present, resolves in status_classification before
+    # this fallback is consulted: a crashed walk leaves
+    # status="in-progress" (NON_COMPLETE); a crash before the marker
+    # leaves no run.json at all (meta is None → NON_COMPLETE).
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

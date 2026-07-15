@@ -66,8 +66,8 @@ flow-init probe, then `/password/check` for credentials, then
    `{"username": "...", "password": "..."}`. On 200, Airlock
    sends the mTAN and returns
    `data.attributes.{nextAuthStep, phoneNumber, resendPossible}`.
-   `phoneNumber` is masked (12 chars) — handy to echo to the
-   operator before they look at their phone.
+   `phoneNumber` is masked (12 chars) — handy to echo to stderr
+   so the target device is identifiable.
 - `POST /auth/rest/public/authentication/mtan/otp/check`
    — OTP verification. Body `{"otp": "..."}`. On 200 the
    existing `AL_SESS-S` cookie is promoted server-side from
@@ -217,8 +217,8 @@ The script reproduces what the Angular SPA does:
    `X-CSRFT759` + `X-Continue-Flow: true` headers. Returns HTTP
    200 with `data.attributes.{nextAuthStep, phoneNumber,
    resendPossible}`. Airlock has sent the mTAN to the registered
-   number; the (masked) phone number comes back so we can
-   surface it to the operator.
+   number; the (masked) phone number comes back so it can be
+   surfaced on stderr.
 5. Display the phone number on stderr and read the OTP from
    stdin via `getpass` (input hidden). Retry on rejection up to
    `--max-otp-attempts` (default 3); each retry accepts the next
@@ -272,8 +272,8 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
   Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
   user prompt (CLAUDE.md §2).
 - `--max-otp-attempts` — retry budget for a mistyped OTP
-  (default 3). The operator can pause indefinitely between
-  attempts; `getpass` blocks on stdin without a deadline. This
+  (default 3). Attempts can pause indefinitely; `getpass`
+  blocks on stdin without a deadline. This
   is the "no immediate-response interactive flows" rule honoured
   by NOT having a timeout, rather than by setting a long one.
 - No `--password` flag, ever. Credentials only via env.
@@ -427,9 +427,9 @@ one (an `"in-progress"` marker from a crashed walk, a `"dry-run"`
 shell, an `"incomplete"` abort, or no `run.json` at all). `load` skips
 a dump still marked `"in-progress"` / `"dry-run"` so a partial capture
 never reaches silver; `prune` reclaims non-complete run dirs (§6). The
-legacy `ended_at` / `dry_run` fields are retained so a dump that
-predates `status` is still classified correctly (complete iff
-`ended_at` was stamped on a non-`dry_run` run).
+`ended_at` / `dry_run` fields are written alongside `status` and are the
+terminal signal `prune` falls back to for a statusless manifest
+(complete iff `ended_at` was stamped on a non-`dry_run` run).
 
 Manifest shape (as written):
 
@@ -489,8 +489,8 @@ per-PDF fetch by `createDate` (the full index is still written for
 traceability).
 
 Iteration discipline: the
-`--mode`, `--no-documents`, and `--limit-*` flags let an operator
-re-run one phase cheaply while iterating on the silver loader or
+`--mode`, `--no-documents`, and `--limit-*` flags let one phase be
+re-run cheaply while iterating on the silver loader or
 investigating a specific portfolio's response shape.
 
 `--dry-run` hits only the two master listing endpoints
@@ -818,8 +818,7 @@ Resolved during the initial portal-mapping work:
   `/mtan/otp/check` is `{otp}`.
 - ✓ Response shapes — JSON:API envelope (`meta`, `data` with
   `type/id/attributes`, `errors[]`). `/password/check` returns
-  the masked phone number so we can show the operator which
-  device to look at.
+  the masked phone number, which identifies the target device.
 - ✓ Anti-bot posture — vanilla `requests` with mimicked Chrome
   headers should suffice. No Akamai / Camoufox / JS-challenge
   observed at the auth surface.

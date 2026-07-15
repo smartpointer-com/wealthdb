@@ -46,11 +46,9 @@ exactly as for every other source.
 
 ## 1. Why web, not API — the path investigation
 
-The task pointed at Carta's API reference. The investigation (from the
-public docs at `docs.carta.com`, incl. its `llms.txt` OpenAPI index — no
-live call was made) verified that a clean, well-documented, investor-side
-REST API **exists**, and then found it is **not obtainable by an individual
-shareholder**:
+A clean, well-documented, investor-side REST API **exists** (per the public
+docs at `docs.carta.com`, incl. its `llms.txt` OpenAPI index — no live call
+was made), but it is **not obtainable by an individual shareholder**:
 
 - **The API is real and well-scoped.** OAuth 2.0 (`client_credentials` for
   own-account data), base `api.carta.com`, token at
@@ -149,8 +147,8 @@ snapshots.
 **Tax documents.** Even the API only surfaces *fund-LP* documents
 (`fundInvestmentDocuments`); equity tax forms (3921 for ISO exercise,
 1099-B) are not API-exposed at all — they live in the holder web UI's
-documents/tax centre. So the **web scraper is actually the only path to the
-tax docs regardless**, which reinforces the pivot.
+documents/tax centre. So the **web scraper is the only path to the tax docs
+regardless**, API access or not.
 
 **Cadence.** Carta refreshes most operational data daily (~noon ET); a
 nightly run after that is the right cadence — same "nightly batch" shape as
@@ -158,41 +156,22 @@ ubs-psn.
 
 ## 3. Discovery via `explore`
 
-`explore.py` (stub) launches Camoufox in the container's Xvfb display,
-opens carta.com, and records the live session via three channels — HAR
-(the primary signal for the SPA's internal JSON/XHR endpoints; read it
-against the §2 map), Playwright trace (DOM + screenshots), and a
-`clicks.jsonl` click log (VNC clicks bypass Playwright's API). Artefacts
-land under `/debug/<UTC-ts>/`, never under `/data`. The persistent Camoufox
-profile carries the post-2FA session between runs.
-
-Questions `explore` must answer before login/download can be written:
-
-- **Login host + selectors**, and the post-login SPA route map. Capture the
-  real hosts; never hard-code a company name into source.
-- **2FA factor** (TOTP authenticator / SMS / email OTP) and whether a
-  "trust this device" option exists and how long it persists — this drives
-  whether the collector slots into a nightly cron unattended (like
-  `cointracking`'s multi-year cookie) or needs a periodic 2FA push.
-- **Stealth need.** Does the authenticated surface require Camoufox, or does
-  vanilla Playwright Firefox get through once a session exists? Start strict
-  (Camoufox, given the likely Akamai front), relax only if telemetry says
-  we can.
-- **The surfaces + their internal endpoints** for: portfolio/holdings
-  overview, per-issuer holdings, per-security detail (grants w/
-  strike+vesting, RSUs, shares, SAFEs/notes), transactions/activity, 409A
-  FMV, and the documents/tax centre. **Export availability** (does the UI
-  offer CSV/PDF, or must we read the XHR JSON / render HTML?).
+`explore.py` launches Camoufox in the container's Xvfb display, opens
+carta.com, and records the live session via three channels — HAR (the
+primary signal for the SPA's internal JSON/XHR endpoints; read it against
+the §2 map), Playwright trace (DOM + screenshots), and a `clicks.jsonl`
+click log (VNC clicks bypass Playwright's API). Artefacts land under
+`/debug/<UTC-ts>/`, never under `/data`. The persistent Camoufox profile
+carries the post-2FA session between runs. Re-run it whenever Carta moves
+its UI or endpoints.
 
 ### Observed internal endpoints (2026-06-08 run)
 
-The first `explore` pass — a single authenticated session — answered the
-above. Findings, recorded so login/download can be
-written against them. **All endpoints are cookie-session REST returning
-`application/json`** (no GraphQL); the scraper replays these GETs with the
-logged-in session via Playwright's request API. Internal field names are
-snake_case and differ from the public `/v1alpha1/` map of §2 — follow the
-*observed* shapes below. (No values reproduced here — PII.)
+**All endpoints are cookie-session REST returning `application/json`** (no
+GraphQL); the scraper replays these GETs with the logged-in session via
+Playwright's request API. Internal field names are snake_case and differ
+from the public `/v1alpha1/` map of §2 — follow the *observed* shapes
+below. (No values reproduced here — PII.)
 
 - **Auth / infra.** Login at `login.app.carta.com/credentials/login/`
   (SPA), creds POSTed to `…/credentials/bff/login/`, 2FA verified at
@@ -310,31 +289,32 @@ with no 2FA push — safe for cron healthchecks.
 
 ### download — per-surface bronze capture
 
-With the session from login, capture raw bronze per surface, preferring the
-SPA's internal JSON endpoints (from explore's HAR, read against §2) and
-falling back to rendered HTML / export blobs:
+With the session from login, the walk replays the SPA's internal JSON
+endpoints (§3) through Playwright's authenticated request API — GET only.
 
-- **portfolios + issuers** — the holder's portfolio(s) and the companies in
-  each.
-- **per-security holdings** — for each issuer: option grants (with strike,
-  vesting schedule, quantities), RSUs, RSAs, certificates, SAFEs/notes.
-- **transactions** — exercises, share sales, RSU settlements.
-- **fair market values** — the per-issuer 409A FMV.
-- **documents / tax centre** — legal docs + 3921 / 1099-B PDFs, fetched via
-  Playwright's authenticated request API.
+Layout (`collectorkit.bronze`): `$XDG_DATA_HOME/wealthdb/carta/<UTC-ts>/`
+with
 
-Layout (`collectorkit.bronze`): `$XDG_DATA_HOME/wealthdb/carta/<UTC-ts>/` with
-`portfolios.json`, `portfolios/<pid-slug>/issuers/<iid-slug>/{option_grants,
-restricted_stock_units,restricted_stock_awards,certificates,
-convertible_notes,security_transactions,fair_market_value}.json`,
-`documents/<id>.pdf`, and a `run.json` manifest. Path slugs are
-`sha256(id)[:16]` (relevate's pattern) so raw portfolio/issuer ids — which
-embed private-company identifiers — never appear in a path; raw ids stay
-inside the JSON. Everything is pulled in full — holdings, activity and
-documents alike — so the shared `--lookback` flag is accepted for
-`wealthdb-refresh` uniformity but cannot narrow the walk: it is validated,
-warned about, and otherwise ignored. `--dry-run` walks navigation without
-firing any export.
+- `bootstrap/{navigation-config,account-switcher,investments}.json` — the
+  ids the rest of the walk is built from.
+- `entities/<slug>/` per held entity: `meta.json`,
+  `holdings-dashboard.json`, one file per security type (`shares`,
+  `options`, `rsu`, `rsa`, `warrants`, `convertibles`, `sar`, `piu`,
+  `equity-grants`), `vesting/grant_<gid>.json`, the exercise-detail xlsx
+  under `exercises/`, and on the fund side `fund-{tabs,companies,cap-calls}.json`
+  + `fund-admin/{app-init,partner-metrics}.json`.
+- `documents/index.json` + the PDF blobs.
+- `run.json` — the manifest.
+
+The entity slug is `corp_<id>` / `fund_<id>`: the numeric Carta id is a
+surrogate key, not a name, and the bronze tree is gitignored, so the path
+leaks nothing while staying greppable. Legal names stay inside `meta.json`.
+
+Everything is pulled in full — holdings, activity and documents alike — so
+the shared `--lookback` flag is accepted for `wealthdb-refresh` uniformity
+but cannot narrow the walk: it is validated, warned about, and otherwise
+ignored. `--no-documents` skips the documents pass (the run's dominant
+cost). `--dry-run` walks navigation without firing any export.
 
 ### run.json status lifecycle + prune
 
@@ -343,14 +323,14 @@ the moment it creates the dir, then atomically overwrites it with the
 terminal manifest carrying `"status": "complete"` (`write_json` = tmp +
 replace) as the last step of a successful walk. So a run dir is a **complete**
 dump (`status == "complete"`), a **non-complete** one (a crashed walk left
-`status == "in-progress"`, or a pre-status run left no `run.json`), or — for
-a dump that predates the field — a statusless manifest, which is treated as
-complete because carta historically wrote `run.json` only once, at the end of
-a successful walk. `--dry-run` creates no run dir, so it leaves no shell to
-classify or prune.
+`status == "in-progress"`, or no `run.json` at all), or — for a dump that
+predates the field — a statusless manifest, which counts as complete: such a
+dump only ever got a `run.json` as the walk's final step, so its presence
+alone means the walk finished. `--dry-run` creates no run dir, so it leaves
+no shell to classify or prune.
 
 `load` skips any dir whose `status` is not `complete` (a statusless manifest
-still loads, for backward compatibility), so a crashed walk's partial capture
+still loads), so a crashed walk's partial capture
 never becomes a silver snapshot. `prune` (a thin wrapper over the shared
 `collectorkit.prune` engine) reclaims those non-complete run dirs once they go
 quiescent. From a complete dump it strips one thing: `screenshots/`, named by
@@ -450,8 +430,8 @@ purges its historical 409A timeline, so the Carta-derived fallback can only
 value held shares flat at the FMV-at-last-exercise — exact from the last
 exercise onward, but over-stating the count/value for earlier dates (the count
 grew through intervening exercises, at then-lower FMVs). To value the position
-*per date* a user may side-load a CSV named `<account_external_id>-valuations.csv`
-in the bronze root (e.g. `1234567-valuations.csv`) — rows of
+*per date*, a CSV named `<account_external_id>-valuations.csv` can be
+side-loaded in the bronze root (e.g. `1234567-valuations.csv`) — rows of
 `YYYY-MM-DD,fmv_per_share_usd`, each carried forward to the next (`#` / blank
 lines ignored), built from 409A valuation reports and stock-price notification
 letters, which do not parse reliably. When found it **overrides** the
@@ -496,12 +476,9 @@ halves, so they too net to 0).
 ### Why SQLite, not DuckDB
 
 The repo default is SQLite + JSON1; the single DuckDB exception
-(`cointracking`) was driven by a window-function holdings *replay* and a
+(`cointracking`) is driven by a window-function holdings *replay* and a
 `DECIMAL(38,18)` need — neither applies here (a small set of securities,
-shape transformation only). **The Phase-0 task brief sketched "DuckDB
-tables"; this design overrides that to stay on the documented default** —
-revisit if a DuckDB silver is in fact wanted (same call as
-`angellist` made).
+shape transformation only). `angellist` made the same call.
 
 ## 6. Gold mapping
 
@@ -509,8 +486,7 @@ The gold adapter is **built** — `wealthdb/internal/silver/carta/`, documented
 in [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md).
 It projects this silver into canonical `accounts` / `instruments` /
 `positions`, plus a `transactions` projection from the cash-flow ledger
-(§6.1) as balanced double-entry pairs on a sentinel funding account.
-What the earlier "open questions" posed, as resolved:
+(§6.1) as balanced double-entry pairs on a sentinel funding account:
 
 - **Asset classes** — two new canonical values in
   `internal/canonical/enums.go`: `private_fund` (the fund LP interest) and
@@ -534,7 +510,7 @@ What the earlier "open questions" posed, as resolved:
 Non-blocking follow-ups (in the adapter doc's "Open questions"): capturing
 409A FMV to value cap-table equity, and per-lot vs aggregate positions.
 
-**Gold consumption of the event-driven silver (§5.1) — done.** The adapter
+**Gold consumption of the event-driven silver (§5.1).** The adapter
 widens its change window to the content tables' `snapshot_at` span (not just
 `dump_runs`) so the event-dated rows fall in-window, reads
 `securities.market_value` for the cap-table value, and at each event date emits

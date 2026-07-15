@@ -173,8 +173,8 @@ files are fresh is never mistaken for abandoned. `run.json` that is
 unreadable or corrupt is left alone, and non-run-dir entries at the data
 root (`known_portfolios.json`, the silver `cointracking.duckdb`) are
 never touched. A statusless `run.json` from a dump that predates the
-status lifecycle is treated as complete (the walk historically wrote it
-only once, at the end) and kept. Deleting a non-complete dump does not
+status lifecycle counts as complete and is kept: such a dump only ever
+got a `run.json` at the end. Deleting a non-complete dump does not
 touch silver — rows already loaded from it persist until the next
 `load --force` rebuild.
 

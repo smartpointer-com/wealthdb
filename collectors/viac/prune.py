@@ -21,16 +21,15 @@ prune engine) with viac's configuration. Two categories are reclaimed:
   holds; after pruning one, the next ``load --force`` rebuild reflects
   the removal.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` / ``"dry-run"`` at the end). Dumps that predate the
-``status`` field carry a full manifest with no ``status`` key: the walk
-historically wrote ``run.json`` only once, at the end, so a
-statusless-but-readable manifest is a finished dump — classified
-COMPLETE and kept — UNLESS it also carries ``dry_run: true``, the shape
-a legacy ``--dry-run`` left behind, which stays NON_COMPLETE to match
-the forward ``status="dry-run"`` behaviour. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` /
+``"dry-run"`` at the end). A statusless-but-readable manifest predates
+the ``status`` field, where the manifest was written only at the end, so
+it is a finished dump — classified COMPLETE and kept — UNLESS it also
+carries ``dry_run: true``, the shape an older ``--dry-run`` left behind,
+which stays NON_COMPLETE to match the forward ``status="dry-run"``
+behaviour. An unreadable or corrupt ``run.json`` is UNKNOWN and never
+deleted.
 
 Note on hard-linked PDFs: ``download.py`` deduplicates document PDFs
 across run dirs with ``os.link``. Deleting a whole NON-complete run dir
@@ -61,15 +60,14 @@ from collectorkit import debugcap, prune
 def _is_complete(run_dir, meta):
     # Legacy fallback for statusless dumps (and the missing-manifest
     # branch): a run.json with no `status` key predates the status
-    # lifecycle. The walk historically wrote run.json only once, at the
-    # end, so its presence means the walk finished — EXCEPT a legacy
-    # --dry-run also wrote a full run.json (dry_run: true), so require
-    # `not dry_run` to keep those legacy dry-run shells NON_COMPLETE,
-    # mirroring the forward status="dry-run" -> NON_COMPLETE. A missing
-    # run.json (meta is None) fails the `m is not None` check -> a
-    # crashed download with no manifest is NON_COMPLETE. New walks always
-    # carry a status key, so status_classification resolves those before
-    # this fallback is consulted.
+    # lifecycle, where the manifest was written only at the end, so its
+    # presence means the walk finished — EXCEPT such a --dry-run also
+    # wrote a full run.json (dry_run: true), so require `not dry_run` to
+    # keep those dry-run shells NON_COMPLETE, mirroring the forward
+    # status="dry-run" -> NON_COMPLETE. A missing run.json (meta is None)
+    # fails the `m is not None` check -> a crashed download with no
+    # manifest is NON_COMPLETE. Current walks always carry a status key,
+    # so status_classification resolves those before this fallback.
     return prune.status_classification(
         meta, run_dir=run_dir,
         legacy_complete=lambda rd, m: m is not None and not m.get("dry_run"))

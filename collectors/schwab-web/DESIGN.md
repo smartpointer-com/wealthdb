@@ -192,14 +192,14 @@ The silver `documents` table is keyed on `sha256` — so it
 preserves every physical fetch (no data loss), but the
 LOGICAL document count is roughly half the row count.
 
-**Silver mitigation (since migration 0004)**: the `transactions`
-table is now sha256-churn-safe. `activity_id` no longer includes
-`source_sha256`; the load gate uses `logical_doc_key`
-(`account|doc_date|filename`) instead of `source_sha256`; and
-`INSERT OR IGNORE` on the `activity_id` PK prevents row-level
-duplicates. Re-downloading the same logical PDF with a new sha256
-is a clean no-op for transactions. **Gold no longer needs a
-transaction dedup pass for this case.**
+**Silver mitigation (migration 0004)**: the `transactions` table is
+sha256-churn-safe. `activity_id` does not include `source_sha256`;
+the load gate uses `logical_doc_key` (`account|doc_date|filename`)
+rather than `source_sha256`; and `INSERT OR IGNORE` on the
+`activity_id` PK prevents row-level duplicates. Re-downloading the
+same logical PDF with a new sha256 is a clean no-op for
+transactions. **Gold needs no transaction dedup pass for this
+case.**
 
 **Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,
@@ -416,8 +416,8 @@ and with no extra system dependency).
   statements), `tx_history_json` (Schwab-rendered, ~4-year "All"
   range), and now `form_1099b` (authoritative sales within a tax
   year). They get different synthetic `activity_id`s (their content
-  fields differ — the id no longer depends on `source_sha256` since
-  migration 0004), so all rows insert without UNIQUE conflict. Gold
+  fields differ; the id does not depend on `source_sha256`), so all
+  rows insert without UNIQUE conflict. Gold
   reconciles them: dedupe `statement_pdf` ↔ `tx_history_json` by
   `(account, timestamp, amount, ±description)` preferring
   tx_history_json; and treat `form_1099b` as authoritative-for-sales

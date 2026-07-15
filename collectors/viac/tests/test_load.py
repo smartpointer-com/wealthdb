@@ -147,7 +147,7 @@ def _pending_names(root: Path, conn) -> set[str]:
 def test_list_pending_skips_in_progress_and_dry_run(tmp_path):
     # download.py stamps run.json with a status; a crashed walk
     # ("in-progress") or a --dry-run shell ("dry-run") must NOT be loaded
-    # — a run.json alone no longer proves the walk finished.
+    # — the manifest's presence alone does not prove the walk finished.
     bronze = tmp_path / "bronze"
     _seed_manifest(bronze, "20240101T000000Z", {"status": "in-progress"})
     _seed_manifest(bronze, "20240102T000000Z", {"status": "dry-run",

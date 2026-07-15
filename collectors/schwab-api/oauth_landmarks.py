@@ -14,9 +14,9 @@ and hand to schwab-py's token exchange.
 The login + 2FA portion mirrors the schwab.com web login that the
 `schwab-web` collector drives, so the selector candidates below are
 seeded from `schwab-web/landmarks.py`. The consent-page selectors are
-best-effort until a live trace pins them; the operator can always finish
-the step over VNC. Centralising the selectors here means drift is a
-one-file fix.
+best-effort until a live trace pins them; the step can always be
+finished by hand over VNC. Centralising the selectors here means drift
+is a one-file fix.
 """
 
 from __future__ import annotations

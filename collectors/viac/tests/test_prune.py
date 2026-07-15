@@ -156,11 +156,11 @@ def test_complete_dump_debug_trace_pruned_inputs_kept(tmp_path):
 
 
 def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle. The
-    # walk historically wrote run.json only once (at the end), so its
-    # presence (with dry_run:false) means the dump finished: keep it and
-    # all its load inputs. (New walks always carry a status key, so this
-    # branch only ever sees pre-change dumps.)
+    # A run.json with no `status` key predates the status lifecycle,
+    # where the manifest was written only at the end, so its presence
+    # (with dry_run:false) means the dump finished: keep it and all its
+    # load inputs. Current walks always carry a status key, so this
+    # branch only ever sees such dumps.
     d = make_dump(tmp_path, OLD_TS, status=None, dry_run=False, age_s=STALE_S)
     run_main(tmp_path)
     assert d.exists()

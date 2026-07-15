@@ -257,8 +257,9 @@ class Manifest:
     overwrites it with the terminal ``"complete"`` / ``"dry-run"`` /
     ``"incomplete"`` at the end. ``prune`` keys on that field to tell
     a finished dump from a crashed walk; ``load`` skips a dump still
-    marked ``"in-progress"`` or ``"dry-run"``. The legacy ``ended_at``
-    / ``dry_run`` fields are kept for dumps that predate ``status``.
+    marked ``"in-progress"`` or ``"dry-run"``. ``ended_at`` / ``dry_run``
+    are written alongside it — they are the terminal signal ``prune``
+    falls back to for a manifest carrying no ``status``.
     """
 
     def __init__(self, run_dir: Path, mode: str, dry_run: bool) -> None:

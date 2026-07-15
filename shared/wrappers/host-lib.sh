@@ -76,11 +76,11 @@ host_verb_takes_silver() {
 # written, which `prune` treats as a no-op.
 #
 # VERB is the subcommand being run. --silver-db only means something on a
-# verb that builds the silver DB, so on any other verb it is REJECTED (F29)
-# rather than silently swallowed — the wrapper consumes the flag and only the
-# `load` arm reads SILVER_DB, so a dropped flag would otherwise look honoured.
-# The ${ENV_PREFIX}_SILVER_DB env var is ambient config naming where silver
-# lives: a non-silver verb ignores it rather than failing.
+# verb that builds the silver DB, so on any other verb it is rejected: the
+# wrapper consumes the flag and only the `load` arm reads SILVER_DB, so
+# swallowing it would look honoured. The ${ENV_PREFIX}_SILVER_DB env var is
+# ambient config naming where silver lives, not a per-verb assertion, so a
+# non-silver verb ignores it rather than failing.
 host_resolve_dirs() {
     local verb="${1:-}"
     shift || true

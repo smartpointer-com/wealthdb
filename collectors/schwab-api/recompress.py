@@ -29,8 +29,8 @@ a corrupt one is redone.
 
 Completeness classification is byte-identical to ``prune``'s (it reuses
 prune's own ``is_complete`` predicate — same ``status`` lifecycle, same
-statusless-but-readable legacy rule), so the two verbs can never
-disagree about a dump.
+``open_orders.json`` fallback for a dump carrying no status), so the two
+verbs can never disagree about a dump.
 
 Usage:
     recompress.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]

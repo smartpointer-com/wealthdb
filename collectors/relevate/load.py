@@ -469,13 +469,12 @@ def list_pending_dumps(
         if not run_json.is_file():
             logger.info("skipping %s — no run.json (still writing?)", d.name)
             continue
-        # Since run.json is now written incrementally from run-dir
-        # creation (born status="in-progress"), its mere presence no
-        # longer means the dump finished. Skip a dump the walk never
-        # completed — a crashed walk left "in-progress", a --dry-run
-        # shell left "dry-run" — so a partial capture never lands in
-        # silver. A statusless manifest predates the status field and
-        # is loaded as before (backward compat).
+        # run.json is written incrementally from run-dir creation (born
+        # status="in-progress"), so its mere presence does NOT mean the
+        # dump finished. Skip a dump the walk never completed — a
+        # crashed walk left "in-progress", a --dry-run shell left
+        # "dry-run" — so a partial capture never lands in silver. A
+        # statusless manifest stays loadable.
         try:
             status = json.loads(
                 run_json.read_text(encoding="utf-8")).get("status")

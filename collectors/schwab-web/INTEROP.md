@@ -109,11 +109,9 @@ Effects on the web silver:
 - `documents` is keyed on `sha256`, so it preserves every
   physical fetch (no data loss). But the **logical** document
   count is roughly half the row count.
-- `transactions` were affected before migration 0004 (the synthetic
-  `activity_id` then included `source_sha256`, so each physical PDF
-  yielded a distinct id set). Since 0004 the id is sha256-independent
-  and the load gates on `logical_doc_key`, so a re-download no longer
-  duplicates rows (see below).
+- `transactions` are unaffected: the synthetic `activity_id` is
+  sha256-independent and the load gates on `logical_doc_key`, so a
+  re-download does not duplicate rows (see below).
 
 ### Gold-layer mitigation
 

@@ -889,11 +889,12 @@ def list_pending_dumps(
         if not run_json_path.is_file():
             logger.info("skipping %s — no run.json (still writing?)", d.name)
             continue
-        # download.py now stamps run.json with a status ("in-progress" at
-        # run-dir creation, "complete"/"dry-run" at the end), so a run.json
-        # alone no longer proves the walk finished. Skip a crashed/aborted
-        # walk ("in-progress") or a --dry-run shell ("dry-run"); a
-        # statusless manifest predates the lifecycle and stays loadable.
+        # download.py stamps run.json with a status ("in-progress" at
+        # run-dir creation, "complete"/"dry-run" at the end), so its
+        # presence alone does not prove the walk finished. Skip a
+        # crashed/aborted walk ("in-progress") or a --dry-run shell
+        # ("dry-run"); a statusless manifest predates the lifecycle and
+        # stays loadable.
         status = bronze.run_status(run_json_path)
         if status in ("in-progress", "dry-run"):
             logger.info("skipping %s — run.json status=%s", d.name, status)

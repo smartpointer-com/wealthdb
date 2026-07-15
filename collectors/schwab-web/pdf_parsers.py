@@ -1602,8 +1602,8 @@ def _as_num(s: str) -> float | None:
 
 def _count_trailing_col_tokens(tokens: list[str]) -> int:
     """Number of trailing tokens (scanning right-to-left) that fit a
-    position-row column slot — the legacy parsers' run length used to
-    tell a main row from a description/tax-lot continuation."""
+    position-row column slot — the run length the legacy-layout parsers
+    use to tell a main row from a description/tax-lot continuation."""
     cnt = 0
     for tok in reversed(tokens):
         if _is_trailing_col_token(tok):

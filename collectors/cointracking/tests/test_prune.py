@@ -157,12 +157,11 @@ def test_dry_run_status_dump_deleted(tmp_path):
 
 
 def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle. The
-    # walk historically wrote run.json only once (at the end), so its
-    # presence means the dump finished: classify COMPLETE and keep every
-    # load input. (New walks always carry a status key, so this branch
-    # only ever sees pre-change dumps — which is also why they carry no
-    # screenshots: --debug wrote none back then.)
+    # A run.json with no `status` key predates the status lifecycle: such
+    # a dump only ever got a run.json at the end, so its presence means
+    # the dump finished — classify COMPLETE and keep every load input.
+    # Those dumps predate the bronze-resident --debug captures too, hence
+    # no screenshots.
     d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
                   screenshots=False)
     run_main(tmp_path)

@@ -37,8 +37,7 @@ conventions.
 and gold migration `0015` admits the source. Build, test, and adapter
 registration are already wired — the collector is auto-discovered by the
 repo Makefile — so the one remaining step to pull EquityZen into a gold run
-is the operator's `wealthdb.cfg` `silver_sources` entry pointing at the
-silver DB.
+is a `wealthdb.cfg` `silver_sources` entry pointing at the silver DB.
 
 | Verb | Status | Notes |
 | --- | --- | --- |
@@ -51,8 +50,7 @@ silver DB.
 The gold adapter is registered with the gold engine and projects this
 silver into the canonical `accounts` / `instruments` / `positions` /
 `transactions` tables (see DESIGN.md §6). Enabling the source in a gold
-run is then just the `wealthdb.cfg` `silver_sources` entry above
-(operator config).
+run is then just the `wealthdb.cfg` `silver_sources` entry above.
 
 ## Quick start
 

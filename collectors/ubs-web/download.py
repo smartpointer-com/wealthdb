@@ -49,8 +49,8 @@ DOWNLOAD_TIMEOUT_MS = 60_000
 # Canonical storageState location — must match login.py, which
 # mints the file there (the wrapper's /secrets mount).
 DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
-# Legacy default (underscore) — read when the new-named file is absent so an
-# existing session isn't orphaned by the rename (F18); login writes the new name.
+# Fallback state location (underscore) — read when the canonical file is absent,
+# so a session stored under this name keeps working. login writes the canonical name.
 LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
 # The --lookback window resolves through collectorkit.cli (default
@@ -1037,9 +1037,9 @@ def write_run_json(run_dir: Path, since: date, until: date,
         # only reached after the walk body, so a real run finalises as
         # "complete" and a --dry-run walk as "dry-run". The atomic write
         # below overwrites the "in-progress" marker dropped at run-dir
-        # creation. `prune` keys on this field; the legacy `dry_run`
-        # bool is kept for backward compatibility with the statusless
-        # classification of pre-change dumps.
+        # creation. `prune` keys on this field; the `dry_run` bool is kept
+        # alongside it because the statusless-manifest fallback classifies
+        # on it (see prune._is_complete).
         "status": "dry-run" if dry_run else "complete",
         "dry_run": dry_run,
         # One window for the whole run: transactions, documents and

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behaviour tests for the shared wrappers' --silver-db policy (F29).
+# Behaviour tests for the shared wrappers' --silver-db policy.
 #
 # The rule: reject a flag that does nothing on the verb being run, rather
 # than swallowing it (host-lib) or forwarding it into a parser that rejects

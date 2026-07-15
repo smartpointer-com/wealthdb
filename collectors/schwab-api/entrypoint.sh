@@ -4,8 +4,8 @@
 # Only the browser-based `login` runs in the container; `download` and
 # `load` run on the host venv (this is a hybrid collector — see the
 # wrapper). `login` drives Schwab's OAuth authorize page in a headed
-# Camoufox browser on an Xvfb display, and starts x11vnc so the operator
-# can complete login / 2FA / consent over VNC. login.py captures the
+# Camoufox browser on an Xvfb display, and starts x11vnc so login / 2FA /
+# consent can be completed over VNC. login.py captures the
 # `?code=…` redirect and exchanges it for the token bundle. `--check`
 # (inspect token) and `--manual` (paste-the-URL) need no browser, so they
 # skip Xvfb/VNC.
@@ -40,9 +40,9 @@ case "${1:-help}" in
         exec python3 /app/login.py --screenshot-dir /debug --trace "$@"
         ;;
     vnc-login)
-        # Manual fallback: start x11vnc and run --no-cli-mfa so the
-        # operator drives login / 2FA / consent over a VNC client (use
-        # when the automated `login` selectors drift). Account checkboxes
+        # Manual fallback: start x11vnc and run --no-cli-mfa so login /
+        # 2FA / consent are driven by hand over a VNC client (use when
+        # the automated `login` selectors drift). Account checkboxes
         # are still auto-ticked.
         shift
         start_xvfb

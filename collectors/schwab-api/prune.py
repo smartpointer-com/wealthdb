@@ -22,26 +22,25 @@ That separate ``/debug`` dir is reclaimed too — the wrapper passes it as
 the engine's ``--debug-dir``, since every ``login --trace`` leaves a
 bundle there and nothing else ever clears them out.
 
-The data artefacts are now zstd-compressed as they land
-(``accounts_positions.json.zst`` etc.; plain ``.json`` in
-pre-compression dumps — both forms are ``load`` inputs), while
-``run.json`` stays uncompressed (it is the ``status`` manifest this
-classification keys on). For forward (manifest-bearing) dumps
-compression is inert to prune — classification is purely status-based.
-The one place it bites: a *legacy* (no-``run.json``) dump's completeness
-signal is the terminal DATA artefact ``open_orders.json``, which the
-``recompress`` sweep may leave as ``open_orders.json.zst``; so
+Data artefacts are zstd-compressed as they land
+(``accounts_positions.json.zst`` etc.; both the plain and the ``.zst``
+form are ``load`` inputs), while ``run.json`` stays uncompressed — it is
+the ``status`` manifest this classification keys on. For a
+manifest-bearing dump compression is inert to prune: classification is
+purely status-based. The one place it bites: a statusless dump's
+completeness signal is the terminal DATA artefact ``open_orders.json``,
+which the ``recompress`` sweep may leave as ``open_orders.json.zst``, so
 ``_is_complete`` resolves the on-disk variant (plain **or** ``.zst``)
-rather than probing the plain name — otherwise a recompressed legacy
-dump would flip to NON_COMPLETE and be pruned. Converting the
-pre-compression backlog is the separate manual ``recompress`` verb's
-job, not prune's. The categories:
+rather than probing the plain name — probing the plain name alone would
+flip a recompressed dump to NON_COMPLETE and prune it. Compressing a
+dump is the separate manual ``recompress`` verb's job, not prune's.
+The categories:
 
 * ``<run>/screenshots/`` — the ``--debug`` HTTP trace, reclaimed from
   complete dumps (see above).
 
-* ``run.json`` is missing (a pre-manifest dump that crashed before
-  ``open_orders.json`` was written) or its ``status`` is anything other
+* ``run.json`` is missing and ``open_orders.json`` was never written
+  (a crashed dump), or its ``status`` is anything other
   than ``"complete"`` (an ``"in-progress"`` marker from a crashed walk,
   or a ``"dry-run"`` shell — though ``--dry-run`` never creates a run
   dir here). ``load`` would otherwise keep re-ingesting whatever partial
@@ -49,17 +48,16 @@ job, not prune's. The categories:
   ``account_numbers.json`` still loads a truncated snapshot); after
   pruning one, the next ``load --force`` rebuild reflects the removal.
 
-Completeness signal: the ``run.json`` ``status`` field ``download.py``
-now writes (``"in-progress"`` at run-dir creation, atomically
-overwritten with ``"complete"`` at the end). Dumps that predate the
-manifest carry no ``run.json`` at all (``meta is None``); for those the
-legacy terminal signal is the presence of ``open_orders.json`` (in
-either the plain or the ``.zst`` form — see above) — the last
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A dump carrying no ``status`` — including one with no ``run.json``
+at all (``meta is None``) — falls back to the presence of
+``open_orders.json`` (plain or ``.zst`` — see above), the last
 unconditional artefact a complete run writes (only the optional
 ``instruments.json`` may follow it, and ``load`` treats that as
-optional), so a run dir with ``open_orders.json`` but no manifest is a
-pre-change complete dump and keeps its load inputs. An unreadable or
-corrupt ``run.json`` is UNKNOWN and never deleted.
+optional). So a run dir holding ``open_orders.json`` but no manifest is
+a complete dump and keeps its load inputs. An unreadable or corrupt
+``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so
@@ -79,22 +77,21 @@ import sys
 
 from collectorkit import compress, debugcap, prune
 
-# The terminal artefact of a complete pre-manifest run: the last file
-# `download.py` writes unconditionally (before the optional, load-optional
-# instruments.json). Its presence is the legacy completeness signal.
+# The terminal artefact of a complete run: the last file `download.py`
+# writes unconditionally (before the optional, load-optional
+# instruments.json). Its presence is the statusless completeness signal.
 TERMINAL_ARTEFACT = "open_orders.json"
 
 
 def _is_complete(run_dir, meta):
-    # Forward: run.json status ("in-progress" -> "complete") is
-    # authoritative and resolved by status_classification before the
-    # legacy fallback. Legacy (no run.json at all, so meta is None —
-    # every pre-change schwab-api dump): the terminal artefact
+    # run.json status ("in-progress" -> "complete") is authoritative and
+    # resolved by status_classification first. The fallback below fires
+    # only for a dump carrying no status: the terminal artefact
     # open_orders.json. It is a compressible DATA artefact, so the
     # `recompress` sweep may leave it as open_orders.json.zst — resolve
     # the on-disk variant rather than probing the plain name, or a
-    # recompressed legacy dump would flip to NON_COMPLETE and get pruned.
-    # It is only inspected, never deleted (it is a load input, not a debug
+    # recompressed dump would flip to NON_COMPLETE and get pruned. It is
+    # only inspected, never deleted (it is a load input, not a debug
     # subdir), so a complete dump keeps it either way.
     return prune.status_classification(
         meta, run_dir=run_dir,

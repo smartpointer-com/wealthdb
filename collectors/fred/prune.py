@@ -22,13 +22,12 @@ Every other file in a complete run dir is a ``load`` input — the
 ``run.json`` manifest and one ``<series_id>.json`` observations document
 per fetched FX series — and is never touched.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` at the end). Dumps that predate the ``status`` field
-carry a full manifest with no ``status`` key — fred historically wrote
-``run.json`` exactly once, at the end of the walk, so a statusless-but-
-readable manifest means the walk finished: it is classified COMPLETE and
-kept. An unreadable or corrupt ``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A readable manifest with no ``status`` key is COMPLETE and kept —
+such a dump only ever got its manifest at the end of the walk, so its
+presence proves the walk finished. An unreadable or corrupt ``run.json``
+is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
@@ -51,11 +50,9 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # fred historically wrote run.json only once, at the end of the walk,
-    # so its presence means the walk finished. New walks always carry a
-    # status key (in-progress → complete), so status_classification
-    # resolves those before the legacy fallback is consulted. A missing
+    # status_classification resolves any dump carrying a status key; the
+    # fallback below fires only for a statusless manifest, whose presence
+    # proves the walk finished (it is written once, at the end). A missing
     # manifest (meta is None) stays NON_COMPLETE — a crashed download.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)

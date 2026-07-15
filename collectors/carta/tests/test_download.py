@@ -439,10 +439,10 @@ def test_lookback_flag():
 
 
 def test_no_documents_flag():
-    # The fleet-wide document opt-out, now a real skip rather than an
-    # accepted-and-warned no-op: the walk runs capture_documents only when
-    # it is absent, and run.json's documents block records skipped=true so a
-    # partial run is not read as one that found no documents. Default off.
+    # The fleet-wide document opt-out: the walk runs capture_documents only
+    # when the flag is absent, and run.json's documents block records
+    # skipped=true so a partial run is not read as one that found no
+    # documents. Default off.
     assert download.parse_args(["--bronze-dir", "/tmp", "--no-documents"]).no_documents is True
     assert download.parse_args(["--bronze-dir", "/tmp"]).no_documents is False
 
@@ -550,7 +550,7 @@ def test_debug_flag():
 
 
 def test_debug_help_promises_bronze_captures(capsys):
-    # Guards against the flag regressing to the warn-only stub it was.
+    # Guards against the flag regressing to a warn-only stub.
     with pytest.raises(SystemExit):
         download.parse_args(["--help"])
     out = capsys.readouterr().out

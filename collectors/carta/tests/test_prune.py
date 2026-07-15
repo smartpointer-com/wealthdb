@@ -159,11 +159,10 @@ def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
 
 
 def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle. carta
-    # historically wrote run.json only once (at the end of a successful
-    # walk), so its presence means the dump finished: classify COMPLETE
-    # and keep its load inputs. (New walks always carry a status key, so
-    # this branch only ever sees pre-change dumps.)
+    # A run.json with no `status` key predates the status lifecycle: such
+    # a dump only ever got a run.json at the end of a successful walk, so
+    # its presence means the dump finished — classify COMPLETE and keep
+    # its load inputs.
     d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
     assert run_main(tmp_path) == 0
     assert d.exists()

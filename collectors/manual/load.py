@@ -93,9 +93,9 @@ POSITION_KINDS = {"real_estate", "private_equity", "convertible_note",
                   "private_fund", "spv", "mortgage", "other"}
 
 # --- Accepted vehicles (the wrapper dimension of the 2-D taxonomy; see
-# wealthdb docs/TAXONOMY.md). `kind` stays the legacy asset_class; `vehicle`
+# wealthdb docs/TAXONOMY.md). `kind` carries the asset class; `vehicle`
 # records how the exposure is held. The full canonical vehicle vocabulary is
-# accepted since the owner authors these rows by hand, but only the ones a
+# accepted because these rows are authored by hand, but only the ones a
 # manual (illiquid, hand-tracked) holding realistically uses are expected.
 POSITION_VEHICLES = {
     "stock", "etf", "fund", "spv", "bond", "convertible_note", "loan",
@@ -103,9 +103,10 @@ POSITION_VEHICLES = {
     "physical", "structured_product", "right", "mortgage", "escrow", "other",
 }
 
-# When the CSV omits `vehicle`, default it from `kind` so existing files load
-# unchanged. `other` defaults to `other`; an escrow receivable or private loan filed under kind=other should set vehicle explicitly (escrow / loan) to carry the
-# right wrapper into gold.
+# The `vehicle` column is optional: when the CSV omits it, default it from
+# `kind`. `other` defaults to `other`; an escrow receivable or private loan
+# filed under kind=other should set vehicle explicitly (escrow / loan) to
+# carry the right wrapper into gold.
 DEFAULT_VEHICLE_BY_KIND = {
     "real_estate": "physical",
     "private_equity": "stock",

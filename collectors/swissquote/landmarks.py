@@ -109,8 +109,8 @@ MFA_PAGE_TEXT_LANDMARK = "Mobile Level 3 Authentication"
 # Operation No. — the 6-character TAN code the phone app shows
 # alongside the approval prompt. The two are meant to match
 # before approval is tapped. login.py scrapes it from this
-# selector and prints it to the terminal so the operator does not
-# need to reach for the browser screenshot.
+# selector and prints it to the terminal, so the code can be
+# checked without opening a browser screenshot.
 MFA_OPERATION_CODE_SELECTOR = ".SmartL3__operation"
 
 # Per-push countdown text — informational, not used as a landmark.

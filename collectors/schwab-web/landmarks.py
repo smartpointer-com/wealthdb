@@ -15,11 +15,11 @@ from __future__ import annotations
 # Entry points
 # ============================================================
 
-# Where login.py lands the operator. The header
-# of this page embeds a `#schwablmslogin` iframe carrying the
-# actual login form (gateway SPA at sws-gateway-nr.schwab.com).
-# We pre-fill the form via frame_locator; the operator clicks
-# Log In and satisfies Symantec VIP themselves via VNC.
+# Where login.py lands. The header of this page embeds a
+# `#schwablmslogin` iframe carrying the actual login form (gateway
+# SPA at sws-gateway-nr.schwab.com). The form is pre-filled via
+# frame_locator; Log In and the Symantec VIP challenge are then
+# satisfied by hand over VNC.
 MARKETING_HOMEPAGE = "https://www.schwab.com/"
 
 # `id` of the login iframe on the marketing homepage.

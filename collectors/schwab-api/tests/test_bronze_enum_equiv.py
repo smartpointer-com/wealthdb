@@ -1,13 +1,12 @@
-"""Equivalence guard for the bronze run-dir enumeration swap.
+"""Guard on the bronze run-dir enumeration load.py depends on.
 
-load.py's `main()` used to enumerate dump directories with a local
-`sorted(iterdir()) + SNAPSHOT_DIR_RE` loop; it now defers to
-`collectorkit.bronze.iter_run_dirs`. This test inlines a byte-for-byte
-copy of the original loop and asserts the shared helper yields the
+load.py's `main()` enumerates dump directories via
+`collectorkit.bronze.iter_run_dirs`. This test carries a local reference
+implementation of the slug rule and asserts the shared helper yields the
 identical ordered list of paths across a mixed fixture tree (valid run
 dirs out of lexical order, a non-matching dir, a stray matching-named
-*file*, a look-alike suffix), plus that `bronze.parse_run_ts` matches
-the original strptime for every valid slug. Synthetic slugs only.
+*file*, a look-alike suffix), plus that `bronze.parse_run_ts` matches a
+reference strptime for every valid slug. Synthetic slugs only.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ sys.path.insert(0, str(COLLECTOR))
 
 from collectorkit import bronze  # noqa: E402
 
-# --- verbatim copy of the pre-refactor local logic ------------------
+# --- reference implementation of the run-dir slug rule --------------
 _ORIG_RE = re.compile(r"^(\d{8}T\d{6}Z)$")
 
 

@@ -59,12 +59,12 @@ STATE_FILE_MODE = 0o600
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
 DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
-# Legacy default (underscore) — read when the new-named file is absent so an
-# existing session isn't orphaned by the rename (F18); login writes the new name.
+# Fallback state location (underscore) — read when the canonical file is absent,
+# so a session stored under this name keeps working. login writes the canonical name.
 LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
 
 # Default credentials env-file locations (the wrapper mounts ~/.secrets at
-# /secrets). --env-file wins; else the first existing candidate (F47).
+# /secrets). --env-file wins; else the first existing candidate.
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/swissquote.env"),
     Path.home() / ".secrets" / "swissquote.env",
@@ -228,8 +228,8 @@ MFA_APPROVAL_PROBE_SECONDS = 30
 
 
 def _announce_operation_code(page, *, waiting_note: str = "") -> None:
-    """Scrape the on-screen Mobile Level 3 operation code and ask the
-    operator to verify it against their phone before approving. Called when
+    """Scrape the on-screen Mobile Level 3 operation code and print it, so it
+    can be compared against the phone before the push is approved. Called when
     the MFA page first appears and again whenever the push is re-triggered,
     so the printed code never goes stale relative to the phone."""
     tan = None
@@ -624,8 +624,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     # Source the credentials env file before resolving SWISSQUOTE_USERNAME /
     # _PASSWORD, so a plain env file works without a manual `source` and the
-    # login isn't forced to getpass-prompt (F47; matches viac). --env-file
-    # wins, else the first existing default candidate.
+    # login isn't forced to getpass-prompt. --env-file wins, else the first
+    # existing default candidate.
     env_path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
     if env_path is not None:
         try:

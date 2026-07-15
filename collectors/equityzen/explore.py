@@ -32,8 +32,8 @@ session so login.py + download.py can be written from real traces:
                                      form from `EQUITYZEN_USERNAME` /
                                      `EQUITYZEN_PASSWORD` (sourced from
                                      `/secrets/equityzen.env` inside the
-                                     container). Operator still clicks
-                                     Login + enters the TOTP code.
+                                     container). Login + the TOTP code are
+                                     still driven by hand.
 
 Recording stops when the last browser window is closed (Camoufox's
 persistent context fires `close`) or after `--max-duration` (default 1h)
@@ -327,8 +327,8 @@ def _maybe_prefill_login(page, username: str, password: str,
         try:
             # Explicit clear before fill defeats append-style stacking; the
             # read-back verifies the field holds exactly our value, with one
-            # retry. Mark the field done regardless so we never fight the
-            # operator with repeated re-fills on later mutations.
+            # retry. Mark the field done regardless so later mutations
+            # never trigger a re-fill that fights a hand-typed value.
             field.fill("", timeout=1500)
             field.fill(value, timeout=2000)
             got = field.input_value(timeout=1500)

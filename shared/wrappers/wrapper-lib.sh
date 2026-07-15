@@ -120,11 +120,11 @@ wrapper_verb_takes_silver() {
 # path is in play).
 #
 # --silver-db only means something on a verb that builds the silver DB, so
-# on any other verb it is REJECTED here (F29) rather than forwarded into a
-# parser that would reject it with an in-container path the caller never
-# typed. The ${PREFIX}_SILVER_DB env var is different: it is ambient config
-# that names where silver lives, so a non-silver verb ignores it silently
-# instead of failing every `login` in a shell that exports it.
+# on any other verb it is rejected here rather than forwarded into a parser
+# that would reject it naming an in-container path the caller never typed.
+# The ${PREFIX}_SILVER_DB env var is different: it is ambient config naming
+# where silver lives, so a non-silver verb ignores it rather than failing
+# every `login` in a shell that exports it.
 # bash 3.2 safe (no namerefs / associative arrays).
 wrapper_resolve_dir_args() {
     FORWARD_ARGS=()

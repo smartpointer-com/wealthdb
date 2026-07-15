@@ -389,10 +389,9 @@ and nothing else clears them out. Entries idle for `--min-age-hours` go;
 a live login's captures are still being written, so they stay.
 
 Completeness is read from each dump's `run.json` status: `in-progress`
-(a crashed walk) is non-complete, `complete` is kept. Dumps that predate
-the manifest carry no `run.json`; for those the fallback signal is the
-presence of `open_orders.json` — the last artefact a complete run writes
-unconditionally. An unreadable or corrupt `run.json` is left alone
+(a crashed walk) is non-complete, `complete` is kept. A dump carrying no
+status falls back to the presence of `open_orders.json` — the last
+artefact a complete run writes unconditionally. An unreadable or corrupt `run.json` is left alone
 (never taken as proof a dump is partial). Load inputs of complete dumps,
 and non-run entries at the bronze root (the silver `schwab-api.db`), are
 never touched, so silver stays reproducible. An in-flight guard

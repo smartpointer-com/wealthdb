@@ -179,9 +179,9 @@ end leaves either the `in-progress` marker or (if it died before
 `mkdir`) no `run.json` at all. `load.discover_bronze_snapshots` skips a
 run dir whose `status` is not complete, so a crashed dump never reaches
 silver; `prune` reclaims it. A `run.json` with no `status` key predates
-this lifecycle — the walk historically wrote it only once, at the end,
-so its presence means the dump finished, and both `load` and `prune`
-treat a statusless-but-readable manifest as complete.
+this lifecycle and counts as complete to both `load` and `prune`: such a
+dump only ever got a `run.json` at the end, so its presence alone means
+the walk finished.
 
 `--dry-run` walks the navigation and prints what it would do but
 skips every export-button click — no downloads fire, and **no run dir
@@ -471,12 +471,9 @@ the sell leg of an exchange **dust sweep** — a periodic conversion
 of tiny leftover balances (CoinTracking labels it "Dust Sweeping"
 in the `Comment` column) that books each swept dust balance as an
 `Other Expense` sell and the consolidated proceeds as a single
-`Income (non taxable)` buy. The buy leg was always routed, so before
-`Other Expense` joined the sell side the proceeds landed while the
-dust never left, stranding each source balance (the fiat/coin swept
-away) at exactly the swept amount — a coin-sized mismatch for the
-larger dust and sub-10⁻⁸ replay-only residues for the rest. Both
-legs are now handled.
+`Income (non taxable)` buy. Both legs must stay routed: drop the
+sell side and the proceeds land while the dust never leaves,
+stranding each swept balance at exactly the swept amount.
 
 **Type handler set (validated against captured balance.csv).**
 CoinTracking has accumulated a ~19-type vocabulary over time;
@@ -611,10 +608,7 @@ Concrete columns are in
 
 The Go gold adapter (`wealthdb/internal/silver/cointracking/`) opens
 this DuckDB silver read-only and projects portfolios → accounts →
-positions into the canonical gold layer. It does not yet emit the
-transaction history — silver's `transactions` stays the source of
-truth for trades, and a later pass can lift it into gold if
-downstream queries call for it.
+positions → transactions into the canonical gold layer.
 
 ## Future work
 

@@ -21,16 +21,13 @@ prune engine) with angellist's configuration. Two categories are removed:
   otherwise keep seeding silver; after pruning it, the next
   ``load --force`` rebuild reflects the removal.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at run-dir creation, atomically overwritten
-with ``"complete"`` at the end). Dumps that predate the ``status`` field
-carry a manifest with no ``status`` key — ``download`` historically wrote
-``run.json`` only once, as its final step (after viewer.json +
-captures.jsonl), so a present-but-statusless manifest means the walk
-finished: it is classified COMPLETE and kept whole. A crashed pre-change
-walk left ``captures.jsonl`` with no ``run.json`` (``meta is None``) →
-NON_COMPLETE. An unreadable or corrupt ``run.json`` is UNKNOWN and never
-deleted.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A manifest with no ``status`` key predates the field and is
+classified COMPLETE: such a dump only ever got a ``run.json`` as the
+walk's final step, so its presence alone means the walk finished. No
+``run.json`` at all (``meta is None``) → NON_COMPLETE. An unreadable or
+corrupt ``run.json`` is UNKNOWN and never deleted.
 
 The load inputs a complete dump holds — ``captures.jsonl`` (the primary
 input) and ``run.json`` itself (stored into ``dump_runs.payload``) — are
@@ -60,14 +57,9 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # download.py historically wrote run.json only once, at the end (after
-    # viewer.json + captures.jsonl), so its presence means the walk
-    # finished. A crashed walk has no run.json (meta is None) → the
-    # legacy fallback returns False → NON_COMPLETE. New walks always carry
-    # a status key (in-progress → complete), which status_classification
-    # resolves before the legacy fallback is consulted. Identical to
-    # fidelity-web's predicate.
+    # Statusless-but-readable run.json → COMPLETE (see module docstring);
+    # no run.json at all → NON_COMPLETE. A status key, when present,
+    # resolves in status_classification before this fallback is consulted.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

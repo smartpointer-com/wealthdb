@@ -41,9 +41,9 @@ case "$cmd" in
         exit 0
         ;;
     download|login)
-        # F41: --check is accepted for fleet uniformity; this collector is
-        # load-only with no session, so --check is inherently a no-op.
-        case " $* " in *" --check "*) echo "svb: login --check not implemented (TODO); no session to probe." >&2 ;; esac
+        # --check is accepted for fleet uniformity; this collector is load-only
+        # with no session, so there is nothing for it to probe.
+        case " $* " in *" --check "*) echo "svb: login --check is a no-op; there is no session to probe." >&2 ;; esac
         cat >&2 <<'EOF'
 svb: no-op. This collector has no live source — the SVB Wealth Advisory
 statements are a fixed historical archive (SVB wound down in 2023). Drop the
@@ -54,19 +54,12 @@ EOF
         exit 0
         ;;
     prune)
-        # F32: prune is a no-op here; acknowledge any flags rather than
-        # swallowing them silently.
+        # Acknowledge any flags rather than swallowing them silently.
         [[ $# -gt 0 ]] && echo "svb: prune flags ignored — nothing to reclaim." >&2
-        # No-op. Unlike the scraper collectors, svb's bronze is a FLAT archive:
-        # the SVB Wealth Advisory statement PDFs (+ an optional signature.txt)
-        # sit directly at the bronze root, with no timestamped run dirs and no
-        # download stage that could leave debug artefacts. Those PDFs ARE the
-        # load inputs — git-ignored, the only copy, irreplaceable — so there is
-        # nothing to reclaim and pruning would only risk deleting them. The
-        # shared collectorkit.prune engine would be inert here anyway (its
-        # iter_run_dirs matches only <UTC-ts>/ slugs and never touches
-        # bronze-root files), so no prune.py is shipped. The arm exists so the
-        # orchestrator can forward `prune` uniformly without erroring.
+        # No prune.py is shipped: the shared collectorkit.prune engine would be
+        # inert here anyway (its iter_run_dirs matches only <UTC-ts>/ slugs and
+        # never touches bronze-root files). The arm exists so the orchestrator
+        # can forward `prune` uniformly without erroring.
         cat >&2 <<'EOF'
 svb: prune is a no-op. The bronze is a flat archive of the SVB Wealth Advisory
 statement PDFs (+ an optional signature.txt) — the load inputs themselves,

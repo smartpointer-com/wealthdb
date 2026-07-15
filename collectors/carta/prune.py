@@ -16,14 +16,14 @@ across every timestamped run dir under ``--bronze-dir``:
   (HAR, Playwright trace, click log) are a separate concern — they land
   outside bronze under ``/debug`` and prune never sees them.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now writes
-(``"in-progress"`` at run-dir creation, atomically overwritten with
-``"complete"`` at the end). Dumps that predate the ``status`` field carry a
-full manifest with no ``status`` key — carta wrote ``run.json`` only once,
-as the last step of a successful walk, so a statusless-but-readable
-manifest is classified COMPLETE and kept. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted. ``--dry-run`` never creates a
-run dir, so there is no dry-run shell to prune.
+Completeness signal: the ``run.json`` ``status`` field (``"in-progress"``
+at run-dir creation, atomically overwritten with ``"complete"`` at the
+end). A manifest with no ``status`` key predates the field and is
+classified COMPLETE: such a dump only ever got a ``run.json`` as the
+walk's final step, so its presence alone means the walk finished. An
+unreadable or corrupt ``run.json`` is UNKNOWN and never deleted.
+``--dry-run`` never creates a run dir, so there is no dry-run shell to
+prune.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
@@ -51,13 +51,10 @@ DEBUG_SUBDIRS: tuple[str, ...] = (debugcap.SCREENSHOTS_DIR,)
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # carta historically wrote run.json only once, as the last step of a
-    # successful walk, so its presence means the walk finished. New walks
-    # always carry a status key (in-progress → complete), so
-    # status_classification resolves those before the legacy fallback runs.
-    # A missing run.json (meta is None) means a crash before finalising →
-    # NON_COMPLETE.
+    # Statusless-but-readable run.json → COMPLETE (see module docstring);
+    # no run.json at all → a crash before finalising → NON_COMPLETE. A
+    # status key, when present, resolves in status_classification before
+    # this fallback is consulted.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

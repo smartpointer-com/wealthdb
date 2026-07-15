@@ -60,12 +60,12 @@ Modes:
   --check      open the profile dir, navigate to the post-auth
                landing URL to verify the session is alive. No
                credential submit, no 2FA, no MFA push.
-  --vnc        pre-fill the credentials, then HAND OFF to the
-               operator via VNC (x11vnc on 127.0.0.1:5900,
-               started by entrypoint.sh). The operator clicks
-               Log In and completes 2FA manually. The script
-               polls for the post-auth URL and (when no walk
-               phases are requested) exits once it lands.
+  --vnc        pre-fill the credentials, then HAND OFF to a VNC
+               session (x11vnc on 127.0.0.1:5900, started by
+               entrypoint.sh), where Log In and 2FA are completed
+               by hand. The script polls for the post-auth URL and
+               (when no walk phases are requested) exits once it
+               lands.
   (default)    full credential + CLI-MFA flow + walk + logout.
 
 Usage:
@@ -186,8 +186,8 @@ MAX_ACTIVITY_WINDOW_DAYS = 93
 LANDMARK_TIMEOUT_MS = 60_000
 PROFILE_DIR_MODE = 0o700
 
-# Canonical ${PREFIX}_ credential envs first, the legacy FIDELITY_* names
-# second (F21): read FIDELITY_WEB_USERNAME/PASSWORD, falling back to the older
+# Canonical ${PREFIX}_ credential envs first, the unprefixed FIDELITY_*
+# names second: read FIDELITY_WEB_USERNAME/PASSWORD, falling back to
 # FIDELITY_USERNAME/PASSWORD so an existing env file keeps working.
 USERNAME_ENVS = ("FIDELITY_WEB_USERNAME", "FIDELITY_USERNAME")
 PASSWORD_ENVS = ("FIDELITY_WEB_PASSWORD", "FIDELITY_PASSWORD")
@@ -2323,8 +2323,8 @@ def click_login(page):
 
 
 def wait_for_mfa_input_or_post_auth(page, timeout_s):
-    """Poll for whichever appears first: the 2FA code input (still
-    needs the operator) or the post-auth URL (device trusted, MFA
+    """Poll for whichever appears first: the 2FA code input (a code
+    is still needed) or the post-auth URL (device trusted, MFA
     skipped). Returns ('mfa', locator), ('post_auth', None), or
     (None, None) on timeout."""
     deadline = time.monotonic() + timeout_s
@@ -2738,10 +2738,10 @@ def parse_args(argv):
     )
     p.add_argument(
         "--vnc", action="store_true",
-        help=("Pre-fill credentials, then WAIT for the operator to "
-              "click Log In and complete 2FA via VNC. The walk "
-              "still runs after the VNC-driven login lands "
-              "(unless --mode none)."),
+        help=("Pre-fill credentials, then WAIT for Log In and 2FA to "
+              "be completed by hand via VNC. The walk still runs "
+              "after the VNC-driven login lands (unless --mode "
+              "none)."),
     )
     p.add_argument(
         "--mfa-timeout", type=float, default=600.0,

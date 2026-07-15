@@ -38,7 +38,7 @@ conventions.
   changes, no contact-detail edits. See
   [CLAUDE.md §1](CLAUDE.md).
 - **No 2FA automation.** Every fresh login pushes an mTAN to the
-  operator's phone; the operator types it into stdin. No
+  registered phone; the code is typed in on stdin. No
   TOTP-secret storage, no SMS auto-grab, no email-forwarding
   rules.
 - **No unattended scheduling.** Cron / launchd / Actions are

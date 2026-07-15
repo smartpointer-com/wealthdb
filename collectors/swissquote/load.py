@@ -96,15 +96,14 @@ def _dump_is_complete(run_dir: Path) -> bool:
     * any other status (``"in-progress"``,
       ``"dry-run"``)                        -> not complete (a crashed
       or still-running walk — do NOT ingest its partial artefacts);
-    * a statusless run.json                 -> complete (a legacy dump:
-      download.py historically wrote run.json only once, at the end,
-      so its presence meant the walk finished);
+    * a statusless run.json                 -> complete (predates the
+      status field, where the manifest was written only at the end so
+      its presence alone marked completion);
     * no run.json / unreadable / corrupt    -> not complete.
 
     Kept in lockstep with download.dump_is_complete and the legacy
     fallback ``prune`` uses (``legacy_complete = lambda rd, m: m is not
-    None``): before the status field existed, a present run.json was
-    the completion marker.
+    None``).
     """
     try:
         raw = (run_dir / "run.json").read_text(encoding="utf-8")
@@ -632,8 +631,7 @@ def load_portfolio_performance_docs(
             result = parse_portfolio_performance(pdf_path)
         except SystemExit as e:
             # One bad PDF shouldn't kill the whole load; record the
-            # parse failure and continue. Operator can investigate
-            # by re-running with -v.
+            # parse failure and continue. -v surfaces the detail.
             log.error("Skip %s — parser failed: %s", pdf_path.name, e)
             continue
 

@@ -38,7 +38,7 @@ def test_debug_flag():
 
 
 def test_debug_help_promises_bronze_captures(capsys):
-    # Guards against the flag regressing to the warn-only stub it was.
+    # Guards against the flag regressing to a warn-only stub.
     with pytest.raises(SystemExit):
         download.parse_args(["--help"])
     out = capsys.readouterr().out

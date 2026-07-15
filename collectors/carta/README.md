@@ -29,23 +29,21 @@ conventions.
 
 **Implemented and verified end-to-end** against a live account
 (2026-06-08): `login` → `download` → `load` produces a populated silver DB.
-The collector pivoted from an API design to a web scraper once the API was
-found to be closed to individual holders (DESIGN.md §1); the `explore` pass
-mapped Carta's internal cookie-session **REST/JSON** API, which both
-`download` and the silver schema follow.
+`explore` mapped Carta's internal cookie-session **REST/JSON** API, which
+both `download` and the silver schema follow.
 
 | Verb | Status | Notes |
 | --- | --- | --- |
 | `explore`  | implemented | Camoufox + VNC discovery harness (HAR + crash-safe network log + trace + click log). Re-run if Carta changes its UI / endpoints. |
 | `login`    | implemented | Camoufox SPA login + CLI-2FA on stdin, persistent profile; `--check` probes the session (no 2FA push). Clears Carta's Cloudflare front. |
-| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival notices (quarterly/annual financials, capital-call & distribution notices) identical to a prior run are hardlinked in rather than re-fetched, while parsed statements and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. `--no-documents` is accepted for fleet-wide flag uniformity but not yet honoured — the document archive is captured unconditionally. Read-only (GET only). `--dry-run` verifies discovery without writing. |
+| `download` | implemented | Authenticated REST/JSON walk of both families (cap-table holdings + grants + vesting + per-grant exercise-detail xlsx; fund LP capital account + cap-calls), plus the document archive (each `document_url` envelope followed to its signed CDN binary). Document fetches are download-avoidant via the shared `collectorkit.docdedup` engine: immutable archival notices (quarterly/annual financials, capital-call & distribution notices) identical to a prior run are hardlinked in rather than re-fetched, while parsed statements and tax docs (K-1 / 1042-S) are always re-fetched and content-compared so a re-issue is never missed. `--documents-force` bypasses the index. `--no-documents` skips the documents pass entirely (the run's dominant cost), recording `skipped=true` in the manifest so a partial run is not read as one that found no documents. Read-only (GET only). `--dry-run` verifies discovery without writing. |
 | `load`     | implemented | SQLite silver as **event-dated change deltas** (DESIGN.md §5.1): entities / securities (valued) / vesting / fund_metrics (quarterly NAV parsed from the statements) / capital_events / documents. Idempotent; migrations on startup. |
 
 The top-level `Makefile` auto-discovers this collector (`make build-carta` /
 `make test-carta`). The silver schema (`migrations/`) is the stable contract
 the gold-side adapter (`wealthdb/internal/silver/carta/`, see
-[`docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md)) reads; that
-adapter is being updated to consume the event-dated delta model (DESIGN.md §6).
+[`docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md)) reads; it
+consumes the event-dated delta model (DESIGN.md §6).
 
 ## Quick start
 

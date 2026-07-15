@@ -157,9 +157,8 @@ and run `wealthdb load fred`.
 ## Caveats
 
 - **Weekly refresh.** The Fed discontinued the *daily* H.10 update in
-  2009; FRED now refreshes the daily series once a week, so the most
-  recent few days lag (today's run topped out at ~9 days ago). Use
-  `ubs-psn` for the fresh tail; `fred` for history.
+  2009; FRED refreshes the daily series once a week, so the tail lags by
+  up to ~9 days. Use `ubs-psn` for the fresh tail; `fred` for history.
 - **Business days only.** No weekends/holidays (FRED emits `.`, which the
   loader skips). The gold FX layer forward-fills.
 - **Fixing.** FRED = noon New York; `ubs-psn` = UBS's own; ECB = 16:00

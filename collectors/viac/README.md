@@ -192,8 +192,8 @@ finishes. A dump is **complete** when `status == "complete"`;
 everything else — an `in-progress` marker a crashed walk left behind, a
 `dry-run` shell, or no `run.json` at all — is **non-complete**. Dumps
 that predate the field carry a statusless manifest and are treated as
-complete (the walk historically wrote `run.json` only at the end),
-except a legacy `dry_run: true` shell, which stays non-complete.
+complete (it was written only at the end, so its presence alone marked
+completion), except a `dry_run: true` shell, which stays non-complete.
 
 `prune` deletes whole non-complete dumps from the bronze tree — crashed
 or aborted walks and `--dry-run` shells. From a complete dump it reclaims

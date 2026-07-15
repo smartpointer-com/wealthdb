@@ -96,7 +96,7 @@ def test_main_check_probes_and_writes_nothing(monkeypatch, tmp_path):
     assert not list(tmp_path.iterdir())
 
 
-# --- --env-file (F19 parity for a direct download.py run) -------------------
+# --- --env-file (credentials for a direct download.py run) ------------------
 
 def test_env_file_is_sourced_before_the_credential_resolves(tmp_path,
                                                             monkeypatch):

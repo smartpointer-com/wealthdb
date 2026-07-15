@@ -276,7 +276,7 @@ def test_collector_subtrees_discovers_bronze_trees(tmp_path):
 
 def test_source_honours_per_collector_data_dir_override(tmp_path, monkeypatch):
     # ${PREFIX}_DATA_DIR points a collector's bronze outside --data-dir (the
-    # wrappers honour it first). A --source sweep must follow it there (F5),
+    # wrappers honour it first). A --source sweep must follow it there,
     # not sweep <data-dir>/<source>. Prefix = source upper, hyphens -> _.
     override = tmp_path / "custom-viac-root"
     override.mkdir()

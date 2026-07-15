@@ -20,18 +20,10 @@ import re
 # ============================================================
 
 # UBS Switzerland retail e-banking is fronted by Nevis (the auth
-# gateway) and load-balanced across four numbered hosts. The
-# canonical entry point used to be `ebanking-ch.ubs.com`; in
-# practice the SPA tells the browser to navigate to one of
-# `ebanking-ch[1-4].ubs.com`. We accept any of them as legitimate
-# UBS hosts.
-HOSTS = (
-    "ebanking-ch.ubs.com",
-    "ebanking-ch1.ubs.com",
-    "ebanking-ch2.ubs.com",
-    "ebanking-ch3.ubs.com",
-    "ebanking-ch4.ubs.com",
-)
+# gateway) and load-balanced across four numbered hosts. The entry
+# point is the unnumbered `ebanking-ch.ubs.com` (LOGIN_ENTRY_URL);
+# from there the SPA tells the browser to navigate to one of
+# `ebanking-ch[1-4].ubs.com`. All five are legitimate UBS hosts.
 HOST_RE = re.compile(r"^https://ebanking-ch[1-4]?\.ubs\.com/")
 
 # The login entry point. Hitting this with no session cookie serves

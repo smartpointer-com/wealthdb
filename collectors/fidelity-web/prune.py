@@ -19,14 +19,13 @@ removed, across every timestamped run dir under ``--bronze-dir``:
   re-ingesting whatever partial artefacts such a dir holds; after
   pruning one, the next ``load --force`` rebuild reflects the removal.
 
-Completeness signal: the ``run.json`` ``status`` field the walk now
-writes (``"in-progress"`` at start, atomically overwritten with
-``"complete"`` / ``"dry-run"`` at the end). Dumps that predate the
-``status`` field carry a full manifest with no ``status`` key — those
-are pre-change complete dumps (the walk wrote ``run.json`` only once,
-at the end), so a statusless-but-readable manifest is classified
-COMPLETE and keeps its load inputs. An unreadable or corrupt
-``run.json`` is UNKNOWN and never deleted.
+Completeness signal: the ``run.json`` ``status`` field
+(``"in-progress"`` at start, atomically overwritten with
+``"complete"`` / ``"dry-run"`` at the end). A manifest with no
+``status`` key predates the field and is classified COMPLETE, keeping
+its load inputs: such a dump only ever got a ``run.json`` at the end,
+so its presence alone means the walk finished. An unreadable or
+corrupt ``run.json`` is UNKNOWN and never deleted.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
@@ -58,11 +57,10 @@ SCREENSHOTS_DIR = "screenshots"
 
 
 def _is_complete(run_dir, meta):
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # the walk historically wrote run.json only once, at the end, so its
-    # presence means the walk finished. New walks always carry a status
-    # key (in-progress → complete/dry-run), so status_classification
-    # resolves those before the legacy fallback is consulted.
+    # Statusless-but-readable run.json → COMPLETE (see module docstring).
+    # A status key, when present (in-progress → complete/dry-run),
+    # resolves in status_classification before this fallback is
+    # consulted.
     return prune.status_classification(
         meta, run_dir=run_dir, legacy_complete=lambda rd, m: m is not None)
 

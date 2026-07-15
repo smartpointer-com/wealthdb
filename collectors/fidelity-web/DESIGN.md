@@ -442,14 +442,14 @@ directory rather than the scraped dump tree.
 > **Reproducible-from-bronze.** The supplied PDFs default to
 > **`<bronze-dir>/supplied-statements/`** — *under* the bronze tree —
 > precisely so `load --force` (which wipes silver and rebuilds from
-> bronze) re-ingests them automatically. An earlier design sourced
-> them from an arbitrary external dir reachable only via
-> `--supplied-statements-dir`; every `--force` rebuild or flag-less
-> nightly reload then silently dropped that entire history,
-> since it lived only in silver and nothing under bronze could
-> rebuild it. Keeping the PDFs bronze-resident restores the "silver
-> is reproducible from bronze alone" invariant that `silver.reset()`
-> depends on. The flag still works as an override.
+> bronze) re-ingests them automatically. Do not move the default
+> outside bronze: sourcing them from an arbitrary external dir
+> reachable only via `--supplied-statements-dir` means every `--force`
+> rebuild or flag-less nightly reload silently drops that entire
+> history, since it would live only in silver with nothing under
+> bronze able to rebuild it. Bronze residency is what upholds the
+> "silver is reproducible from bronze alone" invariant that
+> `silver.reset()` depends on. The flag still works as an override.
 >
 > A misfiled PDF (a statement for an unrelated account) is rejected by
 > a page-1 **signature** check — a substring (the account registration)
@@ -583,15 +583,14 @@ The escalation history:
 | 3b | + `humanize=True` (cursor trajectories) + `geoip=True` (locale/tz match egress IP) + **one initial VNC-driven login** to seed the Akamai trust cookie | Works. Subsequent auto-driven logins (CLI-MFA or auto-MFA-skip via device-trust cookie) succeed. |
 
 The first-ever login on a fresh profile dir requires the VNC
-handoff — the operator clicks "Log in" manually in their VNC
-client, generating real Firefox-sourced mousedown/mouseup events
-that satisfy Akamai's behavioural-score gate. Once Akamai's
-trust cookie is in the profile dir, automated clicks on the
-button work fine.
+handoff — clicking "Log in" by hand in a VNC client generates
+real Firefox-sourced mousedown/mouseup events that satisfy
+Akamai's behavioural-score gate. Once Akamai's trust cookie is
+in the profile dir, automated clicks on the button work fine.
 
 The `--vnc` subcommand drives this: pre-fills the credentials,
 prints a READY banner, polls for the post-auth URL while the
-operator drives the login + 2FA via VNC.
+login + 2FA are completed by hand over VNC.
 
 ## 7. Login + MFA flow
 
@@ -611,8 +610,8 @@ cookies:
 6. Either:
    - Device-trust cookie suppresses MFA → straight to post-auth.
    - 2FA prompt (TOTP-style 6-digit code in
-     `#dom-totp-security-code-input`) → prompt operator on stdin,
-     fill, submit.
+     `#dom-totp-security-code-input`) → prompt on stdin, fill,
+     submit.
 7. Wait for the post-auth URL prefix
    `https://digital.fidelity.com/ftgw/digital/portfolio/` to
    appear (using `live_url()` via `location.href` — see workaround
@@ -630,10 +629,9 @@ landing without re-logging — reports session ALIVE / DEAD,
 skips walk + logout.
 
 `--vnc` (via the `vnc-login` subcommand, or directly) pre-fills
-the credentials but waits for the operator to click Log In via a
-VNC client. After the post-auth URL lands, the walk runs as
-normal (or `--mode none` skips it for a profile-dir-seed-only
-flow).
+the credentials but waits for Log In to be clicked by hand over
+VNC. After the post-auth URL lands, the walk runs as normal (or
+`--mode none` skips it for a profile-dir-seed-only flow).
 
 ## 8. UI surface map
 
@@ -801,9 +799,9 @@ the rendered HTML; silver scrapes from there.
 Does Fidelity regenerate statement / 1099 PDFs per request
 (different sha256 each time, same logical content) like Schwab
 does? Resolve by downloading the same statement twice and diffing
-sha256s. The silver loader currently plans to dedup on
-`content_sha256` (assumes stable hashes); if regenerated, we
-switch to `(account, doc_date, doc_kind, filename)` dedup à la
+sha256s. The silver loader dedups on `content_sha256`, which
+assumes stable hashes; if they turn out to be regenerated, switch
+to `(account, doc_date, doc_kind, filename)` dedup à la
 schwab-web.
 
 ### 11.2 GraphQL endpoint

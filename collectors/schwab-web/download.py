@@ -398,14 +398,13 @@ def click_next_page(page, pagination_id: str) -> bool:
 
     Targets the NUMBERED page link (`#pagination-{N+1}-link`)
     at document scope, ignoring the outer pagination host's id.
-    We previously anchored on `<sdps-pagination id="…">` — that
-    breaks on Statements: Schwab renders the host as
-    `id="document-pagination"` on page 1 but **renames it to
-    `id="pagination"`** after the first click (the same id
-    tx-history uses). The inner `#pagination-N-link` ids are
-    stable across the rename, so we query for them directly and
-    skip the host-element lookup entirely. `pagination_id` is
-    kept only for diagnostic logging.
+    Anchoring on the `<sdps-pagination id="…">` host breaks on
+    Statements: Schwab renders it as `id="document-pagination"`
+    on page 1 but **renames it to `id="pagination"`** after the
+    first click (the same id tx-history uses). The inner
+    `#pagination-N-link` ids are stable across the rename, so we
+    query for them directly and skip the host-element lookup
+    entirely. `pagination_id` is kept only for diagnostic logging.
 
     Returns True after a click; False when we're on the last
     page (no `#pagination-{N+1}-link` exists).

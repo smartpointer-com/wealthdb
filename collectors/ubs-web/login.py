@@ -57,9 +57,9 @@ STATE_FILE_MODE = 0o600
 
 # Default env-file locations (the wrapper mounts ~/.secrets at /secrets).
 # ubs-web owns `<source>.env` (ubs-web.env) for the contract number; the
-# bank-level `ubs.env` is a legacy fallback (shared with a future ubs-*
-# sibling). First existing wins (F48). Host paths let the script run outside
-# the container for local dev.
+# bank-level `ubs.env` is a fallback, shared with any ubs-* sibling. First
+# existing wins. Host paths let the script run outside the container for
+# local dev.
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/ubs-web.env"),
     Path.home() / ".secrets" / "ubs-web.env",
@@ -77,8 +77,8 @@ CONTRACT_NUMBER_ENV = "UBS_CONTRACT_NUMBER"
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
 DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
-# Legacy default (underscore) — still read when the new-named file is absent,
-# so an existing session isn't orphaned by the rename (F18). New logins write
+# Fallback state location (underscore) — read when the canonical file is absent,
+# so a session stored under this name keeps working. New logins write
 # DEFAULT_STATE_PATH, migrating the session to the hyphenated name.
 LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
@@ -157,8 +157,8 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
             raise SystemExit(f"--env-file does not exist: {args.env_file}")
         env_files = [args.env_file]
     else:
-        # First existing candidate wins (ubs-web.env over legacy ubs.env);
-        # don't source both, which would let the legacy file override.
+        # First existing candidate wins (ubs-web.env over the bank-level
+        # ubs.env); don't source both, which would let ubs.env override.
         env_files = [p for p in DEFAULT_ENV_FILE_CANDIDATES if p.exists()][:1]
 
     for env_file in env_files:

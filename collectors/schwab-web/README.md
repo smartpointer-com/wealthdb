@@ -77,7 +77,7 @@ template; subcommand names and roles are the same:
 
 | Script | Status | Purpose |
 | --- | --- | --- |
-| [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` keeps the legacy VNC-driven flow where the operator drives Log In + 2FA. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
+| [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` falls back to the VNC-driven flow, where Log In + 2FA are driven by hand. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
 | [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §4.4 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions, positions, cash) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
@@ -233,10 +233,10 @@ SCHWAB_PASSWORD='your-password-with-$pecial-chars'
 ### Driving over VNC from another machine
 
 The toolkit is built to run on a headless remote Linux host (e.g.
-an always-on home server or a small Mac on the LAN). The operator
-sits at a separate laptop, SSH-tunnels into the host, and uses any
-VNC client (macOS Screen Sharing works out of the box) to drive
-the in-container Firefox during the login step.
+an always-on home server or a small Mac on the LAN). From a
+separate laptop, an SSH tunnel into the host plus any VNC client
+(macOS Screen Sharing works out of the box) drives the
+in-container Firefox during the login step.
 
 Schwab does device fingerprinting on retail logins; if the IP
 running the container is new, expect an extra device-trust prompt
@@ -287,11 +287,11 @@ timestamped run dir, and never touches a `load` input:
 - **`<run>/screenshots/` from complete dumps** — the tx-history
   landing HTML baselines `download --debug` writes. `load` never
   reads them, so removing them leaves silver byte-identical.
-- **`<run>/transactions/*/page-*.html` legacy orphans from complete
-  dumps** — before the `--debug` gate, that same landing-page HTML was
-  written ungated into the `transactions/<suffix>/` load-input dir as
-  `page-001.html`. `load` never read them (the tx-history loader reads
-  only `more-details.json` and the manifest's `.csv`/`.json`/`.xml`
+- **`<run>/transactions/*/page-*.html` orphans from complete dumps** —
+  older run dirs carry an ungated copy of that same landing-page HTML
+  inside the `transactions/<suffix>/` load-input dir as `page-001.html`.
+  `load` never reads them (the tx-history loader reads only
+  `more-details.json` and the manifest's `.csv`/`.json`/`.xml`
   exports), so `prune` reclaims them with a file glob scoped to match
   only `page-*.html` — never a load-input sibling.
 - **whole non-complete dumps** — a run whose `run.json` is missing
@@ -303,11 +303,11 @@ timestamped run dir, and never touches a `load` input:
 
 Completeness comes from the `run.json` `status` field
 (`"in-progress"` at run-dir creation, atomically overwritten with
-`"complete"` / `"dry-run"` at the end). A dump that predates the
-field carries a statusless manifest; because `download` wrote
-`run.json` incrementally, presence alone is not proof of
-completion, so the legacy fallback keeps a real dump (`dry_run`
-false) and prunes a `--dry-run` shell (`dry_run` true). An
+`"complete"` / `"dry-run"` at the end). A statusless manifest falls
+back to `dry_run`: because `download` writes `run.json`
+incrementally, presence alone is not proof of completion, so the
+fallback keeps a real dump (`dry_run` false) and prunes a
+`--dry-run` shell (`dry_run` true). An
 unreadable or corrupt `run.json` is left untouched. An in-flight
 guard (`--min-age-hours`, default 1, keyed on the newest write in
 the dir) protects a long backfill still in progress.
@@ -388,7 +388,7 @@ fresh the cookies + `_abck` are on disk.
 
 The consequence is structural: **login and scrape happen in one
 continuous Firefox session.** `vnc-login` opens Firefox +
-pre-fills the form, the operator completes Log In + VIP 2FA via
+pre-fills the form, Log In + VIP 2FA are completed by hand over
 VNC, and the Python script takes over the same `page` to walk
 Statements & Tax Forms and Transaction History.
 

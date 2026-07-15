@@ -523,7 +523,7 @@ def _collector_subtrees(data_dir: Path, source: str | None):
     if source is not None:
         # The collector's own ${PREFIX}_DATA_DIR override wins (the wrappers
         # honour it first, so download may have written outside --data-dir);
-        # else <data_dir>/<source> (F5).
+        # else <data_dir>/<source>.
         prefix = source.upper().replace("-", "_")
         override = os.environ.get(f"{prefix}_DATA_DIR")
         cand = Path(override) if override else data_dir / source
