@@ -83,7 +83,7 @@ uninstall:
 	@rm -f "$(BINDIR)/wealthdb" "$(BINDIR)/wealthdb-collect"
 	@echo "  removed $(BINDIR)/wealthdb and $(BINDIR)/wealthdb-collect"
 
-build-collectors: base-images $(addprefix build-,$(COLLECTORS))
+build-collectors: $(addprefix build-,$(COLLECTORS))
 test-collectors:  $(addprefix test-,$(COLLECTORS))
 
 # Shared Docker base images: shared/images/*.Dockerfile, built with
@@ -200,7 +200,15 @@ define COLLECTOR_RULES
 # it host-venv-built. A HYBRID collector has both a Dockerfile AND a
 # `.host-venv` marker (e.g. schwab-api: a Camoufox/VNC `login` image plus
 # a host venv for download/load) — it builds and tests both.
-build-$(1):
+# base-images first: collectorkit is BAKED INTO the base images, so a
+# collector container only sees a collectorkit change once the bases are
+# rebuilt. Hanging this off the per-collector build (rather than the
+# build-collectors aggregate) is what makes a bare `make test-<one>` correct
+# too — otherwise it silently exercises whatever collectorkit the image was
+# last built with, and a stale green looks exactly like a real one. Make
+# updates a prerequisite at most once per invocation, so the fleet-wide
+# targets still pay for it only once.
+build-$(1): base-images
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
 		collectors/$(1)/$(1) build; \

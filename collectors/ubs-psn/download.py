@@ -280,6 +280,13 @@ def capture_remote_listing(sftp: paramiko.SFTPClient,
                           "\n".join(lines) + "\n", log=log)
 
 
+# FIXME: each order type is probed by stat-ing one EXACT expected filename
+# (download/<OT>/<OT>.zip), so a file UBS queued under an unexpected name is
+# indistinguishable from nothing being queued — both count as "empty" and the
+# run reports success. Listing the dir and matching a pattern would tell the
+# two apart. The --debug listing capture makes it diagnosable after the fact;
+# it does not fix it. Worth doing if a silently-missed delivery ever bites:
+# UBS deletes each file on a successful fetch, so a miss is not re-fetchable.
 def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
                  verbose: bool = False) -> tuple[int, int]:
     downloaded = 0

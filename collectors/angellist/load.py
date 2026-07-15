@@ -53,6 +53,16 @@ MIGRATIONS = HERE / "migrations"
 
 DEFAULT_BRONZE_DIR = Path("/data")
 DEFAULT_SILVER_DB = Path("/data/angellist.db")
+# FIXME: this is absolute, so --bronze-dir cannot scope it. Every sibling
+# derives its extra input dirs from --bronze-dir (fidelity-web's
+# --supplied-statements-dir is the model), which makes them automatically
+# safe to point at a temp tree. Here a caller that scopes --bronze-dir and
+# --silver-db still reads whatever is at /data — which the test container
+# bind-mounts to the real bronze tree, so the tests had to grow a conftest
+# guard to avoid ingesting live data. Deriving this from --bronze-dir would
+# be identical in production (the wrapper passes /data anyway) and would
+# delete that whole class of surprise. Needs the same change in download.py,
+# which shares this constant.
 DEFAULT_DOCS = Path("/data/angellist-documents")
 
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")

@@ -277,7 +277,15 @@ def _dump_silver(db):
     schema_meta.applied_at and dump_runs.loaded_at — are dropped: they record
     WHEN a load ran, not the bronze-derived data, so they legitimately differ
     between two builds and form no part of "silver is reproducible from
-    bronze". Each table's rows are ordered by their repr, a stable total order
+    bronze".
+
+    FIXME: this only sees a column DEFAULT. A column stamped from the INSERT
+    instead — tax_documents.retrieved_at uses strftime('%s','now') in the
+    statement — is kept, and makes any two-build comparison flake once the
+    builds straddle a second. Today nothing hits it (the conftest guard keeps
+    live documents out, and the fixtures write none), so this is a trap for
+    the next such column rather than a live bug. Marking the columns in the
+    schema, or freezing the clock, would close it properly. Each table's rows are ordered by their repr, a stable total order
     independent of insertion sequence and of NULL/int column mixing."""
     c = sqlite3.connect(db)
     try:
