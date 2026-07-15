@@ -299,24 +299,3 @@ def resolve_standard(args: argparse.Namespace, *, verb: str,
     if log is not None:
         warn_lookback_ignored(args.lookback, log, what=what)
     return None, None
-
-
-def warn_not_implemented(flag: str, source: str, log: logging.Logger) -> None:
-    """Uniform "accepted but not implemented here (TODO)" warning for a
-    standard flag a collector doesn't yet honour.
-
-    Under the unification's principle 2 the uniform *surface* lands first:
-    the flag parses cleanly (never an argparse reject) and the run
-    continues, but the uniform *behaviour* is a deliberate second pass. A
-    matching ``TODO`` lives in the collector's code + docs. A silent no-op
-    is a defect; this warning is the deliberate degrade."""
-    log.warning("%s accepted but not implemented for %s (TODO)", flag, source)
-
-
-def warn_debug_noop(source: str, log: logging.Logger) -> None:
-    """``--debug`` special case of :func:`warn_not_implemented`: the flag is
-    accepted fleet-wide for uniformity, but only the collectors that write
-    bronze debug captures honour it. On the rest it parses and warns here
-    rather than silently doing nothing (principle 2; TODO in code + docs)."""
-    log.warning("--debug: no bronze captures implemented for %s (TODO)",
-                source)

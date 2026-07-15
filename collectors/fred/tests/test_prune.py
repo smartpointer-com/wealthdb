@@ -1,14 +1,15 @@
 """
 Unit tests for the fred collector's prune.py.
 
-fred is a pure REST/JSON collector: it writes NO bronze-resident debug
-artefacts (debug_subdirs=()) and every file in a complete run dir
-(run.json + each <series_id>.json) is a load input. So prune's only
-effect is removing WHOLE run dirs that are not complete dumps; a complete
-dump is never touched. tmp_path bronze trees, synthetic round rates only
-— no real FX data. Covers:
+fred's only bronze-resident debug artefact is the HTTP trace `download
+--debug` writes under <run>/screenshots/ (debug_subdirs); every other file
+in a complete run dir (run.json + each <series_id>.json) is a load input.
+So prune removes screenshots/ plus WHOLE run dirs that are not complete
+dumps, and never a load input. tmp_path bronze trees, synthetic round
+rates only — no real FX data. Covers:
 
-  * complete dump (status="complete"): kept entirely, nothing pruned
+  * complete dump (status="complete"): load inputs kept, screenshots/ (the
+    --debug trace) reclaimed
   * statusless manifest (pre-`status` legacy dump): COMPLETE, kept
   * non-complete dumps (absent run.json / status="in-progress" /
     status="dry-run") deleted whole once quiescent
@@ -20,7 +21,7 @@ dump is never touched. tmp_path bronze trees, synthetic round rates only
   * --dry-run deletes nothing
   * non-run entries at the bronze root (the silver fred.db, stray files)
     are never touched
-  * validate_target refuses anything but a whole run dir (no debug subdirs)
+  * validate_target accepts a run dir or its screenshots/, nothing else
 """
 
 from __future__ import annotations
@@ -59,14 +60,21 @@ def _obs_doc(rows):
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
               run_json: bool = True, series: bool = True,
-              age_s: float = 0.0) -> Path:
+              screenshots: bool = False, age_s: float = 0.0) -> Path:
     """Build a bronze run dir shaped like a real fred dump: one
     ``<series_id>.json`` observations doc per fetched series plus a
     ``run.json`` manifest. ``age_s`` backdates every mtime so the
     write-activity guard sees an abandoned dump; the default (0) leaves it
-    fresh. ``status=None`` writes a statusless (pre-`status`) manifest."""
+    fresh. ``status=None`` writes a statusless (pre-`status`) manifest.
+    ``screenshots`` adds the ``--debug`` HTTP trace — off by default,
+    mirroring a download without ``--debug``."""
     d = root / slug
     d.mkdir(parents=True)
+    if screenshots:
+        shots = d / "screenshots"
+        shots.mkdir()
+        (shots / "http-trace.jsonl").write_text(
+            '{"method": "GET", "url": "https://x.invalid/a", "status": 200}\n')
     if series:
         (d / "DEXSZUS.json").write_text(json.dumps(_obs_doc([
             ("2020-01-02", "0.9000"), ("2020-01-03", "0.9100")])))
@@ -105,7 +113,7 @@ def _series_and_manifest_intact(d: Path) -> None:
 
 
 # ============================================================
-# Complete dumps: kept entirely (no debug artefacts to prune)
+# Complete dumps: load inputs kept, the --debug trace reclaimed
 # ============================================================
 
 def test_complete_dump_kept_entirely(tmp_path):
@@ -115,12 +123,22 @@ def test_complete_dump_kept_entirely(tmp_path):
     _series_and_manifest_intact(d)
 
 
+def test_complete_dump_debug_trace_pruned_inputs_kept(tmp_path):
+    # The --debug HTTP trace is a diagnostic, not a load input, so prune
+    # reclaims it while the observations documents beside it survive.
+    d = make_dump(tmp_path, OLD_TS, screenshots=True)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
+    _series_and_manifest_intact(d)
+
+
 def test_fresh_complete_dump_kept(tmp_path):
-    # A finalised run.json means the walk is over; freshness is irrelevant
-    # because a complete fred dump has nothing prunable inside it.
-    d = make_dump(tmp_path, fresh_slug(age_s=60))
+    # A finalised run.json means the walk is over, so freshness cannot
+    # protect anything: the trace goes, the load inputs stay.
+    d = make_dump(tmp_path, fresh_slug(age_s=60), screenshots=True)
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     _series_and_manifest_intact(d)
 
 
@@ -283,7 +301,7 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 
 # ============================================================
-# Target validation — no debug subdirs, only whole run dirs
+# Target validation — a run dir or its screenshots/, nothing else
 # ============================================================
 
 def test_validate_target_accepts_run_dir(tmp_path):
@@ -291,11 +309,17 @@ def test_validate_target_accepts_run_dir(tmp_path):
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
+def test_validate_target_accepts_debug_subdir(tmp_path):
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+
+
 def test_validate_target_refuses_stray_and_input_paths(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     (tmp_path / OLD_TS / "run.json").write_text("{}")
-    # A load input inside a run dir is never a valid target (empty
-    # debug_subdirs), nor is a non-run root entry, nor a foreign path.
+    # A load input inside a run dir is never a valid target — only the
+    # screenshots/ debug subdir is — nor is a non-run root entry, nor a
+    # foreign path.
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / OLD_TS / "run.json", tmp_path)
     with pytest.raises(SystemExit):

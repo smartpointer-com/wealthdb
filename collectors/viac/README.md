@@ -195,10 +195,11 @@ that predate the field carry a statusless manifest and are treated as
 complete (the walk historically wrote `run.json` only at the end),
 except a legacy `dry_run: true` shell, which stays non-complete.
 
-`prune` deletes whole non-complete dumps from the bronze tree. viac is
-REST-only and writes no bronze-resident debug artefacts, so a complete
-dump is never touched — there is nothing inside one to reclaim; the
-verb exists to clear crashed/aborted walks and `--dry-run` shells.
+`prune` deletes whole non-complete dumps from the bronze tree — crashed
+or aborted walks and `--dry-run` shells. From a complete dump it reclaims
+one thing: the `screenshots/` HTTP trace a `download --debug` left
+behind, which a routine download never writes. Nothing else inside a
+complete dump is touched.
 
 ```sh
 ./viac prune --dry-run          # print the plan; remove nothing

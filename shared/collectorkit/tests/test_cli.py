@@ -144,25 +144,5 @@ class ResolveStandardTest(unittest.TestCase):
         self.assertEqual(cli.resolve_standard(ns, verb="load"), (None, None))
 
 
-class WarnNotImplementedTest(unittest.TestCase):
-    def test_names_flag_source_and_todo(self):
-        log = logging.getLogger("test.notimpl")
-        with self.assertLogs(log, level="WARNING") as cm:
-            cli.warn_not_implemented("--no-documents", "carta", log)
-        joined = "\n".join(cm.output)
-        self.assertIn("--no-documents", joined)
-        self.assertIn("carta", joined)
-        self.assertIn("TODO", joined)
-
-    def test_debug_noop_message(self):
-        log = logging.getLogger("test.debugnoop")
-        with self.assertLogs(log, level="WARNING") as cm:
-            cli.warn_debug_noop("viac", log)
-        joined = "\n".join(cm.output)
-        self.assertIn("--debug", joined)
-        self.assertIn("viac", joined)
-        self.assertIn("TODO", joined)
-
-
 if __name__ == "__main__":
     unittest.main()

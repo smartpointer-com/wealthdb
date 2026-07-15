@@ -60,6 +60,7 @@ import json
 import logging
 import sys
 import tempfile
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,7 @@ except ModuleNotFoundError:  # pragma: no cover
         """Fallback so ``except RequestException`` still resolves when the real
         ``requests`` is absent (the HTTP paths are never entered then)."""
 
-from collectorkit import cli, docdedup, session as ck_session
+from collectorkit import cli, debugcap, docdedup, session as ck_session
 
 # doc_kind_from_filename is the SAME fileName -> kind derivation load.py parses
 # on, so the download-avoidance mode is chosen off the exact label load reads
@@ -345,6 +346,11 @@ def account_slug(external_id: str) -> str:
     return hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:16]
 
 
+# Stands in for callers with no run dir to write into. A disabled trace
+# swallows every record(), so the request path needs no None-guard.
+_NO_TRACE = debugcap.HttpTrace(None, log=logger, enabled=False)
+
+
 def get_and_save_json(
     session: requests.Session,
     endpoint: str,
@@ -353,6 +359,7 @@ def get_and_save_json(
     *,
     relative_to: Path,
     timeout: int = 30,
+    trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> dict[str, Any] | None:
     """
     GET an endpoint expecting JSON, save the response body verbatim
@@ -360,16 +367,28 @@ def get_and_save_json(
     manifest.errors and return None. Idempotent at the dir level —
     the caller is responsible for not re-fetching if the file
     already exists.
+
+    One of the two request choke points, so `trace` records the exchange
+    here, before the status is branched on: the 200, the 204 marker, the
+    unexpected status, and the failure that never reached Relevate all
+    land as one line each.
     """
     url = BASE + endpoint
+    t0 = time.monotonic()
     try:
         resp = session.get(url, timeout=timeout, allow_redirects=False)
     except RequestException as exc:
+        # No status: nothing came back to carry one.
+        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=f"{type(exc).__name__}: {exc}")
         logger.error("GET %s: network failure: %s", endpoint, exc)
         manifest.add_error(
             endpoint=endpoint, status=None, message=str(exc),
         )
         return None
+    trace.record("GET", url, status=resp.status_code,
+                 elapsed_ms=(time.monotonic() - t0) * 1000,
+                 bytes_=len(resp.content), headers=resp.headers)
     if resp.status_code == 204:
         # No-content success. Save a marker so the silver loader
         # can tell "we asked, Relevate said no data" vs "we never
@@ -415,22 +434,33 @@ def get_and_save_binary(
     relative_to: Path,
     expected_content_type: str = "application/pdf",
     timeout: int = 60,
+    trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> str | None:
     """
     GET an endpoint expecting a binary body (e.g. PDF), save the
     response verbatim. Returns the actual content-type on success,
     None on failure. If the content-type differs from expected,
     save under <name>.unexpected.<ext> instead and record.
+
+    The second request choke point; traced like its JSON twin. The
+    content-type that decided the .unexpected rename is on the trace line
+    too — it is a whitelisted response header.
     """
     url = BASE + endpoint
+    t0 = time.monotonic()
     try:
         resp = session.get(url, timeout=timeout, allow_redirects=False)
     except RequestException as exc:
+        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=f"{type(exc).__name__}: {exc}")
         logger.error("GET %s: network failure: %s", endpoint, exc)
         manifest.add_error(
             endpoint=endpoint, status=None, message=str(exc),
         )
         return None
+    trace.record("GET", url, status=resp.status_code,
+                 elapsed_ms=(time.monotonic() - t0) * 1000,
+                 bytes_=len(resp.content), headers=resp.headers)
     if resp.status_code != 200:
         logger.error(
             "GET %s: expected 200, got %s",
@@ -477,6 +507,7 @@ def fetch_accounts_phase(
     manifest: Manifest,
     *,
     skip_ancillary: bool,
+    trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> dict[str, Any] | None:
     """
     Fetch /portfolio/investment-overview (the master enumeration)
@@ -491,6 +522,7 @@ def fetch_accounts_phase(
         accounts_dir / "investment-overview.json",
         manifest,
         relative_to=run_dir,
+        trace=trace,
     )
     if overview is None:
         logger.error("investment-overview failed — cannot enumerate portfolios")
@@ -502,7 +534,7 @@ def fetch_accounts_phase(
         for fname, ep in ANCILLARY_ACCOUNTS:
             get_and_save_json(
                 session, ep, accounts_dir / fname, manifest,
-                relative_to=run_dir,
+                relative_to=run_dir, trace=trace,
             )
 
     return overview
@@ -516,6 +548,7 @@ def fetch_portfolio(
     *,
     year_from: int,
     year_to: int,
+    trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> None:
     """
     Fetch every observed per-portfolio endpoint into
@@ -573,25 +606,28 @@ def fetch_portfolio(
             pdir / f"deposits-{year}.json",
             manifest,
             relative_to=run_dir,
+            trace=trace,
         )
 
     # The four single-shot per-portfolio endpoints.
     get_and_save_json(
         session, ep_performance(pid),
-        pdir / "performance.json", manifest, relative_to=run_dir,
+        pdir / "performance.json", manifest, relative_to=run_dir, trace=trace,
     )
     get_and_save_json(
         session, ep_fees(pid),
-        pdir / "fees.json", manifest, relative_to=run_dir,
+        pdir / "fees.json", manifest, relative_to=run_dir, trace=trace,
     )
     get_and_save_json(
         session, ep_allocation(pid),
         pdir / "investment-allocation.json", manifest, relative_to=run_dir,
+        trace=trace,
     )
     if proposal_id is not None:
         get_and_save_json(
             session, ep_modelportfolio(proposal_id),
             pdir / "modelportfolio.json", manifest, relative_to=run_dir,
+            trace=trace,
         )
     else:
         logger.info(
@@ -742,11 +778,12 @@ def fetch_documents(
     documents_since: date,
     documents_until: date,
     force: bool = False,
+    trace: debugcap.HttpTrace = _NO_TRACE,
 ) -> None:
     docs_dir = run_dir / "documents"
     index = get_and_save_json(
         session, EP_DOCUMENTS_INDEX,
-        docs_dir / "index.json", manifest, relative_to=run_dir,
+        docs_dir / "index.json", manifest, relative_to=run_dir, trace=trace,
     )
     if index is None:
         logger.error("documents index failed — skipping per-doc fetch")
@@ -803,6 +840,7 @@ def fetch_documents(
             session, ep_document(doc_id),
             target, manifest, relative_to=run_dir,
             expected_content_type="application/pdf",
+            trace=trace,
         )
         if ct == "application/pdf":
             return target
@@ -846,7 +884,12 @@ def do_dry_run(
     --dry-run: hit the master listing endpoints (cheap),
     enumerate work, exit. No per-portfolio or per-document fetches.
     Also reports how many of the indexed docs survive the window
-    filter, so the operator can sanity-check --lookback values.
+    filter, which is what makes a --lookback value checkable.
+
+    Deliberately untraced: `run_dir` here is the throwaway temp dir the
+    caller deletes on exit, so a `--debug` capture written into it would
+    go with it. The default no-op trace makes that a stated choice rather
+    than a capture nobody could read.
     """
     logger.info("dry-run: hitting master listing endpoints only")
     overview = get_and_save_json(
@@ -941,11 +984,17 @@ def do_download(args: argparse.Namespace) -> int:
                          documents_since=since,
                          documents_until=until)
 
+    # One trace for the whole walk. Scoped to the phases below rather than
+    # the session probe above: the probe reports its own verdict and returns
+    # before any run dir exists to capture into.
+    trace = debugcap.HttpTrace(run_dir, log=logger, enabled=args.debug)
+
     overview = None
     if args.mode in ("all", "accounts", "portfolios"):
         overview = fetch_accounts_phase(
             session, run_dir, manifest,
             skip_ancillary=(args.mode != "all"),
+            trace=trace,
         )
         if overview is None:
             # The master enumeration failed, so no portfolio/document
@@ -964,6 +1013,7 @@ def do_download(args: argparse.Namespace) -> int:
                 session, portfolio, run_dir, manifest,
                 year_from=year_from,
                 year_to=year_to,
+                trace=trace,
             )
 
     if args.mode in ("all", "documents") and not args.no_documents:
@@ -973,6 +1023,7 @@ def do_download(args: argparse.Namespace) -> int:
             documents_since=since,
             documents_until=until,
             force=args.documents_force,
+            trace=trace,
         )
 
     manifest.finish(status="complete")
@@ -1057,14 +1108,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help=("Uniform fleet debug gate — the switch every collector's "
-              "`download` accepts to keep no debug artefact out of a "
-              "bronze run dir unless asked. relevate is REST-only "
-              "(no browser, so no screenshots / DOM dumps / traces), "
-              "so it writes no bronze-resident debug artefact and this "
-              "flag currently enables nothing beyond what -v/--verbose "
-              "already logs to stderr. It exists so the help is uniform "
-              "and `prune` has a consistent contract."),
+        help=("Capture debug artefacts into the bronze run dir (default "
+              "off): an HTTP trace at <run>/screenshots/http-trace.jsonl, "
+              "one line per Relevate request with its status, timing, size "
+              "and rate-limit headers — the shape of the exchange, which "
+              "the saved bodies beside it do not record. Bodies are not "
+              "duplicated and no credential is written. `prune` reclaims "
+              "the trace; `load` never reads it. A --dry-run writes into a "
+              "throwaway dir, so it captures nothing."),
     )
     return p.parse_args(argv)
 
@@ -1076,9 +1127,6 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("relevate", logger)
     return do_download(args)
 
 

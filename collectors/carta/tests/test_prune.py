@@ -1,12 +1,12 @@
 """
 Unit tests for prune.py + the run.json status lifecycle it keys on.
 
-tmp_path bronze trees, synthetic data only (no real ids/holdings). carta
-writes NO bronze-resident debug artefact (its browser diagnostics land in
-/debug via `./carta explore`), so debug_subdirs is empty and a complete
-dump has nothing to prune — the only category prune removes is a whole
-non-complete run dir. Covers:
-  * complete dump: kept entirely, every load input untouched
+tmp_path bronze trees, synthetic data only (no real ids/holdings). Two
+categories are removed: a whole non-complete run dir, and the
+`screenshots/` subdir `download --debug` writes into a dump that is
+otherwise kept. (The `./carta explore` diagnostics land in /debug, outside
+bronze, and prune never sees them.) Covers:
+  * complete dump: kept, load inputs untouched, screenshots/ reclaimed
   * statusless legacy manifest: classified complete (carta wrote run.json
     only at the end of a successful walk), kept
   * non-complete dumps (absent run.json / status="in-progress") deleted
@@ -63,13 +63,15 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
               run_json: bool = True, age_s: float = 0.0,
-              entities: bool = True, documents: bool = True) -> Path:
+              entities: bool = True, documents: bool = True,
+              screenshots: bool = True) -> Path:
     """Build a synthetic carta bronze run dir mirroring download.py's
     layout: bootstrap/ + entities/<slug>/ (meta + holdings + a security
-    list) + documents/ (index + a PDF) + run.json. ``age_s`` backdates
-    every mtime so the write-activity guard sees an abandoned dump; the
-    default (0) leaves it fresh. ``status`` controls the run.json status
-    field (``None`` → a statusless legacy manifest)."""
+    list) + documents/ (index + a PDF) + screenshots/ (the --debug
+    landing capture) + run.json. ``age_s`` backdates every mtime so the
+    write-activity guard sees an abandoned dump; the default (0) leaves it
+    fresh. ``status`` controls the run.json status field (``None`` → a
+    statusless legacy manifest)."""
     d = root / slug
     boot = d / "bootstrap"
     boot.mkdir(parents=True)
@@ -89,6 +91,11 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
         (docs / "index.json").write_text(
             json.dumps({"count": 0, "results": []}))
         (docs / "doc_100.pdf").write_bytes(b"%PDF-1.4 fake")
+    if screenshots:
+        shots = d / "screenshots"
+        shots.mkdir(parents=True)
+        (shots / "10-landing.html").write_text("<html>landing</html>")
+        (shots / "10-landing.png").write_bytes(b"\x89PNG fake")
     if run_json:
         manifest: dict = {"schema": 1, "dry_run": False,
                           "individual_id": "1", "firm_id": "9",
@@ -121,23 +128,33 @@ def assert_inputs_intact(d: Path) -> None:
 
 
 # ============================================================
-# Complete dumps: kept entirely (no debug_subdirs to reclaim)
+# Complete dumps: screenshots reclaimed, load inputs kept
 # ============================================================
 
-def test_complete_dump_kept_entirely(tmp_path):
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     d = make_dump(tmp_path, OLD_TS)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
+    assert_inputs_intact(d)
+
+
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so the dump has no capture dir and
+    # prune finds nothing to reclaim.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert_inputs_intact(d)
 
 
-def test_fresh_complete_dump_kept_entirely(tmp_path):
+def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     # The write-activity guard protects non-complete dumps only; a
-    # finalised run.json means the walk is over. carta has nothing to
-    # reclaim from a complete dump, so it is simply left whole.
+    # finalised run.json means the walk is over, so its captures are
+    # reclaimable however recently they were written.
     d = make_dump(tmp_path, fresh_slug(age_s=60))
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert_inputs_intact(d)
 
 
@@ -289,12 +306,18 @@ def test_validate_target_accepts_whole_run_dir(tmp_path):
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+
+
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / "carta.db", tmp_path)
     with pytest.raises(SystemExit):
-        # A subdir of a run dir is not a whole run dir and is not a
-        # debug_subdir (there are none), so it must be refused.
+        # entities/ is a load input, not the debug subdir, so a subdir
+        # target that is not screenshots/ must be refused.
         prune.validate_target(tmp_path / OLD_TS / "entities", tmp_path)
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)

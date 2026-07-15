@@ -88,10 +88,15 @@ from pathlib import Path
 
 import httpx
 
-from collectorkit import bronze, cli, docdedup
-from viac_client import ViacClient
+from collectorkit import bronze, cli, debugcap, docdedup
+from viac_client import BASE_URL, ViacClient
 
 log = logging.getLogger("viac.download")
+
+# Stands in for callers with no run dir to write into — the dry-run walk,
+# which persists nothing. A disabled trace swallows every record(), so the
+# request path needs no None-guard.
+_NO_TRACE = debugcap.HttpTrace(None, log=log, enabled=False)
 
 DEFAULT_STATE_PATH = Path("/secrets/viac-state.json")
 DEFAULT_BRONZE_DIR = Path("/data")
@@ -263,6 +268,29 @@ def with_retry(
             time.sleep(delay)
 
 
+def _traced_get(client: ViacClient, path: str,
+                trace: debugcap.HttpTrace) -> httpx.Response:
+    """One `client.get(path)`, with the exchange recorded.
+
+    Called from inside `with_retry`'s loop rather than around it, so a
+    retried attempt lands its own line instead of vanishing behind the try
+    that eventually worked. The URL is resolved the same way the client
+    resolves it (base + path); redacting it is debugcap's job."""
+    url = BASE_URL + path
+    t0 = time.monotonic()
+    try:
+        resp = client.get(path)
+    except httpx.HTTPError as e:
+        # No status: nothing came back to carry one.
+        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=f"{type(e).__name__}: {e}")
+        raise
+    trace.record("GET", url, status=resp.status_code,
+                 elapsed_ms=(time.monotonic() - t0) * 1000,
+                 bytes_=len(resp.content), headers=resp.headers)
+    return resp
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
@@ -316,17 +344,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help=("Uniform debug-artefact gate shared across the collectors. "
-              "viac is REST-only (pure httpx, no browser) and writes no "
-              "bronze-resident debug artefacts, so this currently gates "
-              "nothing; use -v/--verbose for DEBUG logging to stderr. The "
-              "flag exists so `--debug` means the same thing everywhere."),
+        help=("Capture debug artefacts into the bronze run dir (default "
+              "off): an HTTP trace at <run>/screenshots/http-trace.jsonl, "
+              "one line per VIAC request with its status, timing, size and "
+              "rate-limit headers — including every transient retry, which "
+              "the saved bodies beside it do not record. Bodies are not "
+              "duplicated and no credential is written. `prune` reclaims "
+              "the trace; `load` never reads it. A --dry-run persists no "
+              "run dir, so it captures nothing. (Use -v/--verbose for "
+              "DEBUG logging to stderr.)"),
     )
     return p.parse_args(argv)
 
 
 def fetch_json(client: ViacClient, path: str, dest_file: Path,
-               *, persist: bool = True) -> dict | list:
+               *, persist: bool = True,
+               trace: debugcap.HttpTrace = _NO_TRACE) -> dict | list:
     """GET `path` (with retry on transient errors), save the
     response body to `dest_file`, return the parsed JSON.
     Raises on non-2xx.
@@ -334,9 +367,15 @@ def fetch_json(client: ViacClient, path: str, dest_file: Path,
     With `persist=False` (the dry-run walk) the GET + status check +
     parse still run — that's the point of a dry-run: verify the session
     and enumerate the export surfaces — but nothing is written to disk
-    (no `dest_file`, no parent dir), so the bronze root stays untouched."""
+    (no `dest_file`, no parent dir), so the bronze root stays untouched.
+
+    `trace` records inside the retried closure, so each ATTEMPT lands a
+    line: a dropped HTTP/2 stream that was retried into a success is the
+    shape of the exchange --debug exists to show, and tracing only the
+    attempt that finally worked would hide it."""
     log.debug("GET %s", path)
-    resp = with_retry(lambda: client.get(path), label=f"GET {path}")
+    resp = with_retry(lambda: _traced_get(client, path, trace),
+                      label=f"GET {path}")
     if resp.status_code != 200:
         raise RuntimeError(
             f"GET {path}: HTTP {resp.status_code} (expected 200) — "
@@ -384,7 +423,8 @@ def should_download_pdf(doc: dict, with_tx: bool,
 
 
 def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
-              skip: docdedup.SkipSet, *, force: bool = False) -> str:
+              skip: docdedup.SkipSet, *, force: bool = False,
+              trace: debugcap.HttpTrace = _NO_TRACE) -> str:
     """Fetch a document PDF into `target`, routing the download-avoidance
     decision through the shared `collectorkit.docdedup` engine by the
     document's class (`_document_class`): the immutable, unparsed documents
@@ -392,8 +432,13 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
     parsed / tax / fusion documents are always fetched and content-compared
     so a re-issue is never served stale. Any hardlink error falls through to
     a real fetch (degrade to a fetch, never to a miss). Returns a docdedup
-    outcome code (LINKED / FETCHED / VERIFIED / CHANGED / FETCH_FAILED)."""
+    outcome code (LINKED / FETCHED / VERIFIED / CHANGED / FETCH_FAILED).
+
+    A hardlinked document makes no request, so it leaves no trace line —
+    the trace records the exchanges, and an avoided fetch is not one. The
+    run.json documents audit is what accounts for those."""
     path = f"/files/document/{docid}"
+    url = BASE_URL + path
 
     def _stream_to_disk() -> int:
         # If a prior attempt wrote a partial file, drop it — we
@@ -403,15 +448,29 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
         if target.exists():
             target.unlink()
         n = 0
-        with client.stream("GET", path) as resp:
-            if resp.status_code != 200:
-                resp.read()
-                raise RuntimeError(
-                    f"GET {path}: HTTP {resp.status_code} (expected 200)")
-            with target.open("wb") as fh:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    fh.write(chunk)
-                    n += len(chunk)
+        t0 = time.monotonic()
+        try:
+            with client.stream("GET", path) as resp:
+                if resp.status_code != 200:
+                    resp.read()
+                    trace.record("GET", url, status=resp.status_code,
+                                 elapsed_ms=(time.monotonic() - t0) * 1000,
+                                 headers=resp.headers)
+                    raise RuntimeError(
+                        f"GET {path}: HTTP {resp.status_code} (expected 200)")
+                with target.open("wb") as fh:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        fh.write(chunk)
+                        n += len(chunk)
+                trace.record("GET", url, status=resp.status_code,
+                             elapsed_ms=(time.monotonic() - t0) * 1000,
+                             bytes_=n, headers=resp.headers)
+        except httpx.HTTPError as e:
+            # A stream that died mid-body — the case the retry above exists
+            # for, and the one a byte count alone cannot explain.
+            trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                         error=f"{type(e).__name__}: {e}")
+            raise
         return n
 
     def _fetch() -> Path:
@@ -432,6 +491,7 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
 
 def walk(client: ViacClient, dest_root: Path, *,
          with_tx_docs: bool, dry_run: bool, documents_force: bool = False,
+         debug: bool = False,
          since: date, until: date,
          documents_since: date, documents_until: date) -> dict:
     """Run the full bronze fetch. Returns the manifest.
@@ -446,7 +506,12 @@ def walk(client: ViacClient, dest_root: Path, *,
 
     In-gate document PDFs run through the `collectorkit.docdedup`
     download-avoidance engine (link the immutable/unparsed docs, fetch-verify
-    the parsed/tax/fusion ones); `documents_force` bypasses that index."""
+    the parsed/tax/fusion ones); `documents_force` bypasses that index.
+
+    `debug` gates the HTTP trace. A dry-run persists no run dir, so there
+    is nowhere for a capture to land: the trace is built on None, which
+    makes it an explicit no-op rather than a write against a directory
+    that was never created."""
     ts = bronze.ts_slug()
     bronze_dir = dest_root / ts
     if dry_run:
@@ -485,9 +550,14 @@ def walk(client: ViacClient, dest_root: Path, *,
     if not dry_run:
         bronze.atomic_write_json(bronze_dir / "run.json", manifest)
 
+    # One trace for the whole walk; see the docstring on the dry-run case.
+    trace = debugcap.HttpTrace(None if dry_run else bronze_dir, log=log,
+                               enabled=debug)
+
     def get(path: str, rel: str) -> dict | list:
         manifest["endpoints"].append(path)
-        return fetch_json(client, path, bronze_dir / rel, persist=not dry_run)
+        return fetch_json(client, path, bronze_dir / rel, persist=not dry_run,
+                          trace=trace)
 
     # Customer.
     get(f"/rest/web/customer/current/{ENDPOINT_SUFFIXES['customer/current']}",
@@ -559,7 +629,7 @@ def walk(client: ViacClient, dest_root: Path, *,
         target = bronze_dir / "documents" / f"{docid}.pdf"
         try:
             status = fetch_pdf(client, doc, docid, target, skip,
-                               force=documents_force)
+                               force=documents_force, trace=trace)
             _tally(manifest["documents"], status)
             log.debug("doc %s: %s", docid, status)
         except Exception as e:
@@ -576,9 +646,6 @@ def main(argv: list[str]) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("viac", log)
     # Resolve the shared --lookback contract once into the concrete
     # [since..today] window; pass the dates into walk(). Documents are
     # filtered AT FETCH (avoid wasted PDF binaries); transactions
@@ -612,6 +679,7 @@ def main(argv: list[str]) -> int:
                 with_tx_docs=args.with_transaction_documents,
                 dry_run=args.dry_run,
                 documents_force=args.documents_force,
+                debug=args.debug,
                 since=since, until=until,
                 documents_since=since,
                 documents_until=until,

@@ -263,7 +263,7 @@ the dump layer; full order history is intentionally not captured.
 | `--lookback` | _today − 90d_ | How far back to fetch: a preset (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date (`YYYY-MM-DD`). The window runs from there to today. Schwab caps the API window at 1 year per request; the loader chunks longer ranges automatically. |
 | `--no-instruments` | off | Skip the instrument-metadata lookup that otherwise runs after positions and transactions. By default that lookup fetches metadata for every symbol seen and writes a separate `instruments.json` artefact — Schwab omits `description` on equity positions/transactions, and this fills the gap consistently across asset classes. The opt-out suppresses the extra round-trip on high-cadence runs, since instrument metadata changes rarely. |
 | `--dry-run` | off | Skip data fetch; only validate auth and list accounts. Creates no bronze run dir. |
-| `--debug` | off | Fleet-wide debug-artefact gate. This is a pure REST collector that writes no bronze-resident debug artefacts (browser-flow captures belong to `login.py` and land outside bronze), so the flag currently gates nothing — it exists for help-text parity across collectors. Use `--verbose` for DEBUG-level logging. |
+| `--debug` | off | Capture an HTTP trace into the run dir at `screenshots/http-trace.jsonl` — one line per Schwab request with its status, timing, size and rate-limit headers, transient retries included. Metadata only: response bodies are already in bronze beside it, and no credential is written. `load` ignores it, `prune` reclaims it, and a `--dry-run` (which mints no run dir) captures nothing. Browser-flow captures belong to `login.py` and land outside bronze. Use `--verbose` for DEBUG-level logging. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Caveats
@@ -371,11 +371,12 @@ wrapper over the shared, unit-tested prune engine in
 ./schwab-api prune             # delete it
 ```
 
-Unlike the browser-driven collectors, schwab-api has no bronze-resident
-debug artefacts to sweep: a run dir is a flat set of JSON load inputs.
-So inside bronze, `prune`'s only effect is removing whole run dirs that
-are **not complete dumps** — a download that crashed or was interrupted
-before it finished. Such a dir may still hold a partial
+Inside bronze, `prune` removes two things. From a complete dump, the
+`screenshots/` HTTP trace a `download --debug` left behind — a diagnostic,
+never a `load` input, so deleting it leaves silver byte-identical. A
+routine download writes none, since `--debug` is off by default. And
+whole run dirs that are **not complete dumps** — a download that crashed
+or was interrupted before it finished. Such a dir may still hold a partial
 `account_numbers.json` (and some transactions), which `load` would
 otherwise ingest as a truncated snapshot; after pruning one, the next
 `load --force` rebuild reflects the removal.

@@ -12,15 +12,15 @@ timestamped run dir under ``--bronze-dir``, ``prune`` removes:
   by a crashed walk). ``load`` already skips such a dir, but its partial
   ``cu_<id>/`` CSVs otherwise linger on disk; after pruning one, the
   next ``load --force`` rebuild reflects the removal.
-
-cointracking's download writes **no** bronze-resident debug artefacts —
-only ``run.json`` and one ``cu_<id>/{trades,balance,overview}.csv.zst``
-set per portfolio (plain ``.csv`` in pre-compression dumps), all of
-which are ``load`` inputs — so ``debug_subdirs``
-is empty and only the whole-non-complete-dump category applies. (The
-discovery harness ``explore.py`` writes traces to an external ``/debug``
-mount, never into a bronze run dir; a ``download --debug`` opt-in
-reserves the same discipline for any future capture.)
+* ``screenshots/`` inside a complete dump — the DOM + screenshot
+  captures ``download --debug`` writes for the portfolio-discovery page
+  and for any portfolio that failed. Everything else in a run dir is a
+  ``load`` input (``run.json`` plus one
+  ``cu_<id>/{trades,balance,overview}.csv.zst`` set per portfolio; plain
+  ``.csv`` in pre-compression dumps), so ``screenshots/`` is the only
+  thing a complete dump ever gives up, and losing it cannot change
+  silver. (The discovery harness ``explore.py`` writes its traces to an
+  external ``/debug`` mount, never into a bronze run dir.)
 
 Completeness signal: the ``run.json`` ``status`` field the walk now
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
@@ -36,9 +36,9 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so
 a long multi-portfolio walk is protected. ``--dry-run`` prints the plan
 without removing anything. The only paths ever deleted are whole
-non-complete run dirs; complete dumps' load inputs
-(``run.json`` + ``cu_<id>/{trades,balance,overview}.csv[.zst]``) and
-non-run entries at the bronze root (``known_portfolios.json``, the
+non-complete run dirs and ``screenshots/`` subdirs; complete dumps' load
+inputs (``run.json`` + ``cu_<id>/{trades,balance,overview}.csv[.zst]``)
+and non-run entries at the bronze root (``known_portfolios.json``, the
 silver ``cointracking.duckdb``) are never touched.
 
 Usage:
@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -65,10 +65,9 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    # cointracking writes no bronze-resident debug artefact — every file
-    # in a run dir is a load input — so there is nothing to reclaim from
-    # a complete dump; only whole non-complete dumps are prunable.
-    debug_subdirs=(),
+    # The one non-load-input a run dir can hold: where `download --debug`
+    # puts its captures. Every other file is a load input.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
 )
 

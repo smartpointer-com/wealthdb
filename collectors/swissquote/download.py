@@ -19,7 +19,7 @@ explicitly authorised.
 Usage:
     download.py [--state-path <file>] [--bronze-dir <dir>]
                 [--lookback PRESET|YYYY-MM-DD]
-                [--dry-run] [--screenshot-dir <dir>] [--trace]
+                [--dry-run] [--debug] [--screenshot-dir <dir>] [--trace]
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
-from collectorkit import bronze, cli, session
+from collectorkit import bronze, cli, debugcap, session
 
 log = logging.getLogger("swissquote.download")
 
@@ -98,15 +98,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "--screenshot-dir; the bundle is written there "
                         "alongside screenshots.")
     p.add_argument("--debug", action="store_true",
-                   help="Uniform debug gate (default off). No debug "
-                        "artefact ever lands in a bronze run dir unless "
-                        "this is set. Swissquote's diagnostics "
-                        "(screenshots, HTML dumps, the SmartL3 feedback "
-                        "log, trace bundles) already write OUTSIDE bronze, "
-                        "gated on --screenshot-dir / --trace, so today "
-                        "this flag gates nothing new — it exists so the "
-                        "flag is uniform across collectors and so any "
-                        "future bronze-resident capture is opt-in.")
+                   help="Save opt-in debug captures (DOM + screenshot) "
+                        "INSIDE the bronze run dir under <run>/screenshots/, "
+                        "at the three scraped landmarks: the portfolio "
+                        "overview, the transactions route, and the documents "
+                        "list once its Period filter is widened. Also keeps a "
+                        "crashed run dir instead of removing it, so the "
+                        "captures survive the failure they explain (`load` "
+                        "skips it; `prune` reclaims it). Off by default — the "
+                        "captures are never read by `load`, and `prune` "
+                        "reclaims <run>/screenshots/ from complete dumps. "
+                        "No-op under --dry-run, which creates no run dir. "
+                        "Distinct from --screenshot-dir / --trace, whose "
+                        "landmark screenshots and trace bundles write OUTSIDE "
+                        "bronze.")
     return p.parse_args(argv)
 
 
@@ -731,6 +736,21 @@ def run(args: argparse.Namespace) -> int:
     log.info("Bronze tree contains %d already-downloaded document(s)",
              len(existing_doc_ids))
 
+    # Captures land in the run dir, and --dry-run returns before one is
+    # created, so --debug degrades to a warning there rather than
+    # materialising a dir the dry run promised not to write. The landmark
+    # names mirror the --screenshot-dir ones so the two dirs read alike.
+    debug_dir = run_dir if args.debug else None
+    if args.debug and args.dry_run:
+        log.warning("--debug: --dry-run creates no run dir; "
+                    "no captures will be written")
+        debug_dir = None
+
+    def capture(page, name: str) -> None:
+        """Snapshot a landmark into the run dir; a no-op unless --debug."""
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, name, log=log)
+
     with sync_playwright() as p:
         browser, context = _new_context(p, session.resolve_state_path(
             args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
@@ -793,6 +813,10 @@ def run(args: argparse.Namespace) -> int:
                 sq.POSITIONS_EXPORT_BUTTON, timeout=LANDMARK_TIMEOUT_MS,
             )
             _screenshot(page, args.screenshot_dir, "10_portfolio_page")
+            # The DOM the export buttons and the position rows are matched
+            # against — scrape_position_details reads long name + ISIN
+            # straight out of it, and nothing else records what it saw.
+            capture(page, "10_portfolio_page")
 
             _, customer_id = export_positions(page, run_dir)
             export_list_of_assets(page, run_dir)
@@ -814,6 +838,7 @@ def run(args: argparse.Namespace) -> int:
                 sq.TXN_EXPORT_DROPDOWN_TRIGGER, timeout=LANDMARK_TIMEOUT_MS,
             )
             _screenshot(page, args.screenshot_dir, "20_transactions_page")
+            capture(page, "20_transactions_page")
 
             # Single CSV covering the whole window — no chunking.
             entry = export_transactions_window(page, run_dir, 0, since, until)
@@ -826,6 +851,10 @@ def run(args: argparse.Namespace) -> int:
                      since, until)
             set_documents_period(page, since, until)
             _screenshot(page, args.screenshot_dir, "31_documents_page_wide")
+            # Taken after the Period filter is widened and before the list
+            # is read: discover_documents scrapes this DOM, so it is the
+            # evidence for a discovery that comes back empty or short.
+            capture(page, "31_documents_page_wide")
 
             docs = discover_documents(page)
             doc_entries = []
@@ -889,7 +918,21 @@ def run(args: argparse.Namespace) -> int:
             # run_dir without the run.json completion marker. Remove
             # it so orphans don't accumulate in bronze, then re-raise
             # the original exception unchanged.
-            cleanup_incomplete_run_dir(run_dir)
+            #
+            # --debug suppresses the removal: a crash is the failure the
+            # captures exist to explain, and deleting them here would
+            # discard the evidence at exactly the moment it is worth
+            # having. The retained dir is inert — it carries no terminal
+            # run.json, so `load` skips it and `prune` reclaims it once
+            # quiescent, the same as any crashed dump. The exists() check
+            # keeps a crash from BEFORE the run dir was made (a session
+            # failure) on the normal path, where cleanup is a no-op
+            # anyway, rather than claiming to keep a dir that never was.
+            if debug_dir is not None and run_dir.exists():
+                log.warning("--debug: keeping incomplete dump dir %s for "
+                            "inspection; `prune` reclaims it", run_dir.name)
+            else:
+                cleanup_incomplete_run_dir(run_dir)
             raise
         finally:
             if args.trace:
@@ -908,9 +951,6 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("swissquote", log)
     if args.trace and not args.screenshot_dir:
         raise SystemExit(
             "--trace requires --screenshot-dir. The trace bundle is "

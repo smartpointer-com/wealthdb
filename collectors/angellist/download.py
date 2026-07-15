@@ -56,7 +56,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, debugcap
 
 log = logging.getLogger("angellist.download")
 
@@ -210,15 +210,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                    help="Navigate + capture but write no bronze (smoke test).")
     p.add_argument("--debug", action="store_true",
-                   help="Uniform debug-artefact gate (default off). download "
-                        "writes NO bronze-resident debug artefact today — the "
-                        "browser-diagnostic capture (HAR, Playwright trace, "
-                        "click log, saved blobs) lives in the separate "
-                        "`explore` verb, which writes OUTSIDE bronze (a /debug "
-                        "mount) — so this flag currently gates nothing here. It "
-                        "exists so the flag surface is uniform across "
-                        "collectors and reserves the name for any future "
-                        "bronze-resident diagnostic.")
+                   help="Save opt-in debug captures INSIDE the bronze run dir "
+                        "under <run>/screenshots/: the DOM + screenshot of the "
+                        "bootstrap landing and of each LP route (portfolio, "
+                        "commitments, taxes, funding) as it settles. These say "
+                        "what the SPA rendered when an expected GraphQL op "
+                        "never fired — captures.jsonl can only show the ops "
+                        "that did. Off by default; never read by load, and "
+                        "`prune` reclaims <run>/screenshots/. No-op under "
+                        "--dry-run / --check, which write no bronze. Distinct "
+                        "from the `explore` verb, whose HAR / trace / click log "
+                        "land OUTSIDE bronze under /debug.")
     p.add_argument("--check", action="store_true",
                    help="Probe only whether the BYO session is still accepted by "
                         "the server (bootstrap identity, navigate nothing else, "
@@ -240,10 +242,6 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("angellist", log)
-
     if not args.check:
         cli.warn_lookback_ignored(args.lookback, log,
                                   what="the full AngelList portfolio snapshot")
@@ -254,6 +252,28 @@ def main(argv: list[str]) -> int:
         return 1
     cookies = json.loads(args.cookies.read_text(encoding="utf-8"))
     log.info("loaded %d BYO cookie(s) from %s", len(cookies), args.cookies)
+
+    # The run dir's slug is fixed here rather than after the walk: --debug
+    # captures are written while the browser is still open, and they must
+    # land in the same dir the artefacts below eventually do.
+    run_dir = bronze.run_dir(args.bronze_dir)
+
+    # --dry-run and --check both write no bronze, so neither has a run dir
+    # to capture into; --debug degrades to a warning rather than
+    # materialising one for diagnostics alone. Otherwise the dir is created
+    # up front: a run that captures nothing (a stale session) is exactly the
+    # one worth having screenshots of, and it would never reach the write
+    # below. Such a dir holds screenshots and no captures.jsonl, so `load`
+    # finds nothing to ingest, and its missing terminal run.json makes it
+    # non-complete for `prune` — the same lifecycle as a crash.
+    debug_dir: Path | None = None
+    if args.debug:
+        if args.dry_run or args.check:
+            log.warning("--debug: --dry-run / --check write no bronze; "
+                        "no captures will be written")
+        else:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            debug_dir = run_dir
 
     import tempfile, shutil
     from camoufox.sync_api import Camoufox
@@ -304,6 +324,12 @@ def main(argv: list[str]) -> int:
             log.warning("did not observe op(s) %s within %ds (continuing)",
                         sorted(missing), timeout)
 
+    def capture(page, name: str) -> None:
+        """Snapshot a route once it has settled. Named so the capture dir
+        reads in walk order; a no-op unless --debug supplied a dir."""
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, name, log=log)
+
     profile = Path(tempfile.mkdtemp(prefix="angellist-dl-"))
     try:
         with Camoufox(
@@ -328,6 +354,10 @@ def main(argv: list[str]) -> int:
             except Exception as exc:
                 log.warning("bootstrap goto failed: %s", exc)
             wait_for_ops(page, {"ViewerQuery"}, args.settle + 12)
+            # The identity gate: an expired cookie or a bot wall renders
+            # here, and every later route depends on the slugs this page
+            # yields, so it is the first thing worth seeing.
+            capture(page, "10-bootstrap")
 
             viewer = latest_by_op.get("ViewerQuery", {}).get("data")
             cu = (viewer or {}).get("currentUser") if viewer else None
@@ -354,7 +384,10 @@ def main(argv: list[str]) -> int:
                          "no fresh login needed")
                 return 0
 
-            for acct in accounts:
+            # Capture names carry the account's ordinal, not its slug: the
+            # walk order is what makes the dir legible, and the log lines
+            # already tie each ordinal to a slug.
+            for n, acct in enumerate(accounts, start=1):
                 aslug = acct.get("slugName")
                 if not aslug:
                     log.warning("invest account without slugName, skipping: %s",
@@ -405,6 +438,10 @@ def main(argv: list[str]) -> int:
                 got, total, more = pos_state()
                 log.info("account %s: positions captured %d/%s (hasNextPage=%s)",
                          aslug, got, total, more)
+                # Taken after the scroll loop, so the DOM shows the table as
+                # it finally settled — the evidence for a stall that stopped
+                # short of totalCount.
+                capture(page, f"20-acct{n}-portfolio")
 
                 log.info("account %s: capturing commitments", aslug)
                 try:
@@ -413,6 +450,7 @@ def main(argv: list[str]) -> int:
                 except Exception as exc:
                     log.warning("commitments goto failed for %s: %s", aslug, exc)
                 wait_for_ops(page, COMMITMENT_OPS, args.settle + 8)
+                capture(page, f"30-acct{n}-commitments")
 
                 log.info("account %s: capturing tax-document list", aslug)
                 try:
@@ -421,6 +459,7 @@ def main(argv: list[str]) -> int:
                 except Exception as exc:
                     log.warning("taxes goto failed for %s: %s", aslug, exc)
                 wait_for_ops(page, DOCS_OPS, args.settle + 8)
+                capture(page, f"40-acct{n}-taxes")
 
                 log.info("account %s: capturing funding ledger", aslug)
                 try:
@@ -433,6 +472,7 @@ def main(argv: list[str]) -> int:
                 # dated cash ledger (deposits / withdrawals / investments /
                 # disbursements / refunds) — the source of dated cash flows.
                 wait_for_ops(page, FUNDING_OPS, args.settle + 10)
+                capture(page, f"50-acct{n}-funding")
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 
@@ -458,7 +498,9 @@ def main(argv: list[str]) -> int:
         log.info("--dry-run: not writing bronze")
         return 0
 
-    run_dir = bronze.run_dir(args.bronze_dir)
+    # run_dir's slug was fixed before the walk (--debug may already have
+    # created it and written captures into it), so this only ensures it
+    # exists.
     run_dir.mkdir(parents=True, exist_ok=True)
     # Drop an "in-progress" marker before serialising artefacts, to be
     # atomically overwritten with the terminal manifest below. All GraphQL

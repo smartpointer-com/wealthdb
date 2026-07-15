@@ -360,6 +360,7 @@ class _FakeStreamResp:
     def __init__(self, status: int, body: bytes):
         self.status_code = status
         self._body = body
+        self.headers = {"content-type": "application/pdf"}
 
     def __enter__(self):
         return self

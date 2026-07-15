@@ -72,9 +72,9 @@ case "${1:-help}" in
         ;;
     prune)
         # Delete non-complete dumps (crashed / in-progress) from the
-        # bronze tree. No browser, no Xvfb. cointracking writes no
-        # bronze-resident debug artefacts, so a complete dump is left
-        # entirely intact.
+        # bronze tree, and strip screenshots/ (the download --debug
+        # captures) from complete dumps. No browser, no Xvfb. A complete
+        # dump's load inputs are left intact.
         shift
         exec python3 /app/prune.py "$@"
         ;;

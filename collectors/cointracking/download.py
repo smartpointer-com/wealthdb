@@ -46,7 +46,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress
+from collectorkit import bronze, cli, compress, debugcap
 
 log = logging.getLogger("cointracking.download")
 
@@ -448,15 +448,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help=("Retain diagnostic artefacts (screenshots / DOM / trace "
-              "captures) inside the bronze run dir for troubleshooting. "
-              "Off by default so a routine dump holds only what `load` "
-              "reads. cointracking's download currently writes no "
-              "bronze-resident debug artefact, so this gates nothing "
-              "new today; the flag exists for a uniform CLI and to keep "
-              "any future capture behind an explicit opt-in — external "
-              "discovery diagnostics live in explore.py's /debug mount, "
-              "never in a bronze run dir."),
+        help=("Save opt-in debug captures (DOM + screenshot) INSIDE the "
+              "bronze run dir under <run>/screenshots/: the portfolio "
+              "-discovery page, whose late-injected switcher anchors are "
+              "the known-flaky step, plus the page a portfolio was on "
+              "when its download failed. Off by default so a routine "
+              "dump holds only what `load` reads; `load` never reads "
+              "these, and `prune` reclaims <run>/screenshots/. No-op "
+              "under --dry-run, which materialises no bronze tree. "
+              "External discovery diagnostics live in explore.py's "
+              "/debug mount, never in a bronze run dir."),
     )
     cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
@@ -468,11 +469,6 @@ def main(argv: list[str]) -> int:
     cli.warn_lookback_ignored(
         args.lookback, log,
         what="the complete trade history its holdings replay requires")
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under
-        # --debug. cointracking's download retains no extra capture today.
-        cli.warn_debug_noop("cointracking", log)
-
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.bronze_dir / ts
     if not args.dry_run:
@@ -486,6 +482,20 @@ def main(argv: list[str]) -> int:
                                  {"status": "in-progress"})
     snapshot_at = int(time.time())
 
+    # Captures live in the run dir, and --dry-run deliberately materialises
+    # no bronze tree, so --debug degrades to a warning there rather than
+    # creating one for diagnostics alone.
+    debug_dir: Path | None = run_dir if args.debug else None
+    if args.debug and args.dry_run:
+        log.warning("--debug: --dry-run materialises no bronze tree; "
+                    "no captures will be written")
+        debug_dir = None
+
+    def capture(page, name: str) -> None:
+        """Snapshot a page; a no-op unless --debug supplied a dir."""
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, name, log=log)
+
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
@@ -497,7 +507,16 @@ def main(argv: list[str]) -> int:
         )
         try:
             page = context.new_page()
-            scraped = discover_portfolios(page)
+            try:
+                scraped = discover_portfolios(page)
+            finally:
+                # Discovery drives the whole run: it is the auth gate, and
+                # its switcher anchors are injected by late JS that the
+                # merge below exists to paper over. When that list comes
+                # back short, this DOM is the only thing that says why —
+                # nothing downstream records it. Captured on the raise path
+                # too (an unauthenticated session lands here).
+                capture(page, "10-portfolios")
             cached = load_known_portfolios(args.bronze_dir)
             portfolios = merge_portfolios(scraped, cached)
 
@@ -533,6 +552,11 @@ def main(argv: list[str]) -> int:
                 except Exception as exc:  # noqa: BLE001 — isolate per-portfolio
                     log.error("cu=%s download failed: %s — continuing "
                               "with next portfolio", portfolio["id"], exc)
+                    # Captured on the failure path only: the page is still
+                    # on whichever export surface raised, so this is the
+                    # DOM the failing selector was matched against. A
+                    # capture per portfolio per surface would bury it.
+                    capture(page, f"20-cu{portfolio['id']}-failed")
                     failures.append({
                         "id": str(portfolio["id"]),
                         "name": portfolio.get("name"),

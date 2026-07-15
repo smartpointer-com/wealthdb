@@ -68,11 +68,11 @@ Subcommands:
                       run.json status="in-progress", or a pre-status run
                       left no run.json) from the bronze tree. Runs
                       host-side (pure file walk; no container), so it can
-                      reclaim disk while a download is mid-flight.
-                      carta writes no bronze-resident debug artefact, so
-                      only whole non-complete run dirs are removed;
-                      complete dumps' inputs are never touched. --dry-run
-                      prints the plan without deleting anything.
+                      reclaim disk while a download is mid-flight. Also
+                      strips screenshots/ (the download --debug captures)
+                      from complete dumps; their load inputs are never
+                      touched. --dry-run prints the plan without deleting
+                      anything.
   sh|bash             Open an interactive shell in the container.
   help                Show this message.
 

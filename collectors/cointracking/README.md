@@ -25,7 +25,7 @@ shared collector conventions.
 | `download` | implemented | Per-portfolio SPA loop: 19-column trade CSV + balance CSV + daily-overview CSV per portfolio. |
 | `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
 | `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
-| `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks). No debug artefacts to reclaim; a complete dump's load inputs are left intact. |
+| `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks) and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. |
 | `explore`  | implemented | Discovery harness (Camoufox + VNC + HAR + trace + click log). Kept around for re-discovery if cointracking changes their UI. |
 
 The device-trust cookie is multi-year, so once
@@ -153,10 +153,11 @@ before finalising (`run.json` absent, or carrying the
 `status: "in-progress"` marker it drops at run-dir creation). A finished
 dump atomically overwrites that marker with `status: "complete"`, so
 its `run.json` + `cu_<id>/{trades,balance,overview}.csv.zst` are load
-inputs and stay untouched. cointracking writes no bronze-resident debug
-artefacts (the `explore` harness records HAR/trace/click logs to an
-external `/debug` mount, never into a bronze run dir), so there is
-nothing else to reclaim — only whole crashed dumps.
+inputs and stay untouched. The one thing it does strip from a complete
+dump is `screenshots/` — the `download --debug` captures, which `load`
+never reads. (The `explore` harness records its HAR/trace/click logs to an
+external `/debug` mount, never into a bronze run dir, so prune never sees
+them.)
 
 ```sh
 ./cointracking prune --dry-run    # print the plan, delete nothing

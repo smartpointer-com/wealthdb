@@ -92,7 +92,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, docdedup
+from collectorkit import cli, debugcap, docdedup
 
 log = logging.getLogger("carta.download")
 
@@ -580,11 +580,23 @@ def capture_documents(api: Api, iid: str, docs_dir: Path, *,
 # Driver
 # --------------------------------------------------------------------------
 
-def run(context, args, run_dir: Path, snapshot_at: int) -> int:
+def run(context, args, run_dir: Path, snapshot_at: int,
+        debug_dir: Path | None = None) -> int:
     page = context.new_page()
     api = Api(context)
 
-    iid = land_and_get_individual_id(page)
+    try:
+        iid = land_and_get_individual_id(page)
+    finally:
+        # The landing page is carta's only rendered surface — every later
+        # fetch is JSON replay through Api, whose failures already land in
+        # run.json's `errors`. So this one capture carries the whole
+        # browser-side diagnostic: whether the session landed in the app or
+        # bounced to the login host, and what the URL the individual id is
+        # read out of actually looked like. Captured on the raise path too:
+        # a landing that never resolved an id is the failure worth seeing.
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, "10-landing", log=log)
     log.info("individual id discovered")
     firm_id, nav, acct = discover_firm_id(api, iid)
     if not firm_id:
@@ -718,13 +730,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help=("Uniform debug gate. carta's browser diagnostics (HAR, "
-              "Playwright trace, click log) are captured externally by "
-              "`./carta explore` under /debug, never in a bronze run dir, so "
-              "download writes no bronze-resident debug artefact and this flag "
-              "currently gates nothing extra. Present for cross-collector "
-              "help-text uniformity; `prune` therefore only reclaims whole "
-              "non-complete dumps, not per-run debug subdirs."),
+        help=("Save opt-in debug captures INSIDE the bronze run dir under "
+              "<run>/screenshots/ (the app landing page's DOM + screenshot, "
+              "the one rendered surface behind every later JSON fetch). Off "
+              "by default — the captures are never read by load, and `prune` "
+              "reclaims <run>/screenshots/ from complete dumps. No-op under "
+              "--dry-run, which creates no run dir to write into. Distinct "
+              "from `./carta explore`, whose HAR / trace / click log land "
+              "OUTSIDE bronze under /debug."),
     )
     cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
@@ -735,12 +748,6 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
     cli.warn_lookback_ignored(args.lookback, log,
                               what="the full holdings snapshot")
-
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under
-        # --debug. carta's browser diagnostics live in `./carta explore`
-        # (/debug) today, so download honours nothing here yet.
-        cli.warn_debug_noop("carta", log)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = args.bronze_dir / ts
@@ -756,6 +763,17 @@ def main(argv: list[str]) -> int:
         write_json(run_dir / "run.json", {"status": "in-progress"})
     snapshot_at = int(time.time())
 
+    # Captures live inside the run dir, and --dry-run deliberately creates
+    # none (prune's contract: no dry-run shell to reclaim). Rather than
+    # materialise a dir for diagnostics alone, --debug --dry-run degrades to
+    # a warning — the landing page is reachable, but there is nowhere it
+    # belongs.
+    debug_dir: Path | None = run_dir if args.debug else None
+    if args.debug and args.dry_run:
+        log.warning("--debug: --dry-run creates no run dir; "
+                    "no captures will be written")
+        debug_dir = None
+
     from camoufox.sync_api import Camoufox
 
     with Camoufox(
@@ -768,7 +786,7 @@ def main(argv: list[str]) -> int:
         geoip=True,
     ) as context:
         try:
-            return run(context, args, run_dir, snapshot_at)
+            return run(context, args, run_dir, snapshot_at, debug_dir)
         except RuntimeError as exc:
             log.error("%s", exc)
             return 1

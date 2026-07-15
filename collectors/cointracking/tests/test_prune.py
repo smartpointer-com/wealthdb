@@ -3,12 +3,12 @@ Unit tests for prune.py (cointracking).
 
 tmp_path bronze trees mirroring cointracking's layout: a run dir holds
 run.json + one cu_<id>/ per portfolio with trades.csv / balance.csv /
-overview.csv (all load inputs). cointracking writes NO bronze-resident
-debug artefact, so debug_subdirs is empty — a complete dump is left
-entirely intact and only whole non-complete dumps are prunable.
+overview.csv (all load inputs), plus the screenshots/ dir `download
+--debug` writes. Two categories are prunable: screenshots/ from a
+complete dump, and whole non-complete dumps.
 
 Covers:
-  * complete dump: load inputs kept, nothing pruned (no debug subdirs)
+  * complete dump: load inputs kept, screenshots/ reclaimed
   * non-complete dumps (absent run.json / status in-progress / dry-run)
     deleted whole once quiescent
   * statusless manifest classified legacy-complete → kept intact
@@ -55,12 +55,13 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
               run_json: bool = True, age_s: float = 0.0,
-              cu: str = CU) -> Path:
+              cu: str = CU, screenshots: bool = True) -> Path:
     """Build a cointracking bronze run dir: run.json + one cu_<id>/
-    holding the three load-input CSVs (trades / balance / overview).
-    ``age_s`` backdates every file/dir mtime (and the run dir's own) so
-    the write-activity guard sees an abandoned dump; the default (0)
-    leaves it fresh. Synthetic ids / amounts only."""
+    holding the three load-input CSVs (trades / balance / overview),
+    plus the `--debug` screenshots/ capture dir. ``age_s`` backdates
+    every file/dir mtime (and the run dir's own) so the write-activity
+    guard sees an abandoned dump; the default (0) leaves it fresh.
+    Synthetic ids / amounts only."""
     d = root / slug
     port = d / f"cu_{cu}"
     port.mkdir(parents=True)
@@ -68,6 +69,11 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
     (port / "balance.csv").write_text('"Cur.","Amount"\n"BTC","0.5"\n')
     (port / "overview.csv").write_text(
         '"Date","BTC Value"\n"2026-01-01","1"\n')
+    if screenshots:
+        shots = d / "screenshots"
+        shots.mkdir(parents=True)
+        (shots / "10-portfolios.html").write_text("<html>discovery</html>")
+        (shots / "10-portfolios.png").write_bytes(b"\x89PNG fake")
     if run_json:
         meta: dict = {"portfolios": [{"id": cu, "name": "test"}]}
         if status is not None:
@@ -95,21 +101,31 @@ def _inputs_intact(d: Path, cu: str = CU) -> bool:
 
 
 # ============================================================
-# Complete dumps: inputs kept, nothing pruned
+# Complete dumps: inputs kept, screenshots reclaimed
 # ============================================================
 
-def test_complete_dump_inputs_kept_nothing_pruned(tmp_path):
-    # debug_subdirs is empty, so a complete dump has no prunable
-    # artefacts — the whole dir and every load input survive.
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
+    # screenshots/ is the only non-load-input a run dir holds, so it is
+    # the only thing a complete dump gives up.
     d = make_dump(tmp_path, OLD_TS)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert not (d / "screenshots").exists()
+    assert _inputs_intact(d)
+
+
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so there is no capture dir.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert _inputs_intact(d)
 
 
-def test_fresh_complete_dump_kept(tmp_path):
+def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     d = make_dump(tmp_path, fresh_slug(age_s=60))
     assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
     assert _inputs_intact(d)
 
 
@@ -145,8 +161,10 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     # walk historically wrote run.json only once (at the end), so its
     # presence means the dump finished: classify COMPLETE and keep every
     # load input. (New walks always carry a status key, so this branch
-    # only ever sees pre-change dumps.)
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
+    # only ever sees pre-change dumps — which is also why they carry no
+    # screenshots: --debug wrote none back then.)
+    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
+                  screenshots=False)
     run_main(tmp_path)
     assert d.exists()
     assert _inputs_intact(d)
@@ -267,6 +285,12 @@ def test_missing_bronze_dir_exits(tmp_path):
 def test_validate_target_accepts_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

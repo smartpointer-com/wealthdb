@@ -18,8 +18,9 @@ case "${1:-help}" in
         exec python3 /app/load.py "$@"
         ;;
     prune)
-        # Delete non-complete dumps from the bronze tree (swissquote
-        # writes no bronze-resident debug artefacts). No browser needed.
+        # Delete non-complete dumps from the bronze tree, and strip
+        # screenshots/ (the download --debug captures) from complete
+        # dumps. No browser needed.
         shift
         exec python3 /app/prune.py "$@"
         ;;

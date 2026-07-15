@@ -1,12 +1,12 @@
 """
 Unit tests for schwab-api's prune.py.
 
-tmp_path bronze trees. schwab-api is a pure REST collector: a bronze run
-dir is a flat set of JSON load inputs (no bronze-resident debug
-artefacts), so debug_subdirs is empty and prune's only effect is
-reclaiming whole non-complete run dirs. Covers:
-  * complete dump (run.json status=complete): nothing deleted, load
-    inputs untouched (debug_subdirs empty ⇒ no debug-artefact category)
+tmp_path bronze trees. A schwab-api bronze run dir is a flat set of JSON
+load inputs plus, only under `download --debug`, a screenshots/ HTTP trace
+(debug_subdirs) — so prune reclaims that trace and whole non-complete run
+dirs, never a load input. Covers:
+  * complete dump (run.json status=complete): load inputs untouched, the
+    --debug trace reclaimed
   * legacy complete dump (no run.json, open_orders.json present):
     kept, load inputs survive
   * statusless manifest + open_orders present → legacy COMPLETE, kept;
@@ -61,17 +61,23 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, *, status: str | None = "complete",
               run_json: bool = True, open_orders: bool = True,
-              age_s: float = 0.0) -> Path:
+              screenshots: bool = False, age_s: float = 0.0) -> Path:
     """Build a schwab-api bronze run dir with synthetic load inputs.
 
     ``run_json`` toggles the manifest (``status`` its status field, or
     a statusless ``{}`` when ``status is None``); ``open_orders`` toggles
     the terminal ``open_orders.json`` artefact (the legacy completeness
-    signal). ``age_s`` backdates every file/dir mtime (and the run dir's
-    own) to now-age_s so the write-activity guard sees an abandoned dump;
-    the default (0) leaves it fresh."""
+    signal); ``screenshots`` adds the ``--debug`` HTTP trace, off by
+    default to mirror a download without ``--debug``. ``age_s`` backdates
+    every file/dir mtime (and the run dir's own) to now-age_s so the
+    write-activity guard sees an abandoned dump; the default (0) leaves it
+    fresh."""
     d = root / slug
     d.mkdir(parents=True)
+    if screenshots:
+        (d / "screenshots").mkdir()
+        (d / "screenshots" / "http-trace.jsonl").write_text(
+            '{"method": "GET", "url": "https://x.invalid/a", "status": 200}\n')
     (d / "account_numbers.json").write_text(json.dumps(
         [{"accountNumber": ACCT_PLAIN, "hashValue": ACCT_HASH}]))
     (d / "user_preference.json").write_text(json.dumps({"accounts": []}))
@@ -108,7 +114,7 @@ def _inputs_intact(d: Path) -> bool:
 
 
 # ============================================================
-# Complete dumps: kept whole, load inputs untouched
+# Complete dumps: load inputs untouched, the --debug trace reclaimed
 # ============================================================
 
 def test_complete_dump_kept_inputs_untouched(tmp_path):
@@ -119,13 +125,23 @@ def test_complete_dump_kept_inputs_untouched(tmp_path):
     assert (d / "run.json").exists()
 
 
+def test_complete_dump_debug_trace_pruned_inputs_kept(tmp_path):
+    # The --debug HTTP trace is a diagnostic, not a load input, so prune
+    # reclaims it while every artefact beside it survives.
+    d = make_dump(tmp_path, OLD_TS, screenshots=True)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
+    assert _inputs_intact(d)
+
+
 def test_fresh_complete_dump_kept(tmp_path):
     # The write-activity guard protects non-complete dumps only; a
-    # finalised run.json means the walk is over. Nothing to prune here
-    # (no debug artefacts), so a complete dump is left fully intact.
-    d = make_dump(tmp_path, fresh_slug(age_s=60))
+    # finalised run.json means the walk is over, so freshness cannot
+    # protect the trace — but the load inputs are never at risk.
+    d = make_dump(tmp_path, fresh_slug(age_s=60), screenshots=True)
     run_main(tmp_path)
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert _inputs_intact(d)
 
 
@@ -350,6 +366,11 @@ def test_missing_bronze_dir_exits(tmp_path):
 def test_validate_target_accepts_whole_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_debug_subdir(tmp_path):
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

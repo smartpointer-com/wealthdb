@@ -3,21 +3,23 @@
 Prune non-complete dumps from the angellist bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with angellist's configuration. angellist writes NO
-bronze-resident debug artefact — the browser-diagnostic capture (HAR,
-Playwright trace, click log, saved blobs) lives in the separate
-``explore`` verb, which writes OUTSIDE bronze — so ``debug_subdirs`` is
-empty and the first prune category (debug artefacts from complete dumps)
-never fires. That leaves the second category, which is real cleanup here:
+prune engine) with angellist's configuration. Two categories are removed:
 
+* ``screenshots/`` from a complete dump — the per-route DOM + screenshot
+  captures ``download --debug`` writes. ``load`` reads only
+  ``captures.jsonl`` and ``run.json``, so reclaiming them cannot change
+  silver. (The ``explore`` verb's diagnostics — HAR, Playwright trace,
+  click log, saved blobs — are a separate concern: they land OUTSIDE
+  bronze, and prune never sees them.)
 * whole run dirs that are not complete dumps — a crashed or interrupted
   ``download`` whose ``run.json`` ``status`` is ``"in-progress"`` (the
   marker the walk drops at run-dir creation) rather than ``"complete"``,
   or which has no ``run.json`` at all (the walk crashed before minting
-  it). ``load`` ingests any dir that carries a ``captures.jsonl``,
-  regardless of manifest, so such a partial dir would otherwise keep
-  seeding silver; after pruning it, the next ``load --force`` rebuild
-  reflects the removal.
+  it, or ``--debug`` created the dir for captures and the walk then found
+  no session to capture). ``load`` ingests any dir that carries a
+  ``captures.jsonl``, regardless of manifest, so such a partial dir would
+  otherwise keep seeding silver; after pruning it, the next
+  ``load --force`` rebuild reflects the removal.
 
 Completeness signal: the ``run.json`` ``status`` field the walk now
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
@@ -32,8 +34,8 @@ deleted.
 
 The load inputs a complete dump holds — ``captures.jsonl`` (the primary
 input) and ``run.json`` itself (stored into ``dump_runs.payload``) — are
-never touched: with ``debug_subdirs`` empty, prune never removes anything
-from a complete dump. The K-1 CSV/PDF documents live at
+never touched: ``screenshots/`` is the only thing prune removes from a
+complete dump. The K-1 CSV/PDF documents live at
 ``<bronze>/angellist-documents/`` — a bronze-ROOT sibling of the run
 dirs, not a run-dir child — and the silver DB at
 ``<bronze>/angellist.db``; neither matches the timestamped-run-dir slug,
@@ -54,7 +56,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -71,7 +73,8 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),          # angellist writes no bronze-resident debug artefact
+    # Where `download --debug` puts its per-route captures.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
     manifest_name="run.json",
 )

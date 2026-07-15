@@ -2,18 +2,20 @@
 Unit tests for ubs-psn's prune.py.
 
 tmp_path bronze trees with the ubs-psn layout: run dirs
-``<UTC-ts>/`` holding a flat set of ``<ORDERTYPE>.zip`` files (no
-subdirs, no debug artefacts) and an optional ``run.json`` status
-marker. The load-bearing invariant is SAFETY: the PSN zips are
+``<UTC-ts>/`` holding a flat set of ``<ORDERTYPE>.zip`` files, an
+optional ``run.json`` status marker, and — only under `download
+--debug` — a ``screenshots/`` SFTP-listing capture (``debug_subdirs``).
+The load-bearing invariant is SAFETY: the PSN zips are
 irreplaceable (UBS deletes each file server-side on download), so a
 run dir holding ANY zip must never be deleted, even when a crash left
 ``status="in-progress"`` or no manifest at all. Only a truly zip-less
-shell may be reclaimed once quiescent.
+shell may be reclaimed once quiescent — and only the listing may ever
+be reclaimed from a dump that holds zips.
 
 Covers:
   * zip-bearing dumps kept in every completeness state — complete /
     statusless / no-manifest / in-progress(crash) / admin-zip-only —
-    with nothing pruned (debug_subdirs is empty)
+    with every zip surviving; only a --debug listing is reclaimed
   * the trap: a zip-bearing in-progress crash is KEPT (has-zip
     short-circuits before the status field is consulted)
   * has-zip beats slug age and the in-flight guard
@@ -62,20 +64,26 @@ def fresh_slug(age_s: float = 0.0) -> str:
 def make_dump(root: Path, slug: str, *,
               zips: tuple[str, ...] = ("ZAH.zip", "Z40.zip"),
               status: str | None = "complete", run_json: bool = True,
-              age_s: float = 0.0) -> Path:
+              screenshots: bool = False, age_s: float = 0.0) -> Path:
     """Build a ubs-psn bronze run dir.
 
     ``zips`` are the flat ``<ORDERTYPE>.zip`` files inside the run dir
     (empty tuple → a zip-less shell). ``status`` is the run.json status
     field (``None`` writes a statusless ``{}`` manifest); ``run_json``
-    False omits the manifest entirely (every pre-change dump). ``age_s``
-    backdates every mtime so the write-activity guard sees an abandoned
-    dump; the default (0) leaves it fresh.
+    False omits the manifest entirely (every pre-change dump).
+    ``screenshots`` adds the ``--debug`` SFTP listing, off by default to
+    mirror a pull without ``--debug``. ``age_s`` backdates every mtime so
+    the write-activity guard sees an abandoned dump; the default (0)
+    leaves it fresh.
     """
     d = root / slug
     d.mkdir(parents=True)
     for z in zips:
         (d / z).write_bytes(ZIP_BYTES)
+    if screenshots:
+        (d / "screenshots").mkdir()
+        (d / "screenshots" / "sftp-listing.txt").write_text(
+            "host-key: SHA256:synthetic\n\ndownload/ZAH/: ZAH.zip (4 bytes)\n")
     if run_json:
         (d / "run.json").write_text(
             json.dumps({"status": status} if status is not None else {}))
@@ -153,11 +161,31 @@ def test_admin_zip_only_dump_kept(tmp_path):
 
 def test_zip_dump_kept_despite_fresh_slug(tmp_path):
     # has-zip protection is independent of freshness: a fresh, finalised
-    # dump is kept (and, with empty debug_subdirs, entirely untouched).
+    # dump is kept, zips and all.
     d = make_dump(tmp_path, fresh_slug(age_s=60), status="complete")
     run_main(tmp_path)
     assert d.exists()
     assert (d / "ZAH.zip").exists()
+
+
+def test_complete_dump_debug_listing_pruned_zips_kept(tmp_path):
+    # The --debug listing is a diagnostic, not a load input, so prune
+    # reclaims it while the irreplaceable zips beside it survive.
+    d = make_dump(tmp_path, OLD_TS, status="complete", screenshots=True)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
+    assert (d / "ZAH.zip").exists()
+    assert (d / "Z40.zip").exists()
+
+
+def test_zipless_empty_shell_from_debug_pull_deleted_when_quiescent(tmp_path):
+    # A --debug pull that found nothing queued keeps its shell + listing so
+    # the listing is inspectable; prune reclaims the whole thing once it
+    # goes quiescent — the normal debug-artefact lifecycle.
+    d = make_dump(tmp_path, OLD_TS, zips=(), status="empty",
+                  screenshots=True, age_s=STALE_S)
+    assert run_main(tmp_path) == 0
+    assert not d.exists()
 
 
 # ============================================================
@@ -296,12 +324,17 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 
 # ============================================================
-# Target validation (debug_subdirs is empty → only whole run dirs)
+# Target validation (a run dir or its screenshots/, nothing else)
 # ============================================================
 
 def test_validate_target_accepts_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_debug_subdir(tmp_path):
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

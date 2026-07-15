@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import _txartefacts
-from collectorkit import cli, compress, envfile
+from collectorkit import cli, compress, debugcap, envfile
 
 # schwab-py is a thin wrapper over the Schwab Trader API. We import it
 # inside main() so that --help works on a fresh checkout without the
@@ -197,12 +197,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help="Gate bronze-resident debug artefacts, for parity with the "
-             "fleet-wide debug convention. This is a pure REST collector "
-             "that writes none — the browser-flow page captures / traces "
-             "belong to login.py and land outside the bronze tree — so the "
-             "flag currently gates nothing. Off by default. (Use --verbose "
-             "for DEBUG-level logging.)",
+        help="Capture debug artefacts into the bronze run dir (default "
+             "off): an HTTP trace at <run>/screenshots/http-trace.jsonl, "
+             "one line per Schwab request with its status, timing, size "
+             "and rate-limit headers — including every transient retry, "
+             "which the artefacts beside it do not record. Bodies are not "
+             "duplicated and no credential is written. `prune` reclaims "
+             "the trace; `load` never reads it. (The browser-flow page "
+             "captures / traces belong to login.py and land outside "
+             "bronze. Use --verbose for DEBUG-level logging.)",
     )
     return p.parse_args(argv)
 
@@ -327,12 +330,37 @@ def configure_timeout(client, read_timeout: float) -> None:
     ))
 
 
-def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES):
+# Stands in for callers with no run dir to write into. A disabled trace
+# swallows every record(), so the request path needs no None-guard.
+_NO_TRACE = debugcap.HttpTrace(None, log=log, enabled=False)
+
+
+def _request_url(exc, what: str) -> str:
+    """The URL an in-flight failure was aimed at.
+
+    httpx attaches the request to the errors it raises through a client, but
+    an un-mapped httpcore fault carries none and httpx's own `.request`
+    raises when it was never set — so both cases fall back to the request's
+    label. A traced attempt with a coarse target still beats no line for it.
+    """
+    try:
+        return str(exc.request.url)
+    except (AttributeError, RuntimeError):
+        return what
+
+
+def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES, *,
+                  trace: debugcap.HttpTrace = _NO_TRACE):
     """Run a schwab-py request (`call` returns the HTTPX response), then
     validate + parse it. Transient transport faults — read/connect
     timeouts and dropped connections — are retried with exponential
     backoff; every GET here is idempotent so a retry is safe. HTTP status
-    errors surface immediately via schwab_get_json (not retried)."""
+    errors surface immediately via schwab_get_json (not retried).
+
+    Every Schwab request funnels through here, so this is where `trace`
+    records one line per ATTEMPT — not per call. A timeout that was retried
+    into a success is exactly the shape of the exchange `--debug` exists to
+    show, and tracing only the attempt that finally worked would hide it."""
     import httpx
     import httpcore
     # Catch both layers: httpx normally maps httpcore faults to its own
@@ -343,10 +371,14 @@ def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES):
         httpcore.NetworkError,
     )
     for attempt in range(1, max_retries + 1):
+        t0 = time.monotonic()
         try:
             response = call()
-            break
         except retryable as e:
+            # No status: nothing came back to carry one.
+            trace.record("GET", _request_url(e, what),
+                         elapsed_ms=(time.monotonic() - t0) * 1000,
+                         error=f"{type(e).__name__}: {e}")
             if attempt >= max_retries:
                 raise SystemExit(
                     f"Schwab API {what} failed after {max_retries} attempt(s) "
@@ -359,23 +391,33 @@ def _request_json(what: str, call, max_retries: int = MAX_TRANSIENT_RETRIES):
                 what, type(e).__name__, attempt, max_retries, delay,
             )
             time.sleep(delay)
+        else:
+            trace.record("GET", str(response.request.url),
+                         status=response.status_code,
+                         elapsed_ms=(time.monotonic() - t0) * 1000,
+                         bytes_=len(response.content),
+                         headers=response.headers)
+            break
     return schwab_get_json(response)
 
 
-def fetch_account_numbers(client) -> list[dict]:
+def fetch_account_numbers(client, *, trace=_NO_TRACE) -> list[dict]:
     """GET /accounts/accountNumbers. Returns [{accountNumber, hashValue}, ...]."""
-    return _request_json("account numbers", client.get_account_numbers)
+    return _request_json("account numbers", client.get_account_numbers,
+                         trace=trace)
 
 
-def fetch_user_preference(client) -> dict:
-    return _request_json("user preferences", client.get_user_preferences)
+def fetch_user_preference(client, *, trace=_NO_TRACE) -> dict:
+    return _request_json("user preferences", client.get_user_preferences,
+                         trace=trace)
 
 
-def fetch_accounts_with_positions(client) -> list[dict]:
+def fetch_accounts_with_positions(client, *, trace=_NO_TRACE) -> list[dict]:
     """GET /accounts?fields=positions. Returns one entry per linked account."""
     fields = client.Account.Fields.POSITIONS
     return _request_json(
-        "accounts + positions", lambda: client.get_accounts(fields=fields))
+        "accounts + positions", lambda: client.get_accounts(fields=fields),
+        trace=trace)
 
 
 def iter_transaction_windows(since: date, until: date):
@@ -387,7 +429,8 @@ def iter_transaction_windows(since: date, until: date):
         cursor = end + timedelta(days=1)
 
 
-def fetch_open_orders(client, since: date, until: date) -> list[dict]:
+def fetch_open_orders(client, since: date, until: date, *,
+                      trace=_NO_TRACE) -> list[dict]:
     """GET /orders, filtered client-side to non-terminal statuses.
 
     Schwab requires from_entered_datetime/to_entered_datetime; we use the
@@ -406,6 +449,7 @@ def fetch_open_orders(client, since: date, until: date) -> list[dict]:
             from_entered_datetime=start_dt,
             to_entered_datetime=end_dt,
         ),
+        trace=trace,
     )
     return [o for o in all_orders if o.get("status") in OPEN_ORDER_STATUSES]
 
@@ -443,7 +487,7 @@ def collect_instrument_symbols_from_run(run_dir: Path) -> list[str]:
     return sorted(symbols)
 
 
-def fetch_instruments(client, symbols: list[str]) -> dict:
+def fetch_instruments(client, symbols: list[str], *, trace=_NO_TRACE) -> dict:
     """GET /instruments?projection=symbol-search with class-share normalisation.
 
     Schwab is inconsistent across its own endpoints on class-share
@@ -470,6 +514,7 @@ def fetch_instruments(client, symbols: list[str]) -> dict:
     response = _request_json(
         "instruments",
         lambda: client.get_instruments(symbols=lookup, projection=proj),
+        trace=trace,
     )
 
     # Normalise '/'  ->  '.' on returned symbols, and dedup in the rare
@@ -494,7 +539,8 @@ def fetch_instruments(client, symbols: list[str]) -> dict:
     return response
 
 
-def fetch_transactions(client, account_hash: str, start: date, end: date) -> list[dict]:
+def fetch_transactions(client, account_hash: str, start: date, end: date, *,
+                       trace=_NO_TRACE) -> list[dict]:
     """GET /accounts/{hash}/transactions for a date range.
 
     schwab-py expects start_date / end_date as datetimes; we promote
@@ -511,6 +557,7 @@ def fetch_transactions(client, account_hash: str, start: date, end: date) -> lis
             end_date=end_dt,
             transaction_types=types,
         ),
+        trace=trace,
     )
 
 
@@ -531,6 +578,17 @@ def run(args: argparse.Namespace) -> int:
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")
     client_secret = envfile.resolve_credential(args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
 
+    # The run dir is settled before the first request so --debug's trace can
+    # cover the account-hash listing too — the call that forces the token
+    # refresh, and so the one most often needing an explanation. A walk that
+    # dies there leaves the trace behind in a run dir with no manifest, which
+    # prune reclaims as a non-complete dump. A --dry-run mints no run dir, so
+    # its trace has nowhere to land: HttpTrace(None) makes that an explicit
+    # no-op. Without --debug the trace is inert and creates nothing.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = None if args.dry_run else args.bronze_dir / ts
+    trace = debugcap.HttpTrace(run_dir, log=log, enabled=args.debug)
+
     # schwab-py's parameter names (api_key, app_secret) are a historical
     # quirk; they accept the OAuth Client ID / Client Secret that Schwab
     # issues in its developer portal. Both building the client and the
@@ -547,7 +605,7 @@ def run(args: argparse.Namespace) -> int:
         )
         configure_timeout(client, args.read_timeout)
         log.info("Listing account hashes ...")
-        account_numbers = fetch_account_numbers(client)
+        account_numbers = fetch_account_numbers(client, trace=trace)
     except oauth_errors as e:
         raise SystemExit(explain_token_failure(args.token_path, e))
     log.info("Schwab returned %d linked account(s)", len(account_numbers))
@@ -569,8 +627,6 @@ def run(args: argparse.Namespace) -> int:
     since, until = cli.resolve_lookback(args)
     log.info("Transaction window: %s -> %s", since, until)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = args.bronze_dir / ts
     log.info("Writing artefacts to %s", run_dir)
 
     # Drop an "in-progress" manifest up front and overwrite it with the
@@ -583,10 +639,10 @@ def run(args: argparse.Namespace) -> int:
 
     write_data_artefact(run_dir / ARTIFACT_ACCOUNT_NUMBERS, account_numbers)
 
-    user_pref = fetch_user_preference(client)
+    user_pref = fetch_user_preference(client, trace=trace)
     write_data_artefact(run_dir / ARTIFACT_USER_PREFERENCE, user_pref)
 
-    positions = fetch_accounts_with_positions(client)
+    positions = fetch_accounts_with_positions(client, trace=trace)
     write_data_artefact(run_dir / ARTIFACT_ACCOUNTS_POSITIONS, positions)
 
     # Transactions are fetched per account-hash, chunked into <=1y windows
@@ -599,7 +655,7 @@ def run(args: argparse.Namespace) -> int:
         for start, end in iter_transaction_windows(since, until):
             log.info("Fetching transactions for account %s... %s -> %s",
                      h[:8], start, end)
-            txns = fetch_transactions(client, h, start, end)
+            txns = fetch_transactions(client, h, start, end, trace=trace)
             payload = {
                 "account_hash": h,
                 "window_start": start.isoformat(),
@@ -616,7 +672,7 @@ def run(args: argparse.Namespace) -> int:
     # care about orders that can still affect the portfolio.
     orders_since = today - timedelta(days=OPEN_ORDERS_LOOKBACK_DAYS)
     log.info("Fetching open orders (entered %s -> %s) ...", orders_since, today)
-    open_orders = fetch_open_orders(client, orders_since, today)
+    open_orders = fetch_open_orders(client, orders_since, today, trace=trace)
     open_orders_payload = {
         "window_start": orders_since.isoformat(),
         "window_end": today.isoformat(),
@@ -636,7 +692,8 @@ def run(args: argparse.Namespace) -> int:
         log.info("Fetching instrument metadata for %d unique symbol(s) ...",
                  len(symbols))
         instruments_response = (
-            fetch_instruments(client, symbols) if symbols else {"instruments": []}
+            fetch_instruments(client, symbols, trace=trace) if symbols
+            else {"instruments": []}
         )
         write_data_artefact(run_dir / ARTIFACT_INSTRUMENTS, instruments_response)
         instruments_count = len(instruments_response.get("instruments") or [])
@@ -671,9 +728,6 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("schwab-api", log)
     return run(args)
 
 

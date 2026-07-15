@@ -112,12 +112,25 @@ terminal `run.json` (`status: "in-progress"`, or no manifest). It keys on
 the `run.json` `status` above; an in-flight guard (`--min-age-hours`,
 keyed on the newest write in the dir) protects a long download still in
 flight, and a corrupt/unreadable manifest is UNKNOWN and never deleted.
-`debug_subdirs` is empty — angellist writes no bronze-resident debug
-artefact (the `explore` harness's HAR/trace/click-log land under `/debug`,
-outside bronze) — so a *complete* dump keeps every file, and the engine
-only ever iterates timestamped run dirs, leaving the `angellist-documents/`
-sibling and `angellist.db` untouched. It runs host-side (a file walk needs
-no container), so it can reclaim disk while a `download` is mid-flight.
+`debug_subdirs` names `screenshots/`, the one thing prune strips from a
+*complete* dump: the DOM + screenshot `download --debug` takes of the
+bootstrap landing and of each LP route as it settles. Those say what the SPA
+rendered when an expected op never fired — `captures.jsonl` can only record
+the ops that did — and `load` never reads them, so reclaiming them cannot
+change silver. (The `explore` harness's HAR/trace/click-log are separate and
+land under `/debug`, outside bronze.) Every other file in a complete dump
+survives, and the engine only ever iterates timestamped run dirs, leaving the
+`angellist-documents/` sibling and `angellist.db` untouched. It runs host-side
+(a file walk needs no container), so it can reclaim disk while a `download` is
+mid-flight.
+
+Because `--debug` writes while the browser is still open, it fixes the run
+dir's slug up front and creates the dir before the walk — a run that captures
+nothing (a stale cookie) never reaches the artefact write, and that is exactly
+the run whose screenshots are worth having. Such a dir carries no terminal
+`run.json`, so prune reclaims it as non-complete and `load` skips it: the same
+lifecycle as a crash. `--dry-run` and `--check` write no bronze, so `--debug`
+warns and captures nothing there.
 
 ## Silver
 

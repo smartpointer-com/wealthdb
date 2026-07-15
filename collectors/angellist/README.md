@@ -29,7 +29,7 @@ queryable silver).
 | `download`  | implemented | Headless Camoufox with the injected cookie drives the venture SPA and captures its GraphQL (positions, commitments, the funding-account ledger) + downloads tax documents. Browser-based because `/venture/graphql` needs a JS-signed `x-al-gql` header. Read-only. `--no-documents` is accepted for fleet-wide flag uniformity but not yet honoured — the tax documents are downloaded unconditionally. |
 | `load`      | implemented | Parses bronze `captures.jsonl` → SQLite silver: `offerings` (immutable identity) + `position_snapshots` (event-sourced valuation timeline) / `vehicles` / `portfolio_summary` / `portfolio_timeseries` / `commitments` / `funding_accounts` + `funding_transactions` (dated cash ledger); and parses K-1 CSVs in `angellist-documents/` → `k1_capital_accounts` / `tax_documents`. |
 | `explore`   | implemented | Camoufox + VNC discovery harness (HAR + trace + click log, `--cookies`, `--dump-links`). Kept for re-discovery. |
-| `prune`     | implemented | Reclaims bronze disk: deletes whole non-complete dumps (a crashed / interrupted `download`). angellist writes no bronze-resident debug artefact, so complete dumps are left intact. Runs host-side; `--dry-run` previews. |
+| `prune`     | implemented | Reclaims bronze disk: deletes whole non-complete dumps (a crashed / interrupted `download`), and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. Runs host-side; `--dry-run` previews. |
 
 Gold side is wired: the `wealthdb/internal/silver/angellist/` adapter
 projects this silver into the canonical model and is registered with the
@@ -80,11 +80,12 @@ Override host mounts via env: `ANGELLIST_SECRETS_DIR`,
 manifest carries `status: "in-progress"`, or is absent entirely). Because
 `load` ingests any run dir that holds a `captures.jsonl` regardless of
 manifest, such a partial dir would otherwise keep seeding silver; deleting
-it surfaces on the next `load --force` rebuild. angellist writes no
-bronze-resident debug artefact — the discovery diagnostics (HAR,
-Playwright trace, click log) belong to the separate `explore` verb and
-land under `/debug`, outside bronze — so a *complete* dump has nothing to
-reclaim and is left byte-identical. The K-1/PDF documents at
+it surfaces on the next `load --force` rebuild. From a *complete* dump it
+reclaims one thing: `screenshots/`, the per-route DOM + screenshot
+captures `download --debug` writes; `load` reads only `captures.jsonl` and
+`run.json`, so the dump's inputs are left byte-identical. (The `explore`
+verb's diagnostics — HAR, Playwright trace, click log — are separate and
+land under `/debug`, outside bronze.) The K-1/PDF documents at
 `angellist-documents/` and the silver `angellist.db` sit at the bronze
 root, not inside a run dir, so they are never touched. Runs host-side like
 `load`, and an in-flight guard (`--min-age-hours`, default 1, keyed on

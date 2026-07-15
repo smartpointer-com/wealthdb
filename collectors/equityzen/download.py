@@ -69,7 +69,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, docdedup, envfile
+from collectorkit import bronze, cli, debugcap, docdedup, envfile
 
 from login import FIREFOX_PREFS, _authenticated
 
@@ -120,12 +120,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--timeout", type=int, default=45,
                    help="Per-page GraphQL-capture timeout in seconds. Default: %(default)s.")
     p.add_argument("--debug", action="store_true",
-                   help="Uniform debug gate: keep any debug artefact out of a bronze run "
-                        "dir unless set. download.py writes none today — its diagnostics "
-                        "live externally (`login --screenshot-dir` screenshots and `explore`'s "
-                        "/debug HAR/trace/click log, never the bronze tree) — so this flag "
-                        "currently gates nothing bronze-resident; it exists so the gate is "
-                        "uniform across collectors and any future capture stays off by default.")
+                   help="Save opt-in debug captures INSIDE the bronze run dir under "
+                        "<run>/screenshots/: the portfolio list page's DOM + screenshot "
+                        "(the auth gate, and the Ant stage tabs the walk clicks), plus "
+                        "any offering page whose detail query never fired. Off by "
+                        "default — never read by load, and `prune` reclaims "
+                        "<run>/screenshots/. No-op under --dry-run, which creates no run "
+                        "dir. Distinct from `login --screenshot-dir` and `explore`'s "
+                        "/debug HAR/trace/click log, which write OUTSIDE bronze.")
     cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args(argv)
 
@@ -295,11 +297,6 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
     cli.warn_lookback_ignored(args.lookback, log,
                               what="every offering, position and cash flow")
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under
-        # --debug. External diagnostics live under `login --screenshot-dir`
-        # and `explore`'s /debug today, so download honours nothing here yet.
-        cli.warn_debug_noop("equityzen", log)
     timeout_ms = args.timeout * 1000
 
     envfile.source_env_file(args.env_file)  # aligns mounts; no creds used here
@@ -342,6 +339,26 @@ def main(argv: list[str]) -> int:
     snapshot_at = int(time.time())
     run = bronze.run_dir(args.bronze_dir, bronze.ts_slug())
 
+    # Captures land in the run dir, and --dry-run returns before one is ever
+    # created (prune's contract: no dry-run shell to reclaim), so --debug
+    # degrades to a warning there rather than materialising a dir the walk
+    # promised not to write. Otherwise the first capture creates it — a run
+    # that fails the auth gate never reaches the manifest write, and that is
+    # exactly the run worth seeing. Such a dir has no terminal run.json, so
+    # prune reclaims it as non-complete and load skips it.
+    debug_dir: Path | None = None
+    if args.debug:
+        if args.dry_run:
+            log.warning("--debug: --dry-run creates no run dir; "
+                        "no captures will be written")
+        else:
+            debug_dir = run
+
+    def capture(page, name: str) -> None:
+        """Snapshot a page once it has settled; a no-op unless --debug."""
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, name, log=log)
+
     with Camoufox(
         persistent_context=True, user_data_dir=str(args.profile_dir),
         os="macos", window=(1280, 800), headless=False, humanize=True,
@@ -355,6 +372,11 @@ def main(argv: list[str]) -> int:
         log.info("loading portfolio list")
         page.goto(PORTFOLIO_URL, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
+        # Taken before the auth check, so it survives the SystemExit below:
+        # this one page carries both diagnostics — whether the session landed
+        # authenticated, and whether the Ant stage tabs the sweep clicks are
+        # still shaped as the locators expect.
+        capture(page, "10-portfolio")
         if not _authenticated(page):
             raise SystemExit("Not authenticated — run `./equityzen login` first.")
         stage_bodies: dict[str, dict] = {}
@@ -445,6 +467,13 @@ def main(argv: list[str]) -> int:
                                match=lambda v, did=did: v.get("dealId") == did)
             if cap is None:
                 log.warning("offering %s: getMyInvestmentDetails did not fire; skipping", slug)
+                # Captured only on this path — an offering that yielded no
+                # detail is the one whose DOM is worth reading (an error
+                # panel, a redirect, a changed route). Capturing every
+                # offering would bury it. The slug is sha256(deal id)[:16],
+                # the same surrogate the bronze dirs use, so the capture
+                # names line up with offerings/<slug>/.
+                capture(page, f"20-offering-{slug}-nodetail")
                 offerings_meta.append({"slug": slug, "detail": False}); continue
             bronze.atomic_write_json(run / "offerings" / slug / "detail.json", cap["body"])
             doc_counts = _empty_doc_counts()

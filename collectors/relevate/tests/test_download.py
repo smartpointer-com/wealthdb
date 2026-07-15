@@ -26,6 +26,11 @@ stub fetch. Asserts each document kind behaves per the mode mapping:
     linked;
   * _tally routes an unmapped outcome to 'other', never inflating 'fetched'.
 
+Part 3 — the `--debug` HTTP trace. Asserts the flag defaults off, that the
+request choke point records successes, unexpected statuses and transport
+failures alike, that a credential in a URL never reaches the file, and that
+a dry-run (which walks into a throwaway dir) captures nothing.
+
 Synthetic ids / fileNames / bytes only — no real document ids, names, or
 figures.
 """
@@ -41,7 +46,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import download  # noqa: E402
-from collectorkit import bronze, docdedup  # noqa: E402
+from collectorkit import bronze, debugcap, docdedup  # noqa: E402
 
 
 class _FakeResp:
@@ -428,3 +433,113 @@ def test_fetch_failure_is_error(tmp_path):
     counts = download._empty_doc_counts()
     download._tally(counts, status)
     assert counts["errors"] == 1
+
+
+# ============================================================
+# Part 3 — the --debug HTTP trace (no network)
+# ============================================================
+
+class _FakeManifest:
+    """The slice of Manifest get_and_save_json touches."""
+
+    def __init__(self) -> None:
+        self.errors: list[dict] = []
+        self.files: list[str] = []
+
+    def add_error(self, **kw) -> None:
+        self.errors.append(kw)
+
+    def add_file(self, rel: str) -> None:
+        self.files.append(rel)
+
+
+def _trace(tmp_path):
+    return debugcap.HttpTrace(tmp_path, log=download.logger, enabled=True)
+
+
+def _lines(tmp_path):
+    p = tmp_path / debugcap.SCREENSHOTS_DIR / debugcap.HttpTrace.FILENAME
+    return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+
+def _get_json(tmp_path, session, *, trace):
+    return download.get_and_save_json(
+        session, download.EP_INVESTMENT_OVERVIEW,
+        tmp_path / "accounts" / "investment-overview.json",
+        _FakeManifest(), relative_to=tmp_path, trace=trace)
+
+
+def test_debug_parses_and_defaults_off():
+    base = ["--bronze-dir", "/x"]
+    assert download.parse_args(base).debug is False
+    assert download.parse_args([*base, "--debug"]).debug is True
+
+
+def test_untraced_request_writes_nothing(tmp_path):
+    # The default trace is disabled, so a request records nothing.
+    download.get_and_save_json(
+        _FakeSession(), download.EP_INVESTMENT_OVERVIEW,
+        tmp_path / "accounts" / "investment-overview.json",
+        _FakeManifest(), relative_to=tmp_path)
+    assert not (tmp_path / debugcap.SCREENSHOTS_DIR).exists()
+
+
+def test_trace_records_a_request(tmp_path):
+    _get_json(tmp_path, _FakeSession(), trace=_trace(tmp_path))
+    entry = _lines(tmp_path)[0]
+    assert (entry["method"], entry["status"]) == ("GET", 200)
+    assert entry["url"].endswith(download.EP_INVESTMENT_OVERVIEW)
+    assert entry["headers"]["content-type"] == "application/json"
+
+
+def test_trace_records_a_transport_failure(tmp_path):
+    # The walk records the error in its manifest and carries on; the trace
+    # is what says how long it hung and what it was reaching for.
+    class _Dead:
+        def get(self, url, timeout=None, allow_redirects=None):
+            raise download.RequestException("connection reset")
+
+    assert _get_json(tmp_path, _Dead(), trace=_trace(tmp_path)) is None
+    entry = _lines(tmp_path)[0]
+    assert "status" not in entry          # nothing came back to carry one
+    assert "connection reset" in entry["error"]
+
+
+def test_trace_records_an_unexpected_status(tmp_path):
+    # A session that has quietly died answers 302 to the login page, not an
+    # error — exactly the case bronze alone cannot explain.
+    class _Redirect:
+        def get(self, url, timeout=None, allow_redirects=None):
+            return _FakeResp(302, {})
+
+    assert _get_json(tmp_path, _Redirect(), trace=_trace(tmp_path)) is None
+    assert _lines(tmp_path)[0]["status"] == 302
+
+
+def test_trace_redacts_a_credential_query_param(tmp_path):
+    class _WithToken:
+        def get(self, url, timeout=None, allow_redirects=None):
+            return _FakeResp(200, {"portfolios": []})
+
+    download.get_and_save_json(
+        _WithToken(), download.EP_INVESTMENT_OVERVIEW + "?token=SYNTHETIC_TOKEN",
+        tmp_path / "x.json", _FakeManifest(), relative_to=tmp_path,
+        trace=_trace(tmp_path))
+    assert "SYNTHETIC_TOKEN" not in json.dumps(_lines(tmp_path))
+
+
+def test_dry_run_with_debug_persists_nothing_to_bronze(tmp_path, monkeypatch):
+    # A dry-run walks into a throwaway temp dir, so --debug captures
+    # nothing and the bronze root stays untouched.
+    _patch_session(monkeypatch)
+    bronze_dir = tmp_path / "bronze"
+    bronze_dir.mkdir()
+
+    rc = download.main([
+        "--dry-run", "--debug",
+        "--bronze-dir", str(bronze_dir),
+        "--state-path", str(tmp_path / "state.json"),
+    ])
+
+    assert rc == 0
+    assert list(bronze_dir.rglob("*")) == []

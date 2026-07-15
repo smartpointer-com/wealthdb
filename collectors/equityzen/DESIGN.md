@@ -287,11 +287,16 @@ leaves no shell. The `prune` verb (shared `collectorkit.prune` engine, thin
 `prune.py`) reclaims those non-complete dumps once they are quiescent past
 `--min-age-hours`; a **complete** dump keeps every load input, and a
 statusless legacy manifest (written only at the end pre-change) is treated as
-complete. There are **no** bronze-resident debug artefacts to prune —
-`download` writes none, and the uniform `--debug` gate (default off) exists
-only to keep it that way; all diagnostics live externally under
-`login --screenshot-dir` and the `explore` verb's `/debug/<UTC-ts>/`, never in a
-`<UTC-ts>/` bronze run dir.
+complete. The one thing prune strips from a complete dump is `screenshots/`
+(`debug_subdirs`), where the opt-in `--debug` gate puts its captures: the
+portfolio list page — which carries both the auth verdict and the Ant stage
+tabs the sweep clicks — plus any offering page whose `getMyInvestmentDetails`
+never fired, captured on that path alone so the interesting one is not buried
+under a capture per offering. `load` never reads them, so reclaiming them
+cannot change silver. `--debug` is off by default and a no-op under
+`--dry-run`, which creates no run dir. The remaining diagnostics live
+externally under `login --screenshot-dir` and the `explore` verb's
+`/debug/<UTC-ts>/`.
 
 #### Why no `/equity/<uuid>/` capture (investigated, then removed)
 

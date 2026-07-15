@@ -62,9 +62,9 @@ case "${1:-help}" in
     prune)
         # Delete non-complete dumps (a crashed walk left run.json
         # status="in-progress", or a pre-status run left no run.json) from
-        # the bronze tree. Pure file walk — no browser, no Xvfb. carta
-        # writes no bronze-resident debug artefact, so prune reclaims only
-        # whole non-complete run dirs, never a complete dump's inputs.
+        # the bronze tree, plus screenshots/ (the download --debug
+        # captures) from complete dumps. Pure file walk — no browser, no
+        # Xvfb. A complete dump's load inputs are never touched.
         # Also reachable host-side via the wrapper (the usual path).
         shift
         exec python3 /app/prune.py "$@"
@@ -100,9 +100,10 @@ Subcommands:
               fair_market_values, tax_documents. Pass --force to delete
               the silver DB and rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
-              tree. carta writes no bronze-resident debug artefact, so
-              prune only reclaims whole non-complete run dirs. --dry-run
-              prints the plan first. Usually run host-side via the wrapper.
+              tree, and strip screenshots/ (the download --debug captures)
+              from complete dumps, whose load inputs are never touched.
+              --dry-run prints the plan first. Usually run host-side via
+              the wrapper.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 

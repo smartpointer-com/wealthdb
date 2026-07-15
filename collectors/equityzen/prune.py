@@ -3,15 +3,19 @@
 Prune non-complete dumps from the equityzen bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with equityzen's configuration. equityzen writes **no**
-bronze-resident debug artefact — download.py's only diagnostics live
-externally (``login --screenshot-dir`` screenshots and the ``explore`` verb's
-``/debug/<UTC-ts>/`` HAR/trace/click log), never in a ``<UTC-ts>/`` run
-dir — so ``debug_subdirs`` is empty and the sole reclaim category is:
+prune engine) with equityzen's configuration. Two categories are
+reclaimed:
 
+* ``screenshots/`` from a complete dump — the portfolio-list and
+  detail-less-offering captures ``download --debug`` writes. ``load``
+  never reads them, so reclaiming them cannot change silver. (The other
+  diagnostics — ``login --screenshot-dir`` screenshots and the ``explore``
+  verb's ``/debug/<UTC-ts>/`` HAR/trace/click log — live outside bronze,
+  and prune never sees them.)
 * whole run dirs that are not complete dumps: ``run.json`` is missing
   (the walk crashed before writing the in-progress marker or the terminal
-  manifest) or its ``status`` is anything other than ``"complete"`` (an
+  manifest, or ``--debug`` captured a page and the walk then failed the
+  auth gate) or its ``status`` is anything other than ``"complete"`` (an
   ``"in-progress"`` marker left by a crashed walk). ``load`` would
   otherwise keep re-ingesting whatever partial ``investments.json`` /
   ``offerings/`` such a dir holds; after pruning one, the next
@@ -27,12 +31,11 @@ very end, after every artefact), so a statusless-but-readable manifest is
 classified COMPLETE and keeps its load inputs. An unreadable or corrupt
 ``run.json`` is UNKNOWN and never deleted.
 
-Because ``debug_subdirs`` is empty, a COMPLETE dump has nothing removed —
-its load inputs (``investments.json``, ``offerings/*/detail.json``, and
-the ``documents/<deal-slug>/*.pdf`` / ``.zip`` blobs parsed by
-statements.py) are structurally protected: the engine only ever touches
-the configured debug subdirs of complete dumps (there are none) and whole
-non-complete run dirs.
+A COMPLETE dump's load inputs (``investments.json``,
+``offerings/*/detail.json``, and the ``documents/<deal-slug>/*.pdf`` /
+``.zip`` blobs parsed by statements.py) are structurally protected: the
+engine only ever touches the configured debug subdirs of complete dumps —
+``screenshots/`` alone — and whole non-complete run dirs.
 
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
@@ -48,7 +51,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -63,7 +66,8 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),          # no bronze-resident debug artefacts
+    # Where `download --debug` puts its captures.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,  # manifest_name defaults to "run.json"
 )
 

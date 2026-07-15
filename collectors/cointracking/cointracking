@@ -79,12 +79,12 @@ Subcommands:
                       rate-limit ceiling.
   prune [args...]     Reclaim bronze disk: delete whole non-complete
                       dumps (a crashed / in-progress walk) from the
-                      data dir (\$HOST_DATA). Complete dumps and their
-                      load inputs are untouched; cointracking writes no
-                      bronze-resident debug artefacts. Runs host-side
-                      (no image deps). --dry-run prints the plan;
-                      --min-age-hours N (default 1) protects a walk
-                      still in flight.
+                      data dir (\$HOST_DATA), and strip screenshots/
+                      (the download --debug captures) from complete
+                      dumps, whose load inputs are untouched. Runs
+                      host-side (no image deps). --dry-run prints the
+                      plan; --min-age-hours N (default 1) protects a
+                      walk still in flight.
   recompress [args..] One-time backlog sweep: replace plain
                       cu_<id>/*.csv inside complete dumps with
                       sha256-verified .csv.zst twins — the form

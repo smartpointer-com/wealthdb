@@ -3,14 +3,15 @@
 Prune non-complete dumps from the ubs-web bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with ubs-web's configuration. ubs-web writes **no**
-debug artefact inside a bronze run dir — its troubleshooting
-diagnostics (per-landmark screenshots, the Playwright trace bundle,
-the login QR PNG) all land in the external ``--screenshot-dir`` /
-``--trace`` / ``--qr-png`` outputs (the ``/debug`` mount), never in
-bronze. So ``debug_subdirs`` is empty and the only thing ``prune``
-reclaims is:
+prune engine) with ubs-web's configuration. Two things are reclaimed:
 
+* ``screenshots/`` inside a complete dump — the landmark DOM +
+  screenshot captures ``download --debug`` writes. ``load`` never reads
+  them, so reclaiming them cannot change silver. (The rest of ubs-web's
+  troubleshooting output — per-landmark screenshots, the Playwright
+  trace bundle, the login QR PNG — stays outside bronze, in the
+  external ``--screenshot-dir`` / ``--trace`` / ``--qr-png`` outputs
+  under the ``/debug`` mount, where prune never sees it.)
 * whole run dirs that are not complete dumps — a ``--dry-run`` shell
   (``status: "dry-run"``, only a manifest and no exports), or a walk
   that crashed before finalising (``status: "in-progress"``, or no
@@ -34,9 +35,10 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
 so a long multi-window backfill is protected. ``--dry-run`` prints
 the plan without removing anything. The only paths ever deleted are
-whole non-complete run dirs; load inputs of complete dumps
-(``run.json``, ``positions/``, ``transactions/``, ``documents/``) and
-non-run entries at the bronze root (the silver DB) are never touched.
+whole non-complete run dirs and ``screenshots/`` subdirs; load inputs
+of complete dumps (``run.json``, ``positions/``, ``transactions/``,
+``documents/``) and non-run entries at the bronze root (the silver DB)
+are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -46,7 +48,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -69,7 +71,8 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),            # no bronze-resident debug artefacts
+    # Where `download --debug` puts its landmark captures.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
 )
 

@@ -244,10 +244,10 @@ did this run cover".
 Both tiers wire the one shared group,
 [`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
 `add_standard_args(parser, verb=…)` + `resolve_standard(args, …)`, so a
-standard optional flag always parses cleanly — it never argparse-rejects —
-and a flag a collector doesn't yet honour degrades to a `warn_not_implemented`
-warning (plus a `TODO` in that collector's code and docs), never a silent
-no-op or a stack trace.
+standard optional flag always parses cleanly — it never argparse-rejects.
+Every standard flag is honoured everywhere it can be. Where a source
+structurally cannot narrow a fetch, the collector says so at runtime
+(`warn_lookback_ignored`) rather than ignoring the flag in silence.
 
 **Deliberate exceptions** (recorded so they read as intentional, not drift):
 

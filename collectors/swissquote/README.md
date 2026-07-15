@@ -340,7 +340,7 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 | `--dry-run` | off | Skip exports; only validate session and selectors. Returns before creating a run dir, so a dry run leaves no bronze artefacts (and no `run.json`) behind. |
 | `--screenshot-dir` | _unset_ | Write a screenshot at each landmark for offline debugging. Writes outside bronze (the `/debug` mount). |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. |
-| `--debug` | off | Uniform debug gate: no debug artefact ever lands in a bronze run dir unless set. Swissquote's diagnostics already write outside bronze (gated on `--screenshot-dir` / `--trace`), so today this flag gates nothing new — it keeps the flag uniform across collectors and keeps any future bronze-resident capture opt-in. |
+| `--debug` | off | Save DOM + screenshot captures INSIDE the bronze run dir, under `<run>/screenshots/`, at the three scraped landmarks (`10_portfolio_page`, `20_transactions_page`, `31_documents_page_wide`). Also keeps a crashed run dir instead of removing it, so the captures survive the failure they explain. `load` never reads them; `prune` reclaims them. No-op under `--dry-run` (no run dir exists). Distinct from `--screenshot-dir` / `--trace`, which write outside bronze. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Caveats
@@ -478,11 +478,12 @@ never write code that handles "if column X exists".
 a run dir with no `run.json`, or one whose `status` is anything other
 than `"complete"` (an `"in-progress"` marker from a walk that crashed
 past the download's own cleanup trap — a hard kill, OOM, or power
-loss). Swissquote writes no bronze-resident debug artefacts (its
-screenshots, DOM dumps, and trace bundles all land in the external
-`--screenshot-dir` / `/debug` mount), so unlike some collectors there
-is no `screenshots/`-style category to reclaim; only whole
-non-complete dumps.
+loss), or one a `--debug` run deliberately kept so its captures would
+survive the crash they explain. From a complete dump it also strips
+`screenshots/` — the landmark DOM + screenshot captures `download
+--debug` writes, which `load` never reads. (The `--screenshot-dir` /
+`--trace` diagnostics are separate: they land in the external `/debug`
+mount, so prune never sees them.)
 
 Load inputs of complete dumps — `run.json`, `accounts.json`,
 `positions.xls`, `position_details.json`, `list_of_assets.xls`, the

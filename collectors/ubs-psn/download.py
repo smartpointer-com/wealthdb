@@ -35,7 +35,7 @@ from pathlib import Path
 
 import paramiko
 
-from collectorkit import bronze, cli, envfile
+from collectorkit import bronze, cli, debugcap, envfile
 
 # Trusted host-key SHA-256 fingerprints are loaded from a sibling file
 # rather than embedded in the source, so updates to UBS's published keys
@@ -156,11 +156,18 @@ def parse_args() -> argparse.Namespace:
                    help="Connect, authenticate and verify host key, then "
                         "exit without touching any files.")
     p.add_argument("--debug", action="store_true",
-                   help="Capture debug artefacts into the bronze run dir. "
-                        "An SFTP pull produces none, so today this gates "
-                        "nothing; the flag exists so the fleet's `--debug` "
-                        "convention is uniform. (For wire-level tracing use "
-                        "-v/--verbose, which writes to stderr, not bronze.)")
+                   help="Capture debug artefacts into the bronze run dir "
+                        "(default off): <run>/screenshots/sftp-listing.txt, "
+                        "recording the accepted host-key fingerprint and "
+                        "what each download/<ORDERTYPE>/ dir was actually "
+                        "offering — which is what explains a pull that "
+                        "brought back less than expected. Pure observation: "
+                        "it lists, never fetches, and never changes what is "
+                        "downloaded. A run that pulls nothing keeps its "
+                        "shell (and the listing) for `prune` to reclaim "
+                        "rather than discarding it unseen. `load` never "
+                        "reads it. (For wire-level tracing use -v/--verbose, "
+                        "which writes to stderr, not bronze.)")
     cli.add_standard_args(p, verb="download", full_history=True)
     return p.parse_args()
 
@@ -211,6 +218,66 @@ def connect(args: argparse.Namespace) -> paramiko.SSHClient:
         timeout=30,
     )
     return client
+
+
+def _host_key_fingerprint(client: paramiko.SSHClient) -> str:
+    """The SHA-256 fingerprint of the key the connected server presented —
+    read back off the live transport, so it is by construction the key
+    `FingerprintPolicy` accepted for this session."""
+    transport = client.get_transport()
+    key = transport.get_remote_server_key() if transport is not None else None
+    return sha256_fingerprint(key) if key is not None else "unknown"
+
+
+def _listing_line(sftp: paramiko.SFTPClient, remote: str) -> str:
+    """One ``download/<ORDERTYPE>/`` dir as the server presents it.
+
+    An absent dir is not an error — that is how an order type the customer
+    is not provisioned for looks, and recording which ones are absent is
+    part of the diagnostic."""
+    try:
+        entries = sftp.listdir_attr(remote)
+    except FileNotFoundError:
+        return f"{remote}/: absent (order type not provisioned)"
+    except OSError as e:
+        return f"{remote}/: listing failed: {e}"
+    if not entries:
+        return f"{remote}/: empty (nothing queued)"
+    return f"{remote}/: " + ", ".join(
+        f"{a.filename} ({a.st_size} bytes)"
+        for a in sorted(entries, key=lambda a: a.filename))
+
+
+def capture_remote_listing(sftp: paramiko.SFTPClient,
+                           client: paramiko.SSHClient, run_dir: Path) -> None:
+    """Record what the server was offering, under ``--debug``.
+
+    `download_all` stats one exact path per order type, so a queued file
+    under an unexpected name is indistinguishable from nothing queued. The
+    listing is what tells those apart, which is why it is worth capturing
+    at all.
+
+    **Pure observation.** It lists and never reads a file: UBS deletes each
+    zip server-side the moment it is downloaded and there is no re-fetch
+    (CLAUDE.md), so a capture that fetched would silently consume the very
+    data it was documenting. `download_all` never consults this listing —
+    it still decides on its own `stat` — so a pull fetches exactly the same
+    files with and without ``--debug``.
+
+    Runs BEFORE the pull, for two reasons: the listing must show the zips
+    while they still exist, and a capture that failed can then only cost a
+    run, never strand a downloaded-but-unfinalised zip.
+    """
+    try:
+        lines = [f"host-key: SHA256:{_host_key_fingerprint(client)}", ""]
+        lines += [_listing_line(sftp, f"download/{ot}") for ot in ORDER_TYPES]
+    except Exception as e:  # noqa: BLE001 - any paramiko error, never fatal
+        # A diagnostic that breaks the run it is diagnosing is worse than no
+        # diagnostic — and here that run is holding an irreplaceable pull.
+        log.warning("--debug: SFTP listing capture failed: %s", e)
+        return
+    debugcap.capture_text(run_dir, "sftp-listing.txt",
+                          "\n".join(lines) + "\n", log=log)
 
 
 def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
@@ -288,9 +355,6 @@ def main() -> int:
     args.client_id = envfile.resolve_credential(
         args.client_id, "UBS_PSN_CLIENT_ID", "--client-id")
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("ubs-psn", log)
     cli.warn_lookback_ignored(args.lookback, log,
                               what="whatever PSN data UBS currently has queued")
 
@@ -311,6 +375,10 @@ def main() -> int:
         log.info("SFTP session opened.")
 
         if args.dry_run:
+            # Export nothing (root CLAUDE.md §2): no run dir is minted, so
+            # --debug has nowhere to capture into. Resurrecting a shell just
+            # to hold a listing would leave load/prune a dump to reason
+            # about, which is a worse trade than capturing nothing.
             log.info("Dry run: skipping downloads.")
             return 0
 
@@ -318,24 +386,36 @@ def main() -> int:
         run_dir = args.bronze_dir / run_ts
         run_dir.mkdir(parents=True, exist_ok=False)
         # Forward status marker (fleet convention): "in-progress" at run-dir
-        # creation, atomically overwritten with "complete" once the pull
-        # finishes. This is additive metadata only — it never gates the
+        # creation, atomically overwritten with a terminal status once the
+        # pull finishes. This is additive metadata only — it never gates the
         # sftp.get data path, and prune's has-zip guard, not this field, is
         # what protects a crashed-but-non-empty dump from deletion.
         bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
 
+        if args.debug:
+            capture_remote_listing(sftp, client, run_dir)
+
         downloaded, empty = download_all(sftp, run_dir, verbose=args.verbose)
         log.info("Done. %d zip(s) downloaded, %d order type(s) had nothing.",
                  downloaded, empty)
-        if downloaded == 0:
-            # Nothing was queued: the run dir holds only the in-progress
-            # marker (no irreplaceable data), so discard the whole shell.
-            # rmtree, not rmdir — the run.json makes the dir non-empty.
+        if downloaded == 0 and not args.debug:
+            # Nothing was queued and nothing was captured: the run dir holds
+            # only the in-progress marker (no irreplaceable data), so discard
+            # the whole shell. rmtree, not rmdir — the run.json makes the dir
+            # non-empty.
             shutil.rmtree(run_dir)
         else:
+            # status="empty" for a pull that found nothing but captured a
+            # listing: the walk finished, so "in-progress" would be a lie,
+            # yet a zip-less dump is not "complete" either. Being non-
+            # complete is what lets prune reclaim the shell once quiescent,
+            # taking the listing with it — the normal debug-artefact
+            # lifecycle. Discarding it here instead would make the capture
+            # unreachable in exactly the case it exists to explain.
             bronze.atomic_write_json(
                 run_dir / "run.json",
-                {"status": "complete", "downloaded": downloaded, "empty": empty},
+                {"status": "complete" if downloaded else "empty",
+                 "downloaded": downloaded, "empty": empty},
             )
         return 0
     finally:

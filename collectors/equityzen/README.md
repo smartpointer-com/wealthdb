@@ -46,7 +46,7 @@ silver DB.
 | `login`    | **implemented** | Headless CLI flow: headed Camoufox under Xvfb (no VNC), email/password (`submitLogIn`) + stdin TOTP prompt → Submit-button click (`loginTotp`), persistent profile. Renews silently if the session is still valid. Verified end-to-end. |
 | `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; each offering's document PDF blobs (capital-account statements, K-1s) are fetched via the session by default, with a `--no-documents` opt-out. **Download-avoidant** (`collectorkit.docdedup`), chosen per document class: parsed / restatement-prone documents (statements, K-1s, reports) are always fetched and content-compared (a restated one is kept, an unchanged one hardlinked for disk reclaim), while executed-once legal / offering documents (an explicit, curated allow-list) are hardlinked in rather than re-fetched. `--documents-force` bypasses it. |
 | `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` deletes silver + rebuilds from bronze). |
-| `prune`    | **implemented** | Reclaims bronze disk via the shared `collectorkit.prune` engine. Deletes non-complete dumps (crashed downloads with no terminal `run.json`); keeps every load input. No bronze-resident debug artefacts exist, so that is the sole target. `--dry-run` previews; `--min-age-hours` guards an in-flight download. |
+| `prune`    | **implemented** | Reclaims bronze disk via the shared `collectorkit.prune` engine. Deletes non-complete dumps (crashed downloads with no terminal `run.json`) and strips `screenshots/` (the `download --debug` captures) from complete dumps; keeps every load input. `--dry-run` previews; `--min-age-hours` guards an in-flight download. |
 
 The gold adapter is registered with the gold engine and projects this
 silver into the canonical `accounts` / `instruments` / `positions` /
@@ -114,11 +114,12 @@ walk that crashed before writing its terminal `run.json` (its
 `status` is `"in-progress"`, or the manifest is absent entirely).
 `load` would otherwise keep re-ingesting the partial `investments.json`
 / `offerings/` such a dir holds; deleting one surfaces on the next
-`load --force` rebuild. There is nothing else to reclaim: `download`
-writes **no** bronze-resident debug artefact (its diagnostics live
-externally — `login --screenshot-dir` screenshots and the `explore` verb's
-`/debug` HAR/trace/click log), so `debug_subdirs` is empty and a
-complete dump has nothing pruned. Every load input is therefore
+`load --force` rebuild. From a complete dump it reclaims one thing:
+`screenshots/`, the DOM + screenshot captures `download --debug` writes
+(the portfolio list page, and any offering whose detail query never fired).
+`load` never reads them. (The other diagnostics live outside bronze —
+`login --screenshot-dir` screenshots and the `explore` verb's `/debug`
+HAR/trace/click log.) Every load input is therefore
 untouched — the `investments.json`, `offerings/*/detail.json`, and the
 `documents/<deal-slug>/*.pdf` / `.zip` blobs of a complete dump (each either
 freshly fetched or hardlinked from a prior run by `collectorkit.docdedup`)

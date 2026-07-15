@@ -2,12 +2,13 @@
 Unit tests for prune.py.
 
 tmp_path bronze trees, synthetic artefacts only (no real account
-tokens / IBANs / balances). ubs-web writes no bronze-resident debug
-artefact (screenshots + traces go to the external --screenshot-dir),
-so ``debug_subdirs`` is empty and prune's only deletion category is
-whole non-complete run dirs. Covers:
+tokens / IBANs / balances). ``debug_subdirs`` names ``screenshots/``
+(the ``download --debug`` landmark captures), so prune has two deletion
+categories: that subdir from a complete dump, and whole non-complete
+run dirs. (The --screenshot-dir / --trace diagnostics land outside
+bronze, where prune never sees them.) Covers:
 
-  * complete dump: nothing pruned, every load input kept
+  * complete dump: screenshots/ reclaimed, every load input kept
   * non-complete dumps (no run.json / status="in-progress" /
     status="dry-run") deleted whole once quiescent
   * the ubs-web divergence: a statusless legacy manifest is COMPLETE
@@ -57,10 +58,11 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 
 def make_dump(root: Path, slug: str, manifest=_DEFAULT,
-              age_s: float = 0.0) -> Path:
+              age_s: float = 0.0, screenshots: bool = True) -> Path:
     """Build a synthetic ubs-web bronze run dir with the standard load
     inputs (positions/ consolidated + per-portfolio CSVs, transactions/
-    cash CSV + MT940, documents/ PDF).
+    cash CSV + MT940, documents/ PDF) plus the `--debug` screenshots/
+    capture dir.
 
     ``manifest`` controls run.json: the default sentinel writes a
     terminal ``complete`` manifest; ``None`` writes no run.json at all
@@ -83,6 +85,10 @@ def make_dump(root: Path, slug: str, manifest=_DEFAULT,
      ).write_text(":20:SYNTHETIC\n")
     (d / "documents").mkdir()
     (d / "documents" / "0badc0de0badc0de.pdf").write_bytes(b"%PDF-1.4 fake")
+    if screenshots:
+        (d / "screenshots").mkdir()
+        (d / "screenshots" / "10-home.html").write_text("<html>home</html>")
+        (d / "screenshots" / "10-home.png").write_bytes(b"\x89PNG fake")
     if manifest is _DEFAULT:
         manifest = {"status": "complete", "dry_run": False}
     if manifest is not None:
@@ -114,13 +120,22 @@ def run_main(root: Path, *extra: str) -> int:
 
 
 # ============================================================
-# Complete dumps: nothing pruned, load inputs kept
+# Complete dumps: screenshots reclaimed, load inputs kept
 # ============================================================
 
-def test_complete_dump_fully_kept(tmp_path):
-    # debug_subdirs is empty, so a complete dump has nothing to prune —
-    # the whole dir and every load input survive.
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
+    # screenshots/ is the only non-load-input a run dir holds, so it is
+    # the only thing a complete dump gives up.
     d = make_dump(tmp_path, OLD_TS)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert not (d / "screenshots").exists()
+    assert_inputs_present(d)
+
+
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so there is no capture dir.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert_inputs_present(d)
@@ -172,9 +187,10 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     # A run.json with no `status` key predates the status lifecycle.
     # ubs-web wrote run.json only once, at the end of a real walk, so a
     # statusless manifest with dry_run:false means the dump finished:
-    # classify COMPLETE, keep its load inputs.
+    # classify COMPLETE, keep its load inputs. Such a dump carries no
+    # screenshots — --debug wrote none back then.
     d = make_dump(tmp_path, OLD_TS, manifest={"dry_run": False},
-                  age_s=STALE_S)
+                  age_s=STALE_S, screenshots=False)
     run_main(tmp_path)
     assert d.exists()
     assert_inputs_present(d)
@@ -308,11 +324,17 @@ def test_validate_target_accepts_whole_run_dir(tmp_path):
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+
+
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / "historic", tmp_path)
-    # debug_subdirs is empty, so even a real load-input subdir is refused
-    # — prune never targets anything inside a run dir here.
+    # screenshots/ is the only targetable subdir, so a load-input subdir
+    # is still refused.
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / OLD_TS / "positions", tmp_path)
     with pytest.raises(SystemExit):

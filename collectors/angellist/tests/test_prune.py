@@ -1,16 +1,16 @@
 """
 Unit tests for prune.py.
 
-tmp_path bronze trees over angellist's layout. angellist writes NO
-bronze-resident debug artefact (debug_subdirs is empty — the browser
-diagnostics live in the separate `explore` verb, outside bronze), so
-prune only ever removes the *second* category: whole run dirs that are
-not complete dumps. A complete dump is therefore left entirely intact.
+tmp_path bronze trees over angellist's layout. Two categories are
+removed: `screenshots/` (the `download --debug` per-route captures) from
+a complete dump, and whole run dirs that are not complete dumps. The
+`explore` verb's diagnostics live outside bronze and prune never sees
+them.
 
 Covers:
-  * complete dump (status="complete"): left entirely intact — no
-    debug subdirs to prune, and its load inputs (captures.jsonl,
-    run.json) plus the identity-convenience viewer.json all survive
+  * complete dump (status="complete"): screenshots/ reclaimed, load
+    inputs (captures.jsonl, run.json) plus the identity-convenience
+    viewer.json all survive
   * statusless run.json is a pre-`status` complete dump (download.py
     historically wrote run.json only at the end): classified COMPLETE,
     kept whole
@@ -67,18 +67,25 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
               run_json: bool = True, captures: bool = True,
-              viewer: bool = True, age_s: float = 0.0) -> Path:
+              viewer: bool = True, screenshots: bool = True,
+              age_s: float = 0.0) -> Path:
     """Build a bronze run dir with angellist's artefacts. ``status=None``
     with ``run_json=True`` writes a statusless (pre-`status`) manifest.
-    ``age_s`` backdates every file/dir mtime (and the run dir's own) to
-    now-age_s, so the write-activity guard sees an abandoned dump; the
-    default (0) leaves it fresh."""
+    ``screenshots`` adds the `--debug` capture dir. ``age_s`` backdates
+    every file/dir mtime (and the run dir's own) to now-age_s, so the
+    write-activity guard sees an abandoned dump; the default (0) leaves it
+    fresh."""
     d = root / slug
     d.mkdir(parents=True)
     if captures:
         (d / "captures.jsonl").write_text(CAPTURE_LINE)
     if viewer:
         (d / "viewer.json").write_text(VIEWER_BLOB)
+    if screenshots:
+        shots = d / "screenshots"
+        shots.mkdir()
+        (shots / "10-bootstrap.html").write_text("<html>bootstrap</html>")
+        (shots / "20-acct1-portfolio.png").write_bytes(b"\x89PNG fake")
     if run_json:
         payload = ({"status": status} if status is not None
                    else {"source": "angellist", "ops": {}, "had_errors": False})
@@ -99,24 +106,35 @@ def run_main(root: Path, *extra: str) -> int:
 
 
 # ============================================================
-# Complete dumps: left entirely intact (no debug subdirs)
+# Complete dumps: screenshots reclaimed, load inputs kept
 # ============================================================
 
-def test_complete_dump_untouched(tmp_path):
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     d = make_dump(tmp_path, OLD_TS, status="complete")
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert (d / "captures.jsonl").exists()
     assert (d / "run.json").exists()
     assert (d / "viewer.json").exists()
 
 
-def test_fresh_complete_dump_untouched(tmp_path):
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so there is no capture dir.
+    d = make_dump(tmp_path, OLD_TS, status="complete", screenshots=False)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert (d / "captures.jsonl").exists()
+    assert (d / "run.json").exists()
+
+
+def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     # A finalised run.json means the walk is over; freshness is irrelevant
-    # to a complete dump (the age guard protects non-complete dumps only).
-    # With no debug subdirs, prune leaves it exactly as-is.
+    # to a complete dump (the age guard protects non-complete dumps only),
+    # so its captures are reclaimable however recently written.
     d = make_dump(tmp_path, fresh_slug(age_s=60), status="complete")
     assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
     assert d.exists()
     assert (d / "captures.jsonl").exists()
 
@@ -125,9 +143,11 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     # A run.json with no `status` key predates the status lifecycle.
     # download.py historically wrote run.json only once (at the end, after
     # viewer.json + captures.jsonl), so its presence means the dump
-    # finished: classify COMPLETE, keep it whole. (New walks always carry
-    # a status key, so this branch only ever sees pre-change dumps.)
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
+    # finished: classify COMPLETE, keep its inputs. (New walks always carry
+    # a status key, so this branch only ever sees pre-change dumps — which
+    # is also why they carry no screenshots: --debug wrote none back then.)
+    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
+                  screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert (d / "captures.jsonl").exists()
@@ -287,6 +307,12 @@ def test_validate_target_accepts_run_dir(tmp_path):
     # With no debug_subdirs, the only valid target shape is a whole run dir.
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

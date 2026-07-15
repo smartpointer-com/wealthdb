@@ -2,13 +2,14 @@
 Unit tests for prune.py (viac).
 
 tmp_path bronze trees, synthetic fixtures only (placeholder portfolio
-numbers / doc ids / bytes — no real holdings or account data). viac is
-REST-only and writes no bronze-resident debug artefacts, so
-``debug_subdirs`` is empty: a *complete* dump is left byte-identical and
-the only thing prune removes is a whole *non-complete* run dir. Covers:
+numbers / doc ids / bytes — no real holdings or account data). viac drives
+no browser, so its only bronze-resident debug artefact is the HTTP trace
+`download --debug` writes under <run>/screenshots/ (``debug_subdirs``);
+prune reclaims that plus whole *non-complete* run dirs, and never a load
+input. Covers:
 
   * complete dump (status="complete" or a legacy statusless manifest):
-    every load input kept, nothing deleted
+    every load input kept, only a --debug trace reclaimed
   * non-complete dumps (absent run.json / status="in-progress" /
     status="dry-run" / legacy statusless dry_run:true) deleted whole
     once quiescent
@@ -58,13 +59,16 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, *, status: str | None = "complete",
               dry_run: bool = False, run_json: bool = True,
+              screenshots: bool = False,
               pdf_link_from: Path | None = None, age_s: float = 0.0) -> Path:
     """Build a synthetic viac bronze run dir with representative load
     inputs. ``status=None`` writes a statusless (legacy) manifest;
-    ``run_json=False`` writes none at all. ``pdf_link_from`` hard-links
-    the document PDF from another dump (mirrors fetch_pdf's os.link
-    dedup). ``age_s`` backdates every mtime so the write-activity guard
-    sees an abandoned dump; the default (0) leaves it fresh."""
+    ``run_json=False`` writes none at all. ``screenshots`` adds the
+    ``--debug`` HTTP trace, off by default to mirror a download without
+    ``--debug``. ``pdf_link_from`` hard-links the document PDF from another
+    dump (mirrors fetch_pdf's os.link dedup). ``age_s`` backdates every
+    mtime so the write-activity guard sees an abandoned dump; the default
+    (0) leaves it fresh."""
     d = root / slug
     (d / "wealth").mkdir(parents=True)
     _write_json(d / "wealth" / "portfolio-inventory.json",
@@ -88,6 +92,10 @@ def make_dump(root: Path, slug: str, *, status: str | None = "complete",
         os.link(pdf_link_from, pdf)
     else:
         pdf.write_bytes(b"%PDF-1.4 synthetic")
+    if screenshots:
+        (d / "screenshots").mkdir()
+        (d / "screenshots" / "http-trace.jsonl").write_text(
+            '{"method": "GET", "url": "https://x.invalid/a", "status": 200}\n')
     if run_json:
         manifest: dict = {"timestamp": slug, "dry_run": dry_run,
                           "documents": {"total": 1}}
@@ -128,13 +136,22 @@ def _load_inputs_present(d: Path) -> bool:
 
 
 # ============================================================
-# Complete dumps: nothing deleted, inputs kept
+# Complete dumps: inputs kept, the --debug trace reclaimed
 # ============================================================
 
 def test_complete_dump_untouched(tmp_path):
     d = make_dump(tmp_path, OLD_TS, status="complete")
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert _load_inputs_present(d)
+
+
+def test_complete_dump_debug_trace_pruned_inputs_kept(tmp_path):
+    # The --debug HTTP trace is a diagnostic, not a load input, so prune
+    # reclaims it while every artefact beside it survives.
+    d = make_dump(tmp_path, OLD_TS, status="complete", screenshots=True)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
     assert _load_inputs_present(d)
 
 
@@ -328,12 +345,17 @@ def test_validate_target_accepts_run_dir(tmp_path):
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
+def test_validate_target_accepts_debug_subdir(tmp_path):
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+
+
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / "manual", tmp_path)
     with pytest.raises(SystemExit):
-        # A subdir of a run dir is never a valid whole-dir target
-        # (debug_subdirs is empty), so it must be refused.
+        # A load-input subdir of a run dir is never a valid target — only
+        # the screenshots/ debug subdir is — so it must be refused.
         prune.validate_target(tmp_path / OLD_TS / "documents", tmp_path)
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)

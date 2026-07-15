@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Prune non-complete dumps from the ubs-psn bronze tree.
+Prune debug artefacts and non-complete dumps from the ubs-psn bronze
+tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with ubs-psn's configuration. Unlike a browser collector,
-ubs-psn writes **no** bronze-resident debug artefact, and its run dirs
-hold only ``<ORDERTYPE>.zip`` files — so this verb is deliberately
-narrow: the only thing it can ever reclaim is a **zip-less crash shell**
-(a run dir minted before the first file arrived, then abandoned).
+prune engine) with ubs-psn's configuration. A run dir holds
+``<ORDERTYPE>.zip`` files and, only under ``download --debug``, a
+``screenshots/sftp-listing.txt`` capture of what the server was offering
+— so this verb is deliberately narrow: it reclaims that listing, and a
+**zip-less shell** (a run dir minted before the first file arrived and
+then abandoned, or a ``--debug`` pull that found nothing queued).
 
 The scope is narrow because ubs-psn's zips are **irreplaceable**: UBS
 deletes each per-order-type zip from its server the moment it is
@@ -20,13 +22,16 @@ a deletion candidate — even when a crash left ``run.json`` at
 short-circuits **before** the ``status`` field is consulted; only a truly
 zip-less shell defers to the status lifecycle.
 
-``debug_subdirs`` is empty (nothing to reclaim from a complete dump), so
-the sole deletion path is a whole zip-less run dir once it is quiescent.
-In practice this is a safety-first near-no-op — ``download.py`` already
-removes a run dir that received zero files, and ``--dry-run`` creates no
-run dir — but the verb exists so a fleet-wide ``prune`` is guaranteed
-never to delete a ubs-psn ``load`` input, and so its help and behaviour
-match every other collector's.
+``debug_subdirs`` nominates ``screenshots/`` — the ``--debug`` listing,
+never a ``load`` input, so reclaiming it from a complete dump leaves
+silver byte-identical. The zips themselves are the load inputs and are
+never touched. Beyond that the sole deletion path is a whole zip-less run
+dir once it is quiescent: a crash shell, or the ``status="empty"`` dump a
+``--debug`` pull leaves when nothing was queued (kept only so its listing
+is inspectable; a pull without ``--debug`` removes that shell itself).
+``--dry-run`` creates no run dir at all. The verb exists so a fleet-wide
+``prune`` is guaranteed never to delete a ubs-psn ``load`` input, and so
+its help and behaviour match every other collector's.
 
 An unreadable or corrupt ``run.json`` is UNKNOWN and never deleted. An
 in-flight guard skips non-complete shells written within
@@ -41,7 +46,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -61,18 +66,22 @@ def _is_complete(run_dir, meta):
     if any(run_dir.glob("*.zip")):
         return prune.COMPLETE, "contains PSN zip(s) (irreplaceable; keep)"
     # Only a zip-less shell reaches here — a crash before the first file
-    # landed, or an abandoned in-progress dir. There is nothing to keep, so
-    # defer to the status lifecycle: a "complete" marker keeps it, anything
-    # else (in-progress / statusless / no manifest) is NON_COMPLETE. The
-    # legacy_complete predicate echoes the has-zip invariant above as a
-    # belt-and-braces guard (it is False here since this branch is zip-less).
+    # landed, an abandoned in-progress dir, or the status="empty" shell a
+    # --debug pull leaves when nothing was queued. No load input is at
+    # stake, so defer to the status lifecycle: a "complete" marker keeps it,
+    # anything else (empty / in-progress / statusless / no manifest) is
+    # NON_COMPLETE. The legacy_complete predicate echoes the has-zip
+    # invariant above as a belt-and-braces guard (it is False here since
+    # this branch is zip-less).
     return prune.status_classification(
         meta, run_dir=run_dir,
         legacy_complete=lambda rd, m: any(rd.glob("*.zip")))
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),                 # no bronze-resident debug artefacts
+    # `download --debug`'s SFTP listing, which debugcap lands under this
+    # subdir fleet-wide. The zips beside it are the load inputs.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
     manifest_name="run.json",         # read for status + UNKNOWN-on-corrupt
     dump_label="dump",

@@ -139,27 +139,33 @@ loader-semantics changes a wipe is the only consistent path.
 │   ├── ZAH.zip                       MT535 holdings
 │   ├── Z40.zip                       MT940 cash balances + movements
 │   ├── …                             one <ORDERTYPE>.zip per queued type
-│   └── HAC.zip / PTK.zip             EBICS admin zips (raw bronze; not
-│                                     load inputs, but never debug artefacts)
+│   ├── HAC.zip / PTK.zip             EBICS admin zips (raw bronze; not
+│   │                                 load inputs, but never debug artefacts)
+│   └── screenshots/                  --debug only: sftp-listing.txt (what
+│                                     the server offered); never a load input
 ├── 20260525T120000Z/
 │   └── …
 └── ubs-psn.db                        silver SQLite (default location)
 ```
 
-A run dir is a flat set of `<ORDERTYPE>.zip` files — no subdirs, no
-debug artefacts. Every `Z*.zip` is a `load` input (the loader globs
-`Z*.zip` for both its XML and MT passes); the non-`Z` admin zips
-(`HAC`/`PTK`) are raw bronze the loader ignores but that `prune` still
-keeps. The PSN zips are irreplaceable: UBS deletes each file
-server-side on a successful download, so a re-run cannot recover it.
+A run dir is a flat set of `<ORDERTYPE>.zip` files, plus a
+`screenshots/` dir under `--debug` alone. Every `Z*.zip` is a `load`
+input (the loader globs `Z*.zip` for both its XML and MT passes); the
+non-`Z` admin zips (`HAC`/`PTK`) are raw bronze the loader ignores but
+that `prune` still keeps. The PSN zips are irreplaceable: UBS deletes
+each file server-side on a successful download, so a re-run cannot
+recover it.
 
 `prune` therefore treats any run dir containing a zip as complete and
 untouchable — the has-zip check short-circuits *before* the `run.json`
 `status` field is consulted, so even a crash that left `status` at
-`"in-progress"` alongside already-fetched zips is kept whole. With no
-debug artefacts to reclaim, the only path `prune` can ever delete is a
-zip-less crash shell (a run dir minted before the first `sftp.get`),
-and only once it is quiescent. `download.py` already removes a run dir
-that fetched nothing, so in practice the verb is a safety-first
-near-no-op whose value is guaranteeing a fleet-wide prune never deletes
-a load input.
+`"in-progress"` alongside already-fetched zips is kept whole. The one
+thing it reclaims from such a dump is `screenshots/` (`debug_subdirs`),
+which holds no load input. Otherwise it can delete only a zip-less
+shell, and only once quiescent: a crash shell (a run dir minted before
+the first `sftp.get`), or the `status: "empty"` dump a `--debug` pull
+leaves when nothing was queued — kept so its listing can be read, since
+discarding it would hide the listing in exactly the case it explains. A
+pull without `--debug` removes that shell itself, so for the nightly
+path the verb stays a safety-first near-no-op whose value is
+guaranteeing a fleet-wide prune never deletes a load input.

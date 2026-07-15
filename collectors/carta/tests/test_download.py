@@ -454,3 +454,151 @@ def test_no_documents_help_promises_a_skip(capsys):
     out = capsys.readouterr().out
     assert "--no-documents" in out
     assert "NOT YET IMPLEMENTED" not in out
+
+
+# ============================================================
+# --debug: the bronze-resident landing capture
+# ============================================================
+
+# Shaped like the settled app URL land_and_get_individual_id reads the
+# individual id out of. Synthetic id.
+LANDING_URL = "https://app.carta.com/investors/individual/1/portfolio/"
+
+
+class _FakePage:
+    """Camoufox page stand-in for the landing capture. Reports a fixed
+    ``url`` (the routing land_and_get_individual_id parses) and answers
+    content() / screenshot() the way debugcap drives them."""
+
+    def __init__(self, url: str):
+        self.url = url
+
+    def goto(self, *a, **k):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def content(self):
+        return "<html>synthetic landing</html>"
+
+    def screenshot(self, *, path, full_page=False):
+        Path(path).write_bytes(b"\x89PNG synthetic")
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self.status = 200
+        self._body = body
+
+    def json(self):
+        return self._body
+
+    def text(self):
+        return ""
+
+
+class _FakeRequest:
+    """Answers download.Api's GETs from a url-fragment → body map; any
+    unrouted URL returns an empty object, as a 200-with-nothing would."""
+
+    def __init__(self, routes: dict):
+        self.routes = routes
+
+    def get(self, url, **kw):
+        for frag, body in self.routes.items():
+            if frag in url:
+                return _FakeResponse(body)
+        return _FakeResponse({})
+
+
+class _FakeContext:
+    def __init__(self, page, routes):
+        self._page = page
+        self.request = _FakeRequest(routes)
+
+    def new_page(self):
+        return self._page
+
+
+# firm_id resolves from navigation-config; the portfolio holds no entities,
+# so the walk finalises immediately after the landing.
+_ROUTES = {"navigation-config": {"organizationPk": 9},
+           "list_individual_portfolio_investments": []}
+
+
+def _run(tmp_path, page, *flags, debug_dir=None):
+    """Drive the real run() over a stub context — no Camoufox, no network.
+    --no-documents keeps the walk to bootstrap + the (empty) entity list."""
+    args = download.parse_args(
+        ["--bronze-dir", str(tmp_path), "--no-documents", *flags])
+    run_dir = tmp_path / "20260101T010000Z"
+    run_dir.mkdir()
+    ctx = _FakeContext(page, _ROUTES)
+    return download.run(ctx, args, run_dir, 0, debug_dir), run_dir
+
+
+def _captures(run_dir: Path) -> set[str]:
+    d = run_dir / "screenshots"
+    return {p.name for p in d.iterdir()} if d.exists() else set()
+
+
+def test_debug_flag():
+    # Off by default; parses cleanly when passed.
+    assert download.parse_args(["--bronze-dir", "/tmp", "--debug"]).debug is True
+    assert download.parse_args(["--bronze-dir", "/tmp"]).debug is False
+
+
+def test_debug_help_promises_bronze_captures(capsys):
+    # Guards against the flag regressing to the warn-only stub it was.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--debug" in out
+    assert "gates nothing" not in out
+    assert "NOT YET IMPLEMENTED" not in out
+
+
+def test_debug_off_writes_no_captures(tmp_path):
+    # The default: run() is handed no debug_dir and the run dir stays
+    # capture-free.
+    rc, run_dir = _run(tmp_path, _FakePage(LANDING_URL))
+    assert rc == 0
+    assert not (run_dir / "screenshots").exists()
+
+
+def test_debug_on_captures_landing(tmp_path):
+    # The landing is carta's only rendered surface, so it is the whole
+    # browser-side diagnostic: DOM + screenshot, inside the run dir.
+    page = _FakePage(LANDING_URL)
+    rc, run_dir = _run(tmp_path, page, "--debug", debug_dir=None)
+    assert rc == 0
+    assert not (run_dir / "screenshots").exists(), \
+        "run() captures only when handed a debug_dir, not off args.debug"
+
+
+def test_debug_dir_captures_landing(tmp_path):
+    page = _FakePage(LANDING_URL)
+    run_dir = tmp_path / "20260101T010000Z"
+    run_dir.mkdir()
+    args = download.parse_args(
+        ["--bronze-dir", str(tmp_path), "--no-documents", "--debug"])
+    rc = download.run(_FakeContext(page, _ROUTES), args, run_dir, 0, run_dir)
+    assert rc == 0
+    assert _captures(run_dir) == {"10-landing.html", "10-landing.png"}
+    assert (run_dir / "screenshots" / "10-landing.html").read_text() == \
+        "<html>synthetic landing</html>"
+
+
+def test_debug_captures_landing_even_when_id_unresolved(tmp_path):
+    # The raise path matters most: a landing that never resolved an
+    # individual id is precisely the failure the capture explains, so it
+    # must survive land_and_get_individual_id giving up.
+    page = _FakePage("https://app.carta.com/somewhere-unexpected/")
+    run_dir = tmp_path / "20260101T010000Z"
+    run_dir.mkdir()
+    args = download.parse_args(
+        ["--bronze-dir", str(tmp_path), "--no-documents", "--debug"])
+    with pytest.raises(RuntimeError):
+        download.run(_FakeContext(page, _ROUTES), args, run_dir, 0, run_dir)
+    assert _captures(run_dir) == {"10-landing.html", "10-landing.png"}

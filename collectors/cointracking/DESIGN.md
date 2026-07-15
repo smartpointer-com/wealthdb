@@ -190,12 +190,19 @@ gated on the non-dry-run path), so there is no `dry-run` shell for
 `prune` to reclaim. Use to verify portfolio discovery + selector
 correctness without burning bandwidth.
 
-`--debug` is accepted for a uniform CLI across collectors: it opts a run
-into retaining bronze-resident diagnostic artefacts. cointracking's
-download writes none today (discovery diagnostics live in `explore.py`'s
-external `/debug` mount, never in a bronze run dir), so the flag
-currently gates nothing — it reserves the discipline that any future
-capture lands only under an explicit `--debug` run.
+`--debug` opts a run into retaining bronze-resident diagnostic artefacts:
+the DOM + screenshot of two pages, written to `<run>/screenshots/`. The
+first is the portfolio-discovery page — the auth gate, and the step whose
+late-JS switcher anchors are flaky enough that the run merges a cached
+portfolio list to paper over a short scrape; when that happens, this DOM is
+the only record of why, since nothing downstream keeps it. The second is
+captured only on the per-portfolio failure path, where the page is still on
+whichever export surface raised, so it is the DOM the failing selector was
+matched against; capturing all three export surfaces for every portfolio
+would bury it. `load` never reads either, and `prune` reclaims
+`<run>/screenshots/`. Off by default, and a no-op under `--dry-run`, which
+materialises no bronze tree. The discovery harness's own diagnostics stay in
+`explore.py`'s external `/debug` mount, never a bronze run dir.
 
 ## Load — DuckDB silver with incremental positions_daily upsert
 
@@ -260,13 +267,13 @@ from a crashed walk). The completeness predicate delegates to
 `prune.status_classification` with a legacy fallback of `m is not None`
 (a statusless-but-readable manifest is a pre-lifecycle complete dump).
 
-cointracking nominates an **empty `debug_subdirs`**: every file a run
-writes — `run.json` and each `cu_<id>/{trades,balance,overview}.csv.zst`
-(plain `.csv` in pre-compression dumps) — is a `load` input, and the
-discovery harness's traces go to an external
-`/debug` mount rather than into a run dir, so a complete dump has
-nothing prunable inside it. Only the whole-non-complete-dump category
-applies.
+cointracking nominates `debug_subdirs = ("screenshots",)`: that dir is the
+one thing a run writes which `load` does not read — the `--debug` captures —
+so it is the only thing a complete dump ever gives up. Every other file
+(`run.json` and each `cu_<id>/{trades,balance,overview}.csv.zst`; plain
+`.csv` in pre-compression dumps) is a `load` input and is never a target.
+The discovery harness's traces go to an external `/debug` mount rather than
+into a run dir, so prune never sees them.
 
 Safety comes entirely from the shared engine and is identical to every
 other collector: a `load` input is never deleted; an unreadable/corrupt

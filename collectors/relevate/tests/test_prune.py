@@ -2,15 +2,15 @@
 Unit tests for relevate's prune.py.
 
 tmp_path bronze trees, synthetic fixtures only (no real ids /
-balances / account numbers). relevate is REST-only, so its
-``debug_subdirs`` is empty — nothing inside a *complete* dump is ever
-removed; prune's whole value here is reclaiming whole non-complete run
-dirs. Covers:
+balances / account numbers). relevate drives no browser, so its only
+bronze-resident debug artefact is the HTTP trace `download --debug`
+writes under <run>/screenshots/ (``debug_subdirs``); prune reclaims that
+plus whole non-complete run dirs, and never a load input. Covers:
 
   * complete dump (status="complete", or a pre-`status` manifest with
-    ended_at stamped on a non-dry run): kept ENTIRELY — every load
-    input (accounts/, portfolios/, documents/*.pdf) survives, prune
-    reports nothing to do
+    ended_at stamped on a non-dry run): every load input (accounts/,
+    portfolios/, documents/*.pdf) survives; only a --debug trace is
+    reclaimed from it
   * non-complete dumps deleted whole once quiescent: absent run.json,
     status in {in-progress, dry-run, incomplete}, and the relevate-
     specific hazard — a pre-`status` crashed walk whose run.json is
@@ -63,12 +63,15 @@ def make_dump(root: Path, slug: str, *,
               ended_at: str | None = "2026-01-01T01:00:05+00:00",
               dry_run: bool = False,
               run_json: bool = True,
+              screenshots: bool = False,
               age_s: float = 0.0) -> Path:
     """Build a synthetic relevate bronze run dir with the real load-
     input layout. ``status=None`` writes a pre-`status` (legacy)
-    manifest keyed only on ``ended_at`` / ``dry_run``. ``age_s``
-    backdates every mtime so the write-activity guard sees an
-    abandoned dump; the default (0) leaves it fresh."""
+    manifest keyed only on ``ended_at`` / ``dry_run``. ``screenshots``
+    adds the ``--debug`` HTTP trace, off by default to mirror a download
+    without ``--debug``. ``age_s`` backdates every mtime so the
+    write-activity guard sees an abandoned dump; the default (0) leaves
+    it fresh."""
     d = root / slug
     # ---- load inputs (never prune targets) ----
     ov = d / "accounts" / "investment-overview.json"
@@ -88,6 +91,11 @@ def make_dump(root: Path, slug: str, *,
     (docs / "index.json").write_text(json.dumps({"documents": [
         {"id": int(DOC_ID), "fileName": "Quartalsbericht.pdf"}]}))
     (docs / f"{DOC_ID}.pdf").write_bytes(b"%PDF-1.4 synthetic")
+    # ---- the --debug HTTP trace (never a load input) ----
+    if screenshots:
+        (d / "screenshots").mkdir()
+        (d / "screenshots" / "http-trace.jsonl").write_text(
+            '{"method": "GET", "url": "https://x.invalid/a", "status": 200}\n')
     # ---- manifest ----
     if run_json:
         manifest: dict = {
@@ -126,13 +134,23 @@ def run_main(root: Path, *extra: str) -> int:
 
 
 # ============================================================
-# Complete dumps: kept entirely (debug_subdirs is empty)
+# Complete dumps: load inputs kept, the --debug trace reclaimed
 # ============================================================
 
 def test_complete_status_dump_kept_entirely(tmp_path):
     d = make_dump(tmp_path, OLD_TS, status="complete", age_s=STALE_S)
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert_inputs_present(d)
+
+
+def test_complete_dump_debug_trace_pruned_inputs_kept(tmp_path):
+    # The --debug HTTP trace is a diagnostic, not a load input, so prune
+    # reclaims it while every artefact beside it survives.
+    d = make_dump(tmp_path, OLD_TS, status="complete", screenshots=True,
+                  age_s=STALE_S)
+    assert run_main(tmp_path) == 0
+    assert not (d / "screenshots").exists()
     assert_inputs_present(d)
 
 
@@ -308,12 +326,17 @@ def test_missing_bronze_dir_exits(tmp_path):
 
 
 # ============================================================
-# Target validation (debug_subdirs is empty: only whole run dirs)
+# Target validation (a run dir or its screenshots/, nothing else)
 # ============================================================
 
 def test_validate_target_accepts_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_debug_subdir(tmp_path):
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

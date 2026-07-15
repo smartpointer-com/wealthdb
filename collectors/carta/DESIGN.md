@@ -353,16 +353,20 @@ classify or prune.
 still loads, for backward compatibility), so a crashed walk's partial capture
 never becomes a silver snapshot. `prune` (a thin wrapper over the shared
 `collectorkit.prune` engine) reclaims those non-complete run dirs once they go
-quiescent. carta writes **no** bronze-resident debug artefact — the `explore`
-diagnostics (HAR, trace, click log) live under `/debug`, external to the
-bronze tree — so `prune`'s `debug_subdirs` is empty and a complete dump is
-never stripped; its inputs, the bronze-root override CSVs, and the silver DB
-are all out of scope by construction. `prune` runs host-side (a pure file walk
+quiescent. From a complete dump it strips one thing: `screenshots/`, named by
+`prune`'s `debug_subdirs`. That is where `download --debug` puts the landing
+page's DOM + screenshot — carta's only rendered surface, and so the only
+browser-side evidence of a session that bounced or an app whose routing moved;
+every later fetch is JSON replay whose failures already land in `run.json`'s
+`errors`. `load` never reads the captures, so reclaiming them cannot change
+silver. A complete dump's inputs, the bronze-root override CSVs, and the silver
+DB are out of scope by construction. (The `explore` diagnostics — HAR, trace,
+click log — live under `/debug`, external to the bronze tree; prune never sees
+them.) `--debug` is off by default, and is a no-op under `--dry-run`, which
+creates no run dir to write into. `prune` runs host-side (a pure file walk
 needs no container, and `load`'s in-container residence is only because it
 needs `poppler-utils`), guarded by `--min-age-hours` (default 1, keyed on the
-newest write in the dir) so a long backfill in flight is protected. The
-`download --debug` flag exists for cross-collector uniformity and currently
-gates nothing extra.
+newest write in the dir) so a long backfill in flight is protected.
 
 ## 5. Silver schema
 

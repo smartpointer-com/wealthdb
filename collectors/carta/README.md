@@ -98,11 +98,11 @@ run after that is the right cadence; same-day re-runs add nothing.
 `prune` removes whole non-complete run dirs across the bronze tree: a walk
 that crashed leaves `run.json` with `status: "in-progress"` (a pre-status
 run left no `run.json` at all), and `load` skips such dirs, so `prune`
-reclaims them once quiescent. carta writes **no** bronze-resident debug
-artefact — its discovery diagnostics (HAR, Playwright trace, click log) go
-to `/debug` via `./carta explore`, never a run dir — so a complete dump has
-nothing to strip and is left whole. The `download --debug` flag exists for
-cross-collector uniformity and currently gates nothing extra. A complete
+reclaims them once quiescent. From a complete dump it strips only
+`screenshots/` — the landing-page DOM + screenshot that `download --debug`
+writes, which `load` never reads. (The `explore` diagnostics — HAR,
+Playwright trace, click log — are separate: they go to `/debug`, outside
+bronze, and prune never sees them.) A complete
 dump's inputs (`entities/`, the document PDFs, `bootstrap/`, the manifest),
 the side-loaded `<eid>-valuations.csv` / `<eid>-transactions.csv` overrides,
 and the silver DB — all at the bronze root, not under a run dir — are never

@@ -3,16 +3,18 @@
 Prune non-complete dumps from the carta bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with carta's configuration. carta writes no bronze-resident
-debug artefact — its browser diagnostics (HAR, Playwright trace, click
-log) are captured externally by ``./carta explore`` under ``/debug``, not
-in a run dir — so ``debug_subdirs`` is empty and only one category is ever
-removed, across every timestamped run dir under ``--bronze-dir``:
+prune engine) with carta's configuration. Two categories are removed,
+across every timestamped run dir under ``--bronze-dir``:
 
 * whole run dirs that are not complete dumps: ``run.json`` is missing (a
   pre-status walk crashed before finalising) or its ``status`` is anything
   other than ``"complete"`` (an ``"in-progress"`` marker from a crashed
   walk). ``load`` skips such dirs; ``prune`` reclaims them once quiescent.
+* ``screenshots/`` inside a complete dump: the landing-page DOM +
+  screenshot ``download --debug`` writes. ``load`` never reads them, so
+  reclaiming them cannot change silver. ``./carta explore``'s diagnostics
+  (HAR, Playwright trace, click log) are a separate concern — they land
+  outside bronze under ``/debug`` and prune never sees them.
 
 Completeness signal: the ``run.json`` ``status`` field the walk now writes
 (``"in-progress"`` at run-dir creation, atomically overwritten with
@@ -26,11 +28,11 @@ run dir, so there is no dry-run shell to prune.
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
 long backfill is protected. ``--dry-run`` prints the plan without removing
-anything. The only paths ever deleted are whole non-complete run dirs;
-complete dumps (their entities/, documents/ PDFs, bootstrap/ JSON, and the
-manifest), the side-loaded ``<eid>-valuations.csv`` / ``<eid>-transactions.csv``
-overrides and the silver DB (all at the bronze root, not under a run dir)
-are never touched.
+anything. The only paths ever deleted are whole non-complete run dirs and
+``screenshots/`` subdirs; a complete dump's load inputs (its entities/,
+documents/ PDFs, bootstrap/ JSON, and the manifest), the side-loaded
+``<eid>-valuations.csv`` / ``<eid>-transactions.csv`` overrides and the
+silver DB (all at the bronze root, not under a run dir) are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -40,12 +42,12 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
-# carta writes no bronze-resident debug artefact (diagnostics are external,
-# under /debug via `./carta explore`), so there is nothing to reclaim from a
-# complete dump — prune's only category for carta is whole non-complete dumps.
-DEBUG_SUBDIRS: tuple[str, ...] = ()
+# `download --debug` writes the landing-page capture to <run>/screenshots/.
+# Naming it here is what lets prune reclaim it from a dump that is otherwise
+# worth keeping.
+DEBUG_SUBDIRS: tuple[str, ...] = (debugcap.SCREENSHOTS_DIR,)
 
 
 def _is_complete(run_dir, meta):

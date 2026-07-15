@@ -592,14 +592,14 @@ Path conventions:
 
 **Pruning.** `prune` (a thin wrapper over the shared, unit-tested
 `collectorkit.prune` engine) reclaims whole **non-complete** run dirs
-— crashed walks and `--dry-run` shells — across the bronze tree.
-relevate writes no bronze-resident debug artefacts (REST-only: no
-browser, no screenshots / DOM dumps / traces), so its `debug_subdirs`
-is empty and nothing inside a *complete* dump is ever removed: the
-JSON payloads and document PDFs (the latter read cross-dump by
-`load_historical_snapshots` and `load_credit_note_transactions` via
-`documents.bronze_path`) are faithful bronze captures and load inputs,
-never prune targets. Non-run entries at the bronze root (`manual/`,
+— crashed walks and `--dry-run` shells — across the bronze tree, plus
+the one debug artefact a run dir can hold: the `screenshots/` HTTP trace
+a `download --debug` writes (`debug_subdirs`). relevate drives no
+browser, so there are no DOM dumps or Playwright traces beside it. Every
+other file in a *complete* dump is kept: the JSON payloads and document
+PDFs (the latter read cross-dump by `load_historical_snapshots` and
+`load_credit_note_transactions` via `documents.bronze_path`) are faithful
+bronze captures and load inputs, never prune targets. Non-run entries at the bronze root (`manual/`,
 `relevate.db`) and symlinks are never touched, and an unreadable or
 corrupt `run.json` is UNKNOWN and skipped. An in-flight guard
 (`--min-age-hours`, default 1, keyed on the newest write in the dir)

@@ -387,11 +387,14 @@ wins per date) is owned by the wealthdb UBS adapter — see
   engine) uses the status field to reclaim disk: it deletes whole run
   dirs that are non-complete — `in-progress` / `dry-run` / no
   `run.json` — and keeps every complete dump's load inputs untouched.
-  `debug_subdirs` is empty because ubs-web writes no debug artefact
-  inside bronze: screenshots, Playwright traces and QR PNGs all go to
-  the external `--screenshot-dir` / `--trace` / `--qr-png` outputs (the
-  `/debug` mount). Because the sole deletion path is a whole
-  non-complete dir, the one classification that must be exact is the
+  `debug_subdirs` names `screenshots/`, the one thing a complete dump
+  gives up: the landmark DOM + screenshot captures `download --debug`
+  writes, which `load` never reads. ubs-web's other diagnostics —
+  screenshots, Playwright traces and QR PNGs — go to the external
+  `--screenshot-dir` / `--trace` / `--qr-png` outputs (the `/debug`
+  mount), outside bronze. Because the only deletion path that can touch
+  a load input is a whole non-complete dir, the classification that must
+  be exact is the
   legacy (statusless) fallback: a pre-change `--dry-run` shell carries
   a full-looking manifest with `dry_run: true`, so completeness there
   is `manifest present AND not dry_run`, not the bare manifest-presence

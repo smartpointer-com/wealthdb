@@ -3,11 +3,11 @@ Unit tests for prune.py (equityzen).
 
 tmp_path bronze trees against equityzen's run-dir layout
 (investments.json + offerings/<slug>/detail.json + documents/<slug>/*.pdf
-+ run.json). equityzen writes NO bronze-resident debug artefact, so
-``debug_subdirs`` is empty and the only reclaim category is whole
++ screenshots/ + run.json). Two categories are reclaimed: ``screenshots/``
+(the ``download --debug`` captures) from a complete dump, and whole
 non-complete run dirs. Covers:
 
-  * complete dump: nothing pruned, every load input untouched
+  * complete dump: screenshots/ reclaimed, every load input untouched
   * complete dump with document blobs: blobs (a load input) kept
   * non-complete dumps (absent run.json / status="in-progress")
     deleted whole once quiescent
@@ -61,13 +61,14 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
               documents: bool = False, run_json: bool = True,
-              age_s: float = 0.0) -> Path:
+              screenshots: bool = True, age_s: float = 0.0) -> Path:
     """Build a synthetic equityzen bronze run dir. ``age_s`` backdates
     every file/dir mtime (and the run dir's own) to now-age_s, so the
     write-activity guard sees an abandoned dump; the default (0) leaves it
     fresh. ``run_json=False`` models a walk that crashed before the
     in-progress marker; ``status`` sets the run.json status field
-    (``None`` writes a statusless legacy manifest)."""
+    (``None`` writes a statusless legacy manifest); ``screenshots`` adds
+    the ``--debug`` capture dir."""
     d = root / slug
     (d / "offerings" / DEAL_SLUG).mkdir(parents=True)
     (d / "investments.json").write_text(json.dumps(
@@ -78,6 +79,11 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
         (d / "documents" / DEAL_SLUG).mkdir(parents=True)
         (d / "documents" / DEAL_SLUG / f"{DOC_SLUG}.pdf").write_bytes(
             b"%PDF-1.4 fake")
+    if screenshots:
+        (d / "screenshots").mkdir(parents=True)
+        (d / "screenshots" / "10-portfolio.html").write_text(
+            "<html>portfolio</html>")
+        (d / "screenshots" / "10-portfolio.png").write_bytes(b"\x89PNG fake")
     if run_json:
         (d / "run.json").write_text(json.dumps(
             {"status": status} if status is not None else {"source": "equityzen"}))
@@ -97,33 +103,45 @@ def run_main(root: Path, *extra: str) -> int:
 
 
 # ============================================================
-# Complete dumps: nothing pruned, load inputs kept
+# Complete dumps: screenshots reclaimed, load inputs kept
 # ============================================================
 
-def test_complete_dump_nothing_pruned_inputs_kept(tmp_path):
-    # debug_subdirs is empty, so a complete dump has NOTHING removed.
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     d = make_dump(tmp_path, OLD_TS)
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert (d / "investments.json").exists()
     assert (d / "offerings" / DEAL_SLUG / "detail.json").exists()
     assert (d / "run.json").exists()
 
 
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so there is no capture dir.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert (d / "investments.json").exists()
+    assert (d / "run.json").exists()
+
+
 def test_complete_dump_document_blobs_kept(tmp_path):
     # The re-downloaded document PDF/zip blobs are load inputs (parsed by
-    # statements.py) and must survive prune.
+    # statements.py) and must survive prune — only screenshots/ goes.
     d = make_dump(tmp_path, OLD_TS, documents=True)
     assert run_main(tmp_path) == 0
     assert (d / "documents" / DEAL_SLUG / f"{DOC_SLUG}.pdf").exists()
+    assert not (d / "screenshots").exists()
 
 
-def test_fresh_complete_dump_untouched(tmp_path):
+def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     # The write-activity guard protects non-complete dumps only; a
-    # finalised run.json means the walk is over. Nothing to prune here.
+    # finalised run.json means the walk is over, so its captures are
+    # reclaimable however recently written.
     d = make_dump(tmp_path, fresh_slug(age_s=60))
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert (d / "investments.json").exists()
 
 
@@ -150,8 +168,10 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     # walk historically wrote run.json only once (at the end), so its
     # presence means the dump finished: classify COMPLETE, keep its load
     # inputs. (New walks always carry a status key, so this branch only
-    # ever sees pre-change dumps.)
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
+    # ever sees pre-change dumps — which is also why they carry no
+    # screenshots: --debug wrote none back then.)
+    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
+                  screenshots=False)
     run_main(tmp_path)
     assert d.exists()
     assert (d / "investments.json").exists()
@@ -265,6 +285,12 @@ def test_missing_bronze_dir_exits(tmp_path):
 def test_validate_target_accepts_whole_run_dir(tmp_path):
     (tmp_path / OLD_TS).mkdir()
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
+
+
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_stray_paths(tmp_path):

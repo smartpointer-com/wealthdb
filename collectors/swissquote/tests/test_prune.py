@@ -3,11 +3,15 @@ Unit tests for prune.py (swissquote).
 
 tmp_path bronze trees with swissquote's real run-dir layout and
 SYNTHETIC content (no real customer IDs, ISINs, or balances). Swissquote
-nominates NO debug_subdirs — its diagnostics land outside bronze — so
-the only deletions prune performs are whole non-complete run dirs. These
-tests exercise that plus the shared safety envelope:
+nominates debug_subdirs = ("screenshots",) — the landmark captures
+`download --debug` writes — so prune performs two deletions: that subdir
+from a complete dump, and whole non-complete run dirs. (The
+--screenshot-dir / --trace diagnostics land outside bronze, where prune
+never sees them.) These tests exercise both plus the shared safety
+envelope:
 
-  * complete dump (status=complete): load inputs untouched, nothing pruned
+  * complete dump (status=complete): load inputs untouched, screenshots
+    reclaimed
   * statusless run.json (legacy dump): kept as complete
   * non-complete dumps (no run.json / status=in-progress / status=dry-run)
     deleted whole once quiescent
@@ -52,13 +56,15 @@ def fresh_slug(age_s: float = 0.0) -> str:
 
 
 def make_dump(root: Path, slug: str, status: str | None = "complete",
-              run_json: bool = True, age_s: float = 0.0) -> Path:
+              run_json: bool = True, age_s: float = 0.0,
+              screenshots: bool = True) -> Path:
     """Build a bronze run dir with swissquote's load inputs.
 
     ``status`` is the run.json status value (None writes a statusless
-    manifest — a legacy dump). ``age_s`` backdates every file/dir mtime
-    (and the run dir's own) to now-age_s so the write-activity guard
-    sees an abandoned dump; the default (0) leaves it fresh.
+    manifest — a legacy dump). ``screenshots`` adds the `--debug`
+    capture dir. ``age_s`` backdates every file/dir mtime (and the run
+    dir's own) to now-age_s so the write-activity guard sees an
+    abandoned dump; the default (0) leaves it fresh.
     """
     d = root / slug
     d.mkdir(parents=True)
@@ -73,6 +79,11 @@ def make_dump(root: Path, slug: str, status: str | None = "complete",
     docs.mkdir()
     (docs / "AAAAAAAA-0000-0000-0000-000000000000.pdf").write_bytes(
         b"%PDF-1.4 fake-doc")
+    if screenshots:
+        shots = d / "screenshots"
+        shots.mkdir()
+        (shots / "10_portfolio_page.html").write_text("<html>portfolio</html>")
+        (shots / "10_portfolio_page.png").write_bytes(b"\x89PNG fake")
     if run_json:
         meta = {} if status is None else {"status": status}
         (d / "run.json").write_text(json.dumps(meta))
@@ -103,20 +114,30 @@ def run_main(root: Path, *extra: str) -> int:
 
 
 # ============================================================
-# Complete dumps: nothing to prune (no debug subdirs), inputs kept
+# Complete dumps: screenshots reclaimed, inputs kept
 # ============================================================
 
-def test_complete_dump_untouched(tmp_path):
+def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     d = make_dump(tmp_path, OLD_TS)
+    assert run_main(tmp_path) == 0
+    assert d.exists()
+    assert not (d / "screenshots").exists()
+    assert_inputs_present(d)
+
+
+def test_complete_dump_without_screenshots_untouched(tmp_path):
+    # The common case: --debug was off, so there is no capture dir.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert_inputs_present(d)
 
 
-def test_fresh_complete_dump_untouched(tmp_path):
+def test_fresh_complete_dump_screenshots_still_pruned(tmp_path):
     d = make_dump(tmp_path, fresh_slug(age_s=60))
     assert run_main(tmp_path) == 0
     assert d.exists()
+    assert not (d / "screenshots").exists()
     assert_inputs_present(d)
 
 
@@ -124,8 +145,10 @@ def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
     # A run.json with no `status` key predates the status lifecycle.
     # download.py historically wrote run.json only once (at the end),
     # so its presence means the dump finished: classify COMPLETE and
-    # keep everything.
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
+    # keep its load inputs. Such a dump carries no screenshots — --debug
+    # wrote none back then.
+    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
+                  screenshots=False)
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert_inputs_present(d)
@@ -271,12 +294,18 @@ def test_validate_target_accepts_whole_run_dir(tmp_path):
     prune.validate_target(tmp_path / OLD_TS, tmp_path)
 
 
+def test_validate_target_accepts_screenshots_subdir(tmp_path):
+    # The one subdir shape prune may target: the --debug capture dir.
+    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
+    prune.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+
+
 def test_validate_target_refuses_stray_paths(tmp_path):
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path / "manual", tmp_path)
     with pytest.raises(SystemExit):
-        # A load input inside a run dir is never a valid whole-dir
-        # target (debug_subdirs is empty).
+        # A load input inside a run dir is never a valid target — only
+        # the debug subdir is, and positions.xls is not it.
         prune.validate_target(tmp_path / OLD_TS / "positions.xls", tmp_path)
     with pytest.raises(SystemExit):
         prune.validate_target(tmp_path.parent / OLD_TS, tmp_path)

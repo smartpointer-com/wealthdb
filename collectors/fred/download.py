@@ -32,13 +32,14 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
-from collectorkit import bronze, cli, envfile
+from collectorkit import bronze, cli, debugcap, envfile
 
 # Single source of truth for FRED's no-data / market-holiday sentinels — the
 # loader owns the constant (it filters rows on it); the downloader imports it
@@ -112,19 +113,35 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--debug", action="store_true",
-        help="Uniform debug-capture gate (default off). fred is a pure "
-             "REST/JSON collector and writes no bronze-resident debug "
-             "artefacts, so this currently gates nothing extra; it exists "
-             "so every collector's `download` shares the flag. See "
-             "collectors/README.md.",
+        help="Capture debug artefacts into the bronze run dir (default "
+             "off): an HTTP trace at <run>/screenshots/http-trace.jsonl, "
+             "one line per FRED request with its status, timing, size and "
+             "rate-limit headers — the shape of the exchange, which the "
+             "observations documents beside it do not record. The api_key "
+             "query parameter is redacted. `prune` reclaims the trace; "
+             "`load` never reads it.",
     )
     return p.parse_args(argv)
 
 
+# Stands in for callers with no run dir to write into — the `--check` probe,
+# which writes nothing at all by contract. A disabled trace swallows every
+# record(), so the fetch path needs no None-guard.
+_NO_TRACE = debugcap.HttpTrace(None, log=log, enabled=False)
+
+
 def fetch_observations(base_url: str, series_id: str, api_key: str,
-                       start, end, timeout: int = 90) -> dict:
+                       start, end, timeout: int = 90, *,
+                       trace: debugcap.HttpTrace = _NO_TRACE) -> dict:
     """GET the raw FRED observations document for one series + window.
-    Raises on transport/HTTP errors (the caller logs + skips the series)."""
+    Raises on transport/HTTP errors (the caller logs + skips the series).
+
+    The single request choke point, so every exchange is traced here:
+    the 200 that carried a series, the HTTP error that skipped one, and
+    the transport fault that never reached FRED at all. The URL goes to
+    the trace whole — masking the api_key it carries is debugcap's job,
+    never the call site's. An HTTPError's body is left unread for the
+    caller to log; only its status and headers are taken."""
     params = {
         "series_id": series_id,
         "api_key": api_key,
@@ -134,8 +151,25 @@ def fetch_observations(base_url: str, series_id: str, api_key: str,
     }
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": "wealthdb-fred/1"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+            trace.record("GET", url, status=resp.status,
+                         elapsed_ms=(time.monotonic() - t0) * 1000,
+                         bytes_=len(body), headers=resp.headers)
+    except urllib.error.HTTPError as e:
+        trace.record("GET", url, status=e.code,
+                     elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=str(e.reason), headers=e.headers)
+        raise
+    except OSError as e:
+        # URLError, TimeoutError and the socket/TLS errors all land here:
+        # no status, because nothing came back.
+        trace.record("GET", url, elapsed_ms=(time.monotonic() - t0) * 1000,
+                     error=f"{type(e).__name__}: {e}")
+        raise
+    return json.loads(body.decode("utf-8"))
 
 
 def _source_env_file(explicit: Path | None) -> None:
@@ -197,9 +231,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("fred", log)
     _source_env_file(args.env_file)
     api_key = envfile.resolve_credential(args.api_key, "FRED_API_KEY",
                                          "--api-key")
@@ -245,11 +276,17 @@ def main(argv: list[str] | None = None) -> int:
         manifest["status"] = "in-progress"
         bronze.atomic_write_json(run / "run.json", manifest)
 
+    # One trace for the whole fetch loop. A dry-run creates no run dir, so
+    # there is nowhere for a capture to land: HttpTrace(None) makes that an
+    # explicit no-op instead of a write against a directory that isn't there.
+    trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
+
     total = failures = 0
     for sid in series_ids:
         base, quote = FX_SERIES[sid]
         try:
-            doc = fetch_observations(args.base_url, sid, api_key, since, until)
+            doc = fetch_observations(args.base_url, sid, api_key, since, until,
+                                     trace=trace)
         except urllib.error.HTTPError as e:
             body = (e.read() or b"")[:200].decode("utf-8", "replace")
             log.error("series %s: HTTP %s %s — skipping", sid, e.code, body)

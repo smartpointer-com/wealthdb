@@ -40,16 +40,16 @@ def _stub_schwab(monkeypatch, *, open_orders_raises: bool = False) -> None:
 
     monkeypatch.setattr(download, "configure_timeout", lambda *_a, **_k: None)
     monkeypatch.setattr(download, "fetch_account_numbers",
-                        lambda _c: [{"accountNumber": ACCT_PLAIN,
-                                     "hashValue": ACCT_HASH}])
+                        lambda _c, **_k: [{"accountNumber": ACCT_PLAIN,
+                                           "hashValue": ACCT_HASH}])
     monkeypatch.setattr(download, "fetch_user_preference",
-                        lambda _c: {"accounts": []})
+                        lambda _c, **_k: {"accounts": []})
     monkeypatch.setattr(download, "fetch_accounts_with_positions",
-                        lambda _c: [])
+                        lambda _c, **_k: [])
     monkeypatch.setattr(download, "fetch_transactions",
-                        lambda _c, _h, _s, _e: [])
+                        lambda _c, _h, _s, _e, **_k: [])
 
-    def _open_orders(_c, _s, _e):
+    def _open_orders(_c, _s, _e, **_k):
         if open_orders_raises:
             raise RuntimeError("simulated crash fetching open orders")
         return []
@@ -100,6 +100,8 @@ def test_complete_run_writes_status_complete(tmp_path, monkeypatch):
     # uncompressed + greppable for prune/load to read directly.
     assert (run_dir / "run.json").is_file()
     assert not (run_dir / "run.json.zst").exists()
+    # No --debug ⇒ no capture dir: debug artefacts are opt-in.
+    assert not (run_dir / "screenshots").exists()
 
 
 def test_crash_mid_walk_leaves_status_in_progress(tmp_path, monkeypatch):
@@ -132,4 +134,18 @@ def test_dry_run_creates_no_run_dir(tmp_path, monkeypatch):
     assert download.main(_argv(token, dest, "--dry-run")) == 0
     # --dry-run returns before the run dir is minted, so there is no
     # shell and no run.json for prune to see.
+    assert _run_dirs(dest) == []
+
+
+def test_dry_run_with_debug_still_creates_no_run_dir(tmp_path, monkeypatch):
+    _stub_schwab(monkeypatch)
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    dest = tmp_path / "bronze"
+    dest.mkdir()
+
+    assert download.main(_argv(token, dest, "--dry-run", "--debug")) == 0
+    # A dry-run mints no run dir, so the trace has nowhere to land:
+    # HttpTrace(None) swallows the records rather than resurrecting a
+    # bronze shell that load/prune would then have to reason about.
     assert _run_dirs(dest) == []

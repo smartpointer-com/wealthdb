@@ -302,9 +302,10 @@ bronze.
 [`collectorkit.prune`](../../shared/collectorkit/collectorkit/prune.py)
 engine — reclaims whole **non-complete** dumps (`status != "complete"`,
 or a legacy statusless `dry_run: true` shell, or no `run.json`). Its
-`PruneConfig.debug_subdirs` is empty: viac is REST-only and writes no
-bronze-resident debug artefacts, so a complete dump has nothing inside
-it to reclaim and is left untouched. The engine guarantees a `load`
+`PruneConfig.debug_subdirs` nominates `screenshots/`, the HTTP trace a
+`download --debug` writes: viac drives no browser, so the request trace
+is its whole bronze-resident debug surface, and it is the only thing ever
+removed from a complete dump. The engine guarantees a `load`
 input is never deleted, an unreadable/corrupt manifest is skipped as
 UNKNOWN, symlinks and non-run-dir root entries (the silver `viac.db`)
 are never touched, and an in-flight download is protected by a

@@ -47,11 +47,21 @@ def test_check_flag():
 
 
 def test_debug_flag():
-    # The uniform --debug gate (default off). download writes no
-    # bronze-resident debug artefact today, so the flag currently gates
-    # nothing — it exists so the flag surface is uniform across collectors.
+    # Gates the per-route DOM + screenshot captures under
+    # <run>/screenshots/. Off by default: a normal run writes none, and
+    # `prune` reclaims them from the dumps that do.
     assert download.parse_args(["--debug"]).debug is True
     assert download.parse_args([]).debug is False
+
+
+def test_debug_help_promises_bronze_captures(capsys):
+    # Guards against the flag regressing to the warn-only stub it was.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--debug" in out
+    assert "gates nothing" not in out
+    assert "NOT YET IMPLEMENTED" not in out
 
 
 def test_lookback_flag():

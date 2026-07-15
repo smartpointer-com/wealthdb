@@ -11,6 +11,12 @@ run dir that is not a completed dump so orphans don't accumulate in
 bronze; a completed dump (status=complete, or a legacy statusless
 manifest) is preserved.
 
+run()'s trap calls it on every failure EXCEPT under --debug, which keeps
+the dir so its captures survive the crash they explain; `prune` reclaims
+it instead. The predicate itself is flag-agnostic — that decision lives
+at the call site — so these tests pin the removal rule, and
+test_cli_defaults pins the flag surface.
+
 Run from the repo root inside the container:
     python3 -m unittest discover tests
 """

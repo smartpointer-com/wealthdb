@@ -70,9 +70,15 @@ Each `download` mints one UTC-timestamped bronze run dir holding a
 manifest carries a `status` field: `"in-progress"` while the walk runs,
 atomically overwritten with `"complete"` at the end. A crashed walk thus
 leaves `status: "in-progress"`, which `load` skips (no partial rates leak
-into silver) and `prune` reclaims. fred writes no debug artefacts, so the
-uniform `--debug` flag exists for cross-collector consistency but
-currently gates nothing.
+into silver) and `prune` reclaims.
+
+`download --debug` adds `screenshots/http-trace.jsonl` to the run dir: one
+line per FRED request recording status, timing, size and any rate-limit
+headers — the shape of the exchange, which the observations documents
+beside it do not capture. Bodies are not duplicated, and the `api_key`
+query parameter is redacted, never persisted. `load` ignores the trace and
+`prune` reclaims it. A `--dry-run` mints no run dir, so it captures
+nothing.
 
 ### Reclaiming disk
 
@@ -83,10 +89,11 @@ currently gates nothing.
 
 `prune` removes whole non-complete run dirs across the bronze tree — a
 walk that crashed before writing a terminal `run.json`, or one that
-carries `status: "in-progress"`. A complete dump is never touched: every
-file in it (`run.json` and each `<series_id>.json`) is a `load` input, so
-fred nominates no debug artefacts to reclaim and silver stays reproducible
-from bronze alone. Deleting a non-complete dump surfaces on the next
+carries `status: "in-progress"` — plus any `screenshots/` trace `--debug`
+left behind. A complete dump's `load` inputs are never touched: every
+other file in it (`run.json` and each `<series_id>.json`) feeds silver, so
+silver stays reproducible from bronze alone. Deleting a non-complete dump
+surfaces on the next
 `load --force` rebuild. `prune` runs host-side like `load`, and an
 in-flight guard (`--min-age-hours`, default 1, keyed on the newest write
 in the dir) keeps it from removing a long `--lookback all` backfill that

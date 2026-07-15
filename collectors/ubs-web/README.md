@@ -219,17 +219,25 @@ Override any of the host paths via env vars:
 `prune` removes whole run dirs that are **not** complete dumps: a
 `--dry-run` shell (a manifest and no exports), or a walk that crashed
 before finalising (an `in-progress` marker, or no `run.json` at all).
-ubs-web writes no debug artefact inside a bronze run dir — its
-screenshots, Playwright traces and QR PNGs land in the external
-`--screenshot-dir` / `--trace` / `--qr-png` outputs (the `/debug`
-mount), never in bronze — so there is nothing to prune from a complete
-dump; its load inputs (`positions/`, `transactions/`, `documents/`,
-`run.json`) are always kept and silver stays reproducible. Deleting a
-non-complete dump surfaces on the next `load --force` rebuild. An
-in-flight guard (`--min-age-hours`, default 1, keyed on recent write
-activity) keeps it from removing a multi-window backfill that is still
-running. `--debug` is accepted on `download` for a uniform CLI surface
-but gates nothing bronze-resident here.
+From a complete dump it strips one thing: `screenshots/`, the landmark
+DOM + screenshot captures `download --debug` writes, which `load` never
+reads. A complete dump's load inputs (`positions/`, `transactions/`,
+`documents/`, `run.json`) are always kept and silver stays reproducible.
+(ubs-web's other diagnostics — screenshots, Playwright traces and QR
+PNGs — land in the external `--screenshot-dir` / `--trace` / `--qr-png`
+outputs under the `/debug` mount, never in bronze, so prune never sees
+them.) Deleting a non-complete dump surfaces on the next `load --force`
+rebuild. An in-flight guard (`--min-age-hours`, default 1, keyed on
+recent write activity) keeps it from removing a multi-window backfill
+that is still running.
+
+`download --debug` captures three landmarks into `<run>/screenshots/`:
+`10-home` (the homepage the account and portfolio anchors are scraped
+from — both misses only warn, so this DOM is the only record of why),
+`30-documents` (the documents list the window-bisect walk reads its
+counts out of), and `20-txn-<short>-failed` for any account whose
+transaction export raised. Off by default, and a no-op under `--dry-run`,
+which persists nothing to bronze.
 
 ### Headless remote host
 

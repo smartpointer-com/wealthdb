@@ -3,7 +3,8 @@
 The browser/export paths are exercised live, not here. This covers only the
 shared-flag surface: cointracking always exports the complete trade history
 (its holdings replay needs every row), so it accepts --lookback purely for
-wealthdb-refresh uniformity and treats it as a no-op (logs a warning).
+wealthdb-refresh uniformity and treats it as a no-op (logs a warning); and
+--debug, which gates the bronze-resident DOM/screenshot captures.
 """
 from __future__ import annotations
 
@@ -29,7 +30,18 @@ def test_lookback_flag():
 
 
 def test_debug_flag():
-    # Uniform --debug gate (default off); cointracking's download writes no
-    # bronze-resident debug artefact, so it currently gates nothing.
+    # Gates the DOM + screenshot captures under <run>/screenshots/ (the
+    # discovery page, and any portfolio that failed). Off by default: a
+    # routine dump holds only what `load` reads.
     assert download.parse_args(["--debug"]).debug is True
     assert download.parse_args([]).debug is False
+
+
+def test_debug_help_promises_bronze_captures(capsys):
+    # Guards against the flag regressing to the warn-only stub it was.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--debug" in out
+    assert "gates nothing" not in out
+    assert "NOT YET IMPLEMENTED" not in out

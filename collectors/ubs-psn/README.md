@@ -107,7 +107,7 @@ directory (marker and all) is removed.
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
 | `--check` | off | Probe the credential and exit: connect, authenticate, disconnect. Consumes no files. Backs `login --check`. |
 | `--dry-run` | off | Skip downloads |
-| `--debug` | off | Capture debug artefacts into the bronze run dir. An SFTP pull produces none, so today this gates nothing; present so the fleet's `--debug` convention is uniform. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
+| `--debug` | off | Capture `screenshots/sftp-listing.txt` into the bronze run dir: the accepted host-key fingerprint plus what each `download/<ORDERTYPE>/` dir was actually offering — which is what explains a pull that brought back less than expected, since the pull itself only stats one exact filename per dir. Pure observation: it lists, never fetches, and never changes what is downloaded. A pull that fetched nothing keeps its shell (`status: "empty"`) so the listing is inspectable, rather than discarding it unseen; `prune` reclaims either. `load` never reads it. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
 | `-v`, `--verbose` | off | DEBUG-level logging |
 
 ### Caveats
@@ -253,13 +253,15 @@ server-side the moment it is downloaded, and `load` ingests whatever
 zips are present regardless of whether the dump finished — so a run
 dir holding *any* zip is classified complete and never a deletion
 candidate, even if a crash left `run.json` at `"in-progress"` or wrote
-no manifest at all. There are no debug artefacts to reclaim from a
-finished dump, so the only thing `prune` can ever remove is a zip-less
-crash shell: a run dir minted before the first file arrived and then
-abandoned. In practice this is a near-no-op (`download.py` already
-removes a run dir that fetched nothing, and `--dry-run` creates none),
-so its real value is the guarantee that a fleet-wide prune never
-deletes a ubs-psn load input. Runs host-side like `load`; an unreadable
+no manifest at all. The only thing it reclaims from a finished dump is
+the `screenshots/` listing a `download --debug` left behind — never a
+zip. Beyond that it can remove only a zip-less shell: a run dir minted
+before the first file arrived and then abandoned, or the `status:
+"empty"` dump a `--debug` pull leaves when nothing was queued. A routine
+pull writes neither (`download.py` removes a run dir that fetched
+nothing, and `--dry-run` creates none), so for the nightly path this
+stays a near-no-op whose real value is the guarantee that a fleet-wide
+prune never deletes a ubs-psn load input. Runs host-side like `load`; an unreadable
 or corrupt `run.json` is left untouched, and an in-flight guard
 (`--min-age-hours`, default 1, keyed on recent write activity) keeps
 it from removing a download that is still running.

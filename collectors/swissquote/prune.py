@@ -3,20 +3,26 @@
 Prune non-complete dumps from the swissquote bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with swissquote's configuration. Swissquote writes no
-bronze-resident debug artefact — its screenshots, HTML/DOM dumps, the
-SmartL3 feedback log, and Playwright trace bundles are all opt-in
-(``--screenshot-dir`` / ``--trace``) and land OUTSIDE bronze, in the
-``/debug`` mount. So ``debug_subdirs`` is empty and only the second
-prune category applies:
+prune engine) with swissquote's configuration. Two categories are
+removed:
 
+* ``screenshots/`` inside a complete dump — the landmark DOM +
+  screenshot captures ``download --debug`` writes. ``load`` never reads
+  them, so reclaiming them cannot change silver. (The other
+  diagnostics — landmark screenshots, the SmartL3 feedback log, and
+  Playwright trace bundles — stay opt-in under ``--screenshot-dir`` /
+  ``--trace`` and land OUTSIDE bronze in the ``/debug`` mount, where
+  prune never sees them.)
 * whole run dirs that are not complete dumps: run.json is missing (a
   hard-kill / OOM / power-loss that bypassed download.py's
   crash-cleanup trap before it could finalise) or its ``status`` is
   anything other than ``"complete"`` (an ``"in-progress"`` marker from
   a crashed walk). ``load`` skips such dirs, so pruning one only
   reclaims disk; after removal the next ``load --force`` rebuild
-  reflects it.
+  reflects it. ``download --debug`` deliberately leaves a crashed dump
+  in place rather than letting its own trap remove it — the captures
+  are the point — so under that flag this category is the backstop that
+  reclaims it.
 
 Completeness signal: the ``run.json`` ``status`` field the walk now
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
@@ -31,11 +37,11 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
 so a long backfill is protected. ``--dry-run`` prints the plan without
 removing anything. The only paths ever deleted are whole non-complete
-run dirs; the load inputs of complete dumps (run.json, accounts.json,
-positions.xls, position_details.json, list_of_assets.xls, the
-transactions CSVs, and documents/) and the non-run entries at the
-bronze root (``manual/``, the silver ``swissquote.db``) are never
-touched.
+run dirs and ``screenshots/`` subdirs; the load inputs of complete dumps
+(run.json, accounts.json, positions.xls, position_details.json,
+list_of_assets.xls, the transactions CSVs, and documents/) and the
+non-run entries at the bronze root (``manual/``, the silver
+``swissquote.db``) are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -45,7 +51,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -61,7 +67,8 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),           # nothing debug-y ever lands in bronze
+    # Where `download --debug` puts its landmark captures.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,   # manifest_name defaults to 'run.json'
 )
 

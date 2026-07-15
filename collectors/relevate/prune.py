@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Prune non-complete dumps from the relevate bronze tree.
+Prune debug artefacts and non-complete dumps from the relevate bronze
+tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with relevate's configuration. relevate is a REST-only
-collector — no browser, so no screenshots / DOM dumps / Playwright
-traces ever land in a bronze run dir. Its ``debug_subdirs`` is
-therefore empty: nothing inside a *complete* dump is ever removed.
-Every artefact a complete dump holds (the JSON payloads, the document
-PDFs, the manifest) is a faithful bronze capture, and several are
-``load`` inputs read cross-dump. The one thing ``prune`` reclaims here
-is whole run dirs that are **not complete dumps**, across every
-timestamped run dir under ``--bronze-dir``:
+prune engine) with relevate's configuration. Two categories are removed,
+across every timestamped run dir under ``--bronze-dir``.
+
+The first is ``<run>/screenshots/`` — the HTTP trace ``download --debug``
+writes (``http-trace.jsonl``: one metadata line per Relevate request).
+relevate drives no browser, so there are no DOM dumps or Playwright
+traces beside it; the request trace is its whole debug surface. It is
+written only under ``--debug`` and never read by ``load``, so deleting it
+leaves silver byte-identical. Every other artefact a complete dump holds
+(the JSON payloads, the document PDFs, the manifest) is a faithful bronze
+capture, several are ``load`` inputs read cross-dump, and none is ever
+removed.
+
+The second is whole run dirs that are **not complete dumps**:
 
 * a crashed / interrupted walk — ``run.json`` is absent, or present
   but its ``status`` is ``"in-progress"`` / ``"incomplete"`` (the
@@ -41,11 +47,12 @@ or corrupt ``run.json`` is UNKNOWN and never deleted.
 An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir
 so a long backfill is protected. ``--dry-run`` prints the plan without
-removing anything. The only paths ever deleted are whole non-complete
-run dirs; load inputs of complete dumps (``accounts/``,
-``portfolios/``, ``documents/`` — the last read cross-dump for
-historical-snapshot and credit-note PDF parsing) and non-run entries at
-the bronze root (``manual/``, the silver DB) are never touched.
+removing anything. The only paths ever deleted are
+``<run>/screenshots/`` subtrees and whole non-complete run dirs; load
+inputs of complete dumps (``accounts/``, ``portfolios/``, ``documents/``
+— the last read cross-dump for historical-snapshot and credit-note PDF
+parsing) and non-run entries at the bronze root (``manual/``, the silver
+DB) are never touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -55,7 +62,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _legacy_complete(run_dir, meta) -> bool:
@@ -80,7 +87,9 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    debug_subdirs=(),          # REST-only: no bronze-resident debug artefacts
+    # `download --debug`'s HTTP trace, which debugcap lands under this
+    # subdir fleet-wide. Everything else in a run dir is a bronze capture.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
 )
 

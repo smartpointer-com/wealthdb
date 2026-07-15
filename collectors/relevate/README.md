@@ -209,10 +209,11 @@ for the shared env-file rules.
 
 `prune` removes whole non-complete run dirs across the bronze tree: a
 walk that crashed before writing a terminal `run.json` status, and
-`--dry-run` shells. relevate is REST-only, so it writes no
-bronze-resident debug artefacts (no screenshots / DOM dumps / traces);
-there is nothing to reclaim from a *complete* dump, and its data —
-including the document PDFs read cross-dump for historical-snapshot and
+`--dry-run` shells. From a *complete* dump it reclaims one thing — the
+`screenshots/` HTTP trace a `download --debug` left behind, which a
+routine download never writes. relevate drives no browser, so there are
+no DOM dumps or Playwright traces beside it. The dump's data — including
+the document PDFs read cross-dump for historical-snapshot and
 credit-note parsing — is never touched, so silver stays reproducible.
 Deleting a non-complete dump surfaces on the next `load --force`
 rebuild. An in-flight guard (`--min-age-hours`, default 1, keyed on

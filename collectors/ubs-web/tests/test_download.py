@@ -5,6 +5,11 @@ walk (root CLAUDE.md §2) and must persist NOTHING under the bronze
 ``--bronze-dir`` — not even a ``run.json`` shell, because ``load``'s
 ``scan_bronze`` has no status guard and would ingest such a shell as a
 dump run. These tests pin that invariant plus the real-run counterpart.
+
+``--debug`` is covered here too, since it writes into that same tree:
+its captures must land inside the run dir on a real run, and must not
+resurrect a bronze write under ``--dry-run``, where there is no run dir
+to hold them.
 """
 from __future__ import annotations
 
@@ -45,6 +50,13 @@ def test_prepare_run_dir_real_run_writes_in_progress_marker(tmp_path):
 class _FakePage:
     def set_default_navigation_timeout(self, _ms):
         pass
+
+    # The two calls debugcap.capture_page drives.
+    def content(self):
+        return "<html>synthetic home</html>"
+
+    def screenshot(self, *, path, full_page=False):
+        Path(path).write_bytes(b"\x89PNG synthetic")
 
 
 class _FakeContext:
@@ -101,6 +113,76 @@ def test_dry_run_download_persists_nothing_to_bronze(tmp_path, monkeypatch):
         assert list(dest.iterdir()) == []
     # Belt and suspenders: no UTC-timestamped dump dir anywhere below it.
     assert list(Path(dest).glob("*/run.json")) == []
+
+
+def test_dry_run_with_debug_still_persists_nothing(tmp_path, monkeypatch):
+    # --debug must not resurrect a bronze write under --dry-run: there is
+    # no run dir for captures to live in, and materialising one would
+    # hand `load`'s scan_bronze a dump run. The gate warns instead.
+    _mock_playwright_layer(monkeypatch)
+    dest = tmp_path / "bronze"
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+
+    rc = download.main(
+        ["--state-path", str(state), "--bronze-dir", str(dest),
+         "--dry-run", "--debug"]
+    )
+
+    assert rc == 0
+    if dest.exists():
+        assert list(dest.iterdir()) == []
+    assert list(Path(dest).glob("*/screenshots")) == []
+
+
+# --------------------------------------------------------------------
+# --debug: bronze-resident landmark captures
+# --------------------------------------------------------------------
+
+def _mock_export_layer(monkeypatch):
+    """Stub the exports so a real run reaches write_run_json without a
+    browser. enumerate_accounts already returns [], so the transaction
+    loop is empty and only the 10-home capture fires."""
+    monkeypatch.setattr(download, "export_positions", lambda *a, **k: [])
+    monkeypatch.setattr(download, "harvest_documents", lambda *a, **k: [])
+
+
+def _real_run(tmp_path, monkeypatch, *flags):
+    _mock_playwright_layer(monkeypatch)
+    _mock_export_layer(monkeypatch)
+    dest = tmp_path / "bronze"
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+    rc = download.main(
+        ["--state-path", str(state), "--bronze-dir", str(dest), *flags])
+    return rc, dest
+
+
+def test_debug_off_writes_no_captures(tmp_path, monkeypatch):
+    # The default: a routine dump holds only what `load` reads.
+    rc, dest = _real_run(tmp_path, monkeypatch)
+    assert rc == 0
+    assert list(dest.glob("*/run.json"))     # a real dump was written
+    assert list(dest.glob("*/screenshots")) == []
+
+
+def test_debug_captures_home_inside_run_dir(tmp_path, monkeypatch):
+    # The homepage is scraped for anchors it may simply not have, and a
+    # miss only warns — so the capture is the only record of what the DOM
+    # held. It must land INSIDE the run dir, beside the load inputs, so
+    # prune reclaims it with the dump.
+    rc, dest = _real_run(tmp_path, monkeypatch, "--debug")
+    assert rc == 0
+    run_dirs = [p.parent for p in dest.glob("*/run.json")]
+    assert len(run_dirs) == 1
+    shots = run_dirs[0] / "screenshots"
+    assert {p.name for p in shots.iterdir()} == {"10-home.html", "10-home.png"}
+    assert (shots / "10-home.html").read_text() == "<html>synthetic home</html>"
+
+
+def test_debug_flag_defaults_off():
+    assert download.parse_args(["--dry-run"]).debug is False
+    assert download.parse_args(["--dry-run", "--debug"]).debug is True
 
 
 # --------------------------------------------------------------------

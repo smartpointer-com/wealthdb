@@ -3,19 +3,24 @@
 Prune non-complete dumps from the fred bronze tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
-prune engine) with fred's configuration. fred is a pure REST/JSON
-collector: a complete run dir holds only ``load`` inputs — the
-``run.json`` manifest and one ``<series_id>.json`` observations document
-per fetched FX series — and it writes no bronze-resident debug artefacts
-(no screenshots, traces, or DOM dumps). So ``debug_subdirs`` is empty and
-prune's only effect is removing **whole run dirs that are not complete
-dumps**, across every timestamped run dir under ``--bronze-dir``:
+prune engine) with fred's configuration. Two categories are removed,
+across every timestamped run dir under ``--bronze-dir``:
 
-* ``run.json`` is missing (the walk crashed before writing any manifest),
-  or its ``status`` is anything other than ``"complete"`` (an
-  ``"in-progress"`` marker from a crashed or still-running walk). ``load``
-  already skips such a dump; prune reclaims its disk. After pruning one,
-  the next ``load --force`` rebuild reflects the removal.
+* ``<run>/screenshots/`` — the HTTP trace ``download --debug`` writes
+  (``http-trace.jsonl``: one metadata line per FRED request). Written
+  only under ``--debug``; never read by ``load``, so deleting it leaves
+  silver byte-identical.
+
+* whole run dirs that are not complete dumps: ``run.json`` is missing
+  (the walk crashed before writing any manifest), or its ``status`` is
+  anything other than ``"complete"`` (an ``"in-progress"`` marker from a
+  crashed or still-running walk). ``load`` already skips such a dump;
+  prune reclaims its disk. After pruning one, the next ``load --force``
+  rebuild reflects the removal.
+
+Every other file in a complete run dir is a ``load`` input — the
+``run.json`` manifest and one ``<series_id>.json`` observations document
+per fetched FX series — and is never touched.
 
 Completeness signal: the ``run.json`` ``status`` field the walk now
 writes (``"in-progress"`` at run-dir creation, atomically overwritten
@@ -29,9 +34,10 @@ An in-flight guard skips non-complete dumps written within
 ``--min-age-hours`` (default 1), keyed on the newest mtime in the dir so a
 long ``--lookback all`` backfill (a sequence of series fetches) is
 protected while it runs. ``--dry-run`` prints the plan without removing
-anything. The only paths ever deleted are whole non-complete run dirs;
-load inputs of complete dumps, the silver ``fred.db`` and any other
-non-run entries at the bronze root are never touched.
+anything. The only paths ever deleted are ``<run>/screenshots/`` subtrees
+and whole non-complete run dirs; load inputs of complete dumps, the silver
+``fred.db`` and any other non-run entries at the bronze root are never
+touched.
 
 Usage:
     prune.py [--bronze-dir /data] [--dry-run] [--min-age-hours N]
@@ -41,7 +47,7 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import prune
+from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
@@ -56,11 +62,11 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    # fred writes NO bronze-resident debug artefacts, and every file in a
-    # complete run dir (run.json + each <series_id>.json) is a load input,
-    # so nothing inside a complete dump is ever pruned. Must stay empty:
-    # adding run.json or any *.json here would delete a load input.
-    debug_subdirs=(),
+    # The only debug artefact fred writes: `download --debug`'s HTTP trace,
+    # which debugcap lands under this subdir fleet-wide. Everything else in
+    # a complete run dir (run.json + each <series_id>.json) is a load input —
+    # adding either here would delete one.
+    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
 )
 

@@ -14,7 +14,7 @@ explicitly authorised.
 Usage:
     download.py [--state-path <file>] [--bronze-dir <dir>]
                 [--lookback PRESET|YYYY-MM-DD]
-                [--dry-run] [--screenshot-dir <dir>] [--trace]
+                [--dry-run] [--debug] [--screenshot-dir <dir>] [--trace]
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from collectorkit import bronze, cli, session
+from collectorkit import bronze, cli, debugcap, session
 
 import landmarks as ubs  # local module
 
@@ -110,14 +110,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "--screenshot-dir; the bundle lands there alongside "
                         "screenshots.")
     p.add_argument("--debug", action="store_true",
-                   help="Uniform debug gate. ubs-web writes no debug artefact "
-                        "into the bronze run dir — its troubleshooting "
-                        "diagnostics (per-landmark screenshots, the Playwright "
-                        "trace bundle) are the external --screenshot-dir / "
-                        "--trace outputs, which land in the /debug mount, not "
-                        "in bronze. This flag is accepted so the CLI surface "
-                        "matches the other collectors; it currently gates "
-                        "nothing bronze-resident.")
+                   help="Save opt-in debug captures (DOM + screenshot) INSIDE "
+                        "the bronze run dir under <run>/screenshots/: the "
+                        "homepage the account and portfolio anchors are "
+                        "scraped from, the documents list once its filters "
+                        "render, and the page any account's transaction export "
+                        "failed on. Off by default — the captures are never "
+                        "read by `load`, and `prune` reclaims "
+                        "<run>/screenshots/ from complete dumps. No-op under "
+                        "--dry-run, which persists nothing to bronze. Distinct "
+                        "from --screenshot-dir / --trace, whose per-landmark "
+                        "screenshots and trace bundle land in the /debug "
+                        "mount, outside bronze.")
     return p.parse_args(argv)
 
 
@@ -811,9 +815,15 @@ def _suggest_extension(suggested: str | None, fmt: str) -> str:
 # ============================================================
 
 def harvest_documents(page, since: date, until: date, run_dir: Path,
-                      context, screenshot_dir: Path | None) -> list[dict]:
+                      context, screenshot_dir: Path | None,
+                      debug: bool = False) -> list[dict]:
     """Scrape document URLs across [since, until], paginating
-    through the 999-row UBS cap by bisecting the window."""
+    through the 999-row UBS cap by bisecting the window.
+
+    ``debug`` additionally writes the settled documents page into
+    ``run_dir/screenshots/`` — the DOM the window-bisect walk reads its
+    counts and rows out of. Only reached on a real run, so ``run_dir`` is
+    always a real dir here."""
     docs_dir = run_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     _dismiss_open_overlays(page)
@@ -825,11 +835,15 @@ def harvest_documents(page, since: date, until: date, run_dir: Path,
                                timeout=LANDMARK_TIMEOUT_MS)
     except Exception:
         maybe_screenshot(page, screenshot_dir, "docs-no-filters")
+        if debug:
+            debugcap.capture_page(page, run_dir, "30-documents", log=log)
         raise SystemExit(
             "Documents page filter buttons did not appear. Session "
             "may have expired, or UBS may have redesigned the page."
         )
     maybe_screenshot(page, screenshot_dir, "docs-rendered")
+    if debug:
+        debugcap.capture_page(page, run_dir, "30-documents", log=log)
 
     seen_tokens: set[str] = set()
     harvested: list[dict] = []
@@ -1237,10 +1251,6 @@ def main(argv: list[str]) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.debug:
-        # TODO(second pass): write bronze-resident debug captures under --debug.
-        cli.warn_debug_noop("ubs-web", log)
-
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir.")
 
@@ -1257,6 +1267,20 @@ def main(argv: list[str]) -> int:
     # every export (and write_run_json) is skipped below.
     run_dir = _prepare_run_dir(args.bronze_dir, args.dry_run)
 
+    # Captures live inside the run dir, so a --dry-run (run_dir is None,
+    # by design — see _prepare_run_dir) has nowhere to put them and the
+    # gate degrades to a warning rather than materialising a dir the walk
+    # promised not to write.
+    debug_dir = run_dir if args.debug else None
+    if args.debug and run_dir is None:
+        log.warning("--debug: --dry-run persists nothing to bronze; "
+                    "no captures will be written")
+
+    def capture(page, name: str) -> None:
+        """Snapshot a landmark into the run dir; a no-op unless --debug."""
+        if debug_dir is not None:
+            debugcap.capture_page(page, debug_dir, name, log=log)
+
     from playwright.sync_api import sync_playwright
 
     rc = 0
@@ -1271,6 +1295,12 @@ def main(argv: list[str]) -> int:
             try:
                 _verify_session(page)
                 accounts = enumerate_accounts(page, args.screenshot_dir)
+                # The homepage is scraped twice for anchors it may simply
+                # not have — the cash accounts here, the portfolioUids a
+                # moment later in export_positions — and both misses only
+                # warn. This DOM is what says whether the anchors moved or
+                # were genuinely absent.
+                capture(page, "10-home")
                 txn_results: list[dict] = []
                 doc_results: list[dict] = []
                 positions_meta: list[dict] = []
@@ -1302,9 +1332,17 @@ def main(argv: list[str]) -> int:
                                           "account %s: %s",
                                           account["kind"],
                                           account["account_id"][:12], e)
+                            # Failure path only: the page is still on the
+                            # surface that raised, so this is the DOM the
+                            # failing step saw. One capture per account
+                            # would bury it. Named by the sha256 prefix the
+                            # export filenames already use.
+                            capture(page, "20-txn-"
+                                    f"{_account_short_id(account['account_id'])}"
+                                    "-failed")
                     doc_results = harvest_documents(
                         page, since, until, run_dir,
-                        context, args.screenshot_dir,
+                        context, args.screenshot_dir, debug=args.debug,
                     )
                     write_run_json(run_dir, since, until,
                                    txn_results, doc_results,
