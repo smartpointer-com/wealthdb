@@ -326,8 +326,21 @@ def test_force_rebuild_equals_incremental(tmp_path):
                            pos_node("p2", "acme-fund-f", name="Fund One", total=None)]),
         dashboard_capture(), commitments_capture(), funding])
 
+    # --documents-dir is scoped to tmp_path on purpose. Its default is
+    # /data/angellist-documents, which the test container bind-mounts to the
+    # real bronze tree — so omitting it loads whatever documents happen to be
+    # on the host into this test's silver. That made the equality below depend
+    # on live data, and flake: tax_documents.retrieved_at is stamped
+    # strftime('%s','now') by the INSERT rather than by a column default, so
+    # _dump_silver's drop-the-now-defaults filter keeps it, and the two loads
+    # disagree whenever they land either side of a second boundary.
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    argv = ["--bronze-dir", str(dest), "--silver-db", str(db),
+            "--documents-dir", str(docs)]
+
     # Plain incremental load, then snapshot the whole silver DB.
-    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db)]) == 0
+    assert load.main(argv) == 0
     before = _dump_silver(db)
     # Sanity: the load actually populated the core tables, so the equality
     # below can't pass vacuously on two empty builds.
@@ -335,8 +348,7 @@ def test_force_rebuild_equals_incremental(tmp_path):
         and before["funding_transactions"]
 
     # Force = reset + full rebuild from the same, unchanged bronze.
-    assert load.main(
-        ["--bronze-dir", str(dest), "--silver-db", str(db), "--force"]) == 0
+    assert load.main(argv + ["--force"]) == 0
     after = _dump_silver(db)
 
     assert after == before
