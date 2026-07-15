@@ -187,9 +187,13 @@ wrapper_mounts_help() {
 
 # Implement `./<wrapper> build [extra args]` — exec docker build and
 # pass through any extra args. Caller dispatches on $1 == "build".
+# --provenance=false: buildx's default provenance attestation embeds build
+# metadata, so the image digest changes on every build even when every layer
+# is CACHED — which defeats the cache for anything built FROM this image.
+# These images are local-only and never pushed.
 wrapper_build() {
     shift  # drop "build"
-    exec docker build -t "$IMAGE" "$@" "$HERE"
+    exec docker build --provenance=false -t "$IMAGE" "$@" "$HERE"
 }
 
 # Implement `./<wrapper> prune [extra args]` host-side — exec the

@@ -95,12 +95,19 @@ test-collectors:  $(addprefix test-,$(COLLECTORS))
 # (which would put camoufox before playwright).
 BASE_IMAGES := base-python base-playwright base-camoufox
 
+# --provenance=false on every docker build: buildx attaches a provenance
+# attestation by default, and it embeds build metadata, so the image digest
+# changes on EVERY build even when all layers are CACHED. A base image whose
+# digest moves invalidates `FROM wealthdb/base-*` in all 15 collectors, so
+# each one re-ran its whole Dockerfile (pip install and all) on every build.
+# These images are local-only and never pushed; nothing consumes the
+# attestation.
 base-images:
 	@for img in $(BASE_IMAGES); do \
 		f="shared/images/$$img.Dockerfile"; \
 		[ -e "$$f" ] || continue; \
 		echo "==> build base image wealthdb/$$img:latest"; \
-		docker build -q -f "$$f" -t "wealthdb/$$img:latest" shared/ >/dev/null; \
+		docker build -q --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/ >/dev/null; \
 	done
 
 # clean    = build artefacts (pycache, pytest cache, Go build cache)
@@ -295,10 +302,10 @@ update-bases:
 		[ -e "$$f" ] || continue; \
 		if grep -qE '^FROM[[:space:]]+wealthdb/' "$$f"; then \
 			echo "==> rebuild base wealthdb/$$img:latest (FROM is local, no --pull)"; \
-			docker build -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+			docker build --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/; \
 		else \
 			echo "==> rebuild base wealthdb/$$img:latest (--pull)"; \
-			docker build --pull -f "$$f" -t "wealthdb/$$img:latest" shared/; \
+			docker build --pull --provenance=false -f "$$f" -t "wealthdb/$$img:latest" shared/; \
 		fi; \
 	done
 

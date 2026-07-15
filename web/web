@@ -136,7 +136,9 @@ _exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ];
 
 # ---- subcommands ------------------------------------------------------
 
-web_build() { exec docker build -t "$IMAGE" "$HERE" "$@"; }
+# --provenance=false: buildx's default attestation embeds build metadata,
+# so the image digest would change on every build even when fully cached.
+web_build() { exec docker build --provenance=false -t "$IMAGE" "$HERE" "$@"; }
 
 web_start() {
     _load_config

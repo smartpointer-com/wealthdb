@@ -26,7 +26,9 @@ IMAGE="wealthdb:latest"
 case "${1:-}" in
     build)
         shift
-        exec docker build -t "$IMAGE" "$REPO" "$@"
+        # --provenance=false: buildx's default attestation would give the
+        # image a fresh digest on every build even when fully cached.
+        exec docker build --provenance=false -t "$IMAGE" "$REPO" "$@"
         ;;
     web)
         shift

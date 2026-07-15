@@ -1,0 +1,23 @@
+# Build context excludes for the base images (context is shared/).
+#
+# base-python and base-playwright do `COPY collectorkit /opt/collectorkit`
+# — a whole-directory copy, so unlike the collectors' copy-these-files
+# Dockerfiles, everything living under shared/collectorkit lands in the
+# image and in the layer's cache key.
+#
+# The tooling writes into that same tree: `make test-collectorkit` builds
+# its venv at shared/collectorkit/.venv (29MB) and pytest leaves
+# __pycache__ behind. Without these excludes, running the tests changed
+# the COPY layer's hash, which gave base-python a new digest, which
+# invalidated `FROM wealthdb/base-*` in all fifteen collectors — so every
+# collector re-ran its whole Dockerfile after every test run.
+#
+# None of this belongs in an image regardless: the venv is a host-side
+# artefact built against the host's interpreter, and the container installs
+# collectorkit itself.
+collectorkit/.venv/
+**/__pycache__/
+**/*.egg-info/
+**/*.egg-link
+**/.pytest_cache/
+**/*.pyc
