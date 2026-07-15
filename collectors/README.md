@@ -292,6 +292,26 @@ rejected is exactly what it exists to catch — so it makes the cheapest
 authenticated call the source allows and maps the answer onto its exit code.
 The full authentication policy is in root [CLAUDE.md](../CLAUDE.md) §3.
 
+#### Browser launches
+
+A collector that drives a browser keeps its session in a persistent profile
+dir (`<secrets>/<name>-profile`, Camoufox/Firefox) or an ephemeral context
+plus a `storage_state` JSON file (Chromium). Either way the launch options
+come from
+[`collectorkit.launch`](../shared/collectorkit/collectorkit/launch.py) —
+never a hand-rolled pref dict or arg list:
+
+- **Camoufox / Playwright Firefox** — `firefox_user_prefs=launch.firefox_prefs()`
+- **Playwright Chromium** — `args=launch.chromium_args(<collector's own flags>)`
+
+The shared set disables the disk cache, history, favicons, telemetry
+persistence, and the password manager, keeping the profile down to session
+state (cookies, keys, certs, prefs) rather than an unbounded cache of
+authenticated responses. The in-memory cache stays on, and IndexedDB
+(`storage/`) is deliberately untouched — SPAs keep real session state there.
+Debugging uses `--trace`, which is a richer artefact than a cache blob store.
+A launch site that skips the helper fails `make test-collectorkit`.
+
 ### download.py — bronze
 
 `download.py` writes raw artefacts, exactly as the source returns them,

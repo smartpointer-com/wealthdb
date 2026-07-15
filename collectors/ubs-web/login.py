@@ -32,7 +32,7 @@ from pathlib import Path
 
 import landmarks as ubs  # local module: URL + DOM landmarks
 
-from collectorkit import bronze, cli, envfile, session
+from collectorkit import bronze, cli, envfile, launch, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -338,7 +338,8 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
     log.info("validating session at %s", ubs.LOGIN_ENTRY_URL)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"],
+            headless=True,
+            args=launch.chromium_args("--no-sandbox", "--disable-dev-shm-usage"),
         )
         context = browser.new_context(
             storage_state=str(state_path), user_agent=USER_AGENT,
@@ -397,7 +398,8 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
     log.info("opening UBS login")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"],
+            headless=True,
+            args=launch.chromium_args("--no-sandbox", "--disable-dev-shm-usage"),
         )
         context = browser.new_context(user_agent=USER_AGENT)
         if trace:

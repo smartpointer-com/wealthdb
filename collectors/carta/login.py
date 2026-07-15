@@ -41,7 +41,7 @@ import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("carta.login")
 
@@ -276,6 +276,7 @@ def main(argv: list[str]) -> int:
         headless=False,   # headed under the entrypoint's Xvfb; clears Cloudflare
         humanize=True,
         geoip=True,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         page = context.new_page()
 

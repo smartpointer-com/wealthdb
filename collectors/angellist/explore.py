@@ -71,7 +71,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("angellist.explore")
 
@@ -419,6 +419,7 @@ def main(argv: list[str]) -> int:
             geoip=True,
             block_webrtc=True,
             record_har_path=str(har_path),
+            firefox_user_prefs=launch.firefox_prefs(),
         )
         context = _camoufox_cm.__enter__()
 

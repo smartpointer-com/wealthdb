@@ -56,7 +56,7 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, debugcap
+from collectorkit import bronze, cli, debugcap, launch
 
 log = logging.getLogger("angellist.download")
 
@@ -340,6 +340,7 @@ def main(argv: list[str]) -> int:
             humanize=False,
             geoip=True,
             block_webrtc=True,
+            firefox_user_prefs=launch.firefox_prefs(),
         ) as context:
             context.add_cookies(cookies)
             context.on("response", on_response)

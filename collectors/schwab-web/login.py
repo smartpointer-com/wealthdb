@@ -45,7 +45,7 @@ from pathlib import Path
 
 import landmarks as schwab
 
-from collectorkit import bronze, cli, envfile
+from collectorkit import bronze, cli, envfile, launch
 
 log = logging.getLogger("schwab-web.login")
 
@@ -359,6 +359,7 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
         os="macos",
         window=(1280, 800),
         headless=False,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         if trace:
             context.tracing.start(screenshots=True, snapshots=True, sources=True)

@@ -37,7 +37,7 @@ import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("cointracking.login")
 
@@ -274,6 +274,7 @@ def main(argv: list[str]) -> int:
             user_data_dir=str(args.profile_dir),
             headless=True,
             viewport={"width": 1280, "height": 800},
+            firefox_user_prefs=launch.firefox_prefs(),
         )
         try:
             page = context.new_page()

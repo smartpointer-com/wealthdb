@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("equityzen.explore")
 
@@ -453,20 +453,7 @@ def main(argv: list[str]) -> int:
             humanize=True,
             geoip=True,
             record_har_path=str(har_path),
-            # Disable Firefox's built-in password manager. With the
-            # persistent profile holding a saved equityzen.com credential,
-            # Firefox would autofill the password ON TOP OF our
-            # origin-gated pre-fill — the field ended up longer than the
-            # real password and EquityZen rejected it. These prefs stop
-            # Firefox saving, generating, or autofilling logins so our
-            # pre-fill is the only writer. (Camoufox takes **launch_options
-            # and forwards firefox_user_prefs to Playwright's launch.)
-            firefox_user_prefs={
-                "signon.rememberSignons": False,
-                "signon.autofillForms": False,
-                "signon.generation.enabled": False,
-                "signon.management.page.breach-alerts.enabled": False,
-            },
+            firefox_user_prefs=launch.firefox_prefs(),
         )
         context = cm.__enter__()
         # Tolerant teardown: on the browser-closed exit path Camoufox's

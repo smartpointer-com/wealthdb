@@ -46,7 +46,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress, debugcap
+from collectorkit import bronze, cli, compress, debugcap, launch
 
 log = logging.getLogger("cointracking.download")
 
@@ -504,6 +504,7 @@ def main(argv: list[str]) -> int:
             headless=True,
             accept_downloads=True,
             viewport={"width": 1280, "height": 800},
+            firefox_user_prefs=launch.firefox_prefs(),
         )
         try:
             page = context.new_page()

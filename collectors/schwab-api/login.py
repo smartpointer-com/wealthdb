@@ -48,7 +48,7 @@ from pathlib import Path
 
 import oauth_landmarks as lm
 
-from collectorkit import cli, envfile, session
+from collectorkit import cli, envfile, launch, session
 
 log = logging.getLogger("schwab-login")
 
@@ -273,6 +273,7 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
         os="macos",
         window=(1280, 800),
         headless=False,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         if trace:
             context.tracing.start(screenshots=True, snapshots=True,

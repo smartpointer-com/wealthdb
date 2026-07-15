@@ -103,7 +103,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress, envfile
+from collectorkit import bronze, cli, compress, envfile, launch
 
 
 log = logging.getLogger("fidelity-web.download")
@@ -2170,6 +2170,7 @@ def open_camoufox_context(profile_dir, trace):
         # string gets handed straight to the IP-validator and raises
         # InvalidIP.)
         geoip=True,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         context.set_default_navigation_timeout(LANDMARK_TIMEOUT_MS)
         context.set_default_timeout(LANDMARK_TIMEOUT_MS)

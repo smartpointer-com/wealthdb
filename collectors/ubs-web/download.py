@@ -28,7 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from collectorkit import bronze, cli, debugcap, session
+from collectorkit import bronze, cli, debugcap, launch, session
 
 import landmarks as ubs  # local module
 
@@ -149,11 +149,11 @@ def _new_context(p, state_path: Path):
         )
     browser = p.chromium.launch(
         headless=True,
-        args=[
+        args=launch.chromium_args(
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
-        ],
+        ),
     )
     context = browser.new_context(
         storage_state=str(state_path), user_agent=USER_AGENT,

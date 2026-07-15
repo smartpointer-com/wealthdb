@@ -74,7 +74,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("carta.explore")
 
@@ -397,6 +397,7 @@ def main(argv: list[str]) -> int:
             humanize=True,
             geoip=True,
             record_har_path=str(har_path),
+            firefox_user_prefs=launch.firefox_prefs(),
         )
         context = _cam.__enter__()
 

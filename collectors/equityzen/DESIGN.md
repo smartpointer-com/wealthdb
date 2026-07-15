@@ -178,9 +178,10 @@ that cost real login attempts — recorded so they are not rediscovered):
   `loginTotp`. login.py types the digits as real keystrokes then clicks the
   Submit button (Enter / auto-submit kept only as fallbacks).
 - Each field is filled clear → fill → **verify**, and Firefox's password
-  manager is disabled (`signon.*` prefs) so a saved credential can't
-  autofill on top and concatenate the password (an early failure mode —
-  see the Camoufox password-manager prefs).
+  manager is disabled (the `signon.*` prefs in the shared
+  [`collectorkit.launch`](../../shared/collectorkit/collectorkit/launch.py)
+  pref set) so a saved credential can't autofill on top and concatenate the
+  password — an early failure mode.
 - Auth state is decided **purely by the URL leaving `/accounts/login`**
   (the whole login + TOTP flow stays on that path; a valid session
   redirects to `/welcome/`). The "#email-absent" heuristic is deliberately

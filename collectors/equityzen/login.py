@@ -62,7 +62,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile
+from collectorkit import cli, envfile, launch
 
 log = logging.getLogger("equityzen.login")
 
@@ -80,17 +80,6 @@ PASS_ENV = "EQUITYZEN_PASSWORD"
 EMAIL_SEL = "input#email"
 PWD_SEL = "input#password"
 TOTP_SEL = "input#oneTimePassword"
-
-# Firefox prefs that stop the built-in password manager from autofilling a
-# saved credential on top of our programmatic fill (which concatenated the
-# password field and got the login rejected). See
-# collectors/equityzen/DESIGN.md / explore.py.
-FIREFOX_PREFS = {
-    "signon.rememberSignons": False,
-    "signon.autofillForms": False,
-    "signon.generation.enabled": False,
-    "signon.management.page.breach-alerts.enabled": False,
-}
 
 TOTP_RE = re.compile(r"^\d{6}$")
 
@@ -386,7 +375,7 @@ def main(argv: list[str]) -> int:
         headless=False,
         humanize=True,
         geoip=True,
-        firefox_user_prefs=FIREFOX_PREFS,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         _attach_graphql_logger(context)
         page = context.new_page()

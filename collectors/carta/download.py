@@ -92,7 +92,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import cli, debugcap, docdedup
+from collectorkit import cli, debugcap, docdedup, launch
 
 log = logging.getLogger("carta.download")
 
@@ -784,6 +784,7 @@ def main(argv: list[str]) -> int:
         headless=False,   # headed under the entrypoint's Xvfb; clears Cloudflare
         humanize=True,
         geoip=True,
+        firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         try:
             return run(context, args, run_dir, snapshot_at, debug_dir)

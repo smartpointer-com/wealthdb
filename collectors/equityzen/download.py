@@ -69,9 +69,9 @@ import sys
 import time
 from pathlib import Path
 
-from collectorkit import bronze, cli, debugcap, docdedup, envfile
+from collectorkit import bronze, cli, debugcap, docdedup, envfile, launch
 
-from login import FIREFOX_PREFS, _authenticated
+from login import _authenticated
 
 log = logging.getLogger("equityzen.download")
 
@@ -361,7 +361,7 @@ def main(argv: list[str]) -> int:
     with Camoufox(
         persistent_context=True, user_data_dir=str(args.profile_dir),
         os="macos", window=(1280, 800), headless=False, humanize=True,
-        geoip=True, firefox_user_prefs=FIREFOX_PREFS,
+        geoip=True, firefox_user_prefs=launch.firefox_prefs(),
     ) as context:
         page = context.new_page()
         page.set_default_timeout(timeout_ms)

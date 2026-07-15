@@ -35,7 +35,7 @@ from pathlib import Path
 
 import landmarks as sq  # local module
 
-from collectorkit import bronze, cli, debugcap, session
+from collectorkit import bronze, cli, debugcap, launch, session
 
 log = logging.getLogger("swissquote.download")
 
@@ -128,11 +128,11 @@ def _new_context(p, state_path: Path):
     browser = p.chromium.launch(
         headless=True,
         # See login.py for rationale on the anti-detection knobs.
-        args=[
+        args=launch.chromium_args(
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
-        ],
+        ),
     )
     context = browser.new_context(
         storage_state=str(state_path),

@@ -31,7 +31,7 @@ import landmarks as sq  # local module: DOM landmarks + URL constants
 
 import subprocess
 
-from collectorkit import cli, envfile, session
+from collectorkit import cli, envfile, launch, session
 
 log = logging.getLogger("swissquote.login")
 
@@ -265,11 +265,11 @@ def _new_context(p, *, storage_state: Path | None):
         # that quietly stops polling when it detects automation; with
         # this flag (plus the navigator.webdriver override below) it
         # proceeds normally.
-        args=[
+        args=launch.chromium_args(
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
-        ],
+        ),
     )
     ctx_kwargs = {
         "user_agent": USER_AGENT,
