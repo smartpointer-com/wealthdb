@@ -16,8 +16,10 @@ Already-loaded dumps (recorded in dump_runs) are skipped.
 
 Currently loaded:
   - SDCL / SDCA / SDSA / SDPO / SDFI from ZMD.zip
-  - TDFXR / TDFWD from ZME.zip (other TD* types are loaded if non-empty;
-    empty <Data> sections are skipped)
+  - TDFXR / TDFWD / TDOPT / TDMM / TDOTC from ZME.zip (empty <Data>
+    sections are skipped)
+  - TDCAPI cash-account pricing/interest bookings from ZME.zip
+  - TDPOPF monthly portfolio performance from ZME.zip
   - MT535 holdings from ZAH.zip
   - MT537 pending securities from ZM5.zip
   - MT940 cash balances + cash_movement events from Z40.zip
@@ -583,6 +585,76 @@ def load_tdfwd(conn, snapshot_at, relationship_id, entities):
                                 "FwdCtrctInf", "forward_contracts")
 
 
+def load_tdcapi(conn, snapshot_at, relationship_id, entities):
+    """One row per (snapshot, account, settlement) from TDCAPI.
+
+    Each <CshAcctPricingAndInterestInfo> is a single service-charge or
+    interest booking line; UBS emits multiple per account per day.
+    Uniqueness within a snapshot is (AcctId, SttlmId, SttlmBkngNum);
+    the last two combine into settlement_external_id.
+
+    AcctId is canonicalised to IBAN via cash_accounts.payload.AcctId
+    (same convention as MT940). If the lookup misses (SDCA not yet
+    loaded for this account), we fall back to the raw AcctId with a
+    warning; a later reload after SDCA lands will canonicalise it.
+    """
+    n = 0
+    for elem in entities:
+        if _strip_ns(elem.tag) != "CshAcctPricingAndInterestInfo":
+            continue
+        parsed = elem_to_dict(elem)["CshAcctPricingAndInterestInfo"]
+        acct_mt = parsed.get("AcctId")
+        sttlm_id = parsed.get("SttlmId")
+        bkng_num = parsed.get("SttlmBkngNum")
+        if not acct_mt or not sttlm_id or not bkng_num:
+            log.warning("TDCAPI info missing AcctId/SttlmId/SttlmBkngNum — skipping")
+            continue
+        iban = _resolve_iban(conn, relationship_id, acct_mt)
+        if iban is None:
+            log.warning(
+                "TDCAPI: no IBAN mapping for %r (no cash_accounts row found); "
+                "falling back to raw AcctId for this dump", acct_mt)
+            iban = acct_mt
+        settlement_id = f"{sttlm_id}:{bkng_num}"
+        payload = canonical_json(strip_header_noise(parsed))
+        conn.execute(
+            "INSERT OR REPLACE INTO cash_account_pricing"
+            "(snapshot_at, relationship_id, account_external_id, "
+            " settlement_external_id, payload) VALUES (?, ?, ?, ?, ?)",
+            (snapshot_at, relationship_id, iban, settlement_id, payload),
+        )
+        n += 1
+    return n
+
+
+def load_tdpopf(conn, snapshot_at, relationship_id, entities):
+    """One row per (snapshot, portfolio) from TDPOPF.
+
+    UBS emits TDPOPF monthly. Each <PrtflKey> carries a PrtflId and one
+    or more <PrtflPerfData> blocks (MONTHLY, YTD, ...); the payload
+    keeps them nested together so consumers can pick the period they
+    care about without a separate table.
+    """
+    n = 0
+    for elem in entities:
+        if _strip_ns(elem.tag) != "PrtflKey":
+            continue
+        parsed = elem_to_dict(elem)["PrtflKey"]
+        pid = parsed.get("PrtflId")
+        if not pid:
+            log.warning("TDPOPF PrtflKey missing PrtflId — skipping")
+            continue
+        payload = canonical_json(strip_header_noise(parsed))
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_performance"
+            "(snapshot_at, relationship_id, portfolio_external_id, payload) "
+            "VALUES (?, ?, ?, ?)",
+            (snapshot_at, relationship_id, pid, payload),
+        )
+        n += 1
+    return n
+
+
 # --------------------------------------------------------------------------
 # SWIFT MT loaders
 # --------------------------------------------------------------------------
@@ -1102,7 +1174,8 @@ XML_LOADERS = {
         c, s, r, e, "MMCtrctInf", "money_market_contracts"),
     "TDOTC": lambda c, s, r, e: _load_contract_table(
         c, s, r, e, "OtcCtrctInf", "otc_contracts"),
-    # TDCAPI / TDPOPF loaders added when we have non-empty samples.
+    "TDCAPI": load_tdcapi,
+    "TDPOPF": load_tdpopf,
 }
 
 # MT loaders keyed by zip basename. Each takes (conn, snapshot_at,

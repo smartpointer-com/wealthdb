@@ -105,10 +105,11 @@ doesn't try to surface it:
 - **MT536, MT568, MT590, MT599, MT600, MT608, MT900/910, MT942,
   MT990.** Loader stubs not yet implemented — added when we have
   real samples. Bronze keeps every zip; silver simply skips.
-- **Empty XML containers** (`TDCAPI`, `TDOPT`, `TDMM`, `TDOTC` when
-  the relationship is not provisioned for, or holds none of, those
-  product types; `TDPOPF` until UBS produces the monthly batch).
-  Silver does not insert empty rows.
+- **Empty XML containers** (`TDOPT`, `TDMM`, `TDOTC` when the
+  relationship is not provisioned for, or holds none of, those product
+  types; `TDCAPI` on days with no service-charge or interest bookings;
+  `TDPOPF` between monthly emissions). Silver does not insert empty
+  rows.
 - **Computed / derived columns.** No FX-converted values, no
   realised-PnL, no settled flags. Those live in the gold layer.
 

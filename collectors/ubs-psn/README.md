@@ -143,6 +143,8 @@ Currently ingested per dump:
 | --- | --- |
 | `ZMD.zip` → `SDCL` / `SDCA` / `SDSA` / `SDPO` / `SDFI` XML | `account_holders` / `cash_accounts` / `safekeeping_accounts` / `portfolios` / `instruments` |
 | `ZME.zip` → `TDFXR` / `TDFWD` XML (and the contract stubs) | `fx_rates` / `forward_contracts` (and the contract tables) |
+| `ZME.zip` → `TDCAPI` cash-account pricing / interest bookings | `cash_account_pricing` |
+| `ZME.zip` → `TDPOPF` monthly portfolio performance | `portfolio_performance` |
 | `ZAH.zip` → MT535 holdings | `holdings` |
 | `ZM5.zip` → MT537 pending | `pending_securities` |
 | `Z40.zip` → MT940 statement headers + `:61:` lines | `cash_balances` + `events` (`kind='cash_movement'`) |
