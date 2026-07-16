@@ -40,7 +40,7 @@
 #
 # wrapper_init POPULATES (for the caller and the helpers below):
 #   HOST_SECRETS, HOST_DATA, HOST_DEBUG (when HAS_DEBUG=1),
-#   CONTAINER_NAME, IMAGE.
+#   HOST_STARTUPCACHE, CONTAINER_NAME, IMAGE.
 #
 # bash 3.2 compatibility: this lib avoids namerefs and associative
 # arrays so it runs on Apple's /bin/bash. Indirect expansion (${!var})
@@ -85,6 +85,14 @@ wrapper_init() {
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         HOST_DEBUG="$(_envvar DEBUG_DIR "$HOME/.cache/${NAME}-debug")"
     fi
+
+    # Host cache dir for the browsers' relocated startupCache (see
+    # collectorkit.launch). Mounted into every container so Firefox's
+    # regenerable compiled-bytecode cache lands here rather than next to the
+    # session cookie under /secrets. XDG cache path so it survives reboots
+    # (keeping launches fast) yet is plainly non-sensitive; one generic dir,
+    # not per-profile — the container keys per-profile subdirs itself.
+    HOST_STARTUPCACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/startupcache"
 }
 
 # wrapper_verb_takes_silver — is `$1` a subcommand that consumes the silver
@@ -176,6 +184,7 @@ wrapper_silver_verbs_str() {
 wrapper_mounts_help() {
     echo "  $HOST_SECRETS  ->  /secrets"
     echo "  $HOST_DATA     ->  /data"
+    echo "  $HOST_STARTUPCACHE  ->  /cache/startupcache"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         echo "  $HOST_DEBUG    ->  /debug"
     fi
@@ -259,6 +268,7 @@ wrapper_host_prune() {
 # wrapper should paper over.
 wrapper_check_mounts() {
     mkdir -p "$HOST_DATA"
+    mkdir -p "$HOST_STARTUPCACHE"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         mkdir -p "$HOST_DEBUG"
     fi
@@ -394,6 +404,14 @@ wrapper_main() {
     docker_args+=(
         -v "$HOST_SECRETS:/secrets"
         -v "$HOST_DATA:/data"
+        # Generic cache mount + env: the browsers relocate their regenerable
+        # startupCache here (keyed per profile in-container) instead of into
+        # /secrets. One mount covers every browser collector; non-browser
+        # ones simply never write to it. The host and container paths never
+        # coincide, so the in-profile symlink reads as dangling on the host
+        # — a pointer, not data (see collectorkit.launch.redirect_startup_cache).
+        -v "$HOST_STARTUPCACHE:/cache/startupcache"
+        -e "WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache"
         ${SILVER_MOUNT[@]+"${SILVER_MOUNT[@]}"}
     )
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then

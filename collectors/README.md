@@ -51,6 +51,12 @@ the full authentication policy.
 **Session state** (cookie jars, token bundles, browser profiles)
 also lives under `~/.secrets/` (`<source>-state.json`,
 `<source>-token.json`, or `<source>-profile/`), chmod `0600`.
+A browser profile keeps only session state — cookies, keys, certs,
+prefs; its one cache no pref can disable (Firefox's `startupCache/`)
+is relocated to a non-sensitive per-profile cache dir under
+`${XDG_CACHE_HOME:-~/.cache}/wealthdb/startupcache` (override with
+`WEALTHDB_STARTUPCACHE_DIR`), so no cache bytes accrue next to the
+session cookie.
 
 **Data layout** is uniform:
 
@@ -312,12 +318,20 @@ never a hand-rolled pref dict or arg list:
 The shared set disables the disk cache, history, favicons, telemetry
 persistence, and the password manager, keeping the profile down to session
 state (cookies, keys, certs, prefs) rather than an unbounded cache of
-authenticated responses. A profile signed into by hand (angellist's)
-overrides the password manager back on, so Firefox autofills the saved
-login. The in-memory cache stays on, and IndexedDB
-(`storage/`) is deliberately untouched — SPAs keep real session state there.
-None of it is observable to web content, so it is safe on the stealth paths.
-Debugging uses `--trace`, which is a richer artefact than a cache blob store.
+authenticated responses. The one regenerable cache no pref switches off,
+Firefox's build-scoped `startupCache/`, is not disabled (that would slow
+every launch) but relocated: `launch.prepare_profile_dir(<profile>)` — the
+one call every persistent-profile prep site makes — symlinks it out to a
+per-profile dir under the cache root, so the profile under `~/.secrets`
+holds no cache bytes. The docker wrappers mount that cache root at
+`/cache/startupcache`, so the relocated bytes land on the host; the
+in-profile symlink there reads as dangling on macOS (host and container
+paths differ) — a pointer, not data. A profile signed into by hand
+(angellist's) overrides the password manager back on, so Firefox autofills
+the saved login. The in-memory cache stays on, and IndexedDB (`storage/`)
+is deliberately untouched — SPAs keep real session state there. None of it
+is observable to web content, so it is safe on the stealth paths. Debugging
+uses `--trace`, which is a richer artefact than a cache blob store.
 A launch site that skips the helper — including an entrypoint that
 hand-writes prefs — fails `make test-collectorkit`.
 

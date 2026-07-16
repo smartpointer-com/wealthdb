@@ -350,7 +350,9 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    args.profile_dir.mkdir(parents=True, exist_ok=True)
+    # 0700 profile dir (holds the session cookie), with its regenerable
+    # startupCache relocated out of the secrets tree.
+    launch.prepare_profile_dir(args.profile_dir)
     timeout_ms = args.timeout * 1000
 
     username = password = ""

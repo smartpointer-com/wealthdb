@@ -184,7 +184,6 @@ MAX_ACTIVITY_WINDOW_DAYS = 93
 # ---------------------------------------------------------------------------
 
 LANDMARK_TIMEOUT_MS = 60_000
-PROFILE_DIR_MODE = 0o700
 
 # Canonical ${PREFIX}_ credential envs first, the unprefixed FIDELITY_*
 # names second: read FIDELITY_WEB_USERNAME/PASSWORD, falling back to
@@ -2115,20 +2114,8 @@ def maybe_source_env_files(args):
 
 
 # ---------------------------------------------------------------------------
-# Profile-dir + Camoufox launch
+# Camoufox launch
 # ---------------------------------------------------------------------------
-
-def prepare_profile_dir(profile_dir):
-    """Create the user-data-dir if missing and chmod it 0700."""
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(profile_dir, PROFILE_DIR_MODE)
-    except OSError as exc:
-        log.warning(
-            "could not chmod %s to 0%o: %s",
-            profile_dir, PROFILE_DIR_MODE, exc,
-        )
-
 
 @contextlib.contextmanager
 def open_camoufox_context(profile_dir, trace):
@@ -2637,7 +2624,7 @@ def run_check(args):
     if not args.profile_dir.exists():
         log.error("--profile-dir does not exist: %s", args.profile_dir)
         return 2
-    prepare_profile_dir(args.profile_dir)
+    launch.prepare_profile_dir(args.profile_dir)
     with open_camoufox_context(args.profile_dir, args.trace) as context:
         try:
             page = open_page(context)
@@ -2680,7 +2667,7 @@ def run_oneshot(args):
         "creds loaded: %s (len=%d), %s (len=%d)",
         USERNAME_ENVS[0], len(username), PASSWORD_ENVS[0], len(password),
     )
-    prepare_profile_dir(args.profile_dir)
+    launch.prepare_profile_dir(args.profile_dir)
     with open_camoufox_context(args.profile_dir, args.trace) as context:
         try:
             page = open_page(context)

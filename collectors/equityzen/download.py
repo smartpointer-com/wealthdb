@@ -358,6 +358,11 @@ def main(argv: list[str]) -> int:
         if debug_dir is not None:
             debugcap.capture_page(page, debug_dir, name, log=log)
 
+    # Relocate the profile's regenerable startupCache out of the secrets
+    # tree (idempotent; also migrates a pre-relocation profile) before
+    # launching against it.
+    launch.prepare_profile_dir(args.profile_dir)
+
     with Camoufox(
         persistent_context=True, user_data_dir=str(args.profile_dir),
         os="macos", window=(1280, 800), headless=False, humanize=True,

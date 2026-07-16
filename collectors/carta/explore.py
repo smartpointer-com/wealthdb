@@ -313,12 +313,12 @@ def main(argv: list[str]) -> int:
     # --fresh wipes the persistent profile so the next launch hits the 2FA
     # challenge again. Useful for capturing the 2FA selectors and the full
     # first-login traffic in the trace. Must run BEFORE the profile-dir
-    # mkdir below.
+    # prep below.
     if args.fresh and args.profile_dir.exists():
         log.warning("--fresh: wiping profile dir %s "
                     "(2FA will be required on next login)", args.profile_dir)
         shutil.rmtree(args.profile_dir)
-    args.profile_dir.mkdir(parents=True, exist_ok=True)
+    launch.prepare_profile_dir(args.profile_dir)
 
     log.info("debug dir:   %s", debug_dir)
     log.info("profile dir: %s", args.profile_dir)

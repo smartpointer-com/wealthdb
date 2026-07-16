@@ -8,9 +8,13 @@ on an existing one) that opens a browser without the shared helper fails
 here rather than silently regrowing a cache next to the session cookie.
 """
 import ast
+import os
 import re
+import stat
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from collectorkit import launch
 
@@ -282,6 +286,181 @@ class EntrypointProfilesHardenedTest(unittest.TestCase):
             self.assertIsNotNone(
                 invoked,
                 f"{path} starts a browser without invoking {seeder.name}")
+
+
+class StartupCacheRootTest(unittest.TestCase):
+    def test_env_override_wins(self):
+        with mock.patch.dict(os.environ,
+                             {"WEALTHDB_STARTUPCACHE_DIR": "/cache/startupcache"}):
+            self.assertEqual(launch.startup_cache_root(),
+                             Path("/cache/startupcache"))
+
+    def test_xdg_cache_home_default(self):
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": "/x/cache"}):
+            os.environ.pop("WEALTHDB_STARTUPCACHE_DIR", None)
+            self.assertEqual(launch.startup_cache_root(),
+                             Path("/x/cache/wealthdb/startupcache"))
+
+    def test_home_fallback(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WEALTHDB_STARTUPCACHE_DIR", None)
+            os.environ.pop("XDG_CACHE_HOME", None)
+            self.assertEqual(launch.startup_cache_root(),
+                             Path.home() / ".cache" / "wealthdb" / "startupcache")
+
+
+class RedirectStartupCacheTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.profile = self.root / "carta-profile"
+        self.profile.mkdir()
+        self.cache = self.root / "cache"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _link(self):
+        return self.profile / "startupCache"
+
+    def test_creates_symlink_under_cache_root(self):
+        target = launch.redirect_startup_cache(self.profile, self.cache)
+        self.assertEqual(target, self.cache / "carta-profile")
+        self.assertTrue(self._link().is_symlink())
+        self.assertEqual(os.readlink(self._link()), str(target))
+        self.assertTrue(target.is_dir())
+
+    def test_replaces_preexisting_real_dir(self):
+        # The current on-disk state: a real startupCache/ dir with content.
+        real = self._link()
+        real.mkdir()
+        (real / "cache.bin").write_bytes(b"x" * 32)
+        launch.redirect_startup_cache(self.profile, self.cache)
+        self.assertTrue(self._link().is_symlink())
+        # The stale bytes are gone from the profile — the fresh target is empty.
+        self.assertEqual(list((self.cache / "carta-profile").iterdir()), [])
+
+    def test_idempotent_when_already_correct(self):
+        target1 = launch.redirect_startup_cache(self.profile, self.cache)
+        # A file in the target would be lost to an unwanted rmtree/relink.
+        (target1 / "keep").write_text("x")
+        target2 = launch.redirect_startup_cache(self.profile, self.cache)
+        self.assertEqual(target1, target2)
+        self.assertTrue((target2 / "keep").exists())
+        self.assertTrue(self._link().is_symlink())
+
+    def test_repoints_a_wrong_symlink(self):
+        (self._link()).symlink_to(self.root / "elsewhere")
+        target = launch.redirect_startup_cache(self.profile, self.cache)
+        self.assertEqual(os.readlink(self._link()), str(target))
+        self.assertEqual(target, self.cache / "carta-profile")
+
+    def test_two_profiles_key_to_two_targets(self):
+        p2 = self.root / "angellist-fxprofile"
+        p2.mkdir()
+        t1 = launch.redirect_startup_cache(self.profile, self.cache)
+        t2 = launch.redirect_startup_cache(p2, self.cache)
+        self.assertEqual(t1, self.cache / "carta-profile")
+        self.assertEqual(t2, self.cache / "angellist-fxprofile")
+        self.assertNotEqual(t1, t2)
+
+    def test_cache_root_and_target_are_0700(self):
+        target = launch.redirect_startup_cache(self.profile, self.cache)
+        self.assertEqual(stat.S_IMODE(self.cache.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+
+    def test_default_root_from_env(self):
+        # No cache_root passed → falls back to startup_cache_root() (env).
+        with mock.patch.dict(os.environ,
+                             {"WEALTHDB_STARTUPCACHE_DIR": str(self.cache)}):
+            target = launch.redirect_startup_cache(self.profile)
+        self.assertEqual(target, self.cache / "carta-profile")
+
+
+class PrepareProfileDirTest(unittest.TestCase):
+    def test_creates_chmods_and_redirects(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            profile = root / "schwab-web-profile"  # does not exist yet
+            cache = root / "cache"
+            returned = launch.prepare_profile_dir(profile, cache_root=cache)
+            self.assertEqual(returned, profile)
+            self.assertTrue(profile.is_dir())
+            self.assertEqual(stat.S_IMODE(profile.stat().st_mode), 0o700)
+            link = profile / "startupCache"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link),
+                             str(cache / "schwab-web-profile"))
+
+    def test_session_state_is_left_in_place(self):
+        # Only startupCache moves; cookies/keys/prefs stay in the profile.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            profile = root / "carta-profile"
+            profile.mkdir()
+            for name in ("cookies.sqlite", "key4.db", "cert9.db", "prefs.js"):
+                (profile / name).write_bytes(b"secret")
+            launch.prepare_profile_dir(profile, cache_root=root / "cache")
+            for name in ("cookies.sqlite", "key4.db", "cert9.db", "prefs.js"):
+                f = profile / name
+                self.assertTrue(f.is_file() and not f.is_symlink(),
+                                f"{name} must not be moved or symlinked")
+
+
+@unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
+class PersistentProfileStartupCacheTest(unittest.TestCase):
+    """Every persistent browser profile relocates its startupCache.
+
+    A persistent profile lives under ~/.secrets and must not accrue
+    regenerable cache next to the session cookie. startupCache is the one
+    cache no pref disables, so each profile-prep site routes the profile
+    through collectorkit.launch (prepare_profile_dir / redirect_startup_cache),
+    which symlinks it out to the cache root. A new browser collector that
+    seeds a /secrets profile without the redirect fails here.
+
+    An ephemeral `tempfile.mkdtemp` profile (angellist's passive download) is
+    exempt: it lives under /tmp and dies with the run, so it never reaches
+    ~/.secrets and its startupCache needs no relocation.
+    """
+
+    _SECRETS_PROFILE = re.compile(
+        r'DEFAULT_PROFILE_DIR\s*=\s*Path\(\s*["\']/secrets/')
+
+    def _persistent_profile_files(self):
+        firefox = {p for p, _l, e, _n in _launch_sites() if e == "firefox"}
+        for path in sorted(COLLECTORS.rglob("*.py")):
+            if "tests" in path.parts or "__pycache__" in path.parts:
+                continue
+            text = path.read_text()
+            declares_secrets_profile = bool(self._SECRETS_PROFILE.search(text))
+            # A launch against a profile it does not build with mkdtemp — the
+            # ephemeral tempdir case is the one exception (see docstring).
+            persistent_launch = path in firefox and "mkdtemp" not in text
+            if declares_secrets_profile or persistent_launch:
+                yield path, text
+
+    def test_scan_finds_the_persistent_profiles(self):
+        # Guards the guard: an empty set would make the check below vacuous.
+        self.assertGreaterEqual(
+            len(list(self._persistent_profile_files())), 12)
+
+    def test_each_persistent_profile_redirects_startup_cache(self):
+        missing = []
+        for path, text in self._persistent_profile_files():
+            if ("launch.prepare_profile_dir" not in text
+                    and "launch.redirect_startup_cache" not in text):
+                missing.append(str(path.relative_to(COLLECTORS.parent)))
+        self.assertEqual(
+            missing, [],
+            "persistent profile(s) that never relocate startupCache — route "
+            "the profile through collectorkit.launch.prepare_profile_dir():\n"
+            + "\n".join(missing))
+
+    def test_ephemeral_download_profile_is_exempt(self):
+        # angellist's passive download drives an ephemeral mkdtemp profile; it
+        # must not be dragged through the persistent-profile prep.
+        files = {p for p, _t in self._persistent_profile_files()}
+        self.assertNotIn(COLLECTORS / "angellist" / "download.py", files)
 
 
 if __name__ == "__main__":

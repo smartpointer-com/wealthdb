@@ -56,8 +56,6 @@ log = logging.getLogger("schwab-login")
 # constant so --check output matches the actual cap.
 REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
-PROFILE_DIR_MODE = 0o700
-
 # Credential env vars whose env-file value wins over an inherited host
 # value (the host shell's `source` mangles $-containing values; see
 # collectorkit.envfile.load_env_file). The OAuth app id/secret live in
@@ -250,15 +248,6 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def ts_slug() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def prepare_profile_dir(profile_dir: Path) -> None:
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(profile_dir, PROFILE_DIR_MODE)
-    except OSError as exc:
-        log.warning("could not chmod %s to 0%o: %s",
-                    profile_dir, PROFILE_DIR_MODE, exc)
 
 
 @contextlib.contextmanager
@@ -608,7 +597,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     password = os.environ.get("SCHWAB_PASSWORD")
 
     args.token_path.parent.mkdir(parents=True, exist_ok=True)
-    prepare_profile_dir(args.profile_dir)
+    launch.prepare_profile_dir(args.profile_dir)
 
     ctx = schwab_auth.get_auth_context(client_id, args.callback_url)
     log.info("Authorize URL built; opening in Camoufox.")

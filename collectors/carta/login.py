@@ -258,12 +258,9 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     envfile.source_env_file(args.env_file, prefer_file=True)
-    args.profile_dir.mkdir(parents=True, exist_ok=True)
-    # 0700 on the profile dir — it holds the session + device-trust cookie.
-    try:
-        args.profile_dir.chmod(0o700)
-    except PermissionError:
-        pass  # host-side perms already apply if we don't own it
+    # 0700 profile dir (holds the session + device-trust cookie), with its
+    # regenerable startupCache relocated out of the secrets tree.
+    launch.prepare_profile_dir(args.profile_dir)
 
     # Imported lazily so `--help` doesn't pay the Camoufox import cost.
     from camoufox.sync_api import Camoufox

@@ -55,10 +55,6 @@ log = logging.getLogger("schwab-web.login")
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
 
-# Persistent profile dir mode. Holds session cookies + Akamai
-# bot-manager state + localStorage.
-PROFILE_DIR_MODE = 0o700
-
 # Default env-file locations. The wrapper mounts ~/.secrets to
 # /secrets inside the container, so /secrets/schwab-web.env is the
 # canonical place to drop the login-id/password env vars. We also
@@ -206,22 +202,6 @@ def maybe_source_env_files(args: argparse.Namespace) -> None:
     path = envfile.resolve_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES)
     if path is not None:
         _load_env_file(path)
-
-
-# ============================================================
-# Profile-dir setup
-# ============================================================
-
-def prepare_profile_dir(profile_dir: Path) -> None:
-    """Create the user-data-dir if missing and chmod it 0700."""
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(profile_dir, PROFILE_DIR_MODE)
-    except OSError as exc:
-        log.warning(
-            "could not chmod %s to 0%o: %s",
-            profile_dir, PROFILE_DIR_MODE, exc,
-        )
 
 
 # ============================================================
@@ -1089,7 +1069,7 @@ def main(argv: list[str]) -> int:
     since, until = cli.resolve_lookback(args)
     args.date_range = _since_to_schwab_preset(since, until, log=log)
     maybe_source_env_files(args)
-    prepare_profile_dir(args.profile_dir)
+    launch.prepare_profile_dir(args.profile_dir)
     if args.check:
         return run_check(args.profile_dir, args.screenshot_dir, args.trace)
     if args.bronze_dir is None:

@@ -254,16 +254,9 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     envfile.source_env_file(args.env_file, prefer_file=True)
-    args.profile_dir.mkdir(parents=True, exist_ok=True)
-    # 0700 on the profile dir. The wrapper bind-mounts ~/.secrets/
-    # (already 0700 by convention) onto /secrets/, but inside the
-    # container the dir may have been created with whatever umask;
-    # explicitly tightening here is cheap insurance.
-    try:
-        args.profile_dir.chmod(0o700)
-    except PermissionError:
-        # If we don't own it, the host-side perms already apply.
-        pass
+    # 0700 profile dir (holds the multi-year session + device-trust cookie),
+    # with its regenerable startupCache relocated out of the secrets tree.
+    launch.prepare_profile_dir(args.profile_dir)
 
     # Imported lazily so `--help` doesn't pay the Playwright import
     # cost.

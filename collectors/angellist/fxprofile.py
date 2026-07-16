@@ -33,10 +33,6 @@ log = logging.getLogger("angellist.fxprofile")
 
 DEFAULT_PROFILE_DIR = Path("/secrets/angellist-fxprofile")
 
-# The profile holds the live session cookie and the saved AngelList login;
-# keep it owner-only, matching the credential handling elsewhere.
-PROFILE_DIR_MODE = 0o700
-
 # Downloads (K-1 CSV/PDF, financial statements) land in the mounted
 # documents dir (= angellist-documents/ in the wealthdb data dir on the
 # host) rather than the container-ephemeral ~/Downloads, so anything
@@ -91,10 +87,10 @@ def angellist_prefs(download_dir: Path) -> dict[str, bool | int | str]:
 def seed(profile_dir: Path, download_dir: Path) -> Path:
     """Write `<profile_dir>/user.js` and ensure the download dir exists.
     Returns the path written."""
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    # mkdir's mode is subject to umask and leaves an existing dir untouched,
-    # so tighten it explicitly each seed.
-    profile_dir.chmod(PROFILE_DIR_MODE)
+    # Create + 0700 the profile (holds the live session cookie and saved
+    # login) and relocate its regenerable startupCache out of the secrets
+    # tree — the same prep the driven browsers get.
+    launch.prepare_profile_dir(profile_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
     user_js = profile_dir / "user.js"
     user_js.write_text(

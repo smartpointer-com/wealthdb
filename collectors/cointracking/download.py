@@ -496,6 +496,11 @@ def main(argv: list[str]) -> int:
         if debug_dir is not None:
             debugcap.capture_page(page, debug_dir, name, log=log)
 
+    # Relocate the profile's regenerable startupCache out of the secrets
+    # tree (idempotent; also migrates a pre-relocation profile) before
+    # launching against it.
+    launch.prepare_profile_dir(args.profile_dir)
+
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:

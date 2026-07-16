@@ -774,6 +774,11 @@ def main(argv: list[str]) -> int:
                     "no captures will be written")
         debug_dir = None
 
+    # Relocate the profile's regenerable startupCache out of the secrets
+    # tree (idempotent; also migrates a profile last touched before the
+    # relocation) before launching against it.
+    launch.prepare_profile_dir(args.profile_dir)
+
     from camoufox.sync_api import Camoufox
 
     with Camoufox(
