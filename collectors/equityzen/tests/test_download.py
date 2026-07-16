@@ -352,7 +352,7 @@ def test_real_fetch_failure_is_error(tmp_path):
 
 
 def test_lookback_flag():
-    # Accepted for wealthdb-refresh uniformity: equityzen always captures every
+    # Accepted for fleet uniformity: equityzen always captures every
     # offering/position/cash-flow (no date surface), so --lookback only drives
     # a warning; the value is still validated against the shared
     # presets so a typo fails loudly.

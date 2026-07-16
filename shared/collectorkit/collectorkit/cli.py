@@ -36,7 +36,7 @@ def default_data_root() -> Path:
 
 # The convention for "fetch the recent N days" everywhere. 90 days is
 # narrow enough that a forgotten flag doesn't silently trigger a
-# multi-year backfill; wealthdb-refresh --lookback widens uniformly.
+# multi-year backfill; a fleet-wide --lookback widens uniformly.
 DEFAULT_LOOKBACK_DAYS = 90
 
 # Named lookback shortcuts. Value is the number of days from today.
@@ -185,7 +185,7 @@ def _add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
     """``--lookback`` on a collector that always fetches its full
     history and structurally cannot honour a narrower window.
 
-    ``wealthdb-refresh`` forwards ``--lookback`` to every collector's
+    A fleet orchestrator forwards ``--lookback`` to every collector's
     ``download``; the ones that can bound their fetch get
     :func:`_add_lookback_arg` + :func:`resolve_lookback`. The ones that
     always pull everything — a passive SPA capture with no server-side date
@@ -199,7 +199,7 @@ def _add_full_download_lookback_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--lookback", type=lookback_value, default=None,
         metavar=LOOKBACK_METAVAR,
-        help=("Accepted for wealthdb-refresh uniformity. This collector "
+        help=("Accepted for fleet uniformity. This collector "
               "always downloads its full history (a superset of any "
               "window); --lookback cannot narrow that, so it is logged "
               "and otherwise ignored."),
@@ -283,7 +283,7 @@ def resolve_standard(args: argparse.Namespace, *, verb: str,
     - **Bounded** (``full_history=False``): delegates to
       :func:`resolve_lookback`.
     - **Full history** (``full_history=True``): the flag was accepted for
-      ``wealthdb-refresh`` uniformity but cannot narrow the fetch. Returns
+      fleet uniformity but cannot narrow the fetch. Returns
       ``(None, None)`` and, given a ``log``, warns via
       :func:`warn_lookback_ignored` — neither a silent ignore nor an
       argparse reject.

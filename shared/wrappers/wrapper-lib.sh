@@ -66,7 +66,7 @@ _envvar() {
 #      in wrapper_resolve_dir_args, so it overrides everything here)
 #   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR env var
 #   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT env var
-#      (lets wealthdb-nightly / wealthdb-refresh set one knob for all)
+#      (lets an orchestrator set one knob for all)
 #   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
 #      defaults
 wrapper_init() {

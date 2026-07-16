@@ -258,7 +258,7 @@ def test_dry_run_with_debug_creates_no_run_dir(tmp_path, monkeypatch):
 
 def test_lookback_flag_accepted(tmp_path, monkeypatch):
     # An SFTP pull takes whatever UBS has queued; --lookback cannot narrow it,
-    # so it is accepted for wealthdb-refresh uniformity and only logs a note —
+    # so it is accepted for fleet uniformity and only logs a note —
     # the pull still runs in full.
     def dl(sftp, run_dir, verbose=False):
         (run_dir / "ZAH.zip").write_bytes(b"PK\x03\x04")

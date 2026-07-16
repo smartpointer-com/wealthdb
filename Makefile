@@ -66,9 +66,7 @@ test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers
 # BINDIR defaults to ~/.local/bin (the XDG-conventional user bin dir,
 # matching the config default under ~/.config); override e.g.
 # `make install BINDIR=/usr/local/bin`.
-# Per-collector wrappers stay in the repo (the dispatcher resolves them);
-# personal orchestration (wealthdb-nightly / wealthdb-refresh) is not
-# installed here.
+# Per-collector wrappers stay in the repo (the dispatcher resolves them).
 BINDIR    ?= $(HOME)/.local/bin
 REPO_ROOT := $(abspath .)
 

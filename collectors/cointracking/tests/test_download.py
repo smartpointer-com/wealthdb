@@ -3,7 +3,7 @@
 The browser/export paths are exercised live, not here. This covers only the
 shared-flag surface: cointracking always exports the complete trade history
 (its holdings replay needs every row), so it accepts --lookback purely for
-wealthdb-refresh uniformity and treats it as a no-op (logs a warning); and
+fleet uniformity and treats it as a no-op (logs a warning); and
 --debug, which gates the bronze-resident DOM/screenshot captures.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ import download  # noqa: E402
 
 
 def test_lookback_flag():
-    # Accepted for wealthdb-refresh uniformity; the value is still validated
+    # Accepted for fleet uniformity; the value is still validated
     # against the shared presets so a typo fails loudly.
     assert download.parse_args(["--lookback", "2y"]).lookback == "2y"
     assert download.parse_args([]).lookback is None

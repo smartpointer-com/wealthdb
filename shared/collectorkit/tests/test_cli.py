@@ -2,7 +2,7 @@
 
 Focused on the full-download escape hatch — the accept-only ``--lookback``
 that collectors which always fetch their complete history expose so
-``wealthdb-refresh`` can hand every collector the same flag. Stdlib
+a fleet orchestrator can hand every collector the same flag. Stdlib
 unittest, matching the rest of the collectorkit suite."""
 import argparse
 import logging

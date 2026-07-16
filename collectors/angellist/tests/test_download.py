@@ -90,7 +90,7 @@ def test_debug_help_promises_bronze_captures(capsys):
 
 
 def test_lookback_flag():
-    # Accepted for wealthdb-refresh uniformity: angellist always captures the
+    # Accepted for fleet uniformity: angellist always captures the
     # full portfolio snapshot (no server-side date filter), so --lookback only
     # drives a warning; the value is still validated against the
     # shared presets so a typo fails loudly.

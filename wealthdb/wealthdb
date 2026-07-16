@@ -4,7 +4,7 @@
 set -eu
 
 # Resolve $0 through symlinks (macOS has no `readlink -f`) so this
-# works when run via the ~/bin/wealthdb symlink `make install` creates
+# works when run via the ~/.local/bin/wealthdb symlink `make install` creates
 # — same idiom as bin/wealthdb-collect. Without this, `wealthdb web`
 # (which locates the repo via $REPO) would break when run bare.
 SELF="$0"

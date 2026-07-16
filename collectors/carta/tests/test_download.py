@@ -429,7 +429,7 @@ def test_tally_unmapped_code_goes_to_other():
 
 
 def test_lookback_flag():
-    # Accepted for wealthdb-refresh uniformity: carta's download captures a full
+    # Accepted for fleet uniformity: carta's download captures a full
     # holdings snapshot, so --lookback only drives a warning; the
     # value is still validated against the shared presets so a typo fails loudly.
     assert download.parse_args(["--lookback", "6m"]).lookback == "6m"

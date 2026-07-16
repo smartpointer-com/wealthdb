@@ -133,7 +133,7 @@ host_silver_verbs_str() {
 # are populated before the .py runs, removing the "source the env file
 # yourself" friction. Syntax-checked with `bash -n` first, then sourced.
 # Absent file is fine. The file wins over the current environment;
-# that's idempotent when an orchestrator (wealthdb-nightly) already sourced
+# that's idempotent when an orchestrator already sourced
 # the same credentials.
 host_source_env_file() {
     local f

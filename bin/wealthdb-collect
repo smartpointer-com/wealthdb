@@ -51,9 +51,9 @@
 set -euo pipefail
 
 # Find the repo this script lives in, following symlinks (macOS has no
-# `readlink -f`) so `make install` can symlink it into ~/bin. Each source's
-# steps live in collectors/<name>/<name>, which this dispatches to. Set
-# WEALTHDB_REPO to override the auto-detected location.
+# `readlink -f`) so `make install` can symlink it into ~/.local/bin.
+# Each source's steps live in collectors/<name>/<name>, which this
+# dispatches to. Set WEALTHDB_REPO to override the auto-detected location.
 _src="${BASH_SOURCE[0]}"
 while [[ -h "$_src" ]]; do
     _dir="$(cd -P "$(dirname "$_src")" && pwd)"

@@ -128,11 +128,10 @@ Every collector accepts the same single window flag, `--lookback`,
 taking either a preset (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`,
 `all`) or an ISO date (`2020-01-01`). It names where to start; the
 window runs from there to today and covers everything the source
-offers in it. Without it, downloads default to a 90-day window. Orchestration
-helpers in `~/bin` (`wealthdb-nightly` for the unattended sources,
-`wealthdb-refresh` for the interactive ones) drive the fleet through
-`wealthdb-collect` and forward `--lookback` to every collector; see
-their `--help`.
+offers in it. Without it, downloads default to a 90-day window. The
+uniform flag is what lets a single orchestration script — a cron job,
+a shell loop — drive the whole fleet through `wealthdb-collect` and
+forward one `--lookback` to every collector.
 
 ## Documentation
 

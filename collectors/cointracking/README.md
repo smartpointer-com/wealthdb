@@ -28,10 +28,9 @@ shared collector conventions.
 | `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks) and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. |
 | `explore`  | implemented | Discovery harness (Camoufox + VNC + HAR + trace + click log). Kept around for re-discovery if cointracking changes their UI. |
 
-The device-trust cookie is multi-year, so once
-`login` has been run once the collector slots into
-`wealthdb-nightly` like the rest — one MFA prompt every few years,
-otherwise unattended.
+The device-trust cookie is multi-year, so once `login` has been
+run once the collector slots into unattended scheduling like the
+rest — one MFA prompt every few years.
 
 ## Operational quick start
 

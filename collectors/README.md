@@ -223,7 +223,7 @@ rejecting. A wrapper declares its silver-consuming verbs with
 `VNC_SUBCOMMANDS` uses.
 
 **There is exactly one window flag: `--lookback`.** Every `download`
-accepts it, so `wealthdb-refresh` hands the same flag to every source. It
+accepts it, so a fleet orchestrator can hand the same flag to every source. It
 takes either a named preset (`1w`, `4w`, `3m`, `6m`, `1y`, `2y`, `5y`,
 `all`) or an ISO date (`2020-01-01`), and it names a **starting point**:
 the window always runs from there to today, and everything the source

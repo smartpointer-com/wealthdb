@@ -311,7 +311,7 @@ surrogate key, not a name, and the bronze tree is gitignored, so the path
 leaks nothing while staying greppable. Legal names stay inside `meta.json`.
 
 Everything is pulled in full — holdings, activity and documents alike — so
-the shared `--lookback` flag is accepted for `wealthdb-refresh` uniformity
+the shared `--lookback` flag is accepted for fleet uniformity
 but cannot narrow the walk: it is validated, warned about, and otherwise
 ignored. `--no-documents` skips the documents pass (the run's dominant
 cost). `--dry-run` walks navigation without firing any export.
