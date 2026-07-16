@@ -14,7 +14,7 @@ raw JSON into a queryable SQLite silver database.
 | [`login.py`](login.py) | implemented | Interactive OAuth login flow; mints the token file that `download.py` consumes. Required once initially and once per 7-day refresh window thereafter. |
 | [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
 | [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree, plus aged-out entries of the login trace cache (`~/.cache/schwab-api-debug`). Host-side, like `load`. `--dry-run` previews the plan. |
+| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree, plus aged-out entries of the login trace cache (`~/.cache/wealthdb/debug/schwab-api`). Host-side, like `load`. `--dry-run` previews the plan. |
 | [`recompress.py`](recompress.py) | implemented | One-time backlog sweep: replaces the plain data JSON inside pre-compression complete dumps with sha256-verified `.json.zst` twins — the form `download` now writes. `run.json` is never compressed. Host-side, manual only, never scheduled. `--dry-run` previews the plan. |
 
 See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
@@ -81,7 +81,7 @@ Schwab accounts to link" page, so a newly opened account is linked
 without anyone remembering to tick it. It captures the `?code=…` redirect
 straight from the browser and exchanges it for the token bundle (chmod
 `0600`). All browser activity is traced to the debug dir
-(`~/.cache/schwab-api-debug`), which sits outside bronze and is reclaimed
+(`~/.cache/wealthdb/debug/schwab-api`), which sits outside bronze and is reclaimed
 by [`prune`](#prunepy) once a bundle has aged past `--min-age-hours`.
 
 This is why schwab-api is a **hybrid** collector: `login` runs in a
@@ -382,7 +382,7 @@ otherwise ingest as a truncated snapshot; after pruning one, the next
 `load --force` rebuild reflects the removal.
 
 The browser-flow page captures and traces belong to `login.py` and land
-in a separate debug dir *outside* bronze — `~/.cache/schwab-api-debug`,
+in a separate debug dir *outside* bronze — `~/.cache/wealthdb/debug/schwab-api`,
 or `$SCHWAB_API_DEBUG_DIR`. The wrapper passes it as `--debug-dir`, so
 `prune` reclaims it as well: every `login --trace` leaves a bundle there
 and nothing else clears them out. Entries idle for `--min-age-hours` go;
@@ -403,7 +403,7 @@ never touched, so silver stays reproducible. An in-flight guard
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Bronze tree root (the wrapper passes the resolved data dir). |
-| `--debug-dir` | `~/.cache/schwab-api-debug` | Login trace/capture cache, outside bronze (the wrapper passes the resolved debug dir). Absent on disk = nothing to reclaim. |
+| `--debug-dir` | `~/.cache/wealthdb/debug/schwab-api` | Login trace/capture cache, outside bronze (the wrapper passes the resolved debug dir). Absent on disk = nothing to reclaim. |
 | `--dry-run` | off | Print the deletion plan; remove nothing. |
 | `--min-age-hours` | `1` | Leave non-complete dumps, and debug-cache entries, touched within this window alone (protects an in-flight download or login). |
 

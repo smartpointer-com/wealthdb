@@ -196,7 +196,7 @@ traces / ad-hoc QR PNGs:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/debug` | `~/.cache/ubs-web-debug` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs |
+| `/debug` | `~/.cache/wealthdb/debug/ubs-web` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs |
 
 Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.

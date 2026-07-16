@@ -51,7 +51,7 @@ safety net (default 1h) prevents a forgotten session from
 recording forever.
 
 Artefacts land under `/debug/<UTC-ts>/` (mounted from
-`$HOME/.cache/cointracking-debug` on the host), explicitly NOT
+`$HOME/.cache/wealthdb/debug/cointracking` on the host), explicitly NOT
 under `/data`, so the bronze/silver tree stays clean.
 
 The persistent Camoufox profile dir at

@@ -135,7 +135,7 @@ gold DB at all.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c`, `--config` | `$HOME/.config/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
+| `-c`, `--config` | `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg` | Path to config file. Tilde (`~`) and `$HOME` are expanded. |
 | `-r`, `--read-only` | off | Force read-only access even when the gold DB is writeable. Useful for ad-hoc safety during exploration ("I'm running queries on prod and don't want to accidentally mutate anything"). Without this flag, mode is auto-detected from filesystem permissions (§4.10). |
 
 ### 4.3 `wealthdb init`
@@ -224,7 +224,7 @@ With `<id>`: snapshots for the one named silver source. With
 ### 4.9 `wealthdb config [-c <cfg-file-path>]`
 
 Interactive first-time setup wizard. Writes the config file at
-`-c` (default `$HOME/.config/wealthdb.cfg`) by walking
+`-c` (default `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`) by walking
 through:
 
 1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`. The wizard
@@ -392,7 +392,8 @@ the columns these will need (`asset_class`, `vehicle`,
 
 ## 5. Configuration
 
-JSON file. Path defaults to `$HOME/.config/wealthdb.cfg` and is
+JSON file. Path defaults to `wealthdb.cfg` under the XDG config dir
+(`$XDG_CONFIG_HOME`, falling back to `~/.config`) and is
 overridable with `-c` / `--config`. The `.cfg` extension is a
 convention; the content is JSON. Tilde (`~`) and `$HOME` are
 expanded in both the `--config` argument and the path values
@@ -401,7 +402,7 @@ inside the file.
 Conventional host layout, produced by `wealthdb config`'s defaults:
 
 ```
-$HOME/.config/wealthdb.cfg             config file (this file)
+$XDG_CONFIG_HOME/wealthdb.cfg          config file (this file)
 $XDG_DATA_HOME/wealthdb/                        all wealthdb data
 ├── wealthdb.db                        gold DuckDB
 ├── ubs-psn/ubs-psn.db                UBS PSN silver SQLite + bronze dirs
@@ -1882,13 +1883,14 @@ both sides and no path translation is needed. Two specific bind
 mounts:
 
 ```
-$HOME/.config/wealthdb.cfg → $HOME/.config/wealthdb.cfg     config file
-$XDG_DATA_HOME/wealthdb/            → $XDG_DATA_HOME/wealthdb/                gold + silver data tree
+$XDG_CONFIG_HOME/wealthdb.cfg → $XDG_CONFIG_HOME/wealthdb.cfg   config file
+$XDG_DATA_HOME/wealthdb/      → $XDG_DATA_HOME/wealthdb/        gold + silver data tree
 ```
 
-The container also sets `HOME` to match the host's so that `~`
-and `$HOME` references in the config file resolve to the same
-absolute paths inside and outside.
+The container also sets `HOME` and `XDG_CONFIG_HOME` to match the
+host's so that `~` / `$HOME` references in the config file — and the
+engine's default config-path resolution — land on the same absolute
+paths inside and outside.
 
 The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 
@@ -1896,12 +1898,14 @@ The host-side `wealthdb` shell wrapper does the mounting. Two shapes:
 `wealthdb reset`):
 
 ```sh
-mkdir -p "$HOME/.config" "$XDG_DATA_HOME/wealthdb"
-[ -f "$HOME/.config/wealthdb.cfg" ] || : > "$HOME/.config/wealthdb.cfg"
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+mkdir -p "$CFG_DIR" "$XDG_DATA_HOME/wealthdb"
+[ -f "$CFG_DIR/wealthdb.cfg" ] || : > "$CFG_DIR/wealthdb.cfg"
 docker run --rm -it \
     -e HOME="$HOME" \
+    -e XDG_CONFIG_HOME="$CFG_DIR" \
     -u "$(id -u):$(id -g)" \
-    -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg" \
+    -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg" \
     -v "$XDG_DATA_HOME/wealthdb:$XDG_DATA_HOME/wealthdb" \
     wealthdb:latest \
     "$@"
@@ -1915,8 +1919,9 @@ against a read-only mount of someone else's gold tree):
 ```sh
 docker run --rm \
     -e HOME="$HOME" \
+    -e XDG_CONFIG_HOME="$CFG_DIR" \
     -u "$(id -u):$(id -g)" \
-    -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg:ro" \
+    -v "$CFG_DIR/wealthdb.cfg:$CFG_DIR/wealthdb.cfg:ro" \
     -v "/mnt/shared/wealthdb:$XDG_DATA_HOME/wealthdb:ro" \
     wealthdb:latest \
     "$@"
@@ -1995,15 +2000,16 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # Persist Go's caches across invocations so incremental builds
 # stay fast — bind-mount the host's cache dirs (or dedicated
 # named-volumes; the host paths are simpler to inspect).
-mkdir -p "$HOME/.cache/wealthdb-test/go-build" "$HOME/.cache/wealthdb-test/go-mod"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go-test"
+mkdir -p "$CACHE/go-build" "$CACHE/go-mod"
 
 docker run --rm \
     -u "$(id -u):$(id -g)" \
     -e HOME="$HOME" \
-    -e GOCACHE="$HOME/.cache/wealthdb-test/go-build" \
-    -e GOMODCACHE="$HOME/.cache/wealthdb-test/go-mod" \
+    -e GOCACHE="$CACHE/go-build" \
+    -e GOMODCACHE="$CACHE/go-mod" \
     -v "$REPO:$REPO" \
-    -v "$HOME/.cache/wealthdb-test:$HOME/.cache/wealthdb-test" \
+    -v "$CACHE:$CACHE" \
     -w "$REPO" \
     --entrypoint go \
     wealthdb:latest \
@@ -2020,7 +2026,7 @@ mounted source tree; no separate builder image is needed.
 #### Cache locations
 
 Go's build cache (`GOCACHE`) and module cache (`GOMODCACHE`) live
-on the host under `$HOME/.cache/wealthdb-test/` so that incremental
+on the host under `${XDG_CACHE_HOME:-~/.cache}/wealthdb/go-test/` so that incremental
 re-runs are fast across container restarts. The cache dir is
 isolated from any host-side Go toolchain — running tests via the
 wrapper never pollutes a host `$GOPATH`.

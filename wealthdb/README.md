@@ -79,8 +79,8 @@ The `config` wizard walks you through:
    `swissquote`, `viac`, `cointracking`, …), and the path to the
    silver SQLite.
 
-It writes the result to `$HOME/.config/wealthdb.cfg` (overridable
-with `-c <path>`).
+It writes the result to `${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg`
+(overridable with `-c <path>`).
 
 ## Build and run
 
@@ -89,7 +89,7 @@ From the repo root, the `Makefile` drives builds and tests
 are the underlying per-component wrappers.
 
 All commands run inside a single Docker image; the host wrapper
-bind-mounts `$HOME/.config/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/` at
+bind-mounts `$XDG_CONFIG_HOME/wealthdb.cfg` and `$XDG_DATA_HOME/wealthdb/` at
 identical paths inside the container so `~`/`$HOME` resolution
 matches both sides.
 

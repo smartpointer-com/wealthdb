@@ -83,7 +83,9 @@ wrapper_init() {
     HOST_DATA="$(_envvar DATA_DIR "$data_default")"
 
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
-        HOST_DEBUG="$(_envvar DEBUG_DIR "$HOME/.cache/${NAME}-debug")"
+        # Debug/trace cache under the XDG cache dir, namespaced per
+        # collector like the startupCache below.
+        HOST_DEBUG="$(_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"
     fi
 
     # Host cache dir for the browsers' relocated startupCache (see

@@ -46,8 +46,15 @@ esac
 # see (for Colima, listed under `mounts:` in colima.yaml).
 DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
 
-mkdir -p "$HOME/.config" "$DATA_ROOT"
-[ -f "$HOME/.config/wealthdb.cfg" ] || : > "$HOME/.config/wealthdb.cfg"
+# Config file follows the XDG config dir ($XDG_CONFIG_HOME, falling back
+# to ~/.config). Same-path mount + forwarded variable, like the data
+# root above, so the engine's default config resolution lands on the
+# mounted file on both sides.
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+CFG="$CFG_DIR/wealthdb.cfg"
+
+mkdir -p "$CFG_DIR" "$DATA_ROOT"
+[ -f "$CFG" ] || : > "$CFG"
 
 # Allocate a TTY only when the host shell has one. The wizard
 # (`wealthdb config`) requires this; the other subcommands work
@@ -57,9 +64,10 @@ TTY=""
 
 exec docker run --rm $TTY \
     -e HOME="$HOME" \
+    -e XDG_CONFIG_HOME="$CFG_DIR" \
     -e WEALTHDB_DATA_ROOT="$DATA_ROOT" \
     -u "$(id -u):$(id -g)" \
-    -v "$HOME/.config/wealthdb.cfg:$HOME/.config/wealthdb.cfg" \
+    -v "$CFG:$CFG" \
     -v "$DATA_ROOT:$DATA_ROOT" \
     "$IMAGE" \
     "$@"

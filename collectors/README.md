@@ -399,7 +399,7 @@ uniform convention:
   protected.
 
 - **`prune --debug-dir`** extends the same reclaim to the **host-side
-  debug cache**: the `/debug` mount source (`~/.cache/<source>-debug`, or
+  debug cache**: the `/debug` mount source (`~/.cache/wealthdb/debug/<source>`, or
   `${PREFIX}_DEBUG_DIR`) that `--screenshot-dir` / `--trace` write to.
   That dir lives outside bronze, holds no `load` input, and nothing else
   reclaims it — left alone it grows for the life of the checkout. Each

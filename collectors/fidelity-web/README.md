@@ -127,7 +127,7 @@ those it adds two Fidelity-specific mounts:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/debug` | `~/.cache/fidelity-web-debug` | opt-in screenshots / traces |
+| `/debug` | `~/.cache/wealthdb/debug/fidelity-web` | opt-in screenshots / traces |
 | `/app` | repo dir | edits to `download.py` picked up by the next spawn — no rebuild during iteration |
 
 Override host paths via env: `FIDELITY_WEB_SECRETS_DIR`,
@@ -229,7 +229,7 @@ dumps are never touched, so silver stays reproducible; deleting a
 non-complete dump surfaces on the next `load --force` rebuild.
 
 It also reclaims the `/debug` cache outside bronze
-(`~/.cache/fidelity-web-debug`, or `$FIDELITY_WEB_DEBUG_DIR`) — the
+(`~/.cache/wealthdb/debug/fidelity-web`, or `$FIDELITY_WEB_DEBUG_DIR`) — the
 screenshots and traces the container writes there, which nothing else
 clears out. Runs host-side like `load`, and one in-flight guard
 (`--min-age-hours`, default 1, keyed on recent write activity) covers

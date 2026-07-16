@@ -773,7 +773,7 @@ those, relevate bind-mounts a third, tool-specific path:
 
 | Container path | Host default | Purpose |
 |---|---|---|
-| `/debug` | `~/.cache/relevate-debug` | opt-in scratch logs / traces |
+| `/debug` | `~/.cache/wealthdb/debug/relevate` | opt-in scratch logs / traces |
 
 All three are bind-mounted RW. No ports published — the
 container is purely an HTTP client.

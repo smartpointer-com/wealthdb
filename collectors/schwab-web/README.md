@@ -173,7 +173,7 @@ Tool-specific notes only:
   this codebase uses). The Playwright Python package is pulled via
   `requirements.txt`, version-pinned to match the base-image tag —
   bump both in lockstep.
-- **Extra `/debug` mount** (`~/.cache/schwab-web-debug` by default):
+- **Extra `/debug` mount** (`~/.cache/wealthdb/debug/schwab-web` by default):
   opt-in login/landmark screenshots + Playwright traces. Point
   `--screenshot-dir` / `--trace` at `/debug/...` so those diagnostics
   stay OUTSIDE the bronze/silver tree. (Distinct from `--debug`,

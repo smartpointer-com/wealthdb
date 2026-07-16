@@ -127,7 +127,7 @@ a tracked file (source, fixtures, comments, commit messages). Synthetic
 placeholders only — e.g. company "ACME-CO", `dealId 1234`,
 `equityBlockUuid "00000000-0000-0000-0000-000000000000"`, round example
 figures. Raw artefacts live only under `$XDG_DATA_HOME/wealthdb/equityzen/`,
-`~/.secrets/`, and the explore debug dir (`~/.cache/equityzen-debug/`),
+`~/.secrets/`, and the explore debug dir (`~/.cache/wealthdb/debug/equityzen/`),
 never in the repo. The explore harness redacts the username + password
 from `network.jsonl`, but response bodies there carry full holdings data —
 treat the debug dir as sensitive and never commit anything derived from it

@@ -137,7 +137,7 @@ trace, click log, and any blob downloads:
 #    open vnc://localhost:<port>
 ```
 
-Artefacts land under `$HOME/.cache/cointracking-debug/<UTC-ts>/`
+Artefacts land under `$HOME/.cache/wealthdb/debug/cointracking/<UTC-ts>/`
 (network.jsonl + trace-chunks/ + clicks.jsonl + downloads/).
 Close the browser window OR Ctrl-C the container — either path
 flushes everything to disk.

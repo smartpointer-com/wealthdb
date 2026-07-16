@@ -28,7 +28,8 @@ bronze root:
 A third category lives OUTSIDE the bronze tree: the **host-side debug
 cache** (``--debug-dir``) — the dir a collector's ``--screenshot-dir`` /
 ``--trace`` writes to, mounted at ``/debug`` for the containerised
-collectors and defaulting to ``~/.cache/<name>-debug`` on the host.
+collectors and defaulting to ``~/.cache/wealthdb/debug/<name>`` on the
+host (under ``$XDG_CACHE_HOME`` when set).
 Nothing else reclaims it, so it grows for the life of the checkout;
 ``prune``'s job is already "reclaim this collector's disk", so entries
 there age out under the same ``--min-age-hours`` guard. Nothing in it is
@@ -690,7 +691,8 @@ def build_parser(description: str, prog: str | None = None) -> argparse.Argument
         help=("Also reclaim the host-side debug/trace cache rooted here — "
               "the screenshots, HTML captures and Playwright trace bundles "
               "that --screenshot-dir/--trace write OUTSIDE the bronze tree "
-              "(the /debug mount; ~/.cache/<collector>-debug by default). "
+              "(the /debug mount; ~/.cache/wealthdb/debug/<collector> "
+              "by default). "
               "Entries older than --min-age-hours are deleted; none of them "
               "is a `load` input. Omitted, or pointed at a dir that does not "
               "exist: nothing to reclaim."),

@@ -16,9 +16,13 @@ type globalFlags struct {
 	ForceReadOnly bool
 }
 
-// defaultConfigPath returns $HOME/.config/wealthdb.cfg, expanding
-// $HOME at parse time so help text shows the resolved value.
+// defaultConfigPath returns wealthdb.cfg under the XDG config dir
+// ($XDG_CONFIG_HOME, falling back to ~/.config), resolved at parse
+// time so help text shows the concrete value.
 func defaultConfigPath() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "wealthdb.cfg")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// No $HOME → fall back to the unexpanded literal. The
@@ -57,7 +61,7 @@ usage:
   wealthdb [global flags] <subcommand> [subcommand flags]
 
 global flags:
-  -c, --config <path>   config file (default $HOME/.config/wealthdb.cfg)
+  -c, --config <path>   config file (default ${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg)
   -r, --read-only       force read-only access to the gold DB
 
 subcommands:

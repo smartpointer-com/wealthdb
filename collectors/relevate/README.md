@@ -166,7 +166,7 @@ $XDG_DATA_HOME/wealthdb/relevate/              # bronze + (future) silver
 │   └── documents/                    # PDF binaries + index.json
 └── relevate.db                       # silver SQLite (when load.py lands)
 
-$HOME/.cache/relevate-debug/          # opt-in scratch logs / traces
+$HOME/.cache/wealthdb/debug/relevate/          # opt-in scratch logs / traces
 ```
 
 ## Configuration

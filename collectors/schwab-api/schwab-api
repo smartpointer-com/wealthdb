@@ -20,7 +20,7 @@
 #   prune [args...]    Delete non-complete dumps (crashed / interrupted
 #                      downloads) from the bronze tree, and aged-out
 #                      entries from the login trace cache
-#                      (~/.cache/schwab-api-debug). Host-side; --dry-run
+#                      (~/.cache/wealthdb/debug/schwab-api). Host-side; --dry-run
 #                      prints the plan without deleting.
 #   recompress [args]  One-time backlog sweep: replace plain data JSON
 #                      (account_numbers / user_preference /
@@ -37,7 +37,7 @@
 #   --data-dir    DIR  bronze dumps root          (default $XDG_DATA_HOME/wealthdb/schwab-api)
 #   --silver-db   PATH silver DB path             (default <data-dir>/schwab-api.db)
 # The debug/trace cache `login` writes and `prune` reclaims is
-# ~/.cache/schwab-api-debug, or $SCHWAB_API_DEBUG_DIR when set.
+# ~/.cache/wealthdb/debug/schwab-api, or $SCHWAB_API_DEBUG_DIR when set.
 #
 # OAuth app creds (SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET) come from
 # <secrets-dir>/schwab-api.env; the Schwab login id/password pre-filled

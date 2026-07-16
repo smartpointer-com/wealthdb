@@ -13,7 +13,7 @@
 #   make test-collectorkit test the shared collectorkit library
 #   make build-<name>     build one collector   (e.g. make build-schwab-web)
 #   make test-<name>      test one collector    (e.g. make test-schwab-web)
-#   make install          symlink wealthdb + wealthdb-collect into ~/bin
+#   make install          symlink wealthdb + wealthdb-collect into ~/.local/bin
 #
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
@@ -63,11 +63,13 @@ test: test-wealthdb test-web test-collectors test-collectorkit test-wrappers
 # directory (and the repo dir no longer needs to be on PATH):
 #   wealthdb         the gold-engine wrapper (wealthdb/wealthdb)
 #   wealthdb-collect the collector dispatcher (bin/wealthdb-collect)
-# BINDIR defaults to ~/bin; override e.g. `make install BINDIR=/usr/local/bin`.
+# BINDIR defaults to ~/.local/bin (the XDG-conventional user bin dir,
+# matching the config default under ~/.config); override e.g.
+# `make install BINDIR=/usr/local/bin`.
 # Per-collector wrappers stay in the repo (the dispatcher resolves them);
 # personal orchestration (wealthdb-nightly / wealthdb-refresh) is not
 # installed here.
-BINDIR    ?= $(HOME)/bin
+BINDIR    ?= $(HOME)/.local/bin
 REPO_ROOT := $(abspath .)
 
 install:
@@ -162,16 +164,20 @@ test-wealthdb: build-wealthdb
 	@echo "==> test wealthdb (go test ./...)"
 	$(WEALTHDB_TEST) ./...
 
+# Where wealthdb-test parks the containerised Go toolchain caches
+# (must mirror the CACHE default in wealthdb/wealthdb-test).
+GO_TEST_CACHE := $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/wealthdb/go-test
+
 clean-wealthdb:
 	@echo "==> clean wealthdb (go build cache)"
-	@chmod -R u+w $(HOME)/.cache/wealthdb-test/go-build 2>/dev/null || true
-	@rm -rf $(HOME)/.cache/wealthdb-test/go-build
+	@chmod -R u+w $(GO_TEST_CACHE)/go-build 2>/dev/null || true
+	@rm -rf $(GO_TEST_CACHE)/go-build
 
 cleanall-wealthdb: clean-wealthdb
 	@echo "==> cleanall wealthdb (image + go caches)"
 	@docker image rm -f wealthdb:latest >/dev/null 2>&1 || true
-	@chmod -R u+w $(HOME)/.cache/wealthdb-test 2>/dev/null || true
-	@rm -rf $(HOME)/.cache/wealthdb-test
+	@chmod -R u+w $(GO_TEST_CACHE) 2>/dev/null || true
+	@rm -rf $(GO_TEST_CACHE)
 
 # ---- web (optional Metabase BI server) --------------------------------
 
@@ -334,7 +340,7 @@ help:
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
 	@echo ""
-	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/bin)"
+	@echo "  make install            symlink wealthdb + wealthdb-collect into BINDIR (~/.local/bin)"
 	@echo "  make uninstall          remove those symlinks"
 	@echo ""
 	@echo "  make clean              remove build artefacts (pycache, caches)"

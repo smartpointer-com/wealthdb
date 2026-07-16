@@ -5,7 +5,9 @@ set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="wealthdb:latest"
-CACHE="$HOME/.cache/wealthdb-test"
+# Go toolchain caches under the XDG cache dir, namespaced with the
+# rest of the fleet's caches (debug dirs, startupcache).
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go-test"
 
 mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 

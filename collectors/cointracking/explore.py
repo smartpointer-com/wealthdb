@@ -184,7 +184,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--debug-dir", type=Path, default=None,
         help=("Where to write HAR + trace + click log. Defaults to "
               "/debug/<UTC-ts>/ (mounted from "
-              "$HOME/.cache/cointracking-debug on the host)."),
+              "~/.cache/wealthdb/debug/cointracking on the host)."),
     )
     p.add_argument(
         "--url", default=DEFAULT_URL,

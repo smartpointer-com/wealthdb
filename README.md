@@ -67,7 +67,7 @@ make            # show the target list
 make all        # build everything (gold engine + web + all collectors)
 make test       # test everything
 make build-<name> / make test-<name>   # one component (e.g. make build-schwab-web)
-make install    # symlink wealthdb + wealthdb-collect into ~/bin
+make install    # symlink wealthdb + wealthdb-collect into ~/.local/bin
 make update     # bring deps forward (host venvs, Go modules, base images)
 ```
 
@@ -90,7 +90,7 @@ cd wealthdb
 dispatcher:
 
 ```sh
-make install                          # symlink wealthdb + wealthdb-collect into ~/bin (BINDIR)
+make install                          # symlink wealthdb + wealthdb-collect into ~/.local/bin (BINDIR)
 
 wealthdb-collect list                 # the available collectors
 wealthdb-collect viac login           # mint/refresh session (prompts for MFA)

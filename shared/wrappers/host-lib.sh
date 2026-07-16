@@ -93,7 +93,7 @@ host_resolve_dirs() {
     [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
     DATA_DIR="$(_host_envvar DATA_DIR "$data_default")"
 
-    DEBUG_DIR="$(_host_envvar DEBUG_DIR "$HOME/.cache/${NAME}-debug")"
+    DEBUG_DIR="$(_host_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"
 
     SILVER_DB="$(_host_envvar SILVER_DB "")"
 
