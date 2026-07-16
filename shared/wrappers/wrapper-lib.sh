@@ -268,7 +268,11 @@ wrapper_host_prune() {
 # wrapper should paper over.
 wrapper_check_mounts() {
     mkdir -p "$HOST_DATA"
+    # 0700 here is authoritative: the container's own chmod of the mounted
+    # cache root is rejected by the VM file share (non-owner uid), so
+    # collectorkit treats that as best-effort and relies on this.
     mkdir -p "$HOST_STARTUPCACHE"
+    chmod 700 "$HOST_STARTUPCACHE"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         mkdir -p "$HOST_DEBUG"
     fi

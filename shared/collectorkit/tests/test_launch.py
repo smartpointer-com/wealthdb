@@ -72,6 +72,31 @@ class FirefoxPrefsTest(unittest.TestCase):
             launch.firefox_prefs()["browser.cache.disk.enable"], False)
 
 
+class RedirectChmodBestEffortTest(unittest.TestCase):
+    def test_eperm_on_bind_mounted_cache_root_does_not_abort(self):
+        # In a container the cache root is a host-owned bind mount: the VM
+        # file share accepts mkdir/symlink from the container uid but
+        # rejects chmod with EPERM. The redirect must survive that — the
+        # wrapper's host-side chmod is authoritative.
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "x-profile"
+            profile.mkdir()
+            root = Path(tmp) / "cacheroot"
+            real_chmod = os.chmod
+
+            def chmod_eperm(path, mode, **kw):
+                if Path(path) == root or Path(path).parent == root:
+                    raise PermissionError(1, "Operation not permitted", str(path))
+                real_chmod(path, mode, **kw)
+
+            with mock.patch.object(launch.os, "chmod", side_effect=chmod_eperm):
+                target = launch.redirect_startup_cache(profile, cache_root=root)
+            link = profile / "startupCache"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), str(target))
+            self.assertTrue(target.is_dir())
+
+
 class PasswordManagerOnTest(unittest.TestCase):
     def test_reenables_over_the_shared_set(self):
         # The by-hand login profiles layer this back over the shared set,

@@ -331,6 +331,7 @@ def main(argv: list[str]) -> int:
             debugcap.capture_page(page, debug_dir, name, log=log)
 
     profile = Path(tempfile.mkdtemp(prefix="angellist-dl-"))
+    launched = False
     try:
         with Camoufox(
             persistent_context=True,
@@ -342,6 +343,7 @@ def main(argv: list[str]) -> int:
             block_webrtc=True,
             firefox_user_prefs=launch.firefox_prefs(),
         ) as context:
+            launched = True
             context.add_cookies(cookies)
             context.on("response", on_response)
             page = context.new_page()
@@ -474,6 +476,16 @@ def main(argv: list[str]) -> int:
                 # disbursements / refunds) — the source of dated cash flows.
                 wait_for_ops(page, FUNDING_OPS, args.settle + 10)
                 capture(page, f"50-acct{n}-funding")
+    except Exception as exc:
+        if args.check and not launched:
+            # A browser that cannot even start is an environment failure,
+            # not a session verdict. Exiting 1 here would read as "stale"
+            # to the entrypoint and burn a needless by-hand 2FA login;
+            # exit 3 so the probe caller can tell the two apart.
+            log.error("--check aborted: browser failed to launch (%s) — "
+                      "not a session verdict", exc)
+            return 3
+        raise
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 

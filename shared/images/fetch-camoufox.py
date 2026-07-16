@@ -20,8 +20,11 @@ Usage: fetch-camoufox.py <version>-<release>   e.g. 152.0.4-beta.26
 """
 from __future__ import annotations
 
+import os
 import sys
 
+from camoufox.addons import DefaultAddons, get_addon_path, maybe_download_addons
+from camoufox.locale import MMDB_FILE, download_mmdb
 from camoufox.pkgman import OS_NAME, CamoufoxFetcher, Version
 
 
@@ -54,7 +57,27 @@ def main(pin: str) -> int:
         print(f"fetch-camoufox: installed {installed.full_string}, "
               f"wanted {pin}", file=sys.stderr)
         return 1
-    print(f"fetch-camoufox: installed {installed.full_string}")
+
+    # The CLI `python -m camoufox fetch` this script replaces also
+    # downloads the GeoLite2 database and the default addons (uBlock
+    # Origin); CamoufoxFetcher.install() covers only the browser. Bake
+    # both here: at runtime the package dir and the staged /opt cache are
+    # read-only to the container user, so a lazy first-use download can
+    # only crash the launch (geoip) or silently drop UBO from the
+    # fingerprint. maybe_download_addons swallows its own failures with a
+    # printed message, hence the existence re-check.
+    download_mmdb()
+    maybe_download_addons(list(DefaultAddons))
+    missing = [a.name for a in DefaultAddons
+               if not os.path.exists(get_addon_path(a.name))]
+    if missing or not os.path.exists(str(MMDB_FILE)):
+        print(f"fetch-camoufox: geoip/addon staging incomplete "
+              f"(mmdb present={os.path.exists(str(MMDB_FILE))}, "
+              f"missing addons={missing})", file=sys.stderr)
+        return 1
+
+    print(f"fetch-camoufox: installed {installed.full_string} "
+          f"+ GeoLite2 + {[a.name for a in DefaultAddons]}")
     return 0
 
 

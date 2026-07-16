@@ -180,6 +180,20 @@ STARTUP_CACHE_DIRNAME = "startupCache"
 PROFILE_DIR_MODE = 0o700
 
 
+def _chmod_best_effort(path: Path) -> None:
+    """Tighten to 0700 where the filesystem allows it. In a container the
+    cache root is a bind mount owned by the host user, and the VM file
+    share accepts reads and writes from the container uid but rejects
+    chmod (EPERM). Host-side permissions are authoritative there — the
+    wrapper creates the mount source 0700 — so a failed chmod must not
+    abort the redirect."""
+    try:
+        os.chmod(path, PROFILE_DIR_MODE)
+    except OSError as exc:
+        log.debug("chmod %o on %s failed (%s) — host-side perms govern",
+                  PROFILE_DIR_MODE, path, exc)
+
+
 def startup_cache_root() -> Path:
     """The cache root the relocated startupCache dirs live under.
 
@@ -228,10 +242,10 @@ def redirect_startup_cache(profile_dir: Path,
     if cache_root is None:
         cache_root = startup_cache_root()
     cache_root.mkdir(parents=True, exist_ok=True)
-    os.chmod(cache_root, PROFILE_DIR_MODE)
+    _chmod_best_effort(cache_root)
     target = cache_root / profile_dir.name
     target.mkdir(exist_ok=True)
-    os.chmod(target, PROFILE_DIR_MODE)
+    _chmod_best_effort(target)
 
     link = profile_dir / STARTUP_CACHE_DIRNAME
     if link.is_symlink():

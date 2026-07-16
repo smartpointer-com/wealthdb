@@ -31,6 +31,31 @@ def test_is_incomplete():
         {"documentType": "complete", "k1Count": None, "totalK1Count": None}) is False
 
 
+def test_check_exits_3_when_browser_cannot_launch(tmp_path, monkeypatch):
+    # A --check probe whose browser cannot even start must exit 3 — distinct
+    # from 1 ("stale") — so the entrypoint surfaces the environment failure
+    # instead of forcing a needless by-hand 2FA re-login.
+    import json
+    import types
+
+    jar = tmp_path / "cookies.json"
+    jar.write_text(json.dumps([{
+        "name": "_angellist_v2", "value": "s", "domain": ".angellist.com",
+        "path": "/", "expires": 4102444800, "httpOnly": True,
+        "secure": True, "sameSite": "Lax"}]))
+
+    class BoomFox:
+        def __init__(self, **kwargs):
+            raise PermissionError(13, "Permission denied", "GeoLite2-City.mmdb")
+
+    stub = types.ModuleType("camoufox.sync_api")
+    stub.Camoufox = BoomFox
+    monkeypatch.setitem(sys.modules, "camoufox", types.ModuleType("camoufox"))
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", stub)
+
+    assert download.main(["--cookies", str(jar), "--check"]) == 3
+
+
 def test_abs_url():
     assert download._abs_url("/k1_packets/1/csv") == \
         "https://venture.angellist.com/k1_packets/1/csv"

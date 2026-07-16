@@ -81,10 +81,20 @@ case "${1:-help}" in
                 #    rejected by AngelList (stale/revoked session). Confirm it
                 #    actually establishes identity (headless, no VNC) before
                 #    skipping the sign-in — otherwise `download` would fail.
-                if python3 /app/download.py --cookies "$COOKIES" --check; then
+                probe_rc=0
+                python3 /app/download.py --cookies "$COOKIES" --check || probe_rc=$?
+                if [[ "$probe_rc" -eq 0 ]]; then
                     echo "login: existing AngelList session still valid — cookie lifted to" >&2
                     echo "login:   $COOKIES. No VNC login needed (pass --fresh to re-login)." >&2
                     exit 0
+                elif [[ "$probe_rc" -ge 2 ]]; then
+                    # Probe exits ≥2 when it could not run at all (browser/
+                    # environment failure) — not a session verdict. Forcing a
+                    # re-login here would burn a by-hand 2FA on a broken
+                    # container; surface the real failure instead.
+                    echo "login: session probe could not run (exit $probe_rc) — not a stale session." >&2
+                    echo "login: fix the failure above and re-run." >&2
+                    exit "$probe_rc"
                 fi
                 echo "login: saved cookie is unexpired but the server rejected it (stale session)." >&2
             fi
