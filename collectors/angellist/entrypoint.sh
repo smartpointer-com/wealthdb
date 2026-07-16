@@ -72,6 +72,13 @@ case "${1:-help}" in
             -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
                 exit 2 ;;
         esac
+        # Seed the profile's user.js (a stock Firefox takes no Playwright
+        # prefs) and relocate its startupCache out of /secrets. Runs before
+        # the session probe, not only on the re-login path: a session can
+        # stay valid for ~27 days, and the profile would otherwise miss a
+        # month of pref/relocation updates (e.g. a browser-version bump
+        # replacing the startupCache symlink with a real dir).
+        python3 /app/fxprofile.py --profile-dir "$FXPROFILE"
         if [[ "$login_mode" != "fresh" ]]; then
             # 1. Cheap client-side filter: lift the cookie only if a non-expired
             #    session cookie is present in the saved profile.
@@ -106,11 +113,6 @@ case "${1:-help}" in
         fi
         start_xvfb
         start_x11vnc login
-        # Seed the profile's user.js (a stock Firefox takes no Playwright
-        # prefs) and ensure the documents dir exists. The prefs come from
-        # the shared collectorkit.launch set plus AngelList's own — see
-        # fxprofile.py; nothing pref-shaped belongs in this entrypoint.
-        python3 /app/fxprofile.py --profile-dir "$FXPROFILE"
         # Firefox's content-process sandbox needs a user namespace, which
         # Colima's default seccomp profile blocks (EPERM) — left on, page
         # rendering crashes. Disable it (env here + the matching pref in

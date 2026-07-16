@@ -11,10 +11,22 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fxprofile  # noqa: E402
 from collectorkit import launch  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cache_root(tmp_path, monkeypatch):
+    # seed() relocates startupCache via launch.prepare_profile_dir, whose
+    # cache root defaults to the REAL ~/.cache/wealthdb/startupcache when
+    # the env override is unset — these tests run host-side, so without
+    # this pin they leak per-test dirs into the real cache.
+    monkeypatch.setenv("WEALTHDB_STARTUPCACHE_DIR",
+                       str(tmp_path / "startupcache"))
 
 
 def _prefs(text):
