@@ -303,14 +303,23 @@ never a hand-rolled pref dict or arg list:
 
 - **Camoufox / Playwright Firefox** — `firefox_user_prefs=launch.firefox_prefs()`
 - **Playwright Chromium** — `args=launch.chromium_args(<collector's own flags>)`
+- **A stock browser binary started from an `entrypoint.sh`** takes neither.
+  It reads `<profile>/user.js`, so the profile is seeded from
+  `launch.firefox_user_js(**overrides)` by a small Python seeder the
+  entrypoint calls (angellist's `fxprofile.py` is the reference) — prefs
+  never belong in the shell script.
 
 The shared set disables the disk cache, history, favicons, telemetry
 persistence, and the password manager, keeping the profile down to session
 state (cookies, keys, certs, prefs) rather than an unbounded cache of
-authenticated responses. The in-memory cache stays on, and IndexedDB
+authenticated responses. A profile signed into by hand (angellist's)
+overrides the password manager back on, so Firefox autofills the saved
+login. The in-memory cache stays on, and IndexedDB
 (`storage/`) is deliberately untouched — SPAs keep real session state there.
+None of it is observable to web content, so it is safe on the stealth paths.
 Debugging uses `--trace`, which is a richer artefact than a cache blob store.
-A launch site that skips the helper fails `make test-collectorkit`.
+A launch site that skips the helper — including an entrypoint that
+hand-writes prefs — fails `make test-collectorkit`.
 
 ### download.py — bronze
 

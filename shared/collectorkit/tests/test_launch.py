@@ -8,6 +8,7 @@ on an existing one) that opens a browser without the shared helper fails
 here rather than silently regrowing a cache next to the session cookie.
 """
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,21 @@ class FirefoxPrefsTest(unittest.TestCase):
             launch.firefox_prefs()["browser.cache.disk.enable"], False)
 
 
+class PasswordManagerOnTest(unittest.TestCase):
+    def test_reenables_over_the_shared_set(self):
+        # The by-hand login profiles layer this back over the shared set,
+        # which turns the password manager off for the driven ones.
+        prefs = launch.firefox_prefs(**launch.PASSWORD_MANAGER_ON)
+        self.assertIs(prefs["signon.rememberSignons"], True)
+        self.assertIs(prefs["signon.autofillForms"], True)
+
+    def test_overrides_rather_than_adds(self):
+        # Every key it flips must already exist in the shared set, so it is
+        # a genuine override and can't silently introduce a new pref.
+        for key in launch.PASSWORD_MANAGER_ON:
+            self.assertIn(key, launch.FIREFOX_PREFS)
+
+
 class ChromiumArgsTest(unittest.TestCase):
     def test_caches_pinned_not_zero(self):
         # A Chromium cache size of 0 means "pick a default", so the caches
@@ -85,6 +101,54 @@ class ChromiumArgsTest(unittest.TestCase):
     def test_returns_fresh_list(self):
         launch.chromium_args().append("--mutated")
         self.assertNotIn("--mutated", launch.chromium_args())
+
+
+class FirefoxUserJsTest(unittest.TestCase):
+    def _prefs(self, text: str) -> dict[str, str]:
+        return dict(re.findall(r'^user_pref\("([^"]+)", (.+)\);$', text,
+                               re.M))
+
+    def test_js_literals_not_python_reprs(self):
+        # `False` / `True` in a user.js is a syntax error Firefox drops the
+        # whole line for — silently reverting the pref to its default.
+        prefs = self._prefs(launch.firefox_user_js())
+        self.assertEqual(prefs["browser.cache.disk.enable"], "false")
+        self.assertEqual(prefs["browser.cache.memory.enable"], "true")
+        self.assertNotIn("False", launch.firefox_user_js())
+        self.assertNotIn("True", launch.firefox_user_js())
+
+    def test_ints_bare_and_strings_quoted(self):
+        prefs = self._prefs(launch.firefox_user_js(**{"a.str": "/tmp/x"}))
+        self.assertEqual(prefs["browser.cache.disk.capacity"], "0")
+        self.assertEqual(prefs["a.str"], '"/tmp/x"')
+
+    def test_string_escaping(self):
+        prefs = self._prefs(launch.firefox_user_js(**{"a.s": 'a"b\\c'}))
+        self.assertEqual(prefs["a.s"], r'"a\"b\\c"')
+
+    def test_carries_the_shared_set(self):
+        prefs = self._prefs(launch.firefox_user_js())
+        for key in launch.FIREFOX_PREFS:
+            self.assertIn(key, prefs)
+
+    def test_override_replaces_rather_than_duplicates(self):
+        # Two lines for one key is the drift this renderer exists to stop;
+        # the last would silently win.
+        text = launch.firefox_user_js(
+            **{"datareporting.policy.dataSubmissionEnabled": False})
+        self.assertEqual(
+            text.count('user_pref("datareporting.policy.dataSubmissionEnabled"'),
+            1)
+
+    def test_overrides_win(self):
+        prefs = self._prefs(launch.firefox_user_js(
+            **{"browser.cache.memory.enable": False}))
+        self.assertEqual(prefs["browser.cache.memory.enable"], "false")
+
+    def test_every_line_is_a_pref_or_comment(self):
+        for line in launch.firefox_user_js().splitlines():
+            self.assertTrue(line.startswith(("user_pref(", "//")),
+                            f"unexpected user.js line: {line!r}")
 
 
 def _hardened_call(node: ast.Call, kwarg: str, helper: str) -> bool:
@@ -159,6 +223,65 @@ class LaunchSitesHardenedTest(unittest.TestCase):
             self.assertNotIn("signon.rememberSignons", text,
                              f"{path} inlines a pref set — use "
                              f"collectorkit.launch.firefox_prefs()")
+
+
+@unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
+class EntrypointProfilesHardenedTest(unittest.TestCase):
+    """Profiles seeded from bash, not Python.
+
+    A browser started as a plain binary from an entrypoint takes no
+    Playwright prefs and is invisible to the AST scan above — which is
+    exactly how one such profile grew the largest disk cache of any of
+    them. Its prefs have to arrive as a rendered `user.js`, so any
+    entrypoint that hand-writes prefs, or starts a browser without seeding
+    the profile from the shared renderer, fails here.
+    """
+
+    def _entrypoints(self):
+        return sorted(COLLECTORS.rglob("entrypoint.sh"))
+
+    def test_entrypoints_exist(self):
+        # Guards the guard: a rename would otherwise make this vacuous.
+        self.assertTrue(self._entrypoints())
+
+    def test_no_entrypoint_hand_writes_prefs(self):
+        # A mention of user.js in a comment is fine; a shell redirect into
+        # one (`cat > "$FXPROFILE/user.js"`) is the drift being blocked.
+        redirect = re.compile(r">\s*[\"']?\S*user\.js")
+        for path in self._entrypoints():
+            text = path.read_text()
+            self.assertNotIn("user_pref(", text,
+                             f"{path} hand-writes prefs — render them from "
+                             f"collectorkit.launch.firefox_user_js()")
+            self.assertIsNone(redirect.search(text),
+                              f"{path} writes a user.js — render it from "
+                              f"collectorkit.launch.firefox_user_js()")
+
+    def test_browser_launching_entrypoint_seeds_from_the_renderer(self):
+        # A `firefox`/`chrome` binary started from bash gets its profile
+        # from a seeder that goes through the shared renderer.
+        for path in self._entrypoints():
+            text = path.read_text()
+            launches = [ln.strip() for ln in text.splitlines()
+                        if re.match(r"^\s*(firefox|google-chrome|chromium)\s",
+                                    ln)]
+            if not launches:
+                continue
+            seeder = path.parent / "fxprofile.py"
+            self.assertTrue(
+                seeder.is_file(),
+                f"{path} starts a browser but {seeder.name} is missing")
+            self.assertIn(
+                "firefox_user_js", seeder.read_text(),
+                f"{seeder} must render prefs via "
+                f"collectorkit.launch.firefox_user_js()")
+            # An actual invocation, not a mention in a comment — matching
+            # the bare name would let a stray comment satisfy the guard.
+            invoked = re.search(rf"^\s*python3?\s+\S*{re.escape(seeder.name)}",
+                                text, re.M)
+            self.assertIsNotNone(
+                invoked,
+                f"{path} starts a browser without invoking {seeder.name}")
 
 
 if __name__ == "__main__":

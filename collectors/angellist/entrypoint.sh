@@ -96,36 +96,17 @@ case "${1:-help}" in
         fi
         start_xvfb
         start_x11vnc login
-        mkdir -p "$FXPROFILE"
-        # Seed prefs: persist session cookies on shutdown (restore-
-        # session), and skip onboarding/default-browser/telemetry noise so
-        # the login page comes up straight away.
-        cat > "$FXPROFILE/user.js" <<'PREFS'
-user_pref("browser.startup.page", 3);
-user_pref("browser.aboutwelcome.enabled", false);
-user_pref("browser.shell.checkDefaultBrowser", false);
-user_pref("datareporting.policy.dataSubmissionEnabled", false);
-user_pref("trailhead.firstrun.didSeeAboutWelcome", true);
-user_pref("security.sandbox.content.level", 0);
-// Save downloads (K-1 CSV/PDF, financial statements) straight to the
-// mounted /data/angellist-documents (= angellist-documents/ in the wealthdb
-// data dir on the host) instead of the container-ephemeral ~/Downloads,
-// so documents grabbed from the Taxes & Documents page persist. (The doc
-// endpoints reject our cookie-injection, so a real-browser download here
-// is the way to get them onto the host.)
-user_pref("browser.download.folderList", 2);
-user_pref("browser.download.dir", "/data/angellist-documents");
-user_pref("browser.download.useDownloadDir", true);
-user_pref("browser.download.manager.showWhenStarting", false);
-user_pref("pdfjs.disabled", true);
-user_pref("browser.helperApps.neverAsk.saveToDisk", "text/csv,application/pdf,application/octet-stream,application/vnd.ms-excel,application/zip");
-PREFS
-        mkdir -p /data/angellist-documents
+        # Seed the profile's user.js (a stock Firefox takes no Playwright
+        # prefs) and ensure the documents dir exists. The prefs come from
+        # the shared collectorkit.launch set plus AngelList's own — see
+        # fxprofile.py; nothing pref-shaped belongs in this entrypoint.
+        python3 /app/fxprofile.py --profile-dir "$FXPROFILE"
         # Firefox's content-process sandbox needs a user namespace, which
         # Colima's default seccomp profile blocks (EPERM) — left on, page
-        # rendering crashes. Disable it (env + pref above). This is an
-        # internal process-isolation setting, invisible to web content, so
-        # it has no bearing on the anti-bot fingerprint.
+        # rendering crashes. Disable it (env here + the matching pref in
+        # fxprofile.py). This is an internal process-isolation setting,
+        # invisible to web content, so it has no bearing on the anti-bot
+        # fingerprint.
         export MOZ_DISABLE_CONTENT_SANDBOX=1
         echo "login: opening Firefox -> https://venture.angellist.com/v/login" >&2
         echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2

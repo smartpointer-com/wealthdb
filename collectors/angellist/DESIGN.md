@@ -36,7 +36,16 @@ Two dead ends, recorded so they aren't re-litigated:
 **The solution — bring-your-own-cookie.** `login` runs a *genuine,
 un-instrumented stock Mozilla Firefox* (Mozilla apt repo, arm64) under
 Xvfb + VNC inside the container. A real Firefox clears the invisible
-challenge; login is completed by hand. On a clean Firefox close,
+challenge; login is completed by hand. A stock binary takes no Playwright
+prefs, so `fxprofile.py` seeds the profile's `user.js` first — the shared
+[`collectorkit.launch`](../../shared/collectorkit/collectorkit/launch.py)
+pref set (disk cache, history, favicons and telemetry persistence off, so
+the profile stays session-state-sized) plus the AngelList overrides that
+persist the session cookie on shutdown and route document downloads to the
+mounted dir. Nothing there is observable to web content: the fingerprint
+that clears the challenge is untouched, and Firefox's own blocklist data
+(`security_state/`, `safebrowsing/`) is left to populate because it is part
+of looking like a real browser. On a clean Firefox close,
 `extract_cookies.py` reads the profile's plaintext `cookies.sqlite` and
 writes the session to `~/.secrets/angellist-cookies.json` (0600) — no
 manual export/copying. The key cookie is `_angellist_v2` (domain-wide

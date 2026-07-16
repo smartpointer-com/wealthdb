@@ -44,7 +44,7 @@ RUN apt-get update \
 # artefacts (.venv, real-credential JSONs, recorded traces, sample
 # Investor-Portal HTML) never make it into the image even if
 # .dockerignore is incomplete.
-COPY explore.py download.py load.py extract_cookies.py prune.py /app/
+COPY explore.py download.py load.py extract_cookies.py fxprofile.py prune.py /app/
 COPY migrations /app/migrations
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
