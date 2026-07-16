@@ -36,8 +36,11 @@ case "${1:-help}" in
             esac
         done
         start_xvfb
-        # Trace + capture to /debug by default (later args win).
-        exec python3 /app/login.py --screenshot-dir /debug --trace "$@"
+        # Diagnostics are opt-in (fleet convention), not injected here:
+        # Playwright 1.49.0's tracing.start() crashes the base's Firefox,
+        # so a hardcoded --trace killed every login. Pass --trace
+        # --screenshot-dir /debug through the wrapper to capture them.
+        exec python3 /app/login.py "$@"
         ;;
     vnc-login)
         # Manual fallback: start x11vnc and run --no-cli-mfa so login /
@@ -47,8 +50,7 @@ case "${1:-help}" in
         shift
         start_xvfb
         start_x11vnc vnc-login
-        exec python3 /app/login.py --no-cli-mfa \
-            --screenshot-dir /debug --trace "$@"
+        exec python3 /app/login.py --no-cli-mfa "$@"
         ;;
     sh|bash)
         shift
@@ -66,7 +68,8 @@ Usage:
                  (schwab-web.env), auto-submits, prompts for the 2FA code
                  on stdin, drives the consent / account-link pages (ticking
                  every account), captures the redirect, writes the token to
-                 /secrets. Traces to /debug. Stdin must be a TTY.
+                 /secrets. Stdin must be a TTY. Add --trace --screenshot-dir
+                 /debug for diagnostics (off by default).
   login --check  Inspect the stored token's age (no browser).
   login --manual Print the auth URL, paste the redirected URL back.
   vnc-login      Manual fallback: drive login / 2FA / consent yourself over

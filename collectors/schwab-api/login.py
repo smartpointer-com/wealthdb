@@ -141,11 +141,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "NEVER commit these — see CLAUDE.md §4.",
     )
     p.add_argument(
-        # BooleanOptionalAction yields --trace / --no-trace, so the trace the
-        # entrypoint injects on login can be turned off through the wrapper.
-        "--trace", action=argparse.BooleanOptionalAction, default=False,
-        help="Capture a Playwright trace bundle (requires --screenshot-dir); "
-             "--no-trace disables it (the entrypoint injects --trace on login).",
+        "--trace", action="store_true",
+        help="Capture a Playwright trace bundle (requires --screenshot-dir). "
+             "Opt-in — off by default. Note: the base image's Firefox and "
+             "the pinned Playwright are incompatible on tracing.start(), so "
+             "a trace currently crashes the browser mid-login.",
     )
     p.add_argument(
         "--explore", action="store_true",

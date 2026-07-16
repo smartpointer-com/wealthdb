@@ -130,7 +130,7 @@ remaining refresh-window life (no browser):
 | `--cli-mfa` / `--no-cli-mfa` | on | Automate login + stdin 2FA + consent (default; `login` uses it) vs. drive it yourself over VNC (`--no-cli-mfa`; the `vnc-login` subcommand uses it). |
 | `--mfa-timeout` | `600` | Seconds to wait for the human MFA + consent redirect to the callback URL. |
 | `--mfa-page-timeout` | `300` | With `--cli-mfa`: seconds to wait for the 2FA input field to appear. |
-| `--screenshot-dir` / `--trace` | — | Capture page HTML/screenshots, and (with `--trace`) a Playwright trace bundle, to the dir. The container passes `--screenshot-dir /debug --trace` by default. NEVER commit these. |
+| `--screenshot-dir` / `--trace` | — | Capture page HTML/screenshots, and (with `--trace`) a Playwright trace bundle, to the dir. Opt-in — pass `--screenshot-dir /debug --trace` through the wrapper (the entrypoint no longer injects them; a trace also crashes the base image's Firefox on `tracing.start()`). NEVER commit these. |
 | `--explore` | off | Debug: dump each distinct page's DOM to `--screenshot-dir` (for pinning selectors). |
 | `--manual` | off | No-browser paste-the-URL flow (schwab-py). |
 | `--check` | off | Inspect the token file's age. No browser, no network. |

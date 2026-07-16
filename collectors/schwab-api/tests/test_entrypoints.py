@@ -33,3 +33,19 @@ def test_entrypoint_help_builds(script):
         f"`{script} --help` exited {result.returncode}; the argparse "
         f"parser failed to build. stderr:\n{result.stderr}"
     )
+
+
+def test_login_entrypoint_does_not_hardcode_tracing():
+    """Regression: the login entrypoint must not inject --trace /
+    --screenshot-dir. Playwright's tracing.start() crashes the base
+    image's Firefox, so a hardcoded --trace killed every login;
+    diagnostics stay opt-in, passed through the wrapper (fleet convention).
+    """
+    ep = _COLLECTOR_DIR / "entrypoint.sh"
+    exec_lines = [ln for ln in ep.read_text().splitlines()
+                  if "exec python3 /app/login.py" in ln]
+    assert exec_lines, "no login exec line found in entrypoint.sh"
+    for ln in exec_lines:
+        assert "--trace" not in ln, f"entrypoint hardcodes --trace: {ln!r}"
+        assert "--screenshot-dir" not in ln, \
+            f"entrypoint hardcodes --screenshot-dir: {ln!r}"
