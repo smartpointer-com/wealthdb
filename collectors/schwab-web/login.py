@@ -351,19 +351,35 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
     Headed + window=(1280, 800) avoids Schwab's mobile responsive
     layout; the Xvfb display from entrypoint.sh provides the X11
     surface (camoufox respects DISPLAY when set).
+
+    The close is guarded: when the body fails because the browser
+    itself died (startup crash, closed window), Playwright's own
+    cleanup raises TargetClosedError `from None`, which would replace
+    the body's exception — the actual diagnosis — with a generic close
+    error. A cleanup failure is logged instead, never raised.
     """
     from camoufox.sync_api import Camoufox
-    with Camoufox(
+    cm = Camoufox(
         persistent_context=True,
         user_data_dir=str(profile_dir),
         os="macos",
         window=(1280, 800),
         headless=False,
         firefox_user_prefs=launch.firefox_prefs(),
-    ) as context:
+    )
+    context = cm.__enter__()
+    try:
         if trace:
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
         yield context
+    finally:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as exc:
+            log.warning("browser cleanup failed (%s: %s) — the browser "
+                        "likely crashed or was closed; the propagating "
+                        "error above is the real cause",
+                        type(exc).__name__, exc)
 
 
 # ============================================================

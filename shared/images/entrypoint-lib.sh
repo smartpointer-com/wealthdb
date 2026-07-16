@@ -16,8 +16,12 @@ VFB_DISPLAY=99
 # always overwrite the symlink so a stale /tmp/.cache/camoufox from a
 # previous container with a different runtime uid doesn't shadow it.
 mkdir -p /tmp/.cache
-if [[ -d /opt/camoufox-cache && ! -e /tmp/.cache/camoufox ]]; then
-    ln -snf /opt/camoufox-cache /tmp/.cache/camoufox
+if [[ -d /opt/camoufox-cache ]]; then
+    # rm first: `ln -snf` into a stale real directory would nest the
+    # link inside it instead of replacing it. Removing a symlink here
+    # never touches the /opt target.
+    rm -rf /tmp/.cache/camoufox
+    ln -sn /opt/camoufox-cache /tmp/.cache/camoufox
 fi
 
 # start_xvfb — bring up the virtual X11 display Firefox needs to run headed

@@ -1,9 +1,10 @@
 # camoufox + playwright pins live in shared/images/base-camoufox.Dockerfile
-# (camoufox[geoip]>=0.4.11,<0.5 + playwright==1.49.0). Bump them there;
-# this collector picks them up via FROM wealthdb/base-camoufox. The pin
-# matters: camoufox-py 0.4.11 downloads Firefox 135.0.1-beta.24 whose
-# juggler patches target Playwright 1.49.x — a newer Playwright crashes
-# the camoufox-launched Firefox.
+# (camoufox[geoip]>=0.4.11,<0.5 + playwright==1.49.0 + the CAMOUFOX_BUILD
+# browser pin). Bump them there, together: the browser build's juggler
+# patches target a specific Playwright, and camoufox-py's own fetch is
+# unpinned across Firefox majors (see fetch-camoufox.py), which is why the
+# Dockerfile pins the exact build. This collector picks it all up via
+# FROM wealthdb/base-camoufox.
 
 # pypdfium2 ships Python bindings to Google's PDFium (the
 # renderer Chrome uses). Pure-C++ under the hood, an order of
