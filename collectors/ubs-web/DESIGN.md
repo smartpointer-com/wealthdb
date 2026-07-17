@@ -253,12 +253,21 @@ lists — so older token-named dumps keep loading unchanged.
 ### 3.8 Historical snapshots reconstructed from PDFs
 
 The web silver also reconstructs **historical** position + cash
-snapshots from the PDF document archive. Two dedicated tables:
+snapshots from the PDF document archive. Three dedicated tables:
 
 | Table | Source PDF type | Granularity |
 | --- | --- | --- |
 | `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS doesn't surface the safekeeping account in the printed text in a way we can extract). |
 | `historical_cash_balances` | "Account Statement" PDFs (monthly) | One row per `(period_end, account_external_id)` with opening / closing balance + turnover totals. UBS only issues an Account Statement for a given month when the account had activity in that month, so coverage is uneven; year-end months tend to cover the full account inventory. |
+| `historical_mortgages` | "Maturity notice" PDFs (one per fixed-rate / SARON interest-roll period, typically quarterly) | One row per `(as_of_date, account_external_id)` with the outstanding principal (negated to liability sign), the product line → rate type, and the collateral description (migration 0005). |
+
+(The live-fetch side of mortgages is the `mortgages` table —
+migration 0004 — fed by positions.csv's "Pro memoria - Mortgages"
+rows, which reuse the IBAN column for the fixed-rate term and carry
+the UBS-internal mortgage number as `account_external_id`. Gold
+projects both tables through the same mortgage account/instrument
+path: one `AccountChange{Kind: mortgage}` + a negative-value
+position.)
 
 **Position-row shapes the Statement-of-assets walker handles.**
 The securities walker anchors on each `Valor … - ISIN …` line and

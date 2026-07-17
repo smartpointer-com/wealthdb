@@ -85,8 +85,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	// Per-bucket display rows (TWR only). prevEmpty tracks whether the preceding
 	// bucket carried forward with no fresh snapshot, so the *receiving* bucket
 	// (fresh V1, stale carried V0) that over-attributes the accumulated move can
-	// be flagged boundary_same_snapshot — distinct from the donor empty_bucket
-	// (review #5).
+	// be flagged boundary_same_snapshot — distinct from the donor empty_bucket.
 	if p.Period != "total" {
 		prevEmpty := false
 		for _, b := range returns.BucketBoundaries(winFrom, winTo, periodKind(p.Period)) {
@@ -178,7 +177,7 @@ func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (floa
 
 // preFxHistory reports whether the entity's window starts before the earliest FX
 // rate for a held non-output currency, so its boundary values were converted off
-// the migration-0023 day-0 clamped rate (review #4).
+// the migration-0023 day-0 clamped rate.
 func preFxHistory(assets []*accountData, outCcy string, winFrom int64, fx fxBounds) bool {
 	for _, a := range assets {
 		if a.baseCurrency == "" || a.baseCurrency == outCcy {
@@ -281,8 +280,8 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 		ann = f64(rate) // XIRR is already an annual rate
 	}
 	// The mwr_% column shows the PERIOD (cumulative-equivalent) figure so it is
-	// consistent with the twr_% column; mwr_ann_% holds the annualized XIRR
-	// (review #8). For a full-year window the two coincide.
+	// consistent with the twr_% column; mwr_ann_% holds the annualized XIRR.
+	// For a full-year window the two coincide.
 	return f64(returns.DeAnnualize(rate, days)), ann, q
 }
 
@@ -369,9 +368,9 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	//
 	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
 	// constituent debuts after winFrom:
-	//   - OnboardPerConstituent (default): the debuting account's OWN value. Today's
-	//     behavior, untouched — no sibling account moves on a debut day in the
-	//     flow-complete sources, so per-account == aggregate step-up there.
+	//   - OnboardPerConstituent (default): the debuting account's OWN value. No
+	//     sibling account moves on a debut day in the flow-complete sources, so
+	//     per-account == aggregate step-up there.
 	//   - OnboardPerEntityOnce: the newly-debuting constituents' first value MINUS
 	//     same-day sibling FUNDING drops only (NOT the raw calendar aggregate delta —
 	//     see groupOnboardStep: same-day external deposits and market moves on
@@ -382,8 +381,8 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	//     onboarded — the capital was already booked once (inception value + the
 	//     external cash deposit). Genuinely new external value that wasn't captured
 	//     as a same-unit deposit still steps the aggregate up and is onboarded. This
-	//     is the conduit double-count fix, and it is source-scoped: the grain is read
-	//     per constituent from a.rpolicy, so a non-UBS constituent keeps
+	//     prevents the conduit double-count, and it is source-scoped: the grain is
+	//     read per constituent from a.rpolicy, so a non-UBS constituent keeps
 	//     per-constituent onboarding even in the merged global entity.
 	// Conduit-kind accounts never emit their OWN onboarding (ConduitKinds); under
 	// per-entity-once their value still enters the aggregate step-up (they hold the
@@ -563,7 +562,7 @@ func netOwnedTransfers(cand []ownedFlow) (kept []ownedFlow, unmatched int) {
 		}
 	}
 	// Largest-magnitude first, with a fully deterministic tie-break on
-	// (day, transaction id) so equal-magnitude legs match reproducibly (review #6).
+	// (day, transaction id) so equal-magnitude legs match reproducibly.
 	byMag := func(s []ownedFlow) {
 		sort.SliceStable(s, func(i, j int) bool {
 			mi, mj := math.Abs(s[i].Amount), math.Abs(s[j].Amount)
@@ -628,22 +627,17 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 	// Per-constituent inception. Under a constituent's Inception=first-real-
 	// snapshot policy its anchor is the first REAL snapshot day rather than the
 	// first spine day, which kills the tiny-base artifact where a sparse pre-
-	// snapshot cash tail opened the window years early (UBS 2021). The choice is
-	// per constituent, so it is source-scoped even in the merged global entity:
+	// snapshot cash tail opened the window years early. The choice is per
+	// constituent, so it is source-scoped even in the merged global entity:
 	// only that source's constituents move their anchor; every other source keeps
 	// firstDay(). Default policy (InceptionFullWindow) leaves anchorDay == firstDay.
-	// Under Inception=first-real-snapshot a conduit account's sparse cash-only
-	// pre-history must NOT drag the anchor early (UBS held cash months before the
-	// first securities position); the unit's real inception is when a non-conduit
-	// account first has a real snapshot. So for that policy the min-anchor is taken
-	// over NON-conduit constituents only, using their first real snapshot day. If a
-	// group is all conduit, fall back to including conduits so the window is never
-	// empty. Every other constituent keeps firstDay() (default), so this is
-	// source-scoped.
 	// anchorDay is a constituent's inception anchor: firstDay() by default;
 	// firstRealSnapshotDay() under Inception=first-real-snapshot. A first-real-
-	// snapshot CONDUIT is skipped from the min so its sparse cash pre-history can't
-	// anchor the unit early — the anchor prefers a non-conduit real snapshot.
+	// snapshot CONDUIT is skipped from the min so its sparse cash-only pre-history
+	// (cash held months before the first securities position) can't anchor the
+	// unit early — the anchor prefers a non-conduit real snapshot; if a group is
+	// all conduit, the min falls back to including conduits so the window is
+	// never empty.
 	anchorDay := func(a *accountData) (day int64, skipForMin bool) {
 		if a.rpolicy.Inception == returns.InceptionFirstRealSnapshot {
 			return a.firstRealSnapshotDay(), a.isConduit()

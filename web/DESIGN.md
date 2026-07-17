@@ -74,7 +74,7 @@ preserves it so a restart keeps everything.
 
 ## 6. Provisioning (skip the setup wizard)
 
-A private loopback service shouldn't make you fill in a "tell us about
+A private loopback service shouldn't require the "tell us about
 your company" wizard. Metabase's declarative config file
 (`MB_CONFIG_FILE_PATH`) can create users/databases — but that's a
 Pro/EE feature, a silent no-op on OSS. So `web start` provisions over the

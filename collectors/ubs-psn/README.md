@@ -129,6 +129,7 @@ such shells once quiescent.
 | `--host` | `sftp-keyport-ch.ubs.com` | UBS SFTP hostname or IP |
 | `--port` | `26701` | UBS SFTP port |
 | `--client-id` | _(required)_ | UBS customer / SFTP login ID |
+| `--env-file` | — | KEY=VALUE credentials env file, sourced before the client id is resolved (also honours `UBS_PSN_ENV_FILE`; the wrapper sources `~/.secrets/ubs-psn.env` already) |
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Bronze tree root |
 | `--key` | `~/.secrets/ubs_psn_key` | Private RSA key path |
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
@@ -150,7 +151,7 @@ such shells once quiescent.
 - **Order types are the documented union.** A customer may not be
   provisioned for every order type listed; the script lists each and
   records the absent dirs in `listing.json` as `"absent"`.
-- **No retry / resume / scheduling.** Run from cron, launchd, or your
+- **No retry / resume / scheduling.** Run from cron, launchd, or a
   scheduler of choice.
 
 ## load.py

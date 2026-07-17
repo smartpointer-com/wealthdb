@@ -67,18 +67,21 @@ A second-factor approval (SMS code / voice call / push / security
 question — depends on the configured factor) is required
 on every fresh login. Unattended cron is therefore impossible;
 this toolkit is human-triggered (one code entry or biometric tap
-per fresh session) but reuses the persisted session cookie across
-runs until Schwab invalidates it.
+per fresh session). Login and scrape run in one Firefox session —
+Schwab invalidates the session when Firefox closes, so each
+`download` pays one fresh MFA challenge.
 
 ## Tools
 
 The architecture follows the `ubs-web` / `swissquote`
-template; subcommand names and roles are the same:
+template; subcommand names and roles are the same, except login is
+folded into `download` (one continuous Firefox session — no
+standalone `login` verb):
 
 | Script | Status | Purpose |
 | --- | --- | --- |
 | [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` falls back to the VNC-driven flow, where Log In + 2FA are driven by hand. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
-| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §4.4 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §7 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
 | [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions, positions, cash) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
 | [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
@@ -124,10 +127,12 @@ The CLI is intentionally minimal:
   `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-submits, prompts
   on stdin for the 2FA code, runs the statements + tx-history
   download in the same Firefox session, exits. Defaults to a
-  3-month range; the shared `--lookback` flag — a preset
-  (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) or an ISO date — names
-  the window's start, which maps to the narrowest Schwab preset that
-  still covers it. A window wider than `Last10Years` is capped at
+  3-month range; the shared `--lookback` flag names the window's
+  start. A preset (`1w`/`4w`/`3m`/`6m`/`1y`/`2y`/`5y`/`all`) maps to
+  the narrowest Schwab preset that still covers it; an ISO date
+  fills the custom `SpecifyDateRange` mode on both Statements and
+  Transaction history (falling back to the covering preset if the
+  fill fails). A window wider than `Last10Years` is capped at
   ~10 years, with a warning.
 * `load` — parse the bronze tree into the silver SQLite DB.
 * `vnc-login` — fallback to a VNC-driven login + scrape when the

@@ -74,7 +74,7 @@ MFA_CONTINUE_BUTTON_CANDIDATES = (
 
 # Landmark URL hit by `--check` (and the natural post-auth landing
 # page after login). Same URL doubles as the post-auth-detected
-# signal in the upcoming combined login+scrape flow.
+# signal in the combined login+scrape flow (login.py).
 ACCOUNT_SUMMARY_URL = "https://client.schwab.com/app/accounts/summary"
 
 # Statements & Tax Forms page — download.py drives this to
@@ -182,22 +182,17 @@ DATE_RANGE_DEFAULT = "Last3Months"
 # ============================================================
 #
 # Same SPA chrome as Statements (account-selector, date-range
-# select), with a different element id for pagination and an
-# "Apply" button instead of "Search". Reuses
+# select), with a different pagination element id; filters apply
+# via the page's own Search button (TX_SEARCH_BUTTON_ID). Reuses
 # ACCOUNT_SELECTOR_* and DATE_RANGE_SELECT_ID above.
 
 TX_PAGINATION_ELEMENT_ID = "pagination"
 TX_ROW_SELECTOR = "sdps-table-row.sdps-tables__row--body"
 
 # Tx-history's date-range <select> reuses Statements' `id`
-# (`date-range-select-id`) but exposes a DIFFERENT set of
-# option values:
-#   Statements:  Today | Last7Days | Last3Months | Last6Months
-#                | Last5Years | Last10Years | Custom
-#   Tx-history:  Today | Last7Days | CurrentMonth | PreviousMonth
-#                | Last6Months | CurrentYear | PreviousYear
-#                | All | SpecifyDateRange
-# So `Last10Years` is meaningless here; "all available" is `All`.
+# (`date-range-select-id`) but exposes a DIFFERENT set of option
+# values (TX_DATE_RANGE_VALUES here vs DATE_RANGE_VALUES above):
+# `Last10Years` is meaningless here; "all available" is `All`.
 TX_DATE_RANGE_VALUES = (
     "Today", "Last7Days", "CurrentMonth", "PreviousMonth",
     "Last6Months", "CurrentYear", "PreviousYear",
@@ -218,9 +213,9 @@ TX_SEARCH_BUTTON_ID = "lbl_search-button"
 # rows are in the DOM at any time. We side-step the lossy DOM
 # scrape by driving the "Export Transactions Data" modal that
 # Schwab exposes — same data, machine-readable, complete in one
-# fetch. The modal offers a choice of format (CSV/JSON/XML);
-# we grab all three on the first iteration so silver can prefer
-# whichever has the richest field set.
+# fetch. The modal offers a choice of format (CSV/JSON/XML); all
+# three are captured — load ingests the JSON (it adds AcctgRuleCd),
+# CSV/XML stay as opaque documents.
 TX_EXPORT_MODAL_TITLE = "Export Transactions Data"
 TX_EXPORT_FORMATS = (
     # (display_label, radio_input_id, on-disk extension)

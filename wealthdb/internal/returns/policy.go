@@ -123,7 +123,7 @@ func defaultFlowPolicy() FlowPolicy {
 //
 // This map is documentary and is, by construction, identical to the canonical
 // sign that value_outccy already carries on the cash/funding account where these
-// legs are recorded (proposal §3.B): for every external kind,
+// legs are recorded: for every external kind,
 // Flow.Amount == CapitalDirection(kind)·|amount|, so Modified-Dietz F_i =
 // +Flow.Amount and XIRR cf = -Flow.Amount hold without per-kind special-casing.
 // It exists as a guard/assert against a hypothetical future fund-perspective

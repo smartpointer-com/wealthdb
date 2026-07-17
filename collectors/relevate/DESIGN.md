@@ -129,8 +129,8 @@ auth POSTs require it; the middlelayer GETs do not.
 - The SPA exposes a `/dashboard/3a/depots` URL, but
   `/portfolio/investment-overview` returns only the products a
   given login actually holds and omits Pillar 3a for FZ-only
-  logins. `download.py` still probes `/dashboard/3a/depots`
-  defensively so it captures 3a for logins that have it.
+  logins. `download.py` walks whatever the overview lists — a
+  login holding 3a surfaces it there; no separate 3a probe.
 
 **Document corpus (observed):**
 
@@ -141,8 +141,9 @@ auth POSTs require it; the middlelayer GETs do not.
 - `documentType` is a numeric enum (observed values: 0, 1, 3, 4,
   7, 9). `category` is a separate numeric enum (0, 1, 2). The
   enum-to-name mapping isn't exposed in the responses we've
-  captured; the silver loader will need to derive it (likely by
-  correlating with fileName patterns).
+  captured; the silver loader derives `doc_kind` from fileName
+  needles instead (`DOC_KIND_PATTERNS` in load.py, German +
+  English).
 
 ## 2. Architecture
 
@@ -171,9 +172,10 @@ auth POSTs require it; the middlelayer GETs do not.
                                           wealthdb gold (out of scope — sibling component: wealthdb/)
 ```
 
-All three Python scripts run inside the same Docker image
-(`python:3.12-slim-bookworm` + `requests`). No browser, no Xvfb,
-no VNC.
+The Python scripts (login / download / load / prune +
+pdf_parsers) run inside the same Docker image
+(`wealthdb/base-python` + requests / pypdf / pytest). No browser,
+no Xvfb, no VNC.
 
 Stack:
 
@@ -270,7 +272,7 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
   the existing state file, restores the cookie jar, hits the
   landmark probe, prints `ALIVE` / `DEAD` / `MISSING` on stdout.
   Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
-  user prompt (CLAUDE.md §2).
+  user prompt (root CLAUDE.md §2).
 - `--max-otp-attempts` — retry budget for a mistyped OTP
   (default 3). Attempts can pause indefinitely; `getpass`
   blocks on stdin without a deadline. This
@@ -288,7 +290,8 @@ longer (30 d nominal).
 
 `login.py --check` is the canonical "is my session still alive"
 probe. The wrapper documents that running `login.py` without
-`--check` triggers a fresh mTAN — only do it on user request.
+`--check` triggers a fresh mTAN — it runs only on explicit
+request (root CLAUDE.md §2).
 
 ### 3.4 Custom request headers
 
@@ -415,7 +418,8 @@ browser-class consumer to Airlock:
      self-contained and the loader needs no cross-run fallback.
 8. Final `run.json` flush via `finish()`, which stamps the terminal
    `status`: `"complete"` for a finished walk (set even when some
-   endpoints errored), `"dry-run"` for a `--dry-run` shell,
+   endpoints errored), `"dry-run"` for a `--dry-run` walk (stamped
+   in a throwaway temp dir — a dry run leaves nothing under bronze),
    `"incomplete"` when the master enumeration failed and no work
    could run. Exit 0 if no errors recorded, 2 if at least one
    endpoint failed (the run dir is still usable; the loader skips
@@ -470,7 +474,7 @@ Manifest shape (as written):
 
 ```
 download.py [--state-path PATH] [--bronze-dir DIR]
-            [--dry-run]
+            [--dry-run] [--debug]
             [--mode {all, accounts, portfolios, documents}]
             [--no-documents] [--documents-force]
             [--lookback PRESET|YYYY-MM-DD]
@@ -495,7 +499,7 @@ investigating a specific portfolio's response shape.
 
 `--dry-run` hits only the two master listing endpoints
 (`investment-overview` + `documents`), records the work-list
-counts in the manifest, and exits. CLAUDE.md §2 explicitly
+counts in the manifest, and exits. Root CLAUDE.md §2 explicitly
 allows running this without user prompt.
 
 ### 4.3 Idempotency + dedup
@@ -541,8 +545,13 @@ schema (§7), with migrations applied on each invocation. Idempotent
 on re-runs: tracks which `dump_runs.snapshot_at` have been ingested
 and short-circuits.
 
-Out of scope here — the loader can be written against the schema
-in §7 and one good bronze run, both of which exist.
+The loader ingests each unseen bronze run in one transaction
+(accounts / cash_balances / positions / instruments /
+performance_points / documents), then runs two cross-dump PDF
+phases: `load_historical_snapshots` (quarterly-report holdings →
+`historical_position_snapshots` / `historical_cash_balances`) and
+`load_credit_note_transactions` (credit-note events,
+`source='credit_note_pdf'`).
 
 ## 6. Bronze layout
 
@@ -627,7 +636,7 @@ Storage conventions:
   INSERT OR REPLACE so re-loading a window converges.
 - Documents content-deduped via PRIMARY KEY `content_sha256`.
 
-### 7.1 Tables (as built — see `migrations/0001_initial.sql`)
+### 7.1 Tables (as built — see `migrations/`)
 
 | Table | PK | Purpose |
 |---|---|---|
@@ -638,8 +647,10 @@ Storage conventions:
 | `positions` | `(snapshot_at, account_external_id, instrument_external_id)` | One row per (snapshot, account, modelportfolio position). **TARGET allocation**, not actual unit holdings. Promotes isin, asset_class, country_code, allocation, trading_price. |
 | `instruments` | `instrument_external_id` | Slow-changing master data; upsert advances `last_seen_at`. Cross-portfolio dedup'd on `security.id`. |
 | `performance_points` | `(snapshot_at, account_external_id, value_date)` | Daily time series from `/portfolio/{id}/performance`. One point per calendar day of the portfolio's history since inception. `value_date` is Unix seconds at the day's midnight UTC. |
-| `transactions` | `transaction_external_id` | Currently empty for FZ accounts; `/deposits` returns no rows. Schema present for forward compatibility — when credit-note PDFs are parsed by a future loader pass, events land here with `source='credit_note_pdf'`. |
-| `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not yet known; `doc_kind` is a best-effort label that returns `'other'` for production data). |
+| `transactions` | `transaction_external_id` | `/deposits` returns no rows for FZ accounts, so the API side stays empty; `load_credit_note_transactions` parses the credit-note PDFs and lands the contribution events here with `source='credit_note_pdf'`. |
+| `documents` | `content_sha256` | Content-deduped index of PDFs on disk. `first_seen_at` is the earliest dump that captured the content; `last_seen_at` advances on subsequent dumps. Promotes numeric `document_type_code` and `category_code` (enum-to-name mapping not exposed; `doc_kind` is derived from fileName needles — `DOC_KIND_PATTERNS`, `'other'` only for unrecognised names). |
+| `historical_position_snapshots` | `(snapshot_at, account_external_id, isin)` | Per-quarter holdings parsed from the quarterly-report PDFs (migration 0002). |
+| `historical_cash_balances` | `(snapshot_at, account_external_id, currency, balance_kind)` | Per-quarter cash/valuation figures from the same reports (migration 0002). |
 
 #### 7.1.1 `accounts.product_key` is forensic, not behavioural
 
@@ -741,9 +752,9 @@ adapter-scoped identifier.
 
 ### 9.1 Image
 
-`python:3.12-slim-bookworm` + `requests`. Image is ~80 MB —
-nothing else is installed because the toolkit replays REST calls
-only. Build takes a few seconds.
+`wealthdb/base-python` + `requirements.txt` (requests, pypdf,
+pytest). No browser stack — the toolkit replays REST calls and
+parses PDFs. Build takes a few seconds on a warm base.
 
 ### 9.2 Wrapper subcommand surface
 

@@ -198,7 +198,7 @@ func (c *Connection) appendInstruments(ctx context.Context, w canonical.Window, 
 	// recent observation is what we have. Emit each instrument
 	// against every snapshot in the window so the gold per-column
 	// upsert sees consistent data — the loader-side LEAST/GREATEST
-	// on first_seen_at / last_seen_at handles dedup correctly.
+	// on first_seen_at / last_seen_at dedups them.
 	const q = `
 SELECT instrument_external_id,
        COALESCE(isin, ''),

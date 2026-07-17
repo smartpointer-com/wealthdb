@@ -20,10 +20,11 @@ It deliberately **reuses the fidelity-web silver schema and gold adapter**.
 `load.py` builds an `svb.db` in the fidelity silver shape, registered in gold
 as `{ "id": "svb", "kind": "fidelity" }`, so the existing Fidelity adapter
 projects it — under a *separate* source id, which is load-bearing for the
-per-source carry-forward (see [DESIGN.md](DESIGN.md)). The four
-`migrations/*.sql` here are copies of the fidelity-web silver schema and MUST
-stay schema-compatible with that gold adapter — keep them in lockstep, don't
-let them drift.
+per-source carry-forward (see [DESIGN.md](DESIGN.md)). The
+`migrations/*.sql` here are copies of the fidelity-web silver schema
+migrations (schema-bearing ones only — data-only fidelity migrations have no
+svb copy) and MUST stay schema-compatible with that gold adapter — keep
+schema changes in lockstep, don't let them drift.
 
 ## 1. The statement PDFs are pure PII — never copy them into the repo
 

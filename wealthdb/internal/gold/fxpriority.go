@@ -16,9 +16,8 @@ import (
 //
 // The load path (cmd_load / cmd_reload) calls this after the config's
 // FxSourceOrder() is known and the silver_sources rows are upserted, so
-// the SQL FX layer honours config-driven precedence without the old
-// runtime-injected CASE. A no-op-ish call with an empty order clears
-// ranks (date-only tiebreaking).
+// the SQL FX layer honours config-driven precedence. A no-op-ish call
+// with an empty order clears ranks (date-only tiebreaking).
 func SetFxPriorities(ctx context.Context, db *sql.DB, order []string) error {
 	if len(order) == 0 {
 		_, err := db.ExecContext(ctx, `UPDATE silver_sources SET fx_priority = NULL`)

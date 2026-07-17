@@ -16,10 +16,9 @@ import (
 // known PSN counterpart (no cutoff) or a value/snapshot timestamp
 // strictly less than PSN-start for its banking relationship.
 //
-// PSN-start per relationship is derived once on first
-// Transactions/Snapshots call from the configured RelationshipPair
-// list and the *psnReader handle; results are cached on the
-// webReader (single-use Connection lifecycle).
+// PSN-start per relationship is derived per Snapshots/Transactions
+// call from the configured RelationshipPair list and the *psnReader
+// handle (buildPSNStartByWebRel).
 type webReader struct {
 	db *sql.DB
 }
@@ -670,11 +669,11 @@ func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []silver.Re
 //
 // Portfolio side (historical_position_snapshots): the PDF row's
 // portfolio_external_id is the PSN-aligned 'BBBBAAAAAAAANN' form,
-// NOT the 4-char code that lives web uses ('RNNN' / 'NNNN'). PSN
+// NOT the 4-char code that live web uses ('RNNN' / 'NNNN'). PSN
 // silver's portfolios table owns that id space and its
 // relationship_id, so the mapping comes from psn — mapping through
-// live web's portfolios table (as an earlier version did) misses
-// every historical row because the two ID spaces don't overlap.
+// live web's portfolios table misses every historical row because
+// the two ID spaces don't overlap.
 //
 // Account side (historical_cash_balances): IBANs, which live web's
 // accounts table already keys on with banking_relationship_id
@@ -791,10 +790,10 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 	// currency accounts; none is external capital. The MT940 feed
 	// names the instrument ("Purchase/Sale FX Spot/Forward", "…from
 	// FX Swap"), the older PDF backfill only says "FOREX". All map
-	// to non-flow fx kinds so they never enter net_flow — before
-	// this, the multi-token MT940 forms fell through to the
-	// direction switch below and were mis-booked as deposits /
-	// withdrawals.
+	// to non-flow fx kinds so they never enter net_flow — without
+	// the explicit enumeration the multi-token MT940 forms would
+	// fall through to the direction switch below and be mis-booked
+	// as deposits / withdrawals.
 	case "FOREX PURCHASE", "FOREX SALE",
 		"PURCHASE FX SPOT", "SALE FX SPOT":
 		return canonical.TxKindFx
@@ -870,8 +869,8 @@ func normalizeIBAN(s string) string {
 // double-counts capital. The rule is therefore CONSERVATIVE toward internal —
 // default INTERNAL, mark EXTERNAL only when the counterparty is PROVABLY a
 // non-own party — because a missed external merely understates capital (safe)
-// while a fabricated external double-counts (catastrophic; this is what sank the
-// prior attempt via loose org-markers). It uses ONLY the normalized
+// while a fabricated external double-counts (catastrophic — loose org-marker
+// heuristics fabricate externals). It uses ONLY the normalized
 // counter_account IBAN against the relationship's own-IBAN set — NO holder name,
 // NO free-text counterparty, NO org markers, i.e. no PII.
 //

@@ -368,7 +368,7 @@ the tables follow the observed responses.
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
-| `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`) and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on a sentinel funding account (§6). |
+| `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on a sentinel funding account (§6). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
 
 Identity: `entity_external_id` = Carta's `corporation_id`;
@@ -430,7 +430,7 @@ purges its historical 409A timeline, so the Carta-derived fallback can only
 value held shares flat at the FMV-at-last-exercise — exact from the last
 exercise onward, but over-stating the count/value for earlier dates (the count
 grew through intervening exercises, at then-lower FMVs). To value the position
-*per date*, a CSV named `<account_external_id>-valuations.csv` can be
+*per date*, a CSV named `<entity_external_id>-valuations.csv` can be
 side-loaded in the bronze root (e.g. `1234567-valuations.csv`) — rows of
 `YYYY-MM-DD,fmv_per_share_usd`, each carried forward to the next (`#` / blank
 lines ignored), built from 409A valuation reports and stock-price notification
@@ -455,10 +455,13 @@ carries the nature + direction), reconstructed from data we *do* have:
 - **`exercise`** — one per share certificate: `amount` = quantity × strike (the
   cert cost), with `shares` + `price_per_share` carried. Fully derivable from
   the cap-table certs.
+- **`convertible_purchase`** — one per SAFE / convertible note at its principal
+  amount: cash out on issue, but no share lot until conversion.
 - **`exit`** — at the acquisition / cancellation date: Carta purges the payout,
   so recorded proceeds are **$0** (`shares` = the held total) — unless a
-  side-loaded `<account_external_id>-transactions.csv` supplies the exit (a sale plus the withdrawals it splits into, as canonical kinds the gold
-  emits 1:1), which then replaces the $0 exit.
+  side-loaded `<entity_external_id>-transactions.csv` supplies the exit legs
+  (for example a sale plus the withdrawals it splits into, as canonical kinds
+  the gold emits 1:1), which then replace the $0 exit.
 - **`capital_call`** / **`distribution`** — from the capital-account statements.
   Each statement reports inception-to-date figures; differencing consecutive
   statements (by date) yields the per-period flow, so the running total
@@ -532,11 +535,12 @@ magnitude; the adapter signs + splits it:
 | cash_flow `kind` | gold pair (signed) |
 |---|---|
 | `exercise`     | `deposit` (+) + `buy` (−, with shares + price) |
+| `convertible_purchase` | `deposit` (+) + `buy` (−, no share lot) |
 | `capital_call` | `deposit` (+) + `contribution` (−) |
 | `exit`         | `sell` (+, with shares) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |
 
-A **side-loaded** `<account_external_id>-transactions.csv` (§5.2) instead names
+A **side-loaded** `<entity_external_id>-transactions.csv` (§5.2) instead names
 canonical kinds directly — `sell` / `withdrawal` / `deposit` / `buy` /
 `contribution` — which the adapter emits **1:1** (no auto-pairing): the CSV
 supplies both halves of the exit (a sale plus the withdrawals it splits into), so they net to 0 without synthesis.
@@ -556,14 +560,15 @@ The scope is **everything**; all of it is captured:
 
 - equity / share certificates + the latest holdings snapshot;
 - options / RSUs / RSAs — grants with strike + vesting;
-- SAFEs / convertible notes (schema present);
+- SAFEs / convertible notes (schema + `convertible_purchase` cash events);
 - the fund-LP capital account + active capital calls (the fund-admin surface);
 - the document archive — K-1 / 1042-S / capital-account statements /
   quarterly financials.
 
 Carta's internal API exposes no transaction ledger (exercises live inside the
 grant payloads), so the dated cash flows are **reconstructed** into the
-`cash_flows` table (§5.2) — exercises from the certs, the exit at cancellation,
+`cash_flows` table (§5.2) — exercises from the certs, convertible purchases
+from the note principals, the exit at cancellation,
 fund calls / distributions from the statements — for projection to gold
 transactions per §6.1.
 

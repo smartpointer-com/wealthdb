@@ -110,13 +110,14 @@ venv (they parse + decompress bronze in Python, no browser).
 `.venv` (from `requirements.txt`, with `collectorkit` editable-
 installed). `make test-fidelity-web` runs the suite in that venv.
 
-Base image is `mcr.microsoft.com/playwright/python:v1.59.0-noble`
-(used for OS-level deps only; the bundled Playwright browsers are
-unused). Camoufox brings its own Firefox at
-`$HOME/.cache/camoufox/`, fetched at image-build time. The Python
-`playwright` package is pinned to **1.49.0** to match Camoufox's
-juggler-protocol revision — do NOT bump without also bumping
-`camoufox[geoip]`.
+Base image is the shared `wealthdb/base-camoufox`
+(`shared/images/base-camoufox.Dockerfile`, itself built on
+`wealthdb/base-playwright` = `mcr.microsoft.com/playwright/python`,
+used for OS-level deps only — the bundled Playwright browsers are
+unused). It stages Camoufox's pre-fetched Firefox at
+`/opt/camoufox-cache` and pins the Python `playwright` package to
+**1.49.0** to match Camoufox's juggler-protocol revision — do NOT
+bump without also bumping `camoufox[geoip]`.
 
 ### Run
 
@@ -261,8 +262,11 @@ identical).
 
 `download.py` reads two env vars inside the container:
 
-- `FIDELITY_USERNAME` — Fidelity login username (treat as sensitive).
-- `FIDELITY_PASSWORD` — Fidelity login password.
+- `FIDELITY_WEB_USERNAME` — Fidelity login username (treat as sensitive).
+- `FIDELITY_WEB_PASSWORD` — Fidelity login password.
+
+The unprefixed legacy names (`FIDELITY_USERNAME` / `FIDELITY_PASSWORD`)
+are read as a fallback.
 
 Credentials go in `~/.secrets/fidelity-web.env` (sourced
 automatically as `/secrets/fidelity-web.env` inside the container);
@@ -309,7 +313,8 @@ for the shared env-file rules.
 │       └── <ts>-<label>.{html,png}        per-landmark diagnostics (prunable, not compressed)
 ├── 20260525T120000Z/
 │   └── …
-├── manual/                                user-uploaded artefacts (documents that arrive out-of-band)
+├── manual/                                hand-dropped artefacts (documents that arrive out-of-band)
+├── supplied-statements/                   statement PDFs supplied out-of-band (parsed into historical position snapshots)
 └── fidelity-web.db                        silver SQLite (default location)
 ```
 

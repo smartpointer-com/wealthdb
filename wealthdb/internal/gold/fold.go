@@ -59,7 +59,7 @@ func NewChangeAccumulator() *ChangeAccumulator {
 // Enum-typed columns are validated on every record, not just the
 // folded survivors the upsert re-checks, so an adapter emitting an
 // invalid record fails the load even when a later record supersedes
-// it — the same tripwire the per-emission upserts used to provide.
+// it.
 func (a *ChangeAccumulator) AddBatch(b *canonical.SnapshotBatch) error {
 	for i := range b.Portfolios {
 		r := b.Portfolios[i]

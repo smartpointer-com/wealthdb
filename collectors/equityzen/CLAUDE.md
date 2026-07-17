@@ -15,9 +15,9 @@ reading the SPA's own investor-scoped GraphQL API responses
 (`POST /api/graphql/`); see [DESIGN.md](DESIGN.md). Note `download` captures
 the list by **clicking the SPA's stage tabs** and reading the responses —
 it does not replay the query through the endpoint (that returns a
-server-side SYSTEM_ERROR), and it never sends a write mutation. `download
---documents` additionally fetches document PDF blobs via authenticated
-`GET` on `node.documents[].downloadUrl` (read-only); `load` parses the
+server-side SYSTEM_ERROR), and it never sends a write mutation. `download`
+fetches document PDF blobs by default via authenticated `GET` on
+`node.documents[].downloadUrl` (read-only; `--no-documents` skips); `load` parses the
 capital-account statements + K-1s locally (`statements.py` → `pdftotext`).
 Those PDFs carry names / addresses / SSN-EIN fragments and exact figures —
 they live only under `$XDG_DATA_HOME/wealthdb/equityzen/` (bronze) and in the silver DB,

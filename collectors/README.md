@@ -344,7 +344,7 @@ via [`collectorkit.bronze`](../shared/collectorkit/collectorkit/bronze.py)
 `atomic_write_json` so an interrupted run leaves no half-written file).
 The shared window flag comes from
 [`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
-(`add_lookback_arg` + `resolve_lookback`). A `--dry-run` mode walks the
+(`add_standard_args(verb="download")` + `resolve_lookback`). A `--dry-run` mode walks the
 source but exports nothing.
 
 ### load.py — silver

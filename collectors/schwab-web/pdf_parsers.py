@@ -12,18 +12,6 @@ For active accounts the Transaction History page is the
 authoritative source; we keep PDF parsing for cross-checks and
 backfill.
 
-Currently implemented:
-  - parse_statement_period(text) — extracts (start_date, end_date)
-  - parse_transactions(text)     — extracts the "Transaction Details"
-                                   rows as a list of dicts
-  - parse_positions(text)        — extracts per-section position rows
-                                   ("Positions - Equities", "Positions -
-                                   Exchange Traded Funds", etc.)
-  - parse_cash_summary(text)     — extracts the "Transactions -
-                                   Summary" cash-flow block
-                                   (BeginningCash → EndingCash with the
-                                   seven inflow/outflow subtotals)
-
 Design notes:
 
 PDF text extraction goes through pypdfium2 (Python bindings to
@@ -1782,7 +1770,7 @@ def _parse_position_block(block_lines: list[str], section: str) -> dict | None:
 
     A block is the run of lines from one ticker to the next.
     Within it exactly one line carries the numeric columns
-    (>= 3 trailing trailing-col tokens) — that's the "numbers
+    (>= 3 trailing-col tokens) — that's the "numbers
     line". Everything else is description (free-text tokens
     that may appear before OR after the numbers line, depending
     on whether the source PDF wrapped the description). Cheap
@@ -2215,12 +2203,6 @@ def _parse_cash_summary_very_old(text: str) -> dict | None:
 
 
 # ============================================================
-# PDF text extraction goes through collectorkit.pdf.extract_text_pdfium
-# (imported at module top as `_extract_pdf_text`).
-# ============================================================
-
-
-# ============================================================
 # Convenience: open + parse a file path
 # ============================================================
 
@@ -2234,10 +2216,6 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     auto-detected period comes back None. The loader passes the
     year extracted from the manifest doc-date so the row parser
     can still resolve MM/DD dates to full timestamps.
-
-    Importing pypdfium2 inside this function keeps the module
-    importable in environments that don't have it (e.g. parser
-    unit tests with hand-crafted text).
     """
     full_text = _extract_pdf_text(path)
     period = parse_statement_period(full_text)

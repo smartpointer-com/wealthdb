@@ -312,10 +312,6 @@ def _resolve_migrations_dir(arg: Path | None) -> Path:
     )
 
 
-# apply_migrations now lives in collectorkit.silver (same numeric-order
-# logic + the "migration must advance schema_meta" guard).
-
-
 # ============================================================
 # Bronze inventory
 # ============================================================
@@ -956,8 +952,8 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     _load_distribution_letters(conn, run_dir, manifest, reparse, stats)
     _load_1099b_forms(conn, run_dir, manifest, reparse, stats)
 
-    # Tx-history exports: per-account CSV/JSON/XML + a landing
-    # HTML capture. JSON is the canonical source for silver rows;
+    # Tx-history exports: per-account CSV/JSON/XML. JSON is the
+    # canonical source for silver rows;
     # CSV/XML are stored as opaque documents for traceability.
     transactions_dir = run_dir / "transactions"
     for acct in manifest.get("transactions", []):
@@ -1065,8 +1061,7 @@ def _load_more_details(acct_dir: Path) -> dict:
     deterministic SHA-256 prefix over the row's promoted columns
     (date|amount|description|symbol|action) that the loader can
     re-derive from the JSON export to merge details in. See
-    download._scrape_more_details_for_page for the row_key
-    derivation.
+    download._scrape_more_details for the row_key derivation.
     """
     path = acct_dir / "more-details.json"
     if not path.is_file():
@@ -1089,9 +1084,9 @@ def _load_more_details(acct_dir: Path) -> dict:
 
 def _tx_history_row_key(tx: dict) -> str:
     """Deterministic key over a tx-history row's promoted fields,
-    matching what download._scrape_more_details_for_page derives
-    from the rendered row. Used to merge More-modal detail into
-    the JSON export rows."""
+    matching what download._scrape_more_details derives from the
+    rendered row. Used to merge More-modal detail into the JSON
+    export rows."""
     parts = [
         str(tx.get("Date") or ""),
         str(tx.get("Amount") or ""),
@@ -1206,12 +1201,11 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
                         tx.get("date"))
             continue
         kind = tx.get("category") or "Unknown"
-        # instrument_key: per the silver convention, prefer CUSIP
-        # over ticker. Statement PDFs only expose the ticker in
-        # the activity-rows section; CUSIP is in the positions
-        # block. For now, use whatever pdf_parsers gave us in
-        # `symbol`; the gold layer can resolve to CUSIP via the
-        # api silver's instruments table.
+        # Statement PDFs expose only the ticker in the activity
+        # rows (CUSIP lives in the positions block), so
+        # instrument_key carries the parser's ticker; the gold
+        # layer resolves to CUSIP via the api silver's
+        # instruments table.
         instrument_key = tx.get("symbol")
         payload = canonical_json(tx)
         cur = conn.execute(

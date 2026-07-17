@@ -149,6 +149,18 @@ companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
   15-char `historical_position_snapshots.portfolio_external_id`
   values so they line up with PSN's 16-char canonical form.
   Idempotent; the parser fix prevents any new 15-char rows.
+- [`0004_mortgages.sql`](migrations/0004_mortgages.sql) —
+  `mortgages`: the per-mortgage liability rows positions.csv
+  carries under "Pro memoria - Mortgages" (UBS-internal mortgage
+  number as `account_external_id`; term, rate type, collateral in
+  named columns; negative outstanding balance).
+- [`0005_historical_mortgages.sql`](migrations/0005_historical_mortgages.sql)
+  — `historical_mortgages`: per-quarter outstanding principal
+  reconstructed from the "Maturity notice" PDFs, keyed
+  `(as_of_date, account_external_id)`.
+- [`0006_single_window.sql`](migrations/0006_single_window.sql) —
+  `dump_runs` rebuild collapsing the per-facet window columns into
+  one `window_*` pair (one `--lookback` window per run).
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the
@@ -175,9 +187,6 @@ git clone <this repo>
 cd collectors/ubs-web
 ./ubs-web build         # one-time, ~10 min on first build
 ```
-
-(`./ubs-web build` will fail until the Python scripts
-referenced in `Dockerfile` exist — see Status above.)
 
 ### Run
 
@@ -257,34 +266,6 @@ Alternatively, do the device-trust step once via a manual browser
 session on the same outbound IP (e.g. SSH port-forwarding), then
 run scripted afterwards.
 
-## Layout (planned)
-
-```
-<bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/ubs-web/
-├── 20260518T210504Z/               one bronze dump per run
-│   ├── transactions_<account>.csv  per-account transactions for --lookback..today
-│   ├── documents/
-│   │   ├── <sha256>.pdf            eDocuments (account/custody statements,
-│   │   │                           tax PDFs, trade confirms, fee notes, ...)
-│   │   └── ...
-│   └── run.json                    metadata: customer ID, window bounds,
-│                                   doc IDs + types seen
-├── 20260519T091210Z/
-│   └── ...
-├── manual/                         user-uploaded bronze artefacts (e.g. PDFs
-│   └── ...                         downloaded by hand before this toolkit existed)
-└── ubs-web.db                      silver SQLite database (default name)
-```
-
-Bronze and silver paths are independently configurable; the layout
-above is the path of least resistance for personal use.
-
-The `manual/` directory is for bronze artefacts produced
-out-of-band — most notably PDFs already downloaded by hand from
-the netbanking archive before this toolkit existed. `load.py` will
-ingest `manual/` on every run using the same dedup-by-hash
-mechanism as the auto-fetched eDocuments.
-
 ## Relationship to ubs-psn
 
 UBS has two collectors in this repo: this one and the sibling
@@ -303,22 +284,18 @@ per-relationship cutover date — see [DESIGN.md](DESIGN.md) and
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md) for how gold
 reconciles them.
 
-## Session lifecycle (expected)
+## Session lifecycle
 
 UBS netbanking sessions, like Swissquote's, have two layers:
 
 - **Session cookie** — set by UBS's auth gateway after the login +
-  MFA flow completes. `login.py` will persist it into
-  `storageState.json`; `download.py` reuses that file directly.
-  Lifetime is policy-driven and unconfirmed; expect to re-login at
-  least once per working session in practice.
+  MFA flow completes. `login.py` persists it into
+  `storageState.json` (at `--state-path`); `download.py` reuses
+  that file directly. Lifetime is policy-driven; a re-login at
+  least once per working session is the practical norm.
 - **MFA gate** — UBS Access App push (or the configured fallback
   factor) on every fresh login. Cannot be scripted away.
 
 So the normal rhythm is: run `login.py` once, then `download.py`
-as many times as you like during the cookie's lifetime. When
+freely during the cookie's lifetime. When
 `download.py` reports the session is dead, re-run `login.py`.
-
-Concrete URLs, form selectors, MFA timing characteristics, and
-eDocument listing pagination — all TBD pending real netbanking
-samples.

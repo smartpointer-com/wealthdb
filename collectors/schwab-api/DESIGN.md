@@ -29,10 +29,10 @@ Owns whatever credential dance the upstream requires:
 - Schwab: OAuth 2.0 with a 7-day refresh-token cap that requires
   interactive browser re-auth. `login.py` runs the auth flow,
   exchanges the code, writes the token file to disk.
-- UBS PSN: an RSA keypair onboarded with UBS once. `login.py` is
-  more degenerate here (most of the work is the one-time onboarding
-  email exchange); a `--check` mode that validates the key against
-  the server fingerprint is still useful.
+- UBS PSN: an RSA keypair onboarded with UBS once (most of the work
+  is the one-time onboarding email exchange), so it ships no
+  login.py; the wrapper's `login --check` runs `download.py --check`,
+  which validates the key against the pinned server fingerprint.
 
 **Why a separate tool?** Auth is interactive, episodic (weekly for
 Schwab, once-and-forget for UBS), and has its own failure modes. It
@@ -89,7 +89,7 @@ warning and leaves the plain `.json` in place — every reader resolves
 the on-disk variant via `compress.resolve_variant` (plain wins when
 both forms coexist), so a half-adopted tree is a valid tree, not an
 error state. `run.json` is **never** compressed: it is the
-status-lifecycle manifest `prune` and `load` read directly and must
+status-lifecycle manifest `prune` reads directly and must
 stay greppable. Because the loader runs host-side and parses the JSON
 in Python (SQLite silver, no engine to stream `.zst` natively), it
 decompresses via `compress.open_text` inside the single `read_json`
@@ -118,7 +118,7 @@ a `load --force` rebuild must produce identical silver.
 - **Filter to what matters at the dump layer, not silver.** For
   Schwab open orders, we filter to non-terminal statuses *in the
   dump* and discard everything else — order history is out of
-  scope. Don't capture data you'll only throw away.
+  scope. Data that would only be thrown away is not captured.
 - **A `--dry-run` mode that validates auth and lists accounts but
   doesn't fetch.** Used both for connectivity testing and by agents
   exploring the codebase under the CLAUDE.md "don't burn live API
@@ -213,8 +213,8 @@ SQLite chosen over alternatives:
   cheap incremental writes. Parquet is for gold-style scans.
 
 JSON1 is a non-optional companion. `json_extract` is fast enough at
-this scale that you don't need to promote anything but the columns
-you index on. See §4.2.
+this scale that nothing needs promoting beyond the indexed
+columns. See §4.2.
 
 ### 4.2 Semi-relational pattern
 
@@ -412,8 +412,8 @@ original for anyone who genuinely needs to trace a specific request.
 
 **Don't strip:**
 - Anything that could carry semantic information ("status" fields,
-  "type" fields, anything you might want to query later).
-- Anything that *could* be noise but you aren't sure about — silver
+  "type" fields, anything that might be queried later).
+- Anything that *could* be noise but isn't provably so — silver
   faithfulness defaults to "preserve, dedup based on the noisy form".
 
 ### 4.8 Schema versioning via migrations
@@ -542,9 +542,9 @@ source said nothing structured here.
   artefacts in a different order should still succeed. The logical
   relationships (positions.account_external_id → accounts.account_external_id)
   are inviolate semantically but unenforced structurally.
-- **Multi-tenancy.** One silver DB per Schwab developer-app. If you
-  ever need multi-tenant, switch to a server DB (Postgres) and one
-  schema per tenant rather than packing them into one SQLite file.
+- **Multi-tenancy.** One silver DB per Schwab developer-app. A
+  multi-tenant deployment would switch to a server DB (Postgres) and
+  one schema per tenant rather than packing them into one SQLite file.
 - **Computed/derived columns.** No `value_in_usd`, no `is_settled`.
   Those belong to gold. Silver stores what the source said; gold
   computes derivatives.
@@ -597,8 +597,8 @@ Will need adaptation:
   a per-asset-class JSON shape in `payload` — pick after looking at
   real bronze samples.
 
-If you're starting a new collector, the recommended order is:
-1. Implement `login.py` first (you need credentials before anything
+A new collector's recommended build order is:
+1. Implement `login.py` first (credentials gate everything
    else). Cap effort at "mints a token / verifies a key".
 2. Implement `download.py` and write the bronze format to disk. Stop
    here, inspect real bronze samples, *then* design silver.

@@ -29,7 +29,7 @@ func TestClosureFlowAndZeroing(t *testing.T) {
 		t.Errorf("closure: got (%+v, zeroFrom=%d, %v), want {50,-500},50,true", f, zeroFrom, ok)
 	}
 	// A real closing withdrawal already covers the exit ⇒ no synthetic flow, but
-	// the spine still zeroes from the closure day (review #2 dedup).
+	// the spine still zeroes from the closure day (closure dedup).
 	if _, zf, ok := ClosureFlow(50, 500, 500); ok || zf != 50 {
 		t.Errorf("fully-covered closure: got (zeroFrom=%d, ok=%v), want zeroFrom 50 + no flow", zf, ok)
 	}

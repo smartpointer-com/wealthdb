@@ -46,7 +46,7 @@ type Connection struct {
 
 	// bridge resolves web account_external_id (suffix) → api
 	// account_external_id (hashValue). Built lazily on first
-	// Status/Snapshots/Transactions call.
+	// Snapshots/Transactions call.
 	bridge      map[string]string
 	bridgeBuilt bool
 	bridgeErr   error

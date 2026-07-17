@@ -24,13 +24,13 @@ and PDF-reconstructed historical fills the pre-PSN-start range.
 
 ## 2. Identifier conventions
 
-UBS is the most dimensionally rich of the three silvers. Two
+UBS is the most dimensionally rich of the silvers. Two
 identifier dimensions show up in every gold row:
 
 | Field | Source | Notes |
 | --- | --- | --- |
 | `relationship_id` | UBS Server ID (`SFTPCHxx`, `SFTPCHyy`, ...) | One per banking relationship under the single SFTP login. Stored on the gold `accounts` row as a discriminator. |
-| `account_external_id` | IBAN for cash accounts; UBS 28-char safekeeping code for safekeeping accounts; `PrtflId` for portfolios | Whichever identifies the account uniquely within the relationship. |
+| `account_external_id` | IBAN for cash accounts; UBS 28-char safekeeping code for safekeeping accounts | Whichever identifies the account uniquely within the relationship. |
 | `instrument_external_id` | ISIN | UBS always supplies ISINs in SDFI. |
 | `transaction_external_id` | UBS `:20C::SEME//` or MT940 `:61:` ref | Whatever the source MT message uses as its stable event reference. |
 
@@ -42,7 +42,7 @@ identifier dimensions show up in every gold row:
 | `account_holders` | — | Client/legal-owner metadata; not an account. Deferred. |
 | `cash_accounts` | `accounts` (kind=`cash`) | IBAN as `account_external_id`. |
 | `safekeeping_accounts` | `accounts` (kind=`safekeeping`) | UBS safekeeping code as `account_external_id`. |
-| `portfolios` | `accounts` (kind=`portfolio`) | `PrtflId` as `account_external_id`. |
+| `portfolios` | `portfolios` | `PrtflId` as `portfolio_external_id` (the dedicated gold table, migration 0004). |
 | `instruments` | `instruments` | See §4 for the `(asset_class, vehicle)` derivation. |
 | `holdings` | `positions` | One securities holding per row. |
 | `cash_balances` | `cash_balances` | Direct one-to-one; UBS `balance_kind` enum carries over. |
@@ -145,9 +145,9 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 | `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` | from MT940 `:86:` narrative (adapter splits — see §6) |
 | `securities_movement` | `transfer_in` / `transfer_out` | sign-driven |
 | `trade_confirmation` | `buy` or `sell` | from MT515 payload `side` |
-| `fx_confirmation` | `fx_spot` | MT300 |
-| `fx_option_confirmation` | `fx_option` (settlement) | MT305 |
-| `loan_deposit_confirmation` | `money_market` (settlement) | MT320/MT330/MT350 |
+| `fx_confirmation` | `fx` | MT300 |
+| `fx_option_confirmation` | `fx` | MT305 (no dedicated option kind; the settlement is an FX cash effect) |
+| `loan_deposit_confirmation` | `other` | MT320/MT330/MT350 |
 | `corporate_action_notification` | `corporate_action` | MT564 |
 | `corporate_action_confirmation` | `corporate_action` | MT566 |
 | `corporate_action_narrative` | `corporate_action` | MT568 (narrative; may collapse with the MT566 row) |
@@ -173,6 +173,7 @@ Common narrative prefixes (extend as observed):
 | `COMM` / `FRAIS` / `GEBUEHREN` | `fee` |
 | `IMP` / `IMPOT` / `STEUER` | `tax` |
 | `DIV` | `dividend` |
+| `TIMBRE` / `UMSATZABGABE` / `STEMPEL` / `STAMP` (anywhere in the narrative) | `tax` |
 | (other) | `deposit` / `withdrawal` per sign |
 
 ## 7. Change number

@@ -38,7 +38,8 @@ manual CSV source, and FRED (reference FX).
 
 Accounts carry a three-dimensional taxonomy: `account_kind`
 (technical container — brokerage / cash / safekeeping / custody /
-overlay / crypto_exchange / crypto_self_custody / other),
+overlay / crypto / mortgage / other, with crypto_exchange /
+crypto_self_custody reserved),
 `tax_wrapper` (taxable_personal / IRA / Roth / 529 / coverdell_esa /
 custodial_utma / custodial_ugma / pillar_3a / vested_benefits /
 trust / DAF / HSA / …; covers US + Switzerland),

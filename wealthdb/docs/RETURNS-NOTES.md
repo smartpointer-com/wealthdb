@@ -98,10 +98,10 @@ returns migration:
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
 - **Explicit closure** is detected only when an account's last snapshot
-  value is ~0 (`|v| < valueTol`) — mere staleness never triggers it. The
-  synthetic closure outflow is deduped against a real closing
-  withdrawal/transfer_out (`closingNear`), mirroring onboarding, so a
-  "withdraw everything" closure is not double-counted.
+  value is ~0 (`|v| < valueTol`) — mere staleness never triggers it. Real
+  drains across the zeroing gap are subsumed by the synthetic closure
+  outflow (`subsumesAtClosure`), which books the full boundary value, so
+  a "withdraw everything" closure is not double-counted.
 
 ## Staggered-inception subsumption
 
@@ -200,14 +200,24 @@ terms still leak to deposit/withdrawal (defensive coverage, no live sample).
 The `quality` column is the honesty surface: every n/a carries a reason and
 every approximation is tagged. Computed set:
 
-`since_data_inception`, `partial_window`, `staggered_inception`,
-`empty_bucket`, `carried_forward`, `boundary_same_snapshot`,
-`stale_snapshot`, `dropped_while_nonzero`, `dietz_degenerate`,
-`nonpositive_base`, `mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
-`mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers=N`,
-`journal_present`, `nav_only`, `nav_only_capital_call_risk`,
-`crypto_unclassified_transfers`, `unknown_adapter_policy`,
-`fx_clamped_flow`, `pre_fx_history`, `after_tax`.
+`since_data_inception`, `configured_inception`, `partial_window`,
+`staggered_inception`, `accounts_grain_meaningless`, `empty_bucket`,
+`carried_forward`, `boundary_same_snapshot`, `stale_snapshot`,
+`dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`,
+`mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
+`mwr_no_converge`, `mwr_incomplete_flows`, `mwr_negative_net_capital`,
+`unmatched_transfers=N`, `journal_present`, `nav_only`,
+`nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
+`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
+`after_tax`.
+
+`configured_inception` marks a window truncated to a configured
+inception override (DESIGN.md §5.4) rather than the data's own start.
+`accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
+sweep sources (a single wallet's return is noise; the coarser grains
+stay valid). `mwr_negative_net_capital` reports XIRR as n/a because the
+window's net invested capital (opening base plus net external flow) is
+zero or below.
 
 `stale_snapshot` marks a bucket (or the summary row) whose end-day
 valuation rests on a snapshot older than 3× the entity's median

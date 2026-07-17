@@ -8,8 +8,8 @@ A catch-all collector for **private holdings that have no bank or portal
 behind them** — directly-held real estate, convertible loan agreements
 (CLAs) into private companies, and direct equity in a private LLC (a German
 GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
-has **no source**. There is no source to fetch; two hand-maintained CSVs are the input
-by hand; `load` validates them and projects them into a SQLite silver.
+has **no source**. Two hand-maintained CSVs are the input; `load` validates
+them and projects them into a SQLite silver.
 
 > **Status:** implemented end-to-end. `load` is verified against the synthetic
 > [examples/](examples/), and the gold adapter
@@ -24,7 +24,7 @@ by hand; `load` validates them and projects them into a SQLite silver.
 | --- | --- | --- |
 | [`load.py`](load.py) | implemented | Validate `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
 | `login.py` | — | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
-| `download.py` | — | **N/A.** No source to fetch. You maintain the CSVs by hand. `./manual download` is a no-op. |
+| `download.py` | — | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
 
 There is no Docker image and no `~/.secrets/manual.env` — there is nothing
 to authenticate to.
@@ -32,7 +32,7 @@ to authenticate to.
 ## Layout
 
 ```
-$XDG_DATA_HOME/wealthdb/manual/            <- you own this directory (outside the repo)
+$XDG_DATA_HOME/wealthdb/manual/            <- hand-maintained data dir (outside the repo)
 ├── positions.csv            one row per held asset
 ├── valuations.csv           periodic mark-to-market, one row per (asset, date)
 └── manual.db                silver SQLite (written by load; safe to delete + rebuild)
@@ -44,11 +44,10 @@ Build the `.venv` with `make build-manual` (the host-venv pattern — see
 [collectors/README.md](../README.md#build-scaffolding)). Then:
 
 ```bash
-# 1. $XDG_DATA_HOME/wealthdb/manual/ already holds two fictional starter CSVs
-#    (positions.csv / valuations.csv). Edit them in place, replacing the
-#    placeholder holdings with your real ones. (examples/ in this repo is a
-#    second synthetic sample covering every asset kind, incl. a note→equity
-#    conversion — for reference, not for editing.)
+# 1. Create $XDG_DATA_HOME/wealthdb/manual/positions.csv + valuations.csv.
+#    Copying examples/ (a synthetic sample covering every asset kind, incl.
+#    a note→equity conversion) makes a good skeleton; replace the
+#    placeholder holdings with your real ones.
 
 # 2. Load — validates the CSVs and (re)builds $XDG_DATA_HOME/wealthdb/manual/manual.db
 ./manual load
@@ -83,7 +82,7 @@ CSV column. Full details + the gold mapping are in [DESIGN.md](DESIGN.md).
 
 | column | notes |
 | --- | --- |
-| `id` | your stable id, e.g. `re-001`, `pe-001`, `cn-001`, `pf-001`, `spv-001` (unique) |
+| `id` | a hand-assigned stable id, e.g. `re-001`, `pe-001`, `cn-001`, `pf-001`, `spv-001` (unique) |
 | `kind` | `real_estate` \| `private_equity` \| `convertible_note` \| `private_fund` \| `spv` \| `mortgage` \| `other` — the coarse 1-D classification; the gold adapter maps (`kind`, `vehicle`) to the (`asset_class`, `vehicle`) pair. `other` is the catch-all (e.g. a receivable). Add a kind in `load.py`'s `POSITION_KINDS` (one line, no migration). |
 | `vehicle` | optional — the wrapper dimension of the 2-D taxonomy (wealthdb docs/TAXONOMY.md): `physical` \| `stock` \| `fund` \| `spv` \| `convertible_note` \| `loan` \| `escrow` \| `mortgage` \| … When blank it defaults from `kind` (real_estate→physical, private_equity→stock, spv→spv, private_fund→fund, convertible_note→convertible_note, mortgage→mortgage, other→other). Set it explicitly for a kind=other row to carry the right wrapper into gold — an escrow receivable is `escrow`, a private loan is `loan`. Full vocabulary in `load.py`'s `POSITION_VEHICLES`. |
 | `display_name` | a label (synthetic in any committed file) |
@@ -101,7 +100,7 @@ basis (gold's book value).
 
 > **No transactions.** The collector tracks positions + valuations only. The
 > wires that fund a purchase, pay a fee, or return a distribution are real
-> movements in your bank accounts — already captured by the bank collectors —
+> movements in the bank accounts — already captured by the bank collectors —
 > so a transactions ledger here would only duplicate them. The acquisition
 > date lives on the position (`acquired_at`). See [DESIGN.md](DESIGN.md) §6. A
 > note→equity **conversion** is recorded position-side: close the note

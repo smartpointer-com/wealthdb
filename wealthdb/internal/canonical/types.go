@@ -56,8 +56,7 @@ type AccountChange struct {
 // Portfolios are wealth-management wrappers that group component
 // accounts (UBS-specific today). They do not hold positions or
 // cash directly; their value is the sum of their component
-// accounts'. See docs/DESIGN.md §13.9 and the new §7.2 portfolios
-// table.
+// accounts'. See docs/DESIGN.md §13.9 and §7.2.
 type PortfolioChange struct {
 	SilverSourceID      string
 	PortfolioExternalID string

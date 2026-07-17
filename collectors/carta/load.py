@@ -20,11 +20,11 @@ Bronze → silver mapping (schema in migrations/):
   entities/<e>/<sectype>.json  -> securities ({rows} of each security-type file)
   entities/<e>/vesting/grant_*.json
                                -> vesting_schedules + vesting_events
-  <account_external_id>-valuations.csv
+  <entity_external_id>-valuations.csv
                                -> valuation override (bronze root, optional):
                                   per-date FMV, the single source of truth for
                                   held-share value when present (DESIGN.md §5.1)
-  <account_external_id>-transactions.csv
+  <entity_external_id>-transactions.csv
                                -> explicit exit transactions (bronze root,
                                   optional): the final sale + bank/escrow
                                   withdrawals, overriding the $0 exit (§5.2)
@@ -245,7 +245,7 @@ def _last_exercise_fmv(edir: Path) -> float | None:
 
 def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
     """Read a side-loaded valuation-override CSV (named
-    `<account_id>-valuations.csv` in the bronze root): rows of
+    `<entity_external_id>-valuations.csv` in the bronze root): rows of
     `YYYY-MM-DD,fmv_per_share_usd`, '#' / blank lines ignored. Returns
     [(snapshot_ts, fmv)] sorted ascending — the single source of truth for the
     position's per-share fair-market-value, each value carried forward until the
@@ -268,8 +268,9 @@ def _read_valuation_csv(path: Path) -> list[tuple[int, float]]:
 
 
 def _read_transactions_csv(path: Path) -> list[dict]:
-    """Read a side-loaded transactions CSV (named `<account_id>-transactions.csv`
-    in the bronze root): rows of `date,kind,amount,shares,description`, '#' /
+    """Read a side-loaded transactions CSV (named
+    `<entity_external_id>-transactions.csv` in the bronze root): rows of
+    `date,kind,amount,shares,description`, '#' /
     blank lines ignored. `kind` is a canonical transaction kind the gold emits
     1:1 (sell | withdrawal | deposit | buy | contribution); `amount` is a
     positive magnitude (USD). These explicit legs override the auto-derived $0
@@ -731,7 +732,7 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int,
     certificate — amount = quantity x strike (the cert cost), price the strike —
     and one `convertible_purchase` (also deposit+buy, but no share lot) per
     SAFE / convertible note at its principal (cost).
-    The exit is either a side-loaded `<account_id>-transactions.csv` (explicit
+    The exit is either a side-loaded `<entity_external_id>-transactions.csv` (explicit
     sale + withdrawals — canonical kinds the gold emits 1:1) or,
     absent that file, the auto-derived $0 exit at the cancellation date (Carta
     purges the payout, so the gold then omits the $0 withdrawal leg)."""

@@ -36,13 +36,13 @@ The toolkit assumes a directory layout like:
 │   └── open_orders.json.zst
 ├── 20260513T104753Z/
 │   └── ...
-└── schwab.db                       silver SQLite database (default name)
+└── schwab-api.db                   silver SQLite database (default name)
 ```
 
 The six data artefacts are zstd-compressed in place as they land
 (`.json.zst`; plain `.json` in pre-compression dumps — both forms load,
 and the loader decompresses in Python). `run.json` stays uncompressed:
-it is the status manifest `prune` and `load` read directly and must stay
+it is the status manifest `prune` reads directly and must stay
 greppable. See [DESIGN.md](DESIGN.md) §3.2 for the compression +
 convergence contract and the manual `recompress` backlog sweep.
 
@@ -54,13 +54,13 @@ above is the path of least resistance for personal use.
 Schwab issues two tokens with very different lifetimes:
 
 - **Access token** — 30 minutes. Refreshed transparently by `schwab-py`
-  whenever a request needs one. You never touch this.
+  whenever a request needs one. It is never handled directly.
 - **Refresh token** — **7 days, hard cap.** Cannot be renewed
   programmatically; the OAuth authorization flow must be repeated
   in a browser. `login.py` exists solely to perform this re-auth.
 
 So in a normal week the rhythm is: run `login.py` once, then
-`download.py` whenever you want fresh data. Once a week, `download.py`
+`download.py` whenever fresh data is wanted. Once a week, `download.py`
 will start reporting `invalid_client`; that's the signal to re-run
 `login.py`.
 
@@ -80,7 +80,8 @@ consent pages — including ticking **every** checkbox on the "Select your
 Schwab accounts to link" page, so a newly opened account is linked
 without anyone remembering to tick it. It captures the `?code=…` redirect
 straight from the browser and exchanges it for the token bundle (chmod
-`0600`). All browser activity is traced to the debug dir
+`0600`). Browser captures are opt-in (`--screenshot-dir /debug --trace`
+through the wrapper) and land in the debug dir
 (`~/.cache/wealthdb/debug/schwab-api`), which sits outside bronze and is reclaimed
 by [`prune`](#prunepy) once a bundle has aged past `--min-age-hours`.
 
@@ -122,10 +123,11 @@ remaining refresh-window life (no browser):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--token-path` | `/secrets/schwab-api-token.json` | Path to read/write the OAuth token JSON file (the wrapper maps it to your secrets dir). |
+| `--token-path` | `/secrets/schwab-api-token.json` | Path to read/write the OAuth token JSON file (the wrapper maps it to the secrets dir). |
+| `--env-file` | — | Extra KEY=VALUE credentials env file, sourced last so its values win over the default `schwab-api.env` / `schwab-web.env` (also honours `SCHWAB_API_ENV_FILE`). |
 | `--client-id` | _(env `SCHWAB_CLIENT_ID`)_ | Schwab OAuth Client ID. Falls back to env var. |
 | `--client-secret` | _(env `SCHWAB_CLIENT_SECRET`)_ | Schwab OAuth Client Secret. Falls back to env var. |
-| `--callback-url` | `https://127.0.0.1:8182` | OAuth callback URL. Must exactly match the value registered in your Schwab app. |
+| `--callback-url` | `https://127.0.0.1:8182` | OAuth callback URL. Must exactly match the value registered in the Schwab app. |
 | `--profile-dir` | `/secrets/schwab-api-oauth-profile` | Persistent Camoufox profile dir for the browser flow. |
 | `--cli-mfa` / `--no-cli-mfa` | on | Automate login + stdin 2FA + consent (default; `login` uses it) vs. drive it yourself over VNC (`--no-cli-mfa`; the `vnc-login` subcommand uses it). |
 | `--mfa-timeout` | `600` | Seconds to wait for the human MFA + consent redirect to the callback URL. |
@@ -269,7 +271,7 @@ the dump layer; full order history is intentionally not captured.
 ### Caveats
 
 - **7-day refresh ceiling.** Schwab refresh tokens cannot be programmatically
-  extended past 7 days; you must re-run `login.py` at least once a week.
+  extended past 7 days; `login.py` must be re-run at least once a week.
   If `download.py` reports `invalid_client` on token refresh, the
   refresh window has expired.
 - **No read-only OAuth scope exists.** The token `download.py` loads
@@ -285,7 +287,7 @@ the dump layer; full order history is intentionally not captured.
   read timeout is also raised above schwab-py's flat 30s; tune with
   `--read-timeout`). HTTP *status* errors (rate limits, 5xx) are not
   retried — surface them and let the scheduler decide. There's no
-  mid-dump resume; run from cron, launchd, or your scheduler of choice.
+  mid-dump resume; run from cron, launchd, or a scheduler of choice.
 
 ## load.py
 
@@ -293,7 +295,7 @@ the dump layer; full order history is intentionally not captured.
 
 Parses one or more bronze dump directories (as produced by
 `download.py`) and inserts them into a SQLite silver database. The
-schema is defined in [`migrations/0001_initial.sql`](migrations/0001_initial.sql);
+schema is defined in [`migrations/`](migrations/) (0001–0004);
 the loader applies any pending migrations on startup before loading
 data, so the silver database is always at the latest schema version.
 
@@ -340,6 +342,7 @@ not already recorded in `dump_runs`.
 | --- | --- | --- |
 | `--silver-db` | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` | Path to the silver SQLite database. Created if missing. |
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/schwab-api` | Directory containing bronze dump subdirectories. |
+| `--force` | off | Delete the silver DB and rebuild it from all bronze dumps. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
 ### Schema migrations

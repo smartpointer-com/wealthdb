@@ -622,7 +622,7 @@ class TestPositionsAndCashLoad:
     """End-to-end loader tests for migration 0002 (positions +
     cash). Monkeypatches pp.parse_statement_pdf to return a known
     result, so we exercise the dispatcher + insert helpers + DB
-    schema without depending on pdfplumber reading a real PDF.
+    schema without reading a real PDF.
     """
 
     PARSED_STATEMENT = {

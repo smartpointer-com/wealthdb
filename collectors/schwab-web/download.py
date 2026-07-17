@@ -217,8 +217,8 @@ def configure_doc_type_filter(page) -> None:
     visible text labels live inside the Stencil <sdps-chips>
     shadow DOM, so `:has-text(...)` matches nothing). Reads
     selection state from the `selected` HTML attribute, NOT a CSS
-    class — the rendered DOM has no `sdps-chips--selected` class
-    despite what older notes suggested. Clicks via dispatch_event
+    class — the rendered DOM has no `sdps-chips--selected` class.
+    Clicks via dispatch_event
     so an overlay (W-8 banner et al.) can't intercept the toggle.
     """
     chips_container = page.locator(".sdps-chips__container").first
@@ -1049,14 +1049,11 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
 
     Tx-history's results table is virtualized — only a handful
     of rendered rows are in the DOM at any moment, even on a
-    paginated view. The Export modal gives us the FULL set in
-    one machine-readable file per format. We grab CSV + JSON +
-    XML so silver can prefer whichever turns out to have the
-    richest field set; CSV is what most consumers will want, but
-    JSON sometimes carries nested detail (per-row "More" data
-    that doesn't fit CSV's flat shape) and XML occasionally
-    carries different metadata. Empirically TBD — see
-    DESIGN.md §7.
+    paginated view. The Export modal gives the FULL set in one
+    machine-readable file per format. All three carry the same
+    row set; load ingests the JSON (it adds AcctgRuleCd), CSV/XML
+    are kept as opaque documents. None carry the per-row "More"
+    modal extras — those come from the opt-in more-detail scrape.
     """
 
     entries: list[dict] = []
@@ -1450,17 +1447,17 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
         return False
 
 # ============================================================
-# Transaction History (per-page HTML capture, paginated)
+# Transaction History (filter + export, per-account)
 # ============================================================
 #
 # Schwab's Transaction History SPA reuses the same chrome as
 # Statements (account selector, date-range <select>, paginated
 # results) with a different pagination element id ("pagination"
-# vs "document-pagination") and an "Apply" button instead of
-# "Search". Currently we save one rendered-HTML page per
-# pagination step into the bronze tree; the row-parsing /
-# JSON-emit pass lives in load.py against those snapshots so the
-# scraper and the parser can iterate independently.
+# vs "document-pagination") and its own Search button. The date
+# filter is applied per account, then the Export modal yields the
+# full row set as CSV/JSON/XML (no per-page HTML capture); the
+# opt-in more-detail walk scrapes the per-row modal extras the
+# export lacks.
 
 def _apply_tx_filter(page, account_suffix: str, tx_range: str,
                      exact_window: tuple | None,

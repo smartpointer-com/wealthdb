@@ -147,7 +147,6 @@ for the shared env-file rules.
 │   ├── documents/
 │   │   ├── index.json                   document catalogue (one entry per document)
 │   │   └── <docid>.pdf                  PDF binaries (gating below)
-│   └── (manual/ ... user-uploaded artefacts, ingested by load.py)
 └── viac.db                              silver SQLite (default name)
 ```
 
@@ -187,8 +186,8 @@ PDF, no hardlink reuse) — a first-run confidence check.
 
 `download` stamps each run's `run.json` with a `status`:
 `"in-progress"` when the run dir is created, atomically overwritten
-with `"complete"` (or `"dry-run"` for a `--dry-run` walk) once the walk
-finishes. A dump is **complete** when `status == "complete"`;
+with `"complete"` once the walk finishes (a `--dry-run` writes nothing
+under bronze; legacy dry-run shells are still recognised and pruned). A dump is **complete** when `status == "complete"`;
 everything else — an `in-progress` marker a crashed walk left behind, a
 `dry-run` shell, or no `run.json` at all — is **non-complete**. Dumps
 that predate the field carry a statusless manifest and are treated as

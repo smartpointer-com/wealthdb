@@ -15,7 +15,7 @@ The companion silvers:
 
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
-| `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Multi-decade historical: statement PDFs back to 2016 (Schwab's UI cap), tax forms back to 2014, transaction-history HTML drops for the same window | `$XDG_DATA_HOME/wealthdb/schwab-web/schwab-web.db` |
+| `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Deep historical: statement PDFs back to the UI's ~10-year cap, tax forms slightly deeper, transaction-history CSV/JSON/XML exports (~4-year "All" range) | `$XDG_DATA_HOME/wealthdb/schwab-web/schwab-web.db` |
 | `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from API access activation (mid-2024) | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` |
 
 This split mirrors the `ubs-web` ↔ `ubs-psn` pattern: a
@@ -177,12 +177,12 @@ structured tax-lot detail: cost basis, term, wash-sale flag,
 schedule breakdown. The api emits only TRADE transactions; it
 does NOT expose the IRS-level tax categorisation.
 
-**Gold-layer recommendation**: parse the web silver's
-`documents` table for XML files with `doc_kind = 'tax_form'`,
-extract the structured per-lot data with a 1099-aware parser
-(NOT YET WRITTEN), and project it into a gold-only `tax_lots`
-table. The api silver should NOT be modified — the data simply
-isn't in the api.
+**As built**: the 1099-aware parser lives in silver
+(`tax_form_parsers.py`, §6a); sale lots land in `transactions`
+with `source='form_1099b'`, and the gold reader treats them as
+authoritative for sales within their covered tax years
+([INTEROP.md](INTEROP.md) §8). The api silver is NOT modified —
+the data simply isn't in the api.
 
 ### 4.4 Schwab regenerates PDFs per download — sha256 dedup is byte-level only
 
@@ -331,7 +331,7 @@ The silver loader reads `run.json` for the document inventory and,
 per document kind, parses these into `transactions`:
 
 - **Statement PDFs** → `source='statement_pdf'` (also positions +
-  cash, see §5).
+  cash, see §4.5).
 - **Tx-history JSON** → `source='tx_history_json'`. The tx-history
   CSV / XML twins are sha256-keyed into `documents` for traceability
   but not re-parsed — the JSON carries the same set plus Schwab's

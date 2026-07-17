@@ -533,7 +533,7 @@ breaks that pattern for two specific reasons:
 
 Cost of the exception:
   - The Go gold adapter for cointracking uses the DuckDB Go driver
-    (`duckdb-go`) instead of `mattn/go-sqlite3`. Adapter-level
+    (`duckdb-go`) instead of `modernc.org/sqlite`. Adapter-level
     concern; doesn't touch the rest of the gold engine.
   - `collectorkit.silver` is SQLite-shaped — cointracking's
     load.py does not import it. The DuckDB equivalents (a

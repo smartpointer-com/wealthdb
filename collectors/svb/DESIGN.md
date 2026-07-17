@@ -12,7 +12,7 @@ PDFs, not scraped on a schedule.
 | `svb` | Host wrapper. `load` rebuilds the silver; `login`/`download` are no-ops (no live source). |
 | `pdf_parsers_svbwa.py` | Parser for the **SVB Wealth Advisory / NFS** statement family (a different statement layout from the supplied statements, whose parser lives in the `fidelity-web` collector). Equity/ETP/fund, fixed-income (inline CUSIP), and **options** rows — with parens→negative for short legs — plus the no-positions/$0 closing form. |
 | `load.py` | Standalone host builder: parses the bronze PDFs into a `svb.db` that uses the **fidelity-web silver schema**, injects the closures, and synthesises account/portfolio masters. Stdlib `sqlite3` + `pdfplumber`; no `collectorkit`/docker. |
-| `migrations/*.sql` | Copies of the four fidelity-web silver migrations. `svb.db` is read by the Fidelity gold adapter (`kind: "fidelity"`), so these MUST stay schema-compatible with it — keep them in lockstep with `collectors/fidelity-web/migrations/`. |
+| `migrations/*.sql` | Copies of the fidelity-web silver schema migrations (0001–0004; fidelity-web's 0005 is a data-only activity-id rehash with no schema change, so it has no svb copy). `svb.db` is read by the Fidelity gold adapter (`kind: "fidelity"`), so these MUST stay schema-compatible with it — keep schema changes in lockstep with `collectors/fidelity-web/migrations/`. |
 
 ## Why a separate gold source (`svb`), not a fold-in
 
@@ -92,7 +92,7 @@ byte-identical silver. The sidecar holds parsed statement data, so — like
 The wrapper resolves `--data-dir` / `--silver-db` (CLI flag > `SVB_*` env >
 `WEALTHDB_*` env > default `<data-dir>/svb.db`) and forwards extra flags to
 `load.py`, e.g. `wealthdb-collect svb load --closure-date 2023-09-30`. Running
-`load.py` directly works too: `collectors/svb/svb load`.
+the wrapper directly works too: `collectors/svb/svb load`.
 
 ## Bronze layout and `prune`
 

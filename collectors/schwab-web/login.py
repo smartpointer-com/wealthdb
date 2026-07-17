@@ -465,14 +465,9 @@ def run_manual(profile_dir: Path,
                mfa_timeout_s: int,
                debug: bool = False,
                exact_window: tuple | None = None) -> int:
-    """One-shot: CLI-MFA login → scrape → exit.
-
-    Schwab invalidates the persistent profile's session within
-    seconds of Firefox closing, so login + scrape must happen
-    in one Firefox lifetime — which means every `download`
-    invocation pays one MFA challenge. The trade-off is
-    operational simplicity: no daemon to babysit, no trigger
-    files, no idle timeouts to tune.
+    """One-shot: CLI-MFA login → scrape → exit, in one Firefox
+    lifetime (the session-invalidation constraint in the module
+    docstring).
 
     Pre-fill is best-effort and non-fatal; creds missing from the
     env log a warning and (with --no-cli-mfa) leave Log In + 2FA

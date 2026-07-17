@@ -99,7 +99,7 @@ func TestRegimeString(t *testing.T) {
 }
 
 // TestCapitalDirectionMatchesCanonical pins the documentary direction map to the
-// canonical sign that value_outccy already carries (proposal §3.B): for every
+// canonical sign that value_outccy already carries: for every
 // fixed-direction external kind, CapitalDirection == sign(ApplyCanonicalSign).
 func TestCapitalDirectionMatchesCanonical(t *testing.T) {
 	kinds := []canonical.TxKind{

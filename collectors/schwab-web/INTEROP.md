@@ -178,11 +178,12 @@ the data simply isn't in the api.
 
 ## 5. No live position snapshots in web silver
 
-The api silver emits positions per dump run; the web silver
-captures them only annually via the 1099-B detail, and is not
-yet parsed. Position history for pre-api dates will be sparse:
-one snapshot per year, at year-end, if/when the 1099-B parser
-lands.
+The api silver emits positions per dump run; the web silver has
+no live per-dump positions. Web position history is
+statement-cadence instead: `historical_position_snapshots` holds
+the per-statement holdings parsed from the statement PDFs
+(DESIGN.md §4.5). The 1099-B parser (§4) yields sale lots, not
+positions.
 
 ### Gold-layer mitigation
 
@@ -292,18 +293,19 @@ and must not be summed.
   `counterparty_account_suffix`, and `direction` for the transfer-flow
   surface.
 
-### 8.3 Concrete gold-side edits
+### 8.3 Gold-side implementation
 
-- Add `sourceFORM1099B = "form_1099b"` and
+- `sourceFORM1099B = "form_1099b"` and
   `sourceThirdPartyDistribution = "third_party_distribution"`
-  constants alongside `sourceStatementPDF` / `sourceTxHistoryJSON`.
-- Extend `webKind` to map `"Transfer Out"` / `"Transfer In"` →
-  `TxKindTransferOut` / `TxKindTransferIn`, and confirm `"Sale"` →
-  `TxKindSell` already covers the 1099-B rows.
-- Add a 1099-B authority stage in `transactionsBeforeAPIStart` after
-  `spliceNonExternalToJSON` + `dedupeCrossFeedExternalFlows`: index
-  `form_1099b` sales by `(account, tax_year)`, drop other-feed sells
-  in those windows, emit the 1099-B lots (with basis) instead.
-- Route `third_party_distribution` rows through `externalFlowKinds`
-  so they affect `net_flow`; give securities transfers a position
-  effect and cash transfers the dedup-against-statement treatment.
+  constants sit alongside `sourceStatementPDF` / `sourceTxHistoryJSON`.
+- `webKind` maps `"Transfer Out"` / `"Transfer In"` →
+  `TxKindTransferOut` / `TxKindTransferIn`; `"Sale"` → `TxKindSell`
+  covers the 1099-B rows.
+- `supersedeSalesWith1099B` runs in `transactionsBeforeAPIStart`
+  beside `spliceNonExternalToJSON` + `dedupeCrossFeedExternalFlows`:
+  within any `(account, tax_year)` that has `form_1099b` lots, other
+  feeds' sells are dropped and the 1099-B lots (with basis) kept.
+- `third_party_distribution` rows route through `externalFlowKinds`
+  so they affect `net_flow`; securities transfers carry a position
+  effect and cash transfers get the dedup-against-statement
+  treatment.

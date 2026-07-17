@@ -14,7 +14,7 @@ func eod(y int, m time.Month, d int) int64 {
 	return time.Date(y, m, d, 23, 59, 59, 0, time.UTC).Unix()
 }
 
-// TestRunReturnsDisappearingAccountReconciles guards review #1: an account that
+// TestRunReturnsDisappearingAccountReconciles: an account that
 // vanishes from a later same-source snapshot must read 0 thereafter (matching the
 // macros), so the aggregate reconciles with GlobalAsOf and the dropped account is
 // flagged rather than carried forward at its last value.
@@ -57,7 +57,7 @@ func TestRunReturnsDisappearingAccountReconciles(t *testing.T) {
 	}
 }
 
-// TestRunReturnsClosureDedup guards review #2: a real "withdraw everything"
+// TestRunReturnsClosureDedup: a real "withdraw everything"
 // closure must not be double-counted by the synthetic closure outflow.
 func TestRunReturnsClosureDedup(t *testing.T) {
 	db, ctx := openMigrated(t)
@@ -144,7 +144,7 @@ func TestRunReturnsMWRErrorFlags(t *testing.T) {
 	}
 }
 
-// TestRunReturnsFxClampFlags guards review #3: a cross-currency window/flow valued
+// TestRunReturnsFxClampFlags: a cross-currency window/flow valued
 // before the FX history (off the migration-0023 day-0 clamp) is flagged.
 func TestRunReturnsFxClampFlags(t *testing.T) {
 	db, ctx := openMigrated(t)

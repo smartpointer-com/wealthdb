@@ -17,7 +17,7 @@ command; no setup, no paths, no flags required to connect.
 - Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
 - NEVER run anything that writes or mutates: `load`, `reload`, `reset`, `init`, `config`, and `wealthdb-collect` are forbidden. If you think you need to write, you are wrong — stop and just query.
 - Add `-f json` whenever you will parse the output in code.
-- Every monetary amount is a decimal **string** (e.g. `"1380284.21"`). Convert to a number before doing arithmetic.
+- Every monetary amount is a decimal **string** (e.g. `"12345.67"`). Convert to a number before doing arithmetic.
 
 ## Pick the right command
 | You want… | Use |
@@ -67,7 +67,7 @@ command; no setup, no paths, no flags required to connect.
 `silver_source` is the institution (`schwab`, `ubs`, `fidelity`, `swissquote`, `viac`, `relevate`, `cointracking`, `angellist`, `carta`, `equityzen`, `manual`). The value column shows as `value_USD`, `total_value_CHF`, etc. — matching your `-x`. Use `-C all` to list every column for a command.
 
 Slice/group using these account attributes:
-- `account_kind`: brokerage, cash, custody, crypto_exchange, … 
+- `account_kind`: brokerage, cash, custody, crypto, … 
 - `tax_wrapper`: taxable_personal, roth_ira, 529, pillar_3a, vested_benefits, trust_*, …
 - `management_style`: self_directed, advisory, discretionary, automated
 
@@ -127,7 +127,9 @@ Carta/EquityZen, which are `nav_only`), `nav_only` / `nav_only_capital_call_risk
 (value-only source; its TWR omits capital-call timing — caveat it),
 `since_data_inception` (since-inception means since the **first snapshot**, not
 account opening), `staggered_inception` / `unmatched_transfers` /
-`empty_bucket` (coarse-grain or stale-data approximations). **Account-grain
+`empty_bucket` (coarse-grain or stale-data approximations), `stale_snapshot`
+(the end-of-bucket valuation is over ~3× the source's own snapshot cadence
+old — treat the figure as stale). **Account-grain
 returns are exact; portfolios/sources/global are best-effort.** Returns are
 **not additive across grains** — don't sum account returns to get a portfolio
 return; query the grain you want.

@@ -320,7 +320,7 @@ func TestRunReturnsEmptyBucket(t *testing.T) {
 		}
 		// The receiving bucket (a fresh snapshot after empty months) over-attributes
 		// the accumulated move and must carry boundary_same_snapshot — distinct from
-		// the donor empty_bucket (review #5).
+		// the donor empty_bucket.
 		if qualityHas(r, "boundary_same_snapshot") {
 			sawBoundary = true
 		}

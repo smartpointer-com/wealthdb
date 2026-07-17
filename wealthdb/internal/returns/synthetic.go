@@ -7,13 +7,12 @@ const onboardingDedupTol = 1e-6
 
 // OnboardingFlow returns the synthetic onboarding inflow for an aggregate
 // constituent's debut, so the step-up in the aggregate value series on the day a
-// constituent first appears is booked as capital-in rather than performance
-// (proposal §2.7).
+// constituent first appears is booked as capital-in rather than performance.
 //
 // realDebutFunding is the sum of real external capital-in flows already recorded
 // in the debut bucket. The synthetic inflow covers only the *unexplained*
 // opening value (firstValue - realDebutFunding); when a real funding flow
-// already accounts for the opening value, nothing is injected (dedup, GAP2). The
+// already accounts for the opening value, nothing is injected (dedup). The
 // returned Flow is dated on the debut day with capital-in (positive) sign.
 func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow, bool) {
 	synthetic := firstValue - realDebutFunding
@@ -29,14 +28,13 @@ func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow,
 //
 // The spine zeroing (zeroFrom) is returned whenever there is an explicit closure,
 // independent of whether a synthetic flow is injected — the carry-forward spine
-// keeps lastValue in V_end past the closure day, so the zeroing is mandatory
-// (proposal §2.7 / §3, verified).
+// keeps lastValue in V_end past the closure day, so the zeroing is mandatory.
 //
 // The synthetic outflow is deduped against any REAL closing capital-out near the
 // closure day (realClosing = magnitude of real withdrawal/transfer_out flows),
 // mirroring the onboarding side: the textbook "withdraw everything" closure books
 // a real −lastValue AND drives the snapshot to ~0, so injecting another
-// −lastValue would double-count and depress the closure-link return (review #2).
+// −lastValue would double-count and depress the closure-link return.
 // Only the unexplained remainder (lastValue − realClosing) is synthesized; ok is
 // false (no flow) when a real closing flow already covers it, or when there is no
 // explicit closure (closureDay==0). Staleness/dormancy must never reach here.

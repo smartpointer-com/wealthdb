@@ -33,7 +33,7 @@ type ReturnsPolicy struct {
 	// kind sets); ReturnsPolicyFor(kind).Flow exposes exactly this member.
 	Flow FlowPolicy
 
-	// ---- consumed knobs (proposal §2/§3; live since the UBS migration) ----
+	// ---- consumed knobs (live since the UBS migration) ----
 
 	// OnboardScope: whether synthetic onboarding fires per constituent account
 	// (default), once per computed entity at inception, or never.
@@ -58,7 +58,7 @@ type ReturnsPolicy struct {
 	// transferLike).
 	ExternalOnly bool
 
-	// ---- forward knobs (proposal §2); defined, defaulted, NOT yet consumed ----
+	// ---- forward knobs; defined, defaulted, NOT yet consumed ----
 
 	// NettingTol: transfer-netting window / epsilon. Zero value = today's
 	// netting behavior (the engine still uses its module-level netting constants).
@@ -74,10 +74,10 @@ type ReturnsPolicy struct {
 	// InKindJumpTol: suspected-in-kind honesty-flag tolerance. Zero = today.
 	InKindJumpTol canonical.Decimal
 
-	// ---- escape hatches (proposal §2); optional, nil => default behavior ----
+	// ---- escape hatches; optional, nil => default behavior ----
 
 	// ClassifyFlow, if non-nil, overrides external-vs-internal flow
-	// classification (proposal §4) under ExternalOnly. nil => the FlowPolicy
+	// classification under ExternalOnly. nil => the FlowPolicy
 	// kind-set rule (UBS pre-tags in silver instead, so it ships nil).
 	ClassifyFlow func(FlowCtx) FlowClass
 	// OnboardAmount, if non-nil, overrides the synthetic onboarding amount. nil
@@ -93,7 +93,7 @@ const (
 	// constituent account.
 	OnboardPerConstituent OnboardScope = iota
 	// OnboardPerEntityOnce fires onboarding once per computed entity at
-	// inception (proposal §3). Consumed by the engine (groupOnboardStep) and set
+	// inception. Consumed by the engine (groupOnboardStep) and set
 	// live by UBS.
 	OnboardPerEntityOnce
 	// OnboardNone never injects synthetic onboarding for this source's
@@ -134,7 +134,7 @@ type Tolerance struct {
 	Eps  canonical.Decimal
 }
 
-// FlowCtx is the input to the optional ClassifyFlow hook (proposal §4). Shape is
+// FlowCtx is the input to the optional ClassifyFlow hook. Shape is
 // provisional; the hook is nil in every default policy today, so nothing reads
 // it yet.
 type FlowCtx struct {
@@ -162,7 +162,7 @@ type DebutCtx struct {
 // DefaultReturnsPolicy returns the policy that reproduces CURRENT engine
 // behavior for a recognised-but-unmigrated source: the given FlowPolicy plus all
 // forward knobs at their zero/default values (no-op). Sources build their
-// ReturnsPolicy from this and override only what they need (nothing does yet).
+// ReturnsPolicy from this and override only what they need.
 func DefaultReturnsPolicy(flow FlowPolicy) ReturnsPolicy {
 	return ReturnsPolicy{
 		Flow:    flow,

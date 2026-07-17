@@ -7,7 +7,7 @@ import (
 
 // init registers this source's co-located ReturnsPolicy. UBS is a CONDUIT
 // relationship: external cash lands in a cash account and funds securities in a
-// DIFFERENT account inside the same banking relationship. The forward knobs below
+// DIFFERENT account inside the same banking relationship. The knobs below
 // make the engine count that capital exactly once and are source-scoped — they
 // apply ONLY to UBS constituents (resolved by kind), so every other source keeps
 // the default no-op behavior and stays byte-identical, even at the merged global
@@ -26,8 +26,8 @@ import (
 //     rule): internal rows are demoted to a non-flow kind and never reach the
 //     flow set, so no ClassifyFlow hook / FlowCtx payload is needed here.
 //   - Inception = InceptionFirstRealSnapshot: anchor UBS's return window at its
-//     first real position snapshot (2022-03-31) rather than the sparse cash-only
-//     pre-history, killing the tiny-base return artifact.
+//     first real position snapshot rather than the sparse cash-only pre-history,
+//     killing the tiny-base artifact of a window opened years early.
 func init() {
 	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	p.OnboardScope = returns.OnboardPerEntityOnce

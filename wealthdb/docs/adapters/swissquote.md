@@ -62,10 +62,9 @@ projects it as:
 - One `CashBalanceChange` per row with `balance_kind = 'closing'`,
   `amount = payload.cash_balance`, `currency = silver.currency`.
 - One `FxRateChange` per non-CHF row: `base_currency = 'CHF'`,
-  `quote_currency = silver.currency`, `mid_rate = 1.0 /
-  payload.rate_to_chf` (so that `quantity_in_quote * mid_rate =
-  amount_in_base`; double-check the convention against UBS rates
-  before publishing).
+  `quote_currency = silver.currency`, `mid_rate =
+  payload.rate_to_chf` ("1 of this currency = N CHF" — exactly the
+  1-quote-in-base-units convention UBS rates use).
 
 The CHF row's `rate_to_chf = 1.0` is skipped (no useful FX rate).
 The `positions_value` field is not projected to gold — it's

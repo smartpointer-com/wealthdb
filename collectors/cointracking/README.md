@@ -39,7 +39,7 @@ rest — one MFA prompt every few years.
 #    holds the pre-fetched Firefox so this step is fast on a warm cache).
 ./cointracking build
 
-# 2. Drop credentials into the env file. chmod 0600 enforced by login.py.
+# 2. Drop credentials into the env file. chmod 0600.
 #    cat > ~/.secrets/cointracking.env <<'EOF'
 #    COINTRACKING_USERNAME=your-cointracking-email
 #    COINTRACKING_PASSWORD=your-cointracking-password

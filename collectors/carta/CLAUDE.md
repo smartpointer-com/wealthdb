@@ -77,8 +77,9 @@ appears in the allow-list above.
 ## 2. Protect the session
 
 The Carta session cookie is the keys to the kingdom (it can exercise
-options and move money via the flows above). Its lifetime and any
-device-trust behaviour are **TBD pending `explore`** — do not assume it
+options and move money via the flows above). The "remember this device"
+tick (`#enable-bypass`) plants a device-trust cookie that skips 2FA on
+renewal; its exact lifetime is unmeasured — do not assume the session
 persists, and do not invalidate it without cause:
 
 - Don't add a routine "fresh login per N runs" pattern — re-mint only when

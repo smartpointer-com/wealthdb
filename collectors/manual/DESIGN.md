@@ -6,7 +6,7 @@ synthetic [examples/](examples/) (`tests/`); the gold adapter
 §6) loads the manual source into gold, so it shows up in `wealthdb holdings positions`.
 
 A catch-all collector for **private holdings with no source UI at all** —
-the bank/portal sources are all covered by the other twelve collectors;
+the bank/portal sources are all covered by the other collectors;
 what's left is illiquid private holdings tracked by hand:
 
 - **Real estate** — directly-held residential / commercial property.

@@ -35,7 +35,7 @@ for personal aggregation:
 - **OpenWealth** — B2B-only. VIAC's parent (WIR Group / Terzo)
   has no published retail OpenWealth participation.
 - **PSD2** — Switzerland is outside the EU PSD2 regime.
-- **Aggregators** — Plaid / TrueLayer / Tink / Powers / Akoya
+- **Aggregators** — Plaid / TrueLayer / Tink / Powens / Akoya
   all decline Pillar-3a providers as too niche.
 - **Email feeds** — "document available" notifications with no
   payload.
@@ -84,7 +84,7 @@ https://app.viac.ch/#/ext(modal:core/session/login)
 
 — but the toolkit doesn't load it; the auth flow is a sequence
 of REST calls. The SPA's hash-route is operationally irrelevant
-once you know the wire shape.
+once the wire shape is known.
 
 ### 2.1 Auth flow (replayed by `login.py`)
 
@@ -194,7 +194,6 @@ code would need to change beyond the underlying HTTP client.
 │   ├── documents/
 │   │   ├── index.json                 document catalogue
 │   │   └── <docid>.pdf                PDF binaries (see gating below)
-│   └── (manual/ ... user-uploaded artefacts; same dedup path)
 └── viac.db                            silver SQLite (default name)
 ```
 
@@ -285,8 +284,9 @@ through this path, and live instruments gain an earlier
 
 `download.py` records a `status` in `run.json`: `"in-progress"` when
 it creates the run dir (written via `bronze.atomic_write_json` right
-after `mkdir`), then atomically overwritten with `"complete"` — or
-`"dry-run"` for a `--dry-run` walk — once the walk returns. A crash
+after `mkdir`), then atomically overwritten with `"complete"` once
+the walk returns (a `--dry-run` writes nothing under bronze; the
+`"dry-run"` status survives only in legacy shells). A crash
 mid-walk therefore leaves `status = "in-progress"`, a stronger "this
 dump is partial" signal than the older "no `run.json` = incomplete"
 heuristic, which a partial manifest write could defeat.
@@ -313,8 +313,10 @@ recheck immediately before deletion. Document PDFs are hard-linked
 across dumps (§5, cross-run dedup), so deleting a non-complete dump
 that holds a link is safe — the inode survives while any complete dump
 still links it, and `documents/<docid>.pdf` (a `load` input parsed
-cross-dump by the historical-reports phase) is never lost. `prune`
-runs in-container via the same `entrypoint.sh` dispatch as `load`.
+cross-dump by the historical-reports phase) is never lost. The
+wrapper runs `prune` host-side (bypassing the single-writer guard so
+it can run beside a live container); the entrypoint keeps a `prune`
+arm for direct `docker run`.
 
 ## 6. Silver schema
 
@@ -386,8 +388,8 @@ The silver-side facts the adapter reads:
   withdrawals, no beneficiary edits. See [CLAUDE.md §1](CLAUDE.md).
 - **MFA automation** — human-in-the-loop on every fresh login.
 - **Cron / launchd / GitHub-Actions scheduling** — see
-  [CLAUDE.md §2](CLAUDE.md). Unattended runs can't pass the
-  mTAN gate anyway.
+  [the repo-root CLAUDE.md §2](../../CLAUDE.md). Unattended runs
+  can't pass the mTAN gate anyway.
 - **Cross-bank semantic alignment** — gold's job.
 - **PDF body parsing for transaction documents** — silver records
   the per-event TRADE / DIVIDEND / SECURITY_FUSION PDFs only by

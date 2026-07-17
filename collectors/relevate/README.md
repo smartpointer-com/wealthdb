@@ -44,7 +44,7 @@ conventions.
 - **No unattended scheduling.** Cron / launchd / Actions are
   out of scope — they can't survive the mTAN gate anyway, and
   they would invite session-cookie burn from parallel logins.
-  See [CLAUDE.md §2](CLAUDE.md).
+  See [the repo-root CLAUDE.md §2](../../CLAUDE.md).
 - **No mutation surface in the CLI.** No `--password` flag
   (would leak via `ps`). Credentials reach the toolkit via env
   vars sourced from `~/.secrets/relevate.env`.
@@ -135,15 +135,18 @@ the index for a clean-slate re-fetch.
 ```
 relevate/
 ├── relevate        # host wrapper around docker run
-├── Dockerfile           # python:3.12-slim + requests
+├── Dockerfile           # wealthdb/base-python + requirements.txt
 ├── entrypoint.sh        # login / download / load / prune / sh dispatch
 ├── prune.py             # reclaim non-complete dumps (thin collectorkit.prune wrapper)
 ├── login.py             # Airlock auth: POST /b2c/access -> /password/check -> /mtan/otp/check
 ├── download.py          # GET /middlelayer/v2/{...} into bronze tree
 ├── load.py              # bronze -> silver SQLite, idempotent via dump_runs
+├── pdf_parsers.py       # quarterly-report + credit-note PDF text parsers
 ├── migrations/          # numbered SQL migrations
-│   └── 0001_initial.sql
-├── requirements.txt     # requests only
+│   ├── 0001_initial.sql
+│   └── 0002_historical_snapshots.sql
+├── tests/               # pytest suite (fixture-driven, no live calls)
+├── requirements.txt     # pytest + requests + pypdf
 ├── README.md            # this file
 ├── DESIGN.md            # the design doc — read this
 ├── CLAUDE.md            # ground rules for agents
@@ -158,13 +161,13 @@ $HOME/.secrets/                       # chmod 700
 ├── relevate.env                      # chmod 600; export RELEVATE_LOGIN=...
 └── relevate-state.json               # chmod 600; Airlock cookies after login
 
-$XDG_DATA_HOME/wealthdb/relevate/              # bronze + (future) silver
+$XDG_DATA_HOME/wealthdb/relevate/              # bronze + silver
 ├── <UTC-ts>/                         # one bronze dir per `download` run
 │   ├── run.json                      # manifest
 │   ├── accounts/                     # master listing + ancillaries
 │   ├── portfolios/<slug>/            # per-portfolio JSON
 │   └── documents/                    # PDF binaries + index.json
-└── relevate.db                       # silver SQLite (when load.py lands)
+└── relevate.db                       # silver SQLite (written by load)
 
 $HOME/.cache/wealthdb/debug/relevate/          # opt-in scratch logs / traces
 ```
@@ -209,7 +212,8 @@ for the shared env-file rules.
 
 `prune` removes whole non-complete run dirs across the bronze tree: a
 walk that crashed before writing a terminal `run.json` status, and
-`--dry-run` shells. From a *complete* dump it reclaims one thing — the
+legacy `--dry-run` shells (a `--dry-run` today writes nothing under
+bronze). From a *complete* dump it reclaims one thing — the
 `screenshots/` HTTP trace a `download --debug` left behind, which a
 routine download never writes. relevate drives no browser, so there are
 no DOM dumps or Playwright traces beside it. The dump's data — including
@@ -228,6 +232,6 @@ untouched (UNKNOWN, never deleted).
 The repo is intended to be publishable. **Do not commit any
 identifier-shaped value, response body, or screenshot that
 contains real Relevate account data.** See
-[CLAUDE.md §4](CLAUDE.md) for the full PII rules. Pre-commit:
+[the repo-root CLAUDE.md §4](../../CLAUDE.md) for the full PII rules. Pre-commit:
 grep the staged diff for known real values BEFORE the first
 `git add`.

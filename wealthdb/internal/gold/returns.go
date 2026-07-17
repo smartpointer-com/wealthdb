@@ -146,7 +146,7 @@ func (o *InceptionOverrides) resolve(level, src, portfolio, acct string) (int64,
 	return 0, false
 }
 
-// netting tolerances (proposal §2.2 / locked decision 5).
+// netting tolerances.
 const (
 	nettingEpsFloor  = 1.00  // absolute floor, output currency
 	nettingEpsRel    = 0.005 // 0.5% of the larger leg
@@ -191,7 +191,7 @@ func (ds *returnsDataset) finalize() {
 	// The spine's latest emitted day across all accounts (≈ today). An account
 	// whose own series ends before this dropped out of a later same-source
 	// snapshot (closed / feed-dropped) — its value is 0 thereafter (matching the
-	// macro), and we flag it if it dropped while still holding value (review #1).
+	// macro), and we flag it if it dropped while still holding value.
 	var globalMax int64
 	for _, a := range ds.accts {
 		if d := a.lastDay(); d > globalMax {
@@ -339,7 +339,7 @@ type accountData struct {
 	snapDays []int64  // distinct real snapshot days, ascending
 
 	policy         returns.FlowPolicy    // the Flow member (classification) — hot path
-	rpolicy        returns.ReturnsPolicy // full per-source policy incl. forward knobs (OnboardScope/Inception/ConduitKinds/ExternalOnly)
+	rpolicy        returns.ReturnsPolicy // full per-source policy incl. the consumed engine knobs (OnboardScope/Inception/ConduitKinds/ExternalOnly)
 	nonTransfer    []returns.Flow        // external deposit/withdrawal — always kept (never netted)
 	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
@@ -397,11 +397,11 @@ func (a *accountData) lastVal() float64 {
 }
 
 // valueAt returns the value on `day` and whether the account was present then.
-// Before its first emitted row it is NULL ("not yet alive", Fix #4); AFTER its
+// Before its first emitted row it is NULL ("not yet alive"); AFTER its
 // last emitted row it is gone — the macro stops emitting the account once a
 // later same-source snapshot supersedes it without it, so carrying forward past
-// the last row would diverge from report_*_history and break global == Σ accounts
-// (review #1). Within [first,last] the daily spine has a row for every day.
+// the last row would diverge from report_*_history and break global == Σ accounts.
+// Within [first,last] the daily spine has a row for every day.
 func (a *accountData) valueAt(day int64) (float64, bool) {
 	if len(a.series) == 0 || day < a.series[0].day || day > a.series[len(a.series)-1].day {
 		return 0, false
@@ -412,7 +412,7 @@ func (a *accountData) valueAt(day int64) (float64, bool) {
 
 // closureDay returns the explicit-closure day (the account's value went to ~0)
 // or 0 when it merely stopped updating (staleness must NOT synthesize a
-// divestment — proposal §2.7/§3).
+// divestment).
 func (a *accountData) closureDay() int64 {
 	if len(a.series) == 0 {
 		return 0

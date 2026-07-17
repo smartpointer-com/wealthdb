@@ -108,7 +108,8 @@ def parse_account_blocks(text):
 
     Fidelity re-stamps the ``Account #`` header on **every page**
     of an account's section, so a naive split would emit one block
-    per page (one account's section can run to many pages). The parser glues all
+    per page (one account's section can run to many pages).
+    The parser glues all
     consecutive blocks sharing the same account id into one
     logical block — the Portfolio Summary page on page 2 is the
     one exception (it lists every account but holds no per-account
@@ -473,10 +474,6 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
     the returned dict carries
     ``{"_error": "signature-mismatch", ...}``
     so the loader can log + skip without bailing the whole run.
-
-    pdfplumber is imported inside the function so the text-level
-    parsers above remain importable in environments that don't
-    have it (e.g. unit tests with hand-crafted fixtures).
     """
     text = _extract_pdf_text(path)
     if expected_signature and expected_signature not in text:
@@ -515,10 +512,6 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
         "period_end": period[1].isoformat() if period else None,
         "accounts": accounts_out,
     }
-
-
-# PDF text extraction goes through collectorkit.pdf.extract_text_pdfplumber
-# (imported at module top as `_extract_pdf_text`).
 
 
 # ============================================================

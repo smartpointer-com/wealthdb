@@ -1079,9 +1079,8 @@ def backfill_first_day_gaps(
         WHERE DATEDIFF('day', fl.gap_date, fl.next_priced) <= {max_gap_days}
         ON CONFLICT DO NOTHING
     """).fetchall()
-    # DuckDB's INSERT doesn't return rowcount via fetchall but we
-    # can probe by counting BEFORE/AFTER, or trust the next coverage
-    # check. For now just log via a follow-up query.
+    # DuckDB's INSERT reports no rowcount; count the rows stamped
+    # with this fetched_at instead.
     n = conn.execute("""
         SELECT COUNT(*)
         FROM coin_prices

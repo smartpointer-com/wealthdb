@@ -131,7 +131,7 @@ should win on the days they overlap and `fred` should fill the rest.
 
 How the winner is chosen is **not hard-coded** — it's the per-source
 **`fx_priority`** field in `wealthdb.cfg`. For each conversion the gold FX
-resolver (`internal/gold/fx.go`) picks, per day, the rate from the
+resolver (`internal/gold/fxpriority.go`) picks, per day, the rate from the
 highest-priority source that covers that day, falling back to the next.
 Lower number = higher priority; absent/null = lowest; ties broken by the
 order sources are listed in the config. Which sources exist and how

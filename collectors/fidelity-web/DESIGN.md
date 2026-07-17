@@ -108,7 +108,8 @@ bronze subdirectory holds documents that arrive out-of-band.
 │                                               (+ <ts>-<label>.dominv.json with --explore) — NOT compressed
 ├── 20260525T120000Z/
 │   └── …
-├── manual/                                     user-uploaded artefacts (documents that arrive out-of-band)
+├── manual/                                     hand-dropped artefacts (documents that arrive out-of-band)
+├── supplied-statements/                        statement PDFs supplied out-of-band (→ historical_position_snapshots, §4.5)
 └── fidelity-web.db                             silver SQLite (default location)
 ```
 
@@ -237,11 +238,13 @@ codes to a different lookup than CUSIPs.
 ### 3.3 `transaction_external_id`
 
 Fidelity activity CSVs do NOT carry a stable per-row identifier
-across exports. Plan: synthesise a deterministic SHA-256 prefix
-over the row's promoted columns (`account_external_id |
-timestamp | amount | description | symbol | source_sha256`),
-mirroring `schwab-web`'s pattern. Silver-internal only;
-gold does not attempt cross-source per-row matching on it.
+across exports. `activity_id` is a deterministic SHA-256 prefix
+over the row's structural columns (account, timestamp, kind,
+symbol, quantity, price, amount, settlement date) plus a per-file
+occurrence index. Free-text columns and the source-file hash are
+deliberately excluded — they vary between exports and would break
+cross-window dedup (migration 0005). Silver-internal only; gold
+does not attempt cross-source per-row matching on it.
 
 ### 3.4 `owner` dimension
 
@@ -303,7 +306,7 @@ databases always conform to the latest schema.
 | `portfolios` | snapshot | `(snapshot_at, portfolio_external_id)` | `kind` (`529` / `trust_managed` / `other`); rest in `payload` |
 | `accounts` | snapshot | `(snapshot_at, account_external_id)` | `portfolio_external_id`, `nickname`, `management_style`; rest in `payload` |
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
-| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's full normalized payload + a per-file occurrence index; file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
+| `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
 | `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
 
@@ -328,8 +331,8 @@ load. Every dump's view of the master data is preserved.
 
 `transactions` follows the event archetype: idempotent INSERT
 OR REPLACE on the synthetic `activity_id`. The ID is derived
-purely from the row's content fingerprint (its full normalized
-payload) plus a per-file occurrence index — **not** from the
+purely from the row's structural columns (§3.3) plus a per-file
+occurrence index — **not** from the
 source-file sha256 or the CSV row index, both of which vary
 between download windows. This is what lets the same transaction
 re-downloaded across overlapping windows / repeated runs collapse
@@ -603,7 +606,7 @@ cookies:
 3. Detect either signin form (US locale) or International Usage
    Agreement interstitial (non-US locale, when geoip=True trips
    it); click "I Accept" on the IUA if served.
-4. Fill `#dom-pswd-input` with `FIDELITY_PASSWORD`. Username field
+4. Fill `#dom-pswd-input` with `FIDELITY_WEB_PASSWORD`. Username field
    varies by device-known state (text input vs `<select>`); the
    script tries both paths.
 5. Click `#dom-login-button`.

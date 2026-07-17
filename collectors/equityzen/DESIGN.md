@@ -269,8 +269,9 @@ dropped, §4), `/documents/` (doc + tax centre).
 Layout (`collectorkit.bronze`; deal-slug = `sha256(deal.id)[:16]` so no
 company name ever appears in a path): `$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/` with
 `investments.json` (`{stage: getBuyerInvestments body}`),
-`offerings/<deal-slug>/detail.json` (`getMyInvestmentDetails`),
-`documents.json` (metadata, present unless `--no-documents`), and a `run.json` manifest
+`offerings/<deal-slug>/detail.json` (`getMyInvestmentDetails`;
+`node.documents[]` carries the document metadata), document blobs under
+`documents/<deal-slug>/` (skipped by `--no-documents`), and a `run.json` manifest
 (slugs + counts only — no names/ids/amounts). `--dry-run` captures the list
 across all stages, logs what it would fetch, and writes nothing
 (CLAUDE.md-sanctioned read-only smoke test).
@@ -308,7 +309,7 @@ and why none of it is worth the extra per-company navigations + pagination
 machinery per run:
 
 - `getInvOpps(equityBlockUuid)` → the company's **open order-book asks**
-  (live deals you could buy into). An ask need never transact, so it is
+  (deals currently open to buyers). An ask need never transact, so it is
   **not reliable price data** — only *closed* deals are (the valuation
   rule). Of the live book, typically only a held name that happens to be
   actively offered has any ask; other held names return nothing.

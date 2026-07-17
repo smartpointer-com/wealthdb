@@ -11,7 +11,7 @@ Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
 concrete surface for ubs-web:
 
 Allowed UI surfaces — `download.py` may only navigate to or click
-within (final list TBD once the live UI is mapped, but the
+within (landmarks.py pins the concrete URLs and selectors; the
 allow-list pattern below is binding):
 
 - The UBS login form and the MFA approval page that follows it.

@@ -37,10 +37,10 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
 | `schema_meta` / `dump_runs` | meta only | Drive `Status` / `ChangeWindow`. |
 | `portfolios` | `portfolios` | Display name lifted directly; `base_currency` derived from `portfolio_prices.quote_currency`. |
 | `wallets` | `accounts` (kind=`crypto`) | One account per (portfolio, wallet) — see §4. |
-| `transactions` | (in-process source of derived positions) | NOT yet projected to gold's `transactions` table — see §7. |
-| `positions_daily` | (unused) | Per-portfolio daily aggregate; the adapter derives per-wallet balances from the trade history instead. |
+| `transactions` | `transactions` | Every silver row projects to 1–2 canonical rows (trade splitting + the CT-type → `TxKind` map) — see §7. |
+| `positions_daily` | drives `positions` | One snapshot batch per distinct `as_of_date`, forward-filled — see §5. |
 | `portfolio_prices` | drives `positions.market_value` | CT's per-portfolio valuations in the portfolio's quote currency. |
-| `coin_prices` | (unused in this iteration) | Cross-portfolio canonical USD reference; available to the gold layer for downstream FX paths. |
+| `coin_prices` | `fx_rates` | One (coin → USD) `FxRateChange` per row (plus fiat → USD), so gold can value event-dated flows. |
 | `coin_mapping` | (unused) | Internal to the price fetcher. |
 
 ## 4. Account taxonomy
@@ -77,17 +77,16 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
 
 ## 5. Positions
 
-Emitted at one `snapshot_at` per ChangeWindow (= `MAX(dump_runs.
-snapshot_at)` in the window). The silver loader replays every
-prior balance from the full trade history on each load, so
-historical snapshots would mostly duplicate what gold already has
-from the previous load.
+Emitted as one batch per distinct `positions_daily.as_of_date` in
+the window, so gold's `PositionsAsOf` can answer historical
+"what did I hold on day D" queries. Each batch reflects the
+complete portfolio state on that day, forward-filled from the
+latest per-(portfolio, wallet, instrument) entry at or before it.
+Dimensions (portfolios, accounts, instruments, fx_rates) ride only
+the latest batch — they are not snapshot-grain.
 
-- **`quantity`** is the running coin balance computed in-line from
-  `SUM(buy_amount) − SUM(sell_amount)` over the wallet's
-  transactions. A `> 1e-10` filter drops sub-satoshi dust that
-  successive deposits + withdrawals can leave from CT's per-trade
-  decimal scaling.
+- **`quantity`** is the wallet's balance from `positions_daily`
+  (the silver loader's full-history replay computes it).
 
 - **`currency`** is the portfolio's quote currency (USD for some,
   EUR for others; defaults to USD if the portfolio's
@@ -119,17 +118,27 @@ unknown tickers fall back to the ticker itself.
 
 ## 7. Transactions
 
-NOT emitted in this iteration. The silver `transactions` table is
-the authoritative trade-history record at full per-row fidelity;
-downstream queries can read it directly. Promoting the per-trade
-records into gold's `transactions` table would mean classifying
-CT's per-row `type` (Trade / Deposit / Withdrawal / Income / Spend
-/ Lost / Stolen / Gift / Mining / Staking / Airdrop / …) into the
-canonical `TxKind` enum, splitting two-sided trades into a buy +
-sell pair, deriving the canonical signed amounts in the
-portfolio's quote currency, and validating sign convention against
-the running balance reconciliation. Left as a follow-up for when
-a downstream query actually needs it.
+Every silver `transactions` row in the window projects into one or
+two canonical rows (`transactions.go`):
+
+- **Trade with the portfolio's base currency on one side** → 1 row
+  (`buy` / `sell`): instrument = the non-base side, quantity = the
+  signed amount, net amount = the signed base-currency cash flow.
+- **Trade with no base-currency side** (e.g. crypto-to-crypto) →
+  a `sell` + `buy` pair whose ±V base-currency net amounts cancel,
+  so SUM-derived cash balances are unaffected by the trade.
+- **Non-Trade CT types** (Deposit, Withdrawal, Staking, Income,
+  Airdrop, Gift, Spend, Lost, Stolen, …) → 1 row via the CT-type →
+  `TxKind` map in `kindmap.go`. Currency is the asset that
+  actually moved; non-base assets also carry instrument + quantity
+  so instrument-keyed rollups work.
+
+The closing-balance invariant `balance(C) = SUM(quantity WHERE
+instrument = C) + SUM(net_amount WHERE currency = C)` ties the
+projected rows back to silver's replayed balances. Fees on Trade
+rows are internalised by CT into the trade amounts (no separate
+fee row — it would double-count); only the standalone "Other Fee"
+type produces a `fee` row.
 
 ## 8. Change number
 

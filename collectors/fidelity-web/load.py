@@ -286,15 +286,6 @@ def main(argv=None):
 
 
 # ============================================================
-# Migrations
-# ============================================================
-
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic). The silver
-# connection is created inline in main() with default isolation.
-
-
-# ============================================================
 # Bronze scan
 # ============================================================
 
@@ -1553,7 +1544,7 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
             if not desc:
                 continue
             mv = holding.get("market_value")
-            total = parsed.get("portfolio_total")  # currently unused
+            total = parsed.get("portfolio_total")  # supplied parser emits none
             pct = None
             if mv is not None and total:
                 pct = mv / total

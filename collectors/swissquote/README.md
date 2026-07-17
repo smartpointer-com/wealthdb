@@ -14,14 +14,14 @@ conventions.
 
 ## Why this design
 
-Swissquote does not expose any retail-accessible API for reading your
-own portfolio:
+Swissquote does not expose any retail-accessible API for a client
+reading its own portfolio:
 
 - **PSD2 / Open Banking** — TPP-only (eIDAS cert required).
 - **OpenWealth / `bankingapi.swissquote.ch`** — B2B-only (External
-  Asset Managers, family offices). Worth asking your relationship
-  manager if you have the assets to justify it, but expect "no" for
-  retail.
+  Asset Managers, family offices). Available on request for mandates
+  with the assets to justify it; retail requests are typically
+  declined.
 - **FIX API** — covers only the Forex/CFD margin sub-account, not the
   bank-account portfolio (equities, ETFs, bonds, funds).
 - **PSD2 aggregators (Plaid, TrueLayer, Tink, etc.)** — no Swissquote
@@ -89,7 +89,7 @@ The toolkit is built to run on a headless remote Linux host (e.g. an
 always-on home server or a small VPS). The bronze directory is
 `scp`'d back to a workstation for analysis. Chromium runs
 headless inside the container; the MFA push is approved on the
-user's phone, not in any UI on the remote host.
+registered phone, not in any UI on the remote host.
 
 **First-run device verification.** Swissquote does device
 fingerprinting. The first login from a new IP (i.e. the remote
@@ -151,8 +151,8 @@ Swissquote sessions have two layers:
   fingerprint is recent enough — the script handles that case
   silently.
 
-So the normal rhythm is: run `login.py` once, then `download.py` as
-many times as you like during the cookie's lifetime. When
+So the normal rhythm is: run `login.py` once, then `download.py`
+freely during the cookie's lifetime. When
 `download.py` reports the session is dead, re-run `login.py`.
 
 ## login.py
@@ -201,10 +201,11 @@ new MFA push, no fresh login):
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--state-path` | `/secrets/swissquote-state.json` (wrapper mount) | Path to read/write the Playwright `storageState.json` file (a legacy `swissquote_state.json` is still read if absent). |
+| `--env-file` | — | Credentials env file; wins over the default `/secrets/swissquote.env` candidates. |
 | `--username` | _(env `SWISSQUOTE_USERNAME`)_ | Swissquote login username / customer number. Falls back to env var. |
 | `--check` | off | Validate the existing state file against a live landmark URL; print whether it's still authenticated. No new login, no MFA push. |
 | `--mfa-timeout` | `300` | Seconds to wait for the Mobile Level 3 push to be approved. |
-| `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [CLAUDE.md](CLAUDE.md) §4. |
+| `--screenshot-dir` | _unset_ | If set, write a Playwright screenshot at each navigation landmark for offline debugging. Never use on a real account in tracked output — see [the repo-root CLAUDE.md](../../CLAUDE.md) §4. |
 | `--trace` | off | Capture a Playwright trace bundle. Requires `--screenshot-dir`; the bundle lands there alongside screenshots. Never auto-writes to the secrets dir. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |
 
@@ -363,8 +364,8 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
   written to support multiple linked accounts under one login, but
   no second-account fixtures exist — multi-account paths are
   exercised but not verified.
-- **No retry / resume / scheduling.** Run interactively when you
-  want fresh data. The Mobile Level 3 gate makes unattended cron a
+- **No retry / resume / scheduling.** Runs are interactive by
+  design. The Mobile Level 3 gate makes unattended cron a
   non-starter.
 
 ## load.py
@@ -373,7 +374,7 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 
 Parses one or more bronze dump directories (as produced by
 `download.py`) and inserts them into a SQLite silver database.
-The schema is defined in `migrations/0001_initial.sql`; the loader
+The schema is defined in `migrations/` (0001–0005); the loader
 applies any pending migrations on startup before loading data, so
 the silver database is always at the latest schema version.
 
@@ -489,8 +490,9 @@ Portfolio-Performance PDFs are re-parsed into positions on later
 loads) — are never touched, so silver stays reproducible; deleting a
 non-complete dump surfaces on the next `load --force` rebuild. The
 non-run entries at the bronze root (`manual/`, the silver
-`swissquote.db`) are out of scope by construction. `prune` runs in the
-container like the other verbs, and an in-flight guard
+`swissquote.db`) are out of scope by construction. `prune` runs
+host-side (a pure file walk; it bypasses the single-writer guard so it
+can run beside a live download container), and an in-flight guard
 (`--min-age-hours`, default 1, keyed on recent write activity) keeps
 it from removing a download that is still running. A `run.json` that
 can't be read or parsed is left alone rather than treated as

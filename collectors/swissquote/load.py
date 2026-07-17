@@ -63,11 +63,6 @@ ISO_CCY_RE = re.compile(r"^[A-Z]{3}$")
 open_db = silver.open_db
 
 
-# Schema versioning + the migration runner now live in
-# collectorkit.silver (transaction-model agnostic). open_db stays local
-# per the decision not to unify collector transaction models.
-
-
 def canonical_json(obj) -> str:
     """Stable JSON for content-based dedup. Sorted keys, no spaces."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),

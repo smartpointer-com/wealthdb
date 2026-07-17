@@ -116,10 +116,7 @@ any of them in wealthdb v1:
    need to duplicate.
 
 Until either (1) or (2) lands, equity rows render with an empty
-`name` column. The `symbol` column is still populated. (The
-planned `schwab-web` source is a likely third path —
-scraping the company name out of the brokerage UI's holdings
-page — but that's its own design question.)
+`name` column. The `symbol` column is still populated.
 
 ## 5. `transactions.kind` mapping
 
@@ -185,7 +182,7 @@ contributes three things the api silver doesn't have:
 Web stores `account_external_id` as the 3-to-5-digit account
 suffix Schwab shows in the UI. The api stores Schwab's opaque
 `hashValue`. The orchestrator builds the suffix → hashValue
-bridge lazily on first Status/Snapshots/Transactions call, in
+bridge lazily on first Snapshots/Transactions call, in
 two tiers per web account:
 
 1. **Exact.** When the web account's payload carries a non-empty

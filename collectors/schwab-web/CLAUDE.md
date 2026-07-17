@@ -11,8 +11,8 @@ Root [CLAUDE.md](../../CLAUDE.md) §1 mandates read-only access. The
 concrete surface for schwab-web:
 
 Allowed UI surfaces — `download.py` may only navigate to or click
-within (final list TBD once the live UI is mapped, but the
-allow-list pattern below is binding):
+within (landmarks.py pins the concrete selectors; the allow-list
+pattern below is binding):
 
 - The Schwab login form and the MFA challenge page that follows
   it (SMS code, voice call, push, security questions — exact

@@ -1,9 +1,9 @@
 """
 Unit tests for pdf_parsers.py.
 
-Hand-curated synthetic text mimics what
-pdfplumber.extract_text() returns on a real Schwab brokerage
-statement. No real PDFs touched — these tests are safe to ship
+Hand-curated synthetic text mimics extracted statement text (both
+the pdfplumber-tight and pypdfium2-spaced shapes seen on real
+Schwab brokerage statements). No real PDFs touched — these tests are safe to ship
 and run in CI without any account data.
 
 A separate test module (test_pdf_parsers_fixture.py) handles the

@@ -272,9 +272,6 @@ def parse_statement_pdf(path):
             ],
         }
 
-    pdfplumber is imported inside the function so the text-level
-    parsers above remain importable in environments that don't
-    have it (e.g. unit tests with hand-crafted fixtures).
     """
     text = _extract_pdf_text(path)
     period = parse_statement_period(text)
@@ -305,10 +302,6 @@ def parse_statement_pdf(path):
         "period_end": period[1].isoformat() if period else None,
         "accounts": accounts_out,
     }
-
-
-# PDF text extraction goes through collectorkit.pdf.extract_text_pdfplumber
-# (imported at module top as `_extract_pdf_text`).
 
 
 # ============================================================

@@ -57,7 +57,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def parsed():
     """Parse the fixture PDF once per module."""
-    pytest.importorskip("pdfplumber")
+    pytest.importorskip("pypdfium2")
     path = _fixture_path()
     return pp.parse_statement_pdf(path)
 

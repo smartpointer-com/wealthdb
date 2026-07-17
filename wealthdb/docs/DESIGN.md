@@ -4,8 +4,8 @@
 
 This document describes the design of `wealthdb` — the **gold**
 layer of the personal-portfolio data pipeline whose bronze and silver
-layers are owned by per-bank dump repositories (`schwab-api`,
-`ubs-psn`, `ubs-web`, `swissquote`, future siblings).
+layers are owned by the per-source collectors under `collectors/`
+(see [the repo-root DESIGN.md](../../DESIGN.md) for the full fan-in).
 
 It is intended to be read alongside
 [schwab-api/DESIGN.md](../../collectors/schwab-api/DESIGN.md),
@@ -92,7 +92,7 @@ strictly relational, and the surface that future analytics
   on source time. When silver retracts a past event, gold loses the
   prior version too.
 - **Backwards compatibility in the schema.** Gold migrates forward
-  only. If you need an old shape, restore the database from backup.
+  only. An old shape is recovered by restoring the database from backup.
 - **Multi-user / multi-tenant.** One gold DB per human.
 
 ## 4. The `wealthdb` CLI
@@ -175,7 +175,8 @@ Prints the consolidated portfolio as of a date.
 | --- | --- | --- |
 | `-d`, `--as-of` | today (UTC) | Date in `YYYY-MM-DD` to query as-of. |
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
-| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). || `--include-cash` | on | Include cash balances as synthetic rows with `asset_class = 'cash'`. |
+| `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
+| `--with-cash` | off | Also emit one synthetic row per account+currency with non-zero cash (`asset_class = 'cash'`). |
 
 Formats:
 - `table` — Postgres-style aligned ASCII (one column header line,
@@ -234,7 +235,7 @@ through:
 2. **Default output currency** — default `USD`. ISO 4217 only;
    validated against a built-in list.
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
-   `kind` (one of `schwab`, `ubs`, `swissquote`, `auto`), and
+   `kind` (any registered adapter kind, or `auto`), and
    `path` (default `$XDG_DATA_HOME/wealthdb/<id>/<id>.db`). The wizard opens
    the silver DB read-only, verifies it parses as SQLite and has
    a `dump_runs` table, and — for `kind != "auto"` — verifies the
@@ -275,7 +276,8 @@ to silently consuming stdin and producing an empty config.
 `wealthdb` supports two access modes against the gold database:
 
 - **Read-write** — `init`, `load`, `reset` plus all read commands.
-- **Read-only** — only `positions`, `status`, `snapshots`, `help`.
+- **Read-only** — only the read commands: `holdings <view>`, `returns`,
+  `transactions`, `snapshots`, `status`, `resolutions`, `help`.
   Suitable when the gold DB lives on a read-only share, has been
   `chmod`'d 0444 for safekeeping, or sits on a consumer
   host that should never write.
@@ -304,7 +306,7 @@ order:
    is **read-only**.
 
 The detected mode is logged at INFO level on every invocation, so
-operators always see in the log whether the run could have written.
+the log records whether the run could have written.
 
 #### Opening DuckDB
 
@@ -331,7 +333,7 @@ crash.
 
 | Condition | Exit | Message |
 | --- | --- | --- |
-| RW subcommand on read-only-detected DB | 2 | `wealthdb: '<cmd>' requires write access to the gold database, but '<path>' is read-only (detected: <reason>). Use 'wealthdb --read-only positions' (or similar) for read operations.` |
+| RW subcommand on read-only-detected DB | 2 | `wealthdb: '<cmd>' requires write access to the gold database, but '<path>' is read-only (detected: <reason>).` |
 | RW subcommand with `-r` / `--read-only` flag set | 2 | `wealthdb: '<cmd>' requires write access, but -r/--read-only was specified. Drop the flag or run a different subcommand.` |
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
@@ -694,6 +696,7 @@ type SnapshotBatch struct {
     Positions    []PositionChange
     CashBalances []CashBalanceChange
     FxRates      []FxRateChange
+    Portfolios   []PortfolioChange
 }
 
 type TransactionStream interface {
@@ -729,8 +732,9 @@ type PositionChange struct {
 
 ### 6.3 Registration
 
-`silver.Register(name, factory)` is called from each backend
-package's `init()`. Backends live under `internal/silver/<source>`
+`silver.Register(&Adapter{})` is called from each backend
+package's `init()` (the name comes from the adapter's `Kind()`).
+Backends live under `internal/silver/<source>`
 — currently `angellist`, `carta`, `cointracking`, `equityzen`,
 `fidelity`, `fred`, `manual`, `relevate`, `schwab`, `swissquote`,
 `ubs`, `viac`. `cmd/wealthdb/main.go` blank-imports each backend to
@@ -1201,12 +1205,16 @@ CREATE INDEX ix_fx_rates_pair_time
 --   'coupon'              — bond coupon
 --   'capital_gain'        — fund capital-gain distribution
 --   'interest'            — cash account interest
+--   'staking'             — crypto staking reward
+--   'contribution'        — fund/LP capital contribution
+--   'distribution'        — fund/LP distribution
 --   'fee'                 — custody/trade/tax-statement fee
 --   'tax'                 — withholding tax, stamp duty
 --   'deposit'             — incoming wire/cash
 --   'withdrawal'          — outgoing wire/cash
---   'fx_spot'             — FX conversion settlement
+--   'fx'                  — FX conversion settlement
 --   'fx_forward'          — FX-forward settlement
+--   'fx_swap'             — FX-swap settlement
 --   'corporate_action'    — stock split, name change, merger, ...
 --   'transfer_in'         — securities transfer in (DRS, ACATS)
 --   'transfer_out'        — securities transfer out
@@ -1249,7 +1257,7 @@ CREATE INDEX ix_transactions_kind_time
   joins but eliminate a whole class of "how do I generate a stable
   surrogate" bugs. DuckDB has no SERIAL/SEQUENCE that fits well.
 - **Audit columns on dimensions** beyond `first_seen_at` /
-  `last_seen_at`. `payload` carries the rest if you need it.
+  `last_seen_at`. `payload` carries the rest.
 - **A separate `holdings_history` table.** Positions itself is the
   history — one row per (snapshot, account, position_key).
 
@@ -1654,7 +1662,7 @@ variants of these (§10.8), not the single-currency macros directly.
 ### 10.8 Multi-currency reports (Metabase)
 
 The Metabase models need a value column **per reporting currency** (USD, CHF,
-EUR) so a user picks the currency by picking a column — Metabase native
+EUR) so the currency is picked by picking a column — Metabase native
 *models* don't expose template-tag parameters to questions built on them, so a
 "target currency" widget wouldn't reach the charts. Calling
 `report_x(MAX, 'USD' | 'CHF' | 'EUR')` three times and joining would re-run the
@@ -1784,14 +1792,14 @@ the verified per-adapter flow table):
   `docs/RETURNS-NOTES.md`, "Pluggable per-source policy".
 
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
-every approximation is tagged (`since_data_inception`, `partial_window`,
-`staggered_inception`, `empty_bucket`/`carried_forward`, `boundary_same_snapshot`,
-`stale_snapshot`,
+every approximation is tagged (`since_data_inception`, `configured_inception`,
+`partial_window`, `staggered_inception`, `accounts_grain_meaningless`,
+`empty_bucket`/`carried_forward`, `boundary_same_snapshot`, `stale_snapshot`,
 `dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`,
 `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
-`unmatched_transfers=N`, `journal_present`, `nav_only`, `nav_only_capital_call_risk`,
-`crypto_unclassified_transfers`, `unknown_adapter_policy`, `fx_clamped_flow`,
-`pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts` is a
+`mwr_negative_net_capital`, `unmatched_transfers=N`, `journal_present`, `nav_only`,
+`nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
+`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts` is a
 **value** identity (verified by reconciliation test), but **returns are not
 additive across grains**.
 
@@ -1799,14 +1807,10 @@ additive across grains**.
 
 ```
 wealthdb/
-├── DESIGN.md                       — this document (gold-layer design)
 ├── README.md                       — user-facing usage
-├── CLAUDE.md                       — agent ground rules
-├── Dockerfile                      — single-stage; Go toolchain + binary in one image
-├── docker-entrypoint.sh            — sets up paths, then exec wealthdb
+├── Dockerfile                      — single-stage; Go toolchain + binary in one image (ENTRYPOINT is the binary)
 ├── wealthdb                        — host-side wrapper around `docker run` (production binary)
 ├── wealthdb-test                   — host-side wrapper around `docker run go test ...` (§12.5)
-├── config.example.json             — annotated example config
 ├── go.mod / go.sum
 ├── docs/
 │   ├── DESIGN.md · RETURNS-NOTES.md · TAXONOMY.md
@@ -2190,12 +2194,12 @@ fleshed out when the feature is scheduled.
 
 ### 13.9 Account taxonomy (kind / tax_wrapper / management_style) and nickname
 
-Users typically hold several distinct kinds of accounts at the
+Several distinct kinds of accounts typically coexist at the
 same bank — personal brokerage, managed wealth account, UTMA /
 ESA / IRA / 529 / Säule 3a wrappers for tax purposes, separate
 cash accounts. Filtering positions and net-worth roll-ups by
 these dimensions is more useful than slicing by raw account ID.
-Independently, a user-friendly `nickname` lets the CLI render
+Independently, a `nickname` lets the CLI render
 something more recognisable than the bank's identifier.
 
 The `accounts` table carries three orthogonal classifier columns
@@ -2265,7 +2269,7 @@ silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
 `account_type` instead of `account_product`); older silvers
 still load with the corresponding columns left NULL.
 
-Config-side override (extends §5): users can specify
+Config-side override (extends §5): the config accepts
 `account_overrides` as a nested map keyed by
 `(silver_source_id, account_external_id)` with optional
 `nickname`, `category`, `tax_wrapper`, and/or `management_style`

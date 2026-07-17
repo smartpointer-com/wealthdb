@@ -82,12 +82,12 @@ EOF
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     prune)
-        # --bronze-dir first so a user-supplied override in FORWARD_ARGS wins.
+        # --bronze-dir first so an override in FORWARD_ARGS wins.
         exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
             ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
         ;;
     *)
-        echo "ubs-psn: unknown command '$cmd' (expected: download|load|prune)" >&2
+        echo "ubs-psn: unknown command '$cmd' (expected: login|download|load|prune)" >&2
         exit 2
         ;;
 esac

@@ -434,7 +434,8 @@ const (
 )
 
 // Cross-feed dedup tolerance. The statement-PDF and tx-history-JSON sub-feeds
-// overlap (statements reach back to 2017, tx-history only ~2 years) and record
+// overlap (statements reach back years further than the ~2-year tx-history
+// export) and record
 // the same external capital flow with a settlement-vs-trade-date offset
 // (observed ~3 days) and sub-dollar rounding. A twin is matched within this
 // window — the same tolerance the gold returns layer uses to net internal

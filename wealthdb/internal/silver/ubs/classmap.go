@@ -260,7 +260,7 @@ func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
 //     every observed PSN code so far is a private-banking
 //     product).
 //   - Unknown codes return "" so the caller leaves TaxWrapper nil,
-//     AND log a one-shot WARN to stderr so the operator notices.
+//     AND log a one-shot WARN to stderr.
 //     This is the alarm bell for "PSN started surfacing a code we
 //     haven't classified" — the primary case being a pension
 //     product if PSN's coverage ever widens beyond pure private
@@ -268,12 +268,9 @@ func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
 //   - Empty code (silver payload missing AcctTpCd) is silent.
 //
 // The tables are deliberately not "default everything to
-// taxable_personal" — overreaching that way is what the
-// ubs-psn maintainer corrected on 2026-05-24, because the
-// current customer happens to hold no Swiss pension assets at
-// UBS at all, so the absence of pension codes in the silver
-// proves nothing about whether PSN would surface them if they
-// existed.
+// taxable_personal": every code observed so far is a
+// private-banking product, and the absence of pension codes in
+// observed silver proves nothing about how PSN would encode one.
 
 var knownCashAcctTpCd = map[string]canonical.TaxWrapper{
 	"OA155": canonical.TaxWrapperTaxablePersonal, // UBS current account for private clients
