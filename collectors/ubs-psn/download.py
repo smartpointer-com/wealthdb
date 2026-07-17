@@ -259,9 +259,9 @@ def capture_remote_listing(sftp: paramiko.SFTPClient,
 
     **Pure observation.** It lists and never reads a file: UBS deletes the
     undotted queue zip server-side the moment it is downloaded (CLAUDE.md;
-    dated dot-prefixed archive copies remain, but whether fetching one
-    deletes it too is unverified), so a capture that fetched would risk
-    silently consuming the very data it was documenting. `download_all` never consults this listing —
+    the dated dot-prefixed archive copies remain, and a fetch experiment
+    showed they survive a GET), so a capture that fetched a queue file
+    would silently consume the very data it was documenting. `download_all` never consults this listing —
     it still decides on its own `stat` — so a pull fetches exactly the same
     files with and without ``--debug``.
 
@@ -291,10 +291,13 @@ def capture_remote_listing(sftp: paramiko.SFTPClient,
 # the undotted queue file UBS retains dot-prefixed dated copies
 # (.<OT>_<YYYYMMDD>.zip, observed reaching back ~2 months). So the fix can
 # match patterns and reconcile against the dated trail, and a missed
-# delivery is recoverable from the archive copy rather than lost. Only the
-# undotted file is known to vanish on fetch; whether fetching a dated copy
-# also deletes it is unverified — treat archive fetches as potentially
-# one-shot until tested.
+# delivery is recoverable from the archive copy rather than lost. A
+# follow-up fetch experiment confirmed dated copies are NOT consumed on
+# download (file, size, and mtime unchanged after a GET) — recovery is
+# retryable. Caveat: the byte stream a dated copy serves can be slightly
+# smaller than its listed st_size while still being a complete, valid zip,
+# so reconciliation must validate content (zip integrity, inner files),
+# never size equality.
 def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
                  verbose: bool = False) -> tuple[int, int]:
     downloaded = 0
