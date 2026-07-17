@@ -202,11 +202,21 @@ every approximation is tagged. Computed set:
 
 `since_data_inception`, `partial_window`, `staggered_inception`,
 `empty_bucket`, `carried_forward`, `boundary_same_snapshot`,
-`dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`,
-`mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`,
-`mwr_incomplete_flows`, `unmatched_transfers=N`, `journal_present`,
-`nav_only`, `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
-`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`, `after_tax`.
+`stale_snapshot`, `dropped_while_nonzero`, `dietz_degenerate`,
+`nonpositive_base`, `mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
+`mwr_no_converge`, `mwr_incomplete_flows`, `unmatched_transfers=N`,
+`journal_present`, `nav_only`, `nav_only_capital_call_risk`,
+`crypto_unclassified_transfers`, `unknown_adapter_policy`,
+`fx_clamped_flow`, `pre_fx_history`, `after_tax`.
+
+`stale_snapshot` marks a bucket (or the summary row) whose end-day
+valuation rests on a snapshot older than 3× the entity's median
+snapshot gap — the feed-died-mid-bucket case that `empty_bucket` /
+`carried_forward` cannot see, since the bucket itself still holds
+snapshots. The cadence is inferred per entity, so a daily feed flags
+after days and a quarterly manual source only after months, with no
+per-source configuration; with fewer than 3 observed gaps no cadence
+is inferred and the flag stays off.
 
 `unknown_adapter_policy` is unreachable via the real pipeline
 (`silver_sources.silver_kind` has a CHECK constraint admitting only the
@@ -215,9 +225,7 @@ kept as defense-in-depth for a future adapter added to the CHECK without a
 policy, and unit-tested at the policy-resolution level.
 
 Deferred flags: `corp_action_present` / `corp_action_split_timing`,
-`dormant_carryforward`, `flows_before_inception`, `stale_snapshot` (the
-`empty_bucket` / `carried_forward` condition already covers the common stale
-case; a source-relative `stale_snapshot` threshold is still TODO).
+`dormant_carryforward`, `flows_before_inception`.
 
 ## Deferred / out of scope
 

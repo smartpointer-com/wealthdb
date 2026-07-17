@@ -1786,6 +1786,7 @@ the verified per-adapter flow table):
 The honesty surface is the **`quality` column**: every n/a carries a reason, and
 every approximation is tagged (`since_data_inception`, `partial_window`,
 `staggered_inception`, `empty_bucket`/`carried_forward`, `boundary_same_snapshot`,
+`stale_snapshot`,
 `dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`,
 `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
 `unmatched_transfers=N`, `journal_present`, `nav_only`, `nav_only_capital_call_risk`,

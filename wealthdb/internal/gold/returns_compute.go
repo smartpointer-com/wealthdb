@@ -49,8 +49,9 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	flows, qFlowTags := entityFlows(assets, p, winFrom, winTo, av, aggregate)
 
 	// Snapshot-day union (real snapshots) for inception, the canonical headline
-	// bucket, and empty-bucket detection.
+	// bucket, and empty- / stale-bucket detection.
 	snaps := unionSnapshotDays(assets)
+	snapGap, snapGapOK := medianSnapGap(snaps)
 
 	base := ReturnRow{
 		SilverSourceID: src, EntityID: entityID, EntityLabel: label,
@@ -97,14 +98,62 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 			case prevEmpty:
 				row.Quality = append(row.Quality, "boundary_same_snapshot")
 			}
+			// A bucket can hold snapshots yet end on a value far older
+			// than the source's own cadence (a feed that died
+			// mid-bucket) — invisible to the empty/carried flags.
+			if !empty && staleAt(snaps, b[1], snapGap, snapGapOK) {
+				row.Quality = append(row.Quality, "stale_snapshot")
+			}
 			prevEmpty = empty
 			out = append(out, row)
 		}
 	}
 
 	// Since-inception summary row, cumulative TWR pinned to the canonical bucket.
-	out = append(out, summaryRow(base, winFrom, winTo, av, flows, snaps, assets, p, entityQ))
+	sr := summaryRow(base, winFrom, winTo, av, flows, snaps, assets, p, entityQ)
+	if staleAt(snaps, winTo, snapGap, snapGapOK) {
+		sr.Quality = append(sr.Quality, "stale_snapshot")
+	}
+	out = append(out, sr)
 	return out
+}
+
+// staleFactor is the source-relative staleness multiple: an end day
+// valued from a snapshot older than staleFactor times the entity's
+// median snapshot gap is flagged stale_snapshot.
+const staleFactor = 3
+
+// medianSnapGap returns the median gap between consecutive snapshot
+// days. ok is false with fewer than 3 gaps — too little history to
+// call a cadence, so staleness is never inferred.
+func medianSnapGap(snaps []int64) (gap float64, ok bool) {
+	if len(snaps) < 4 {
+		return 0, false
+	}
+	gaps := make([]int64, 0, len(snaps)-1)
+	for i := 1; i < len(snaps); i++ {
+		gaps = append(gaps, snaps[i]-snaps[i-1])
+	}
+	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
+	if n := len(gaps); n%2 == 1 {
+		return float64(gaps[n/2]), true
+	} else {
+		return float64(gaps[n/2-1]+gaps[n/2]) / 2, true
+	}
+}
+
+// staleAt reports whether the freshest snapshot at or before day is
+// older than staleFactor x the median gap. Strict >, so a daily
+// source's ordinary weekend gap stays quiet.
+func staleAt(snaps []int64, day int64, gap float64, ok bool) bool {
+	if !ok {
+		return false
+	}
+	i := sort.Search(len(snaps), func(i int) bool { return snaps[i] > day })
+	if i == 0 {
+		return false
+	}
+	return float64(day-snaps[i-1]) > staleFactor*gap
 }
 
 func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (float64, bool), flows []returns.Flow) ReturnRow {
