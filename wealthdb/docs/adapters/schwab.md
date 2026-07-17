@@ -185,17 +185,30 @@ contributes three things the api silver doesn't have:
 Web stores `account_external_id` as the 3-to-5-digit account
 suffix Schwab shows in the UI. The api stores Schwab's opaque
 `hashValue`. The orchestrator builds the suffix → hashValue
-bridge lazily on first Status/Snapshots/Transactions call by
-matching each web suffix against the trailing digits of every
-api `accounts.account_number` (a column the api silver promotes
-from the `/accounts/accountNumbers` response).
+bridge lazily on first Status/Snapshots/Transactions call, in
+two tiers per web account:
 
-The bridge is unambiguous as long as no two api accounts share
-the same trailing-N digits in their account numbers. At a handful
-of accounts the data is unambiguous on 3-digit suffixes; if
-a future account triggers ambiguity, the bridge fails loudly so
-an explicit override can be added (not yet implemented —
-file a request when needed).
+1. **Exact.** When the web account's payload carries a non-empty
+   `account_number_full` (the number as printed on statement
+   PDFs, e.g. `1234-5678`), both it and every api
+   `accounts.account_number` (a column the api silver promotes
+   from the `/accounts/accountNumbers` response) are reduced to
+   their digit sequences and compared for equality. The UI
+   suffix is by construction the trailing digits of the account
+   number, so a full number that doesn't end in the account's
+   own suffix can only be a mis-parsed statement header — that
+   disagreement fails the bridge loudly rather than rebridging
+   the account's history onto the wrong hashValue. Two api
+   accounts can't share a full number, but the case is guarded
+   with the same loud failure as the suffix tier. A full number
+   matching no api account falls through to the suffix tier —
+   the api roster may lag the statement side.
+2. **Suffix.** Without a resolving full number, the web suffix
+   is matched against the trailing digits of every api
+   `account_number`. This tier is unambiguous as long as no two
+   api accounts share the same trailing-N digits; a web account
+   that does trigger ambiguity fails the bridge loudly rather
+   than silently mismapping.
 
 Web rows whose suffix doesn't bridge to any api hashValue are
 dropped silently — they have no api counterpart to merge with
@@ -239,6 +252,9 @@ wealthdb doesn't need to dedupe further.
   the api doesn't surface. Wealthdb doesn't ingest this yet — a
   future `tax_lots` gold table could project it.
 - **Explicit suffix→hashValue override config.** The bridge is
-  currently auto-only. When/if ambiguity strikes, add an
+  auto-only. The exact tier (§7.1) resolves any realistic suffix
+  collision once `account_number_full` is present, so an
   `account_bridge: {<api_hash>: <web_suffix>}` field on the
-  schwab silver_source config.
+  schwab silver_source config is needed only if both tiers fail
+  ambiguously — a suffix collision on an account whose payload
+  carries no full number.

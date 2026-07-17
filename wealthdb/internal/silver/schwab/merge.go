@@ -35,10 +35,11 @@ import (
 //
 // Account identity: web stores the 3-to-5-digit account suffix;
 // api stores Schwab's opaque hashValue. The orchestrator builds
-// a suffix → hashValue bridge at Open time by matching each web
-// suffix against the trailing digits of every api accountNumber.
-// Ambiguity (>1 api account whose number ends in the same web
-// suffix) raises a clear error rather than silently mismapping.
+// a suffix → hashValue bridge by exact digits-only equality when
+// web's payload carries the full account number, else by matching
+// the suffix against the trailing digits of every api
+// accountNumber. Ambiguity in either tier raises a clear error
+// rather than silently mismapping.
 type Connection struct {
 	api *apiReader
 	web *webReader
@@ -384,13 +385,30 @@ SELECT DISTINCT json_extract(payload,'$.instrument.symbol') AS sym,
 }
 
 // buildAccountBridge reads (hashValue, accountNumber) from api
-// and account suffixes from web, then matches each web suffix
-// against the trailing digits of the api accountNumbers. Fails
-// loudly on ambiguity.
+// and account suffixes from web, then resolves each web account
+// in two tiers:
 //
-// Uses the latest snapshot per account on both sides so a closed
-// account that no longer appears in the most-recent dump still
-// participates if it was historically present.
+//  1. Exact — when the web payload carries a non-empty
+//     `account_number_full` (the number as printed on statement
+//     PDFs, e.g. "1234-5678"), both sides are reduced to their
+//     digit sequences and compared for equality. The UI suffix
+//     is by construction the trailing digits of the account
+//     number, so a full number that doesn't end in the
+//     account's own suffix can only be a mis-parsed statement
+//     header and fails loudly. Two api accounts can't share a
+//     full number, but the case is guarded with the same loud
+//     failure as the suffix tier. A full number matching no api
+//     account falls through to the suffix tier — the api roster
+//     may lag the statement side.
+//  2. Suffix — the web suffix is matched against the trailing
+//     digits of the api accountNumbers. Fails loudly on
+//     ambiguity.
+//
+// Uses the latest snapshot per account on the api side so a
+// closed account that no longer appears in the most-recent dump
+// still participates if it was historically present; on the web
+// side every account ever seen participates, with the newest
+// non-empty `account_number_full` winning.
 func buildAccountBridge(ctx context.Context, api, web *sql.DB) (map[string]string, error) {
 	const qAPI = `
 SELECT a.account_external_id, a.account_number
@@ -417,29 +435,69 @@ SELECT a.account_external_id, a.account_number
 		return nil, err
 	}
 
-	const qWeb = `SELECT DISTINCT account_external_id FROM accounts`
+	const qWeb = `
+SELECT account_external_id,
+       COALESCE(json_extract(payload, '$.account_number_full'), '')
+  FROM accounts
+ ORDER BY snapshot_at`
 	wrows, err := web.QueryContext(ctx, qWeb)
 	if err != nil {
 		return nil, fmt.Errorf("schwab bridge web scan: %w", err)
 	}
 	defer wrows.Close()
-	var suffixes []string
+	type webAcct struct {
+		suffix string
+		full   string
+	}
+	var webAccts []webAcct
+	idx := make(map[string]int) // suffix → index into webAccts
 	for wrows.Next() {
-		var s string
-		if err := wrows.Scan(&s); err != nil {
+		var suffix, full string
+		if err := wrows.Scan(&suffix, &full); err != nil {
 			return nil, err
 		}
-		suffixes = append(suffixes, s)
+		if i, ok := idx[suffix]; ok {
+			if full != "" {
+				webAccts[i].full = full
+			}
+			continue
+		}
+		idx[suffix] = len(webAccts)
+		webAccts = append(webAccts, webAcct{suffix: suffix, full: full})
 	}
 	if err := wrows.Err(); err != nil {
 		return nil, err
 	}
 
-	bridge := make(map[string]string, len(suffixes))
-	for _, suffix := range suffixes {
+	bridge := make(map[string]string, len(webAccts))
+	for _, wa := range webAccts {
+		if full := digitsOnly(wa.full); full != "" {
+			// A full number that doesn't end in the account's
+			// own suffix can only be a mis-parsed statement
+			// header; refuse rather than rebridge the account's
+			// history onto the wrong api hashValue.
+			if !strings.HasSuffix(full, digitsOnly(wa.suffix)) {
+				return nil, fmt.Errorf("schwab bridge: full account number for web suffix %q does not end in that suffix (suspect statement parse); refusing to bridge", wa.suffix)
+			}
+			var matches []string
+			for hash, num := range apiAccts {
+				if digitsOnly(num) == full {
+					matches = append(matches, hash)
+				}
+			}
+			if len(matches) == 1 {
+				bridge[wa.suffix] = matches[0]
+				continue
+			}
+			if len(matches) > 1 {
+				return nil, fmt.Errorf("schwab bridge: web account number for suffix %q matches %d api accounts (ambiguous); add an explicit override", wa.suffix, len(matches))
+			}
+			// No exact counterpart — fall through to the suffix
+			// heuristic.
+		}
 		var matches []string
 		for hash, num := range apiAccts {
-			if strings.HasSuffix(num, suffix) {
+			if strings.HasSuffix(num, wa.suffix) {
 				matches = append(matches, hash)
 			}
 		}
@@ -450,12 +508,25 @@ SELECT a.account_external_id, a.account_number
 			// dropped by the readers' bridge lookup, with no orphan
 			// gold rows.
 		case 1:
-			bridge[suffix] = matches[0]
+			bridge[wa.suffix] = matches[0]
 		default:
-			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts (ambiguous); add an explicit override", suffix, len(matches))
+			return nil, fmt.Errorf("schwab bridge: web suffix %q matches %d api accounts (ambiguous); add an explicit override", wa.suffix, len(matches))
 		}
 	}
 	return bridge, nil
+}
+
+// digitsOnly reduces an account number to its digit sequence,
+// dropping separators and whitespace ("1234-5678" → "12345678")
+// so numbers compare equal regardless of print formatting.
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if '0' <= r && r <= '9' {
+			b.WriteByte(byte(r))
+		}
+	}
+	return b.String()
 }
 
 // ensureAPIStart caches the per-account-hash MIN(timestamp) from
