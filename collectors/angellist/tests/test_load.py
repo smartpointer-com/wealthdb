@@ -11,10 +11,15 @@ Synthetic bronze (captures.jsonl) + synthetic K-1 CSV → SQLite silver. Covers:
   * K-1 'statement' events fed into position_snapshots; SPV identity
     (fund_name / fund_tax_id) stamped onto the offering
   * idempotent reload (no duplicate snapshots)
+  * silver-DB + documents-dir defaults derived from --bronze-dir
+  * --force rebuild reproduces the incremental load, modulo the
+    VOLATILE_COLUMNS wall-clock stamps (allowlist completeness guarded)
 """
 from __future__ import annotations
 
+import csv
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -93,6 +98,24 @@ def write_run(dest, ts, captures):
     return d
 
 
+K1_HDR = ["Portfolio Company", "Fund", "K-1 Status", "Beginning Capital",
+          "Contributions", "Current Year Net Income (Loss)",
+          "Other Increase (Decrease)", "Withdrawals & Distributions",
+          "Line 19(a) - Cash Distributions", "Ending Capital",
+          "Ending Capital %", "Final K-1?", "Fund Tax ID Number"]
+K1_ROW = ["Synthetic Co", "ACME Fund I, a series of X, LP", "Issued", "$1,000",
+          "$1,000", "$50", "", "", "$200", "$1,050", "5.0", "No", "12-3456789"]
+
+
+def write_k1_csv(docs_dir):
+    """One-row 2023 K-1 package CSV for the 'Synthetic Co' position."""
+    docs_dir = Path(docs_dir)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    with open(docs_dir / "Synthetic 2023 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_HDR, K1_ROW])
+
+
 def test_load_basic(tmp_path):
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
     write_run(dest, "20240101T000000Z", [
@@ -142,25 +165,13 @@ def test_parse_money_cents():
 
 
 def test_k1_documents(tmp_path):
-    import csv as _csv
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
-    docs = tmp_path / "docs"
-    docs.mkdir()
     # a position whose company matches the K-1 portfolio company
     write_run(dest, "20240101T000000Z",
               [positions_capture([pos_node("p1", "acme-co-s")]), dashboard_capture()])
-    hdr = ["Portfolio Company", "Fund", "K-1 Status", "Beginning Capital",
-           "Contributions", "Current Year Net Income (Loss)",
-           "Other Increase (Decrease)", "Withdrawals & Distributions",
-           "Line 19(a) - Cash Distributions", "Ending Capital",
-           "Ending Capital %", "Final K-1?", "Fund Tax ID Number"]
-    row = ["Synthetic Co", "ACME Fund I, a series of X, LP", "Issued", "$1,000",
-           "$1,000", "$50", "", "", "$200", "$1,050", "5.0", "No", "12-3456789"]
-    with open(docs / "Synthetic 2023 Consolidated Schedule K-1 Package.csv",
-              "w", newline="") as f:
-        _csv.writer(f).writerows([hdr, row])
+    write_k1_csv(tmp_path / "docs")
     assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db),
-                      "--documents-dir", str(docs)]) == 0
+                      "--documents-dir", str(tmp_path / "docs")]) == 0
     c = sqlite3.connect(db)
 
     # parsed K-1 capital account
@@ -184,6 +195,33 @@ def test_k1_documents(tmp_path):
         "AND event_type='statement'").fetchone()
     assert st == (105000, "tax_basis", 100000, "2023-12-31")
     c.close()
+
+
+def test_default_paths_derive_from_bronze_dir(tmp_path):
+    """With only --bronze-dir given, the silver DB lands at
+    <bronze-dir>/angellist.db and documents are parsed from the
+    <bronze-dir>/angellist-documents sibling — the DESIGN.md bronze-root
+    layout — so one flag scopes the whole load (a temp tree stays a temp
+    tree, no absolute /data reads)."""
+    dest = tmp_path / "bronze"
+    write_run(dest, "20240101T000000Z",
+              [positions_capture([pos_node("p1", "acme-co-s")]), dashboard_capture()])
+    write_k1_csv(dest / "angellist-documents")
+    assert load.main(["--bronze-dir", str(dest)]) == 0
+    db = dest / "angellist.db"
+    assert db.is_file()
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM offerings").fetchone()[0] == 1
+    # the sibling documents dir was picked up without --documents-dir
+    assert c.execute("SELECT doc_type, tax_year FROM tax_documents").fetchall() == \
+        [("k1_packet", 2023)]
+    assert c.execute("SELECT COUNT(*) FROM k1_capital_accounts").fetchone()[0] == 1
+    c.close()
+    # an explicit flag wins over the derivation
+    assert load.parse_args(["--documents-dir", "/x"]).documents_dir == Path("/x")
+    assert load.parse_args(["--silver-db", "/y.db"]).silver_db == Path("/y.db")
+    assert load.parse_args([]).documents_dir is None
+    assert load.parse_args([]).silver_db is None
 
 
 def test_funding(tmp_path):
@@ -269,24 +307,40 @@ def test_idempotent_reload(tmp_path):
     assert n1 == n2 == 2  # investment + valuation, no duplicates
 
 
+# Wall-clock ingest stamps: (table, column) pairs that record WHEN a load
+# ran, not bronze-derived data, so two otherwise-identical silver builds
+# legitimately differ there. _dump_silver drops exactly these columns —
+# whether the stamp comes from a column DEFAULT or from the INSERT itself.
+# test_volatile_allowlist_is_complete cross-checks the set against the
+# migrations and the loader SQL, so a new stamp fails loudly until listed.
+VOLATILE_COLUMNS = {
+    ("schema_meta", "applied_at"),      # DEFAULT (datetime('now'))
+    ("dump_runs", "loaded_at"),         # DEFAULT (datetime('now'))
+    ("tax_documents", "retrieved_at"),  # INSERT stamps strftime('%s','now')
+}
+
+# SQLite's spellings of "current wall-clock time": the quoted 'now'
+# timestring (datetime('now'), strftime('%s','now'), ...), the
+# CURRENT_TIMESTAMP / CURRENT_TIME / CURRENT_DATE keywords, and the
+# no-timestring forms that default to 'now' — zero-argument date(),
+# time(), datetime(), julianday(), unixepoch(), and format-only
+# strftime('...'). The last alternations also catch a Python-side
+# time.time() / datetime() stamp bound into an INSERT, which no
+# DEFAULT scan could see.
+_WALL_CLOCK_SQL = re.compile(
+    r"(?i)'now'|current_(?:time|date)"
+    r"|\b(?:date|time|datetime|julianday|unixepoch)\s*\(\s*\)"
+    r"|\bstrftime\s*\(\s*'[^']*'\s*\)")
+
+
 def _dump_silver(db):
     """Full snapshot of every user table's rows, for asserting two silver
     builds carry identical data. Tables are discovered via sqlite_master (a
-    newly added one is picked up automatically). Columns whose default is the
-    current wall-clock time — the datetime('now') ingest stamps
-    schema_meta.applied_at and dump_runs.loaded_at — are dropped: they record
-    WHEN a load ran, not the bronze-derived data, so they legitimately differ
-    between two builds and form no part of "silver is reproducible from
-    bronze".
-
-    FIXME: this only sees a column DEFAULT. A column stamped from the INSERT
-    instead — tax_documents.retrieved_at uses strftime('%s','now') in the
-    statement — is kept, and makes any two-build comparison flake once the
-    builds straddle a second. Today nothing hits it (the conftest guard keeps
-    live documents out, and the fixtures write none), so this is a trap for
-    the next such column rather than a live bug. Marking the columns in the
-    schema, or freezing the clock, would close it properly. Each table's rows are ordered by their repr, a stable total order
-    independent of insertion sequence and of NULL/int column mixing."""
+    newly added one is picked up automatically); the VOLATILE_COLUMNS
+    wall-clock stamps are dropped — they form no part of "silver is
+    reproducible from bronze". Each table's rows are ordered by their repr,
+    a stable total order independent of insertion sequence and of NULL/int
+    column mixing."""
     c = sqlite3.connect(db)
     try:
         tables = [r[0] for r in c.execute(
@@ -294,14 +348,74 @@ def _dump_silver(db):
             "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
         state = {}
         for t in tables:
-            keep = [name for _cid, name, _ty, _nn, dflt, _pk
+            keep = [name for _cid, name, _ty, _nn, _dflt, _pk
                     in c.execute(f'PRAGMA table_info("{t}")')
-                    if not (dflt and "now" in dflt.lower())]
+                    if (t, name) not in VOLATILE_COLUMNS]
             sel = ", ".join(f'"{col}"' for col in keep)
             state[t] = sorted(c.execute(f'SELECT {sel} FROM "{t}"'), key=repr)
         return state
     finally:
         c.close()
+
+
+def test_volatile_allowlist_is_complete():
+    """VOLATILE_COLUMNS must track the schema and the loader exactly.
+
+    Completeness: every wall-clock stamp in the SQL — a column DEFAULT in
+    migrations/*.sql or a stamp inside one of load.py's statements (the
+    kind a DEFAULT scan cannot see) — must target an allowlisted column;
+    otherwise _dump_silver keeps it and any two-build comparison flakes
+    once the builds straddle a second boundary. Precision: every
+    allowlisted pair must be a real, provably stamped column, so a stale
+    entry can't silently drop genuine data from the comparison."""
+    stamped = set()
+    for src in sorted(load.MIGRATIONS.glob("*.sql")) + [Path(load.__file__)]:
+        lines = src.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if not _WALL_CLOCK_SQL.search(line):
+                continue
+            # The statement's target table + column list sit within a few
+            # lines above the stamp (the loader's SQL literals are
+            # line-broken); the nearest preceding target wins.
+            ctx = "\n".join(lines[max(0, i - 12):i + 1])
+            targets = re.findall(
+                r"(?i)(?:INTO|UPDATE|CREATE TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(\w+)",
+                ctx)
+            assert targets, \
+                f"{src.name}:{i + 1}: wall-clock stamp with no target table in context"
+            table = targets[-1]
+            cols = [c for t, c in VOLATILE_COLUMNS
+                    if t == table and re.search(rf"\b{c}\b", ctx)]
+            assert cols, (
+                f"{src.name}:{i + 1}: stamps the wall clock into {table!r}, but no "
+                f"matching (table, column) is in VOLATILE_COLUMNS — add it there so "
+                f"_dump_silver keeps excluding it from the two-build comparison")
+            stamped.update((table, c) for c in cols)
+
+    # Both directions at once: nothing stamped is missing from the
+    # allowlist, and no allowlisted entry has gone stale.
+    assert stamped == VOLATILE_COLUMNS
+
+    # Every allowlisted pair is a real column of the migrated schema, and
+    # every DEFAULT-side stamp the schema itself declares is allowlisted
+    # (authoritative for DEFAULTs, independent of the source scan above).
+    conn = sqlite3.connect(":memory:")
+    try:
+        for sql in sorted(load.MIGRATIONS.glob("*.sql")):
+            conn.executescript(sql.read_text())
+        schema_cols, default_stamped = set(), set()
+        for table, in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'").fetchall():
+            for _cid, name, _ty, _nn, dflt, _pk in conn.execute(
+                    f'PRAGMA table_info("{table}")'):
+                schema_cols.add((table, name))
+                if dflt and _WALL_CLOCK_SQL.search(dflt):
+                    default_stamped.add((table, name))
+        assert VOLATILE_COLUMNS <= schema_cols
+        assert default_stamped <= VOLATILE_COLUMNS
+    finally:
+        conn.close()
 
 
 def test_force_rebuild_equals_incremental(tmp_path):
@@ -334,18 +448,13 @@ def test_force_rebuild_equals_incremental(tmp_path):
                            pos_node("p2", "acme-fund-f", name="Fund One", total=None)]),
         dashboard_capture(), commitments_capture(), funding])
 
-    # --documents-dir is scoped to tmp_path on purpose. Its default is
-    # /data/angellist-documents, which the test container bind-mounts to the
-    # real bronze tree — so omitting it loads whatever documents happen to be
-    # on the host into this test's silver. That made the equality below depend
-    # on live data, and flake: tax_documents.retrieved_at is stamped
-    # strftime('%s','now') by the INSERT rather than by a column default, so
-    # _dump_silver's drop-the-now-defaults filter keeps it, and the two loads
-    # disagree whenever they land either side of a second boundary.
-    docs = tmp_path / "documents"
-    docs.mkdir()
-    argv = ["--bronze-dir", str(dest), "--silver-db", str(db),
-            "--documents-dir", str(docs)]
+    # Documents at the derived <bronze-dir>/angellist-documents sibling, so
+    # the rebuild also spans tax_documents + k1_capital_accounts — and the
+    # re-stamped tax_documents.retrieved_at (strftime('%s','now') inside the
+    # INSERT, invisible to a DEFAULT scan) is exactly what VOLATILE_COLUMNS
+    # must absorb for the equality to hold across a second boundary.
+    write_k1_csv(dest / "angellist-documents")
+    argv = ["--bronze-dir", str(dest), "--silver-db", str(db)]
 
     # Plain incremental load, then snapshot the whole silver DB.
     assert load.main(argv) == 0
@@ -353,7 +462,8 @@ def test_force_rebuild_equals_incremental(tmp_path):
     # Sanity: the load actually populated the core tables, so the equality
     # below can't pass vacuously on two empty builds.
     assert before["offerings"] and before["position_snapshots"] \
-        and before["funding_transactions"]
+        and before["funding_transactions"] and before["tax_documents"] \
+        and before["k1_capital_accounts"]
 
     # Force = reset + full rebuild from the same, unchanged bronze.
     assert load.main(argv + ["--force"]) == 0

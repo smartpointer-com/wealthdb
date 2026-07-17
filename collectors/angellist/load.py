@@ -52,18 +52,6 @@ HERE = Path(__file__).resolve().parent
 MIGRATIONS = HERE / "migrations"
 
 DEFAULT_BRONZE_DIR = Path("/data")
-DEFAULT_SILVER_DB = Path("/data/angellist.db")
-# FIXME: this is absolute, so --bronze-dir cannot scope it. Every sibling
-# derives its extra input dirs from --bronze-dir (fidelity-web's
-# --supplied-statements-dir is the model), which makes them automatically
-# safe to point at a temp tree. Here a caller that scopes --bronze-dir and
-# --silver-db still reads whatever is at /data — which the test container
-# bind-mounts to the real bronze tree, so the tests had to grow a conftest
-# guard to avoid ingesting live data. Deriving this from --bronze-dir would
-# be identical in production (the wrapper passes /data anyway) and would
-# delete that whole class of surprise. Needs the same change in download.py,
-# which shares this constant.
-DEFAULT_DOCS = Path("/data/angellist-documents")
 
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
@@ -729,11 +717,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
                    help="Bronze root to ingest from. Default: %(default)s.")
-    p.add_argument("--silver-db", type=Path, default=DEFAULT_SILVER_DB,
-                   help="Silver SQLite DB path. Default: %(default)s.")
-    p.add_argument("--documents-dir", type=Path, default=DEFAULT_DOCS,
+    p.add_argument("--silver-db", type=Path, default=None,
+                   help="Silver SQLite DB path. DEFAULT: <bronze-dir>/angellist.db "
+                        "— the bronze-root sibling of the run dirs (DESIGN.md).")
+    p.add_argument("--documents-dir", type=Path, default=None,
                    help="Dir of downloaded tax documents (K-1 CSV/PDF, financial "
-                        "statements) to parse. Default: %(default)s.")
+                        "statements) to parse. DEFAULT: "
+                        "<bronze-dir>/angellist-documents — the bronze-root "
+                        "sibling `download` saves into, so silver stays "
+                        "reproducible from bronze alone. No-op when missing.")
     cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
 
@@ -742,12 +734,21 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    # The silver DB and the documents dir are bronze-ROOT siblings of the
+    # timestamped run dirs (DESIGN.md), so their defaults derive from
+    # --bronze-dir: scoping it to another tree scopes them too, and the
+    # in-container default still lands on the /data paths the wrapper mounts.
+    silver_db = (args.silver_db if args.silver_db is not None
+                 else args.bronze_dir / "angellist.db")
+    docs_dir = (args.documents_dir if args.documents_dir is not None
+                else args.bronze_dir / "angellist-documents")
+
     # --force = delete the silver DB, then rebuild from all bronze (the
     # fleet-wide meaning). After a reset the DB is empty, so the
     # already-loaded skip below naturally re-ingests every run.
     if args.force:
-        silver.reset(args.silver_db)
-    conn = silver.open_db(args.silver_db)
+        silver.reset(silver_db)
+    conn = silver.open_db(silver_db)
     silver.apply_migrations(conn, MIGRATIONS)
     already = silver.loaded_snapshots(conn)
 
@@ -762,11 +763,11 @@ def main(argv: list[str]) -> int:
             continue
         load_snapshot(conn, snap, run_dir)
         n += 1
-    load_documents(conn, args.documents_dir)
+    load_documents(conn, docs_dir)
     build_k1_statement_snapshots(conn)
     link_funding_transactions(conn)
     conn.close()
-    log.info("loaded %d snapshot(s) into %s", n, args.silver_db)
+    log.info("loaded %d snapshot(s) into %s", n, silver_db)
     return 0
 
 

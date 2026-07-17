@@ -65,7 +65,6 @@ GRAPHQL_RE = re.compile(r"/venture/graphql")
 
 DEFAULT_COOKIES = Path("/secrets/angellist-cookies.json")
 DEFAULT_BRONZE_DIR = Path("/data")
-DEFAULT_DOCS = Path("/data/angellist-documents")
 
 # Ops we want per invest account, and the route that fires them.
 PORTFOLIO_OPS = {
@@ -101,6 +100,16 @@ def _is_incomplete(taxdoc):
         return True
     k1, total = taxdoc.get("k1Count"), taxdoc.get("totalK1Count")
     return isinstance(k1, int) and isinstance(total, int) and k1 < total
+
+
+def _resolve_documents_dir(documents_dir: Path | None, bronze_dir: Path) -> Path:
+    """The documents dir is a bronze-ROOT sibling of the run dirs, so its
+    default derives from --bronze-dir — scoping one scopes the other. The
+    sibling name must stay in lockstep with the default `load` parses, or
+    documents land where the loader never looks. An explicit
+    --documents-dir wins."""
+    return (documents_dir if documents_dir is not None
+            else bronze_dir / "angellist-documents")
 
 
 def download_documents(cookies, captures, docs_dir, dry_run):
@@ -201,9 +210,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR,
                    help="A UTC-timestamped run dir is created here per invocation. "
                         "Default: %(default)s.")
-    p.add_argument("--documents-dir", type=Path, default=DEFAULT_DOCS,
+    p.add_argument("--documents-dir", type=Path, default=None,
                    help="Where to save downloaded tax documents (K-1 CSV/PDF, "
-                        "financial statements). Default: %(default)s.")
+                        "financial statements). DEFAULT: "
+                        "<bronze-dir>/angellist-documents — the bronze-root "
+                        "sibling `load` parses.")
     p.add_argument("--settle", type=int, default=8,
                    help="Seconds to wait after each navigation for the SPA's "
                         "GraphQL to fire. Default: %(default)s.")
@@ -505,7 +516,8 @@ def main(argv: list[str]) -> int:
     if args.no_documents:
         log.info("--no-documents: skipping the tax-document fetches")
     else:
-        download_documents(cookies, captures, args.documents_dir, args.dry_run)
+        docs_dir = _resolve_documents_dir(args.documents_dir, args.bronze_dir)
+        download_documents(cookies, captures, docs_dir, args.dry_run)
 
     if args.dry_run:
         log.info("--dry-run: not writing bronze")

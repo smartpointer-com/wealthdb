@@ -56,6 +56,20 @@ def test_check_exits_3_when_browser_cannot_launch(tmp_path, monkeypatch):
     assert download.main(["--cookies", str(jar), "--check"]) == 3
 
 
+def test_documents_dir_derives_from_bronze_dir():
+    # parse_args leaves the default None; main() resolves it through
+    # _resolve_documents_dir as <bronze-dir>/angellist-documents — the
+    # bronze-root sibling `load` parses (its side is pinned end-to-end by
+    # test_load.test_default_paths_derive_from_bronze_dir against the same
+    # literal) — so scoping --bronze-dir scopes the document drop too.
+    assert download.parse_args([]).documents_dir is None
+    assert download._resolve_documents_dir(None, Path("/b")) == \
+        Path("/b/angellist-documents")
+    # an explicit flag wins over the derivation
+    assert download.parse_args(["--documents-dir", "/x"]).documents_dir == Path("/x")
+    assert download._resolve_documents_dir(Path("/x"), Path("/b")) == Path("/x")
+
+
 def test_abs_url():
     assert download._abs_url("/k1_packets/1/csv") == \
         "https://venture.angellist.com/k1_packets/1/csv"
