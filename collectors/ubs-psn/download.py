@@ -257,10 +257,11 @@ def capture_remote_listing(sftp: paramiko.SFTPClient,
     listing is what tells those apart, which is why it is worth capturing
     at all.
 
-    **Pure observation.** It lists and never reads a file: UBS deletes each
-    zip server-side the moment it is downloaded and there is no re-fetch
-    (CLAUDE.md), so a capture that fetched would silently consume the very
-    data it was documenting. `download_all` never consults this listing —
+    **Pure observation.** It lists and never reads a file: UBS deletes the
+    undotted queue zip server-side the moment it is downloaded (CLAUDE.md;
+    dated dot-prefixed archive copies remain, but whether fetching one
+    deletes it too is unverified), so a capture that fetched would risk
+    silently consuming the very data it was documenting. `download_all` never consults this listing —
     it still decides on its own `stat` — so a pull fetches exactly the same
     files with and without ``--debug``.
 
@@ -285,8 +286,15 @@ def capture_remote_listing(sftp: paramiko.SFTPClient,
 # indistinguishable from nothing being queued — both count as "empty" and the
 # run reports success. Listing the dir and matching a pattern would tell the
 # two apart. The --debug listing capture makes it diagnosable after the fact;
-# it does not fix it. Worth doing if a silently-missed delivery ever bites:
-# UBS deletes each file on a successful fetch, so a miss is not re-fetchable.
+# it does not fix it. A 2026-07 live probe confirmed the server permits
+# listdir_attr on the root and every download/<OT>/ dir — and that next to
+# the undotted queue file UBS retains dot-prefixed dated copies
+# (.<OT>_<YYYYMMDD>.zip, observed reaching back ~2 months). So the fix can
+# match patterns and reconcile against the dated trail, and a missed
+# delivery is recoverable from the archive copy rather than lost. Only the
+# undotted file is known to vanish on fetch; whether fetching a dated copy
+# also deletes it is unverified — treat archive fetches as potentially
+# one-shot until tested.
 def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
                  verbose: bool = False) -> tuple[int, int]:
     downloaded = 0
