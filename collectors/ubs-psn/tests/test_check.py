@@ -5,8 +5,8 @@ PSN mints no session — the RSA key is the credential — so the fleet's "probe
 the stored session without minting a new one" contract becomes a connect that
 authenticates and stops. The SSH transport is mocked out; these assert the
 probe's verdict mapping and, above all, that it touches no files: UBS deletes
-each per-order-type zip on a successful download, so a probe that fetched
-anything would destroy data.
+each queue zip on a successful download, so a probe that fetched one would
+destroy data.
 
 Synthetic client id only — no network, no real UBS data.
 """

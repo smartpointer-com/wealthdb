@@ -2,14 +2,23 @@
 
 ubs-psn's bronze is SWIFT MT messages (and PSN XML) inside Z*.zip
 containers. These tests exercise the MT parsing → silver path
-directly with synthetic SWIFT text: an MT535 holdings message into
-the `holdings` table, plus the balance-line parser. Synthetic
-safekeeping ids / ISINs / amounts only.
+directly with synthetic SWIFT text — an MT535 holdings message into
+the `holdings` table, plus the balance-line parser — and the
+dump-level driver with synthetic zips: dated archive names
+(`<OT>_<YYYYMMDD>.zip`, landed by `download --recover`) routing to the
+same per-order-type loaders as `<OT>.zip`, and re-delivered batch
+content converging instead of duplicating — for the snapshot tables
+(upsert on their snapshot-scoped keys) and for the change-point master
+tables (dedup bounded at the file's as-of date), including a replay
+after the master data has since changed. Synthetic safekeeping ids /
+ISINs / IBANs / amounts only.
 """
 from __future__ import annotations
 
 import sqlite3
 import sys
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -216,3 +225,167 @@ def test_parse_mt_balance():
     assert bal["credit_debit"] == "C"
     # SWIFT comma decimal is normalised to a dot.
     assert float(bal["amount"]) == 1234.56
+
+
+# ============================================================
+# Dump driver: dated archive zips + re-delivery convergence
+# ============================================================
+
+# Synthetic TDFXR batch: CHF base with two quote currencies.
+TDFXR_XML = """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<Document xmlns="PsNMasterData">
+  <PsNForeignExchangeRate>
+    <Header><FlInf><TypeCd>TDFXR</TypeCd></FlInf></Header>
+    <Data>
+      <ForeignExchangeRateData>
+        <ForeignExchangeRateBase>
+          <BaseCcyIsoCd>CHF</BaseCcyIsoCd>
+        </ForeignExchangeRateBase>
+        <ForeignExchangeRateInfo>
+          <CcyIsoCd>USD</CcyIsoCd><MidRate>0.90</MidRate>
+        </ForeignExchangeRateInfo>
+        <ForeignExchangeRateInfo>
+          <CcyIsoCd>EUR</CcyIsoCd><MidRate>0.95</MidRate>
+        </ForeignExchangeRateInfo>
+      </ForeignExchangeRateData>
+    </Data>
+  </PsNForeignExchangeRate>
+</Document>"""
+
+# Synthetic TDFWD batch: one open forward contract.
+TDFWD_XML = """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<Document xmlns="PsNMasterData">
+  <PsNForwardContract>
+    <Header><FlInf><TypeCd>TDFWD</TypeCd></FlInf></Header>
+    <Data>
+      <ClntFwdCtrctData>
+        <FwdCtrctInf>
+          <CtrctId>FWD0001</CtrctId>
+          <CtrctAmt>1.00</CtrctAmt>
+        </FwdCtrctInf>
+      </ClntFwdCtrctData>
+    </Data>
+  </PsNForwardContract>
+</Document>"""
+
+
+def _write_zip(dump_dir: Path, name: str, entries: dict[str, str]) -> None:
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dump_dir / name, "w") as zf:
+        for ename, data in entries.items():
+            zf.writestr(ename, data)
+
+
+def _rows(conn, table: str) -> list[tuple]:
+    cur = conn.execute(f"SELECT * FROM {table}")
+    return sorted(tuple(r) for r in cur.fetchall())
+
+
+def test_dated_zip_routes_to_order_type_loader(tmp_path):
+    # ZAH_20260528.zip (an archive copy landed by `download --recover`)
+    # carries the same batch content as ZAH.zip and must reach the same
+    # MT535 loader; snapshot_at still comes from the inner filename's
+    # as-of prefix, not the dump directory.
+    conn = _fresh_db(tmp_path)
+    dump = tmp_path / "20260601T120000Z"
+    _write_zip(dump, "ZAH_20260528.zip", {"2026-05-28_ZAH_synthetic.txt": MT535})
+    stats = loader.load_dump(conn, dump, REL)
+    assert stats["skipped"] is False
+    rows = conn.execute(
+        "SELECT safekeeping_external_id, isin, snapshot_at "
+        "FROM holdings").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["safekeeping_external_id"] == "SK123"
+    assert rows[0]["snapshot_at"] == int(
+        datetime(2026, 5, 28, tzinfo=timezone.utc).timestamp())
+
+
+def test_redelivered_content_converges(tmp_path):
+    # The same batch content arriving twice — once via the queue files,
+    # once via recovered dated archive copies in a later dump — must
+    # leave silver identical: fx_rates and the contract tables upsert on
+    # their snapshot-scoped keys, holdings on its PK.
+    conn = _fresh_db(tmp_path)
+    xml_inner = {
+        "2026-05-31_TDFXR_synthetic.xml": TDFXR_XML,
+        "2026-05-31_TDFWD_synthetic.xml": TDFWD_XML,
+    }
+    mt_inner = {"2026-05-31_ZAH_synthetic.txt": MT535}
+
+    original = tmp_path / "20260601T120000Z"
+    _write_zip(original, "ZME.zip", xml_inner)
+    _write_zip(original, "ZAH.zip", mt_inner)
+    recovered = tmp_path / "20260701T120000Z"
+    _write_zip(recovered, "ZME_20260531.zip", xml_inner)
+    _write_zip(recovered, "ZAH_20260531.zip", mt_inner)
+
+    tables = ("fx_rates", "forward_contracts", "holdings")
+    assert loader.load_dump(conn, original, REL)["skipped"] is False
+    before = {t: _rows(conn, t) for t in tables}
+    assert len(before["fx_rates"]) == 2          # USD + EUR quotes
+    assert len(before["forward_contracts"]) == 1
+    assert len(before["holdings"]) == 1
+
+    assert loader.load_dump(conn, recovered, REL)["skipped"] is False
+    after = {t: _rows(conn, t) for t in tables}
+    assert after == before
+
+
+# Synthetic SDCA batch: one cash account whose book balance (part of
+# the dedup-compared payload) is parameterised, so successive batches
+# can carry unchanged or changed master data.
+SDCA_XML_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<Document xmlns="PsNMasterData">
+  <PsNCashAccount>
+    <Header><FlInf><TypeCd>SDCA</TypeCd></FlInf></Header>
+    <Data>
+      <ClntCshAcctData>
+        <ClntKey><ClntId>CLNT9999</ClntId></ClntKey>
+        <CshAcctInfo>
+          <Iban>CH99XXXX0000000000001</Iban>
+          <CcyIsoCd>CHF</CcyIsoCd>
+          <BookBal>{book_bal}</BookBal>
+        </CshAcctInfo>
+      </ClntCshAcctData>
+    </Data>
+  </PsNCashAccount>
+</Document>"""
+
+
+def test_master_data_recover_replay_converges(tmp_path):
+    # Change-point master tables must converge under --recover replays
+    # too. Queue pulls land SDCA state A (as-of 06-01), A again (06-08,
+    # dedups against 06-01), then B (06-15, a new change-point). A later
+    # recover dump replays all three batches as dated ZMD archive
+    # copies. Because the dedup compare is bounded at each file's as-of
+    # date, the A@06-01 copy dedups against its own row, the A@06-08
+    # copy dedups against A@06-01 exactly as the original delivery did,
+    # and the B@06-15 copy dedups against its own row — no collision at
+    # an already-occupied key, no spurious change-point rows.
+    conn = _fresh_db(tmp_path)
+    a = SDCA_XML_TMPL.format(book_bal="100.00")
+    b = SDCA_XML_TMPL.format(book_bal="200.00")
+
+    pulls = (
+        ("20260601T120000Z", "2026-06-01_SDCA_synthetic.xml", a),
+        ("20260608T120000Z", "2026-06-08_SDCA_synthetic.xml", a),
+        ("20260615T120000Z", "2026-06-15_SDCA_synthetic.xml", b),
+    )
+    for run, inner, xml in pulls:
+        dump = tmp_path / run
+        _write_zip(dump, "ZMD.zip", {inner: xml})
+        assert loader.load_dump(conn, dump, REL)["skipped"] is False
+
+    before = _rows(conn, "cash_accounts")
+    assert [r["snapshot_at"] for r in conn.execute(
+        "SELECT snapshot_at FROM cash_accounts ORDER BY snapshot_at")] == [
+        int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()),
+        int(datetime(2026, 6, 15, tzinfo=timezone.utc).timestamp()),
+    ]
+
+    recovered = tmp_path / "20260701T120000Z"
+    for _, inner, xml in pulls:
+        stamp = inner[:10].replace("-", "")
+        _write_zip(recovered, f"ZMD_{stamp}.zip", {inner: xml})
+    assert loader.load_dump(conn, recovered, REL)["skipped"] is False
+    assert _rows(conn, "cash_accounts") == before

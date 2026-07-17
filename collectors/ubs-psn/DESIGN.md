@@ -133,40 +133,52 @@ loader-semantics changes a wipe is the only consistent path.
 <bronze-root>/
 ├── 20260524T120000Z/
 │   ├── run.json                      status marker: "in-progress" at
-│   │                                 run-dir creation, "complete" once
-│   │                                 the pull finishes
+│   │                                 run-dir creation, "complete"/"empty"
+│   │                                 once the pull finishes; "mode" is
+│   │                                 "download" or "recover"
+│   ├── listing.json                  the full pre-pull SFTP listing (per
+│   │                                 order type: filenames + sizes),
+│   │                                 the accepted host-key fingerprint,
+│   │                                 a capture stamp; provenance, never
+│   │                                 a load input
 │   ├── ZMD.zip                       PSN XML master data (SDCL/SDCA/SDSA/…)
 │   ├── ZME.zip                       PSN XML rates / contracts (TDFXR/…)
 │   ├── ZAH.zip                       MT535 holdings
 │   ├── Z40.zip                       MT940 cash balances + movements
-│   ├── …                             one <ORDERTYPE>.zip per queued type
+│   ├── …                             one <ORDERTYPE>.zip per queued type;
+│   │                                 a --recover run lands
+│   │                                 <ORDERTYPE>_<YYYYMMDD>.zip instead
 │   ├── HAC.zip / PTK.zip             EBICS admin zips (raw bronze; not
 │   │                                 load inputs, but never debug artefacts)
-│   └── screenshots/                  --debug only: sftp-listing.txt (what
-│                                     the server offered); never a load input
+│   └── screenshots/                  legacy --debug capture from before
+│                                     listing.json; never a load input
 ├── 20260525T120000Z/
 │   └── …
 └── ubs-psn.db                        silver SQLite (default location)
 ```
 
-A run dir is a flat set of `<ORDERTYPE>.zip` files, plus a
-`screenshots/` dir under `--debug` alone. Every `Z*.zip` is a `load`
-input (the loader globs `Z*.zip` for both its XML and MT passes); the
-non-`Z` admin zips (`HAC`/`PTK`) are raw bronze the loader ignores but
-that `prune` still keeps. The PSN zips are irreplaceable: UBS deletes
-each file server-side on a successful download, so a re-run cannot
-recover it.
+A run dir is a flat set of zips plus the two JSON records. A normal
+pull lands `<ORDERTYPE>.zip` queue files; a `--recover` run lands
+`<ORDERTYPE>_<YYYYMMDD>.zip` dated archive copies. Every `Z*.zip` is a
+`load` input (the loader globs `Z*.zip` for both its XML and MT passes
+and routes a dated stem to the same order-type loader); the non-`Z`
+admin zips (`HAC`/`PTK`) are raw bronze the loader ignores but that
+`prune` still keeps. A fetched queue zip cannot be fetched again — UBS
+deletes it server-side on a successful download — but a dot-prefixed
+dated archive copy of each batch stays on the server for roughly two
+months and survives fetching, which is what `--recover` replays;
+beyond that window a batch is irreplaceable.
 
 `prune` therefore treats any run dir containing a zip as complete and
 untouchable — the has-zip check short-circuits *before* the `run.json`
 `status` field is consulted, so even a crash that left `status` at
 `"in-progress"` alongside already-fetched zips is kept whole. The one
-thing it reclaims from such a dump is `screenshots/` (`debug_subdirs`),
-which holds no load input. Otherwise it can delete only a zip-less
-shell, and only once quiescent: a crash shell (a run dir minted before
-the first `sftp.get`), or the `status: "empty"` dump a `--debug` pull
-leaves when nothing was queued — kept so its listing can be read, since
-discarding it would hide the listing in exactly the case it explains. A
-pull without `--debug` removes that shell itself, so for the nightly
-path the verb stays a safety-first near-no-op whose value is
-guaranteeing a fleet-wide prune never deletes a load input.
+thing it reclaims from such a dump is a legacy `screenshots/` capture
+(`debug_subdirs`), which holds no load input; `listing.json` is
+provenance and stays. Otherwise it can delete only a zip-less shell,
+and only once quiescent: a crash shell (a run dir minted before the
+first `sftp.get`), or the `status: "empty"` dump a pull leaves when
+nothing was queued — kept so its `listing.json` can be read, since
+discarding it would hide the listing in exactly the case it explains.
+The verb stays safety-first; its value is guaranteeing a fleet-wide
+prune never deletes a load input.

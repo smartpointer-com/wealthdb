@@ -363,7 +363,10 @@ collector README.
 
 ### Debug artefacts, run status, and pruning bronze
 
-A bronze run dir holds **only what `load` reads**. Diagnostics a run
+A bronze run dir holds **only what `load` reads**, plus the run's
+manifest (`run.json`, and any always-on provenance sidecar the
+collector's own docs name — e.g. ubs-psn's `listing.json`, the pre-pull
+SFTP listing). Diagnostics a run
 writes for troubleshooting — screenshots, HTML/DOM dumps, Playwright
 traces, failure captures — are not `load` inputs and are governed by one
 uniform convention:

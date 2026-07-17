@@ -12,7 +12,12 @@ Usage:
 
 Each immediate subdirectory of <bronze-dir> whose name matches the
 ubs-psn timestamp format (YYYYMMDDTHHMMSSZ) is considered a dump.
-Already-loaded dumps (recorded in dump_runs) are skipped.
+Already-loaded dumps (recorded in dump_runs) are skipped. Inside a dump,
+both <ORDERTYPE>.zip (a queue-file pull) and <ORDERTYPE>_<YYYYMMDD>.zip
+(a dated archive copy landed by `download --recover`) route to the same
+per-order-type loaders; re-delivered batch content converges instead of
+duplicating, because every table either upserts on its natural key or
+dedups on payload.
 
 Currently loaded:
   - SDCL / SDCA / SDSA / SDPO / SDFI from ZMD.zip
@@ -323,10 +328,20 @@ def _insert_if_changed_master(
     payload_canon: str, snapshot_at: int,
     extra_cols: tuple[tuple[str, object], ...] = (),
 ) -> int:
-    """Insert a row into `table` only if the most-recent row for the same
-    PK suffix (everything after snapshot_at) has a different payload.
+    """Insert a row into `table` only if the most recent row *at or
+    before* `snapshot_at` for the same PK suffix (everything after
+    snapshot_at) has a different payload.
 
     Returns 1 if inserted, 0 if deduped.
+
+    Bounding the compare at the file's as-of date (rather than the
+    globally most recent row) is what makes a recovered dated archive
+    copy converge: a replayed batch whose content has since changed
+    dedups against the change-point row it originally landed as (or
+    deduped against), instead of diffing against later data and
+    colliding with an already-occupied key. INSERT OR REPLACE covers
+    the remaining exact-key case — a redelivery carrying a *different*
+    payload for the same as-of date replaces that date's row.
 
     `extra_cols` are non-PK columns whose values come from the row being
     inserted (e.g. promoted-from-payload fields like portfolio_external_id).
@@ -336,8 +351,8 @@ def _insert_if_changed_master(
     where = " AND ".join(f"{c} = ?" for c in pk_cols)
     row = conn.execute(
         f"SELECT payload FROM {table} WHERE {where} "
-        f"ORDER BY snapshot_at DESC LIMIT 1",
-        pk_vals,
+        f"AND snapshot_at <= ? ORDER BY snapshot_at DESC LIMIT 1",
+        pk_vals + (snapshot_at,),
     ).fetchone()
     if row is not None and row[0] == payload_canon:
         return 0
@@ -347,7 +362,8 @@ def _insert_if_changed_master(
            + tuple(v for _, v in extra_cols) + (payload_canon,)
     placeholders = ",".join("?" * len(cols))
     conn.execute(
-        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+        f"INSERT OR REPLACE INTO {table} "
+        f"({','.join(cols)}) VALUES ({placeholders})",
         vals,
     )
     return 1
@@ -519,9 +535,12 @@ def load_tdfxr(conn, snapshot_at, entities):
     """One row per (snapshot, base, quote) currency from
     <ForeignExchangeRateInfo>.
 
-    Snapshot table — no content-dedup, rates change every batch.
-    The base currency lives in the <ForeignExchangeRateBase> sibling
-    block (singleton); we hoist it onto each quote row's payload.
+    Snapshot table — no content-dedup, rates change every batch. The
+    base currency lives in the <ForeignExchangeRateBase> sibling block
+    (singleton); we hoist it onto each quote row's payload. Upsert on
+    the (snapshot, base, quote) key so a re-delivered batch (the same
+    file content arriving again via a recovered dated archive copy)
+    converges on identical rows instead of colliding.
     """
     base_ccy = None
     base_meta = None
@@ -547,7 +566,7 @@ def load_tdfxr(conn, snapshot_at, entities):
                      canonical_json(strip_header_noise(full))))
     if rows:
         conn.executemany(
-            "INSERT INTO fx_rates"
+            "INSERT OR REPLACE INTO fx_rates"
             "(snapshot_at, base_currency_iso, quote_currency_iso, payload) "
             "VALUES (?, ?, ?, ?)",
             rows,
@@ -558,7 +577,10 @@ def load_tdfxr(conn, snapshot_at, entities):
 def _load_contract_table(conn, snapshot_at, relationship_id, entities,
                          child_tag, table) -> int:
     """Generic per-contract loader: iterate sibling <child_tag> entities
-    (after parse_psn_xml's wrapper descent) and insert one snapshot row each.
+    (after parse_psn_xml's wrapper descent) and insert one snapshot row
+    each. Upsert on the (snapshot, relationship, contract) key so a
+    re-delivered batch (a recovered dated archive copy carrying content
+    already loaded from the queue file) converges instead of colliding.
     """
     n = 0
     for child in entities:
@@ -571,7 +593,7 @@ def _load_contract_table(conn, snapshot_at, relationship_id, entities,
             continue
         payload = canonical_json(strip_header_noise(parsed))
         conn.execute(
-            f"INSERT INTO {table}"
+            f"INSERT OR REPLACE INTO {table}"
             "(snapshot_at, relationship_id, contract_external_id, payload) "
             "VALUES (?, ?, ?, ?)",
             (snapshot_at, relationship_id, str(cid), payload),
@@ -1178,7 +1200,13 @@ XML_LOADERS = {
     "TDPOPF": load_tdpopf,
 }
 
-# MT loaders keyed by zip basename. Each takes (conn, snapshot_at,
+# Zip basenames that route to per-order-type handling: the queue file
+# (<ORDERTYPE>.zip) and the dated archive copies `download --recover`
+# lands beside it (<ORDERTYPE>_<YYYYMMDD>.zip). Same batch content,
+# same loaders; only the name differs.
+_ZIP_STEM_RE = re.compile(r"^(Z[A-Z0-9]{2})(?:_\d{8})?$")
+
+# MT loaders keyed by order type. Each takes (conn, snapshot_at,
 # relationship_id, message_text) and returns either int (rows) or
 # tuple (balances, events).
 MT_LOADERS = {
@@ -1235,13 +1263,15 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
                 xml_rows += loader(conn, file_at, relationship_id, entities)
         stats["xml_rows"] = xml_rows
 
-        # 2. MT containers — iterate every .txt entry per zip basename
+        # 2. MT containers — iterate every .txt entry per zip's order type
+        #    (from the stem: 'ZAH' or a dated 'ZAH_20260601' both route to
+        #    the ZAH loader)
         mt_balances = 0
         mt_events = 0
         mt_other = 0
         for zip_path in sorted(dump_dir.glob("Z*.zip")):
-            stem = zip_path.stem.upper()                # 'ZAH', 'Z40', ...
-            loader = MT_LOADERS.get(stem)
+            m = _ZIP_STEM_RE.match(zip_path.stem.upper())
+            loader = MT_LOADERS.get(m.group(1)) if m else None
             if loader is None:
                 continue
             for fname, blob in iter_zip_entries(zip_path, suffix=".txt"):

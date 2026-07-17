@@ -8,11 +8,14 @@
 #                       `login --check` probes the key: it opens and closes
 #                       one authenticated SSH session, consuming no files.
 #   download [args...]  Pull the nightly PSN files over SFTP into bronze.
-#                       (UBS deletes each file server-side on success.)
+#                       (UBS deletes each queue file server-side on success;
+#                       --recover replays the ~2-month dated archive copies,
+#                       which survive fetching.)
 #   load [args...]      Parse bronze into the silver SQLite DB.
-#   prune [args...]     Reclaim bronze disk. Safety-scoped: the PSN zips are
-#                       irreplaceable, so it only ever removes a zip-less
-#                       crash shell, never a load input. --dry-run to preview.
+#   prune [args...]     Reclaim bronze disk. Safety-scoped: a fetched queue
+#                       zip cannot be fetched again, so it only ever removes
+#                       a zip-less shell, never a load input. --dry-run to
+#                       preview.
 #
 # Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
 # > default), accepted on any subcommand:

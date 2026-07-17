@@ -5,33 +5,39 @@ tree.
 
 Thin wrapper over :mod:`collectorkit.prune` (the shared, unit-tested
 prune engine) with ubs-psn's configuration. A run dir holds
-``<ORDERTYPE>.zip`` files and, only under ``download --debug``, a
-``screenshots/sftp-listing.txt`` capture of what the server was offering
-— so this verb is deliberately narrow: it reclaims that listing, and a
-**zip-less shell** (a run dir minted before the first file arrived and
-then abandoned, or a ``--debug`` pull that found nothing queued).
+``<ORDERTYPE>.zip`` files, a ``run.json`` status marker, and a
+``listing.json`` recording what the server was offering pre-pull — so
+this verb is deliberately narrow: it reclaims a legacy
+``screenshots/sftp-listing.txt`` capture (the pre-``listing.json`` form
+of that record) and a **zip-less shell** (a run dir minted before the
+first file arrived and then abandoned, or a pull that found nothing
+queued).
 
-The scope is narrow because ubs-psn's zips are **irreplaceable**: UBS
-deletes each per-order-type zip from its server the moment it is
-downloaded, so a re-run cannot re-fetch it, and ``load`` ingests whatever
-``*.zip`` are present regardless of whether the dump finished. A run dir
-holding *any* zip therefore holds genuinely consumed data that no marker
-can distinguish from a clean dump, so it is classified COMPLETE and never
-a deletion candidate — even when a crash left ``run.json`` at
-``"in-progress"`` or wrote no manifest at all. The has-zip check
-short-circuits **before** the ``status`` field is consulted; only a truly
-zip-less shell defers to the status lifecycle.
+The scope is narrow because a queue zip is consumed by its own fetch:
+UBS deletes ``download/<OT>/<OT>.zip`` from its server the moment it is
+downloaded, its dated archive copy ages out after roughly two months
+(``download --recover`` replays it inside that window), and ``load``
+ingests whatever ``*.zip`` are present regardless of whether the dump
+finished. A run dir holding *any* zip therefore holds genuinely
+consumed data that no marker can distinguish from a clean dump, so it
+is classified COMPLETE and never a deletion candidate — even when a
+crash left ``run.json`` at ``"in-progress"`` or wrote no manifest at
+all. The has-zip check short-circuits **before** the ``status`` field
+is consulted; only a truly zip-less shell defers to the status
+lifecycle. ``listing.json`` is provenance, not a debug artefact: from a
+dump that holds zips it is never deleted; it goes only when a zip-less
+shell is removed whole.
 
-``debug_subdirs`` nominates ``screenshots/`` — the ``--debug`` listing,
-never a ``load`` input, so reclaiming it from a complete dump leaves
-silver byte-identical. The zips themselves are the load inputs and are
-never touched. Beyond that the sole deletion path is a whole zip-less run
-dir once it is quiescent: a crash shell, or the ``status="empty"`` dump a
-``--debug`` pull leaves when nothing was queued (kept only so its listing
-is inspectable; a pull without ``--debug`` removes that shell itself).
-``--dry-run`` creates no run dir at all. The verb exists so a fleet-wide
-``prune`` is guaranteed never to delete a ubs-psn ``load`` input, and so
-its help and behaviour match every other collector's.
+``debug_subdirs`` nominates ``screenshots/`` — the legacy listing
+capture, never a ``load`` input, so reclaiming it from a complete dump
+leaves silver byte-identical. The zips themselves are the load inputs
+and are never touched. Beyond that the sole deletion path is a whole
+zip-less run dir once it is quiescent: a crash shell, or the
+``status="empty"`` dump any pull leaves when nothing was queued (kept
+so its listing.json is inspectable until reclaimed here). ``--dry-run``
+creates no run dir at all. The verb exists so a fleet-wide ``prune`` is
+guaranteed never to delete a ubs-psn ``load`` input, and so its help
+and behaviour match every other collector's.
 
 An unreadable or corrupt ``run.json`` is UNKNOWN and never deleted. An
 in-flight guard skips non-complete shells written within
@@ -50,11 +56,12 @@ from collectorkit import debugcap, prune
 
 
 def _is_complete(run_dir, meta):
-    # ubs-psn PSN zips are IRREPLACEABLE: UBS deletes each file server-side
-    # on a successful download, and `load` ingests whatever *.zip are
-    # present regardless of dump completeness. A run dir holding ANY zip
-    # therefore holds consumed data and must NEVER be a whole-dir deletion
-    # candidate — even if a crash left status="in-progress" or no manifest.
+    # A ubs-psn queue zip is consumed by its own fetch (UBS deletes it
+    # server-side; the dated archive copy behind it ages out after ~2
+    # months), and `load` ingests whatever *.zip are present regardless of
+    # dump completeness. A run dir holding ANY zip therefore holds consumed
+    # data and must NEVER be a whole-dir deletion candidate — even if a
+    # crash left status="in-progress" or no manifest.
     #
     # This short-circuits to COMPLETE *before* status_classification is
     # consulted, because status_classification returns NON_COMPLETE for a
@@ -64,11 +71,11 @@ def _is_complete(run_dir, meta):
     # "*.zip" (not "Z*.zip") so a dir holding only the non-Z admin zips
     # (HAC/PTK) — raw bronze data, though load never reads them — is kept too.
     if any(run_dir.glob("*.zip")):
-        return prune.COMPLETE, "contains PSN zip(s) (irreplaceable; keep)"
+        return prune.COMPLETE, "contains PSN zip(s) (consumed data; keep)"
     # Only a zip-less shell reaches here — a crash before the first file
     # landed, an abandoned in-progress dir, or the status="empty" shell a
-    # --debug pull leaves when nothing was queued. No load input is at
-    # stake, so defer to the status lifecycle: a "complete" marker keeps it,
+    # pull leaves when nothing was queued. No load input is at stake, so
+    # defer to the status lifecycle: a "complete" marker keeps it,
     # anything else (empty / in-progress / statusless / no manifest) is
     # NON_COMPLETE. The legacy_complete predicate echoes the has-zip
     # invariant above as a belt-and-braces guard (it is False here since
@@ -79,8 +86,10 @@ def _is_complete(run_dir, meta):
 
 
 CONFIG = prune.PruneConfig(
-    # `download --debug`'s SFTP listing, which debugcap lands under this
-    # subdir fleet-wide. The zips beside it are the load inputs.
+    # The legacy `download --debug` SFTP-listing capture, which debugcap
+    # landed under this subdir fleet-wide (the record now lives in each
+    # run's listing.json, which is provenance and never nominated here).
+    # The zips beside it are the load inputs.
     debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
     is_complete=_is_complete,
     manifest_name="run.json",         # read for status + UNKNOWN-on-corrupt

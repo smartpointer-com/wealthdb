@@ -2,14 +2,23 @@
 """
 UBS PSN SFTP Pull downloader.
 
-Connects to a UBS Private Standard Network SFTP server, pulls every
-order-type zip currently waiting for the client, and stores the files
-locally under <bronze-dir>/<UTC-timestamp>/<ORDERTYPE>.zip.
+Connects to a UBS Private Standard Network SFTP server, lists every
+``download/<ORDERTYPE>/`` dir, pulls the queued zips, and stores the
+files locally under <bronze-dir>/<UTC-timestamp>/.
 
-Per the UBS PSN SFTP factsheet, the per-order-type zip exists only when
-new data is queued; UBS deletes the zip from its server after a
-successful download. A missing remote file therefore just means "nothing
-new for this order type" and is not an error.
+Per the UBS PSN SFTP factsheet, the per-order-type queue zip
+(``download/<OT>/<OT>.zip``) exists only when new data is queued; UBS
+deletes it from its server after a successful download. A missing queue
+file therefore just means "nothing new for this order type" and is not
+an error. Next to the queue file UBS retains dot-prefixed dated archive
+copies (``.<OT>_<YYYYMMDD>.zip``) reaching back roughly two months; a
+fetch does not consume those, so a delivery missed or corrupted inside
+that window is recoverable with ``--recover``. Beyond the archive
+window a batch is irreplaceable.
+
+Every run records the full pre-pull listing — per-order-type filenames
+and sizes, the accepted host-key fingerprint, a capture stamp — in
+``<run>/listing.json`` before anything is fetched.
 
 Host authenticity is verified against the SHA-256 fingerprints UBS
 publishes in the SFTP Pull factsheet. A connection to a host whose key
@@ -18,7 +27,7 @@ does not match is rejected before authentication.
 Usage:
     download.py --client-id <login> --bronze-dir <dir> \\
                 [--host <ip-or-hostname>] [--port <port>] [--key <path>] \\
-                [--ignore-fingerprint-mismatch] [--dry-run]
+                [--ignore-fingerprint-mismatch] [--dry-run] [--recover]
 """
 
 from __future__ import annotations
@@ -28,14 +37,15 @@ import base64
 import hashlib
 import logging
 import os
-import shutil
+import re
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paramiko
 
-from collectorkit import bronze, cli, debugcap, envfile
+from collectorkit import bronze, cli, envfile
 
 # Trusted host-key SHA-256 fingerprints are loaded from a sibling file
 # rather than embedded in the source, so updates to UBS's published keys
@@ -47,10 +57,11 @@ FINGERPRINTS_FILENAME = "host_fingerprints.txt"
 # Description" and "UBS file types"; plus the EBICS administrative order
 # types (HAC, PTK) that may be exposed alongside.
 #
-# A given customer is provisioned for a subset only; the script attempts
-# all of them, and UBS returns the per-type zip only when new data is
-# queued, so unprovisioned/empty types simply yield FileNotFoundError on
-# stat() and are skipped.
+# A given customer is provisioned for a subset only; the script lists
+# all of them. An unprovisioned type's dir is simply absent
+# (FileNotFoundError on listdir_attr) and a provisioned-but-idle type's
+# dir holds no queue file — both are recorded in listing.json and
+# skipped.
 ORDER_TYPES = (
     # EBICS administrative order types
     "HAC", "PTK",
@@ -144,31 +155,50 @@ def parse_args() -> argparse.Namespace:
                         "not in host_fingerprints.txt, emit a warning to "
                         "stderr and continue instead of aborting. Use only "
                         "during a verified UBS key rotation.")
-    p.add_argument("--check", action="store_true",
-                   help="Probe the configured credential and exit: load the "
-                        "RSA key, open an SSH session (host-key checked) and "
-                        "close it. Exit 0 when UBS accepts the key, non-zero "
-                        "when it is missing, unloadable or rejected. Lists "
-                        "nothing and consumes no files. This is what "
-                        "`ubs-psn login --check` runs — PSN has no session to "
-                        "mint, so the key IS the session.")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="Probe the configured credential and exit: load "
+                           "the RSA key, open an SSH session (host-key "
+                           "checked) and close it. Exit 0 when UBS accepts "
+                           "the key, non-zero when it is missing, unloadable "
+                           "or rejected. Lists nothing and consumes no "
+                           "files. This is what `ubs-psn login --check` "
+                           "runs — PSN has no session to mint, so the key "
+                           "IS the session.")
+    mode.add_argument("--recover", action="store_true",
+                      help="Fetch the dot-prefixed dated archive copies "
+                           "(.<ORDERTYPE>_<YYYYMMDD>.zip) instead of the "
+                           "queue files. UBS retains roughly two months of "
+                           "these next to each queue file, and a fetch does "
+                           "not consume them, so recovery is freely "
+                           "re-runnable; --lookback bounds how far back the "
+                           "replay reaches (default: the whole archive). "
+                           "Each copy lands undotted as "
+                           "<ORDERTYPE>_<YYYYMMDD>.zip in a normal "
+                           "timestamped run dir; the undotted queue files "
+                           "are never touched.")
     p.add_argument("--dry-run", action="store_true",
                    help="Connect, authenticate and verify host key, then "
                         "exit without touching any files.")
     p.add_argument("--debug", action="store_true",
-                   help="Capture debug artefacts into the bronze run dir "
-                        "(default off): <run>/screenshots/sftp-listing.txt, "
-                        "recording the accepted host-key fingerprint and "
-                        "what each download/<ORDERTYPE>/ dir was actually "
-                        "offering — which is what explains a pull that "
-                        "brought back less than expected. Pure observation: "
-                        "it lists, never fetches, and never changes what is "
-                        "downloaded. A run that pulls nothing keeps its "
-                        "shell (and the listing) for `prune` to reclaim "
-                        "rather than discarding it unseen. `load` never "
-                        "reads it. (For wire-level tracing use -v/--verbose, "
-                        "which writes to stderr, not bronze.)")
-    cli.add_standard_args(p, verb="download", full_history=True)
+                   help="Accepted for fleet uniformity. The diagnostics this "
+                        "gate captures elsewhere are recorded here "
+                        "unconditionally: every run writes the full "
+                        "pre-pull SFTP listing (per-order-type filenames "
+                        "and sizes, plus the accepted host-key fingerprint) "
+                        "to <run>/listing.json, so there is nothing extra "
+                        "for --debug to capture — the flag is logged and "
+                        "otherwise ignored. (For wire-level tracing use "
+                        "-v/--verbose, which writes to stderr, not bronze.)")
+    cli.add_common_args(p)
+    p.add_argument("--lookback", type=cli.lookback_value, default=None,
+                   metavar=cli.LOOKBACK_METAVAR,
+                   help="A normal pull takes whatever UBS has queued (a "
+                        "superset of any window), so this is logged and "
+                        "otherwise ignored. Under --recover it bounds the "
+                        "archive replay: only dated copies from the "
+                        "resolved start date onward are fetched (default: "
+                        "the whole ~2-month archive).")
     return p.parse_args()
 
 
@@ -229,93 +259,199 @@ def _host_key_fingerprint(client: paramiko.SSHClient) -> str:
     return sha256_fingerprint(key) if key is not None else "unknown"
 
 
-def _listing_line(sftp: paramiko.SFTPClient, remote: str) -> str:
-    """One ``download/<ORDERTYPE>/`` dir as the server presents it.
+def list_remote(sftp: paramiko.SFTPClient) -> dict[str, dict]:
+    """One ``listdir_attr`` per ``download/<ORDERTYPE>/`` dir, as the
+    server presents it.
 
-    An absent dir is not an error — that is how an order type the customer
-    is not provisioned for looks, and recording which ones are absent is
-    part of the diagnostic."""
-    try:
-        entries = sftp.listdir_attr(remote)
-    except FileNotFoundError:
-        return f"{remote}/: absent (order type not provisioned)"
-    except OSError as e:
-        return f"{remote}/: listing failed: {e}"
-    if not entries:
-        return f"{remote}/: empty (nothing queued)"
-    return f"{remote}/: " + ", ".join(
-        f"{a.filename} ({a.st_size} bytes)"
-        for a in sorted(entries, key=lambda a: a.filename))
+    Returns ``{order_type: info}`` where ``info["status"]`` is
+    ``"listed"`` (with ``"entries"``: ``[{"name", "size"}, ...]`` sorted
+    by name), ``"absent"`` (dir missing — how an unprovisioned order
+    type looks), or ``"error"`` (listing failed; the message is kept).
+    Pure observation: nothing is fetched, so nothing is consumed.
+    """
+    out: dict[str, dict] = {}
+    for ot in ORDER_TYPES:
+        try:
+            entries = sftp.listdir_attr(f"download/{ot}")
+        except FileNotFoundError:
+            out[ot] = {"status": "absent"}
+            continue
+        except OSError as e:
+            out[ot] = {"status": "error", "error": str(e)}
+            continue
+        out[ot] = {"status": "listed", "entries": [
+            {"name": a.filename, "size": a.st_size}
+            for a in sorted(entries, key=lambda a: a.filename)]}
+    return out
 
 
-def capture_remote_listing(sftp: paramiko.SFTPClient,
-                           client: paramiko.SSHClient, run_dir: Path) -> None:
-    """Record what the server was offering, under ``--debug``.
+def write_listing(run_dir: Path, listing: dict[str, dict],
+                  host_fp: str) -> None:
+    """Record the pre-pull listing as ``<run>/listing.json``.
 
-    `download_all` stats one exact path per order type, so a queued file
-    under an unexpected name is indistinguishable from nothing queued. The
-    listing is what tells those apart, which is why it is worth capturing
-    at all.
+    Written on every run, before the first fetch, so it shows each zip
+    while it still exists server-side, and a failed write can only cost
+    a run — never strand a consumed-but-unrecorded batch. Provenance,
+    not a load input: `load` never reads it, and `prune` never deletes
+    it from a dump that holds zips (only a zip-less shell is ever
+    removed whole).
+    """
+    bronze.atomic_write_json(run_dir / "listing.json", {
+        "captured_at": datetime.now(timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host_key": f"SHA256:{host_fp}",
+        "order_types": listing,
+    })
 
-    **Pure observation.** It lists and never reads a file: UBS deletes the
-    undotted queue zip server-side the moment it is downloaded (CLAUDE.md;
-    the dated dot-prefixed archive copies remain, and a fetch experiment
-    showed they survive a GET), so a capture that fetched a queue file
-    would silently consume the very data it was documenting. `download_all` never consults this listing —
-    it still decides on its own `stat` — so a pull fetches exactly the same
-    files with and without ``--debug``.
 
-    Runs BEFORE the pull, for two reasons: the listing must show the zips
-    while they still exist, and a capture that failed can then only cost a
-    run, never strand a downloaded-but-unfinalised zip.
+def validate_zip(path: Path) -> None:
+    """Fail the run loudly when a fetched zip is corrupt.
+
+    Integrity is judged by content — the central directory plus a CRC
+    pass over every entry — never by comparing byte counts against the
+    listed ``st_size``: the stream the server serves for a dated archive
+    copy can undercut its listed size while still being a complete,
+    valid zip. On failure the run dir is kept as-is (a consumed queue
+    copy is already gone server-side); the batch remains recoverable
+    from its dated archive copy via ``--recover``, which is itself
+    freely retryable.
     """
     try:
-        lines = [f"host-key: SHA256:{_host_key_fingerprint(client)}", ""]
-        lines += [_listing_line(sftp, f"download/{ot}") for ot in ORDER_TYPES]
-    except Exception as e:  # noqa: BLE001 - any paramiko error, never fatal
-        # A diagnostic that breaks the run it is diagnosing is worse than no
-        # diagnostic — and here that run is holding an irreplaceable pull.
-        log.warning("--debug: SFTP listing capture failed: %s", e)
-        return
-    debugcap.capture_text(run_dir, "sftp-listing.txt",
-                          "\n".join(lines) + "\n", log=log)
+        with zipfile.ZipFile(path) as zf:
+            bad = zf.testzip()
+    except zipfile.BadZipFile as e:
+        raise SystemExit(
+            f"Corrupt zip fetched: {path} ({e}). The run dir is kept; "
+            f"re-fetch the batch with --recover.")
+    if bad is not None:
+        raise SystemExit(
+            f"Corrupt zip fetched: {path} (CRC mismatch in {bad!r}). The "
+            f"run dir is kept; re-fetch the batch with --recover.")
 
 
-# FIXME: each order type is probed by stat-ing one EXACT expected filename
-# (download/<OT>/<OT>.zip), so a file UBS queued under an unexpected name is
-# indistinguishable from nothing being queued — both count as "empty" and the
-# run reports success. Listing the dir and matching a pattern would tell the
-# two apart. The --debug listing capture makes it diagnosable after the fact;
-# it does not fix it. A 2026-07 live probe confirmed the server permits
-# listdir_attr on the root and every download/<OT>/ dir — and that next to
-# the undotted queue file UBS retains dot-prefixed dated copies
-# (.<OT>_<YYYYMMDD>.zip, observed reaching back ~2 months). So the fix can
-# match patterns and reconcile against the dated trail, and a missed
-# delivery is recoverable from the archive copy rather than lost. A
-# follow-up fetch experiment confirmed dated copies are NOT consumed on
-# download (file, size, and mtime unchanged after a GET) — recovery is
-# retryable. Caveat: the byte stream a dated copy serves can be slightly
-# smaller than its listed st_size while still being a complete, valid zip,
-# so reconciliation must validate content (zip integrity, inner files),
-# never size equality.
 def download_all(sftp: paramiko.SFTPClient, run_dir: Path,
+                 listing: dict[str, dict],
                  verbose: bool = False) -> tuple[int, int]:
+    """Fetch every queued (undotted) file named in `listing`.
+
+    The expected queue file is ``<OT>.zip``; any other undotted entry is
+    fetched too, under its server filename, with a warning — bronze
+    keeps every zip, and a queue file left on the server may be
+    consumed or superseded later, so fetching is the data-preserving
+    choice. The server filename is trusted only as far as it lands
+    safely: a listed name that is not a plain basename (path
+    separators, an absolute path, ``..``) would escape the run dir, and
+    one that collides with ``run.json`` / ``listing.json`` would
+    clobber the run's own metadata — such entries are refused with a
+    warning and left on the server (a skipped fetch consumes nothing).
+    Dot-prefixed entries are the dated archive trail that ``--recover``
+    replays; a normal pull never touches them (the undotted queue file
+    is deleted server-side by its own fetch, the archive copies are
+    not). Every fetched zip is content-validated before the run
+    finalises.
+    """
     downloaded = 0
     empty = 0
     for ot in ORDER_TYPES:
-        remote = f"download/{ot}/{ot}.zip"
-        local = run_dir / f"{ot}.zip"
-        try:
-            attrs = sftp.stat(remote)
-        except FileNotFoundError:
+        info = listing.get(ot, {"status": "absent"})
+        if info["status"] == "absent":
             if verbose:
-                print(f"no data queued for {ot} ({remote})",
-                      file=sys.stderr, flush=True)
+                print(f"order type {ot} not provisioned (download/{ot}/ "
+                      f"absent)", file=sys.stderr, flush=True)
             empty += 1
             continue
-        log.info("Downloading %s (%s bytes)", remote, attrs.st_size)
-        sftp.get(remote, str(local))
-        downloaded += 1
+        if info["status"] == "error":
+            # A queue file stays queued until fetched, so a failed listing
+            # postpones its pickup to the next run rather than losing it.
+            log.warning("Listing download/%s/ failed (%s) — skipping.",
+                        ot, info.get("error"))
+            empty += 1
+            continue
+        fetched = 0
+        for entry in info["entries"]:
+            name = entry["name"]
+            if name.startswith("."):
+                continue
+            if name != f"{ot}.zip":
+                if (not name or name != Path(name).name
+                        or name in ("run.json", "listing.json")):
+                    log.warning("Refusing unexpected file in download/%s/: "
+                                "%r is not a safe run-dir basename — "
+                                "leaving it on the server.", ot, name)
+                    continue
+                log.warning("Unexpected file queued in download/%s/: %s "
+                            "(%s bytes) — fetching it under its server "
+                            "name.", ot, name, entry["size"])
+            remote = f"download/{ot}/{name}"
+            local = run_dir / name
+            log.info("Downloading %s (%s bytes)", remote, entry["size"])
+            sftp.get(remote, str(local))
+            validate_zip(local)
+            downloaded += 1
+            fetched += 1
+        if not fetched:
+            if verbose:
+                print(f"no data queued for {ot} (download/{ot}/)",
+                      file=sys.stderr, flush=True)
+            empty += 1
+    return downloaded, empty
+
+
+def recover_all(sftp: paramiko.SFTPClient, run_dir: Path,
+                listing: dict[str, dict], since=None,
+                verbose: bool = False) -> tuple[int, int]:
+    """Fetch the dated archive copies (``.<OT>_<YYYYMMDD>.zip``) named
+    in `listing`.
+
+    The undotted queue files are never touched — fetching one consumes
+    it server-side, and recovery must not. The dated copies survive
+    their own fetch (file, size and mtime unchanged), so a recovery run
+    is freely re-runnable. Each copy lands undotted as
+    ``<OT>_<YYYYMMDD>.zip``, the shape `load` routes to the order
+    type's loaders; `since` drops copies dated before it, ``None``
+    replays the whole archive. Every fetched zip is content-validated,
+    as in `download_all`.
+    """
+    downloaded = 0
+    empty = 0
+    for ot in ORDER_TYPES:
+        info = listing.get(ot, {"status": "absent"})
+        if info["status"] == "absent":
+            empty += 1
+            continue
+        if info["status"] == "error":
+            log.warning("Listing download/%s/ failed (%s) — skipping.",
+                        ot, info.get("error"))
+            empty += 1
+            continue
+        fetched = 0
+        for entry in info["entries"]:
+            name = entry["name"]
+            m = re.match(rf"^\.{ot}_(\d{{8}})\.zip$", name)
+            if not m:
+                continue
+            try:
+                stamp = datetime.strptime(m.group(1), "%Y%m%d").date()
+            except ValueError:
+                log.warning("Unparseable date in archive copy "
+                            "download/%s/%s — skipping.", ot, name)
+                continue
+            if since is not None and stamp < since:
+                log.debug("Skipping download/%s/%s (dated before %s).",
+                          ot, name, since)
+                continue
+            remote = f"download/{ot}/{name}"
+            local = run_dir / f"{ot}_{m.group(1)}.zip"
+            log.info("Recovering %s (%s bytes)", remote, entry["size"])
+            sftp.get(remote, str(local))
+            validate_zip(local)
+            downloaded += 1
+            fetched += 1
+        if not fetched:
+            if verbose:
+                print(f"no archive copies to recover for {ot}",
+                      file=sys.stderr, flush=True)
+            empty += 1
     return downloaded, empty
 
 
@@ -341,9 +477,10 @@ def _check_credential(args: argparse.Namespace) -> int:
     The fleet's `login --check` contract is "probe the stored session without
     minting a new one". PSN has no session — the RSA key is the credential —
     so the equivalent is a connect that authenticates and stops there: no
-    SFTP channel, no listing, and above all no download (UBS deletes each zip
-    on a successful fetch, so a probe must never touch one). `connect` raises
-    SystemExit for a missing or unloadable key, which is the same failure.
+    SFTP channel, no listing, and above all no download (UBS deletes each
+    queue zip on a successful fetch, so a probe must never touch one).
+    `connect` raises SystemExit for a missing or unloadable key, which is the
+    same failure.
     """
     try:
         client = connect(args)
@@ -373,15 +510,21 @@ def main() -> int:
     args.client_id = envfile.resolve_credential(
         args.client_id, "UBS_PSN_CLIENT_ID", "--client-id")
 
-    cli.warn_lookback_ignored(args.lookback, log,
-                              what="whatever PSN data UBS currently has queued")
+    if not args.recover:
+        cli.warn_lookback_ignored(
+            args.lookback, log,
+            what="whatever PSN data UBS currently has queued")
+    if args.debug:
+        log.info("--debug: nothing extra to capture — every run records the "
+                 "pre-pull SFTP listing in listing.json; the flag has no "
+                 "effect.")
 
     if args.check:
         return _check_credential(args)
 
     # Validate the bronze root up front, before connecting. UBS deletes
-    # each per-order-type zip immediately on a successful download, so a
-    # local write failure after a download would silently destroy data.
+    # each queue zip immediately on a successful download, so a local
+    # write failure after a download would silently destroy data.
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {args.bronze_dir}")
     if not os.access(args.bronze_dir, os.W_OK):
@@ -393,13 +536,12 @@ def main() -> int:
         log.info("SFTP session opened.")
 
         if args.dry_run:
-            # Export nothing (root CLAUDE.md §2): no run dir is minted, so
-            # --debug has nowhere to capture into. Resurrecting a shell just
-            # to hold a listing would leave load/prune a dump to reason
-            # about, which is a worse trade than capturing nothing.
+            # Export nothing (root CLAUDE.md §2): no run dir is minted,
+            # nothing is listed, nothing is fetched.
             log.info("Dry run: skipping downloads.")
             return 0
 
+        mode = "recover" if args.recover else "download"
         run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         run_dir = args.bronze_dir / run_ts
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -408,33 +550,41 @@ def main() -> int:
         # pull finishes. This is additive metadata only — it never gates the
         # sftp.get data path, and prune's has-zip guard, not this field, is
         # what protects a crashed-but-non-empty dump from deletion.
-        bronze.atomic_write_json(run_dir / "run.json", {"status": "in-progress"})
+        bronze.atomic_write_json(run_dir / "run.json",
+                                 {"status": "in-progress", "mode": mode})
 
-        if args.debug:
-            capture_remote_listing(sftp, client, run_dir)
+        # The pre-pull listing both drives the fetch and is recorded first,
+        # so listing.json shows every zip while it still exists server-side
+        # and any later failure leaves the record of what was on offer.
+        listing = list_remote(sftp)
+        write_listing(run_dir, listing, _host_key_fingerprint(client))
 
-        downloaded, empty = download_all(sftp, run_dir, verbose=args.verbose)
+        if args.recover:
+            since = None
+            if args.lookback:
+                since = cli.lookback_start(
+                    args.lookback, today=datetime.now(timezone.utc).date())
+                log.info("Recovering archive copies dated %s or later.",
+                         since)
+            downloaded, empty = recover_all(sftp, run_dir, listing,
+                                            since=since,
+                                            verbose=args.verbose)
+        else:
+            downloaded, empty = download_all(sftp, run_dir, listing,
+                                             verbose=args.verbose)
         log.info("Done. %d zip(s) downloaded, %d order type(s) had nothing.",
                  downloaded, empty)
-        if downloaded == 0 and not args.debug:
-            # Nothing was queued and nothing was captured: the run dir holds
-            # only the in-progress marker (no irreplaceable data), so discard
-            # the whole shell. rmtree, not rmdir — the run.json makes the dir
-            # non-empty.
-            shutil.rmtree(run_dir)
-        else:
-            # status="empty" for a pull that found nothing but captured a
-            # listing: the walk finished, so "in-progress" would be a lie,
-            # yet a zip-less dump is not "complete" either. Being non-
-            # complete is what lets prune reclaim the shell once quiescent,
-            # taking the listing with it — the normal debug-artefact
-            # lifecycle. Discarding it here instead would make the capture
-            # unreachable in exactly the case it exists to explain.
-            bronze.atomic_write_json(
-                run_dir / "run.json",
-                {"status": "complete" if downloaded else "empty",
-                 "downloaded": downloaded, "empty": empty},
-            )
+        # status="empty" for a pull that found nothing: the walk finished,
+        # so "in-progress" would be a lie, yet a zip-less dump is not
+        # "complete" either. Being non-complete is what lets prune reclaim
+        # the shell — listing.json and all — once quiescent, while the
+        # listing stays inspectable in the meantime: it is the record that
+        # explains a pull that brought back nothing.
+        bronze.atomic_write_json(
+            run_dir / "run.json",
+            {"status": "complete" if downloaded else "empty",
+             "mode": mode, "downloaded": downloaded, "empty": empty},
+        )
         return 0
     finally:
         client.close()

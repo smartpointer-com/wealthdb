@@ -3,23 +3,27 @@ Unit tests for ubs-psn's prune.py.
 
 tmp_path bronze trees with the ubs-psn layout: run dirs
 ``<UTC-ts>/`` holding a flat set of ``<ORDERTYPE>.zip`` files, an
-optional ``run.json`` status marker, and — only under `download
---debug` — a ``screenshots/`` SFTP-listing capture (``debug_subdirs``).
-The load-bearing invariant is SAFETY: the PSN zips are
-irreplaceable (UBS deletes each file server-side on download), so a
+optional ``run.json`` status marker, a ``listing.json`` pre-pull
+record, and — on legacy dumps only — a ``screenshots/`` SFTP-listing
+capture (``debug_subdirs``). The load-bearing invariant is SAFETY: a
+fetched queue zip cannot be fetched again (UBS deletes it server-side
+on download; its dated archive copy ages out after ~2 months), so a
 run dir holding ANY zip must never be deleted, even when a crash left
 ``status="in-progress"`` or no manifest at all. Only a truly zip-less
-shell may be reclaimed once quiescent — and only the listing may ever
-be reclaimed from a dump that holds zips.
+shell may be reclaimed once quiescent — and only the legacy
+``screenshots/`` capture, never ``listing.json``, may be reclaimed
+from a dump that holds zips.
 
 Covers:
   * zip-bearing dumps kept in every completeness state — complete /
     statusless / no-manifest / in-progress(crash) / admin-zip-only —
-    with every zip surviving; only a --debug listing is reclaimed
+    with every zip surviving; only a legacy screenshots/ capture is
+    reclaimed, and listing.json survives it
   * the trap: a zip-bearing in-progress crash is KEPT (has-zip
     short-circuits before the status field is consulted)
   * has-zip beats slug age and the in-flight guard
-  * zip-less shells deleted whole once quiescent; kept while fresh /
+  * zip-less shells (crash shells and the status="empty" shell an
+    empty pull leaves) deleted whole once quiescent; kept while fresh /
     in-flight (guard keyed on write activity, not slug age)
   * unreadable / corrupt run.json is UNKNOWN → skipped, never deleted
   * calendar-invalid slug skipped, not a crash
@@ -64,22 +68,29 @@ def fresh_slug(age_s: float = 0.0) -> str:
 def make_dump(root: Path, slug: str, *,
               zips: tuple[str, ...] = ("ZAH.zip", "Z40.zip"),
               status: str | None = "complete", run_json: bool = True,
-              screenshots: bool = False, age_s: float = 0.0) -> Path:
+              listing: bool = False, screenshots: bool = False,
+              age_s: float = 0.0) -> Path:
     """Build a ubs-psn bronze run dir.
 
     ``zips`` are the flat ``<ORDERTYPE>.zip`` files inside the run dir
     (empty tuple → a zip-less shell). ``status`` is the run.json status
     field (``None`` writes a statusless ``{}`` manifest); ``run_json``
-    False omits the manifest entirely.
-    ``screenshots`` adds the ``--debug`` SFTP listing, off by default to
-    mirror a pull without ``--debug``. ``age_s`` backdates every mtime so
-    the write-activity guard sees an abandoned dump; the default (0)
-    leaves it fresh.
+    False omits the manifest entirely. ``listing`` adds the
+    ``listing.json`` pre-pull record every download run writes;
+    ``screenshots`` adds the legacy ``--debug`` SFTP-listing capture.
+    ``age_s`` backdates every mtime so the write-activity guard sees an
+    abandoned dump; the default (0) leaves it fresh.
     """
     d = root / slug
     d.mkdir(parents=True)
     for z in zips:
         (d / z).write_bytes(ZIP_BYTES)
+    if listing:
+        (d / "listing.json").write_text(json.dumps({
+            "captured_at": "2026-01-01T01:00:00Z",
+            "host_key": "SHA256:synthetic",
+            "order_types": {"ZAH": {"status": "listed", "entries": []}},
+        }))
     if screenshots:
         (d / "screenshots").mkdir()
         (d / "screenshots" / "sftp-listing.txt").write_text(
@@ -136,7 +147,7 @@ def test_no_manifest_zip_dump_kept(tmp_path):
 
 def test_in_progress_crash_with_zips_kept(tmp_path):
     # THE TRAP: a crash mid-download leaves status="in-progress" alongside
-    # already-downloaded (irreplaceable) zips. The has-zip check MUST
+    # already-downloaded (consumed) zips. The has-zip check MUST
     # short-circuit to COMPLETE *before* the status field is consulted;
     # otherwise the shared engine would classify NON_COMPLETE and rmtree
     # the whole dir, destroying data `load` consumes.
@@ -168,22 +179,25 @@ def test_zip_dump_kept_despite_fresh_slug(tmp_path):
     assert (d / "ZAH.zip").exists()
 
 
-def test_complete_dump_debug_listing_pruned_zips_kept(tmp_path):
-    # The --debug listing is a diagnostic, not a load input, so prune
-    # reclaims it while the irreplaceable zips beside it survive.
-    d = make_dump(tmp_path, OLD_TS, status="complete", screenshots=True)
+def test_complete_dump_legacy_capture_pruned_zips_and_listing_kept(tmp_path):
+    # The legacy screenshots/ capture is a diagnostic, not a load input, so
+    # prune reclaims it while the consumed zips beside it survive — and
+    # listing.json, the run's provenance record, survives too.
+    d = make_dump(tmp_path, OLD_TS, status="complete", listing=True,
+                  screenshots=True)
     assert run_main(tmp_path) == 0
     assert not (d / "screenshots").exists()
     assert (d / "ZAH.zip").exists()
     assert (d / "Z40.zip").exists()
+    assert (d / "listing.json").exists()
 
 
-def test_zipless_empty_shell_from_debug_pull_deleted_when_quiescent(tmp_path):
-    # A --debug pull that found nothing queued keeps its shell + listing so
-    # the listing is inspectable; prune reclaims the whole thing once it
-    # goes quiescent — the normal debug-artefact lifecycle.
+def test_zipless_empty_shell_deleted_when_quiescent(tmp_path):
+    # A pull that found nothing queued keeps its shell (run.json +
+    # listing.json) so the listing that explains it is inspectable; prune
+    # reclaims the whole thing once it goes quiescent.
     d = make_dump(tmp_path, OLD_TS, zips=(), status="empty",
-                  screenshots=True, age_s=STALE_S)
+                  listing=True, age_s=STALE_S)
     assert run_main(tmp_path) == 0
     assert not d.exists()
 

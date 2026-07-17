@@ -15,29 +15,42 @@ source-specific design notes.
 
 | Script | Purpose |
 | --- | --- |
-| [`download.py`](download.py) | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. |
+| [`download.py`](download.py) | Fetches all pending PSN data from UBS over SFTP Pull and stores the per-order-type zips locally, organised by UTC timestamp. `--recover` replays the server's ~2-month dated archive instead. |
 | [`load.py`](load.py) | Parses bronze dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| [`prune.py`](prune.py) | Reclaims bronze disk by removing zip-less crash shells. Safety-scoped: a run dir holding any zip is never a deletion candidate, because the PSN zips are irreplaceable. See [Reclaiming disk](#reclaiming-disk). |
+| [`prune.py`](prune.py) | Reclaims bronze disk by removing zip-less shells (crashed runs, pulls that found nothing queued) and legacy debug captures. Safety-scoped: a run dir holding any zip is never a deletion candidate, because a fetched queue zip cannot be fetched again. See [Reclaiming disk](#reclaiming-disk). |
 
 ## download.py
 
 ### How it works
 
 Per the UBS PSN SFTP Pull factsheet, each authorised order type is exposed
-at `download/<TYPE>/<TYPE>.zip`. UBS materialises a given zip only when
-new data is queued for that type, and removes it from the server after a
-successful download. `download.py` therefore:
+at `download/<TYPE>/<TYPE>.zip`. UBS materialises a given queue zip only
+when new data is queued for that type, and removes it from the server
+after a successful download. Next to the queue file the server retains
+dot-prefixed dated archive copies (`.<TYPE>_<YYYYMMDD>.zip`) reaching back
+roughly two months; fetching one of those does *not* consume it.
+`download.py` therefore:
 
 1. Connects to the UBS SFTP server (defaults: Switzerland endpoint).
 2. Verifies the server's host-key SHA-256 fingerprint against
    `host_fingerprints.txt`.
 3. Authenticates with an RSA key (UBS only supports RSA).
-4. For every known order type, `stat()`s the remote path and downloads
-   the zip if present.
+4. Lists every `download/<TYPE>/` dir once and records the full listing
+   (filenames, sizes, the accepted host-key fingerprint) in the run
+   dir's `listing.json`, before anything is fetched.
+5. Fetches every undotted file the listing named: the expected
+   `<TYPE>.zip`, plus — with a warning — any unexpectedly-named
+   undotted file, under its server filename (bronze keeps every zip;
+   leaving a queued file behind risks losing it). Dot-prefixed archive
+   copies are never fetched by a normal pull.
+6. Validates each fetched file as a zip (content check, never a size
+   comparison — the served stream can undercut the listed size and
+   still be a complete zip). A corrupt fetch aborts the run loudly with
+   the run dir kept in place.
 
-A missing remote zip is normal (no data queued) and is skipped silently.
-The script intentionally never lists the `download/` directory — the SFTP
-account is restricted from `READDIR` on it anyway.
+An absent `download/<TYPE>/` dir is normal (order type not provisioned),
+as is a dir with nothing queued; both are recorded in `listing.json` and
+skipped.
 
 ### Prerequisites
 
@@ -89,11 +102,25 @@ Real download:
 (Both read `UBS_PSN_CLIENT_ID` from `~/.secrets/ubs-psn.env`; append
 `--client-id CHxxxxxx` to override.)
 
-Files land in `./data/<UTC-timestamp>/<ORDERTYPE>.zip`. A `run.json`
-carrying `{"status": "in-progress"}` is written when the run dir is
-created and atomically overwritten with `{"status": "complete", …}`
-once the pull finishes. If the run downloaded nothing, the timestamped
-directory (marker and all) is removed.
+Archive recovery — fetch the dated archive copies instead of the queue
+files, e.g. after a missed or corrupted delivery:
+
+```sh
+./ubs-psn download --recover                    # the whole ~2-month archive
+./ubs-psn download --recover --lookback 4w      # only the last four weeks
+```
+
+Files land in `./data/<UTC-timestamp>/<ORDERTYPE>.zip` (a recovery run
+lands `<ORDERTYPE>_<YYYYMMDD>.zip`, one per archive copy). A `run.json`
+carrying `{"status": "in-progress", "mode": …}` is written when the run
+dir is created and atomically overwritten with `{"status": "complete",
+…}` once the pull finishes; `mode` is `"download"` or `"recover"`. A
+`listing.json` — the full pre-pull listing of every
+`download/<ORDERTYPE>/` dir, with the accepted host-key fingerprint and
+a capture stamp — is recorded before the first fetch on every run. A
+run that downloaded nothing keeps its shell with `{"status": "empty"}`
+so the listing that explains it stays inspectable; `prune` reclaims
+such shells once quiescent.
 
 #### Flags
 
@@ -105,19 +132,24 @@ directory (marker and all) is removed.
 | `--bronze-dir` | `$XDG_DATA_HOME/wealthdb/ubs-psn` | Bronze tree root |
 | `--key` | `~/.secrets/ubs_psn_key` | Private RSA key path |
 | `--ignore-fingerprint-mismatch` | off | Warn instead of abort on host-key mismatch |
-| `--check` | off | Probe the credential and exit: connect, authenticate, disconnect. Consumes no files. Backs `login --check`. |
-| `--dry-run` | off | Skip downloads |
-| `--debug` | off | Capture `screenshots/sftp-listing.txt` into the bronze run dir: the accepted host-key fingerprint plus what each `download/<ORDERTYPE>/` dir was actually offering — which is what explains a pull that brought back less than expected, since the pull itself only stats one exact filename per dir. Pure observation: it lists, never fetches, and never changes what is downloaded. A pull that fetched nothing keeps its shell (`status: "empty"`) so the listing is inspectable, rather than discarding it unseen; `prune` reclaims either. `load` never reads it. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
+| `--check` | off | Probe the credential and exit: connect, authenticate, disconnect. Lists nothing, consumes no files. Backs `login --check`. Mutually exclusive with `--recover`. |
+| `--recover` | off | Fetch the dot-prefixed dated archive copies (`.<ORDERTYPE>_<YYYYMMDD>.zip`) instead of the queue files. The copies survive fetching, so recovery is freely re-runnable; each lands undotted as `<ORDERTYPE>_<YYYYMMDD>.zip` in a normal run dir, and the queue files are never touched. `--lookback` bounds the replay (default: the whole ~2-month archive). |
+| `--lookback` | _(none)_ | Under `--recover`: only archive copies dated on/after the resolved start (a preset like `4w`, or an ISO date) are fetched. On a normal pull it cannot narrow anything (the pull takes whatever is queued) and is logged and otherwise ignored. |
+| `--dry-run` | off | Skip downloads (mints no run dir, lists nothing) |
+| `--debug` | off | Accepted for fleet uniformity. Every run already records its diagnostics — the full pre-pull listing lands in `listing.json` unconditionally — so there is nothing extra to capture; the flag is logged and otherwise ignored. Wire-level tracing is `-v`/`--verbose` (stderr, not bronze). |
 | `-v`, `--verbose` | off | DEBUG-level logging |
 
 ### Caveats
 
-- **First successful download is one-shot.** Because UBS deletes the
-  server-side zip on a successful download, you cannot re-download a
-  given file via this script. Use `--dry-run` for connectivity tests.
+- **Fetching a queue file is one-shot; the archive is the safety net.**
+  UBS deletes the server-side queue zip on a successful download, so
+  that exact fetch cannot be repeated — but a dated archive copy of the
+  batch stays on the server for roughly two months and `--recover` can
+  re-fetch it any number of times. Beyond the archive window the data
+  is irreplaceable. Use `--dry-run` for connectivity tests.
 - **Order types are the documented union.** A customer may not be
-  provisioned for every order type listed; the script attempts each
-  and silently skips those that yield `FileNotFoundError`.
+  provisioned for every order type listed; the script lists each and
+  records the absent dirs in `listing.json` as `"absent"`.
 - **No retry / resume / scheduling.** Run from cron, launchd, or your
   scheduler of choice.
 
@@ -156,6 +188,15 @@ loaded — for retail PSN it duplicates MT940. `ZMH` (MT536 statement of
 transactions) and other MT types will be added when we have real
 samples. Bronze still keeps every retrieved zip for auditability.
 
+A dated zip (`<ORDERTYPE>_<YYYYMMDD>.zip`, landed by `download
+--recover`) routes to the same per-order-type handling as
+`<ORDERTYPE>.zip` — it is the same batch content under an archive name.
+Re-delivered content converges rather than duplicating: every silver
+table either upserts on its natural key or dedups on payload (see
+below), and the per-file `snapshot_at` comes from the filename prefix
+*inside* the zip, which the archive copy shares with the original
+delivery.
+
 Reload semantics:
 
 - **`snapshot_at` is the per-file as-of date**, parsed from the
@@ -167,13 +208,19 @@ Reload semantics:
   timestamp (the bronze-directory name), kept as an audit trail of
   when each dump was processed.
 - **Snapshots** (`holdings`, `cash_balances`, `pending_securities`,
-  `fx_rates`, `forward_contracts`, contract tables) are append-only
-  per snapshot.
+  `fx_rates`, `forward_contracts`, contract tables) upsert on their
+  natural key (`INSERT OR REPLACE` on the snapshot-scoped primary
+  key), so the same batch content arriving twice — a queue-file pull
+  plus a recovered archive copy — lands identical rows once.
 - **Slow-changing master data** (`account_holders`, `cash_accounts`,
   `safekeeping_accounts`, `portfolios`, `instruments`) dedups against
-  the most recent row for each entity: insert only when the canonical-
-  JSON payload differs, after stripping UBS header noise
-  (`DWHMsgId` / `MsqSeqNo` / `CrtnDtTm`).
+  each entity's most recent row at or before the file's as-of date:
+  insert only when the canonical-JSON payload differs, after stripping
+  UBS header noise (`DWHMsgId` / `MsqSeqNo` / `CrtnDtTm`). Bounding the
+  compare at the as-of date keeps a recovered archive copy of a batch
+  whose content has since changed from re-inserting old state as a new
+  change-point; a redelivery carrying a different payload for an
+  already-loaded as-of date replaces that date's row.
 - **Events** (`events`) use either window-DELETE-then-INSERT
   (cash_movement, keyed on account + value-date range) or row-level
   `INSERT OR REPLACE` on `event_external_id` for events the upstream
@@ -250,20 +297,20 @@ never write code that handles "if column X exists".
 ```
 
 `prune` shares the fleet-wide bronze-prune engine but is deliberately
-narrow here. The PSN zips are irreplaceable — UBS deletes each file
-server-side the moment it is downloaded, and `load` ingests whatever
-zips are present regardless of whether the dump finished — so a run
-dir holding *any* zip is classified complete and never a deletion
+narrow here. A fetched queue zip cannot be fetched again — UBS deletes
+it server-side the moment it is downloaded, and its dated archive copy
+ages out after roughly two months — and `load` ingests whatever zips
+are present regardless of whether the dump finished, so a run dir
+holding *any* zip is classified complete and never a deletion
 candidate, even if a crash left `run.json` at `"in-progress"` or wrote
 no manifest at all. The only thing it reclaims from a finished dump is
-the `screenshots/` listing a `download --debug` left behind — never a
-zip. Beyond that it can remove only a zip-less shell: a run dir minted
-before the first file arrived and then abandoned, or the `status:
-"empty"` dump a `--debug` pull leaves when nothing was queued. A routine
-pull writes neither (`download.py` removes a run dir that fetched
-nothing, and `--dry-run` creates none), so for the nightly path this
-stays a near-no-op whose real value is the guarantee that a fleet-wide
-prune never deletes a ubs-psn load input. Runs host-side like `load`; an unreadable
-or corrupt `run.json` is left untouched, and an in-flight guard
-(`--min-age-hours`, default 1, keyed on recent write activity) keeps
-it from removing a download that is still running.
+a legacy `screenshots/` capture (the pre-`listing.json` debug listing)
+— never a zip, and never `listing.json`, which is provenance the run
+records unconditionally. Beyond that it can remove only a zip-less
+shell: a run dir minted before the first file arrived and then
+abandoned, or the `status: "empty"` dump any pull leaves when nothing
+was queued (kept so its `listing.json` stays inspectable until
+reclaimed here; `--dry-run` creates no run dir at all). Runs host-side
+like `load`; an unreadable or corrupt `run.json` is left untouched, and
+an in-flight guard (`--min-age-hours`, default 1, keyed on recent write
+activity) keeps it from removing a download that is still running.
