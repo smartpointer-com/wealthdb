@@ -396,13 +396,25 @@ def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
     canonical payload differs from the most recent row for the
     same account_external_id. Mirrors schwab-api.load_accounts.
 
+    The manifest-built payload never carries `account_number_full`
+    — that key is harvested from statement-PDF headers after the
+    manifest walk (see _apply_account_number). Carrying the most
+    recent row's value forward here keeps an unchanged account
+    content-deduping against its number-bearing row, and keeps a
+    label/nickname change from shedding the key.
+
     Returns True if a row was inserted, False if dedup skipped it."""
-    payload = canonical_json(payload_dict)
     row = conn.execute(
         "SELECT payload FROM accounts WHERE account_external_id = ? "
         "ORDER BY snapshot_at DESC LIMIT 1",
         (account_external_id,),
     ).fetchone()
+    if row is not None:
+        prev_number = json.loads(row[0]).get("account_number_full")
+        if prev_number is not None:
+            payload_dict = dict(payload_dict,
+                                account_number_full=prev_number)
+    payload = canonical_json(payload_dict)
     if row is not None and row[0] == payload:
         return False
     nickname = payload_dict.get("nickname")
@@ -415,6 +427,92 @@ def _upsert_account(conn: sqlite3.Connection, snapshot_at: int,
     return True
 
 
+def _stored_account_number(conn: sqlite3.Connection,
+                           account_external_id: str) -> str | None:
+    """The `account_number_full` payload value on the most recent
+    accounts row for `account_external_id`, or None."""
+    row = conn.execute(
+        "SELECT payload FROM accounts WHERE account_external_id = ? "
+        "ORDER BY snapshot_at DESC LIMIT 1",
+        (account_external_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row[0]).get("account_number_full")
+
+
+def _write_account_number(conn: sqlite3.Connection,
+                          account_external_id: str,
+                          number: str | None) -> bool:
+    """Set (or, with None, remove) `account_number_full` in the
+    payload of EVERY accounts row for `account_external_id`, so
+    the key reads the same regardless of which snapshot row a
+    consumer picks. Returns True when any payload changed."""
+    changed = False
+    rows = conn.execute(
+        "SELECT snapshot_at, payload FROM accounts"
+        " WHERE account_external_id = ?",
+        (account_external_id,),
+    ).fetchall()
+    for snapshot_at, payload in rows:
+        d = json.loads(payload)
+        if number is None:
+            if "account_number_full" not in d:
+                continue
+            del d["account_number_full"]
+        else:
+            if d.get("account_number_full") == number:
+                continue
+            d["account_number_full"] = number
+        conn.execute(
+            "UPDATE accounts SET payload = ?"
+            " WHERE snapshot_at = ? AND account_external_id = ?",
+            (canonical_json(d), snapshot_at, account_external_id),
+        )
+        changed = True
+    return changed
+
+
+def _apply_account_number(conn: sqlite3.Connection,
+                          account_external_id: str,
+                          numbers: set[str]) -> bool:
+    """Reconcile the full account numbers harvested from statement
+    headers (`numbers`) with any previously stored value, then
+    write the result into `accounts.payload.account_number_full`.
+
+    The key is set only when every observation agrees: a suffix
+    maps to exactly one full account number, so a disagreement —
+    across this harvest, or against a value stored by an earlier
+    load — means at least one header mis-parsed, and the key is
+    cleared rather than pinned to a possibly-wrong value. A key
+    set from a previously-absent state rests only on the
+    observations passed in, so it is provisional until run_load's
+    reconcile pass re-checks it against every statement in bronze
+    (_reconcile_account_numbers) — that pass is what makes the
+    end-of-load key depend only on the bronze evidence, never on
+    load order. Returns True when any payload changed."""
+    candidates = set(numbers)
+    stored = _stored_account_number(conn, account_external_id)
+    if stored is not None:
+        candidates.add(stored)
+    if not candidates:
+        return False
+    if len(candidates) > 1:
+        log.warning(
+            "account …%s: %d conflicting full account numbers across "
+            "statement headers; leaving account_number_full unset",
+            account_external_id, len(candidates),
+        )
+        return _write_account_number(conn, account_external_id, None)
+    return _write_account_number(conn, account_external_id,
+                                 candidates.pop())
+
+
+# FIXME: the plain INSERT collides with dump_runs' snapshot_at PRIMARY KEY
+# when --reparse revisits an already-loaded run: the IntegrityError rolls
+# that run back, so --reparse only works together with --force or on runs
+# absent from dump_runs. An INSERT OR REPLACE (or a delete-first under
+# --reparse) would honour the flag's documented contract.
 def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
                      run_dir: Path) -> None:
     conn.execute(
@@ -494,6 +592,12 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         "cash_balances_inserted": 0,
         "statements_logical_deduped": 0,
         "account_registration_updated": 0,
+        "account_number_updated": 0,
+        # Not a counter: suffixes whose account_number_full went
+        # from absent to set on this run's parses alone. run_load
+        # re-verifies them against the full bronze evidence
+        # (_reconcile_account_numbers).
+        "account_numbers_pinned": set(),
     }
     # Parse-dedup set: (account_suffix, doc_date, doc_kind, filename).
     # Schwab regenerates statement PDFs on every download (different
@@ -725,6 +829,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
         # `tax_wrapper` enum mapping — see migration 0003
         # comment + DESIGN.md §8.
         registration_by_acct: dict[str, str] = {}
+        # Full account numbers from the page-1 headers, ALL
+        # values per account — _apply_account_number writes the
+        # payload key only when every statement agrees (see
+        # INTEROP.md §1 for the api↔web bridge it feeds).
+        numbers_by_acct: dict[str, set[str]] = {}
 
         for job, parsed in zip(parse_jobs, parsed_results):
             if parsed.get("_error"):
@@ -738,6 +847,10 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             reg = parsed.get("account_registration")
             if reg and job["suffix"] not in registration_by_acct:
                 registration_by_acct[job["suffix"]] = reg
+
+            num = parsed.get("account_number")
+            if num:
+                numbers_by_acct.setdefault(job["suffix"], set()).add(num)
 
             if job["tx_reparse_delete"]:
                 # Delete by logical_doc_key so all sha256-churn
@@ -790,6 +903,24 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                 (reg, suffix),
             )
         n_updated = len(registration_by_acct)
+
+        # Pin the full account number into each account's
+        # payload (consistent-or-absent — see
+        # _apply_account_number). A key set here where none was
+        # stored rests only on this run's parses — bronze may
+        # hold older, disagreeing statements this run never saw
+        # (dump-run / logical-doc gated, or cleared by an earlier
+        # conflict) — so the suffix is queued for re-verification
+        # against the full bronze evidence
+        # (_reconcile_account_numbers in run_load). Accounts
+        # whose statements were all ingested by earlier
+        # invocations reach the same pass via their absent key.
+        for suffix, nums in numbers_by_acct.items():
+            if (len(nums) == 1
+                    and _stored_account_number(conn, suffix) is None):
+                stats["account_numbers_pinned"].add(suffix)
+            if _apply_account_number(conn, suffix, nums):
+                stats["account_number_updated"] += 1
 
         # Tax-form fallback: for any account whose statements
         # didn't surface a registration (e.g. a brand-new
@@ -1337,6 +1468,84 @@ def _registration_from_tax_forms(conn: sqlite3.Connection,
     return None
 
 
+def _reconcile_account_numbers(conn: sqlite3.Connection,
+                               runs: list[Path],
+                               verify: set[str] | frozenset[str]
+                               = frozenset()) -> int:
+    """Settle `accounts.payload.account_number_full` against the
+    full bronze evidence, for two kinds of account:
+
+    - accounts still lacking the key — rows ingested before the
+      account-number parser existed, statements skipped by the
+      dump-run / logical-doc gates on every later load, or headers
+      that conflicted;
+    - accounts in `verify` — those whose key this invocation's
+      in-run harvest set from a previously-absent state. Such a
+      key rests only on the statements parsed this time, so it is
+      provisional until checked against every statement in bronze:
+      agreement keeps it, a conflict clears it (the same
+      consistent-or-absent rule via _apply_account_number). This
+      check makes the end-of-load key independent of the order
+      the bronze runs were loaded in.
+
+    Statement PDFs are re-read from the bronze tree (header-only;
+    the row parsers don't run). Each logical statement (unique
+    filename per account) is read once, preferring the bronze run
+    that first recorded it and falling back to any run that still
+    holds the file (a pruned bronze dir just narrows the
+    evidence). Accounts that end up without a key are re-attempted
+    on the next load — cheap for accounts with no statements at
+    all, and bounded by the account's statement count otherwise.
+
+    Returns the number of accounts whose payload changed."""
+    missing = {r[0] for r in conn.execute(
+        "SELECT DISTINCT account_external_id FROM accounts"
+        " WHERE json_extract(payload, '$.account_number_full') IS NULL"
+    ).fetchall()}
+    targets = sorted(missing | set(verify))
+    if not targets:
+        return 0
+    run_by_snapshot = {parse_snapshot_at(r.name): r for r in runs}
+    n_updated = 0
+    for suffix in targets:
+        docs = conn.execute(
+            "SELECT snapshot_at, filename FROM documents"
+            " WHERE account_external_id = ? AND doc_kind = 'statement'"
+            "   AND file_format = 'pdf'"
+            " ORDER BY snapshot_at, filename",
+            (suffix,),
+        ).fetchall()
+        numbers: set[str] = set()
+        seen_filenames: set[str] = set()
+        for snapshot_at, filename in docs:
+            if filename in seen_filenames:
+                continue
+            seen_filenames.add(filename)
+            first_run = run_by_snapshot.get(snapshot_at)
+            candidates = ([first_run] if first_run else []) + [
+                r for r in runs if r is not first_run
+            ]
+            pdf_path = None
+            for r in candidates:
+                p = r / "statements" / suffix / filename
+                if p.is_file():
+                    pdf_path = p
+                    break
+            if pdf_path is None:
+                continue
+            try:
+                num = pp.parse_statement_account_number(pdf_path)
+            except Exception as e:
+                log.warning("account-number backfill: parse failed "
+                            "for %s: %r", pdf_path, e)
+                continue
+            if num:
+                numbers.add(num)
+        if numbers and _apply_account_number(conn, suffix, numbers):
+            n_updated += 1
+    return n_updated
+
+
 def _insert_position_snapshots(conn: sqlite3.Connection,
                                 account_external_id: str,
                                 as_of_date: int,
@@ -1459,6 +1668,11 @@ def run_load(args: argparse.Namespace) -> int:
         # once across a cumulative bronze archive. The pool is skipped when
         # nothing needs loading or when serial parsing is forced.
         seen_logical_docs: set[tuple] = set()
+        # Suffixes whose account_number_full was pinned by this
+        # invocation's in-run harvest, accumulated only from runs
+        # that committed (a rolled-back run's stats are discarded
+        # with it). Fed to the reconcile pass below.
+        pinned_accounts: set[str] = set()
         pending = [
             r for r in runs
             if args.reparse or not already_loaded(conn, parse_snapshot_at(r.name))
@@ -1488,10 +1702,12 @@ def run_load(args: argparse.Namespace) -> int:
                         seen_logical_docs=seen_logical_docs,
                     )
                     conn.commit()
+                    pinned_accounts |= stats["account_numbers_pinned"]
                     log.info(
                         "loaded %s: accts +%d/-%d, docs +%d/-%d, "
                         "tx +%d (reparsed %d), positions +%d, cash +%d, "
-                        "logical-dup %d, registrations %d, pdf errors %d; "
+                        "logical-dup %d, registrations %d, "
+                        "acct-numbers %d, pdf errors %d; "
                         "1099-B +%d (pdf-only %d, errors %d), "
                         "distributions +%d (errors %d)",
                         run_dir.name,
@@ -1503,6 +1719,7 @@ def run_load(args: argparse.Namespace) -> int:
                         stats["cash_balances_inserted"],
                         stats["statements_logical_deduped"],
                         stats["account_registration_updated"],
+                        stats["account_number_updated"],
                         stats["pdf_parse_errors"],
                         stats["form_1099b_transactions_inserted"],
                         stats["form_1099b_pdf_only"],
@@ -1515,7 +1732,27 @@ def run_load(args: argparse.Namespace) -> int:
                     seen_logical_docs = seen_before  # undo this run's marks
                     log.exception("load failed for %s; rolled back", run_dir.name)
 
+        # Settle account_number_full against the full bronze
+        # evidence: accounts loaded before the account-number
+        # parser existed never passed through the in-run harvest
+        # (their runs are dump_runs-skipped above), and a key the
+        # harvest pinned this invocation rests only on the
+        # statements parsed this time. Header-only re-read from
+        # bronze for both; no-op once every account carries a
+        # verified key and no new pin happened.
+        try:
+            n_reconciled = _reconcile_account_numbers(
+                conn, runs, pinned_accounts)
+            if n_reconciled:
+                conn.commit()
+                log.info("reconciled account_number_full for %d account(s)",
+                         n_reconciled)
+        except Exception:
+            conn.rollback()
+            log.exception("account-number reconcile failed; rolled back")
+
         _log_registration_histogram(conn)
+        _log_account_number_coverage(conn)
     finally:
         conn.close()
     return 0
@@ -1545,6 +1782,28 @@ def _log_registration_histogram(conn: sqlite3.Connection) -> None:
         log.warning(
             "  %d account(s) have NULL account_registration "
             "(no parseable statement header)", null_count,
+        )
+
+
+def _log_account_number_coverage(conn: sqlite3.Connection) -> None:
+    """Report how many accounts carry payload.account_number_full —
+    the api↔web bridge key (INTEROP.md §1). The values themselves
+    stay out of the log; accounts without the key fall back to
+    gold's suffix matching, so a shrinking count here means the
+    header anchors drifted or statements started disagreeing."""
+    total = conn.execute(
+        "SELECT COUNT(DISTINCT account_external_id) FROM accounts"
+    ).fetchone()[0]
+    missing = conn.execute(
+        "SELECT COUNT(DISTINCT account_external_id) FROM accounts "
+        "WHERE json_extract(payload, '$.account_number_full') IS NULL"
+    ).fetchone()[0]
+    log.info("account_number_full present for %d of %d account(s)",
+             total - missing, total)
+    if missing:
+        log.warning(
+            "  %d account(s) lack account_number_full "
+            "(no consistent statement header)", missing,
         )
 
 

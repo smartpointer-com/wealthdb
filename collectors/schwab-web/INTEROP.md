@@ -16,9 +16,9 @@ gold layer that needs to converge them.
   inhabit **disjoint identifier spaces**. The two silvers cannot
   be natively joined.
 - The gold layer needs an **explicit bridge per identifier**
-  (manual map for accounts; date-splice for transactions) and a
-  **logical-document dedup** on the web side because Schwab
-  regenerates PDFs per download.
+  (full-account-number join for accounts; date-splice for
+  transactions) and a **logical-document dedup** on the web side
+  because Schwab regenerates PDFs per download.
 - The schwab-api collector itself does **not** need to change. One nice-to-have
   suggested below; everything else is gold-layer work.
 
@@ -37,25 +37,41 @@ gold layer that needs to converge them.
 
 Every Schwab statement PDF has the full account number printed
 in its first-page header (typically `Account Number:
-1234-5678`). The web-silver `documents` table already references
-every PDF on disk; a small parser pass — currently TODO — can
-extract `account_number_full` once per (`account_external_id`,
-earliest snapshot) and write it into `accounts.payload`. Then:
+1234-5678`). The web loader parses that header
+(`pdf_parsers.parse_account_number` — both the 2017-2019 inline
+form and the 2020+ label-and-value-on-consecutive-lines form)
+and writes the value into `accounts.payload` under
+**`account_number_full`**, on every snapshot row of the account.
+The value is stored **exactly as printed — dash kept**; the key
+is set only when all of an account's statements agree on the
+number (a disagreement logs a warning and leaves the key
+absent). Accounts loaded before the parser existed are
+backfilled from the bronze statement PDFs on the next `load`
+run (header-only re-read; no `--reparse` needed), and a key
+first set by an incremental load is re-verified the same way
+against every statement in bronze — the key's end state
+depends only on the statements in the bronze tree, never on
+the order they were loaded in. Then:
 
 ```sql
--- Bridge:
+-- Bridge. Normalise to digits-only on both sides: the api's
+-- accountNumber is undashed, the web value keeps the printed
+-- dash.
 SELECT api_acct.account_external_id  AS api_hash,
        web_acct.account_external_id  AS web_suffix
 FROM api.accounts api_acct
 JOIN web.accounts web_acct
-  ON json_extract(api_acct.payload, '$.accountNumber') =
-     json_extract(web_acct.payload, '$.account_number_full');
+  ON replace(json_extract(api_acct.payload, '$.accountNumber'),
+             '-', '') =
+     replace(json_extract(web_acct.payload, '$.account_number_full'),
+             '-', '');
 ```
 
-Until the parser pass lands, **maintain a manual map in the gold
-config**: `{api_hashValue: web_suffix}`. The pivot key is the
-web suffix (the customer recognises it; the api hashValue is
-opaque). One-line lookup.
+For accounts without the key (no parseable statement header, or
+conflicting headers), gold falls back to matching the web
+suffix against the trailing digits of the api account number.
+The pivot key is the web suffix (the customer recognises it;
+the api hashValue is opaque).
 
 ## 2. Transaction identifier mismatch
 
@@ -207,7 +223,7 @@ the web feed is and isn't carrying:
 | Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold must bridge name → instrument (its symbol/CUSIP map), §8 |
 | `third_party_distribution` cash transfers may overlap a statement cash debit | Gold dedupes cash distributions against external flows; securities distributions are new data (§8) |
-| Account-number → suffix mapping not yet auto-extracted | Manual map maintenance for now (see §1) |
+| `account_number_full` is absent for accounts with no parseable (or conflicting) statement headers | Gold falls back to suffix matching for those accounts (see §1) |
 
 ---
 

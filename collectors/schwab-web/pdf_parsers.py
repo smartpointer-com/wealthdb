@@ -267,6 +267,73 @@ def _clean_registration(s: str) -> str:
     return _REG_TRIM_RE.sub(" ", s).strip()
 
 
+# ============================================================
+# Full account number (page-1 header)
+# ============================================================
+#
+# Every statement prints the full account number ("NNNN-NNNN")
+# near the top of page 1, next to the registration header above.
+# It is the only place the web feed carries more than the 3-to-5-
+# digit UI suffix, which makes it the bridge key between this
+# silver and schwab-api's (whose account_external_id is Schwab's
+# opaque hashValue) — see INTEROP.md §1. The same two anchor
+# shapes as the registration eras:
+#
+#   2020+         "Account Number" label line, the NNNN-NNNN
+#                 value on the following line
+#   2017-2019     inline "Account Number: NNNN-NNNN"
+#
+# The value is returned exactly as printed (dash kept). The gold
+# bridge normalises both sides to digits-only when joining
+# against schwab-api's undashed accountNumber, so silver stores
+# the verbatim form.
+
+_ACCT_NUM_INLINE_RE = re.compile(
+    r"^\s*account\s+number\s*:?\s*(?P<num>\d{4}-\d{4})\b",
+    re.IGNORECASE,
+)
+_ACCT_NUM_LABEL_RE = re.compile(
+    r"^\s*account\s+number\s*:?\s*$",
+    re.IGNORECASE,
+)
+_ACCT_NUM_VALUE_RE = re.compile(r"^\s*(?P<num>\d{4}-\d{4})\s*$")
+
+
+def parse_account_number(text: str) -> str | None:
+    """Extract the full account number from the top of page 1 of
+    a Schwab statement, verbatim ("NNNN-NNNN", dash kept).
+
+    Handles the inline colon form (2017-2019) and the label-and-
+    value-on-consecutive-lines form (2020+; one intervening line
+    tolerated for layout jitter). Returns None when neither shape
+    appears in the first ~80 lines — a header layout the anchors
+    don't recognise leaves the account without a bridge key, and
+    the gold layer falls back to suffix matching.
+    """
+    lines = [ln.strip() for ln in text.split("\n")[:80]]
+    for i, ln in enumerate(lines):
+        m = _ACCT_NUM_INLINE_RE.match(ln)
+        if m:
+            return m.group("num")
+        if _ACCT_NUM_LABEL_RE.match(ln):
+            for nxt in lines[i + 1:i + 3]:
+                v = _ACCT_NUM_VALUE_RE.match(nxt)
+                if v:
+                    return v.group("num")
+    return None
+
+
+def parse_statement_account_number(path) -> str | None:
+    """Header-only variant of parse_statement_pdf: extract the
+    document text and return just the full account number. The
+    loader's reconcile pass uses this to re-read statement
+    headers from bronze — for rows ingested before the
+    account-number parser existed, and to re-verify a freshly
+    set key against every statement — without re-running the
+    row parsers."""
+    return parse_account_number(_extract_pdf_text(path))
+
+
 def parse_statement_period(text: str) -> tuple[date, date] | None:
     """Return (start_date, end_date) for the first period header
     found in `text` (the entire PDF text or page 1 will do).
@@ -2178,6 +2245,7 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     positions = parse_positions(full_text)
     cash = parse_cash_summary(full_text)
     registration = parse_account_registration(full_text)
+    account_number = parse_account_number(full_text)
     return {
         "path": str(path),
         "period_start": period[0].isoformat() if period else None,
@@ -2186,6 +2254,7 @@ def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
         "positions": positions,
         "cash_summary": cash,
         "account_registration": registration,
+        "account_number": account_number,
     }
 
 

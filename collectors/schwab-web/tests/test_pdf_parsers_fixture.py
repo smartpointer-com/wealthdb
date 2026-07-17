@@ -21,6 +21,7 @@ different statement months and different user accounts.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -72,6 +73,15 @@ def test_period_present(parsed):
     assert 25 <= (end - start).days <= 35
     # Sanity: not from a fake year.
     assert 2000 <= start.year <= 2100
+
+
+def test_account_number_extracted(parsed):
+    """The page-1 header account number feeds the api↔web account
+    bridge (INTEROP.md §1); it must parse and keep the printed
+    NNNN-NNNN dash form. Format-only assert — no per-account value
+    embedded."""
+    assert parsed["account_number"] is not None
+    assert re.fullmatch(r"\d{4}-\d{4}", parsed["account_number"])
 
 
 def test_extracts_some_transactions(parsed):

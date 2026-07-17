@@ -230,6 +230,103 @@ class TestAccountRegistration:
         )
 
 
+class TestAccountNumber:
+    """The page-1 header account number we surface into
+    `accounts.payload.account_number_full` — the api↔web bridge
+    key (INTEROP.md §1). Returned exactly as printed (dash kept);
+    the gold join normalises to digits-only on both sides. Two
+    anchor shapes: 2017-2019 inline colon form, 2020+ label line
+    with the value on the following line."""
+
+    def test_2025_plus_two_line_form(self):
+        text = (
+            "1 of 8\n"
+            "Statement Period\n"
+            "PLACEHOLDER NAME February 1-28, 2026\n"
+            "Account Number\n"
+            "1234-5678\n"
+            "Schwab One International® Account of Account Nickname\n"
+        )
+        assert pp.parse_account_number(text) == "1234-5678"
+
+    def test_2020_2024_two_line_form(self):
+        text = (
+            "Schwab One® International Account of\n"
+            "PLACEHOLDER NAME\n"
+            "Manage Your Account\n"
+            "Account Number\n"
+            "0000-0000\n"
+            "Statement Period\n"
+            "June 1-30, 2024\n"
+        )
+        assert pp.parse_account_number(text) == "0000-0000"
+
+    def test_2017_2019_inline_form(self):
+        text = (
+            "Mail To\n"
+            "Schwab One® Account\n"
+            "Account Number: 1234-5678\n"
+            "Statement Period: June 1, 2018 to June 30, 2018\n"
+        )
+        assert pp.parse_account_number(text) == "1234-5678"
+
+    def test_inline_form_without_colon(self):
+        text = "Account Number 1234-5678\n"
+        assert pp.parse_account_number(text) == "1234-5678"
+
+    def test_label_case_and_whitespace_tolerated(self):
+        text = "  ACCOUNT  NUMBER:   1234-5678\n"
+        assert pp.parse_account_number(text) == "1234-5678"
+
+    def test_value_after_one_intervening_line(self):
+        # pypdfium2's line ordering occasionally interleaves an
+        # adjacent header cell between label and value; one
+        # intervening line is tolerated.
+        text = (
+            "Account Number\n"
+            "Statement Period\n"
+            "1234-5678\n"
+        )
+        assert pp.parse_account_number(text) == "1234-5678"
+
+    def test_value_too_far_from_label_is_ignored(self):
+        text = (
+            "Account Number\n"
+            "Statement Period\n"
+            "February 1-28, 2026\n"
+            "1234-5678\n"
+        )
+        assert pp.parse_account_number(text) is None
+
+    def test_undashed_value_not_matched(self):
+        # Only the printed NNNN-NNNN form counts — a drifted
+        # layout yields None rather than a guessed value.
+        text = (
+            "Account Number: 12345678\n"
+            "Account Number\n"
+            "12345678\n"
+        )
+        assert pp.parse_account_number(text) is None
+
+    def test_no_header_returns_none(self):
+        text = (
+            "This statement was provided by Schwab.\n"
+            "Please see the disclosures section.\n"
+        )
+        assert pp.parse_account_number(text) is None
+
+    def test_bare_number_without_label_not_matched(self):
+        # A NNNN-NNNN token elsewhere on the page (CUSIP fragment,
+        # phone extension) must not be picked up without the
+        # "Account Number" anchor.
+        text = "Reference 1234-5678\n"
+        assert pp.parse_account_number(text) is None
+
+    def test_header_beyond_first_80_lines_ignored(self):
+        text = "\n" * 100 + "Account Number: 1234-5678\n"
+        assert pp.parse_account_number(text) is None
+
+
 class TestSaleRows:
     def test_sale_with_realized_gain_short_term(self):
         text = _wrap(

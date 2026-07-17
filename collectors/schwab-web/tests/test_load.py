@@ -913,6 +913,338 @@ class TestAccountRegistrationLoad:
         assert row == (None,)
 
 
+class TestAccountNumberFullLoad:
+    """Loader tests for `accounts.payload.account_number_full` —
+    the api↔web bridge key harvested from statement-PDF page-1
+    headers (INTEROP.md §1). Stored verbatim (dash kept), set only
+    when every statement for an account agrees, carried forward
+    through the accounts content-dedup, backfilled from bronze for
+    accounts loaded before the parser existed, and — when first
+    set by an incremental load — re-verified against the full
+    bronze evidence so the end state never depends on load
+    order."""
+
+    PARSED_BASE = {
+        "path": "<patched>",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28",
+        "transactions": [],
+        "positions": [],
+        "cash_summary": None,
+        "account_registration": None,
+        "account_number": "1234-5678",
+    }
+
+    @staticmethod
+    def _patch_parser(monkeypatch, by_filename=None, number="1234-5678"):
+        """Monkeypatch parse_statement_pdf; `by_filename` maps a
+        filename substring to the account_number to return."""
+        def _fake(path, statement_year=None):
+            num = number
+            if by_filename is not None:
+                num = next((v for k, v in by_filename.items() if k in path),
+                           None)
+            return dict(TestAccountNumberFullLoad.PARSED_BASE,
+                        account_number=num)
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", _fake)
+
+    @staticmethod
+    def _bronze(tmp_path, run_ts, filenames, label="Demo …NNN"):
+        return _make_bronze_run(tmp_path, run_ts, [
+            {"suffix": "NNN", "label": label,
+             "documents": [
+                 {"date": "02/28/2026", "type": "Statements",
+                  "document": "Brokerage Statement", "filename": f}
+                 for f in filenames
+             ]},
+        ])
+
+    @staticmethod
+    def _payloads(conn, suffix="NNN"):
+        return [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM accounts WHERE account_external_id = ?"
+            " ORDER BY snapshot_at", (suffix,),
+        ).fetchall()]
+
+    def test_payload_populated_from_statement(
+            self, monkeypatch, migrated, tmp_path):
+        self._patch_parser(monkeypatch)
+        run = self._bronze(tmp_path, "20260520T120000Z",
+                           ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        stats = load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert stats["account_number_updated"] == 1
+        payloads = self._payloads(migrated)
+        assert len(payloads) == 1
+        # Verbatim as printed — dash kept; gold normalises at join.
+        assert payloads[0]["account_number_full"] == "1234-5678"
+
+    def test_dedup_carries_number_across_runs(
+            self, monkeypatch, migrated, tmp_path):
+        # Run 2 rebuilds the manifest payload without the number;
+        # _upsert_account must carry it forward so the content-dedup
+        # still collapses the two runs into one row.
+        self._patch_parser(monkeypatch)
+        run1 = self._bronze(tmp_path, "20260520T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        load.load_run(migrated, run1, workers=1)
+        migrated.commit()
+        run2 = self._bronze(tmp_path, "20260601T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        stats2 = load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        assert stats2["accounts_inserted"] == 0
+        assert stats2["accounts_deduped"] == 1
+        payloads = self._payloads(migrated)
+        assert len(payloads) == 1
+        assert payloads[0]["account_number_full"] == "1234-5678"
+
+    def test_label_change_keeps_number_on_new_row(
+            self, monkeypatch, migrated, tmp_path):
+        self._patch_parser(monkeypatch)
+        run1 = self._bronze(tmp_path, "20260520T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        load.load_run(migrated, run1, workers=1)
+        migrated.commit()
+        run2 = self._bronze(tmp_path, "20260601T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"],
+                            label="Renamed …NNN")
+        load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        payloads = self._payloads(migrated)
+        assert len(payloads) == 2
+        assert all(p["account_number_full"] == "1234-5678"
+                   for p in payloads)
+
+    def test_conflicting_numbers_leave_key_absent(
+            self, monkeypatch, migrated, tmp_path, caplog):
+        import logging as _logging
+        self._patch_parser(monkeypatch, by_filename={
+            "2026-01-31": "1111-1111",
+            "2026-02-28": "2222-2222",
+        })
+        run = self._bronze(tmp_path, "20260520T120000Z", [
+            "Brokerage-Statement_2026-01-31_NNN.PDF",
+            "Brokerage-Statement_2026-02-28_NNN.PDF",
+        ])
+        with caplog.at_level(_logging.WARNING, logger="schwab-web.load"):
+            load.load_run(migrated, run, workers=1)
+        migrated.commit()
+        assert any("conflicting full account numbers" in r.message
+                   for r in caplog.records)
+        payloads = self._payloads(migrated)
+        assert len(payloads) == 1
+        assert "account_number_full" not in payloads[0]
+
+    def test_conflict_with_stored_value_clears_key(
+            self, monkeypatch, migrated, tmp_path, caplog):
+        import logging as _logging
+        self._patch_parser(monkeypatch, by_filename={
+            "2026-02-28": "1111-1111",
+            "2026-03-31": "2222-2222",
+        })
+        run1 = self._bronze(tmp_path, "20260520T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        load.load_run(migrated, run1, workers=1)
+        migrated.commit()
+        assert self._payloads(migrated)[0]["account_number_full"] == "1111-1111"
+        run2 = self._bronze(tmp_path, "20260601T120000Z",
+                            ["Brokerage-Statement_2026-03-31_NNN.PDF"])
+        with caplog.at_level(_logging.WARNING, logger="schwab-web.load"):
+            load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        assert any("conflicting full account numbers" in r.message
+                   for r in caplog.records)
+        assert all("account_number_full" not in p
+                   for p in self._payloads(migrated))
+
+    def test_reapply_same_number_is_noop(
+            self, monkeypatch, migrated, tmp_path):
+        self._patch_parser(monkeypatch)
+        run1 = self._bronze(tmp_path, "20260520T120000Z",
+                            ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        load.load_run(migrated, run1, workers=1)
+        migrated.commit()
+        run2 = self._bronze(tmp_path, "20260601T120000Z",
+                            ["Brokerage-Statement_2026-03-31_NNN.PDF"])
+        stats2 = load.load_run(migrated, run2, workers=1)
+        migrated.commit()
+        assert stats2["account_number_updated"] == 0
+        assert self._payloads(migrated)[0]["account_number_full"] == "1234-5678"
+
+    def test_backfill_populates_already_loaded_silver(
+            self, monkeypatch, tmp_path):
+        """A silver fully loaded before the parser existed gains the
+        key on a plain re-run of load: the dump-run gate skips the
+        bronze run (no statement re-parse), and the backfill re-reads
+        just the headers from bronze."""
+        args = self._run_load_args(tmp_path)
+        self._bronze(args.bronze_dir, "20260520T120000Z",
+                     ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+
+        # Initial load with a parser that surfaces no number.
+        self._patch_parser(monkeypatch, number=None)
+        self._patch_header_parser(monkeypatch, {})
+        assert load.run_load(args) == 0
+
+        # Re-run: statements must not re-parse (the run is already
+        # loaded); the header-only backfill fills the key in.
+        def _boom(path, statement_year=None):
+            raise AssertionError("statement re-parsed on plain reload")
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", _boom)
+        monkeypatch.setattr(load.pp, "parse_statement_account_number",
+                            lambda path: "1234-5678")
+        assert load.run_load(args) == 0
+
+        payloads = self._payloads_at(args.silver_db)
+        assert len(payloads) == 1
+        assert payloads[0]["account_number_full"] == "1234-5678"
+
+    def test_backfill_conflict_leaves_key_absent(
+            self, monkeypatch, migrated, tmp_path, caplog):
+        import logging as _logging
+        self._patch_parser(monkeypatch, number=None)
+        run = self._bronze(tmp_path, "20260520T120000Z", [
+            "Brokerage-Statement_2026-01-31_NNN.PDF",
+            "Brokerage-Statement_2026-02-28_NNN.PDF",
+        ])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+
+        def _by_path(path):
+            return ("1111-1111" if "2026-01-31" in str(path)
+                    else "2222-2222")
+        monkeypatch.setattr(load.pp, "parse_statement_account_number",
+                            _by_path)
+        with caplog.at_level(_logging.WARNING, logger="schwab-web.load"):
+            n = load._reconcile_account_numbers(migrated, [run])
+        migrated.commit()
+        assert n == 0
+        assert any("conflicting full account numbers" in r.message
+                   for r in caplog.records)
+        assert all("account_number_full" not in p
+                   for p in self._payloads(migrated))
+
+    def test_backfill_noop_when_key_present(
+            self, monkeypatch, migrated, tmp_path):
+        self._patch_parser(monkeypatch)
+        run = self._bronze(tmp_path, "20260520T120000Z",
+                           ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        load.load_run(migrated, run, workers=1)
+        migrated.commit()
+
+        def _boom(path):
+            raise AssertionError("backfill re-read a covered account")
+        monkeypatch.setattr(load.pp, "parse_statement_account_number",
+                            _boom)
+        assert load._reconcile_account_numbers(migrated, [run]) == 0
+
+    @staticmethod
+    def _run_load_args(tmp_path):
+        import argparse
+        return argparse.Namespace(
+            silver_db=tmp_path / "silver.db",
+            bronze_dir=tmp_path / "bronze",
+            migrations_dir=MIGRATIONS_DIR,
+            reparse=False, workers=1, verbose=False, force=False,
+        )
+
+    @staticmethod
+    def _patch_header_parser(monkeypatch, by_filename):
+        """Monkeypatch the header-only reader the reconcile pass
+        uses, mapping a filename substring to the number."""
+        monkeypatch.setattr(
+            load.pp, "parse_statement_account_number",
+            lambda path: next(
+                (v for k, v in by_filename.items() if k in str(path)),
+                None),
+        )
+
+    def _payloads_at(self, db):
+        conn = sqlite3.connect(str(db))
+        try:
+            return self._payloads(conn)
+        finally:
+            conn.close()
+
+    def test_repin_after_clear_reverified_against_bronze(
+            self, monkeypatch, tmp_path, caplog):
+        """A conflict clears the key, and a later run agreeing with
+        only one side of that conflict must not re-pin it: the
+        reconcile pass re-checks the freshly set key against every
+        statement in bronze — where the disagreeing header still
+        lives — and clears it again."""
+        import logging as _logging
+
+        by = {
+            "2026-01-31": "1111-1111",
+            "2026-02-28": "2222-2222",
+            "2026-03-31": "2222-2222",
+        }
+        self._patch_parser(monkeypatch, by_filename=by)
+        self._patch_header_parser(monkeypatch, by)
+        args = self._run_load_args(tmp_path)
+
+        self._bronze(args.bronze_dir, "20260520T120000Z",
+                     ["Brokerage-Statement_2026-01-31_NNN.PDF"])
+        assert load.run_load(args) == 0
+        assert (self._payloads_at(args.silver_db)[0]["account_number_full"]
+                == "1111-1111")
+
+        self._bronze(args.bronze_dir, "20260601T120000Z",
+                     ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        assert load.run_load(args) == 0
+        assert all("account_number_full" not in p
+                   for p in self._payloads_at(args.silver_db))
+
+        self._bronze(args.bronze_dir, "20260610T120000Z",
+                     ["Brokerage-Statement_2026-03-31_NNN.PDF"])
+        with caplog.at_level(_logging.WARNING, logger="schwab-web.load"):
+            assert load.run_load(args) == 0
+        assert any("conflicting full account numbers" in r.message
+                   for r in caplog.records)
+        assert all("account_number_full" not in p
+                   for p in self._payloads_at(args.silver_db))
+
+    def test_incremental_pin_converges_with_force_rebuild(
+            self, monkeypatch, tmp_path):
+        """An incremental load over a silver whose runs predate the
+        account-number parser must not pin the key from its one new
+        statement: the reconcile pass replays the old bronze
+        headers, finds the conflict, and leaves the key absent —
+        the same end state a from-scratch rebuild of the identical
+        bronze reaches."""
+        args = self._run_load_args(tmp_path)
+
+        # Parser-less era: statements load, no number surfaces.
+        self._patch_parser(monkeypatch, number=None)
+        self._patch_header_parser(monkeypatch, {})
+        self._bronze(args.bronze_dir, "20260520T120000Z",
+                     ["Brokerage-Statement_2026-01-31_NNN.PDF"])
+        assert load.run_load(args) == 0
+
+        # Parser era: the new statement disagrees with the old one,
+        # which only the reconcile pass ever re-reads (its run is
+        # dump_runs-skipped).
+        by = {"2026-01-31": "1111-1111", "2026-02-28": "2222-2222"}
+        self._patch_parser(monkeypatch, by_filename=by)
+        self._patch_header_parser(monkeypatch, by)
+        self._bronze(args.bronze_dir, "20260601T120000Z",
+                     ["Brokerage-Statement_2026-02-28_NNN.PDF"])
+        assert load.run_load(args) == 0
+        incremental = self._payloads_at(args.silver_db)
+        assert incremental
+        assert all("account_number_full" not in p for p in incremental)
+
+        # From-scratch rebuild of the same bronze tree.
+        rebuild_args = self._run_load_args(tmp_path)
+        rebuild_args.silver_db = tmp_path / "rebuild.db"
+        assert load.run_load(rebuild_args) == 0
+        rebuilt = self._payloads_at(rebuild_args.silver_db)
+        assert rebuilt
+        assert all("account_number_full" not in p for p in rebuilt)
+
+
 class TestTxHistoryRowKey:
     def test_stable_for_identical_inputs(self):
         tx = {"Date": "01/02/2024", "Amount": "$1.00",

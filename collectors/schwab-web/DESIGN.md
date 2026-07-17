@@ -126,13 +126,20 @@ FULL account number embedded in two places:
    `Brokerage-Statement_<YYYY-MM-DD>_<suffix>.PDF`. This carries
    only the suffix; not useful.
 2. The first page of the PDF text, in a header line like
-   `Account Number: 1234-5678` (8-digit format). pdf_parsers does
-   not currently extract this; **TODO for the gold layer or for
-   a follow-up parser pass**: read account_number once per
-   account from a statement, write it into `accounts.payload`,
-   and have gold join api↔web through that.
+   `Account Number: 1234-5678` (8-digit format).
+   `pdf_parsers.parse_account_number` extracts it — inline colon
+   form (2017-2019) or label-and-value-on-consecutive-lines form
+   (2020+) — and the loader writes it verbatim (dash kept) into
+   `accounts.payload.account_number_full`, only when every
+   statement for the account agrees on the value (see INTEROP.md
+   §1). Accounts loaded before the parser existed are backfilled
+   from bronze on the next `load` run, and a key first set by an
+   incremental load is re-checked against all bronze statements,
+   so the key depends only on the statements in bronze, never on
+   load order. Gold joins api↔web through that key, normalising
+   both sides to digits-only.
 
-Alternative: a hand-maintained map (suffix → hashValue) in `wealthdb`. Lower-effort but requires manual maintenance.
+Accounts whose statements never yield a parseable (or consistent) header carry no key; gold falls back to matching the web suffix against the trailing digits of the api account number.
 
 ### 4.2 Transaction identity is different in the two feeds
 
