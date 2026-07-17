@@ -57,22 +57,10 @@ ISO_CCY_RE = re.compile(r"^[A-Z]{3}$")
 # DB plumbing
 # ============================================================
 
-def open_db(path: Path) -> sqlite3.Connection:
-    """Open (or create) the silver DB with sensible defaults.
-
-    FIXME: byte-for-byte collectorkit's silver.open_db minus the
-    synchronous=NORMAL it sets (corruption-safe under WAL; a torn last
-    transaction re-loads from bronze). Fold: `open_db = silver.open_db`
-    as relevate and viac do.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)  # autocommit; we BEGIN/COMMIT explicitly
-    conn.row_factory = sqlite3.Row
-    # foreign_keys is a per-connection PRAGMA; it must be re-set on
-    # every new connection regardless of what's in the schema file.
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    return conn
+# Silver connections use the manual-transaction model (isolation_level=None;
+# explicit BEGIN/COMMIT per window) with row_factory=Row — exactly what
+# collectorkit's silver.open_db provides.
+open_db = silver.open_db
 
 
 # Schema versioning + the migration runner now live in
