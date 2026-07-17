@@ -508,15 +508,15 @@ def _apply_account_number(conn: sqlite3.Connection,
                                  candidates.pop())
 
 
-# FIXME: the plain INSERT collides with dump_runs' snapshot_at PRIMARY KEY
-# when --reparse revisits an already-loaded run: the IntegrityError rolls
-# that run back, so --reparse only works together with --force or on runs
-# absent from dump_runs. An INSERT OR REPLACE (or a delete-first under
-# --reparse) would honour the flag's documented contract.
 def _insert_dump_run(conn: sqlite3.Connection, snapshot_at: int,
                      run_dir: Path) -> None:
+    """Record the run in the dump_runs audit table. OR REPLACE because
+    --reparse deliberately revisits already-loaded runs (the normal
+    path is gated by already_loaded, so a duplicate snapshot_at can
+    only be a reparse) — the row re-stamps under the current
+    silver_schema_version instead of colliding with the PK."""
     conn.execute(
-        "INSERT INTO dump_runs"
+        "INSERT OR REPLACE INTO dump_runs"
         " (snapshot_at, silver_schema_version, run_dir)"
         " VALUES (?, ?, ?)",
         (snapshot_at, silver.current_schema_version(conn), str(run_dir)),

@@ -151,17 +151,25 @@ PAGINATION_HIDDEN_LI_CLASS = "sdps-hide"
 # to "Last3Months" in the live SPA even though the saved-state HTML
 # snapshot in samples/ shows "Last10Years" selected — so we
 # explicitly drive select_option rather than trusting the default.
-# "Custom" exposes two date inputs whose DOM we don't have a
-# sample of yet; a custom date range is TODO.
+# Both pages share the custom mode under the value
+# "SpecifyDateRange" (rendered label "Custom date range");
+# download.fill_custom_date_range drives the two datepickers a live
+# probe sampled. The saved-state sample's "Custom" value is gone from
+# the live page — the option set below is the live 2026-07 probe's,
+# which also carries month/year presets the sample predated.
 DATE_RANGE_SELECT_ID = "date-range-select-id"
 DATE_RANGE_VALUES = (
     "Today",
     "Last7Days",
+    "CurrentMonth",
+    "PreviousMonth",
     "Last3Months",
     "Last6Months",
+    "YearToDate",
+    "PreviousYear",
     "Last5Years",
     "Last10Years",   # longest preset; "all available"
-    "Custom",
+    "SpecifyDateRange",
 )
 # 3-month default matches the convention of the sibling
 # collectors (schwab-api, ubs-psn, ubs-web).

@@ -310,6 +310,19 @@ class TestDumpRunIdempotency:
         other = load.parse_snapshot_at("20260521T130000Z")
         assert load.already_loaded(migrated, other) is False
 
+    def test_reparse_reinsert_replaces_instead_of_colliding(
+            self, migrated, tmp_path):
+        """--reparse revisits already-loaded runs, so the same
+        snapshot_at is recorded twice; the second insert must
+        re-stamp the row, not abort the run on the PK."""
+        sa = load.parse_snapshot_at("20260520T120000Z")
+        load._insert_dump_run(migrated, sa, tmp_path / "a")
+        load._insert_dump_run(migrated, sa, tmp_path / "a")
+        rows = migrated.execute(
+            "SELECT COUNT(*) FROM dump_runs WHERE snapshot_at = ?", (sa,),
+        ).fetchone()
+        assert rows[0] == 1
+
 
 # ============================================================
 # Synthetic activity_id stability

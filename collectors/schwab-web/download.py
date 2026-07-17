@@ -35,7 +35,9 @@ import json
 import logging
 import os
 import re
+import signal
 import tempfile
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +50,24 @@ log = logging.getLogger("schwab-web.download")
 # Same as login.py — generous defaults for the heavy SPA.
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 60_000
+# A pagination swap re-fetches the page's rows server-side, which on
+# wide date ranges (Last5Years / All) regularly outlives the old 10s
+# wait — hence its own, longer budget.
+PAGE_SWAP_TIMEOUT_MS = 30_000
+
+# More-detail walk pacing. A modal-heavy page costs ~1-2 min at
+# baseline (~25 rows x open/read/close), and a degraded SPA (runaway
+# change detection starving every protocol call) can stretch a lap
+# several-fold — or, at the extreme, wedge it entirely, which no
+# per-call timeout catches because page.evaluate has none. The lap
+# deadline is the hard ceiling for that case; the heartbeat keeps a
+# slow lap visibly alive; the notice threshold flags degradation
+# without treating it as an error.
+PAGE_DETAIL_DEADLINE_S = 600
+DETAIL_HEARTBEAT_S = 30
+SLOW_LAP_NOTICE_S = 180
+MAX_DETAIL_RECOVERIES = 2
+RECOVERY_DEADLINE_S = 180
 
 # Bronze run-directory naming: <bronze-dir>/<UTC-timestamp>/
 RUN_DIR_FMT = "%Y%m%dT%H%M%SZ"
@@ -264,15 +284,29 @@ def select_date_range(page, value: str) -> None:
         raise ValueError(
             f"unknown date range {value!r}; valid: {sorted(valid)}"
         )
-    if value in ("Custom", "SpecifyDateRange"):
-        # Custom modes (one per page) expose extra date inputs
-        # we don't have a sample of yet. Fail loud rather than
-        # silently leaving the default in place.
+    if value == "SpecifyDateRange":
+        # The custom mode needs its two date inputs filled —
+        # that's fill_custom_date_range's job. Selecting it bare
+        # would leave the filter dateless, so fail loud.
         raise NotImplementedError(
-            f"custom date-range mode {value!r} not implemented; "
-            "pass a preset"
+            f"custom date-range mode {value!r} takes dates; "
+            "use fill_custom_date_range, or pass a preset"
         )
-    n_set = page.evaluate(
+    n_set = _set_date_range_raw(page, value)
+    if not n_set:
+        raise RuntimeError(
+            f"no <option value={value!r}> found in any "
+            f"#{schwab.DATE_RANGE_SELECT_ID}"
+        )
+    log.debug("date range set to %s on %d <select> element(s)", value, n_set)
+
+
+def _set_date_range_raw(page, value: str) -> int:
+    """JS-set every date-range <select> to `value` (no validation, no
+    custom-mode guard) and fire change/input. Returns how many selects
+    took the value. select_date_range is the guarded public face; the
+    --debug custom-mode probe uses this directly."""
+    return page.evaluate(
         """(args) => {
             const els = document.querySelectorAll('#' + args.id);
             let n = 0;
@@ -296,12 +330,151 @@ def select_date_range(page, value: str) -> None:
         }""",
         {"id": schwab.DATE_RANGE_SELECT_ID, "value": value},
     )
-    if not n_set:
+
+
+def fill_custom_date_range(page, since, until) -> None:
+    """Exact window: select SpecifyDateRange and fill the two
+    datepickers the SPA mounts (From then To in DOM order; both
+    inner inputs share id "datepicker-input", so selection is
+    positional). Dates are typed as mm/dd/yyyy — the format the
+    widget's helper text names. Statements and Tx-history share the
+    option value and widget; the Search click that follows applies
+    the filter, same as the preset path."""
+    if not _set_date_range_raw(page, "SpecifyDateRange"):
         raise RuntimeError(
-            f"no <option value={value!r}> found in any "
-            f"#{schwab.DATE_RANGE_SELECT_ID}"
-        )
-    log.debug("date range set to %s on %d <select> element(s)", value, n_set)
+            "date-range select offers no SpecifyDateRange option")
+    page.wait_for_function(
+        "() => document.querySelectorAll('#datepicker-input').length >= 2",
+        timeout=LANDMARK_TIMEOUT_MS,
+    )
+    inputs = page.locator("#datepicker-input")
+    for nth, d in ((0, since), (1, until)):
+        el = inputs.nth(nth)
+        el.fill(f"{d.month:02d}/{d.day:02d}/{d.year}")
+        # Playwright's fill fires input events; Angular's model sync
+        # additionally wants a change on blur.
+        el.dispatch_event("change")
+    log.info("tx-history custom range set: %s..%s", since, until)
+
+
+def _date_range_facts(page) -> list:
+    """Structured snapshot of every date-range filter widget: the
+    select's state plus the attributes and values of any input-like
+    elements in its enclosing container. Dates and widget metadata
+    only — no result rows, no account data."""
+    return page.evaluate(
+        """(id) => {
+            const out = [];
+            for (const el of document.querySelectorAll('#' + id)) {
+                let wrap = el;
+                for (let i = 0; i < 3 && wrap.parentElement; i++)
+                    wrap = wrap.parentElement;
+                const inputs = [];
+                for (const inp of wrap.querySelectorAll(
+                        'input, sdps-datepicker, [role="textbox"]')) {
+                    inputs.push({
+                        tag: inp.tagName.toLowerCase(),
+                        id: inp.id || null,
+                        name: inp.getAttribute('name'),
+                        type: inp.getAttribute('type'),
+                        placeholder: inp.getAttribute('placeholder'),
+                        ariaLabel: inp.getAttribute('aria-label'),
+                        value: inp.value ?? null,
+                        visible: !!(inp.offsetWidth || inp.offsetHeight),
+                    });
+                }
+                out.push({
+                    selected: el.value,
+                    options: Array.from(el.options).map(o => o.value),
+                    inputs,
+                    containerText:
+                        wrap.textContent.replace(/\\s+/g, ' ')
+                            .trim().slice(0, 400),
+                    containerHtml: wrap.outerHTML,
+                });
+            }
+            // Custom-mode date inputs mount in a sibling subtree, not
+            // near the select — sweep the whole page for them too.
+            const pickers = [];
+            for (const dp of document.querySelectorAll(
+                    'sdps-datepicker, #datepicker-input,' +
+                    ' input[name="datepicker"]')) {
+                pickers.push({
+                    tag: dp.tagName.toLowerCase(),
+                    id: dp.id || null,
+                    value: dp.value ?? null,
+                    nearText: (dp.closest('sdps-datepicker')?.parentElement
+                               ?? dp.parentElement)
+                        ?.textContent.replace(/\\s+/g, ' ')
+                        .trim().slice(0, 120) ?? null,
+                });
+            }
+            if (pickers.length)
+                out.push({ pageDatepickers: pickers });
+            return out;
+        }""",
+        schwab.DATE_RANGE_SELECT_ID,
+    )
+
+
+_CUSTOM_PROBES_DONE: set = set()
+
+
+def probe_custom_date_range(page, screenshot_dir, custom_value: str,
+                            restore_value: str) -> None:
+    """--debug discovery aid for the custom date-range mode (both
+    pages share the "SpecifyDateRange" value): momentarily selects it,
+    records
+    what the SPA mounts (input ids/names/placeholders/values, container
+    text, a DOM fragment + screenshot when a screenshot dir is given),
+    then restores `restore_value`. Runs once per mode per process,
+    before any Search/Apply — the filter is never applied in the custom
+    state. Best-effort: failures warn and the walk continues."""
+    if custom_value in _CUSTOM_PROBES_DONE:
+        return
+    _CUSTOM_PROBES_DONE.add(custom_value)
+    try:
+        before = _date_range_facts(page)
+        log.info("date-range-probe[%s] preset facts: %s",
+                 restore_value,
+                 json.dumps([{k: v for k, v in f.items()
+                               if k != "containerHtml"} for f in before]))
+        if not _set_date_range_raw(page, custom_value):
+            log.info("date-range-probe[%s]: no select offers this option",
+                     custom_value)
+            return
+        page.wait_for_timeout(750)
+        after = _date_range_facts(page)
+        log.info("date-range-probe[%s] custom facts: %s",
+                 custom_value,
+                 json.dumps([{k: v for k, v in f.items()
+                               if k != "containerHtml"} for f in after]))
+        if screenshot_dir is not None:
+            try:
+                screenshot_dir.mkdir(parents=True, exist_ok=True)
+                frag = screenshot_dir / (
+                    f"{bronze.ts_slug()}-date-range-{custom_value}"
+                    "-fragment.html")
+                frag.write_text(
+                    "\n\n".join(f["containerHtml"] for f in after
+                                if "containerHtml" in f),
+                    encoding="utf-8")
+                log.info("date-range-probe[%s]: fragment -> %s",
+                         custom_value, frag)
+            except Exception as e:
+                log.warning("date-range-probe[%s]: fragment write "
+                            "failed: %s", custom_value, e)
+            maybe_screenshot(page, screenshot_dir,
+                             f"date-range-{custom_value}")
+    except Exception as e:
+        log.warning("date-range-probe[%s] failed: %s", custom_value, e)
+    finally:
+        try:
+            _set_date_range_raw(page, restore_value)
+            page.wait_for_timeout(250)
+        except Exception as e:
+            log.warning("date-range-probe[%s]: restore to %r failed: %s",
+                        custom_value, restore_value, e)
 
 def click_visible_button(page, text: str, timeout_s: int = 5) -> bool:
     """Click the first visible button on the page whose text is
@@ -411,24 +584,13 @@ def click_next_page(page, pagination_id: str) -> bool:
     """
     # Read the currently-selected page number from
     # `<a aria-current="page" id="pagination-N-link">`.
-    current = page.locator(
-        'a[aria-current="page"][id^="pagination-"]'
-    ).first
-    if current.count() == 0:
+    n = _current_page_num(page)
+    if n is None:
         log.info("click_next_page (%s): no aria-current page marker "
                  "— single-page result set or no pagination",
                  pagination_id)
         return False
-    try:
-        cid = current.get_attribute("id") or ""
-    except Exception:
-        cid = ""
-    m = re.match(r"pagination-(\d+)-link", cid)
-    if not m:
-        log.info("click_next_page: unexpected current-page id %r; "
-                 "stopping", cid)
-        return False
-    next_n = int(m.group(1)) + 1
+    next_n = n + 1
     next_link = page.locator(f"#pagination-{next_n}-link").first
     if next_link.count() == 0:
         # Schwab truncates visible numbered links (1, 2, 3, Next)
@@ -460,31 +622,99 @@ def click_next_page(page, pagination_id: str) -> bool:
             return False
         log.debug("click_next_page: falling back to Next stepper for page %d",
                   next_n)
+    # Hit-test guard: a forced click still goes to the topmost
+    # element at the link's coordinates, so a lingering modal
+    # overlay (see _dismiss_open_modal) silently eats the flip.
+    # Name the covering element, dismiss, and re-check once —
+    # the named element is the diagnostic when flips still fail.
+    try:
+        next_link.scroll_into_view_if_needed(timeout=5_000)
+    except Exception:
+        pass
+    try:
+        covering = next_link.evaluate(
+            """el => {
+                const r = el.getBoundingClientRect();
+                const top = document.elementFromPoint(
+                    r.x + r.width / 2, r.y + r.height / 2);
+                if (!top || el.contains(top) || top.contains(el))
+                    return null;
+                const c = top.closest(
+                    '[class*="overlay"], [role="dialog"]') || top;
+                return (c.tagName + ' ' + (c.id || '') + ' '
+                        + (c.className || '')).trim().slice(0, 120);
+            }"""
+        )
+    except Exception:
+        covering = None
+    if covering:
+        # A routine, handled condition (the More-detail modal's
+        # overlay re-shows between the row loop and the flip);
+        # WARNING is reserved for a dismissal that fails or a page
+        # that never advances.
+        log.info("click_next_page: pagination link covered by %r; "
+                 "dismissing before the click", covering)
+        _dismiss_open_modal(page)
     # Real click with force=True: bypasses Playwright's
     # actionability waits (the anchor's bounding rect can flicker
     # during the Angular page swap) while still emitting a
-    # TRUSTED click — Schwab's pagination handler appears to
-    # ignore untrusted (JS dispatch_event) clicks after the first.
+    # TRUSTED click. A click that lands but produces no swap gets
+    # one retry (an overlay mid-animation or a re-render race can
+    # eat one); a still-stuck page returns False so the caller
+    # stops instead of re-scraping the page it is already on.
+    for attempt in (1, 2):
+        try:
+            next_link.click(force=True, timeout=10_000)
+        except Exception as e:
+            log.warning("click_next_page: click on page %d link failed: %s",
+                        next_n, e)
+            return False
+        # Wait for the new page to become current — guards against
+        # the next iteration reading the old page's already-detached
+        # rows. Polled via the id ATTRIBUTE: the refreshed marker can
+        # sit display-hidden inside the Stencil wrapper, where a
+        # visibility wait times out even though the swap succeeded.
+        try:
+            page.wait_for_function(
+                """(nid) => document.querySelector(
+                       'a[aria-current="page"][id^="pagination-"]'
+                   )?.id === nid""",
+                arg=f"pagination-{next_n}-link",
+                timeout=PAGE_SWAP_TIMEOUT_MS,
+            )
+            return True
+        except Exception:
+            pass
+        landed = _current_page_num(page)
+        if landed == next_n:
+            return True
+        if attempt == 1:
+            log.info("click_next_page: still on page %s after clicking "
+                     "for page %d; retrying once", landed, next_n)
+    log.warning(
+        "click_next_page: page %d never became current (still on %s) — "
+        "stopping this walk rather than re-scraping the current page",
+        next_n, landed,
+    )
+    return False
+
+
+def _current_page_num(page) -> int | None:
+    """Page number from the `<a aria-current="page"
+    id="pagination-N-link">` marker, or None when no pagination (or an
+    unrecognised id scheme) is rendered. Attribute reads only — the
+    marker can be display-hidden inside the Stencil wrapper."""
+    current = page.locator(
+        'a[aria-current="page"][id^="pagination-"]'
+    ).first
+    if current.count() == 0:
+        return None
     try:
-        next_link.click(force=True, timeout=10_000)
-    except Exception as e:
-        log.warning("click_next_page: click on page %d link failed: %s",
-                    next_n, e)
-        return False
-    # Wait for the new page to actually become current — guards
-    # against the next iteration's iter_visible_rows reading the
-    # old page's already-DOM-detached rows.
-    try:
-        page.wait_for_selector(
-            f'#pagination-{next_n}-link[aria-current="page"]',
-            timeout=10_000,
-        )
-    except Exception as e:
-        log.warning(
-            "click_next_page: page %d did not become current "
-            "after click: %s", next_n, e,
-        )
-    return True
+        cid = current.get_attribute("id") or ""
+    except Exception:
+        cid = ""
+    m = re.match(r"pagination-(\d+)-link", cid)
+    return int(m.group(1)) if m else None
 
 # ============================================================
 # Per-document download
@@ -498,19 +728,38 @@ def _safe(s: str, fallback: str = "x") -> str:
     return out or fallback
 
 def _dismiss_open_modal(page) -> None:
-    """Press Escape to dismiss any currently-open Schwab modal.
+    """Dismiss any open Schwab modal and wait until its overlay is
+    actually gone.
 
-    sdps-modal honors Escape per WAI-ARIA dialog conventions.
-    No-op if nothing is open. Used between Transaction History
-    accounts to make sure a still-open filter modal can't
-    intercept the next `selector_button.click()` with its
-    `.sdps-modal__overlay--open` z-index 101003 overlay.
+    sdps-modal honors Escape per WAI-ARIA dialog conventions, but its
+    `.sdps-modal__overlay--open` (z-index 101003) outlives the dialog
+    for the duration of the close animation — and anything it still
+    covers eats every click underneath, including pagination flips
+    (force-clicks skip actionability checks, not hit-testing). So
+    dismissal is verified: no-op when nothing is open, Escape and
+    re-check otherwise, warning if an overlay refuses to clear.
     """
+    overlay_gone = """() => !document.querySelector(
+            '.sdps-modal__overlay--open')
+        && !Array.from(document.querySelectorAll('[role="dialog"]'))
+            .some(d => d.offsetWidth || d.offsetHeight)"""
+    # Short probes with an Escape between each (a clean page returns
+    # on the first), then one longer grace for the close animation.
+    for _ in range(3):
+        try:
+            page.wait_for_function(overlay_gone, timeout=500)
+            return
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
     try:
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        page.wait_for_function(overlay_gone, timeout=2_000)
+        return
     except Exception:
-        pass
+        log.warning("modal overlay still open after repeated Escape — "
+                    "the next click may be intercepted")
 
 def _confirm_export_tax_modal(page) -> None:
     """If Schwab popped its "Export Tax Data" confirmation modal,
@@ -675,7 +924,9 @@ def download_one(page, row: dict, target_dir: Path) -> list[dict]:
 def download_account(page, account: dict, dest_dir: Path,
                      dry_run: bool,
                      screenshot_dir: Path | None,
-                     date_range: str) -> dict:
+                     date_range: str,
+                     debug: bool = False,
+                     exact_window: tuple | None = None) -> dict:
     """Walk every page of results for `account`, downloading each
     document into <dest_dir>/statements/<suffix>/. Returns a
     per-account summary for the run manifest.
@@ -687,7 +938,20 @@ def download_account(page, account: dict, dest_dir: Path,
     page.wait_for_timeout(1500)
 
     configure_doc_type_filter(page)
-    select_date_range(page, date_range)
+    custom_set = False
+    if exact_window is not None:
+        try:
+            fill_custom_date_range(page, exact_window[0], exact_window[1])
+            custom_set = True
+        except Exception as e:
+            log.warning("statements …%s: custom range failed (%s); "
+                        "falling back to preset %r", account["suffix"],
+                        e, date_range)
+    if not custom_set:
+        select_date_range(page, date_range)
+        if debug:
+            probe_custom_date_range(page, screenshot_dir,
+                                    "SpecifyDateRange", date_range)
     click_search(page)
 
     expected = wait_for_results(page)
@@ -906,6 +1170,53 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
         page.wait_for_timeout(300)
     return entries
 
+class _WalkStalled(RuntimeError):
+    """A watchdog deadline expired inside a page walk."""
+
+
+@contextlib.contextmanager
+def _deadline(seconds: int, label: str):
+    """SIGALRM watchdog: raises _WalkStalled out of whatever call is
+    executing when `seconds` elapse — the only reliable escape from a
+    protocol call queued behind a busy page main thread, since
+    page.evaluate has no driver-side timeout at all. Real signals
+    only fire on the main thread; elsewhere (and on platforms
+    without SIGALRM) this is a no-op passthrough."""
+    if (not hasattr(signal, "SIGALRM")
+            or threading.current_thread() is not threading.main_thread()):
+        yield
+        return
+
+    def _fire(signum, frame):
+        raise _WalkStalled(label)
+
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev)
+
+
+def _recover_tx_page(page, reapply) -> bool:
+    """Reload the tx-history page to shed a degraded SPA and
+    re-establish the walk's context via `reapply` (account selection,
+    date filter, Search). Runs under its own deadline — recovery on a
+    wedged page can block exactly like the walk it rescues. Returns
+    False when recovery itself fails."""
+    try:
+        with _deadline(RECOVERY_DEADLINE_S, "tx-history recovery"):
+            page.reload(wait_until="domcontentloaded",
+                        timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(2000)
+            reapply()
+        return True
+    except Exception as e:
+        log.warning("tx-history recovery failed: %s", e)
+        return False
+
+
 def _scroll_tx_table(page) -> None:
     """Scroll the tx-history table's scrollable parent to the
     bottom repeatedly to force virtualised rows into the DOM.
@@ -995,7 +1306,8 @@ def _parse_more_modal_text(text: str) -> dict:
                 fields[key] = val
     return fields
 
-def _scrape_more_details(page, account_suffix: str) -> list[dict]:
+def _scrape_more_details(page, account_suffix: str,
+                         reapply=None) -> list[dict]:
     """Walk every pagination page of the tx-history table,
     scroll-load all virtualised rows, click each row's "More"
     link, capture the per-row detail modal contents.
@@ -1009,64 +1321,108 @@ def _scrape_more_details(page, account_suffix: str) -> list[dict]:
     no More link), modal-open failures retry once then move on,
     and a per-row exception doesn't abort the per-account
     scrape.
+
+    Each page lap runs under a hard SIGALRM deadline: the SPA can
+    degrade into a busy loop that starves every protocol call, and
+    a wedged lap would otherwise block forever with nothing
+    logged. On expiry the walk keeps the details it has and, given
+    a `reapply` callback, reloads the page to shed the degraded
+    SPA and restarts from page 1 — `seen_keys` makes the replay of
+    already-scraped pages cheap (no modal is reopened). A
+    heartbeat line lands every ~30s so a slow page is visibly slow
+    rather than silent.
     """
 
     details: list[dict] = []
     seen_keys: set[str] = set()
     page_n = 0
+    recoveries = 0
     while True:
         page_n += 1
         log.info("more-detail …%s: scraping page %d", account_suffix, page_n)
-        _scroll_tx_table(page)
-        rows = page.locator(schwab.TX_ROW_SELECTOR).all()
-        log.debug("more-detail …%s pg %d: %d rendered rows",
-                  account_suffix, page_n, len(rows))
-        for row_idx, row in enumerate(rows):
-            cells = _extract_tx_row_cells(row)
-            if not cells:
-                continue
-            row_key = hashlib.sha256(
-                "|".join(cells).encode("utf-8")
-            ).hexdigest()[:16]
-            if row_key in seen_keys:
-                continue
-            seen_keys.add(row_key)
-            more_btn = row.locator(
-                'a:has-text("More"), button:has-text("More")'
-            ).first
-            if more_btn.count() == 0:
-                continue
-            try:
-                more_btn.click(timeout=5_000)
-            except Exception as e:
-                log.debug("more-detail row %d click failed: %s", row_idx, e)
-                continue
-            try:
-                # Playwright 1.49's Locator.filter() doesn't take
-                # a `visible` kwarg — that's a newer-version API.
-                # Use the Playwright-specific `:visible` CSS
-                # extension so we still pick only the currently-
-                # displayed dialog (a previously-dismissed modal
-                # may still be in the DOM, just `display:none`).
-                modal = page.locator('[role="dialog"]:visible').first
-                modal.wait_for(state="visible", timeout=5_000)
-                raw_text = modal.inner_text()
-                fields = _parse_more_modal_text(raw_text)
-                details.append({
-                    "row_key": row_key,
-                    "row_cells": cells,
-                    "fields": fields,
-                    "raw_text": raw_text,
-                })
-            except Exception as e:
-                log.warning("more-detail row %d capture failed: %s",
-                            row_idx, e)
-            finally:
-                _dismiss_open_modal(page)
-        if not click_next_page(page, schwab.TX_PAGINATION_ELEMENT_ID):
+        lap_start = last_beat = time.monotonic()
+        advanced = False
+        try:
+            with _deadline(PAGE_DETAIL_DEADLINE_S,
+                           f"more-detail page {page_n}"):
+                _scroll_tx_table(page)
+                rows = page.locator(schwab.TX_ROW_SELECTOR).all()
+                log.debug("more-detail …%s pg %d: %d rendered rows",
+                          account_suffix, page_n, len(rows))
+                for row_idx, row in enumerate(rows):
+                    if time.monotonic() - last_beat > DETAIL_HEARTBEAT_S:
+                        last_beat = time.monotonic()
+                        log.info("more-detail …%s pg %d: row %d/%d, "
+                                 "%d detail(s) so far", account_suffix,
+                                 page_n, row_idx, len(rows), len(details))
+                    cells = _extract_tx_row_cells(row)
+                    if not cells:
+                        continue
+                    row_key = hashlib.sha256(
+                        "|".join(cells).encode("utf-8")
+                    ).hexdigest()[:16]
+                    if row_key in seen_keys:
+                        continue
+                    seen_keys.add(row_key)
+                    more_btn = row.locator(
+                        'a:has-text("More"), button:has-text("More")'
+                    ).first
+                    if more_btn.count() == 0:
+                        continue
+                    try:
+                        more_btn.click(timeout=5_000)
+                    except Exception as e:
+                        log.debug("more-detail row %d click failed: %s",
+                                  row_idx, e)
+                        continue
+                    try:
+                        # Playwright 1.49's Locator.filter() doesn't take
+                        # a `visible` kwarg — that's a newer-version API.
+                        # Use the Playwright-specific `:visible` CSS
+                        # extension so we still pick only the currently-
+                        # displayed dialog (a previously-dismissed modal
+                        # may still be in the DOM, just `display:none`).
+                        modal = page.locator('[role="dialog"]:visible').first
+                        modal.wait_for(state="visible", timeout=5_000)
+                        raw_text = modal.inner_text()
+                        fields = _parse_more_modal_text(raw_text)
+                        details.append({
+                            "row_key": row_key,
+                            "row_cells": cells,
+                            "fields": fields,
+                            "raw_text": raw_text,
+                        })
+                    except Exception as e:
+                        log.warning("more-detail row %d capture failed: %s",
+                                    row_idx, e)
+                    finally:
+                        _dismiss_open_modal(page)
+                advanced = click_next_page(
+                    page, schwab.TX_PAGINATION_ELEMENT_ID)
+                if advanced:
+                    page.wait_for_load_state("domcontentloaded",
+                                             timeout=NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(800)
+        except _WalkStalled as stall:
+            recoveries += 1
+            recover = (reapply is not None
+                       and recoveries <= MAX_DETAIL_RECOVERIES)
+            log.warning(
+                "more-detail …%s: %s exceeded %ds — %s", account_suffix,
+                stall, PAGE_DETAIL_DEADLINE_S,
+                "reloading to shed the degraded SPA and resuming"
+                if recover else "keeping the details captured so far",
+            )
+            if not recover or not _recover_tx_page(page, reapply):
+                break
+            page_n = 0
+            continue
+        lap_s = time.monotonic() - lap_start
+        if lap_s > SLOW_LAP_NOTICE_S:
+            log.info("more-detail …%s pg %d took %.0fs — SPA under load; "
+                     "details keep accruing", account_suffix, page_n, lap_s)
+        if not advanced:
             break
-        page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-        page.wait_for_timeout(800)
     log.info("more-detail …%s: captured %d record(s) across %d page(s)",
              account_suffix, len(details), page_n)
     return details
@@ -1106,11 +1462,62 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
 # JSON-emit pass lives in load.py against those snapshots so the
 # scraper and the parser can iterate independently.
 
+def _apply_tx_filter(page, account_suffix: str, tx_range: str,
+                     exact_window: tuple | None,
+                     debug: bool = False,
+                     screenshot_dir: Path | None = None) -> None:
+    """Set the tx-history date-range filter and click Search.
+
+    Tx-history's date-range <select> sits on the main page (the
+    "Filter by Transaction Types" launcher is a different concern);
+    select_date_range JS-sets the value and the Search button
+    applies it, same shape as the Statements page. Best-effort
+    throughout — partial capture is still useful on a UI tweak.
+
+    An exact window (an ISO-date --lookback) beats the nearest-preset
+    mapping: SpecifyDateRange + the two datepickers give tx-history
+    the window as asked, no over-fetch; any failure falls back to the
+    preset that covers the window. Under ``debug`` the custom-mode
+    discovery probe runs between the preset set and the Search (once
+    per process). Also the re-establishment step after a
+    degraded-SPA recovery reload, where ``debug`` stays off so the
+    probe never re-fires.
+    """
+    custom_set = False
+    if exact_window is not None:
+        try:
+            fill_custom_date_range(page, exact_window[0], exact_window[1])
+            custom_set = True
+        except Exception as e:
+            log.warning("tx-history …%s: custom range failed (%s); "
+                        "falling back to preset %r", account_suffix,
+                        e, tx_range)
+    if not custom_set:
+        try:
+            select_date_range(page, tx_range)
+            if debug:
+                probe_custom_date_range(page, screenshot_dir,
+                                        "SpecifyDateRange", tx_range)
+        except Exception as e:
+            log.warning("tx-history …%s: could not set date range to %r: %s",
+                        account_suffix, tx_range, e)
+    try:
+        page.locator(f"#{schwab.TX_SEARCH_BUTTON_ID}").first.click(
+            force=True, timeout=10_000,
+        )
+    except Exception as e:
+        log.warning("tx-history …%s: could not click Search: %s",
+                    account_suffix, e)
+    page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    page.wait_for_timeout(2000)
+
+
 def capture_transactions(page, account: dict, dest_dir: Path,
                          screenshot_dir: Path | None,
                          date_range: str,
                          with_more_detail: bool = False,
-                         debug: bool = False) -> dict:
+                         debug: bool = False,
+                         exact_window: tuple | None = None) -> dict:
     """Per-account: select the account, set the date-range
     filter, click Search, then drive the Export modal to save
     CSV + JSON + XML of the full filtered transaction set under
@@ -1136,19 +1543,6 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
     page.wait_for_timeout(1500)
 
-    # The date-range <select> and Apply button live inside a
-    # filter modal that's hidden until the launcher is clicked.
-    # Open it, set the range, then click the modal's Apply.
-    # Best-effort throughout — partial HTML capture is still
-    # useful if any step fails on a UI tweak.
-    # Tx-history's date-range <select> is on the main page (not
-    # inside a modal — the "Filter by Transaction Types"
-    # launcher is for the transaction-type checkboxes, a
-    # different concern). select_date_range JS-sets the value;
-    # we then click the Search button (id=lbl_search-button) to
-    # apply the filter, same shape as the Statements page's
-    # Search.
-    #
     # `date_range` from the CLI uses Statements' option values;
     # tx-history exposes a disjoint set (different option names,
     # different granularities). Map each Statements value to the
@@ -1164,20 +1558,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
         "Last10Years":  "All",
     }
     tx_range = _STATEMENT_TO_TX_RANGE.get(date_range, date_range)
-    try:
-        select_date_range(page, tx_range)
-    except Exception as e:
-        log.warning("tx-history …%s: could not set date range to %r: %s",
-                    account["suffix"], tx_range, e)
-    try:
-        page.locator(f"#{schwab.TX_SEARCH_BUTTON_ID}").first.click(
-            force=True, timeout=10_000,
-        )
-    except Exception as e:
-        log.warning("tx-history …%s: could not click Search: %s",
-                    account["suffix"], e)
-    page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-    page.wait_for_timeout(2000)
+    _apply_tx_filter(page, account["suffix"], tx_range, exact_window,
+                     debug=debug, screenshot_dir=screenshot_dir)
 
     try:
         url = page.evaluate("() => location.href") or page.url
@@ -1220,7 +1602,15 @@ def capture_transactions(page, account: dict, dest_dir: Path,
 
     more_details_count = 0
     if with_more_detail:
-        details = _scrape_more_details(page, account["suffix"])
+        def _reapply():
+            select_account(page, account["entry_id"])
+            page.wait_for_load_state("domcontentloaded",
+                                     timeout=NAV_TIMEOUT_MS)
+            page.wait_for_timeout(1500)
+            _apply_tx_filter(page, account["suffix"], tx_range, exact_window)
+
+        details = _scrape_more_details(page, account["suffix"],
+                                       reapply=_reapply)
         if details:
             try:
                 (out_dir / "more-details.json").write_text(
@@ -1255,7 +1645,8 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
                      screenshot_dir: Path | None,
                      date_range: str,
                      with_more_detail: bool = False,
-                     debug: bool = False) -> list[dict]:
+                     debug: bool = False,
+                     exact_window: tuple | None = None) -> list[dict]:
     """Navigate to the Transaction History page, then capture per
     account. Returns the per-account list to merge into the
     run.json manifest."""
@@ -1275,6 +1666,7 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
             entry = capture_transactions(
                 page, acct, dest_dir, screenshot_dir, date_range,
                 with_more_detail=with_more_detail, debug=debug,
+                exact_window=exact_window,
             )
         except Exception as e:
             log.error(
@@ -1325,7 +1717,8 @@ def walk(page, dest_root: Path, *, mode: str = "all",
          screenshot_dir: Path | None = None,
          date_range: str = schwab.DATE_RANGE_DEFAULT,
          with_more_detail: bool = False,
-         debug: bool = False) -> dict:
+         debug: bool = False,
+         exact_window: tuple | None = None) -> dict:
     """Run the configured scrape against an already-authenticated
     page. Returns the manifest dict.
 
@@ -1413,7 +1806,8 @@ def walk(page, dest_root: Path, *, mode: str = "all",
                 try:
                     per_acct = download_account(
                         page, acct, run_dir, dry_run, screenshot_dir,
-                        date_range,
+                        date_range, debug=debug,
+                        exact_window=exact_window,
                     )
                 except Exception as e:
                     log.error(
@@ -1436,6 +1830,7 @@ def walk(page, dest_root: Path, *, mode: str = "all",
             tx_entries = run_transactions(
                 page, accounts, run_dir, screenshot_dir, date_range,
                 with_more_detail=with_more_detail, debug=debug,
+                exact_window=exact_window,
             )
             run_summary["transactions"] = tx_entries
             _write_manifest(run_dir, run_summary)

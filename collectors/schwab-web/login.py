@@ -463,7 +463,8 @@ def run_manual(profile_dir: Path,
                with_more_detail: bool = False,
                cli_mfa: bool = True,
                mfa_timeout_s: int,
-               debug: bool = False) -> int:
+               debug: bool = False,
+               exact_window: tuple | None = None) -> int:
     """One-shot: CLI-MFA login → scrape → exit.
 
     Schwab invalidates the persistent profile's session within
@@ -511,8 +512,15 @@ def run_manual(profile_dir: Path,
                         "have to drive Log In + 2FA manually)"
                     )
                 else:
-                    ok = _run_cli_mfa(page, screenshot_dir)
-                    if not ok:
+                    verdict = _run_cli_mfa(page, screenshot_dir)
+                    if verdict == "abort":
+                        log.error(
+                            "CLI-MFA could not complete; re-run download "
+                            "for a fresh attempt, or drive the login "
+                            "via ./schwab-web vnc-login"
+                        )
+                        return 8
+                    if verdict == "manual":
                         log.warning(
                             "CLI-MFA path failed; falling back to manual "
                             "drive — open a VNC session (./schwab-web "
@@ -521,9 +529,9 @@ def run_manual(profile_dir: Path,
 
             if cli_mfa:
                 log.info(
-                    "2FA submitted; waiting for post-auth landing page "
-                    "(/app/...). If anything stalls, open a VNC "
-                    "session (./schwab-web vnc-login) to recover."
+                    "waiting for the post-auth landing page (/app/...). "
+                    "If anything stalls, open a VNC session "
+                    "(./schwab-web vnc-login) to recover."
                 )
             else:
                 log.info(
@@ -571,6 +579,7 @@ def run_manual(profile_dir: Path,
                     date_range=date_range,
                     with_more_detail=with_more_detail,
                     debug=debug,
+                    exact_window=exact_window,
                 )
                 log.info(
                     "scrape complete: %d statement entries, %d tx entries",
@@ -918,11 +927,11 @@ def _prompt_for_mfa_code() -> str:
     return code.strip()
 
 
-def _submit_mfa_code(page, code_locator, code: str) -> bool:
-    """Fill the MFA input with `code` and click the Continue
-    button (trying each candidate selector). Returns True if a
-    button click landed, False on no-match (caller may fall back
-    to pressing Enter inside the input)."""
+def _submit_mfa_code(page, code_locator, code: str) -> str | None:
+    """Fill the MFA input with `code` and click the Continue button
+    (trying each candidate selector). Returns "clicked" on a button
+    click, "enter" when only the Enter-key fallback landed, None
+    when nothing could submit."""
     code_locator.fill(code)
     for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES:
         try:
@@ -933,34 +942,114 @@ def _submit_mfa_code(page, code_locator, code: str) -> bool:
                 continue
             btn.click(timeout=10_000)
             log.info("submitted 2FA via Continue selector %s", sel)
-            return True
+            return "clicked"
         except Exception as e:
             log.debug("continue button candidate %s failed: %s", sel, e)
     log.warning("no Continue button matched; pressing Enter in the input")
     try:
         code_locator.press("Enter")
-        return True
+        return "enter"
     except Exception as e:
         log.error("could not press Enter to submit 2FA: %s", e)
-        return False
+        return None
+
+
+# Codes tried before giving up. Each prompt wants a NEW code —
+# Schwab rejects a code submitted twice.
+MFA_CODE_ATTEMPTS = 3
+
+
+def _verify_mfa_outcome(page, code_input, *, budget_s: float = 60,
+                        grace_s: float = 5, poll_s: float = 1.0) -> str:
+    """Classify what Schwab did with a submitted 2FA code: 'auth'
+    (post-auth URL reached), 'rejected' (code input still visible
+    after the grace period), 'login' (the login iframe is back — the
+    challenge session ended), or 'pending' (nothing conclusive
+    within the budget; the caller's long post-auth wait takes over).
+    The grace period covers the navigation lag after Continue."""
+    start = time.monotonic()
+    while time.monotonic() - start < budget_s:
+        if schwab.is_post_auth_url(_live_url(page)):
+            return "auth"
+        if time.monotonic() - start >= grace_s:
+            try:
+                if code_input.is_visible():
+                    return "rejected"
+            except Exception:
+                pass
+            try:
+                if page.locator(f"#{schwab.LOGIN_IFRAME_ID}").is_visible():
+                    return "login"
+            except Exception:
+                pass
+        time.sleep(poll_s)
+    return "pending"
+
+
+def _visible_error_text(page) -> str:
+    """Visible error text, one message per line. role=alert regions
+    are preferred over the generic aria-live/error-classed fallback.
+    Only innermost matches are read — a matched container's
+    textContent swallows its children's (tooltip widgets, the error
+    span) into one blob, so containers of other matches are dropped."""
+    try:
+        found = page.evaluate(
+            """() => {
+                const grab = (sel) => {
+                    const els = Array.from(
+                        document.querySelectorAll(sel))
+                        .filter(el => el.offsetWidth || el.offsetHeight);
+                    return els
+                        .filter(el => !els.some(
+                            o => o !== el && el.contains(o)))
+                        .map(el => el.textContent
+                            .replace(/\\s+/g, ' ').trim())
+                        .filter(t => t && t.length <= 300);
+                };
+                return {
+                    alerts: grab('[role="alert"]'),
+                    other: grab('[aria-live], [class*="error" i], '
+                                + '[class*="alert" i]'),
+                };
+            }"""
+        )
+        texts = found.get("alerts") or found.get("other") or []
+        return "\n  - ".join(list(dict.fromkeys(texts))[:5])
+    except Exception:
+        return ""
+
+
+def _continue_button_present(page) -> bool:
+    """Whether any known Continue-button selector is visible. A
+    challenge page that dropped its button cannot be submitted —
+    pressing Enter in the input goes nowhere on that page."""
+    for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES:
+        try:
+            btn = page.locator(sel).first
+            if btn.count() and btn.is_visible(timeout=200):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _run_cli_mfa(page, screenshot_dir: Path | None,
-                  mfa_wait_s: float = 300) -> bool:
-    """Auto-submit the login form, wait for the 2FA page, prompt
-    for the code, fill, click Continue. Returns True on success
-    (or if Schwab skipped 2FA because the device is already
-    trusted), False on any step that failed in a way that warrants
-    falling back to the VNC-driven flow.
+                 mfa_wait_s: float = 300) -> str:
+    """Auto-submit the login form, wait for the 2FA page, prompt for
+    the code, submit, and verify the outcome. No cleverer than the
+    web page: a rejection logs Schwab's own error and re-prompts
+    (new code each time), a dead challenge aborts fast — re-running
+    the command is the fresh start.
 
-    Does NOT wait for the post-auth landing page — the caller's
-    existing `_wait_for_post_auth()` polls for that.
+    Verdicts: "ok" (landed, pending, or trusted-device skip),
+    "manual" (selectors missed; VNC can still finish, so the caller
+    keeps its long wait), "abort" (exit instead of waiting).
     """
     maybe_screenshot(page, screenshot_dir, "pre-login-submit")
     if not _submit_login_form(page):
         maybe_screenshot(page, screenshot_dir, "submit-failed")
         _dump_visible_form_elements(page, "login-submit-failed")
-        return False
+        return "manual"
     # Two captures: immediate (during transition) and ~3s later
     # (after navigation settles) so we can see what Schwab served
     # without burning a fresh MFA round to inspect manually.
@@ -974,7 +1063,7 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
         # URL and proceed) or the input never appeared. Distinguish
         # by re-checking the URL.
         if schwab.is_post_auth_url(_live_url(page)):
-            return True
+            return "ok"
         log.error(
             "no MFA input field appeared within %ds; "
             "Schwab may have served a different challenge (security "
@@ -983,19 +1072,41 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
         )
         _dump_visible_form_elements(page, "mfa-input-not-found")
         _dump_iframe_state(page)
-        return False
+        return "manual"
 
     sel, loc = hit
     log.info("MFA code input found (%s); prompting for code on stdin", sel)
     maybe_screenshot(page, screenshot_dir, "mfa-prompt")
-    code = _prompt_for_mfa_code()
-    if not code:
-        log.error("no 2FA code entered; aborting login")
-        return False
-    if not _submit_mfa_code(page, loc, code):
-        return False
-    maybe_screenshot(page, screenshot_dir, "post-mfa-submit")
-    return True
+    for attempt in range(1, MFA_CODE_ATTEMPTS + 1):
+        code = _prompt_for_mfa_code()
+        if not code:
+            log.error("no 2FA code entered; aborting login")
+            return "abort"
+        submitted = _submit_mfa_code(page, loc, code)
+        if submitted is None:
+            return "manual"
+        maybe_screenshot(page, screenshot_dir, "post-mfa-submit")
+        outcome = _verify_mfa_outcome(page, loc)
+        if outcome in ("auth", "pending"):
+            return "ok"
+        err = _visible_error_text(page)
+        if err:
+            log.warning("Schwab reports:\n  - %s", err)
+        if outcome == "login":
+            log.warning("the login form is back — the challenge session "
+                        "ended; re-run download to start fresh")
+            return "abort"
+        if not _continue_button_present(page):
+            log.error("the challenge page no longer offers a Continue "
+                      "button, so further codes cannot be submitted; "
+                      "aborting — re-run download to start fresh")
+            return "abort"
+        if attempt < MFA_CODE_ATTEMPTS:
+            log.warning("2FA code rejected; enter a new code "
+                        "(attempt %d/%d)", attempt, MFA_CODE_ATTEMPTS)
+    log.error("2FA code rejected %d times; aborting — re-run download "
+              "to start a fresh login", MFA_CODE_ATTEMPTS)
+    return "abort"
 
 
 def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> None:
@@ -1040,14 +1151,12 @@ def _since_to_schwab_preset(since, until, log=None) -> str:
         return "Last3Months"
     if days <= 180:
         return "Last6Months"
-    # FIXME: the shared 5y preset is exactly 1825 days, so `--lookback 5y`
-    # fails this test and lands on Last10Years — it over-fetches rather
-    # than under-fetching, so the window is still covered. Left as-is
-    # because `<` may be deliberate: if Schwab measures Last5Years in
-    # calendar years it can fall a leap day short of 1825, and `<=`
-    # would then under-fetch, which is the direction that loses data.
-    # Confirm against the live filter before tightening.
-    if days < 1825:
+    # <= keeps the shared 5y preset (exactly 1825 days) on Last5Years.
+    # Safe: Schwab resolves Last5Years to the 5-calendar-year
+    # anniversary date (observed on the live filter, 2026-07), and any
+    # 5-year calendar span contains at least one leap day, so the
+    # preset always covers >= 1826 days — never a day short of 1825.
+    if days <= 1825:
         return "Last5Years"
     if days > LAST_10_YEARS_DAYS and log is not None:
         log.warning(
@@ -1055,6 +1164,18 @@ def _since_to_schwab_preset(since, until, log=None) -> str:
             "filter stops at Last10Years — coverage is capped at ~10 years.",
             since, days)
     return "Last10Years"
+
+
+def _exact_window(lookback, since, until):
+    """(since, until) when ``--lookback`` names an exact ISO date, else
+    None. resolve_lookback already validated the value, so anything
+    that is not a named preset is an ISO date. Named presets keep the
+    preset ladder on both pages; an exact date drives the shared
+    SpecifyDateRange custom mode on Statements and Tx-history alike,
+    each falling back to the covering preset if the fill fails."""
+    if lookback and lookback not in cli.LOOKBACK_PRESETS:
+        return (since, until)
+    return None
 
 
 def main(argv: list[str]) -> int:
@@ -1066,8 +1187,12 @@ def main(argv: list[str]) -> int:
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
     # Translate the one window flag into the Schwab preset that covers it.
+    # An ISO-date --lookback expresses an exact window; tx-history can
+    # honour it verbatim via its custom date-range mode, so the resolved
+    # window rides along and only Statements falls back to the preset.
     since, until = cli.resolve_lookback(args)
     args.date_range = _since_to_schwab_preset(since, until, log=log)
+    args.exact_window = _exact_window(args.lookback, since, until)
     maybe_source_env_files(args)
     launch.prepare_profile_dir(args.profile_dir)
     if args.check:
@@ -1087,6 +1212,7 @@ def main(argv: list[str]) -> int:
         cli_mfa=args.cli_mfa,
         mfa_timeout_s=args.mfa_timeout,
         debug=args.debug,
+        exact_window=args.exact_window,
     )
 
 

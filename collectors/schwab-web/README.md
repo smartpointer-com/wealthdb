@@ -108,6 +108,16 @@ kills it on close), so login + scrape happen in one continuous
 session. Each `download` invocation pays one fresh MFA challenge
 — Schwab won't honour a persisted session across runs.
 
+Observed 2FA challenge behaviour (2026-07): a **wrong code is
+recoverable** — the form stays up and a fresh code on the same
+challenge lands, so the stdin prompt simply repeats, quoting
+Schwab's error. **Letting the form sit idle is fatal for that
+login attempt** — Schwab locks it behind an identity-verification
+banner, removes the Continue button, and rejects every further
+code however fresh. The flow detects the missing button, aborts
+with rc 8, and a re-run mints a fresh challenge that works; the
+lock is per-attempt, not per-account.
+
 The CLI is intentionally minimal:
 
 * `download` — one-shot CLI-MFA login + scrape. Pre-fills from
