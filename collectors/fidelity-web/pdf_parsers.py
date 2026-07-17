@@ -29,6 +29,16 @@ hand-crafted fixtures without needing a real PDF.
 ``parse_statement_pdf(path)`` is the orchestration entry-point
 that opens the PDF via pdfplumber and delegates to the
 text-level parsers.
+
+Performance note: extraction stays on pdfplumber. A trial swap
+(2026-07) of both fidelity parser modules to collectorkit's
+``extract_text_pdfium`` (measured ~27x faster) round-tripped this
+module's output byte-identically, but the supplied-statement
+parser (``pdf_parsers_supplied``) produced differing rows, so both
+modules stayed put; the parse cache in load.py absorbs the cost on
+warm runs. Migrating this module alone, or reworking the
+supplied-statement parser to hold under PDFium's text layout,
+unlocks the swap.
 """
 
 from __future__ import annotations

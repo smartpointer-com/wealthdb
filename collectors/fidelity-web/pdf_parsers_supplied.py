@@ -57,6 +57,14 @@ functions of strings so tests exercise them against hand-crafted
 fixtures without a real PDF. ``parse_supplied_statement_pdf(path)``
 is the orchestration entry-point that opens the PDF via
 pdfplumber and delegates to the text-level parsers.
+
+Performance note: this module is why fidelity-web stays on
+pdfplumber. In a trial swap (2026-07) to collectorkit's
+``extract_text_pdfium`` (measured ~27x faster), ``pdf_parsers``
+round-tripped byte-identically but this module's parsed rows
+differed. Reworking the line heuristics to hold under PDFium's
+text layout unlocks the swap for both modules (see the note in
+``pdf_parsers``).
 """
 
 from __future__ import annotations

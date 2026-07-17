@@ -716,6 +716,9 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
     # transactions rows (the convergence invariant), and source_sha256
     # is a stored column. decompressed_sha256 hashes raw bytes for a
     # plain file, so pre-compression dumps are unaffected.
+    # FIXME: this decompresses twice — once for the hash, once for the
+    # text below. compress.read_text_and_sha does both in a single pass
+    # and was added for exactly this call shape.
     src_sha = compress.decompressed_sha256(csv_path)[0]
     inserted = 0
     with compress.open_text(csv_path, encoding="utf-8-sig", newline="") as f:

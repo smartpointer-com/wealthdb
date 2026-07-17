@@ -76,7 +76,14 @@ def read_json(path: Path):
 
 def open_db(path: Path) -> sqlite3.Connection:
     """Default-isolation connection so `with conn:` brackets each run's load
-    in a BEGIN/COMMIT (ROLLBACK on error)."""
+    in a BEGIN/COMMIT (ROLLBACK on error).
+
+    FIXME: local copy of collectorkit's silver.open_db_default_isolation,
+    kept only for row_factory=Row — and it misses the synchronous=NORMAL
+    the shared helper sets (corruption-safe under WAL; a torn last
+    transaction re-loads from bronze). Fold: call the shared helper and
+    set row_factory on the returned connection.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
