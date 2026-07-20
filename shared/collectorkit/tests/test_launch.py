@@ -8,6 +8,7 @@ on an existing one) that opens a browser without the shared helper fails
 here rather than silently regrowing a cache next to the session cookie.
 """
 import ast
+import functools
 import os
 import re
 import stat
@@ -193,13 +194,28 @@ def _hardened_call(node: ast.Call, kwarg: str, helper: str) -> bool:
     return False
 
 
-def _launch_sites():
-    """Every browser-launch call across the collectors, as
-    (path, lineno, engine). Collector `tests/` are skipped — they drive stub
-    contexts, never a real browser."""
+def _collector_py_files(*, skip_tests):
+    """First-party collector .py files. Vendored `.venv` trees and bytecode
+    caches are never first-party and are always skipped — walking a collector's
+    `.venv` would parse thousands of site-packages files (and could match a
+    launch call inside Playwright itself). `skip_tests` additionally drops
+    collector `tests/`, which drive stub contexts rather than a real browser."""
     for path in sorted(COLLECTORS.rglob("*.py")):
-        if "tests" in path.parts or "__pycache__" in path.parts:
+        parts = path.parts
+        if ".venv" in parts or "__pycache__" in parts:
             continue
+        if skip_tests and "tests" in parts:
+            continue
+        yield path
+
+
+@functools.cache
+def _launch_sites():
+    """Every browser-launch call across the collectors, as a tuple of
+    (path, lineno, engine, node). Cached: the scan parses the whole
+    first-party tree, and several guards below share the one result."""
+    sites = []
+    for path in _collector_py_files(skip_tests=True):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -207,15 +223,16 @@ def _launch_sites():
             f = node.func
             # Camoufox(...) — the patched-Firefox stealth launcher.
             if isinstance(f, ast.Name) and f.id == "Camoufox":
-                yield path, node.lineno, "firefox", node
+                sites.append((path, node.lineno, "firefox", node))
             elif isinstance(f, ast.Attribute):
                 # <pw>.firefox.launch_persistent_context(...)
                 if f.attr == "launch_persistent_context":
-                    yield path, node.lineno, "firefox", node
+                    sites.append((path, node.lineno, "firefox", node))
                 # <pw>.chromium.launch(...)
                 elif (f.attr == "launch" and isinstance(f.value, ast.Attribute)
                       and f.value.attr == "chromium"):
-                    yield path, node.lineno, "chromium", node
+                    sites.append((path, node.lineno, "chromium", node))
+    return tuple(sites)
 
 
 @unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
@@ -244,10 +261,9 @@ class LaunchSitesHardenedTest(unittest.TestCase):
         self.assertGreaterEqual(engines.count("chromium"), 5)
 
     def test_no_collector_redefines_the_pref_set(self):
-        # The prefs live in one place; a copy would drift out of sync.
-        for path in sorted(COLLECTORS.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
+        # The prefs live in one place; a copy would drift out of sync. Tests
+        # are included: a test that hardcodes the pref set drifts too.
+        for path in _collector_py_files(skip_tests=False):
             text = path.read_text()
             self.assertNotIn("signon.rememberSignons", text,
                              f"{path} inlines a pref set — use "
@@ -432,6 +448,27 @@ class PrepareProfileDirTest(unittest.TestCase):
                                 f"{name} must not be moved or symlinked")
 
 
+_SECRETS_PROFILE = re.compile(
+    r'DEFAULT_PROFILE_DIR\s*=\s*Path\(\s*["\']/secrets/')
+
+
+@functools.cache
+def _persistent_profile_files():
+    """Collector files that seed a persistent (~/.secrets) browser profile,
+    as a tuple of (path, text). Cached; shared by the guards below."""
+    firefox = {p for p, _l, e, _n in _launch_sites() if e == "firefox"}
+    files = []
+    for path in _collector_py_files(skip_tests=True):
+        text = path.read_text()
+        declares_secrets_profile = bool(_SECRETS_PROFILE.search(text))
+        # A launch against a profile it does not build with mkdtemp — the
+        # ephemeral tempdir case is the one exception (see class docstring).
+        persistent_launch = path in firefox and "mkdtemp" not in text
+        if declares_secrets_profile or persistent_launch:
+            files.append((path, text))
+    return tuple(files)
+
+
 @unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
 class PersistentProfileStartupCacheTest(unittest.TestCase):
     """Every persistent browser profile relocates its startupCache.
@@ -448,30 +485,14 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
     ~/.secrets and its startupCache needs no relocation.
     """
 
-    _SECRETS_PROFILE = re.compile(
-        r'DEFAULT_PROFILE_DIR\s*=\s*Path\(\s*["\']/secrets/')
-
-    def _persistent_profile_files(self):
-        firefox = {p for p, _l, e, _n in _launch_sites() if e == "firefox"}
-        for path in sorted(COLLECTORS.rglob("*.py")):
-            if "tests" in path.parts or "__pycache__" in path.parts:
-                continue
-            text = path.read_text()
-            declares_secrets_profile = bool(self._SECRETS_PROFILE.search(text))
-            # A launch against a profile it does not build with mkdtemp — the
-            # ephemeral tempdir case is the one exception (see docstring).
-            persistent_launch = path in firefox and "mkdtemp" not in text
-            if declares_secrets_profile or persistent_launch:
-                yield path, text
-
     def test_scan_finds_the_persistent_profiles(self):
         # Guards the guard: an empty set would make the check below vacuous.
         self.assertGreaterEqual(
-            len(list(self._persistent_profile_files())), 12)
+            len(list(_persistent_profile_files())), 12)
 
     def test_each_persistent_profile_redirects_startup_cache(self):
         missing = []
-        for path, text in self._persistent_profile_files():
+        for path, text in _persistent_profile_files():
             if ("launch.prepare_profile_dir" not in text
                     and "launch.redirect_startup_cache" not in text):
                 missing.append(str(path.relative_to(COLLECTORS.parent)))
@@ -484,7 +505,7 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
     def test_ephemeral_download_profile_is_exempt(self):
         # angellist's passive download drives an ephemeral mkdtemp profile; it
         # must not be dragged through the persistent-profile prep.
-        files = {p for p, _t in self._persistent_profile_files()}
+        files = {p for p, _t in _persistent_profile_files()}
         self.assertNotIn(COLLECTORS / "angellist" / "download.py", files)
 
 
