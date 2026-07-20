@@ -99,6 +99,14 @@ _docker_run_args() {
         -e MALLOC_ARENA_MAX=2
         -e MB_DB_FILE=/metabase-data/metabase.db
         -e MB_ANON_TRACKING_ENABLED=false
+        # Query row limits. Metabase's defaults (10k aggregated, 2k
+        # un-aggregated — and native SQL always counts as un-aggregated)
+        # silently truncate the daily day × source history charts, which
+        # already exceed both; the truncated series then renders as a
+        # misleading partial chart with no warning. 100k gives that
+        # grain decades of headroom.
+        -e MB_AGGREGATED_QUERY_ROW_LIMIT=100000
+        -e MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000
         -v "${H2_DIR}:/metabase-data"
         -v "${SNAP}:/gold/wealthdb.db:ro"
         -v "${SPILL_DIR}:/gold/wealthdb.db.tmp"

@@ -59,6 +59,8 @@ check "snapshot RO mount" "/data/web/snapshot/wealthdb.db:/gold/wealthdb.db:ro" 
 check "spill mount"       "/data/web/spill:/gold/wealthdb.db.tmp"               "$joined"
 check "publish IPv4"      "127.0.0.1:3000:3000"                                 "$joined"
 check "publish IPv6"      "[::1]:3000:3000"                                     "$joined"
+check "aggregated row cap"   "MB_AGGREGATED_QUERY_ROW_LIMIT=100000"             "$joined"
+check "unaggregated row cap" "MB_UNAGGREGATED_QUERY_ROW_LIMIT=100000"           "$joined"
 check "image is last"     "wealthdb/metabase:latest"                            "$joined"
 
 echo "== _snapshot .wal guard =="
