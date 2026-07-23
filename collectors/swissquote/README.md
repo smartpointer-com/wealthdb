@@ -1,5 +1,48 @@
 # swissquote
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates a human browser user and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates a human user**: it drives a real,
+stealth-hardened browser session that signs in to Swissquote with your
+credentials and your multi-factor confirmations. The session it holds is
+**fully privileged** — the same login a human uses to move money — and
+Swissquote offers no read-only sub-scope, so nothing but this codebase's
+own discipline restricts the session to reading. If malicious code were
+ever introduced into this repository, its dependency chain, or the
+container images it runs, it could act on your accounts with your full
+authority and cause **irreversible financial damage, up to the total loss
+of the assets reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach Swissquote's terms
+of service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by Swissquote or any other
+financial institution; nothing in this repository is financial, legal, or
+tax advice.
+
 A toolkit for ingesting Swissquote Bank private-client portfolio data:
 driving the e-banking web UI under Playwright to export positions,
 transactions, and eDocuments, then (in subsequent scripts) parsing the
@@ -42,11 +85,11 @@ persisted session cookie across runs until it expires.
 
 ## Tools
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`login.py`](login.py) | implemented | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes and prints the on-screen Operation No. (TAN) for comparison against the phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
-| [`download.py`](download.py) | implemented | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`load.py`](load.py) | implemented | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
+| Script | Purpose |
+| --- | --- |
+| [`login.py`](login.py) | Drives headless Chromium through the F5 BIG-IP login form and the Mobile Level 3 MFA gate, scrapes and prints the on-screen Operation No. (TAN) for comparison against the phone, and persists the Playwright `storageState.json`. `--check` validates an existing state file without an MFA push. |
+| [`download.py`](download.py) | Reuses the persisted session to export transactions (CSV), positions + list of assets (XLS), account overview (PDF), and per-document PDFs from eBanking into a timestamped bronze directory. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`load.py`](load.py) | Parses bronze CSVs and XLSs into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically (window-DELETE-INSERT for transactions, content-hash dedup for documents). Idempotent — already-loaded dumps are skipped. Also parses **Portfolio Performance PDFs** in bronze to reconstruct historical position snapshots (one per year-end the bank issues), tagged with `source='pp:<doc_id>'` on the silver `positions` table. |
 
 ## Container build
 
@@ -118,7 +161,7 @@ port-forwarding), then run scripted afterwards.
 │   └── run.json                    metadata + status: written "in-progress" at run-dir creation, atomically overwritten "complete" at the end
 ├── 20260514T210105Z/
 │   └── ...
-├── manual/                         user-uploaded bronze artefacts
+├── manual/                         out-of-band bronze artefacts
 │   ├── tax_statement_2024.pdf      annual e-tax PDFs from prior years
 │   └── tax_statement_2025.pdf
 └── swissquote.db                   silver SQLite database (default name)
@@ -360,10 +403,9 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 - **Currency.** Swissquote returns multi-currency data; every
   position and transaction in silver carries an explicit `currency`
   column. There is no implicit "main currency" assumption.
-- **One trading account today.** The schema and code path are
-  written to support multiple linked accounts under one login, but
-  no second-account fixtures exist — multi-account paths are
-  exercised but not verified.
+- **Multi-account logins.** Supported by schema and code — multiple
+  linked accounts under one login — but unverified: no
+  second-account fixtures exist.
 - **No retry / resume / scheduling.** Runs are interactive by
   design. The Mobile Level 3 gate makes unattended cron a
   non-starter.

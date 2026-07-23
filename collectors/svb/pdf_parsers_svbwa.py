@@ -2,8 +2,8 @@
 Parser for SVB Wealth Advisory / NFS brokerage-statement PDFs.
 
 A third statement layout, distinct from the 529 statements
-(``pdf_parsers.py``) and the supplied statements
-(``pdf_parsers_supplied.py``):
+(``fidelity-web/pdf_parsers.py``) and the supplied statements
+(``fidelity-web/pdf_parsers_supplied.py``):
 
 * Masthead is ``SVB WEALTH ADVISORY, INC.`` (a brokerage carried
   by National Financial Services LLC — every page footer reads
@@ -18,7 +18,7 @@ A third statement layout, distinct from the 529 statements
   collapsed to 9 digits like the supplied-statement parser does.
 * Period line is upper-case with the word ``TO`` and may span a
   quarter, not just a calendar month:
-  ``STATEMENT FOR THE PERIOD JANUARY 1, 2021 TO MARCH 31, 2021``.
+  ``STATEMENT FOR THE PERIOD JANUARY 1, 2020 TO MARCH 31, 2020``.
 * Holdings live under a ``Holdings`` heading, in asset-class
   sub-sections each opened by a banner
   (``CASH AND CASH EQUIVALENTS - N% …``, ``HOLDINGS > EQUITIES …``,
@@ -525,8 +525,8 @@ def _is_boilerplate(line):
     # numeric tail is a section-continuation marker, not a row.
     if line.endswith("continued") and _trailing_numeric_count(line.split()) == 0:
         return True
-    # The per-page re-stamped registration line ("<name(s)> -
-    # <ownership type>").
+    # The per-page re-stamped "<name(s)> - <ownership type>"
+    # registration line (an ownership type ending in "Property").
     # Matched on the generic ownership-type suffix so no name is
     # hard-coded; it has no numeric tail anyway, but skipping it
     # explicitly keeps it out of any future description-glue logic.

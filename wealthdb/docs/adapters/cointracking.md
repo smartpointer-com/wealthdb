@@ -46,7 +46,7 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
 ## 4. Account taxonomy
 
 - **`account_kind`** is `crypto` for every wallet. CT's wallet
-  vocabulary (an exchange, a hardware wallet, a staking provider, …) doesn't
+  vocabulary (exchange and wallet-vendor names, free-form) doesn't
   expose a reliable custodial-vs-self-custody flag, so the adapter
   uses a single bucket. The finer-grained `crypto_exchange` /
   `crypto_self_custody` enum values stay reserved for future
@@ -61,19 +61,16 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
   ```json
   "portfolio_overrides": {
       "cointracking": {
-          "cu_999999": {"tax_wrapper": "roth_ira"}
+          "cu_999999": {"tax_wrapper": "ira"}
       }
   }
   ```
 
   Every wallet (= gold account) under `cu_999999` gets stamped
-  `roth_ira`; other portfolios keep the default. Per-account
+  `ira`; other portfolios keep the default. Per-account
   overrides in the existing `account_overrides` block still win
   over portfolio overrides on the same column (most-specific
   wins).
-
-  An IRA wrapper is a tax sleeve; how trades are placed is the
-  orthogonal `management_style`.
 
 ## 5. Positions
 
@@ -88,9 +85,9 @@ the latest batch — they are not snapshot-grain.
 - **`quantity`** is the wallet's balance from `positions_daily`
   (the silver loader's full-history replay computes it).
 
-- **`currency`** is the portfolio's quote currency (USD for some,
-  EUR for others; defaults to USD if the portfolio's
-  `portfolio_prices` rows haven't been ingested yet).
+- **`currency`** is the portfolio's quote currency (from its
+  `portfolio_prices` rows; defaults to USD if those haven't been
+  ingested yet).
 
 - **`market_value`** = `quantity × latest portfolio_prices.price`
   in the portfolio's quote currency. NULL when no price is

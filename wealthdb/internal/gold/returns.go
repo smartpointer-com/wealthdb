@@ -442,7 +442,7 @@ func (a *accountData) lastNonzeroDay() int64 {
 func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string]*accountData, error) {
 	byKey := map[string]*accountData{}
 
-	kinds, err := loadSourceKinds(ctx, db)
+	kinds, err := SourceKinds(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -519,10 +519,14 @@ func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]strin
 	a.series = append(a.series, dayVal{day: day, val: v})
 }
 
-func loadSourceKinds(ctx context.Context, db *sql.DB) (map[string]string, error) {
+// SourceKinds maps each configured silver_source_id to its
+// silver_kind (the adapter it loads through). Config-side ids are
+// free-form, so anything keying behaviour to an adapter must go
+// through this map rather than match the id string.
+func SourceKinds(ctx context.Context, db *sql.DB) (map[string]string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT silver_source_id, silver_kind FROM silver_sources`)
 	if err != nil {
-		return nil, fmt.Errorf("RunReturns source kinds: %w", err)
+		return nil, fmt.Errorf("SourceKinds: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]string{}

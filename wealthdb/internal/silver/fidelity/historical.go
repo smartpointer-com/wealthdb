@@ -15,8 +15,9 @@ import (
 // Historical-snapshot reader for the fidelity-web silver
 // migration-0004 table `historical_position_snapshots`. Parsed
 // from quarterly + year-end 529 statement PDFs by
-// fidelity-web/pdf_parsers.py. Statement archives exist only for account groups
-// that expose statements (see fidelity-web/DESIGN.md §4.5).
+// fidelity-web/pdf_parsers.py. Statement archives exist in this
+// silver only for account groups that expose statements (see fidelity-web/DESIGN.md §4.5), so the historical path
+// covers those alone.
 //
 // The table's primary key is (as_of_date, account_external_id,
 // description). The cross-walked `instrument_key` column points

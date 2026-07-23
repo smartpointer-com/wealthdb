@@ -241,7 +241,7 @@ func TestLoadParsesAccountOverrides(t *testing.T) {
         "account_overrides": {
             "schwab-main": {
                 "1A2B3C4D": {"nickname": "Main brokerage", "category": "personal"},
-                "5E6F7G8H": {"nickname": "Goal account", "category": "esa"}
+                "5E6F7G8H": {"nickname": "ESA One", "category": "esa"}
             },
             "swissquote": {
                 "1234567": {"nickname": "CHF trading"}
@@ -381,7 +381,7 @@ func TestValidateSymbolOverrides(t *testing.T) {
 	t.Run("accepts delete", func(t *testing.T) {
 		c := base()
 		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
-			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "XD1396017463", Delete: true},
+			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "XD0000000001", Delete: true},
 		}}
 		if err := c.Validate(); err != nil {
 			t.Fatal(err)

@@ -1,6 +1,6 @@
 """Coverage for envfile.resolve_env_file / load_env — the
 first-existing-candidate resolver adopted by viac / schwab-web /
-fidelity-web (P9). Synthetic fixtures only."""
+fidelity-web. Synthetic fixtures only."""
 import os
 from pathlib import Path
 

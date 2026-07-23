@@ -397,7 +397,7 @@ func TestAccountOverridesApplied(t *testing.T) {
 		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
 		Overrides: map[string]loader.AccountOverride{
 			"ACC1": {Nickname: "Main brokerage", Category: "personal"},
-			"ACC2": {Nickname: "Education account"}, // partial: only nickname
+			"ACC2": {Nickname: "ESA One"},   // partial: only nickname
 			"ACC3": {Category: "managed"},   // partial: only category
 			"ACCX": {Nickname: "unmatched"}, // no such account in batch
 		},
@@ -424,7 +424,7 @@ func TestAccountOverridesApplied(t *testing.T) {
 	}
 	want := map[string][2]string{
 		"ACC1": {"Main brokerage", "personal"},
-		"ACC2": {"Education account", ""},
+		"ACC2": {"ESA One", ""},
 		"ACC3": {"", "managed"},
 	}
 	for id, w := range want {

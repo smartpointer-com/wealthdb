@@ -7,8 +7,9 @@ account statement is a clean label/value table and parses reliably (the
 "Net Ending [Net] Capital Account Balance" line is the fund NAV). The K-1 is
 an IRS Form-1065 grid: its Item L capital-account analysis ("Ending capital
 account") parses cleanly and is the valuable tax-basis NAV; the Part III box
-amounts are form-positioned and best-effort, so the full extracted text is
-always retained in `payload` for fallback.
+amounts sit in a form grid a naive scan misreads, so they are not extracted,
+and the full K-1 text is not retained (it carries SSN/EIN/address) — see
+`parse_k1`.
 
 All functions are pure (text in, dict out) except `pdf_text` which shells to
 pdftotext. No values are hard-coded; nothing here carries source data.

@@ -16,7 +16,7 @@ const (
 	ExitRWNeeded = 2
 
 	// ExitMissingDB — a read subcommand was invoked but the gold
-	// DB doesn't exist; user should run `wealthdb init`.
+	// DB doesn't exist; run `wealthdb init` to create it.
 	ExitMissingDB = 3
 
 	// ExitInitExisting — `wealthdb init` was invoked but the gold

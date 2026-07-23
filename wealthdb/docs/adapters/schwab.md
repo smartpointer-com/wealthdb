@@ -102,8 +102,8 @@ funds/bonds). The company name lives on Schwab's
 `/marketdata/instruments` or `/marketdata/quotes` endpoints,
 which `schwab-api` doesn't currently call.
 
-Three places this could be fixed; we're deliberately not doing
-any of them in wealthdb v1:
+Three places this could be fixed; none is done in wealthdb v1,
+deliberately:
 1. `schwab-api` enriches positions/instruments by calling
    `/marketdata/quotes` (or `instruments?projection=symbol-search`)
    once per held symbol. Right place architecturally — silver is
@@ -145,7 +145,7 @@ with the original string preserved in payload.
 ## 7. Web subsource (schwab-web)
 
 When the `schwab-web` subsource is configured, the adapter
-contributes three things the api silver doesn't have:
+contributes four things the api silver doesn't have:
 
 - **Historical position snapshots.** `historical_position_snapshots`
   carries per-statement-period holdings (one row per (period_end,
@@ -246,8 +246,10 @@ wealthdb doesn't need to dedupe further.
   [INTEROP §4](../../../collectors/schwab-web/INTEROP.md#4-tax-form-structure-has-no-api-equivalent),
   schwab-web silver carries 1099 Composite as PDF/XML/CSV; the
   XML has lot-level detail (cost basis, term, wash-sale flag)
-  the api doesn't surface. Wealthdb doesn't ingest this yet — a
-  future `tax_lots` gold table could project it.
+  the api doesn't surface. The web silver's `form_1099b` sale
+  rows are ingested as transactions (`web_reader.go`); the
+  lot-level detail is not — a future `tax_lots` gold table
+  could project it.
 - **Explicit suffix→hashValue override config.** The bridge is
   auto-only. The exact tier (§7.1) resolves any realistic suffix
   collision once `account_number_full` is present, so an

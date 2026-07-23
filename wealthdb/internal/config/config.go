@@ -70,8 +70,8 @@ type Config struct {
 	// most-specific-first (account → its portfolio → source); the global
 	// grain is never anchored. It can only move an anchor LATER, never
 	// earlier. Absent block ⇒ every entity keeps its data-derived
-	// inception (today's behaviour). Works for every source, not just
-	// crypto. See docs/DESIGN.md §5 and internal/gold entityWindow.
+	// inception. Works for every source, not just crypto. See
+	// docs/DESIGN.md §5 and internal/gold entityWindow.
 	InceptionOverrides *InceptionOverrides `json:"inception_overrides,omitempty"`
 	// ReturnsExclude omits whole accounts or portfolios from HIGHER-grain
 	// return aggregates (sources, global) while still reporting them at their

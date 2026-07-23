@@ -1,5 +1,48 @@
 # fidelity-web
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates a human browser user and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates a human user**: it drives a real,
+stealth-hardened browser session that signs in to Fidelity with your
+credentials and your multi-factor confirmations. The session it holds is
+**fully privileged** — the same login a human uses to move money — and
+Fidelity offers no read-only sub-scope, so nothing but this codebase's own
+discipline restricts the session to reading. If malicious code were ever
+introduced into this repository, its dependency chain, or the container
+images it runs, it could act on your accounts with your full authority and
+cause **irreversible financial damage, up to the total loss of the assets
+reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach Fidelity's terms of
+service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by Fidelity or any other
+financial institution; nothing in this repository is financial, legal, or
+tax advice.
+
 A toolkit for ingesting Fidelity (USA) brokerage data by driving
 the `www.fidelity.com` client UI under Camoufox (a stealth-patched
 Firefox) to export portfolio positions, transaction history, and
@@ -23,7 +66,7 @@ Login, bronze fetch, and silver loader are operational.
 | [`download.py`](download.py) positions | implemented (Overview + DividendView CSVs, all accounts) |
 | [`download.py`](download.py) activity | implemented (consolidated CSV per date-window; preset 'Past 90 days' or Custom-tab `--lookback` window bisected into ≤93-day chunks, clamped to Fidelity's ~4-year retention) |
 | [`download.py`](download.py) documents — tax forms | implemented (multi-year via `#options-select-TimeFilter`; one click per form by unique anchor id) |
-| [`download.py`](download.py) documents — statements | implemented (per-row popover → "Download as PDF" via popup-tab + `context.request`, "Download as CSV" via canonical download event; scroll-into-view + JS-click fallback for rows below the fold). |
+| [`download.py`](download.py) documents — statements | implemented (per-row click fires an authenticated `financial-documents/download` POST; the PDF is decoded from base64-in-JSON in that response; scroll-into-view + JS-click fallback for rows below the fold). |
 | [`download.py`](download.py) balances | implemented as HTML capture only — no direct export; per-account values are in `data-testid$='-totalaccountvalue-label'` for silver to scrape. The actions menu's 'Create Balance Letter' is a multi-step wizard; deferred. |
 | [`download.py`](download.py) performance | implemented as HTML capture only — Fidelity offers no structured export here (pure Highcharts UI + collapsible info tiles). Silver loader either scrapes return % from DOM text or accepts the gap. |
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
@@ -61,7 +104,8 @@ to pass. See [DESIGN.md §6](DESIGN.md) / `vnc-login` subcommand.
 ## Account composition
 
 Fidelity's account selector groups accounts under section labels
-(`Education` for 529 sleeves, `Authorized` for trust accounts under a third-party investment manager, `Fidelity Charitable®
+(`Education` for 529 sleeves, `Authorized` for trust accounts
+under a third-party investment manager, `Fidelity Charitable®
 Giving` for DAFs, etc.). The toolkit auto-excludes the DAF by
 account-id length (Fidelity uses a shorter id for it than for
 brokerage / trust / 529 accounts) and dumps everything else into
@@ -71,7 +115,8 @@ Silver classifies each section label into a stable
 `portfolios.kind`:
 
 - `529` — 529 College Investing Plan participant accounts
-- `trust_managed` — Trust accounts under a third-party investment manager (Fidelity-as-custodian; manager places trades)
+- `trust_managed` — Trust accounts under a third-party investment
+  manager (Fidelity-as-custodian; manager places trades)
 - `other` — anything else, kept as a fall-through so future
   Fidelity labels don't need a schema migration
 
@@ -331,20 +376,17 @@ mapping lives inside each CSV's `Account Number` column and
 in tax-form filenames (Fidelity-supplied); bronze itself is
 gitignored.
 
-The `manual/` directory is for bronze artefacts produced
-out-of-band — most notably advisor reports from the outside
-investment manager (performance attribution, fee accruals, IPS
-/ mandate documentation) that Fidelity-as-custodian does not
-surface. The (planned) silver loader will ingest `manual/` on
-every run using the same dedup-by-hash mechanism as
-auto-fetched documents.
+The `manual/` directory is for bronze artefacts that arrive
+out-of-band, outside anything Fidelity-as-custodian surfaces.
+`manual/` contents are stored alongside the auto-fetched
+bronze but are not parsed into silver.
 
 ## Relationship to a hypothetical Fidelity API source
 
 `schwab-api` exists alongside `schwab-web` because
 Schwab publishes a retail Trader API; for Fidelity in 2026 there
 is no equivalent api-side toolkit. A direct institutional feed,
-if one ever materialises, would live in its own collector; The
+if one ever materialises, would live in its own collector; the
 `wealthdb` Fidelity adapter would then merge the two silvers the
 same way the Schwab adapter merges api + web.
 

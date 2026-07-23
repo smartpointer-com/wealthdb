@@ -34,15 +34,13 @@ session so download.py can be written from real traces:
                                      `ANGELLIST_USERNAME` /
                                      `ANGELLIST_PASSWORD` (sourced from
                                      `/secrets/angellist.env` inside the
-                                     container). Operator still clicks
-                                     Login + handles 2FA.
+                                     container). Login + 2FA are still
+                                     driven by hand.
 
-What this run needs to map (see DESIGN.md): the login host (possibly a
-fund-branded subdomain) + form selectors, the 2FA factor + any
-"trust this device" option, whether the authenticated surface needs
-Camoufox stealth, and the page/endpoint surfaces holding the LP
-portfolio summary, per-vehicle capital-account detail, the
-funding-account cash ledger, and the tax-document / K-1 centre.
+Re-run this harness whenever AngelList moves its UI or GraphQL
+operations: the fresh HAR + trace pinpoint what changed against the
+endpoint map in DESIGN.md, so download.py can be updated from real
+captures.
 
 Recording stops when the last browser window is closed (Camoufox's
 persistent context fires `close`) or after `--max-duration` (default
@@ -297,7 +295,7 @@ def _maybe_prefill_login(page, username: str, password: str) -> bool:
     except Exception:
         return False
     if existing_user or existing_pwd:
-        # Operator has already typed something; don't overwrite.
+        # The fields may already hold typed input; don't overwrite.
         return False
     try:
         user_field.fill(username, timeout=2000)

@@ -35,6 +35,7 @@ var helpText = map[string]string{
 	"snapshots":       "List snapshots gold has loaded for a silver source (-a for all).",
 	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.symbol_resolution.model.",
 	"resolutions":     "Dump the symbol_resolutions table (LLM-derived + manual-override tickers).",
+	"version":         "Print the wealthdb version.",
 	"help":            "Show this help, or detailed help for a subcommand.",
 }
 
@@ -54,8 +55,8 @@ func cmdHelp(_ context.Context, _ globalFlags, subargs []string, _ io.Reader, _,
 		return nil
 	}
 	name := subargs[0]
-	// Holdings views are addressed as `wealthdb holdings <view>`; point the
-	// user at that path rather than reporting them as unknown.
+	// Holdings views are addressed as `wealthdb holdings <view>`; point
+	// at that path rather than reporting them as unknown.
 	if _, ok := holdingsViews[name]; ok {
 		fmt.Fprintf(stderr, "Use 'wealthdb holdings %s -h' for detailed flags.\n%s\n", name, helpText[name])
 		return nil

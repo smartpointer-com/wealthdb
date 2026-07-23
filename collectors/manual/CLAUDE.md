@@ -22,12 +22,12 @@ The only step is `load`: it reads two hand-maintained CSVs from
 
 Root [CLAUDE.md](../../CLAUDE.md) §4 (no private information in source)
 applies in **full force** and is the single most important rule for this
-collector. The real CSVs in `$XDG_DATA_HOME/wealthdb/manual/` name:
+collector. The real CSVs under `$XDG_DATA_HOME/wealthdb/manual/` can name:
 
 - **Real properties** — addresses, cities, the fact of ownership.
-- **Private companies, funds & vehicles** — the names of held companies (equity and lending), the venture/PE funds
-  and SPVs in the book, and the deals behind them. **A company / fund / SPV name alone is
-  identifying.**
+- **Private companies, funds & vehicles** — names of held companies
+  (equity and lending), venture/PE funds and SPVs, and the deals behind
+  them. **A company / fund / SPV name alone is identifying.**
 - **Counterparties & agents** — lenders, co-owners, sellers, deal leads,
   escrow agents, fund admins, and the external bank accounts that funded a
   deal.

@@ -36,7 +36,7 @@ CREATE TABLE historical_mortgages (
     currency_iso            TEXT    NOT NULL,
     outstanding_balance     REAL,                    -- negative (liability)
     product_name            TEXT,                    -- 'UBS SARON Mortgage', …
-    rate_type               TEXT,                    -- 'saron'|'fixed'|'variable'|NULL
+    rate_type               TEXT,                    -- 'fixed'|'variable'|NULL (SARON maps to 'variable')
     collateral_description  TEXT,
     source_doc_token        TEXT    NOT NULL,
     payload                 TEXT    NOT NULL,

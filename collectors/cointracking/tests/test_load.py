@@ -33,7 +33,7 @@ TRADES_HEADER = (
     '"Sell To Address"'
 )
 TRADE_ROW = (
-    '"Trade","0.5","BTC","15000","USD","10","USD","Kraken",'
+    '"Trade","0.5","BTC","15000","USD","10","USD","ExchangeA",'
     '"","","TID1","","","2024-01-15 10:00:00","","","","",""'
 )
 
@@ -54,7 +54,7 @@ def _fresh_db(tmp_path: Path) -> duckdb.DuckDBPyConnection:
 
 
 def _row(type_, *, buy="", buy_cur="", sell="", sell_cur="", fee="",
-         fee_cur="", exchange="Kraken", comment="",
+         fee_cur="", exchange="ExchangeA", comment="",
          date="2024-01-15 10:00:00") -> str:
     """One 19-column "Extended" trades.csv row (all fields quoted).
     Positional layout matches TRADES_HEADER: Type, Buy, Cur.(buy),
@@ -117,9 +117,9 @@ def test_dust_sweep_other_expense_zeroes_the_swept_balance(tmp_path):
 
     latest = _latest_positions(conn)
     # Dust fully swept out — ETH back to zero, not stranded at 0.01230000.
-    assert latest[("Kraken", "ETH")] == 0
+    assert latest[("ExchangeA", "ETH")] == 0
     # Consolidated proceeds landed.
-    assert latest[("Kraken", "USD")] == Decimal("0.50")
+    assert latest[("ExchangeA", "USD")] == Decimal("0.50")
 
 
 def test_warn_unhandled_types_flags_unrouted_leg(tmp_path):
@@ -170,7 +170,7 @@ def test_ingest_transactions(tmp_path):
     (portfolio, wallet, typ, buy, buy_ccy, sell, sell_ccy,
      fee, fee_ccy) = row[0]
     assert portfolio == "cu_1"
-    assert wallet == "cu_1:Kraken"
+    assert wallet == "cu_1:ExchangeA"
     assert typ == "Trade"
     assert float(buy) == 0.5
     assert buy_ccy == "BTC"

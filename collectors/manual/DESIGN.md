@@ -160,8 +160,7 @@ SQLite + JSON1 — the repo default. The one prior DuckDB exception
 `DECIMAL(38,18)` crypto amounts; **neither applies here** — this is a tiny
 shape transformation, a few rows a year, no computation and no
 arbitrary-precision need. DuckDB is for high-volume / complex-query stores,
-which this is not. (An early sketch used a DuckDB silver; it was overridden to
-stay on the documented default — the same call carta made.) Money
+which this is not. Money
 is stored as decimal STRINGS (TEXT) verbatim to avoid float rounding, dates
 as ISO TEXT, `payload` as TEXT JSON — exactly the carta silver conventions,
 so the gold adapter reads it with the same `modernc.org/sqlite` driver every
@@ -218,11 +217,12 @@ correct at any historical date:
 
 | position `kind` = `asset_class` | status | rationale |
 |---|---|---|
-| `real_estate` | **NEW** | Directly-held property is a first-class asset class with no existing fit; `other` would erase it from portfolio queries. |
-| `convertible_note` | **NEW** | 0%-interest early-stage venture bets expected to convert to equity (or go to zero) — **not** debt. Calling them `private_debt`/`bond` would be technically arguable but actively misleading. |
+| `real_estate` | exists | Directly-held property is a first-class asset class with no existing fit; `other` would erase it from portfolio queries. |
+| `convertible_note` | exists | 0%-interest early-stage venture bets expected to convert to equity (or go to zero) — **not** debt. Calling them `private_debt`/`bond` would be technically arguable but actively misleading. |
 | `private_equity` | exists | Direct private-company equity (e.g. a GmbH/AG stake) — what carta's classmap folds into `private_equity`. |
 | `private_fund` | exists | LP interest in a venture/PE fund (carta/angellist). Capital calls → `contribution`, distributions → `distribution`. |
 | `spv` | exists | LP interest in a single-company SPV (equityzen). The one-shot buy-in → `acquisition`. |
+| `mortgage` | exists | Real-property-backed liability (gold `AssetClassMortgage`), typically securing a `real_estate` position. Valuations are entered as a positive outstanding balance; the gold adapter negates it so it nets against the property. |
 | `other` | exists | Catch-all for holdings without a fitting class — e.g. a receivable or a private loan. Semantics ride in `display_name` + `payload`. |
 
 Only `real_estate` + `convertible_note` are new enum values;

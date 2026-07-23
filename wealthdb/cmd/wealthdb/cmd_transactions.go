@@ -220,7 +220,7 @@ flags):
   YYYY-MM-DD YYYY-MM-DD  explicit range, inclusive
   YYYY-MM-DD -           open end (FROM date to today)
   - YYYY-MM-DD           open start (epoch to TO date)
-  - today                all time (synonym of "- today")
+  - today                all time (synonym of "- -")
   today                  accepted in any position as a synonym
 
 Flags:

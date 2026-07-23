@@ -479,9 +479,9 @@ testing found no such variants surface in practice. Silver
 stores the PDFs in `documents` keyed by
 `content_sha256` with `doc_kind='tax_form'` and the parsed
 `tax_year`. Structured per-lot extraction (1099 detail into a
-`tax_form_rows` table) is a follow-up; parser TBD (pdfplumber
-+ per-line layout heuristics, mirroring the planned 529-
-statement reconstruction in §4.5).
+`tax_form_rows` table) is a follow-up; a parser would mirror
+the 529-statement reconstruction implemented in §4.5
+(pdfplumber + per-line layout heuristics).
 
 ### 4.7 Balances + Performance pages
 
@@ -772,8 +772,7 @@ the rendered HTML; silver scrapes from there.
 - Trade / transfer / config writes — see [CLAUDE.md](CLAUDE.md) §1.
 - MFA automation — human-in-the-loop on every truly-fresh login.
 - Cross-bank semantic alignment — gold's job.
-- Trust statement reconstruction from PDFs — no statements exist.
-- Outside investment-manager data sources — out-of-band; its own future collector when needed.
+- Third-party investment-manager data sources — out-of-band; their own future collector when needed.
 
 ## 10. Implementation status
 
@@ -863,10 +862,10 @@ registration is implied by `portfolios.kind`:
 | `trust_managed`  | Trust account, managed                        |
 
 Other account types (retirement, brokerage) would extend this
-table. The most likely place a registration label surfaces
-is the dedicated `/portfolio/accounts/<account-id>` detail page,
-which `download.py` does NOT currently visit. The path forward
-when that signal materialises:
+table. The most likely place a registration label
+surfaces is the dedicated `/portfolio/accounts/<account-id>`
+detail page, which `download.py` does NOT currently visit. The
+path forward when that signal materialises:
 1. Extend `download.py` to nav each in-scope account-id detail
    page; capture `account-registration` (or similar testid)
    into `run.json/account_dimensions[*].registration`.

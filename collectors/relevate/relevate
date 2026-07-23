@@ -57,8 +57,8 @@ Subcommands:
                         the walk never finished (run.json status
                         in-progress / dry-run).
   prune [args...]       Delete non-complete dumps (crashed walks +
-                        --dry-run shells) from the bronze tree. No
-                        debug artefacts to reclaim (REST-only). Use
+                        --dry-run shells) and `download --debug`
+                        HTTP traces from the bronze tree. Use
                         --dry-run to print the plan first;
                         --min-age-hours (default 1) guards a download
                         still in flight.

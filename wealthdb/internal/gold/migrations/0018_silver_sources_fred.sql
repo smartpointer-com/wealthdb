@@ -4,7 +4,7 @@
 -- transactions), filling the deep historic FX tail the account collectors
 -- lack. See collectors/fred/ and internal/silver/fred/. Its rates are
 -- deprioritised relative to account sources via the per-source
--- silver_sources[].fx_priority config field (see internal/gold/fx.go).
+-- silver_sources[].fx_priority config field (see internal/gold/fxpriority.go).
 --
 -- DuckDB can't widen a CHECK constraint in place — same rename-recreate
 -- workaround as migrations 0007–0016.

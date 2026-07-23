@@ -288,8 +288,8 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		}
 		isinCopy := isin
 		// UBS web descriptions encode the listing ticker in
-		// trailing parens — e.g. "Reg.shs Novartis Inc.
-		// (NOVN)". Extract it and surface as the instrument's
+		// trailing parens — e.g. "Reg.shs Example AG
+		// (XMPL)". Extract it and surface as the instrument's
 		// Symbol so dividend / coupon transactions joined by
 		// ISIN get a populated symbol column. Descriptions
 		// without a trailing (TICKER) (ETFs identified only by
@@ -742,9 +742,8 @@ func populateCutoffMap(
 // invent semantics that PSN's own MT940 events would contradict.
 //
 // UBS marks bank-side corrections with a `<base>;Reversal`
-// suffix (the only one observed so far is
-// `Dividend;Reversal`, where UBS clawed back a duplicate
-// dividend booking). Reversals carry a negative amount in the
+// suffix (e.g. `Dividend;Reversal`, a clawback of a dividend
+// booking). Reversals carry a negative amount in the
 // credit column; we map them to the same canonical kind as the
 // underlying event so they net out when summed by kind, and
 // rely on ApplyCanonicalSign preserving the source's negative
@@ -960,9 +959,9 @@ func extractInstrumentFromDescription1(payload string) (instrumentID, descriptio
 }
 
 // tickerFromDescription pulls the trailing `(TICKER)` segment
-// out of a UBS web caption like "Reg.shs Novartis Inc.
-// (NOVN)" or "Sponsored American Deposit Receipt Taiwan
-// Semicon. Manuf.Co Ltd (Repr. 5 shs)     (TSM)". Returns nil
+// out of a UBS web caption like "Reg.shs Example AG (XMPL)" or
+// "Sponsored American Deposit Receipt Example Co Ltd
+// (Repr. 5 shs)     (XMPL)". Returns nil
 // when:
 //
 //   - The string has no trailing `(...)`.

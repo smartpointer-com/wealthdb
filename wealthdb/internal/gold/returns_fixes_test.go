@@ -219,8 +219,8 @@ func TestRunReturnsMWRWiring(t *testing.T) {
 // chain: a large deposit lands in a snapshot gap that straddles a month boundary
 // and its value only shows at the next snapshot. Fixed monthly buckets would split
 // the flow (its month has no value move ⇒ a sub-(-100%) Dietz) from the value jump
-// (the next month), and chaining the poisoned factor collapses the headline (the
-// real-data symptom was a since-inception TWR orders of magnitude below -100%).
+// (the next month), and chaining the poisoned factor collapses the headline
+// (symptom: a since-inception TWR orders of magnitude below -100%).
 // Snapshot-aligned sub-periods keep both in one [snap,snap] bucket.
 func TestRunReturnsSparseSnapshotNoChainCollapse(t *testing.T) {
 	db, ctx := openMigrated(t)

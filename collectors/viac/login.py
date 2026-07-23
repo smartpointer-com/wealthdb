@@ -97,9 +97,6 @@ def _redact_login(s: str) -> str:
         return "<too short>"
     return s[:4] + "*" * (len(s) - 6) + s[-2:]
 
-# Bash bookkeeping vars we filter out when sourcing the env file.
-_BASH_VAR_BLOCKLIST = frozenset({"_", "PWD", "OLDPWD", "SHLVL", "PATH"})
-
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(

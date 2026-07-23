@@ -275,11 +275,11 @@ class EntrypointProfilesHardenedTest(unittest.TestCase):
     """Profiles seeded from bash, not Python.
 
     A browser started as a plain binary from an entrypoint takes no
-    Playwright prefs and is invisible to the AST scan above — which is
-    exactly how one such profile grew the largest disk cache of any of
-    them. Its prefs have to arrive as a rendered `user.js`, so any
-    entrypoint that hand-writes prefs, or starts a browser without seeding
-    the profile from the shared renderer, fails here.
+    Playwright prefs and is invisible to the AST scan above, leaving its
+    disk cache free to grow unbounded next to the session cookie. Its
+    prefs have to arrive as a rendered `user.js`, so any entrypoint that
+    hand-writes prefs, or starts a browser without seeding the profile
+    from the shared renderer, fails here.
     """
 
     def _entrypoints(self):

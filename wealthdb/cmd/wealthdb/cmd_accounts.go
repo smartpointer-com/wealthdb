@@ -17,7 +17,7 @@ import (
 // per registered account with the account's promoted columns plus
 // derived aggregates: total non-cash positions value, cash value,
 // and grand total, each expressed both in the account's own
-// base_currency (when known) and in the user-requested output
+// base_currency (when known) and in the requested output
 // currency. See cmd_positions.go for the parallel positions-grain
 // view.
 func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
@@ -27,7 +27,7 @@ func cmdAccounts(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	hf := registerHoldingsFlags(fs, holdingsFlagSpec{
 		cmd:           "accounts",
 		currencyUsage: "output currency for the _<CCY> aggregate columns (default: config.default_currency)",
-		privacyUsage:  "redact account IDs / quantities / monetary amounts in the output",
+		privacyUsage:  "redact account IDs / monetary amounts in the output",
 		withColumns:   true,
 	})
 	fs.Usage = func() {
@@ -94,9 +94,9 @@ func buildAccountColumnRegistry(outCcy string) []columnSpec[gold.AccountRow] {
 			Extract: func(a gold.AccountRow) string { return a.AccountExternalID }},
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
-		// Defaults applied at render time so users see something
-		// useful when the adapter / overrides haven't classified
-		// the account. The underlying column stays NULL — gold's
+		// Defaults applied at render time so the rendered cell is
+		// never blank when the adapter / overrides haven't
+		// classified the account. The underlying column stays NULL — gold's
 		// distinguishes "unknown" from "explicitly default" via
 		// the database, the CLI surfaces the conventional default.
 		{Name: "tax_wrapper", Align: output.AlignLeft,
@@ -178,7 +178,7 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+account_id-cash_balance)
   -x, --currency CCY       output currency for the _<CCY> aggregate columns (default: config.default_currency)
-  -p, --privacy            redact account IDs, quantities, and monetary amounts
+  -p, --privacy            redact account IDs and monetary amounts
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

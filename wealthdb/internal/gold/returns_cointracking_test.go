@@ -85,11 +85,11 @@ func TestCointrackingOnboardNoneNoPhantomInflow(t *testing.T) {
 	}
 }
 
-// TestCointrackingOnboardNoneKeepsLateDebutDeposit guards the debut-region
-// subsumption fix. Under OnboardNone there is no synthetic onboarding to replace a
-// subsumed pre-debut flow, so a real fiat deposit funding a wallet that debuts
-// AFTER winFrom must be KEPT. Before the fix it was subsumed and vanished, so the
-// funded value read as pure performance on the tiny opening base.
+// TestCointrackingOnboardNoneKeepsLateDebutDeposit pins the debut-region
+// subsumption exemption. Under OnboardNone there is no synthetic onboarding to
+// replace a subsumed pre-debut flow, so a real fiat deposit funding a wallet
+// that debuts AFTER winFrom must be KEPT — subsuming it would make the funded
+// value read as pure performance on the tiny opening base.
 func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctx", "cointracking")
@@ -111,8 +111,8 @@ func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
-	// The late fiat deposit must appear in net_flow. Before the fix it was subsumed
-	// (net_flow 0), so the +5000 value jump on the 20 base read as a huge gain.
+	// The late fiat deposit must appear in net_flow: subsuming it (net_flow 0)
+	// would make the +5000 value jump on the 20 base read as a huge gain.
 	if nf := netFlowOf(t, rows, "ctx"); math.Abs(nf-5000) > 1e-6 {
 		t.Errorf("net_flow = %.2f, want 5000 (late-debut deposit kept under OnboardNone)", nf)
 	}

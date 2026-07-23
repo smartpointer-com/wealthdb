@@ -11,10 +11,10 @@ populated with the ECB closing reference rate for that day —
 inserted into the same `coin_prices` table the crypto path uses,
 under `source='frankfurter'`.
 
-ECB publishes weekday-only rates. Weekend / holiday gaps are NOT
-filled by this client — the gold layer is expected to forward-fill
-(typical FX convention: the last business day's close applies
-through the next non-business day).
+ECB publishes weekday-only rates; the client forward-fills across
+weekends and ECB holidays (typical FX convention: the last
+business day's close applies through the next non-business day),
+so the returned series covers every calendar day.
 
 The public-interface signatures (`FrankfurterClient`,
 `fetch_fiat_to_usd`) mirror the shape of the crypto clients so
@@ -75,9 +75,8 @@ class FrankfurterClient:
     ) -> list[tuple[date, float]]:
         """Daily `<fiat>` → USD rates for [from_date, to_date].
         Returns [(as_of_date, usd_per_one_fiat), …] ascending,
-        weekday-only (ECB doesn't publish weekend rates). The
-        caller is expected to forward-fill if total coverage is
-        needed."""
+        forward-filled across weekends / ECB holidays so every
+        calendar day in the range carries a rate."""
         fiat_u = fiat.upper()
         if fiat_u == "USD":
             # Trivial: 1 USD = 1 USD. Synthesise the full day range.

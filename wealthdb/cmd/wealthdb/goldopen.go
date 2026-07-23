@@ -16,7 +16,7 @@ import (
 const defaultMissingGoldMsg = "gold database %q does not exist. Run 'wealthdb init' first (requires write access)."
 
 // openGoldForRead opens the gold DB for a read-side subcommand
-// (positions / accounts / portfolios / transactions). It picks
+// (holdings views / transactions). It picks
 // read-write when the filesystem allows it — so an outstanding
 // migration is applied on open — and read-only when -r is set or
 // the path isn't writable. Returns a clear ExitMissingDB error

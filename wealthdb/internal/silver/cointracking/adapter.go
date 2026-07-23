@@ -11,9 +11,10 @@
 //     through from silver.
 //
 //   - accounts = the per-wallet rows in silver.wallets, scoped to
-//     one portfolio (an exchange, a hardware wallet, a staking provider, …). The
-//     account_external_id is `<cu_id>:<wallet_name>` — the same
-//     composite key silver uses, so cross-table joins line up.
+//     one portfolio (an exchange, a hardware wallet, a staking
+//     provider, …). The account_external_id is
+//     `<cu_id>:<wallet_name>` — the same composite key silver
+//     uses, so cross-table joins line up.
 //
 //   - instruments = one row per coin ticker observed across any
 //     portfolio. AssetClass is `crypto`; the symbol is the ticker
@@ -34,16 +35,19 @@
 // Account taxonomy:
 //
 //   - account_kind is always `crypto`. CT's wallet vocabulary
-//     (an exchange, a hardware wallet, a staking provider, …) doesn't expose a
-//     reliable custodial-vs-self-custody flag, and downstream
-//     reporting treats both the same way.
+//     (an exchange, a hardware wallet, a staking provider, …)
+//     doesn't expose a reliable custodial-vs-self-custody flag,
+//     and downstream reporting treats both the same way.
 //
 //   - management_style is always `self_directed`.
 //
 //   - tax_wrapper defaults to `taxable_personal`. The
 //     `portfolio_overrides` block in wealthdb.cfg overrides the
 //     wrapper per CT portfolio (e.g. `roth_ira` for a portfolio
-//     held inside an IRA wrapper). The existing per-account
+//     held inside a tax-advantaged wrapper such as an IRA; how
+//     trades are placed stays captured by the orthogonal
+//     `management_style`, while the tax treatment rides on the
+//     wrapper). The existing per-account
 //     override block still works in parallel for any wallet-
 //     specific corrections.
 //

@@ -400,10 +400,10 @@ def main(argv=None) -> int:
                    help="directory of SVB statement PDFs + signature.txt")
     p.add_argument("--statement-signature", default=None,
                    help="page-1 signature substring (else read signature.txt)")
-    p.add_argument("--closure-date", default="2023-09-30",
+    p.add_argument("--closure-date", required=True,
                    help="synthetic $0 closure date for still-held accounts "
-                        "(the handoff to the destination source); default "
-                        "2023-09-30")
+                        "(the handoff to the destination source), e.g. "
+                        "2020-12-31")
     p.add_argument("--migrations-dir", type=Path,
                    default=Path(__file__).parent / "migrations")
     p.add_argument("--parse-cache-dir", type=Path, default=_default_cache_dir(),

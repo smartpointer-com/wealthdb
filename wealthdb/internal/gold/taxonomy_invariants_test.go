@@ -86,7 +86,7 @@ SELECT silver_source_id, asset_class, COALESCE(vehicle, ''), count(*)
 // mis-projection could hide a value change. Absent the before-copy it
 // degrades to printing the current totals for a manual external diff.
 //
-// Operator workflow for a real check:
+// Workflow for a real check:
 //
 //	cp $GOLD gold.before.db          # BEFORE reload
 //	wealthdb reload -a               # re-project with the current adapters

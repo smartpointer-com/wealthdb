@@ -11,20 +11,20 @@ GmbH / Swiss AG). Every other collector scrapes or calls a source; this one
 has **no source**. Two hand-maintained CSVs are the input; `load` validates
 them and projects them into a SQLite silver.
 
-> **Status:** implemented end-to-end. `load` is verified against the synthetic
-> [examples/](examples/), and the gold adapter
+> `load` is exercised against the synthetic [examples/](examples/), and the
+> gold adapter
 > ([`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/))
-> is built + registered — the manual source loads into gold and appears in
+> loads the manual source into gold, where it appears in
 > `wealthdb holdings positions`. The collector tracks **positions + valuations only**
 > (no transactions; see [DESIGN.md](DESIGN.md) §6).
 
 ## Tools
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`load.py`](load.py) | implemented | Validate `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
-| `login.py` | — | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
-| `download.py` | — | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
+| Script | Purpose |
+| --- | --- |
+| [`load.py`](load.py) | Validate `positions.csv` / `valuations.csv` and rebuild the SQLite silver from them. Aggressive validation; a bad row fails the whole load with `file:row:column` context. |
+| `login.py` | **N/A.** No source, no session. `./manual login` is a no-op that prints this. |
+| `download.py` | **N/A.** No source to fetch; the CSVs are hand-maintained. `./manual download` is a no-op. |
 
 There is no Docker image and no `~/.secrets/manual.env` — there is nothing
 to authenticate to.

@@ -1,5 +1,48 @@
 # relevate
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates the provider's web client and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates Relevate / Pensexpert's own web client**: it
+authenticates with your credentials and your multi-factor confirmations
+and replays the portal's private REST API. The session it holds is **fully
+privileged** — the same login a human uses to manage the account — and
+Relevate / Pensexpert offers no read-only sub-scope, so nothing but this
+codebase's own discipline restricts the session to reading. If malicious
+code were ever introduced into this repository, its dependency chain, or
+the container images it runs, it could act on your accounts with your full
+authority and cause **irreversible financial damage, up to the total loss
+of the assets reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach Relevate /
+Pensexpert's terms of service; verifying that your use is permitted is
+likewise your responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by Relevate / Pensexpert or any
+other financial institution; nothing in this repository is financial,
+legal, or tax advice.
+
 Scrape Vested Benefits account positions, balances, transactions,
 and documents from Relevate's customer portal
 (`portal.pens-expert.ch`) and land them in a queryable SQLite
@@ -10,14 +53,14 @@ overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
-## Status
+## How it works
 
-- **Bronze (login + download) — working.** `login.py` replays
+- **Bronze (login + download).** `login.py` replays
   Relevate's Airlock IAM auth flow (mTAN via SMS, no bearer
   token — cookie-only session); `download.py` walks
   `/middlelayer/v2/` and lands per-portfolio JSON + per-document
   PDFs into a versioned bronze tree.
-- **Silver loader — working.** `load.py` walks the bronze tree,
+- **Silver loader.** `load.py` walks the bronze tree,
   applies SQL migrations, and ingests each not-yet-loaded run in
   one transaction. Idempotent via `dump_runs.snapshot_at`.
   Schema in [DESIGN.md §7](DESIGN.md).
@@ -78,8 +121,8 @@ conventions.
 #    fresh mTAN.
 ./relevate login --check     # prints ALIVE / DEAD / MISSING
 
-# 5. Dump bronze. ~10 sec for ~50 files (per-portfolio JSON +
-#    per-document PDFs).
+# 5. Dump bronze. A few seconds; per-portfolio JSON +
+#    per-document PDFs.
 ./relevate download
 
 # 6. Parse bronze into silver SQLite ($XDG_DATA_HOME/wealthdb/relevate/relevate.db).
@@ -192,14 +235,14 @@ for the shared env-file rules.
 
 ## Subcommands
 
-| Command    | Status |
-|------------|--------|
-| `build`    | Working |
-| `login`    | Working (use `--check` to probe without burning an mTAN) |
-| `download` | Working (use `--dry-run` to enumerate; `--mode` / `--limit-*` for iteration) |
-| `load`     | Working (applies migrations, ingests not-yet-loaded bronze runs into SQLite silver; skips a dump the walk never finished) |
-| `prune`    | Working (reclaims non-complete dumps from the bronze tree; `--dry-run` to preview) |
-| `sh`       | Working (interactive shell in the container) |
+| Command    | Purpose |
+|------------|---------|
+| `build`    | Build the container image |
+| `login`    | Mint a session (use `--check` to probe without burning an mTAN) |
+| `download` | Dump bronze (use `--dry-run` to enumerate; `--mode` / `--limit-*` for iteration) |
+| `load`     | Applies migrations, ingests not-yet-loaded bronze runs into SQLite silver; skips a dump the walk never finished |
+| `prune`    | Reclaims non-complete dumps from the bronze tree; `--dry-run` to preview |
+| `sh`       | Interactive shell in the container |
 
 `./relevate help` prints the canonical list.
 

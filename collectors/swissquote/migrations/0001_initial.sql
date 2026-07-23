@@ -14,7 +14,7 @@
 -- payload for traceability.
 --
 -- Stable filter columns are promoted; everything else lives in the
--- `payload` JSON column. See sibling repos' DESIGN.md (schwab-api)
+-- `payload` JSON column. See the schwab-api collector's DESIGN.md
 -- for the semi-relational contract.
 -- ============================================================
 
@@ -65,8 +65,9 @@ CREATE TABLE accounts (
 -- backfill it from the transactions stream where symbols overlap).
 -- Currency is in the PK because Swissquote groups positions per
 -- currency in the UI, and a single instrument held in two currency
--- books would surface as two rows; only CHF is in the book today but
--- the schema mirrors the source's multi-currency model from day one.
+-- books would surface as two rows; a single-currency book is the
+-- common case but the schema mirrors the source's multi-currency
+-- model from day one.
 --
 -- Symbol is stored as '' (empty string), never NULL, when absent —
 -- SQLite allows multiple NULLs in PK columns, which would silently

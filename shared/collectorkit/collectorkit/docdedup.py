@@ -47,7 +47,8 @@ index and is re-fetched — bronze self-heals. There is **no CLI verb**: unlike
 so its whole surface is this Python API.
 
 Hardlink only — never a clone: ``clonefile`` is unavailable inside the docker
-collector runtimes; ``os.link`` is proven across the Colima bind mount by viac.
+collector runtimes; ``os.link`` works across the Docker-VM bind mounts
+(proven by viac).
 The engine only ever *adds* a file (a hardlink) or *declines to add* one; it
 never deletes or rewrites a load input.
 """
@@ -67,7 +68,7 @@ from collectorkit import bronze, prune
 log = logging.getLogger("collectorkit.docdedup")
 
 # ---------------------------------------------------------------------------
-# Document classes and the class -> mode mapping (the correctness core, §2.5)
+# Document classes and the class -> mode mapping (the correctness core)
 # ---------------------------------------------------------------------------
 
 CLASS_IMMUTABLE = "immutable"   # finalized, never re-issued under its key
@@ -243,7 +244,7 @@ class SkipSet:
         outright; its in-progress status would exclude it anyway, but naming it
         is belt-and-braces.
 
-        ``freshness_days`` defaults to ``35`` (the plan's safe default), so a
+        ``freshness_days`` defaults to ``35``, so a
         link-mode adopter that omits it still gets a freshness window: a document
         issued within that many days of ``now`` is left out of the index and
         re-fetched, since a just-issued doc may still be corrected under its id.

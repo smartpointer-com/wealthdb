@@ -10,10 +10,9 @@ reads `<profile>/user.js` at startup.
 
 So the prefs are rendered from the shared `collectorkit.launch` set — the
 same one the driven browsers launch with — plus the AngelList overrides
-below. Keeping the entrypoint out of the business of hand-writing prefs is
-what stops this profile drifting off the shared set: it used to carry its
-own bash heredoc, and its unbounded disk cache made it the largest profile
-on disk.
+below. Rendering from the shared set keeps the entrypoint out of the
+business of hand-writing prefs, keeps the profile session-state-sized
+(the disk cache stays capped), and prevents pref drift.
 
 Nothing here alters the fingerprint web content can observe — that is the
 whole point of the stock-Firefox path. Firefox's own blocklist data

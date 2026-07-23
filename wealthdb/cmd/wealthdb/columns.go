@@ -26,9 +26,9 @@ type columnSpec[T any] struct {
 	// decisions. Used where the right class depends on row
 	// context — typically silver_source: e.g. UBS portfolio
 	// labels ("Savings") are bank-assigned categories and stay
-	// legible, while cointracking portfolio names are user-chosen
-	// account identifiers and must be redacted regardless of
-	// their character class.
+	// legible, while cointracking portfolio names are free-form,
+	// customer-identifying account names and must be redacted
+	// regardless of their character class.
 	PrivacyFunc func(T) PrivacyClass
 }
 
@@ -50,7 +50,7 @@ const (
 	// at this layer they're typically bank-assigned taxonomic
 	// labels (UBS "Savings" / "Brokerage").
 	PrivacyAccountID
-	// PrivacyCustomerLabel: user-chosen customer-identifying
+	// PrivacyCustomerLabel: free-form, customer-identifying
 	// strings — cointracking portfolio names, for example.
 	// Redacted by the same shape as PrivacyAccountID but WITHOUT
 	// the purely-alphabetic exemption: every alphanumeric string

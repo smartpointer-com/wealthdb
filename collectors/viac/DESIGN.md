@@ -11,13 +11,13 @@ overview](../../DESIGN.md) for the bronze → silver → gold
 model and [collectors/README.md](../README.md) for shared collector
 conventions. This document only covers what's VIAC-specific.
 
-## Status
+## Tools
 
-| Verb | Status |
+| Verb | Notes |
 | --- | --- |
-| `login.py` | implemented (pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600) |
-| `download.py` | implemented (pure httpx; per-event TRANSACTION receipts on by default with a `--no-transaction-documents` opt-out; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry) |
-| `load.py` + `migrations/0001_initial.sql` | implemented (idempotent on `dump_runs.snapshot_at`) |
+| `login.py` | pure httpx; Airlock-flow replay; cookies + CSRF metadata at chmod 0600 |
+| `download.py` | pure httpx; per-event TRANSACTION receipts on by default with a `--no-transaction-documents` opt-out; `collectorkit.docdedup` download-avoidance — link the immutable/unparsed docs, fetch-verify the parsed/tax/fusion docs; `--documents-force` bypass; h2-stream-drop retry |
+| `load.py` + `migrations/0001_initial.sql` | idempotent on `dump_runs.snapshot_at` |
 
 What's NOT implemented: PVB (Pillar-2 vested-benefits) per-
 portfolio endpoint surface — `accounts` carries the inventory
@@ -247,8 +247,8 @@ archive closes that gap: the `REPORT` / `INVESTMENT_REPORTING`
 PDFs (plus the on-demand `MANUAL_INVESTMENT_REPORTING`) are
 period-end statements that list, per portfolio, every fund held
 with its ISIN, units, prices and CHF market value — going back to
-the contract's first year. Observed cadence: semi-annual through
-2023, annual thereafter. One PDF covers every portfolio.
+the contract's first year. Cadence varies (semi-annual or
+annual). One PDF covers every portfolio.
 
 [`pdf_parsers.py`](pdf_parsers.py) parses them (via **pypdfium2**
 — the fastest lossless extractor benchmarked on these A4 reports;
@@ -341,13 +341,12 @@ runs pending migrations on every invocation. Same discipline
 as the sibling collectors — never rewrite an applied migration,
 always add a new file.
 
-### 6.1 Validation against the first real load
+### 6.1 Load invariants
 
-Two bronze dumps (one full, one re-fetch of a single missed PDF)
-loaded cleanly into silver. Per-portfolio reconstructed rows
-reconcile to the cent against each report's printed Balance in
-CHF, ISIN-keyed instrument master upserts dedupe as expected, and
-content-dedup collapses identical PDFs across snapshots.
+Per-portfolio reconstructed rows reconcile to the cent against
+each report's printed Balance in CHF, ISIN-keyed instrument
+master upserts dedupe as expected, and content-dedup collapses
+identical PDFs across snapshots.
 
 Re-running `load` is a no-op (`dump_runs.snapshot_at` is the
 idempotency anchor).
@@ -418,7 +417,7 @@ Outstanding work — currently neither implemented nor blocking:
    `inv[]` array is in the inventory schema. Mapping to
    wealthdb `tax_wrapper='taxable_personal'` is speculative
    until we see one.
-5. **Transaction collision rate.** A small number of source rows
+5. **Transaction collision rate.** Some source rows can
    collapse in silver on identical-to-16-decimals (account, type,
    date, amount, doc) keys — most likely duplicate reports of the
    same dividend in VIAC's API rather than legitimately

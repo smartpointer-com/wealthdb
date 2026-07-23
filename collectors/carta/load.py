@@ -580,7 +580,7 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
             "WHERE content_sha256=?", (sha,)).fetchone()
         if existing is None:
             # New content. Supersede any stale row for this doc_id (e.g. a
-            # prior broken capture that the document-download fix corrected) —
+            # superseded capture under the same doc id) —
             # doc_id is unique, and the latest fetch is authoritative.
             conn.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
             conn.execute(

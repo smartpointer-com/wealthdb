@@ -3,8 +3,29 @@ package main
 import (
 	"testing"
 
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/output"
 )
+
+// TestPortfolioNamePrivacyMatchesKind pins that the cointracking
+// always-redact rule keys on the source's silver_kind, not on the
+// free-form config id — a source named "ct" must still redact, and
+// a source that merely NAMED itself "cointracking" but loads
+// through another adapter must not.
+func TestPortfolioNamePrivacyMatchesKind(t *testing.T) {
+	kinds := map[string]string{"ct": "cointracking", "cointracking": "ubs"}
+	f := portfolioNamePrivacy(func(id string) string { return kinds[id] })
+
+	if got := f(gold.PortfolioRow{SilverSourceID: "ct"}); got != PrivacyCustomerLabel {
+		t.Errorf("kind=cointracking: privacy = %v, want PrivacyCustomerLabel", got)
+	}
+	if got := f(gold.PortfolioRow{SilverSourceID: "cointracking"}); got != PrivacyAccountID {
+		t.Errorf("id-only match: privacy = %v, want PrivacyAccountID", got)
+	}
+	if got := f(gold.PortfolioRow{SilverSourceID: "unknown"}); got != PrivacyAccountID {
+		t.Errorf("unknown source: privacy = %v, want PrivacyAccountID", got)
+	}
+}
 
 func TestRedactAccountID(t *testing.T) {
 	cases := []struct {

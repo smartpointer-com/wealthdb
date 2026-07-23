@@ -19,10 +19,10 @@ one owner and a stable contract with the next.
  collectors/ubs-psn/      MT5xx zips  ─→  ubs-psn.db      ─┤
  collectors/ubs-web/      PDF + CSV   ─→  ubs-web.db      ─┤
  collectors/swissquote/   XLS + PDF   ─→  swissquote.db   ─┤
- collectors/fidelity-web/ CSV + HTML  ─→  fidelity.db     ─┤   wealthdb load
+ collectors/fidelity-web/ CSV + HTML  ─→  fidelity-web.db ─┤   wealthdb load
  collectors/relevate/     JSON        ─→  relevate.db     ─┼─────────────────→  wealthdb.db
  collectors/viac/         JSON + PDF  ─→  viac.db         ─┤   (DuckDB, canonical)
- collectors/cointracking/ CSV + JSON  ─→  cointracking.db ─┤
+ collectors/cointracking/ CSV + JSON  ─→  cointracking.duckdb (DuckDB) ─┤
  collectors/angellist/    JSON        ─→  angellist.db    ─┤   → positions / transactions
  collectors/carta/        JSON + PDF  ─→  carta.db        ─┤   accounts / portfolios ...
  collectors/equityzen/    JSON + PDF  ─→  equityzen.db    ─┤

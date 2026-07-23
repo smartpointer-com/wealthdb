@@ -8,7 +8,7 @@ into a SQLite silver database. One dump = one transaction; the
 `dump_runs` row is the last INSERT before COMMIT, so failures
 mid-load roll the whole dump back and re-runs retry idempotently.
 
-Also scans `<bronze-dir>/manual/` for user-uploaded artefacts
+Also scans `<bronze-dir>/manual/` for out-of-band artefacts
 (typically e-tax statement PDFs) and indexes new files into the
 `documents` table by content sha256.
 
@@ -82,17 +82,14 @@ def _dump_is_complete(run_dir: Path) -> bool:
     manifest carrying ``status == "complete"`` at the end. So:
 
     * ``status == "complete"``             -> complete (load it);
-    * any other status (``"in-progress"``,
-      ``"dry-run"``)                        -> not complete (a crashed
+    * any other status (``"in-progress"``)  -> not complete (a crashed
       or still-running walk — do NOT ingest its partial artefacts);
     * a statusless run.json                 -> complete (predates the
       status field, where the manifest was written only at the end so
       its presence alone marked completion);
     * no run.json / unreadable / corrupt    -> not complete.
 
-    Kept in lockstep with download.dump_is_complete and the legacy
-    fallback ``prune`` uses (``legacy_complete = lambda rd, m: m is not
-    None``).
+    Twin of download.dump_is_complete.
     """
     try:
         raw = (run_dir / "run.json").read_text(encoding="utf-8")

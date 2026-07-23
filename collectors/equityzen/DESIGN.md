@@ -111,16 +111,16 @@ explore session, no values retained):
   from company counts needed. Maps to silver `offerings.kind` (§5) and
   gold `asset_class` (§6).
 - **Distributions are in the structured API.**
-  `primaryTransaction.distributedTransactions[]` was populated (several
-  entries on some investments), with a `type` enum of `{ACH, DISTRIBUTION}`.
-  So cash flows are derivable from GraphQL — a real distribution that
-  arrived in a bank account with no obvious UI record *does* show up here.
+  `primaryTransaction.distributedTransactions[]` carries distribution
+  events, with a `type` enum of `{ACH, DISTRIBUTION}`.
+  So cash flows are derivable from GraphQL — including distributions
+  with no obvious UI record.
   The K-1 / capital-account-statement PDFs corroborate but are not the
   only source (§5).
 - **Document types** (`documentType` enum): `K1`,
   `CAPITAL_ACCOUNT_STATEMENT` (the quarterly statements), `SUMMARY_SHEET`,
-  plus onboarding `SUITABILITY` / `W_8`. `sellOrders` was empty (no
-  active listings).
+  plus onboarding `SUITABILITY` / `W_8`. `sellOrders` lists active
+  listings (may be empty).
 
 **Not on the read path.** The session also fires marketplace / discovery
 / telemetry operations — `getInvOpps`, `getCarousels`, `searchGlobal`,
@@ -319,7 +319,7 @@ machinery per run:
 - `getEquityDetails` → block detail (`securityType`, `isTransactable`,
   `alerts`, `userActions`) — no price.
 - `getEquityBlockInformation` → `units{totalSum, exercisedSum, verified}`.
-  In practice this came back **empty for almost every block**, so it is a
+  This can come back **empty**, so it is a
   *worse* share-count source than the holdings API.
 
 Crucially, everything valuation needs is already in the **holdings** bronze
@@ -409,8 +409,8 @@ values. The only gold-schema change is migration `0015`, which widens the
 
 ### Account / instrument / position model
 
-- **Two accounts** (the silver has no buyer-id column and the holder has one
-  relationship, so both ids are constants):
+- **Two accounts** (the silver has no buyer-id column and both ids are
+  constant within a relationship):
   - `equityzen` — the **custody** account holding the positions (one per
     offering; no per-SPV accounts, no portfolio grouping). `account_kind =
     custody` (EquityZen administers the interests; the buyer places no trades
@@ -495,9 +495,7 @@ exited drop-out, spv-quantity vs fund-NULL) / the double-entry transaction
 pairs (deposit+buy, deposit+contribution, sell+withdrawal,
 distribution+withdrawal, the $0-exit withdrawal omission) including the
 **funding ledger nets to exactly 0** invariant. An end-to-end gold load of
-the real silver reproduced the expected as-of history (0 holdings
-pre-investment, the book growing then an exited SPV dropping out, fund marks
-tracking statement NAVs, current total matching the silver-level figure) and
+real silver reproduced the expected position and valuation series, and
 the funding account's transactions sum to 0.
 
 ## 7. Future work

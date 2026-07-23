@@ -32,8 +32,8 @@ Currently loaded:
   - MT566 corporate_action_confirmation events from ZAN.zip
 
 ZAY.zip (MT950) is intentionally not loaded — see migration 0001's
-header. ZMH (MT536) and other MT types will be added when we have
-samples.
+header. ZMH (MT536) and other MT types are added when real samples
+exist to develop against.
 
 Account identifiers are canonicalised at load time (since migration
 0002): cash side uses IBAN everywhere (MT940 :25: is translated via

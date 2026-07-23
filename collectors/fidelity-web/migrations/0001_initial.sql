@@ -2,7 +2,7 @@
 -- fidelity-web silver schema, migration 0001 — initial schema.
 --
 -- Built to mirror schwab-web and ubs-web's silver
--- conventions so the (planned) `wealthdb` Fidelity adapter can
+-- conventions so the `wealthdb` Fidelity adapter can
 -- compose with the sibling silvers using the same shapes.
 --
 -- Migration discipline: every change to the silver schema lands
@@ -26,15 +26,16 @@
 -- ------------------------------------------------------------
 --
 --   account_external_id
---     Fidelity's 9-digit account number, no separator. The DAF's
---     7-digit id is the auto-exclusion criterion at bronze; it
---     never enters silver. Promoted into every snapshot + event
+--     Fidelity's 9-digit account number, no separator. Ids
+--     matching the bronze exclusion rule (shorter id format)
+--     never enter silver. Promoted into every snapshot + event
 --     table as the canonical account join key.
 --
 --   portfolio_external_id
 --     The label Fidelity renders above each account group in the
---     account selector ('Education' for the 529 sleeves,
---     'Authorized' for trust accounts, etc.). Captured at bronze
+--     account selector (group labels such as 'Education' /
+--     'Authorized' map to portfolio kinds '529' /
+--     'trust_managed'). Captured at bronze
 --     time as `account_dimensions[*].portfolio`. The gold layer
 --     can normalize these to its own taxonomy; silver preserves
 --     Fidelity's labels verbatim. Portfolios are wealth-management
@@ -74,7 +75,9 @@
 --
 -- The fidelity-web silver is the only Fidelity-side silver today
 -- (no Akoya / API equivalent exists for retail clients — see
--- DESIGN.md §1.1). If a future institutional feed from a third-party investment manager materialises (see DESIGN.md §1.3) it would live in a separate
+-- fidelity-web/DESIGN.md §1.1). If a future institutional feed
+-- from a third-party investment manager materialises (see
+-- fidelity-web/DESIGN.md §1.3) it would live in a separate
 -- repo + silver and the gold layer would splice on value-date
 -- per the schwab-api/web pattern.
 --
@@ -125,13 +128,14 @@ CREATE TABLE dump_runs (
 --
 -- `kind` is the loader's interpretation of that label:
 --   '529'              Fidelity 529 College Investing Plan sleeves
---                      (group label 'Education')
---   'trust_managed'    Trust accounts under a third-party investment manager (group label 'Authorized'; see
---                      DESIGN.md §1.3)
---   'other'            Anything else surfaced under a different
---                      group label (e.g. a retail or DAF-adjacent
---                      group; the DAF itself is auto-excluded
---                      before silver). Lets gold route unknown
+--                      (group labels such as 'Education' map here)
+--   'trust_managed'    Trust accounts under a third-party
+--                      investment manager (group labels such as
+--                      'Authorized' map here; see
+--                      fidelity-web/DESIGN.md §1.3)
+--   'other'            Any group label not mapped above (ids
+--                      matching the bronze exclusion rule never
+--                      reach silver). Lets gold route unknown
 --                      labels without a schema migration.
 CREATE TABLE portfolios (
     snapshot_at           INTEGER NOT NULL,
@@ -142,11 +146,11 @@ CREATE TABLE portfolios (
     PRIMARY KEY (snapshot_at, portfolio_external_id)
 );
 
--- One row per (snapshot, account). `nickname` is the user-set
--- display name (e.g. an account nickname); the literal
--- 'Trust: Under Agreement' prefix is what Fidelity emits for trust
--- sleeves (the disambiguating agreement number lives only in
--- statement/tax-form PDFs, not in any selector text we can read).
+-- One row per (snapshot, account). `nickname` is the
+-- account-holder-set display name. Accounts under a trust agreement
+-- can share one generic label (the disambiguating agreement number
+-- lives only in statement/tax-form PDFs, not in any selector text
+-- we can read).
 CREATE TABLE accounts (
     snapshot_at           INTEGER NOT NULL,
     account_external_id   TEXT    NOT NULL,                 -- 9-digit Fidelity account number
@@ -259,7 +263,8 @@ CREATE INDEX ix_transactions_source_sha256
 -- doc_kind values:
 --   'statement'        Fidelity quarterly / annual statements
 --                      (accounts whose group exposes statements in
---                      the web document center; see DESIGN.md §1.2)
+--                      the web document center; see
+--                      fidelity-web/DESIGN.md §1.2)
 --   'tax_form'         Consolidated 1099 / 1099-Q PDFs, per
 --                      tax-year, per account group
 --   'balances_html'    balances/balances.html snapshot

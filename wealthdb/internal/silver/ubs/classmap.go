@@ -365,23 +365,18 @@ func taxWrapperForSafekeepingAcctTp(code, desc string) canonical.TaxWrapper {
 // on every safekeeping via AcctSubTypeDesc, but the
 // *portfolio* can still be a general-banking package even when
 // its (residual) safekeeping technically has an advisory tag.
-// Concretely: a "private banking" portfolio that holds personal
-// chequing / savings / current accounts plus a residual
-// advisory securities position carries advisory-tagged
-// safekeeping rows (AcctSubTypeDesc = "securities account with
-// dvisory agreement"), but the cash accounts in the portfolio
-// are personal banking that the customer manages directly —
-// not part of any investment mandate. Those safekeeping rows
-// have an EMPTY AcctDesc (no strategy name like "EMERGING
-// MARKETS ASIA" / "PRIVATE MARKETS"). Named-mandate
-// safekeeping accounts always carry an AcctDesc; their cash
+// Such residual safekeeping rows have an EMPTY AcctDesc (no
+// strategy name), and the cash accounts sharing their portfolio
+// are personal banking outside any investment mandate — they
+// must not inherit the safekeeping's advisory tag. Named-mandate
+// safekeeping accounts always carry an AcctDesc (a strategy
+// name like "STRATEGY ALPHA" / "STRATEGY BETA"); their cash
 // siblings ARE part of the mandate (typically labelled in
 // silver as "Cash Account for investment solutions"), and
-// inheriting the safekeeping's style is correct. Staging cash
-// in a named-mandate portfolio (e.g. USD pre-positioned to
-// fund a Private Equity capital call) is also part of the
-// mandate and inherits — the customer doesn't direct that cash
-// independently; they fund the mandate, the mandate deploys.
+// inheriting the safekeeping's style is correct. Cash staged in
+// a named-mandate portfolio to fund the mandate is likewise
+// directed by the mandate rather than managed as a standalone
+// balance, so it inherits too.
 //
 // Conflict handling: if two safekeeping accounts share a
 // portfolio and disagree on style (shouldn't happen in real

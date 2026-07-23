@@ -1379,9 +1379,11 @@ def _statement_label_year(label: str) -> int | None:
 #     switched by clicking the rail link, not by driving the select.
 #   * a `#options-select-TimeFilter` <select> + Apply set the year.
 #   * each document is an <ent-ds-link> whose text ends in "(pdf)";
-#     clicking it opens the PDF in a popup tab (no direct href), which
-#     we re-fetch via context.request (cookie-authenticated) — the
-#     same mechanism the old grid used, just different row selectors.
+#     clicking it fires an authenticated POST to
+#     .../financial-documents/download whose JSON response carries the
+#     PDF as base64, which is decoded directly (see
+#     _doccenter_download_row); any popup tab the click spawns is
+#     closed.
 # ---------------------------------------------------------------------------
 
 SEL_DOCCENTER_TIMEFILTER = "#options-select-TimeFilter"

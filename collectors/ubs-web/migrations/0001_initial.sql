@@ -59,10 +59,10 @@
 --
 --   transaction_external_id
 --     UBS "Transaction no." column from the CSV export (e.g.
---     '8830131TO4290735'). PSN derives the same identifier from
---     the MT940 `:61:` `<bank_ref>` field; gold can use it for
---     cross-checks but the primary merge is value-date-based
---     splice (see "Gold merge strategy" below).
+--     '0000000TO0000000'). PSN derives its event IDs from SWIFT
+--     message references instead; the two ID spaces do not
+--     overlap and must not be joined — the merge is the
+--     value-date-based splice (see "Gold merge strategy" below).
 --
 --   isin / valor
 --     ISO 6166 ISIN-12 and Swiss "Valor" number, both as in PSN.
@@ -240,12 +240,13 @@ CREATE TABLE positions (
 -- EVENT TABLE — transactions
 --
 -- One row per UBS transaction. Promotes `value_date` as the
--- splice key gold uses against PSN.events.timestamp. UBS's
--- "Transaction no." serves as the natural PK; re-running a
--- download window safely UPSERTs the same row.
+-- splice key gold uses against PSN.events.timestamp. The PK is
+-- the compound (transaction_external_id, account_external_id)
+-- explained below; re-running a download window safely UPSERTs
+-- the same rows.
 --
--- Reload semantics: row-level INSERT OR REPLACE on the
--- transaction_external_id PK. Window deletion is unnecessary
+-- Reload semantics: row-level INSERT OR REPLACE on the compound
+-- PK. Window deletion is unnecessary
 -- because UBS never RETRACTS transactions in this UI (each is
 -- final once booked); corrections produce a new debit/credit
 -- pair, not an edit.

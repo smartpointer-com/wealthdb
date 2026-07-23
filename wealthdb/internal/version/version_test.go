@@ -4,7 +4,7 @@ import "testing"
 
 func TestVersionDefault(t *testing.T) {
 	if Version == "" {
-		t.Error("Version is empty; want a non-empty build version (default \"dev\")")
+		t.Error("Version is empty; want the compiled-in default or an ldflags override")
 	}
 }
 

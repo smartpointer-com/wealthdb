@@ -234,7 +234,7 @@ class EnvFileTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# Equivalence proof for the hoisted hand-rolled parser (WI p7p8-envfile).
+# Equivalence proof for the hoisted hand-rolled parser.
 #
 # `envfile.load_env_file` replaces a hand-rolled KEY=VALUE parser that was
 # triplicated in schwab-api/login.py, schwab-web/login.py and
@@ -320,7 +320,7 @@ def _oracle_load(path, override_vars, base_env):
 
 class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
     """Proves envfile.load_env_file == the parser it replaced, and that a
-    bash source would diverge on realistic credential shapes (P7)."""
+    bash source would diverge on realistic credential shapes."""
 
     def _run_helper(self, path, override_vars, base_env, warn):
         import logging
@@ -372,10 +372,10 @@ class HandRolledEnvFileEquivalenceTest(unittest.TestCase):
             self.assertEqual(got["PLAIN"], "hostplain")   # env wins
 
     def test_bash_source_would_diverge_on_credential_shapes(self):
-        # The decisive P7 evidence: for shapes a real credential file can
+        # The decisive evidence: for shapes a real credential file can
         # hit, a bash source (source_env_file) yields a DIFFERENT value
         # than the byte-preserving hand parser. If these ever stop
-        # diverging, revisit the P8 migration.
+        # diverging, revisit whether a bash source could replace it.
         diverging = {
             "dollar_double_quoted": 'CRED_A="abc$def"\n',   # $def expands
             "dollar_unquoted": "CRED_A=abc$def\n",

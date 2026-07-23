@@ -115,9 +115,9 @@ def test_lookback_flag():
 
 
 def test_no_documents_flag():
-    # The fleet-wide document opt-out, now a real skip rather than an
-    # accepted-and-warned no-op: main() calls download_documents only when
-    # it is absent. Default off, so a bare run still fetches.
+    # The fleet-wide document opt-out, a real skip: main() calls
+    # download_documents only when it is absent. Default off, so a bare
+    # run still fetches.
     assert download.parse_args(["--no-documents"]).no_documents is True
     assert download.parse_args([]).no_documents is False
 

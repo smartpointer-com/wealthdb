@@ -5,7 +5,7 @@
 -- ## Background
 --
 -- Schwab regenerates statement PDFs on every download (INTEROP.md §3),
--- giving the same logical statement up to 4 distinct sha256s in the
+-- giving the same logical statement multiple distinct sha256s in the
 -- bronze archive. The pre-0004 `_synthesize_activity_id` function
 -- included `source_sha256` in its hash input, so each re-download of
 -- the same statement produced an entirely distinct set of activity_ids.

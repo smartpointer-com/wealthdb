@@ -74,9 +74,8 @@ ORDER BY t`
 
 // buildBatch materialises the full portfolio as of event date t: every
 // position live at t, marked at its latest valuation on/before t, with the
-// running cost basis from its acquisition/contribution/disposal transactions.
-// Emits one position + one instrument per live position, plus the single
-// manual account and the funding sentinel.
+// valuation dated at acquired_at as its cost basis. Emits one position +
+// one instrument per live position, plus the single manual account.
 func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	const q = `
@@ -182,7 +181,7 @@ SELECT p.id, p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.
 	// directly-held assets with no institutional container. management_style
 	// self_directed (the holder decides what to hold); the asset-family split
 	// rides on each position's asset_class, not the account. No base_currency:
-	// the book spans multiple currencies (CHF / EUR / USD).
+	// positions may span multiple currencies.
 	wrapper := canonical.TaxWrapperTaxablePersonal
 	style := canonical.ManagementStyleSelfDirected
 	name := "Manual"

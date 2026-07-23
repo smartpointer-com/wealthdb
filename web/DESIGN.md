@@ -59,8 +59,8 @@ driver*) is the canary that all three are right.
 
 Published on `127.0.0.1:PORT` **and** `[::1]:PORT` → container `:3000`
 (two `-p` flags). Dual-stack so an `ssh -L PORT:127.0.0.1:PORT` *or* a
-`[::1]` tunnel both reach it — avoiding the IPv4/IPv6 loopback mismatch
-that bit the DuckDB UI. If the daemon can't bind IPv6, `web start`
+`[::1]` tunnel both reach it — avoiding an IPv4/IPv6 loopback
+mismatch. If the daemon can't bind IPv6, `web start`
 falls back to IPv4-only with a warning (`WEALTHDB_WEB_BIND=v4` to
 force). Never bound to a public interface; auth is Metabase's own.
 
@@ -178,11 +178,12 @@ materializer loads each currency's dataset **once** and drives all 16
 `(grain, period)` computations off it — and loads all three currencies
 in a single pass over the `_multi` report macros rather than one scan
 per currency. With the per-row inserts replaced by batched multi-row
-`INSERT`s, a full refresh dropped from ~20s to ~2s. Aggregate grains
-sum constituent account values as floats, so their cent-and-below
-digits depend on summation order; `groupAccounts` sorts each group's
-members by `(source, account)` so a run is byte-deterministic (the
-accounts grain, whose groups are singletons, was always exact).
+`INSERT`s, refresh time is cut by roughly an order of magnitude.
+Aggregate grains sum constituent account values as floats, so their
+cent-and-below digits depend on summation order; `groupAccounts`
+sorts each group's members by `(source, account)` so a run is
+byte-deterministic (the accounts grain, whose groups are singletons,
+was always exact).
 
 That cheap re-compute also buys the dashboard's **start-year picker**.
 The since-inception TWR is frequently `null` — the earliest months are

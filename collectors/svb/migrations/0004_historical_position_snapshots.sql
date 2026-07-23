@@ -10,7 +10,8 @@
 -- Coverage:
 --   * Accounts whose group the web document center serves
 --     statements for, such as 529 College Investing Plan
---     accounts (DESIGN.md §4.5).
+--     accounts (fidelity-web/DESIGN.md §4.5). Later migrations
+--     and loader passes add other statement families.
 --   * One row per (as_of_date, account, fund) inside the
 --     statement's "Holdings" block.
 --

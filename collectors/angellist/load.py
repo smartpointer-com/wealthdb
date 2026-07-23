@@ -601,7 +601,7 @@ _FUND_CO_PATTERNS = {
 
 def _norm_company(s: str) -> str:
     """Normalise a company name for matching: lowercase, drop parentheticals
-    (e.g. a "(Batch X)" suffix the funding ledger omits), drop dots/commas,
+    (e.g. a "(Series A)" suffix the funding ledger omits), drop dots/commas,
     collapse whitespace."""
     s = _PAREN_RE.sub("", (s or "").lower())
     s = re.sub(r"[.,]", "", s)

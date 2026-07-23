@@ -1,5 +1,48 @@
 # schwab-web
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates a human browser user and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates a human user**: it drives a real,
+stealth-hardened browser session that signs in to Charles Schwab with your
+credentials and your multi-factor confirmations. The session it holds is
+**fully privileged** — the same login a human uses to move money — and
+Charles Schwab offers no read-only sub-scope, so nothing but this
+codebase's own discipline restricts the session to reading. If malicious
+code were ever introduced into this repository, its dependency chain, or
+the container images it runs, it could act on your accounts with your full
+authority and cause **irreversible financial damage, up to the total loss
+of the assets reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach Charles Schwab's
+terms of service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by Charles Schwab or any other
+financial institution; nothing in this repository is financial, legal, or
+tax advice.
+
 Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 A toolkit for ingesting Charles Schwab data the Trader API does
@@ -78,12 +121,12 @@ template; subcommand names and roles are the same, except login is
 folded into `download` (one continuous Firefox session — no
 standalone `login` verb):
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`login.py`](login.py) | implemented | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` falls back to the VNC-driven flow, where Log In + 2FA are driven by hand. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
-| [`download.py`](download.py) | implemented | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §7 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`pdf_parsers.py`](pdf_parsers.py) | implemented (transactions, positions, cash) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
-| [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
+| Script | Purpose |
+| --- | --- |
+| [`login.py`](login.py) | One-shot: pre-fill the login form from `SCHWAB_LOGIN_ID` / `SCHWAB_PASSWORD`, auto-click Log In, prompt for the 2FA code on stdin, fill, click Continue, then hand off to `download.walk()` against the same Firefox page. `--no-cli-mfa` falls back to the VNC-driven flow, where Log In + 2FA are driven by hand. `--check` validates the persisted profile (mostly diagnostic — Schwab invalidates the session on Firefox close). Driven by the wrapper's `download` subcommand. |
+| [`download.py`](download.py) | `--mode statements`: walks the Statements & Tax Forms page per account, configures the chip filter to Statements / Tax Forms / Letters / Reports & Plans (Trade Confirms intentionally skipped), paginates the full result set, saves each PDF (plus XML / CSV for tax-form variants where Schwab offers them) under `<bronze-dir>/<UTC-ts>/statements/<suffix>/`. Writes `run.json` manifest incrementally with a `status` field (`in-progress` → `complete`/`dry-run`). `--mode transactions`: drives the Schwab "Export Transactions Data" modal to save CSV + JSON + XML of the full tx-history under `<bronze-dir>/<UTC-ts>/transactions/<suffix>/`; with `--debug`, also saves one landing HTML baseline under `<bronze-dir>/<UTC-ts>/screenshots/` (off by default; never read by load; reclaimed by `prune`). `--mode all` (the default) runs them in sequence. `--dry-run` walks without clicking PDF download buttons (the tx-history exports still fire; the dump is recorded `status=dry-run` so load skips it). By default, each transaction's "More" modal is also driven and the per-row detail (Settle Date / CUSIP / Principal / Commission / Industry Fee) stashed in a sidecar; `--no-more-detail` skips that pass — see DESIGN.md §7 for the cost trade-off. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`pdf_parsers.py`](pdf_parsers.py) | Parses Schwab monthly brokerage statement PDFs across three layout eras: `parse_transactions` (the "Transaction Details" table → `TransactionRow` dicts with category, symbol/CUSIP, quantity, price, charges, amount, ST/LT realised gain/loss), `parse_positions` (the holdings block → position rows), and `parse_cash_summary` (the cash-flow summary). Statement-period header parsing supplies the year for MM/DD dates. Also `parse_distribution_pdf` for 3rd-Party-Distribution letters. Runnable standalone: `python3 pdf_parsers.py <pdf>...` emits JSON. Feeds `load.py` (closed accounts disappear from the Transaction History page, so PDF parsing is the only backfill path). |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using schemas in `migrations/`. Applies pending migrations on startup; each dump loads atomically. Parses four transaction feeds: statement PDFs (`statement_pdf`), tx-history JSON (`tx_history_json`), 1099-Composite XML/CSV sale lots (`form_1099b`, XML preferred — see [`tax_form_parsers.py`](tax_form_parsers.py) + [DESIGN.md](DESIGN.md) §6a), and 3rd-Party-Distribution transfer letters (`third_party_distribution` — [DESIGN.md](DESIGN.md) §6b). Silver schema mirrors `schwab-api`'s conventions (snapshot_at, account_external_id, content-dedup payload columns) — see [DESIGN.md](DESIGN.md) for the gold-layer merge contract. |
 
 ### Browser choice — camoufox-patched Firefox
 
@@ -142,7 +185,7 @@ The CLI is intentionally minimal:
 # Standard path: CLI-MFA login + scrape. stdin/stdout must be a
 # TTY (the wrapper allocates one automatically when invoked from
 # a terminal); the script prints
-#   Schwab 2FA: enter your VIP / SMS code, then press Enter.
+#   Schwab 2FA: enter your 2FA code, then press Enter.
 #   > _
 # at which point you type the code and press Enter.
 ./schwab-web download \
@@ -255,7 +298,7 @@ in-container Firefox during the login step.
 
 Schwab does device fingerprinting on retail logins; if the IP
 running the container is new, expect an extra device-trust prompt
-on top of VIP 2FA the first time. After that the persistent
+on top of 2FA the first time. After that the persistent
 profile dir under `/secrets/schwab-web-profile/` carries enough
 state that subsequent vnc-login runs land on a trusted-device
 challenge.
@@ -403,7 +446,7 @@ fresh the cookies + `_abck` are on disk.
 
 The consequence is structural: **login and scrape happen in one
 continuous Firefox session.** `vnc-login` opens Firefox +
-pre-fills the form, Log In + VIP 2FA are completed by hand over
+pre-fills the form, Log In + 2FA are completed by hand over
 VNC, and the Python script takes over the same `page` to walk
 Statements & Tax Forms and Transaction History.
 

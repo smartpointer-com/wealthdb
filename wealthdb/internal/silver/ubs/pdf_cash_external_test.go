@@ -22,8 +22,8 @@ func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool
 	return string(b)
 }
 
-// TestPdfCashIsExternalInternalTransferVeto is the CAPITAL-FABRICATION regression
-// (defect #1). A mandate-funding / book-transfer row that the collector's own
+// TestPdfCashIsExternalInternalTransferVeto is the CAPITAL-FABRICATION regression.
+// A mandate-funding / book-transfer row that the collector's own
 // name-free markers already flagged internal_transfer=true, whose counter_account
 // is a non-own CH/LI IBAN ABSENT from the relationship's `accounts` set, and whose
 // booking_type carries none of the guard tokens (HYPOTHEK/MATURITY/CLOSING —

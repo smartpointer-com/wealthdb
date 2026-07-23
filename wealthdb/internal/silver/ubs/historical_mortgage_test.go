@@ -290,8 +290,8 @@ func TestHistoricalPreciousMetalsDedup(t *testing.T) {
              '{"kind":"overview_asset_class","asset_class":"precious_metals"}'),
             -- overlay portfolio …01: year-end gold-bar detail (SUPPRESSED)
             (1000, '0999AAAAAAAA01', '', 'CH0000000001', 'USD',
-             12000, 815000, 'CHF', 'Gold bar(s) fine weight', 'tok',
-             '{"headline":"12 000 Gold bar(s) fine weight USD ..."}'),
+             1000, 50000, 'CHF', 'Gold bar(s) fine weight', 'tok',
+             '{"headline":"1 000 Gold bar(s) fine weight USD ..."}'),
             -- overlay portfolio …01: a genuine non-metal security (kept)
             (1000, '0999AAAAAAAA01', '', 'CH0000000003', 'CHF',
              100, 50000, 'CHF', 'UBS Money Market Fund CHF', 'tok', '{}'),

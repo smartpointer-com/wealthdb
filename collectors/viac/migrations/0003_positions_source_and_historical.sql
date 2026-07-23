@@ -1,5 +1,5 @@
 -- ============================================================
--- viac-dump silver schema, migration 0003.
+-- viac silver schema, migration 0003.
 --
 -- Adds a `source` provenance column to `positions` and
 -- `cash_balances` so the snapshot tables can carry BOTH:

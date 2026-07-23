@@ -18,10 +18,9 @@ func init() {
 
 // cmdResolutions dumps the symbol_resolutions table for inspection
 // — the LLM-derived and manual-override (config-synced) ticker
-// fallbacks the read path COALESCEs in. Read-only. Provided so
-// users can eyeball the model's output, verify external research,
-// and decide which entries (if any) need a manual override in
-// wealthdb.cfg.
+// fallbacks the read path COALESCEs in. Read-only. Lets the
+// model's output be inspected against external research to decide
+// which entries (if any) need a manual override in wealthdb.cfg.
 func cmdResolutions(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb resolutions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -41,7 +40,7 @@ Flags:
   -f, --format FORMAT     table | csv | csv_plain | json (default: table)
 
 The model_name column tells you each row's provenance:
-  - 'manual-override'        — from cfg.symbol_overrides
+  - 'manual-override'        — from cfg.symbol_resolution.overrides
   - anything else            — LLM model that emitted the row`)
 	}
 	if err := fs.Parse(subargs); err != nil {

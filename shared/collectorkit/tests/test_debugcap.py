@@ -199,16 +199,5 @@ class CapturePageTest(unittest.TestCase):
         self.assertFalse((d / "landing.png").exists())
 
 
-class CaptureTextTest(unittest.TestCase):
-    def test_writes_under_the_capture_dir(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            run = Path(td)
-            debugcap.capture_text(run, "sftp-listing.txt", "a\nb\n", log=log)
-            self.assertEqual(
-                (run / debugcap.SCREENSHOTS_DIR / "sftp-listing.txt").read_text(),
-                "a\nb\n")
-
-
 if __name__ == "__main__":
     unittest.main()

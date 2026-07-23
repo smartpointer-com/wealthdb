@@ -208,9 +208,9 @@ silver-side facts that make a clean date-splice possible:
 
 - **Both silvers promote `value_date`.** PSN's `events.timestamp`
   is the MT940 booking/value date; web's `transactions.value_date`
-  is the CSV "Value date" column. Spot-checked identical for cash
-  movements in the overlap window, so the splice needs no per-row
-  matching.
+  is the CSV "Value date" column. Identical by construction for
+  cash movements in the overlap window, so the splice needs no
+  per-row matching.
 - **The cutover date is derivable from PSN silver:** PSN's feed
   go-live for a relationship is `MIN(snapshot_at)` in
   `psn.dump_runs`.
@@ -221,8 +221,8 @@ silver-side facts that make a clean date-splice possible:
   account_external_id)` so both rows survive a per-account splice.
 - **The two transaction-ID schemes do not overlap.** Web uses
   UBS's "Transaction no."; PSN derives event IDs from SWIFT
-  message references (`mt515:…`). Empirically there is zero overlap
-  between the two ID spaces, so per-row identity matching is not
+  message references (`mt515:…`). There is zero overlap between
+  the two ID spaces, so per-row identity matching is not
   possible — the date-splice is the only safe merge.
 
 **Note on Trade date vs Value date.** Web's CSV has four dates per
@@ -284,14 +284,14 @@ reads the headline row just above it, in three flavours:
    Commitment rows are 0-valued and skipped (the same fund's
    commitment ISINs would otherwise add value-less rows).
 3. **Overview-only asset classes** — UBS issues no Detailed-positions
-   page for the precious-metals / custody portfolio, so its gold-bar
-   holding has no per-instrument row anywhere in the PDF. Its
+   page for some portfolio types (e.g. precious-metals custody), so
+   such a holding has no per-instrument row anywhere in the PDF. Its
    asset-class total is recovered from the relationship overview as a
    single synthetic position (`description = "Precious metals &
    commodities"`, a non-ISIN-shaped `instrument_isin` key of the form
    `PM-<portfolio>`). The overview prints the figure once per
    portfolio-currency PDF, so the walker emits it only from
-   USD-valued PDFs (the relationship's reporting currency); the
+   USD-valued PDFs (the reporting-currency baseline); the
    duplicate USD copies collapse on the silver PK. The gold adapter
    recognises the non-ISIN key and leaves the canonical ISIN null.
 
@@ -386,8 +386,8 @@ wins per date) is owned by the wealthdb UBS adapter — see
 - **Run status + pruning.** `download` writes `run.json` twice: a
   `{"status": "in-progress"}` marker the moment it creates the run
   dir, then an atomic overwrite with the terminal manifest carrying
-  `"status": "complete"` (or `"dry-run"`, alongside the legacy
-  `dry_run` bool) once the walk finishes. This makes a crashed walk —
+  `"status": "complete"` once the walk finishes (`--dry-run` writes
+  nothing to bronze at all). This makes a crashed walk —
   which never reaches `write_run_json` — legible without leaving an
   empty run dir. `load` is unaffected: `scan_bronze` selects every
   timestamped subdir regardless of `run.json`, and `_read_run_json`

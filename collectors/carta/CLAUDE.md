@@ -96,8 +96,8 @@ Per root [CLAUDE.md](../../CLAUDE.md) §3: never bypass, downgrade, or
 "temporarily disable" 2FA to simplify the flow; never add a `--password`
 flag (credentials arrive via env only); never persist a password to disk.
 If a future Carta change breaks the browser flow, fix the selectors / waits
-— do not reach for an auth shortcut. Carta is likely fronted by Akamai-style
-bot detection (cf. [fidelity-web](../fidelity-web/)); the answer to a
+— do not reach for an auth shortcut. Carta's login is fronted by
+Cloudflare Turnstile bot detection; the answer to a
 challenge is a better stealth profile in `explore`, never an auth bypass.
 
 ## Authentication & private data
@@ -105,8 +105,8 @@ challenge is a better stealth profile in `explore`, never an auth bypass.
 See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and §4
 (no private information in source). They apply in full here.
 
-This collector's PII surface is unusually sensitive. Carta data names the
-**private companies** in the book and exact share
+This collector's PII surface is unusually sensitive. Carta data names
+**private companies**, exact share
 counts, strike prices, 409A fair-market-values, vesting schedules, and
 tax-document figures (3921 / 1099-B). The **company name alone is
 identifying**. Never copy a real company / issuer / portfolio name or id,

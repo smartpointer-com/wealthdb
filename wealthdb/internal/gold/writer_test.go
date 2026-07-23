@@ -382,8 +382,8 @@ func TestEmptyBatchIsNoop(t *testing.T) {
 	}
 }
 
-// TestPositionTaxonomyPair covers the transitional 2-D columns:
-// a valid pair round-trips, both-empty stores NULL, and a half-filled
+// TestPositionTaxonomyPair covers the 2-D taxonomy columns: a valid
+// (asset_class, vehicle) pair round-trips, and a missing, invalid,
 // or nonsensical pair is rejected before it reaches gold.
 func TestPositionTaxonomyPair(t *testing.T) {
 	db, ctx := openMigrated(t)

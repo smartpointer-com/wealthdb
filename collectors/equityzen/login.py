@@ -30,8 +30,10 @@ Flow:
      cookies + storage back to the profile.
 
 Selectors are from the explore capture: email `input#email`, password
-`input#password`, TOTP `input#oneTimePassword`. Submit is an Enter
-keypress on the active field (what the SPA's form listens for).
+`input#password`, TOTP `input#oneTimePassword`. Submit on the password
+step is an Enter keypress on the active field (what the SPA's form
+listens for); the TOTP card needs its Submit-button click instead (see
+`_submit_totp`).
 
 CLI surface:
 

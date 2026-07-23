@@ -19,10 +19,9 @@ Bronze layout (mirrors the sibling toolkits):
     │   ├── assets.json                   current holdings (per fund)
     │   └── fees.json                     fee config
     ├── transactions/all.json             every transaction across portfolios
-    ├── documents/
-    │   ├── index.json                    document catalogue (1019 entries)
-    │   └── <docid>.pdf                   PDF binaries (see gating below)
-    └── (manual/ ... user-uploaded artefacts, ingested by load.py)
+    └── documents/
+        ├── index.json                    document catalogue (one entry per document)
+        └── <docid>.pdf                   PDF binaries (see gating below)
 
 PDF gating (in order):
   - DATE gate: doc `timestamp` must fall in the run's window. The
@@ -37,8 +36,8 @@ PDF gating (in order):
       record carries `amountInChf: 0`; the old→new ISIN mapping is
       ONLY in the PDF.
     * Other TRANSACTION docs (TRADE_REPORT, FEE_CHARGE, INTEREST,
-      DIVIDEND, DIVIDEND_CANCELLATION) downloaded by default (~950
-      per-event PDFs); `--no-transaction-documents` skips them.
+      DIVIDEND, DIVIDEND_CANCELLATION) downloaded by default (the
+      bulk of the archive); `--no-transaction-documents` skips them.
 
 Transactions are written FULL to bronze (the REST envelope is one
 small JSON; keeping it complete preserves bronze faithfulness). The
@@ -201,8 +200,7 @@ def extract_viac(run_dir, manifest):
     """docdedup extract hook (disk-driven): recover each prior run's document
     identities from its ``documents/<docid>.pdf`` files. Key = ``(docid,)``,
     the ``documentNumber`` the file is named after — collision-free, so the
-    same logical document lands at the same path every run (this is exactly
-    the identity the old ``find_existing_pdf`` glob keyed on). No reliable
+    same logical document lands at the same path every run. No reliable
     pre-fetch issue date drives a freshness window here, so ``doc_date`` is
     None. Enumerating on-disk files means a key counts only while its blob
     still exists, so a pruned bronze self-heals. ``index.json`` and any
@@ -228,8 +226,8 @@ def _tally(counts: dict, status: str) -> None:
     docdedup.tally(counts, status)
 
 
-# Transient httpx errors worth retrying. Empirically VIAC has
-# dropped an HTTP/2 stream once during a 1019-PDF run with the
+# Transient httpx errors worth retrying. VIAC can drop an HTTP/2
+# stream during a full-archive run with the
 # h2 "ConnectionTerminated" diagnostic — that surfaces in httpx
 # as RemoteProtocolError. Network blips during the same run could
 # also trip TimeoutException or NetworkError; treat them all the
@@ -310,7 +308,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_false",
         help=("Skip the per-event TRANSACTION PDFs (TRADE_REPORT, "
               "FEE_CHARGE, INTEREST, DIVIDEND, DIVIDEND_CANCELLATION; "
-              "~950 PDFs). These are downloaded by DEFAULT; pass this to "
+              "the bulk of the archive). These are downloaded by DEFAULT; "
+              "pass this to "
               "skip them. This is the narrower per-event-receipt opt-out — "
               "distinct from the always-on document centre. SECURITY_FUSION "
               "is downloaded regardless of this flag."),

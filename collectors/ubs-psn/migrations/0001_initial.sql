@@ -9,10 +9,10 @@
 --
 -- Storage convention: timestamps are INTEGER Unix seconds (UTC).
 -- Stable filter columns are promoted; everything else lives in the
--- `payload` JSON column. See the "Silver semi-relational" memory note
--- for the broader contract.
+-- `payload` JSON column. See the repo-root DESIGN.md for the
+-- broader contract.
 --
--- Identifier conventions (see README / DESIGN once written):
+-- Identifier conventions (see README.md / DESIGN.md):
 --   relationship_id          — UBS Server ID from the FTP-access PDF
 --                              ('SFTPCH01', 'SFTPCH02', ...). One per
 --                              banking relationship under one SFTP login.
@@ -240,8 +240,10 @@ CREATE TABLE otc_contracts (
 -- added by the loader without a migration.
 --
 -- Load semantics: window-DELETE-then-INSERT, in one transaction,
--- per (account_external_id, kind, time-range). Never row-level upsert,
--- so upstream removals/corrections propagate.
+-- per (account_external_id, kind, time-range), so upstream
+-- removals/corrections propagate. Exceptions: trade_confirmation
+-- and corporate_action_confirmation rows upsert row-level
+-- (INSERT OR REPLACE) — see README §load.
 --
 -- MT950 (ZAY) is intentionally NOT loaded: for retail PSN it's a
 -- bank-to-bank duplicate of MT940. Bronze keeps the raw ZAY zip; if a

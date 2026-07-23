@@ -17,19 +17,26 @@ import (
 // portfolio column's display value, which mixes different
 // conventions across sources:
 //
-//   - cointracking emits the user-chosen CT account name as
-//     display_name. These are globally-unique customer-identifying
+//   - the cointracking adapter emits the free-form CT account name
+//     as display_name. These are globally-unique customer-identifying
 //     strings on cointracking.info, so they always redact
 //     regardless of character class.
 //   - UBS / other Swiss-source adapters emit bank-assigned
 //     portfolio category labels (Savings / Brokerage / …).
 //     These pass through under the PrivacyAccountID heuristic
 //     because their info content is taxonomy, not identifier.
-func portfolioNamePrivacy(r gold.PortfolioRow) PrivacyClass {
-	if r.SilverSourceID == "cointracking" {
-		return PrivacyCustomerLabel
+//
+// kindOf resolves a silver_source_id to its silver_kind — the
+// config-side id is free-form, so matching the id string instead
+// would silently lose redaction for a source named anything but
+// the literal adapter name.
+func portfolioNamePrivacy(kindOf func(string) string) func(gold.PortfolioRow) PrivacyClass {
+	return func(r gold.PortfolioRow) PrivacyClass {
+		if kindOf(r.SilverSourceID) == "cointracking" {
+			return PrivacyCustomerLabel
+		}
+		return PrivacyAccountID
 	}
-	return PrivacyAccountID
 }
 
 // cmdPortfolios is the portfolio-grain rollup. One row per
@@ -66,7 +73,13 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	colSet, err := resolvePortfolioColumns(*hf.cols, hv.outCcy)
+	// kinds is populated after the gold DB opens; the column
+	// registry's privacy closure reads it through kindOf, so the
+	// -C validation below can still run before any DB access.
+	kinds := map[string]string{}
+	kindOf := func(id string) string { return kinds[id] }
+
+	colSet, err := resolvePortfolioColumns(*hf.cols, hv.outCcy, kindOf)
 	if err != nil {
 		return errs.Newf(2, "portfolios: %s", err.Error())
 	}
@@ -76,6 +89,16 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 	defer db.Close()
+
+	if *hf.privacy {
+		sk, err := gold.SourceKinds(ctx, db)
+		if err != nil {
+			return err
+		}
+		for k, v := range sk {
+			kinds[k] = v
+		}
+	}
 
 	rows, err := gold.PortfoliosAsOf(ctx, db, hv.asOfEpoch, hv.outCcy)
 	if err != nil {
@@ -87,7 +110,7 @@ func cmdPortfolios(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 
 // ---- column registry -----------------------------------------------------
 
-func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow] {
+func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.PortfolioRow] {
 	suffix := "_" + outCcy
 	return []columnSpec[gold.PortfolioRow]{
 		{Name: "silver_source", Align: output.AlignLeft,
@@ -100,7 +123,7 @@ func buildPortfolioColumnRegistry(outCcy string) []columnSpec[gold.PortfolioRow]
 		}},
 		{Name: "portfolio", Align: output.AlignLeft,
 			Privacy:     PrivacyAccountID,
-			PrivacyFunc: portfolioNamePrivacy,
+			PrivacyFunc: portfolioNamePrivacy(kindOf),
 			Extract: func(r gold.PortfolioRow) string {
 				// Sentinel rows render as "(no portfolio)" so they
 				// stand out at a glance; real portfolios show their
@@ -158,12 +181,12 @@ var defaultPortfolioColumns = []string{
 	"total_value_outccy",
 }
 
-func resolvePortfolioColumns(flagValue, outCcy string) ([]columnSpec[gold.PortfolioRow], error) {
-	return resolveColumns(flagValue, defaultPortfolioColumns, buildPortfolioColumnRegistry(outCcy))
+func resolvePortfolioColumns(flagValue, outCcy string, kindOf func(string) string) ([]columnSpec[gold.PortfolioRow], error) {
+	return resolveColumns(flagValue, defaultPortfolioColumns, buildPortfolioColumnRegistry(outCcy, kindOf))
 }
 
 func portfoliosUsage() string {
-	registry := buildPortfolioColumnRegistry("CCY")
+	registry := buildPortfolioColumnRegistry("CCY", func(string) string { return "" })
 	return `usage: wealthdb holdings portfolios [-d YYYY-MM-DD] [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
 Print one row per portfolio (wealth-management wrapper grouping

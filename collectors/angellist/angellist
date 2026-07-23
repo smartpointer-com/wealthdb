@@ -46,7 +46,7 @@ Subcommands:
                       record HAR + Playwright trace + click log + saved
                       blobs under /debug for analysis. --fresh wipes the
                       profile so the next login forces 2FA.
-  login [args...]     The auth path (formerly byo-login). If the saved
+  login [args...]     The auth path. If the saved
                       profile still holds a valid session — cookie unexpired
                       AND a headless probe confirms the server still accepts
                       it — the cookie is lifted and login exits at once, no VNC.

@@ -476,26 +476,6 @@ def probe_custom_date_range(page, screenshot_dir, custom_value: str,
             log.warning("date-range-probe[%s]: restore to %r failed: %s",
                         custom_value, restore_value, e)
 
-def click_visible_button(page, text: str, timeout_s: int = 5) -> bool:
-    """Click the first visible button on the page whose text is
-    exactly `text`. Returns True on click, False if no visible
-    match was found.
-
-    Used when the same button text appears multiple times in the
-    DOM (e.g. Apply lives in both the brokerage-filter-modal and
-    the charitable-filter-modal; only one is mounted/visible at
-    any time per account).
-    """
-    btns = page.get_by_role("button", name=text, exact=True).all()
-    for btn in btns:
-        try:
-            if btn.is_visible():
-                btn.click(timeout=timeout_s * 1000)
-                return True
-        except Exception:
-            continue
-    return False
-
 # ============================================================
 # Result-table walking
 # ============================================================
@@ -1053,7 +1033,8 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
     machine-readable file per format. All three carry the same
     row set; load ingests the JSON (it adds AcctgRuleCd), CSV/XML
     are kept as opaque documents. None carry the per-row "More"
-    modal extras — those come from the opt-in more-detail scrape.
+    modal extras — those come from the default-on more-detail
+    scrape.
     """
 
     entries: list[dict] = []
@@ -1456,8 +1437,8 @@ def _click_visible_export_button(page, in_modal: bool) -> bool:
 # vs "document-pagination") and its own Search button. The date
 # filter is applied per account, then the Export modal yields the
 # full row set as CSV/JSON/XML (no per-page HTML capture); the
-# opt-in more-detail walk scrapes the per-row modal extras the
-# export lacks.
+# default-on more-detail walk scrapes the per-row modal extras
+# the export lacks.
 
 def _apply_tx_filter(page, account_suffix: str, tx_range: str,
                      exact_window: tuple | None,
@@ -1528,11 +1509,11 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     each row, clicks the row's "More" link if present, and
     captures the per-row detail modal contents (Settle Date,
     CUSIP, Principal, Commission, Industry Fee, etc.) into a
-    sidecar `more-details.json`. Off by default — adds ~1 click
-    per transaction, which is several thousand extra clicks for
-    a multi-year backfill. The silver loader merges these
-    details into the transaction's payload when the sidecar is
-    present (see load._load_more_details).
+    sidecar `more-details.json`. On by default; `--no-more-detail`
+    opts out of the ~1 extra click per transaction (several
+    thousand for a multi-year backfill). The silver loader
+    merges these details into the transaction's payload when the
+    sidecar is present (see load._load_more_details).
     """
     log.info("=== tx-history: %s (…%s) ===",
              account["label"], account["suffix"])
@@ -1575,7 +1556,7 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     # full row set; JSON/XML add `AcctgRuleCd`. None carry the
     # per-row "More" modal extras (Settle Date / CUSIP /
     # Principal / Commission / Industry Fee) — those come from
-    # the opt-in `with_more_detail` scrape below.
+    # the default-on `with_more_detail` scrape below.
     exports = _export_tx_history(page, account["suffix"], out_dir)
 
     # Optionally capture one HTML snapshot of the search-results

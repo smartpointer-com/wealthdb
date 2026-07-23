@@ -1,5 +1,5 @@
 -- Add 'carta' to the silver_kind whitelist so the carta adapter
--- (private-market holdings: cap-table equity + a fund LP interest)
+-- (private-market holdings: cap-table equity + fund LP interests)
 -- can register a silver source.
 --
 -- carta reuses existing taxonomy values — account_kind 'custody',

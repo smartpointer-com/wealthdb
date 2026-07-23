@@ -5,8 +5,7 @@ subType) class mapping, the disk-driven extract hook, and the (docid,)
 keying — plus the end-to-end mode dispatch, both through
 ``docdedup.process`` directly (with an injected stub fetch) and through the
 real ``download.fetch_pdf`` (with a fake streaming client). Asserts each
-document class behaves per the correctness-safe mapping that replaced viac's
-old link-everything ``find_existing_pdf`` / ``os.link``:
+document class behaves per the correctness-safe mapping:
 
   * executed-once, immutable, unparsed docs — contracts, investment
     profiles, credit notes, communications, and the per-event TRANSACTION
@@ -15,8 +14,8 @@ old link-everything ``find_existing_pdf`` / ``os.link``:
   * PARSED / restatement-prone docs — the INVESTMENT_REPORTING period-end
     statements load.py parses, every TAX Bescheinigung, and the data-bearing
     SECURITY_FUSION PDF → ALWAYS fetched and content-compared (unchanged one
-    hardlinked, a restated/corrected one KEPT — the re-issue case the old
-    link-everything code would have served stale);
+    hardlinked, a restated/corrected one KEPT — the re-issue case a
+    link-everything scheme would serve stale);
   * an unrecognised type → always fetched (fail-safe);
   * a real fetch failure → an error; _tally routes an unmapped outcome to
     'other', never inflating 'fetched'; --documents-force bypasses the index.

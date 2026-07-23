@@ -7,7 +7,7 @@ import (
 )
 
 // TestReturnsPolicyForUnknownDefault pins the ReturnsPolicyFor miss-fallback. The
-// per-kind assertions (ubs/fidelity/cointracking/angellist/manual/…) now live in
+// per-kind assertions (ubs/fidelity/cointracking/angellist/manual/…) live in
 // policy_registered_test.go (package returns_test), which blank-imports the
 // silver adapters so their init()-time RegisterPolicy calls run — here in bare
 // package returns no source is registered, so every kind would (correctly) fall

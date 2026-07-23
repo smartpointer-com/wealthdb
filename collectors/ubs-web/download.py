@@ -1029,19 +1029,19 @@ def _strip_apikey(href: str) -> str:
 
 def write_run_json(run_dir: Path, since: date, until: date,
                    accounts: list[dict], documents: list[dict],
-                   positions: list[dict],
-                   dry_run: bool) -> None:
+                   positions: list[dict]) -> None:
     payload = {
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
-        # only reached after the walk body, so a real run finalises as
-        # "complete" and a --dry-run walk as "dry-run". The atomic write
-        # below overwrites the "in-progress" marker dropped at run-dir
-        # creation. `prune` keys on this field; the `dry_run` bool is kept
-        # alongside it because the statusless-manifest fallback classifies
-        # on it (see prune._is_complete).
-        "status": "dry-run" if dry_run else "complete",
-        "dry_run": dry_run,
+        # only reached at the end of a real walk (--dry-run writes no
+        # bronze at all — see _prepare_run_dir), so the run finalises as
+        # "complete". The atomic write below overwrites the
+        # "in-progress" marker dropped at run-dir creation. `prune` keys
+        # on this field; the `dry_run` bool is kept alongside it because
+        # the statusless-manifest fallback classifies on it (see
+        # prune._is_complete).
+        "status": "complete",
+        "dry_run": False,
         # One window for the whole run: transactions, documents and
         # positions are all fetched over it. (Dumps predating the single
         # --lookback flag carry a separate since/until on each block.)
@@ -1346,7 +1346,7 @@ def main(argv: list[str]) -> int:
                     )
                     write_run_json(run_dir, since, until,
                                    txn_results, doc_results,
-                                   positions_meta, args.dry_run)
+                                   positions_meta)
             finally:
                 if args.trace:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)

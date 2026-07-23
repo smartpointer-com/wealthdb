@@ -51,9 +51,6 @@ USER_AGENT = (
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 
-# storageState file mode. CLAUDE.md §3 — never relax below 0600.
-STATE_FILE_MODE = 0o600
-
 # Canonical storageState location: the wrapper mounts the secrets
 # dir (default ~/.secrets, overridable via SWISSQUOTE_SECRETS_DIR /
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
@@ -178,7 +175,7 @@ def _log_feedback_poll(
     Records status, how early it returned, and the response body so we can
     confirm the approved-vs-keep-alive response shape against the timing
     heuristic the wait loop uses. Best-effort; only when a debug dir is set.
-    The body is auth-status only and lands in the user-provided debug dir,
+    The body is auth-status only and lands in the supplied debug dir,
     never in the repo."""
     if not screenshot_dir:
         return

@@ -10,9 +10,8 @@ prices and CHF market value as of a period-end date — going back to
 the contract's first year. Parsing them lets the silver layer
 reconstruct a position time series long before live scraping began.
 
-Cadence observed: semi-annual through 2023, annual thereafter, plus
-the occasional MANUAL_INVESTMENT_REPORTING the customer can request
-on demand. One PDF covers every portfolio under the contract.
+Cadence varies (semi-annual or annual), plus the occasional
+MANUAL_INVESTMENT_REPORTING the customer can request on demand. One PDF covers every portfolio under the contract.
 
 Text extraction goes through **pypdfium2** (Python bindings to
 Google's PDFium). On these A4 reports it is ~3x faster than

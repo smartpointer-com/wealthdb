@@ -10,8 +10,8 @@ that merges every bank, broker, pension, and crypto source the owner uses.
 The point-in-time portfolio views live under one parent command,
 **`wealthdb holdings <view>`** (`<view>` = positions, accounts, portfolios,
 sources, or global); **`wealthdb transactions`** is the separate money-in/out
-ledger. You only ever *read* from it. It is already configured — just run the
-command; no setup, no paths, no flags required to connect.
+ledger. You only ever *read* from it. In a configured deployment, just run
+the command; no setup, no paths, no flags required to connect.
 
 ## Hard rules (do not break)
 - Allowed, all read-only: `wealthdb holdings <view>` (`<view>` is `global`, `sources`, `portfolios`, `accounts`, or `positions`), `wealthdb returns <view>` (`<view>` is `accounts`, `portfolios`, `sources`, or `global`), and `wealthdb transactions` — the data queries — plus `wealthdb status`, `snapshots`, `help` (harmless diagnostics — run freely).
@@ -50,7 +50,7 @@ command; no setup, no paths, no flags required to connect.
 
 ## Flags (the query commands)
 - `-f json|csv|table` — output format. Default is `table` (for humans). Use `json` to parse.
-- `-x CCY` — currency for value columns. Default is the configured base (USD). E.g. `-x CHF`, `-x EUR`.
+- `-x CCY` — currency for value columns. Default is the configured base currency. E.g. `-x CHF`, `-x EUR`.
 - `-d` (as-of date) applies to **holdings** views; `transactions` and `returns` take a positional date range/window instead, not `-d`. `-p` (privacy/redact) works on all.
 - `-C COLS` — choose columns: comma-separated names, `all`, or a delta like `-C +name,-quantity`. (Not on `holdings global`, which is a single fixed row.)
 - `holdings positions` only: `--with-cash` — add one cash-balance row per account+currency.
@@ -152,13 +152,13 @@ wealthdb returns sources --period monthly 2024-01-01 - -f json
 ## Direct database access (advanced, optional)
 Prefer the commands above — they hide schema, snapshot, and FX details. Drop
 to raw SQL only when the CLI genuinely can't express what you need. All data
-lives under the **`WEALTHDB_DATA_ROOT`** environment variable (already set),
-and you have read-only access:
+lives under the **`WEALTHDB_DATA_ROOT`** environment variable (set in a
+configured deployment), and you have read-only access:
 - **Gold** (the merged, canonical store the commands read — query this one): `$WEALTHDB_DATA_ROOT/wealthdb.db`, a **DuckDB** database.
 - **Silver** (per-source, source-shaped inputs to gold): `$WEALTHDB_DATA_ROOT/<collector>/<collector>.db`, **SQLite** — except `cointracking/cointracking.duckdb` (DuckDB). Collectors: `schwab-web, schwab-api, ubs-web, ubs-psn, swissquote, fidelity-web, relevate, viac, cointracking, carta, angellist, equityzen, manual, fred`.
 - **Bronze** (raw, as-downloaded CSV/JSON/PDF): `$WEALTHDB_DATA_ROOT/<collector>/<UTC-timestamp>/`. Rarely needed for analysis.
 
-Always open these **read-only** (you have no write access, and a nightly job may be writing). Don't assume column names — inspect with DuckDB `SHOW TABLES` / `DESCRIBE <table>` first.
+Always open these **read-only** (you have no write access, and a scheduled collection job may be writing). Don't assume column names — inspect with DuckDB `SHOW TABLES` / `DESCRIBE <table>` first.
 
 ## Gotchas
 - There are **no row-filter flags** (no `--source`, `--account`, `--symbol`). To filter by source, account, asset class, etc., request `-f json` and filter/aggregate in your own code.

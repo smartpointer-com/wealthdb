@@ -35,10 +35,11 @@
 //   - TaxWrapper:       vested_benefits (the Swiss canonical
 //     enum value for Pillar-2 in transit /
 //     Freizügigkeit).
-//   - ManagementStyle:  self_directed. Relevate offers a fixed
-//     menu of pre-defined strategies; the
-//     account holder picks one. No advisor
-//     discretion.
+//   - ManagementStyle:  automated. Relevate's robo-style menu
+//     maps to canonical 'automated': the
+//     holder picks a strategy from a fixed
+//     list, then an algorithm allocates and
+//     rebalances with no human in the loop.
 package relevate
 
 import (

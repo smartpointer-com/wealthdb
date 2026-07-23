@@ -30,7 +30,7 @@ and captures the investor GraphQL responses as raw bronze.
         reclaimed), a changed one keeps its fresh bytes (a re-issue is never
         missed). This is the correctness-safe default for anything load.py reads
         for figures;
-      - executed-once legal / offering documents (an explicit, owner-confirmable
+      - executed-once legal / offering documents (an explicit, curated
         allow-list) are immutable once signed and are not parsed, so an
         identical copy from a prior complete run is HARDLINKED into the new run
         dir and the fetch is skipped (any hardlink error falls through to a real
@@ -103,7 +103,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Skip fetching each offering's document PDF blobs (capital-account "
                         "statements, K-1s, etc.). Documents are fetched by DEFAULT via "
                         "downloadUrl into bronze documents/; pass this to skip that heavy "
-                        "pass (~200 PDFs). Download-avoidant when on: an executed-once "
+                        "pass. Download-avoidant when on: an executed-once "
                         "legal/offering document identical to a prior run is hardlinked in "
                         "rather than re-fetched; parsed / restatement-prone documents "
                         "(statements, K-1s, reports) are always fetched and content-compared "

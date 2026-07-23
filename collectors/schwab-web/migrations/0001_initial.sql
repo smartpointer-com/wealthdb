@@ -3,8 +3,8 @@
 --
 -- The web-scraped silver complements `schwab-api`'s
 -- Trader-API silver. Gold-layer logic merges the two by splicing
--- transactions at the date Schwab's Trader API access started
--- (mid-2024) and falling back to the web feed for
+-- transactions at the date the deployment's Trader-API access
+-- was activated and falling back to the web feed for
 -- everything earlier — see "Gold merge strategy" below.
 --
 -- Migration discipline: every change to the silver schema lands
@@ -34,11 +34,10 @@
 --     schwab-api's `account_external_id`, which is the
 --     opaque `hashValue` returned by /accounts/accountNumbers.
 --     Gold cannot join web↔api on this column directly. The
---     bridge is the FULL account number, which web statement
---     PDF filenames suffix verbatim
---     ("Brokerage-Statement_2026-04-30_NNN.PDF"): map suffix →
---     full number via a hand-maintained mapping or by parsing
---     the PDF header.
+--     bridge is the FULL account number: the loader harvests it
+--     from statement-PDF headers into
+--     accounts.payload.account_number_full, and gold joins that
+--     against the api silver's promoted account_number column.
 --
 --   activity_id (transactions)
 --     Schwab web has no stable per-transaction identifier.
@@ -71,10 +70,12 @@
 -- ------------------------------------------------------------
 --
 -- 1. Account matching:
---    Maintain a manual map (account_external_id_web → account_external_id_api)
---    derived from full account numbers. Web silver carries only
---    the suffix; gold widens it to the api hashValue via the map.
---    Without this map, web rows must remain unjoined to api.
+--    Web silver stores the full account number in
+--    accounts.payload.account_number_full (harvested from
+--    statement-PDF headers); gold joins it against the api
+--    silver's account_number column to widen the suffix to the
+--    api hashValue. Accounts with no harvested number fall
+--    back to suffix matching.
 --
 -- 2. Transaction splicing:
 --    Per resolved account:
@@ -86,10 +87,11 @@
 --    window, the api feed wins (structured + activity_id).
 --
 -- 3. Position snapshots:
---    The api feed emits live positions; the web feed exposes
---    them only via 1099-B detail (annual). Gold prefers api
---    positions for any date api covers; web 1099 detail is a
---    fallback for pre-api years.
+--    The api feed emits live positions; the web feed carries
+--    per-statement historical_position_snapshots (migration
+--    0002, parsed from statement PDFs). Gold prefers api
+--    positions for any date api covers; the web snapshots
+--    cover the pre-api dates.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;

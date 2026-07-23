@@ -94,8 +94,9 @@ Subcommands:
               read-only smoke test (writes nothing); document blobs +
               tax-centre metadata are recorded by default, --no-documents skips them.
   load        Ingest bronze snapshots into the SQLite silver: offerings,
-              positions, cash_flows, tax_documents. Pass --force to
-              re-load snapshots already recorded in dump_runs.
+              positions, cash_flows, tax_documents,
+              capital_account_statements, k1_documents. Pass --force to
+              delete the silver DB and rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed downloads with no
               terminal run.json) from the bronze tree, and strip
               screenshots/ (the download --debug captures) from complete
@@ -104,7 +105,7 @@ Subcommands:
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
 
-NOTE: all four verbs (explore / login / download / load) are
+NOTE: all five verbs (explore / login / download / load / prune) are
 implemented. See DESIGN.md.
 
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.

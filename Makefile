@@ -4,7 +4,7 @@
 # so a `git pull` or an agent refactor is followed by a single command.
 #
 #   make                  show this help
-#   make all              build everything (gold engine + all collectors)
+#   make all              build everything (gold engine + web + all collectors)
 #   make test             test everything
 #   make build-wealthdb   build the Go gold-engine image
 #   make test-wealthdb    run `go test ./...` in the wealthdb container
@@ -18,7 +18,8 @@
 # A collector with a Docker wrapper (collectors/<name>/<name>) builds via
 # `<wrapper> build` and tests with pytest inside the container; a host-venv
 # collector (schwab-api, ubs-psn, fred, manual, svb) builds its .venv
-# from requirements.txt.
+# from requirements.txt. schwab-api and fidelity-web are hybrids: they
+# Docker-build AND carry a host venv (`.host-venv` marker).
 # Collectors that ship no tests are a no-op for the test target. Each
 # test-<x> rebuilds its <x> first, so testing always runs current code.
 # `make test` also runs the shared collectorkit library's own suite
@@ -100,8 +101,9 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # --provenance=false on every docker build: buildx attaches a provenance
 # attestation by default, and it embeds build metadata, so the image digest
 # changes on EVERY build even when all layers are CACHED. A base image whose
-# digest moves invalidates `FROM wealthdb/base-*` in all 15 collectors, so
-# each one re-ran its whole Dockerfile (pip install and all) on every build.
+# digest moves invalidates `FROM wealthdb/base-*` in every Docker
+# collector, so each one re-ran its whole Dockerfile (pip install and
+# all) on every build.
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
 base-images:
@@ -328,7 +330,7 @@ update-bases:
 help:
 	@echo "wealthdb build/test — run from the repo root:"
 	@echo ""
-	@echo "  make all                build everything (engine + all collectors)"
+	@echo "  make all                build everything (engine + web + all collectors)"
 	@echo "  make test               test everything"
 	@echo "  make build-wealthdb     build the Go gold-engine image"
 	@echo "  make test-wealthdb      run go test ./... in the wealthdb container"

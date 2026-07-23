@@ -75,8 +75,8 @@ was made), but it is **not obtainable by an individual shareholder**:
   the angellist collector) and the bank portals, **this
   collector scrapes the holder web UI.** Runtime: Docker + Camoufox,
   matching `fidelity-web` / `schwab-web` / `cointracking` (a React SPA
-  behind an aggregator-grade login very likely fronted by Akamai-style bot
-  detection — cf. fidelity-web).
+  behind an aggregator-grade login fronted by Cloudflare Turnstile bot
+  detection — see §3).
 
 If API access is ever obtained (e.g. via a company/firm account,
 or by emailing `developers@carta.com` as a Carta customer), this collector

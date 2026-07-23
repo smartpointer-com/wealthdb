@@ -11,18 +11,19 @@ import (
 // pluggable per-source knobs (see docs/RETURNS-NOTES.md, "Pluggable per-source
 // policy").
 //
-// The UBS and cointracking migrations have landed, so a subset of the knobs is
-// now consumed by the engine: OnboardScope (returns_compute.go, per-entity-once
-// onboarding), Inception (entityWindow, first-real-snapshot anchor), ConduitKinds
-// via IsConduit (returns.go), the ClassifyFlow/ExternalOnly hook path (attachFlows
-// in returns.go), and AccountsGrainMeaningless (returns.go, suppressing the
-// per-wallet accounts grain for crypto sources). The remaining knobs — NettingTol,
-// SpineDensity,
-// InKindJumpTol, the NavOnly mirror, and the OnboardAmount hook — are DEFINED
-// but NOT YET consumed. Every knob defaults to reproduce CURRENT behavior, so
-// DefaultReturnsPolicy() is a strict no-op: a recognised-but-unmigrated source
-// stays byte-identical, and each consumed knob only changes numbers when a
-// source opts into a non-default value.
+// The engine consumes these knobs: OnboardScope (returns_compute.go,
+// per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
+// anchor), ConduitKinds via IsConduit (returns.go), the ClassifyFlow/ExternalOnly
+// hook path (attachFlows in returns.go), and AccountsGrainMeaningless
+// (returns.go, suppressing the per-wallet accounts grain for crypto sources).
+// The remaining knobs — NettingTol, SpineDensity, InKindJumpTol, the NavOnly
+// mirror, and the OnboardAmount hook — are a declared forward contract for the
+// per-source returns-policy migration: defined and defaulted here so a source
+// can declare intent that takes effect once the corresponding engine site reads
+// the knob. Every knob defaults to the engine's baseline behavior, so
+// DefaultReturnsPolicy() is a strict no-op: a source without a registered
+// policy stays byte-identical, and each consumed knob only changes numbers when
+// a source opts into a non-default value.
 //
 // A source declares its ReturnsPolicy co-located in its silver package and
 // registers it via RegisterPolicy from that package's init(). The engine
@@ -33,7 +34,7 @@ type ReturnsPolicy struct {
 	// kind sets); ReturnsPolicyFor(kind).Flow exposes exactly this member.
 	Flow FlowPolicy
 
-	// ---- consumed knobs (live since the UBS migration) ----
+	// ---- consumed knobs ----
 
 	// OnboardScope: whether synthetic onboarding fires per constituent account
 	// (default), once per computed entity at inception, or never.
@@ -42,7 +43,7 @@ type ReturnsPolicy struct {
 	// economically meaningless for this source (coins sweep between wallets on
 	// arrival, so a single wallet's return is noise); the portfolios/sources/global
 	// grains stay valid because they aggregate coherent units. Default false leaves
-	// every grain's TWR/MWR computed as today.
+	// every grain's TWR/MWR computed.
 	AccountsGrainMeaningless bool
 	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode
@@ -58,20 +59,21 @@ type ReturnsPolicy struct {
 	// transferLike).
 	ExternalOnly bool
 
-	// ---- forward knobs; defined, defaulted, NOT yet consumed ----
+	// ---- forward-contract knobs; defined and defaulted, awaiting engine sites ----
 
-	// NettingTol: transfer-netting window / epsilon. Zero value = today's
-	// netting behavior (the engine still uses its module-level netting constants).
+	// NettingTol: transfer-netting window / epsilon. Zero value matches the
+	// engine's module-level netting constants.
 	NettingTol Tolerance
 	// SpineDensity: daily vs. sparse-carry-forward value spine. Zero value =
-	// today's behavior.
+	// the engine's baseline spine.
 	SpineDensity SpineMode
 	// NavOnly: capital-call-risk vehicles (suppress flow-based return, surface
-	// NAV growth). The engine still derives NAV-only from Flow.Regime ==
-	// RegimeNavOnly; this knob mirrors that for the migration (set by
-	// DefaultReturnsPolicy) but is not itself read, and defaults false.
+	// NAV growth). The engine derives NAV-only from Flow.Regime ==
+	// RegimeNavOnly; this knob mirrors that (set by DefaultReturnsPolicy) as
+	// the forward contract for reading it directly, and defaults false.
 	NavOnly bool
-	// InKindJumpTol: suspected-in-kind honesty-flag tolerance. Zero = today.
+	// InKindJumpTol: suspected-in-kind honesty-flag tolerance. Zero = the
+	// engine's baseline tolerance.
 	InKindJumpTol canonical.Decimal
 
 	// ---- escape hatches; optional, nil => default behavior ----
@@ -80,8 +82,8 @@ type ReturnsPolicy struct {
 	// classification under ExternalOnly. nil => the FlowPolicy
 	// kind-set rule (UBS pre-tags in silver instead, so it ships nil).
 	ClassifyFlow func(FlowCtx) FlowClass
-	// OnboardAmount, if non-nil, overrides the synthetic onboarding amount. nil
-	// today => the engine's default. NOT yet consumed.
+	// OnboardAmount, if non-nil, overrides the synthetic onboarding amount.
+	// nil => the engine's default. Forward contract: no engine site reads it.
 	OnboardAmount func(DebutCtx) canonical.Decimal
 }
 
@@ -89,7 +91,7 @@ type ReturnsPolicy struct {
 type OnboardScope int
 
 const (
-	// OnboardPerConstituent is today's behavior: onboarding fires per
+	// OnboardPerConstituent is the default: onboarding fires per
 	// constituent account.
 	OnboardPerConstituent OnboardScope = iota
 	// OnboardPerEntityOnce fires onboarding once per computed entity at
@@ -108,7 +110,7 @@ const (
 type InceptionMode int
 
 const (
-	// InceptionFullWindow is today's behavior: the full report window.
+	// InceptionFullWindow is the default: the full report window.
 	InceptionFullWindow InceptionMode = iota
 	// InceptionFirstRealSnapshot anchors at the first real value snapshot.
 	// Consumed by the engine (entityWindow) and set live by UBS.
@@ -119,7 +121,7 @@ const (
 type SpineMode int
 
 const (
-	// SpineDefault is today's behavior. Not yet consumed.
+	// SpineDefault is the engine's baseline spine density.
 	SpineDefault SpineMode = iota
 	// SpineDaily forces a daily spine.
 	SpineDaily
@@ -127,16 +129,15 @@ const (
 	SpineSparseCarryForward
 )
 
-// Tolerance is a netting window / epsilon knob. Its zero value reproduces
-// today's netting behavior. Not yet consumed.
+// Tolerance is a netting window / epsilon knob. Its zero value matches the
+// engine's module-level netting constants (forward contract).
 type Tolerance struct {
 	Days int
 	Eps  canonical.Decimal
 }
 
 // FlowCtx is the input to the optional ClassifyFlow hook. Shape is
-// provisional; the hook is nil in every default policy today, so nothing reads
-// it yet.
+// provisional; the hook is nil in every default policy.
 type FlowCtx struct {
 	Kind   canonical.TxKind
 	Amount canonical.Decimal
@@ -153,15 +154,14 @@ const (
 	FlowExternal
 )
 
-// DebutCtx is the input to the optional OnboardAmount hook. Provisional; nil in
-// every default policy today.
+// DebutCtx is the input to the optional OnboardAmount hook. Provisional; part
+// of the OnboardAmount forward contract.
 type DebutCtx struct {
 	Day int64
 }
 
-// DefaultReturnsPolicy returns the policy that reproduces CURRENT engine
-// behavior for a recognised-but-unmigrated source: the given FlowPolicy plus all
-// forward knobs at their zero/default values (no-op). Sources build their
+// DefaultReturnsPolicy returns the baseline policy: the given FlowPolicy plus
+// all other knobs at their zero/default values (no-op). Sources build their
 // ReturnsPolicy from this and override only what they need.
 func DefaultReturnsPolicy(flow FlowPolicy) ReturnsPolicy {
 	return ReturnsPolicy{
@@ -207,7 +207,7 @@ func lookupPolicy(kind string) (ReturnsPolicy, bool) {
 // engine can read the forward knobs (OnboardScope, Inception, ConduitKinds,
 // ExternalOnly, …) — not just its Flow member (the flow-classification policy).
 // An unregistered kind returns DefaultReturnsPolicy(defaultFlowPolicy()) with ok
-// false; the default knobs reproduce today's behavior, so a miss is a strict
+// false; the default knobs are the engine baseline, so a miss is a strict
 // no-op at every knob site. Because kind is resolved per source and the engine
 // carries each constituent's src, the policy is naturally source-scoped even
 // inside the merged global entity — a UBS constituent keeps the UBS policy while

@@ -31,8 +31,8 @@ func taxWrapperFor(accountProduct string) canonical.TaxWrapper {
 // taxonomyFor maps a Swissquote XLS section header (stored in
 // positions.payload.asset_class; the set of headers is small and
 // stable) to the (exposure, vehicle) pair emitted to gold, per
-// TAXONOMY.md. Observed headers in real silver: "ETFs", "Bonds";
-// the rest are Swissquote UI sections expected eventually.
+// TAXONOMY.md. Headers the export format produces include "ETFs",
+// "Bonds"; the rest are Swissquote UI sections expected eventually.
 //
 // The vehicle is pinned by the section header; the exposure is fixed
 // except for the two collective-vehicle sections ("ETFs", "Funds"),

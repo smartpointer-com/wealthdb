@@ -6,10 +6,9 @@
 --   nickname          — a user-friendly label. Schwab silver
 --                       exposes this directly (the user-set
 --                       nickname from /userPreference). UBS and
---                       Swissquote silvers don't carry one
---                       today; the future config-side override
---                       (DESIGN.md §13.9) will fill in for
---                       those.
+--                       Swissquote silvers don't carry one;
+--                       the config-side account_overrides fill
+--                       in for those.
 --
 --   account_category  — a bank-assigned or user-set category
 --                       hinting at the wealth-management wrapper

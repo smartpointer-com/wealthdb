@@ -1,5 +1,48 @@
 # angellist
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates a human browser user and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates a human user**: it drives a real,
+stealth-hardened browser session that signs in to AngelList with your
+credentials and your multi-factor confirmations. The session it holds is
+**fully privileged** — the same login a human uses to move money — and
+AngelList offers no read-only sub-scope, so nothing but this codebase's
+own discipline restricts the session to reading. If malicious code were
+ever introduced into this repository, its dependency chain, or the
+container images it runs, it could act on your accounts with your full
+authority and cause **irreversible financial damage, up to the total loss
+of the assets reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach AngelList's terms of
+service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by AngelList or any other
+financial institution; nothing in this repository is financial, legal, or
+tax advice.
+
 A read-only collector for the [AngelList](https://angellist.com) venture
 investor portal — the **limited-partner** book of SPVs and fund
 deals: per-vehicle commitment, capital called (contributed), invested,

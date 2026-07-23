@@ -14,7 +14,7 @@ import (
 // perEntityGroups empty). Source id -> silver_kind "ubs" selects that policy.
 // All data synthetic / placeholder (CLAUDE.md §4).
 
-// TestUBSConduitOnboardStepNoSameDayContamination is the defect-#3 regression: the
+// TestUBSConduitOnboardStepNoSameDayContamination is the regression: the
 // per-entity-once step-up must be the newly-debuting constituents' first value NET
 // OF same-day sibling FUNDING drops only — NOT the raw aggregate calendar delta,
 // which sweeps in same-day external deposits (already booked as their own flow) and

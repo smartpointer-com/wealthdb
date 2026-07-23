@@ -99,8 +99,8 @@ func anchorToDay(t time.Time, endOfPeriod bool) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// parseAsOf is the convenience wrapper used by point-in-time
-// subcommands (`positions -d`, `accounts -d`, `portfolios -d`).
+// parseAsOf is the convenience wrapper used by the point-in-time
+// subcommands (`holdings positions -d`, `holdings accounts -d`, …).
 // Empty string means "today, end-of-day"; any non-empty string
 // is delegated to parseDate with endOfPeriod=true.
 func parseAsOf(s string, now time.Time) (int64, error) {

@@ -228,7 +228,7 @@ func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	const kind = canonical.TxKindTransferOut
 
 	// Guard the production extraction directly: market_value alone must yield a
-	// non-nil magnitude (this is the path that previously returned nil).
+	// non-nil magnitude.
 	rawNet, _, _ := extractWebTxAmounts(payload)
 	if rawNet == nil {
 		t.Fatal("extractWebTxAmounts returned nil NetAmount for a market_value-only securities transfer; market_value is not being read")

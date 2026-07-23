@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,11 +12,6 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	_ "modernc.org/sqlite"
 )
-
-// Compile-time check: silence unused-import warnings if io is
-// later trimmed (used by some inline strings.Reader → io.Reader
-// coercions).
-var _ io.Reader = strings.NewReader("")
 
 // silverFixture is the minimal Schwab silver schema, duplicated
 // here so this end-to-end test doesn't reach across packages.

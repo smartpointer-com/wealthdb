@@ -6,8 +6,8 @@ see `collectors/carta/`) into canonical gold change records.
 
 Carta is the first wealthdb source for **non-public-market securities**:
 direct private-company equity + equity-comp (shares, option grants with
-strike + vesting, RSUs/RSAs, SAFEs/notes, warrants) and an LP interest in a
-venture/PE fund. None has an ISIN/CUSIP/symbol or a quotable market price, so
+strike + vesting, RSUs/RSAs, SAFEs/notes, warrants) and LP interests in
+venture/PE funds. None has an ISIN/CUSIP/symbol or a quotable market price, so
 the adapter introduces two private asset classes and values the fund at its
 NAV and cap-table equity at the holder's per-date fair-market-value (from the
 collector's valuation series), rather than inventing prices.
@@ -73,9 +73,11 @@ holds many securities. All values are adapter defaults; config-side
 - **account_kind** = `custody`. Carta safekeeps / administers private
   securities and fund interests; it is not a trading brokerage.
 - **tax_wrapper** = `taxable_personal`. The holdings are personally held
-  and taxable (K-1 / 1042-S confirm); no tax-advantaged wrapper.
+  and taxable; no tax-advantaged wrapper.
 - **management_style** = `self_directed`. `management_style` is an
-  account-level field (a canonical position carries none), and a Carta account may hold holder-controlled equity, GP-managed funds, and pre-conversion SAFEs — so the GP-managed-fund vs holder-controlled-equity vs
+  account-level field (a canonical position carries none), and a Carta
+  account may hold holder-controlled equity, GP-managed funds, and pre-conversion
+  SAFEs — so the GP-managed-fund vs holder-controlled-equity vs
   pre-conversion-SAFE distinction rides on each position's (`asset_class`,
   `vehicle`) pair ((`private_equity`, `fund`) vs (`private_equity`, `stock`) vs
   (`private_debt`, `convertible_note`)), not here. The holder controls what the
@@ -134,8 +136,9 @@ for a cap-table company the pair its security types derive — (`private_equity`
 `stock`), (`private_equity`, `option`), or (`private_debt`, `convertible_note`)
 for a purely-convertible holding (see below). `name` = the entity legal name;
 ISIN/CUSIP/symbol/currency are NULL (private securities have none). The
-company's single position references its instrument; its lots (e.g. several share certificates + option grants) are aggregated into that one position, not separate
-instruments or positions.
+company's single position references its instrument; its lots (e.g. several
+share certificates + option grants) are aggregated into that one position,
+not separate instruments or positions.
 
 ### Taxonomy (`asset_class` × `vehicle`)
 
@@ -187,7 +190,7 @@ instrument; the buy / sell legs carry the share lot + price.
 A side-loaded `<account_id>-transactions.csv` (collector DESIGN.md §5.2) instead
 names canonical kinds directly (`sell` / `withdrawal` / `deposit` / `buy` /
 `contribution`), which the adapter emits **1:1** — the CSV supplies both halves
-of the exit (a sale plus the withdrawals it splits into), so they
+of an exit (a sale plus the withdrawals it splits into), so they
 net to 0 without auto-pairing and override the synthesized $0 exit.
 
 `Status` reports the `cash_flows` date range as the transaction extrema; the

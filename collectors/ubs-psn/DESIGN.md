@@ -99,12 +99,13 @@ Where the gold-layer adapter should not look for data because silver
 doesn't try to surface it:
 
 - **MT950 (`ZAY.zip`).** Bank-to-bank statement format; a duplicate of
-  MT940 for the same accounts in this customer's PSN setup. Bronze
+  MT940 for the same accounts in a retail PSN setup. Bronze
   keeps the raw zip; silver does not ingest. See migration 0001's
   header.
 - **MT536, MT568, MT590, MT599, MT600, MT608, MT900/910, MT942,
-  MT990.** Loader stubs not yet implemented — added when we have
-  real samples. Bronze keeps every zip; silver simply skips.
+  MT990.** Loader stubs not yet implemented — added when real
+  samples exist to develop against. Bronze keeps every zip; silver
+  simply skips.
 - **Empty XML containers** (`TDOPT`, `TDMM`, `TDOTC` when the
   relationship is not provisioned for, or holds none of, those product
   types; `TDCAPI` on days with no service-charge or interest bookings;

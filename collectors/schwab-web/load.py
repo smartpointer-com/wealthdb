@@ -1572,8 +1572,8 @@ def _insert_position_snapshots(conn: sqlite3.Connection,
             "est_annual_income": pos.get("est_annual_income"),
             "pct_of_acct": pos.get("pct_of_acct"),
             # Schwab Endnote markers on this holding (e.g. "e" = edited
-            # by the account holder, "t" = by a third party) — flags an
-            # account-provided / SPV valuation. None when unmarked.
+            # by the account holder, "t" = by a third party) — flags a
+            # holder-provided valuation. None when unmarked.
             "footnotes": pos.get("footnotes"),
             "raw_lines": pos.get("raw_lines"),
         })

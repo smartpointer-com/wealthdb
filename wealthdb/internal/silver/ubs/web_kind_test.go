@@ -50,7 +50,7 @@ func TestWebKindClassification(t *testing.T) {
 		{"mt940 fx swap sale", "Sale from FX Swap", N, C, canonical.TxKindFxSwap},
 		{"mt940 fx swap purchase", "Purchase from FX Swap", D, N, canonical.TxKindFxSwap},
 		{"mt940 pm spot sell", "Sell PM spot w/o VAT", N, C, canonical.TxKindSell},
-		{"mt940 order prefixed", "UCCDD01000001494; order", D, N, canonical.TxKindWithdrawal},
+		{"mt940 order prefixed", "UCCDD00000000001; order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 capital gain", "Capital gain", N, C, canonical.TxKindDeposit},
 		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindWithdrawal},
 
@@ -83,9 +83,8 @@ func TestWebKindClassification(t *testing.T) {
 		{"pdf order buy", "ORDER", D, N, canonical.TxKindBuy},
 		{"pdf ubs manage buy", "UBS MANAGE", D, N, canonical.TxKindBuy},
 		{"pdf precious metal sell", "PRECIOUS METAL SELL", N, C, canonical.TxKindSell},
-		// Mortgage principal payoff — deferred: classified by
-		// direction (a debit → withdrawal) until the returns-engine
-		// follow-up nets it against the vanishing liability.
+		// Mortgage principal payoff — classified by direction
+		// (a debit → withdrawal).
 		{"pdf extraord amortization", "EXTRAORD. AMORTIZATION", D, N, canonical.TxKindWithdrawal},
 		{"pdf mortgage closing", "CLOSING", D, N, canonical.TxKindWithdrawal},
 		// Unknown / no direction hint.

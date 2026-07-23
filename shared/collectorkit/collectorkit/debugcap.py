@@ -8,10 +8,8 @@ one helper per kind rather than one shape for all:
     Camoufox collectors).
   * :class:`HttpTrace`    — request metadata for a REST collector: what was
     asked, what came back, how long it took.
-  * :func:`capture_text`  — anything else a collector can dump as text (an
-    SFTP listing, a directory manifest).
 
-The contract, identical for all three:
+The contract, identical for both:
 
   * Captures land in ``<run>/screenshots/`` — the same subdir name the
     fleet's `prune` already nominates via ``debug_subdirs``, so a complete
@@ -92,15 +90,6 @@ def capture_dir(run_dir: Path) -> Path:
     d = Path(run_dir) / SCREENSHOTS_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def capture_text(run_dir: Path, name: str, text: str, *,
-                 log: logging.Logger) -> None:
-    """Write `text` to ``<run>/screenshots/<name>``. Best effort."""
-    try:
-        (capture_dir(run_dir) / name).write_text(text, encoding="utf-8")
-    except OSError as e:
-        log.warning("--debug: capture %s failed: %s", name, e)
 
 
 def capture_page(page, run_dir: Path, name: str, *,

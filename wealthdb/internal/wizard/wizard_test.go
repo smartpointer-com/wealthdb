@@ -13,6 +13,13 @@ import (
 // newSilverFixture writes a minimal SQLite with a `dump_runs`
 // table so probeSilverDB succeeds against it.
 func newSilverFixture(t *testing.T, name string) string {
+	return newSilverFixtureTable(t, name, "dump_runs")
+}
+
+// newSilverFixtureTable writes a minimal SQLite carrying the named
+// run-tracking table (`dump_runs` for collector silvers, `load_runs`
+// for load-only silvers such as manual).
+func newSilverFixtureTable(t *testing.T, name, table string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -20,7 +27,7 @@ func newSilverFixture(t *testing.T, name string) string {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE ` + table + ` (snapshot_at INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
 	return path
@@ -147,7 +154,7 @@ func TestRunRejectsBadSilverPath(t *testing.T) {
 }
 
 func TestRunRejectsNotSilverDB(t *testing.T) {
-	// SQLite file without the expected dump_runs table.
+	// SQLite file without a dump_runs or load_runs table.
 	path := filepath.Join(t.TempDir(), "notsilver.db")
 	db, _ := sql.Open("sqlite", "file:"+path)
 	db.Exec(`CREATE TABLE foo (x INTEGER)`)
@@ -157,7 +164,7 @@ func TestRunRejectsNotSilverDB(t *testing.T) {
 	stdin := scriptedInput(
 		"/tmp/gold.db", "USD",
 		"x", "schwab",
-		path, // bad: SQLite but no dump_runs
+		path, // bad: SQLite but no run-tracking table
 		good,
 		"n",
 	)
@@ -165,8 +172,26 @@ func TestRunRejectsNotSilverDB(t *testing.T) {
 	if _, err := Run(stdin, &stdout, "/tmp/wealthdb.cfg", Defaults{}); err != nil {
 		t.Fatalf("Run: %v\n%s", err, stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "missing the `dump_runs`") {
-		t.Errorf("expected dump_runs guidance: %s", stdout.String())
+	if !strings.Contains(stdout.String(), "neither a `dump_runs` nor a `load_runs`") {
+		t.Errorf("expected run-table guidance: %s", stdout.String())
+	}
+}
+
+func TestRunAcceptsLoadRunsSilver(t *testing.T) {
+	// Load-only silvers (e.g. manual) have load_runs instead of
+	// dump_runs; the probe must accept them.
+	silverPath := newSilverFixtureTable(t, "manual.db", "load_runs")
+	stdin := scriptedInput(
+		"/tmp/gold.db", "USD",
+		"m", "manual", silverPath, "n",
+	)
+	var stdout bytes.Buffer
+	res, err := Run(stdin, &stdout, "/tmp/wealthdb.cfg", Defaults{})
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, stdout.String())
+	}
+	if res.Config.SilverSources[0].Path != silverPath {
+		t.Errorf("expected load_runs silver accepted, got %+v", res.Config.SilverSources)
 	}
 }
 

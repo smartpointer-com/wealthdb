@@ -1,5 +1,48 @@
 # ubs-web
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector impersonates a human browser user and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector **impersonates a human user**: it drives a real,
+stealth-hardened browser session that signs in to UBS with your
+credentials and your multi-factor confirmations. The session it holds is
+**fully privileged** — the same login a human uses to move money — and UBS
+offers no read-only sub-scope, so nothing but this codebase's own
+discipline restricts the session to reading. If malicious code were ever
+introduced into this repository, its dependency chain, or the container
+images it runs, it could act on your accounts with your full authority and
+cause **irreversible financial damage, up to the total loss of the assets
+reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach UBS's terms of
+service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by UBS or any other financial
+institution; nothing in this repository is financial, legal, or tax
+advice.
+
 A toolkit for ingesting UBS Switzerland retail e-banking data the
 PSN feed does not cover: driving the UBS netbanking web UI under
 Playwright to export historic account statements, custody/portfolio
@@ -63,11 +106,11 @@ cookie across runs until UBS invalidates it.
 The architecture follows the `swissquote` template; subcommand
 names and roles are the same:
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`login.py`](login.py) | implemented | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; an older `ubs_web_state.json` is read if the canonical file is absent). `--check` validates an existing state file without a new QR push. |
-| [`download.py`](download.py) | implemented | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Writes a `run.json` manifest. Credit-card transactions are intentionally skipped — this is a wealth-management toolkit. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`load.py`](load.py) | implemented | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
+| Script | Purpose |
+| --- | --- |
+| [`login.py`](login.py) | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; an older `ubs_web_state.json` is read if the canonical file is absent). `--check` validates an existing state file without a new QR push. |
+| [`download.py`](download.py) | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Writes a `run.json` manifest. Credit-card transactions are intentionally skipped — this is a wealth-management toolkit. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
 
 ### Why both CSV and MT940?
 
@@ -121,12 +164,13 @@ prefix, so a naive slice would collide silently — hashing avoids it.
 
 `download` writes `run.json` twice: `{"status": "in-progress"}` when
 it creates the run dir, then an atomic overwrite with the terminal
-manifest carrying `"status": "complete"` (or `"dry-run"`) once the
-walk finishes. A run dir left with `status: "in-progress"` (or none at
-all) is therefore a crashed walk, and a `dry-run` shell is a
-`--dry-run`; `prune` reclaims both. Dumps that predate this field are
-statusless but complete iff their manifest is present and not a
-`--dry-run` shell (`dry_run: false`).
+manifest carrying `"status": "complete"` once the walk finishes. A
+`--dry-run` walk writes nothing to bronze at all. A run dir left with
+`status: "in-progress"` (or none at all) is therefore a crashed walk;
+`prune` reclaims it, along with legacy `"dry-run"` shells (manifests
+carrying `"status": "dry-run"`). Dumps that predate the status field
+are statusless but complete iff their manifest is present and not a
+legacy `--dry-run` shell (`dry_run: false`).
 
 ### Silver schema and gold-merge contract
 

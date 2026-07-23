@@ -75,7 +75,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat <<'EOF'
-carta container (SCAFFOLD)
+carta container
 
 Usage:
   <wrapper> <subcommand> [args...]
@@ -90,15 +90,17 @@ Subcommands:
               stdin; persists to the Camoufox profile dir at
               /secrets/carta-profile. Pass --check to probe the existing
               session without firing a 2FA push.
-  download    Browse the holder surfaces and capture bronze: portfolios,
-              issuers (companies held), securities (option grants w/
-              strike+vesting, RSUs, RSAs, shares, SAFEs/notes),
-              transactions, 409A FMVs, and tax documents. Pass --dry-run
-              to walk the navigation without firing exports/downloads.
-  load        Ingest bronze snapshots into the SQLite silver: portfolios,
-              issuers, securities, vesting_events, transactions,
-              fair_market_values, tax_documents. Pass --force to delete
-              the silver DB and rebuild it from all bronze.
+  download    Walk the holder REST/JSON API and capture bronze for both
+              holding families: the cap-table side (holdings, grants,
+              vesting, per-grant exercise-detail xlsx) and the fund-LP
+              side (capital account, cap calls), plus the document
+              archive. Pass --dry-run to verify discovery without
+              writing; --no-documents skips the document pass.
+  load        Ingest bronze snapshots into the SQLite silver: entities,
+              securities, vesting_schedules + vesting_events,
+              fund_metrics, cap_calls, capital_events, cash_flows,
+              documents. Pass --force to delete the silver DB and
+              rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
               tree, and strip screenshots/ (the download --debug captures)
               from complete dumps, whose load inputs are never touched.
@@ -106,10 +108,6 @@ Subcommands:
               the wrapper.
   sh|bash     Open an interactive shell inside the container.
   help        Show this message.
-
-NOTE: this collector is a SCAFFOLD. login / download / load are stubs
-that exit without touching carta.com until the explore phase has run and
-the implementation lands. See DESIGN.md.
 
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF

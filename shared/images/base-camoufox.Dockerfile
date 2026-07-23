@@ -1,5 +1,6 @@
 # Shared base for the camoufox-using collectors (the private-market
-# scrapers, schwab-web / schwab-api, fidelity-web). Layers Xvfb/x11vnc,
+# scrapers, schwab-web / schwab-api, fidelity-web, cointracking).
+# Layers Xvfb/x11vnc,
 # camoufox-pinned Playwright, and a pre-fetched Firefox bundle onto
 # base-playwright, and bakes the shared entrypoint bootstrap
 # (/opt/entrypoint-lib.sh) that each collector's entrypoint.sh sources.
@@ -14,7 +15,7 @@ FROM wealthdb/base-playwright:latest
 
 # Xvfb gives Firefox a virtual X11 display so it can run headed
 # inside the container with no real GPU/monitor. x11vnc serves
-# that display over VNC so the operator can drive the browser
+# that display over VNC so the browser can be driven interactively
 # (vnc-login subcommand) from a host-side VNC client.
 #
 # Pre-create /tmp/.X11-unix world-writable + sticky. Xvfb tries

@@ -29,7 +29,7 @@
 --
 --   portfolio_internal_id
 --     `portfolios[].id` — the foundation's internal DB key (small
---     int, e.g. 1100-range). Kept on `accounts` as a join column
+--     integer). Kept on `accounts` as a join column
 --     because Relevate's per-portfolio API endpoints
 --     (/Portfolio/{id}/deposits, /portfolio/{id}/performance, ...)
 --     are keyed by THIS, not by externalId.
@@ -41,10 +41,11 @@
 --     cross-bank joins in wealthdb gold.
 --
 --   transaction_external_id
---     Not yet populated. The /deposits endpoint observed so far
---     returns an empty `{transactions:[]}` envelope for FZ accounts.
---     Schema present for forward compatibility; actual contribution
---     events live in the credit-note PDFs for now.
+--     'credit_note:<relevate_doc_id>' for contribution events the
+--     loader parses out of credit-note PDFs — deterministic, so
+--     re-loads collapse to the same row. The /deposits endpoint
+--     can return an empty `{transactions:[]}` envelope for FZ
+--     accounts; the credit-note PDFs carry the contribution data.
 --
 --   content_sha256 (documents)
 --     SHA-256 hex of the PDF on disk. Same row regardless of how
@@ -56,7 +57,7 @@
 -- ------------------------------------------------------------
 --
 -- The relevate silver is currently the only source for Relevate
--- accounts. wealthdb's future `relevate` adapter projects:
+-- accounts. wealthdb's `relevate` adapter projects:
 --   accounts.account_external_id        -> gold.accounts.account_external_id
 --   accounts.product_key (FZ*)          -> gold.accounts.tax_wrapper='vested_benefits'
 --   accounts.product_key                -> management_style='automated' for FZPF and FZI
@@ -248,11 +249,11 @@ CREATE INDEX ix_instruments_isin
 -- Performance time series. One row per (snapshot, account,
 -- value_date) from /portfolio/{id}/performance values[]. Each
 -- snapshot's values[] is the full history Relevate exposes for
--- that portfolio (~219 daily points in the observed sample);
--- re-loading a fresh dump REPLACES the prior snapshot's points
--- via the (snapshot_at, account, value_date) PK collision being
--- avoided by snapshot_at — distinct snapshots get distinct rows,
--- and the gold layer chooses the latest snapshot per value_date.
+-- that portfolio; re-loading a fresh dump REPLACES the prior
+-- snapshot's points via the (snapshot_at, account, value_date)
+-- PK collision being avoided by snapshot_at — distinct snapshots
+-- get distinct rows, and the gold layer chooses the latest
+-- snapshot per value_date.
 CREATE TABLE performance_points (
     snapshot_at           INTEGER NOT NULL,
     account_external_id   TEXT    NOT NULL,
@@ -280,12 +281,12 @@ CREATE INDEX ix_performance_account_date
 -- ============================================================
 -- EVENT TABLE — transactions
 --
--- Empty for FZ accounts so far (/deposits returns an empty
--- envelope); schema present for forward compatibility and to
--- match the sibling-repo pattern. If Relevate exposes
--- contributions / withdrawals via a different endpoint in the
--- future, or if PDFs are parsed into transaction events by a
--- later migration, rows land here.
+-- Populated by the loader from credit-note PDFs
+-- (source='credit_note_pdf'), one row per parsed
+-- Gutschriftsanzeige. The /deposits endpoint can return an
+-- empty `{transactions:[]}` envelope for FZ accounts; if
+-- Relevate exposes contributions / withdrawals via an
+-- endpoint feed, those rows land here too.
 -- ============================================================
 
 CREATE TABLE transactions (
@@ -317,20 +318,19 @@ CREATE INDEX ix_transactions_account_occurred
 -- first_seen_at is the earliest dump that observed it and whose
 -- last_seen_at advances on each subsequent dump.
 --
--- doc_kind is the loader's best-effort human label. The
--- /middlelayer/v2/documents response's `fileName` field is an
--- internal code, NOT the user-visible label (that lives in the
--- SPA's Content-Disposition headers, which the JSON API doesn't
--- surface). The numeric `document_type_code` + `category_code`
--- columns ARE structured, but the enum-to-name mapping isn't
--- published — for now the heuristic falls through to 'other' for
--- the production response shape and a future migration will swap
--- in a real mapping. Filter on document_type_code in the
--- meantime.
+-- doc_kind is the loader's best-effort human label, derived by
+-- matching German + English needles against the
+-- /middlelayer/v2/documents response's `fileName` field
+-- (DOC_KIND_PATTERNS in load.py); fileNames that match no
+-- needle fall through to 'other'. The numeric
+-- `document_type_code` + `category_code` columns ARE
+-- structured, but the enum-to-name mapping isn't published —
+-- if it surfaces, a later migration can swap it in for the
+-- fileName heuristic.
 -- ============================================================
 
 -- bronze_path is RELATIVE TO THE BRONZE ROOT (i.e. starts with
--- the run-ts dirname: '20260527T142642Z/documents/NNNN.pdf').
+-- the run-ts dirname: '20260101T120000Z/documents/NNNN.pdf').
 -- Consumers join with their own bronze root — works the same
 -- inside the container (root = /data) and on the host (root =
 -- $XDG_DATA_HOME/wealthdb/relevate). No absolute path stored, no container-

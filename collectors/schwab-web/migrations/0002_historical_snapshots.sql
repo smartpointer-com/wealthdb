@@ -2,7 +2,8 @@
 -- schwab-web silver schema, migration 0002
 -- — per-statement position snapshots and cash-flow summaries.
 --
--- Schwab Trader API coverage starts mid-2024;
+-- Trader-API coverage starts at the deployment's
+-- API-activation date;
 -- everything before that has to be reconstructed from monthly /
 -- quarterly statement PDFs. Migration 0001 captured the
 -- transactions side only. This migration adds the two missing

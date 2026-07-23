@@ -13,6 +13,7 @@ RUN pip install -r requirements.txt
 # is incomplete.
 COPY login.py download.py load.py prune.py viac_client.py pdf_parsers.py /app/
 COPY migrations /app/migrations
+COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

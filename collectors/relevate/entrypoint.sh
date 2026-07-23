@@ -29,8 +29,8 @@ case "${1:-help}" in
         ;;
     prune)
         # Delete non-complete dumps (crashed walks + --dry-run shells)
-        # from the bronze tree. REST-only, so no debug artefacts to
-        # reclaim and no browser/Xvfb needed. --dry-run prints the
+        # and `download --debug` HTTP traces from the bronze tree.
+        # No browser/Xvfb needed. --dry-run prints the
         # plan first. Also reachable host-side via the wrapper.
         shift
         exec python3 /app/prune.py "$@"

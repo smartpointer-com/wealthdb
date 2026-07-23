@@ -39,16 +39,17 @@ func cmdWebConfig(_ context.Context, g globalFlags, _ []string, _ io.Reader, std
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_ENABLED=%s\n", enabled)
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_PORT=%d\n", port)
 	fmt.Fprintf(stdout, "WEALTHDB_GOLD_DB=%s\n", shellSingleQuote(cfg.GoldDB))
-	// The output currency the pre-created Metabase report models bind
-	// (provision.py's report_x(..., '<CCY>')), so models default to the
-	// same currency as the CLI's default_currency.
+	// Passed to provision.py's --default-currency, which accepts it
+	// for compatibility only and does not use it — the report models
+	// expose per-currency (_<CCY>) column sets rather than binding a
+	// single currency.
 	fmt.Fprintf(stdout, "WEALTHDB_DEFAULT_CURRENCY=%s\n", shellSingleQuote(cfg.DefaultCurrency))
 	return nil
 }
 
 // shellSingleQuote wraps s in single quotes for safe `eval` in a
 // POSIX shell, escaping embedded single quotes the standard way
-// ('\” closes the quote, adds a literal ', reopens).
+// (close the quote, add a backslash-escaped literal ', reopen).
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

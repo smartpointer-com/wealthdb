@@ -1,5 +1,47 @@
 # schwab-api
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **This collector uses a write-capable brokerage API and holds fully
+> privileged financial-account credentials. Read this disclaimer in full
+> before configuring any credential.**
+
+This collector holds OAuth credentials to the official Charles Schwab
+Trader API — a **write-capable API**: the granted token family is not
+limited to reading and also reaches order-placement and other
+account-changing endpoints, so nothing but this codebase's own discipline
+restricts it to the read-only subset. If malicious code were ever
+introduced into this repository, its dependency chain, or the environment
+it runs in, it could trade or otherwise act on your accounts with your
+full authority and cause **irreversible financial damage, up to the total
+loss of the assets reachable from those credentials**.
+
+**You are solely responsible for a thorough, independent security audit**
+of this code, its dependency chain, and its runtime images **before**
+entrusting it with credentials, and again after every update or rebuild.
+If you cannot perform such an audit, do not hand this software real
+credentials. Automated access may additionally breach Charles Schwab's
+terms of service; verifying that your use is permitted is likewise your
+responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”, without
+warranty of any kind, express or implied, including but not limited to the
+implied warranties of merchantability, fitness for a particular purpose,
+title, and non-infringement. To the maximum extent permitted by applicable
+law, **SmartPointer AG and the contributors accept no responsibility for,
+and shall not be liable for, any claim, damages, or other liability** —
+whether in an action of contract, tort, or otherwise — arising from, out
+of, or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds or other
+assets, credential or data compromise, account suspension or termination,
+and any direct, indirect, incidental, special, consequential, or punitive
+damages. Your use is entirely at your own risk. See
+[LICENSE](../../LICENSE) for the governing terms. This software is not
+affiliated with, endorsed by, or sponsored by Charles Schwab or any other
+financial institution; nothing in this repository is financial, legal, or
+tax advice.
+
 Part of the **wealthdb** suite — see [the architecture overview](../../DESIGN.md) for the bronze → silver → gold model and [collectors/README.md](../README.md) for shared collector conventions.
 
 A toolkit for ingesting Charles Schwab Trader API portfolio data:
@@ -9,13 +51,13 @@ raw JSON into a queryable SQLite silver database.
 
 ## Tools
 
-| Script | Status | Purpose |
-| --- | --- | --- |
-| [`login.py`](login.py) | implemented | Interactive OAuth login flow; mints the token file that `download.py` consumes. Required once initially and once per 7-day refresh window thereafter. |
-| [`download.py`](download.py) | implemented | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
-| [`load.py`](load.py) | implemented | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
-| [`prune.py`](prune.py) | implemented | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree, plus aged-out entries of the login trace cache (`~/.cache/wealthdb/debug/schwab-api`). Host-side, like `load`. `--dry-run` previews the plan. |
-| [`recompress.py`](recompress.py) | implemented | One-time backlog sweep: replaces the plain data JSON inside pre-compression complete dumps with sha256-verified `.json.zst` twins — the form `download` now writes. `run.json` is never compressed. Host-side, manual only, never scheduled. `--dry-run` previews the plan. |
+| Script | Purpose |
+| --- | --- |
+| [`login.py`](login.py) | Interactive OAuth login flow; mints the token file that `download.py` consumes. Required once initially and once per 7-day refresh window thereafter. |
+| [`download.py`](download.py) | Fetches account hashes, user preferences, positions, transactions, and open orders over the Schwab REST API and stores the raw JSON locally, organised by UTC timestamp. Read-only. |
+| [`load.py`](load.py) | Parses raw JSON dumps into a queryable SQLite silver database. Applies pending migrations on startup; each dump loads atomically. Idempotent — already-loaded dumps are skipped. |
+| [`prune.py`](prune.py) | Reclaims disk by deleting non-complete dumps (crashed / interrupted downloads) from the bronze tree, plus aged-out entries of the login trace cache (`~/.cache/wealthdb/debug/schwab-api`). Host-side, like `load`. `--dry-run` previews the plan. |
+| [`recompress.py`](recompress.py) | One-time backlog sweep: replaces the plain data JSON inside pre-compression complete dumps with sha256-verified `.json.zst` twins — the form `download` now writes. `run.json` is never compressed. Host-side, manual only, never scheduled. `--dry-run` previews the plan. |
 
 See [DESIGN.md](DESIGN.md) for the Schwab-specific design rationale
 (semi-relational silver schema, temporal model, why each script
@@ -27,7 +69,7 @@ The toolkit assumes a directory layout like:
 
 ```
 <bronze-dir>/                       e.g. $XDG_DATA_HOME/wealthdb/schwab-api/
-├── 20260512T104753Z/               one bronze dump per run
+├── 20260101T120000Z/               one bronze dump per run
 │   ├── run.json                    status manifest (in-progress → complete) — NOT compressed
 │   ├── account_numbers.json.zst
 │   ├── user_preference.json.zst

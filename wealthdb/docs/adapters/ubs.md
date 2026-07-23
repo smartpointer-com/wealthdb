@@ -62,8 +62,9 @@ identifier dimensions show up in every gold row:
 adapter looks up the holding's ISIN in `silver.instruments` and
 reads the ISO 10962 CFI code (`InstrCtgyCFI` in the SDFI payload),
 falling back to UBS's internal `UacAsstClsCd` bucket when the CFI
-is empty — the non-listed custody items (e.g. metal-deposit receipts, private-market fund interests) carry no CFI but
-do carry a UAC code. `taxonomyPairForInstrument` derives the gold
+is empty — the non-listed custody items (e.g. metal-deposit
+receipts, private-market fund interests) carry no CFI but do
+carry a UAC code. `taxonomyPairForInstrument` derives the gold
 `(asset_class, vehicle)` pair (exposure = what moves the value,
 vehicle = the wrapper — TAXONOMY.md) from those signals: the CFI's
 first character picks the vehicle, and the exposure comes from the
@@ -96,9 +97,7 @@ adapter compensates by building a `map[isin]meta` from the
 **most-recent** instrument row across the entire silver DB, then
 using that for every holding. This is correct in practice
 because instrument metadata (name, CFI category) is functionally
-immutable — being stale by one snapshot is harmless. Discovered
-empirically during M7's load against real silver; documented here
-so the next maintainer doesn't undo it.
+immutable — being stale by one snapshot is harmless.
 
 ### MT535 SWIFT-tag parsing (implemented)
 
@@ -184,7 +183,7 @@ Common narrative prefixes (extend as observed):
 ## 8. Historical (PDF-reconstructed) data — ubs-web migration 0002
 
 `ubs-web` migration 0002 added two parallel tables built
-from the customer's eDocuments PDF archive:
+from the eDocuments PDF archive:
 
 | Silver table | Source PDF | Cadence | Gold target |
 | --- | --- | --- | --- |

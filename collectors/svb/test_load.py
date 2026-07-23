@@ -49,7 +49,7 @@ def _build(tmp_path, monkeypatch):
     # SAME bytes, which the content-keyed cache would (correctly, for real
     # bronze) collapse; the modelling tests therefore run cache-off, and
     # test_parse_cache_reuse covers the cache with distinct content.
-    B.build(db, bronze, signature=None, closure_date="2023-09-30",
+    B.build(db, bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
     return sqlite3.connect(str(db))
 
@@ -80,7 +80,7 @@ def test_empty_bronze_never_clobbers_existing_silver(tmp_path, monkeypatch):
     for bad in (tmp_path / "empty", tmp_path / "does-not-exist"):
         (tmp_path / "empty").mkdir(exist_ok=True)
         with pytest.raises(SystemExit, match="no statement PDFs"):
-            B.build(db, bad, signature=None, closure_date="2023-09-30",
+            B.build(db, bad, signature=None, closure_date="2023-12-31",
                     migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
         assert db.read_bytes() == before, "existing silver was modified"
 
@@ -111,9 +111,9 @@ def test_closure_injected_for_held_sleeve(tmp_path, monkeypatch):
         "historical_position_snapshots WHERE account_external_id='SVM-000001' "
         "ORDER BY as_of_date").fetchall()
     assert len(rows) == 2
-    # real holding at 2022-12-31, then a $0 closure at the 2023-09-30 handoff.
+    # real holding at 2022-12-31, then a $0 closure at the 2023-12-31 closure-date handoff.
     assert rows[0] == (B.ts_from_iso("2022-12-31"), 200.0, _real_sha(conn))
-    assert rows[1][0] == B.ts_from_iso("2023-09-30")
+    assert rows[1][0] == B.ts_from_iso("2023-12-31")
     assert rows[1][1] == 0.0
     assert rows[1][2] == B._CLOSURE_SHA
 
@@ -131,7 +131,7 @@ def test_masters_synthesised_neutral(tmp_path, monkeypatch):
     latest = conn.execute(
         "SELECT snapshot_at FROM accounts WHERE account_external_id='SVM-000001'"
     ).fetchone()[0]
-    assert latest == B.ts_from_iso("2023-09-30")
+    assert latest == B.ts_from_iso("2023-12-31")
 
 
 def test_duplicate_option_descriptions_all_survive(tmp_path, monkeypatch):
@@ -155,7 +155,7 @@ def test_duplicate_option_descriptions_all_survive(tmp_path, monkeypatch):
         B.pdf_parsers_svbwa, "parse_svbwa_statement_pdf",
         lambda path, expected_signature=None: dict(canned["s"]))
     db = tmp_path / "svb.db"
-    B.build(db, bronze, signature=None, closure_date="2023-09-30",
+    B.build(db, bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=None, max_workers=1)
     conn = sqlite3.connect(str(db))
     rows = conn.execute(
@@ -191,7 +191,8 @@ def test_force_is_accepted_noop_rebuild(tmp_path, monkeypatch):
         B, "parse_statements",
         lambda pdfs, shas, **kw: [dict(_CANNED[Path(p).stem]) for p in pdfs])
     db = tmp_path / "svb.db"
-    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze)]
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze),
+            "--closure-date", "2023-12-31"]
     assert B.main(argv) == 0
     plain = _snapshot_rows(db)
     assert B.main(argv + ["--force"]) == 0
@@ -225,14 +226,14 @@ def test_parse_cache_reuse(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache"
 
     cold = tmp_path / "cold.db"
-    B.build(cold, bronze, signature=None, closure_date="2023-09-30",
+    B.build(cold, bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
     assert sorted(calls) == sorted(_DISTINCT_STEMS)  # cold: each parsed once
     assert (cache_dir / B._PARSE_CACHE_FILE).is_file()
 
     calls.clear()
     warm = tmp_path / "warm.db"
-    B.build(warm, bronze, signature=None, closure_date="2023-09-30",
+    B.build(warm, bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
     assert calls == [], "warm run must not re-parse any statement"
     assert _snapshot_rows(cold) == _snapshot_rows(warm)
@@ -246,14 +247,14 @@ def test_parser_logic_change_invalidates_cache(tmp_path, monkeypatch):
     covered by collectorkit's test_srcfp."""
     bronze, calls = _distinct_bronze(tmp_path, monkeypatch)
     cache_dir = tmp_path / "cache"
-    B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-09-30",
+    B.build(tmp_path / "a.db", bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
     calls.clear()
 
     # A different fingerprint (parser edit or library upgrade) misses every
     # prior entry.
     monkeypatch.setattr(B, "_parser_logic_fingerprint", lambda: "different-fingerprint")
-    B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-09-30",
+    B.build(tmp_path / "b.db", bronze, signature=None, closure_date="2023-12-31",
             migrations_dir=MIGRATIONS, cache_dir=cache_dir, max_workers=1)
     assert sorted(calls) == sorted(_DISTINCT_STEMS), "changed fingerprint must re-parse"
 

@@ -57,10 +57,9 @@ var coinNames = map[string]string{
 	"FDUSD": "First Digital USD",
 	"PYUSD": "PayPal USD",
 
-	// Forks and edge cases observed in this collector.
+	// Long-tail names the upstream list lacks.
 	"BCHSV": "Bitcoin SV",
 	"ETHW":  "EthereumPoW",
-	"PSETH": "Polkadot Staked ETH",
 
 	// Older / smaller caps.
 	"DASH":  "Dash",
@@ -73,9 +72,6 @@ var coinNames = map[string]string{
 	"IOT":   "IOTA",
 	"MIOTA": "IOTA",
 	"NANO":  "Nano",
-	"BEST":  "Bitpanda Ecosystem Token",
-	"UCAP":  "Unicap",
-	"STRK2": "Starknet",
 
 	// Fiat displayed inside crypto wallets — full English names so
 	// the instruments table reads naturally.

@@ -226,7 +226,7 @@ def redirect_startup_cache(profile_dir: Path,
 
     Idempotent and self-migrating. `startupCache` is regenerable, so:
 
-      * an existing real dir (the pre-relocation state — up to ~30M) is
+      * an existing real dir (the pre-relocation state) is
         removed and replaced with the symlink, so the first run after this
         change migrates each profile with no manual cleanup;
       * an already-correct symlink is left as is;

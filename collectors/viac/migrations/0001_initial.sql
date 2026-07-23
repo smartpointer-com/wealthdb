@@ -55,7 +55,7 @@
 -- ------------------------------------------------------------
 --
 -- The viac silver is currently the only source for VIAC accounts.
--- A future wealthdb `viac` adapter projects:
+-- wealthdb's `viac` adapter projects:
 --
 --   accounts.account_external_id  →  gold.accounts.account_external_id
 --   accounts.product_code='3'     →  gold.accounts.tax_wrapper='pillar_3a'
@@ -258,10 +258,10 @@ CREATE TABLE instruments (
 -- daily wealth value, daily performance %, daily invested amount.
 -- We zip them by date into one row per (snapshot, value_date).
 -- The series can extend back to the customer's first investment
--- (~1600 rows for the observed user) and grows by one day per
--- working day. Each snapshot persists the full series so the gold
--- layer can pick the latest snapshot per value_date — same
--- pattern as relevate's `performance_points` table.
+-- and grows by one row per working day. Each snapshot persists
+-- the full series so the gold layer can pick the latest snapshot
+-- per value_date — same pattern as relevate's
+-- `performance_points` table.
 CREATE TABLE wealth_history (
     snapshot_at            INTEGER NOT NULL,
     value_date             INTEGER NOT NULL,                    -- Unix s at midnight UTC

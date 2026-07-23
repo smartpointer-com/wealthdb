@@ -242,7 +242,7 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
 # ---- content-hash parse cache -------------------------------------------
 #
 # The same statement/K-1 PDF is hardlinked into every later dump, so a full
-# reload finds each blob many times (≈4.5× on the current corpus). Both the
+# reload finds each blob many times over. Both the
 # content hash and the pdftotext parse are functions of the blob content
 # alone, so they are memoized process-wide and computed once per distinct
 # blob rather than once per (dump, document).

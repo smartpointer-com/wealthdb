@@ -77,8 +77,8 @@ func parseColumnsDelta(s string) (adds, removes []string, isDelta bool) {
 // applyColumnsDelta returns base + adds - removes, preserving the
 // order of `base` and appending unique adds at the end. Adds
 // already present in base are skipped (no duplicates, no reorder).
-// Removes that aren't in the result are a silent no-op so users
-// can write "-account_id" without first checking it's in the
+// Removes that aren't in the result are a silent no-op so
+// "-account_id" works without first checking it's in the
 // default for that command.
 func applyColumnsDelta(base, adds, removes []string) []string {
 	out := make([]string, 0, len(base)+len(adds))

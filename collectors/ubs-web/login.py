@@ -52,9 +52,6 @@ USER_AGENT = (
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
 
-# storageState file mode. CLAUDE.md §3 — never relax below 0600.
-STATE_FILE_MODE = 0o600
-
 # Default env-file locations (the wrapper mounts ~/.secrets at /secrets).
 # ubs-web owns `<source>.env` (ubs-web.env) for the contract number; the
 # bank-level `ubs.env` is a fallback, shared with any ubs-* sibling. First
@@ -122,7 +119,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--no-terminal-qr", action="store_true",
-        help="Skip printing the QR to the terminal. Implies --qr-png.",
+        help="Skip printing the QR to the terminal. Requires --qr-png.",
     )
     p.add_argument(
         "--screenshot-dir", default=None, type=Path,

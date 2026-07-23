@@ -186,8 +186,9 @@ Currently ingested per dump:
 
 `ZAY.zip` (MT950 bank-to-bank statements) is intentionally **not**
 loaded — for retail PSN it duplicates MT940. `ZMH` (MT536 statement of
-transactions) and other MT types will be added when we have real
-samples. Bronze still keeps every retrieved zip for auditability.
+transactions) and other MT types are added when real samples exist
+to develop against. Bronze still keeps every retrieved zip for
+auditability.
 
 A dated zip (`<ORDERTYPE>_<YYYYMMDD>.zip`, landed by `download
 --recover`) routes to the same per-order-type handling as

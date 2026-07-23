@@ -13,6 +13,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Single implementation lives in silver; re-exported here so
+# download-side callers get it without touching the silver module.
+from .silver import canonical_json  # noqa: F401
+
 # A bronze run directory is named with a UTC timestamp, e.g. 20260529T071530Z.
 RUN_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
@@ -94,15 +98,6 @@ def atomic_write_json(path: Path, obj) -> None:
     atomic_write_bytes(Path(path), text.encode("utf-8"))
 
 
-def canonical_json(obj) -> str:
-    """Stable, compact JSON for content-based dedup (sorted keys, no
-    spaces). `default=str` lets non-JSON-native scalars a silver
-    payload may carry — Decimal, date/datetime — serialise as their
-    string form rather than raising, matching the local copies the
-    collectors used before adopting this helper.
-    """
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, default=str)
 
 
 # Process-lifetime memo for sha256_file, keyed by file identity + version

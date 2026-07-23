@@ -151,7 +151,7 @@ def _lot_row(*, security_name: str, sale_description: str | None,
     The promoted `cost_basis` is set to None when the basis is a
     *placeholder* — Schwab renders `0.00` for noncovered lots whose
     basis it does not know (BASISNOTSHOWN). A genuine $0 basis on a
-    *covered* lot (e.g. a lot with a zero basis) is preserved.
+    *covered* lot is preserved.
     The raw value and both flags are always kept in the payload so the
     gold layer can tell a real zero from an unknown one.
 

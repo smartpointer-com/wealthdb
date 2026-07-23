@@ -1,7 +1,7 @@
 -- ============================================================
 -- fidelity-web silver, migration 0002 — gold-layer feedback.
 --
--- Four nice-to-have changes the gold-side adapter author flagged:
+-- Four columns promoted for the gold-side adapter:
 --
 -- 1. Promoted `currency` on positions + transactions, defaulted
 --    to 'USD'. Fidelity US is USD-only today, but a foreign-fund

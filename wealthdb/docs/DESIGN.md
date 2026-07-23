@@ -229,11 +229,10 @@ Interactive first-time setup wizard. Writes the config file at
 through:
 
 1. **Gold DB path** — default `$XDG_DATA_HOME/wealthdb/wealthdb.db`. The wizard
-   confirms the parent directory exists (offering to `mkdir -p`)
-   but does **not** create the gold DB itself — that's `wealthdb
-   init`'s job.
+   confirms the parent directory exists but does **not** create
+   the gold DB itself — that's `wealthdb init`'s job.
 2. **Default output currency** — default `USD`. ISO 4217 only;
-   validated against a built-in list.
+   validated for ISO 4217 shape (three uppercase ASCII letters).
 3. **First silver source** — `id` (slug matching `^[A-Za-z0-9_-]+$`),
    `kind` (any registered adapter kind, or `auto`), and
    `path` (default `$XDG_DATA_HOME/wealthdb/<id>/<id>.db`). The wizard opens
@@ -305,8 +304,7 @@ order:
 5. If both checks succeed, mode is **read-write**. Otherwise mode
    is **read-only**.
 
-The detected mode is logged at INFO level on every invocation, so
-the log records whether the run could have written.
+The detected mode drives subcommand gating.
 
 #### Opening DuckDB
 
@@ -452,7 +450,7 @@ Example config file:
     "account_overrides": {
         "schwab-retail": {
             "<account-hash-1>": {"nickname": "Main brokerage", "category": "personal"},
-            "<account-hash-2>": {"nickname": "Education account",      "category": "esa"}
+            "<account-hash-2>": {"nickname": "ESA One",        "category": "esa"}
         },
         "swissquote-1": {
             "1234567": {"nickname": "CHF trading", "category": "personal"}
@@ -528,8 +526,8 @@ source, not just crypto.
 
 ```json
 "inception_overrides": {
-    "sources":    { "cointracking": "2017-07-01" },
-    "portfolios": { "cointracking": { "cu_000001": "2019-09-24" } },
+    "sources":    { "cointracking": "2020-01-01" },
+    "portfolios": { "cointracking": { "cu_000001": "2021-07-01" } },
     "accounts":   { "schwab-retail": { "<account-hash>": "2020-01-01" } }
 }
 ```
@@ -1828,7 +1826,7 @@ wealthdb/
 │   ├── returns/                    — source-agnostic TWR/MWR math + pluggable per-source policy
 │   ├── loader/                     — the §8 silver→gold load orchestration (the only silver↔gold bridge)
 │   └── config/ · pathmode/ · wizard/ · output/ · errs/ · version/
-└── (Dockerfile, wrappers, config.example.json per above)
+└── (Dockerfile, wrappers per above)
 ```
 
 **Dependency direction** is strictly one-way — anything lower may
@@ -2006,13 +2004,14 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # stay fast — bind-mount the host's cache dirs (or dedicated
 # named-volumes; the host paths are simpler to inspect).
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go-test"
-mkdir -p "$CACHE/go-build" "$CACHE/go-mod"
+mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 
 docker run --rm \
     -u "$(id -u):$(id -g)" \
     -e HOME="$HOME" \
     -e GOCACHE="$CACHE/go-build" \
     -e GOMODCACHE="$CACHE/go-mod" \
+    -e GOPATH="$CACHE/gopath" \
     -v "$REPO:$REPO" \
     -v "$CACHE:$CACHE" \
     -w "$REPO" \
@@ -2187,7 +2186,7 @@ Sketch of where this lands when designed:
   `positions.market_value` (sourced from the bank's view) coexists
   with future `instrument_prices`-derived mark-to-market — queries
   pick whichever they prefer, with the bank's number remaining the
-  authoritative "what the bank says you have" figure.
+  authoritative bank-reported figure.
 
 This is a sketch only; the source and ingest design will be
 fleshed out when the feature is scheduled.
@@ -2308,8 +2307,8 @@ Still on the roadmap:
 ### 13.10 Equity-transfer ledger
 
 Securities transferred *into* a tracked account (e.g. shares
-transferred in from another custodian at appreciated value)
-are a capital inflow at their market value on the transfer date —
+transferred in from another custodian at appreciated value) are a
+capital inflow at their market value on the transfer date —
 but the collectors often don't capture them as valued transactions
 (the position just appears in a later snapshot, or the transfer is
 booked as a $0-cash share journal). Left uncorrected, that value

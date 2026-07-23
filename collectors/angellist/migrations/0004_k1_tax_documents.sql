@@ -22,9 +22,12 @@ CREATE TABLE IF NOT EXISTS tax_documents (
     tax_year         INTEGER,
     period           TEXT,               -- financial reports: 'Q1'..; K-1: NULL
     document_status  TEXT,               -- 'complete' | 'estimate_provided'
-    k1_count         INTEGER,
-    total_k1_count   INTEGER,
-    updated_at       TEXT,               -- AngelList updatedAt (re-download trigger)
+    k1_count         INTEGER,           -- reserved; unwritten
+    total_k1_count   INTEGER,           -- reserved; unwritten
+    updated_at       TEXT,              -- reserved; unwritten. Re-download
+                                        -- triggering uses the GraphQL
+                                        -- documentType / k1Count /
+                                        -- totalK1Count fields at fetch time.
     filename         TEXT,
     content_sha256   TEXT,               -- change detection / idempotent parse
     retrieved_at     INTEGER,

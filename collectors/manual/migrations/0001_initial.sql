@@ -73,7 +73,9 @@ CREATE TABLE load_runs (
 -- canonical gold `asset_class` (the gold classmap is an identity). The set is
 -- open-ended — `load.py`'s POSITION_KINDS is the source of truth. Current
 -- values: 'real_estate', 'private_equity', 'convertible_note', 'private_fund'
--- (a venture/PE fund LP interest), 'spv' (a single-deal vehicle), and 'other'
+-- (a venture/PE fund LP interest), 'spv' (a single-deal vehicle), 'mortgage'
+-- (a real-property-backed liability, valued as a positive outstanding
+-- balance that the gold adapter negates), and 'other'
 -- (catch-all, e.g. a receivable). 'convertible_note' covers a 0%
 -- early-stage note expected to convert to equity at the next round (or go to
 -- zero). `payload` carries the kind-specific fields, e.g.

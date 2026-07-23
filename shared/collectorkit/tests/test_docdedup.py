@@ -2,7 +2,7 @@
 
 No network: the fetch is a stub closure that writes a known byte-string, so we
 can assert exactly when it runs. Mirrors the dedup suite's fixture style
-(synthetic run dirs + a run.json status) and covers the plan's §7.1 recipe:
+(synthetic run dirs + a run.json status) and covers the engine's core recipe:
 
   * SkipSet.derive indexes COMPLETE prior runs, ignores non-complete ones,
     self-heals a deleted file, is multiset-aware, honours the freshness window
@@ -160,7 +160,7 @@ def test_derive_freshness_window_excludes_recent(tmp_path):
 
 
 def test_derive_freshness_default_is_35(tmp_path):
-    # freshness_days now DEFAULTS to 35 (the plan's safe default), so a doc dated
+    # freshness_days DEFAULTS to 35 (the safe default), so a doc dated
     # within 35 days of now is excluded even when the caller omits the argument.
     now = date(2026, 3, 1)
     _run(tmp_path, OLD_A,

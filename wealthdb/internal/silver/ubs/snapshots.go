@@ -43,7 +43,7 @@ func (c *psnReader) Snapshots(ctx context.Context, w canonical.Window) (silver.S
 	// sibling cash / overlay accounts within the same portfolio,
 	// gated on the portfolio being a "named mandate" (i.e. its
 	// safekeeping carries a non-empty AcctDesc — strategy name
-	// like "EMERGING MARKETS ASIA" or "PRIVATE MARKETS").
+	// like "STRATEGY ALPHA" or "STRATEGY BETA").
 	// Portfolios whose safekeeping has no AcctDesc are residuals
 	// in general-banking portfolios; the cash there is personal
 	// banking and should stay self_directed, not inherit the
@@ -198,8 +198,8 @@ type safekeepingPayload struct {
 	AcctSubTypeDesc string `json:"AcctSubTypeDesc"`
 	// AcctDesc is the strategy / mandate name UBS attaches to
 	// safekeeping accounts that hold a dedicated investment
-	// mandate (e.g. "EMERGING MARKETS ASIA", "PRIVATE MARKETS",
-	// "ADVICE HEDGE FUND"). Empty when the safekeeping is a
+	// mandate (e.g. "STRATEGY ALPHA", "STRATEGY BETA",
+	// "STRATEGY GAMMA"). Empty when the safekeeping is a
 	// residual sitting in a general-banking portfolio rather
 	// than a named mandate. Used by the cash-propagation pass
 	// to decide whether the sibling cash accounts in this
@@ -627,9 +627,9 @@ type fxRatePeriod struct {
 }
 
 // fxRatePayload — UBS ships ForeignExchangeRatePeriodData as
-// either a single-rate object (~65% of rows in observed real data)
-// OR an array of period entries (~35%). We capture the raw bytes
-// and split based on the leading byte; see firstFxPeriod.
+// either a single-rate object OR an array of period entries. We
+// capture the raw bytes and split based on the leading byte; see
+// firstFxPeriod.
 type fxRatePayload struct {
 	ForeignExchangeRatePeriodData json.RawMessage `json:"ForeignExchangeRatePeriodData"`
 }

@@ -47,8 +47,8 @@ class CleanupIncompleteRunDirTests(unittest.TestCase):
     def test_removes_dir_with_in_progress_marker(self):
         # A walk that crashed after dropping the in-progress marker
         # but before finalising: run.json exists but is not complete,
-        # so it must be removed (the pre-status guard, which keyed on
-        # marker *absence*, would wrongly have kept it).
+        # so it must be removed — the status guard classes any
+        # non-"complete" manifest as incomplete.
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "20260101T120000Z"
             run_dir.mkdir()

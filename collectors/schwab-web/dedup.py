@@ -28,8 +28,8 @@ manually-invoked one-off (not wired into orchestration) and runs IN-CONTAINER
 `prune`. Run it once after a backlog of re-downloaded statements has
 accumulated:
 
-    <wrapper> dedup --dry-run        # the evidence report — collapses nothing
-    <wrapper> dedup                  # collapse the parse-equivalent copies
+    <wrapper> collapse-statements --dry-run   # evidence report — collapses nothing
+    <wrapper> collapse-statements             # collapse the parse-equivalent copies
 
 Divergence is a hard stop, not a collapse: if the copies of one logical
 statement do NOT all parse alike (a genuine restatement, or a parser
@@ -154,7 +154,7 @@ def _text_layer_diff(canonical: Path, dup: Path, max_lines: int) -> list[str]:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        prog="schwab-web dedup",
+        prog="schwab-web collapse-statements",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
                    help="schwab-web bronze root (default: %(default)s).")

@@ -129,8 +129,8 @@ PORTFOLIO_KIND = {
 # kind alone pins the style for the categories silver models:
 #   529            → self_directed (holder picks the investment
 #                    option from the plan menu; no manager).
-#   trust_managed  → discretionary (a third-party manager places trades;
-#                    custodian executes).
+#   trust_managed  → discretionary (a third-party manager places
+#                    trades; custodian executes).
 # 'other' / unknown labels stay NULL — gold handles them.
 MANAGEMENT_STYLE_BY_KIND = {
     "529": "self_directed",
@@ -1712,11 +1712,11 @@ def validate(conn):
             log.info("validation: portfolio %s (kind=%s) → %d accounts",
                      ext_id, kind, n)
         if "529" not in seen_kinds:
-            log.warning("validation: no '529' portfolio found "
-                        "(expected the Education group)")
+            log.info("validation: no '529' portfolio derived from "
+                     "this dump (no Education group present)")
         if "trust_managed" not in seen_kinds:
-            log.warning("validation: no 'trust_managed' portfolio found "
-                        "(expected the Authorized group)")
+            log.info("validation: no 'trust_managed' portfolio derived "
+                     "from this dump (no Authorized group present)")
 
 
 if __name__ == "__main__":

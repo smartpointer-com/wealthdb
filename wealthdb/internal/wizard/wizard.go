@@ -191,10 +191,11 @@ func promptSilverSource(p *prompter, already []config.SilverSource, knownKinds [
 }
 
 // probeSilverDB opens the path as a read-only SQLite and checks
-// that a `dump_runs` table is present. That's our minimum-viable
-// "looks like a silver SQLite" test — every adapter relies on
-// dump_runs, so its absence is a clear signal the configured path
-// is wrong.
+// that a `dump_runs` or `load_runs` table is present. That's our
+// minimum-viable "looks like a silver SQLite" test — collector
+// silvers carry dump_runs, load-only silvers (e.g. manual) carry
+// load_runs, so the absence of both is a clear signal the
+// configured path is wrong.
 func probeSilverDB(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -213,13 +214,13 @@ func probeSilverDB(path string) error {
 	}
 	var n int
 	err = db.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dump_runs'`,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('dump_runs', 'load_runs')`,
 	).Scan(&n)
 	if err != nil {
 		return fmt.Errorf("could not inspect schema: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("file is missing the `dump_runs` table — is it really a silver SQLite from a wealthdb collector?")
+		return fmt.Errorf("file has neither a `dump_runs` nor a `load_runs` table — is it really a silver SQLite from a wealthdb collector?")
 	}
 	return nil
 }

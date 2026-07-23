@@ -5,6 +5,84 @@ transactions, and documents from every configured bank and pension
 provider, normalises them into one canonical store, and answers
 "what is held, anywhere, as of when?" from a single CLI.
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **The wealthdb suite handles fully privileged financial-account
+> credentials. Read this disclaimer in full before configuring any
+> credential anywhere in the suite.**
+
+The [collectors](collectors/) sign in to banks, brokerages, and
+pension providers with your credentials and your multi-factor
+confirmations. The web-scraping collectors **impersonate a human
+browser user** (a stealth-hardened browser session), and the API
+collectors hold **write-capable credentials**; in both cases the
+session is fully privileged — the same login a human uses to move
+money — and no provider offers a read-only sub-scope. Nothing but
+the codebase's own discipline restricts the collectors to reading.
+If malicious code were ever introduced into this repository, its
+dependency chain, or the container images it runs, it could act on
+your accounts with your full authority and cause **irreversible
+financial damage, up to the total loss of the assets reachable
+from those credentials**.
+
+**You are solely responsible for a thorough, independent security
+audit** of this code, its dependency chain, and its runtime images
+**before** entrusting the suite with credentials, and again after
+every update or rebuild. If you cannot perform such an audit, do
+not hand this software real credentials. Automated access may
+additionally breach a provider's terms of service; verifying that
+your use is permitted is likewise your responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”,
+without warranty of any kind, express or implied, including but
+not limited to the implied warranties of merchantability, fitness
+for a particular purpose, title, and non-infringement. To the
+maximum extent permitted by applicable law, **SmartPointer AG and
+the contributors accept no responsibility for, and shall not be
+liable for, any claim, damages, or other liability** — whether in
+an action of contract, tort, or otherwise — arising from, out of,
+or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds
+or other assets, credential or data compromise, account suspension
+or termination, and any direct, indirect, incidental, special,
+consequential, or punitive damages. Your use is entirely at your
+own risk. See [LICENSE](LICENSE) for the governing terms. This
+software is not affiliated with, endorsed by, or sponsored by any
+financial institution; nothing in this repository is financial,
+legal, or tax advice.
+
+## Why wealthdb
+
+An AI agent becomes genuinely useful when it can answer questions
+over a complete financial picture — and genuinely dangerous when
+the way to get there is handing it banking credentials. A fully
+privileged e-banking login in the hands of a probabilistic,
+prompt-injectable system is a standing invitation for irreversible
+damage. wealthdb exists to make that trade unnecessary; its
+layered security model is the main reason it was built:
+
+1. **Credentials are handled only by static, reviewable code.**
+   The collectors are deterministic scripts — auditable line by
+   line, human-triggered, with MFA challenges answered by a
+   person. No agent drives a banking session, and no agent ever
+   sees a credential.
+2. **The collectors only read.** Their contract is navigate,
+   filter, export — no code path submits a form, places an order,
+   or changes a setting, and no CLI flag can enable one.
+3. **The data lands locally.** Everything is parsed into local
+   databases and consolidated into one queryable gold store;
+   nothing is sent to any third-party service.
+4. **Agent access is read-only by construction.** The `wealthdb`
+   CLI's `--read-only` flag forces read-only access to the gold
+   DB, so the surface exposed to an agent is consolidated,
+   local, read-only queries — and nothing else.
+
+The result is a clean separation: an agent can answer "what is
+held, anywhere, as of when?" while no agent is ever given write
+access to the financial data — let alone the banking credentials
+that produced it.
+
 The suite is a **monorepo** of two parts:
 
 - **`wealthdb/`** — the **gold** engine: a Go CLI that reads the

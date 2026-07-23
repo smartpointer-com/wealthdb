@@ -98,7 +98,7 @@ TOTAL PORTFOLIO VALUE $300,000.00
 Activity
 """
 
-# An options statement. Each option spans
+# An options statement (long and short legs). Each option spans
 # three physical lines. Short legs print parenthesised — those must
 # come out NEGATIVE for BOTH quantity and market value. One long leg
 # (the put) prints plain (positive). The equity leg is a plain long.

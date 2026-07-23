@@ -74,7 +74,7 @@ type invalidRow struct {
 
 // tickerShapeRe is the strict ticker-shape pattern: 1-12 chars of
 // uppercase ASCII letters, digits, dots, or hyphens. Captures the
-// surface forms seen across brokers (BRK.B,
+// surface forms brokers emit (BRK.B,
 // XDEW, TFLO, EUNH.DE, etc.) and rejects obvious garbage like
 // "BANK INT 07/30".
 var tickerShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
@@ -107,7 +107,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	noCurrency := fs.Bool("no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
 	maxAnchors := fs.Int("max-anchors", 30, "max anchor examples to include in the prompt")
 	showPrompt := fs.Bool("show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
-	overridesOnly := fs.Bool("overrides-only", false, "apply cfg.symbol_overrides and exit; skip the LLM round-trip entirely")
+	overridesOnly := fs.Bool("overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, resolveSymbolsUsage())
 	}
@@ -436,8 +436,8 @@ func candKey(source, kind, value string) string {
 }
 
 // candidateStats summarises the candidate set across the two
-// dimensions a user cares about when assessing a resolve-symbols
-// run: per silver_source (how many to attempt per broker) and per
+// dimensions the run summary reports: per silver_source (how many
+// to attempt per broker) and per
 // lookup_kind within each source (id-keyed vs name-keyed — those
 // have different failure modes).
 type candidateStats struct {
@@ -508,9 +508,9 @@ func unresolvedCandidates(cands []candidate, valid []resolution) []candidate {
 // Per-source resolution rate is calculated against the candidate
 // total, not against the model's response — i.e. unresolved
 // includes both rows the model skipped and rows the model attempted
-// but failed validation on. That's the right denominator: from the
-// user's perspective, a candidate is "resolved" only if it ended
-// up in symbol_resolutions.
+// but failed validation on. That's the right denominator: a
+// candidate counts as "resolved" only if it ended up in
+// symbol_resolutions.
 func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresolved []candidate, attempts, totalInvalid int) {
 	perSourceResolved := map[string]int{}
 	perKindResolved := map[string]int{}
@@ -560,7 +560,7 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 		}
 		fmt.Fprintln(w, "  notes:")
 		fmt.Fprintln(w, "    - Some unresolved rows are expected: cash-interest descriptions, currency/FX placeholders,")
-		fmt.Fprintln(w, "      gold bullion, dividend-right certificates, structured products, and private funds don't have tickers.")
+		fmt.Fprintln(w, "      bullion, structured products, and private funds don't have tickers.")
 		fmt.Fprintln(w, "    - To improve coverage: load more silver data (more anchors in the prompt), try --max-attempts 4-5,")
 		fmt.Fprintln(w, "      or fix upstream silvers so the relevant rows carry an instrument_external_id at load time.")
 	}
@@ -1002,13 +1002,13 @@ func stripCodeFences(s string) string {
 // ---- persistence -----------------------------------------------------------
 
 // manualOverrideModelName is the model_name string written into
-// symbol_resolutions for rows that came from cfg.symbol_overrides
+// symbol_resolutions for rows that came from cfg.symbol_resolution.overrides
 // rather than an LLM. Distinguishes them in the resolutions dump
 // and lets syncSymbolOverrides target just those rows when
 // reconciling cfg ↔ DB.
 const manualOverrideModelName = "manual-override"
 
-// syncSymbolOverrides reconciles cfg.symbol_overrides into the
+// syncSymbolOverrides reconciles cfg.symbol_resolution.overrides into the
 // symbol_resolutions table. Three phases, all in one transaction:
 //
 //  1. Remove every existing row tagged model_name='manual-override'
@@ -1152,8 +1152,8 @@ configured in wealthdb.cfg's "symbol_resolution.model" block.
 Reads candidates from:
 
   - instruments rows where symbol IS NULL but name IS NOT NULL
-    (typical: UBS ETFs whose descriptions don't carry a ticker —
-    Xtrackers, UBS Core, SPDR — keyed by ISIN);
+    (typical: European-listed ETFs whose descriptions don't
+    carry a ticker, keyed by ISIN);
   - transactions rows with no instrument_external_id but a
     free-text description (typical: Schwab DIVIDEND_OR_INTEREST
     payloads whose transferItems only have the cash leg).
@@ -1177,6 +1177,6 @@ Flags:
                         (experiment / ablation)
       --max-anchors N   cap the in-context anchor examples (default 30)
       --show-prompt     print the full LLM prompt to stderr (debugging)
-      --overrides-only  apply cfg.symbol_overrides and exit; skip the
+      --overrides-only  apply cfg.symbol_resolution.overrides and exit; skip the
                         LLM round-trip entirely`
 }

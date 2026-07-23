@@ -1,7 +1,8 @@
 -- ============================================================
 -- fidelity-web silver, migration 0003 — management_style on accounts.
 --
--- Follow-up to the gold-layer punch list note in DESIGN.md §11.6:
+-- Follow-up to the gold-layer punch list note in
+-- fidelity-web/DESIGN.md §11.6:
 -- Fidelity does NOT emit a per-account management-style indicator
 -- on any captured surface, but the surfaced `portfolios.kind` is
 -- enough to pin the style for the categories silver currently
@@ -10,7 +11,7 @@
 --   529 College Investing Plan accounts            → 'self_directed'
 --     (account holder picks investment options from the plan
 --     menu; no manager involved).
---   Trust accounts under a third-party manager        → 'discretionary'
+--   Trust accounts under a third-party manager     → 'discretionary'
 --     (manager places trades; custodian executes).
 --   Any other portfolios.kind (incl. 'other')      → NULL
 --     (gold either infers from a future Fidelity signal or

@@ -14,7 +14,8 @@ import (
 // Returns the process exit code; the caller is responsible for
 // os.Exit.
 //
-// stdout is for normal output (e.g. `wealthdb positions`'s table).
+// stdout is for normal output (e.g. `wealthdb holdings positions`'s
+// table).
 // stderr is for log lines, error messages, and usage text.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	g, rest, err := parseGlobal(args, stderr)

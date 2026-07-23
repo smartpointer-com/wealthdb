@@ -677,7 +677,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
 
 
 def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
-    """Experimental: auto-submit login, prompt for 2FA on stdin, click
+    """Auto-submit login, prompt for 2FA on stdin, click
     through consent. Best-effort — on selector drift the flow can be
     driven by hand over VNC and the redirect capture still completes."""
     if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):

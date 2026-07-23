@@ -369,16 +369,17 @@ def parse_statement_of_assets_text(full_text: str, doc_token: str,
         })
 
     # --- Overview-only asset classes: precious metals / commodities.
-    # UBS issues no Detailed-positions page for the precious-metals
-    # custody portfolio, so the gold bar has no per-instrument row in
-    # any PDF — only the relationship overview's asset-class total.
-    # We recover that value as a synthetic asset-class-level position.
-    # The overview prints the same holding once per portfolio-currency
-    # PDF (USD / CHF / EUR), so we emit only from USD-valued PDFs (the
-    # relationship's reporting currency); the 3 USD copies collapse to
-    # one row on the silver PK, giving a single deterministic value
-    # that gold converts at query time. The synthetic instrument key
-    # is deliberately not ISIN-shaped — the gold adapter detects that
+    # UBS issues no Detailed-positions page for some portfolio types,
+    # so such a portfolio (e.g. precious-metals custody) has no
+    # per-instrument row in any PDF — only the relationship overview's
+    # asset-class total. We recover that value as a synthetic
+    # asset-class-level position. The overview prints the same holding
+    # once per portfolio-currency PDF (USD / CHF / EUR); rows are
+    # emitted only from USD-valued PDFs (the reporting-currency
+    # baseline), so per-currency copies collapse to one row on the
+    # silver PK, giving a single deterministic value that gold
+    # converts at query time. The synthetic instrument key is
+    # deliberately not ISIN-shaped — the gold adapter detects that
     # and leaves the canonical ISIN null. ---
     if base_ccy == "USD":
         results.extend(_overview_precious_metals(
@@ -729,10 +730,9 @@ def _mortgage_rate_type_from_product(product_name: str) -> str | None:
     low = product_name.lower()
     if "saron" in low:
         # SARON-indexed mortgages are UBS's current variable-rate
-        # product; classify with the user-facing 'variable' tag
-        # rather than 'saron' so the canonical taxonomy stays
-        # rate-basis (fixed vs. variable), not product-name (SARON
-        # vs. older flavours).
+        # product; classify with the 'variable' tag rather than
+        # 'saron' so the canonical taxonomy stays rate-basis (fixed
+        # vs. variable), not product-name (SARON vs. older flavours).
         return "variable"
     if "fixed-rate" in low or "fixed rate" in low or "festhypothek" in low:
         return "fixed"
@@ -764,9 +764,9 @@ def _to_float(s: str | None) -> float | None:
 #
 # The summary parser above (`parse_account_statement_text`) reads
 # only the opening/closing balances. This parser walks the ledger and
-# emits every booking (movement) row, so the pre-MT940 transaction
-# history that the CSV feed hard-caps at 2024-01-02 can be
-# backfilled from the PDF archive.
+# emits every booking (movement) row, so transaction history from
+# before the CSV feed's earliest available date can be backfilled
+# from the PDF archive.
 #
 # Layout (see docs + probing): the ledger is a visually-aligned,
 # NOT a real PDF table. Columns are:

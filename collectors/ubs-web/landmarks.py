@@ -51,8 +51,8 @@ POST_AUTH_PATH_HINTS = ("/app/", "/workbench/", "/workspace/")
 def is_post_auth_url(url: str) -> bool:
     """True iff the browser is on a logged-in UBS workbench URL.
 
-    Used by login.py post-MFA, by login.py --check, and (in future)
-    by download.py's session-verify step.
+    Used by login.py post-MFA, by login.py --check, and by
+    download.py's session-verify step.
     """
     if not HOST_RE.match(url):
         return False
@@ -81,35 +81,16 @@ TEMPLATE_CONTRACT_NR = "AuthGetContractNrDialog"
 
 # The visible contract-number input. The SPA labels it
 # "Contract number" / "Vertragsnummer" depending on language. We
-# locate by `name="loginalias"` (stable across locales) and fall
-# back to the `id="contractNumber"` Playwright role-based lookup.
+# locate by `name="loginalias"`, which is stable across locales.
+# Submission clicks the card's visible primary submit button, so no
+# further landmark is needed.
 CONTRACT_INPUT_NAME = "loginalias"
-CONTRACT_INPUT_ID = "contractNumber"
-
-# Submit button on the contract-entry form. The SPA renders a
-# `<button type="submit">` with an explicit data-testid that we
-# can target without depending on locale.
-CONTRACT_SUBMIT_TESTID = "submit-button"
-
-
-# ============================================================
-# Stage 1b — "Login starten" interstitial
-# ============================================================
 
 # After the contract-number form, UBS sometimes (always?) renders
-# a short interstitial: a card titled "Login mit Access App" /
-# "Login with Access App" with one button to advance to the QR
-# challenge. The button label is locale-dependent ("Login starten",
-# "Start login", "Avviare il login", ...) so we identify it by
-# being the only submit-style button on a screen whose card title
-# matches the access-app heading. The card title is rendered with
-# a `data-testid="card-title"` (same element used on the QR page).
-
-TEMPLATE_CONFIRM_ACCESS_APP = "AuthConfirmAccessAppDialog"
-
-# We never read this template by name (since spa.js may call it
-# something else); we identify the screen by the presence of the
-# advance-button locator below.
+# a short "Login starten" interstitial: a card with one button to
+# advance to the QR challenge. login.py resolves it by waiting for
+# whichever renders first — the QR image or the interstitial — and
+# clicking through; no dedicated landmark is needed.
 
 
 # ============================================================
@@ -124,11 +105,6 @@ TEMPLATE_QR = "AuthQRDialog"
 # server-side `qrCodeImageInternal` REST endpoint, because the SPA
 # does the base64-to-img wiring for us.
 QR_IMG_TESTID = "qr-scanner-image"
-
-# Card title on the QR dialog. Used as an additional readiness
-# signal so we don't try to grab the img before the SPA has
-# rendered the dialog at all.
-QR_DIALOG_TITLE_TESTID = "card-title"
 
 # The polling endpoint the SPA hits every 2s while waiting for the
 # user to scan + approve in Access App. JSON shape (from spa.js):
@@ -212,9 +188,6 @@ HOME_PORTFOLIO_LINK_SELECTOR = (
 # Bare `#/documents` shows a "We cannot display this page" stub —
 # the docs micro-frontend requires the navitemid query to bootstrap.
 ROUTE_DOCUMENTS = "#/documents/bank-documents?navitemid=MailboxEdocumentsPg"
-ROUTE_CASH_ACCOUNT_TRANSACTIONS_PREFIX = (
-    "#/accounts?target=cash-account-transactions"
-)
 
 # Anchor selector on the homepage. Every cash account has an
 # anchor whose href contains the route + an opaque `accountId=`
@@ -234,13 +207,12 @@ HOME_CASH_ACCOUNT_LINK_SELECTOR = (
 # Account transactions page (#/accounts? or #/cards?)
 # ============================================================
 
-# Three server-side export buttons in the transactions toolbar.
-# Cash accounts expose all three. Card accounts only render the CSV
-# button — and on cards the button carries `title="CSV"` but no
+# Server-side export buttons in the transactions toolbar. Cash
+# accounts expose CSV, PDF, and MT940; card accounts only render the
+# CSV button — and on cards the button carries `title="CSV"` but no
 # `data-name`, so we identify by title (which is stable for both
 # surfaces).
 TXN_BUTTON_CSV_SELECTOR = 'button[title="CSV"]'
-TXN_BUTTON_PDF_SELECTOR = 'button[title="PDF"]'
 TXN_BUTTON_MT940_SELECTOR = 'button[data-name="button-swiftMt940Export"]'
 
 # MT940 download flow: clicking the MT940 button does NOT trigger a
@@ -260,7 +232,6 @@ MT940_DIALOG_CLOSE_BUTTON = 'dialog[open] [aria-label="Close"]'
 # wrapping <label> as the click target. We click the label, not the
 # input, otherwise Playwright bails with "element is not visible".
 MT940_DIALOG_RADIO_ENRICHED_LABEL = 'label[for="download-option-1"]'
-MT940_DIALOG_RADIO_LIGHT_LABEL = 'label[for="download-option-0"]'
 
 # Period filter combobox. Clicking opens a popover (`<dialog>`)
 # with a Predefined/Custom radio toggle and either a list of
@@ -302,9 +273,6 @@ PERIOD_POPOVER_MAX_DATE_RE = re.compile(
 # readiness signal before triggering an export.
 TXN_COUNT_SELECTOR = '[data-name="number-of-trx"]'
 
-# Hash fragment that flags this as a cash-account view.
-TXN_TARGET_CASH = "cash-account-transactions"
-
 
 # ============================================================
 # Bank documents page (#/documents)
@@ -339,10 +307,6 @@ DOC_LINK_SELECTOR = 'a[href*="/api/v1/digital-banking/files/"]'
 # → _TzYzX). Match on the stable prefix only, never a full class.
 DOC_FILTER_BUTTON_SELECTOR = 'button[class*="UWR_FilterItem_filter-content_"]'
 DOC_FILTER_INDEX_PERIOD = 0
-DOC_FILTER_INDEX_CATEGORY = 1
-DOC_FILTER_INDEX_BANKING_RELATIONSHIP = 2
-DOC_FILTER_INDEX_ACCOUNT_PORTFOLIO = 3
-DOC_FILTER_INDEX_STATUS = 4
 
 # UBS caps the documents list at 999 rows per query. When the
 # current filter selection would return more, the header counter

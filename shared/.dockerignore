@@ -9,8 +9,8 @@
 # its venv at shared/collectorkit/.venv (29MB) and pytest leaves
 # __pycache__ behind. Without these excludes, running the tests changed
 # the COPY layer's hash, which gave base-python a new digest, which
-# invalidated `FROM wealthdb/base-*` in all fifteen collectors — so every
-# collector re-ran its whole Dockerfile after every test run.
+# invalidated `FROM wealthdb/base-*` in every Docker collector — so each
+# one re-ran its whole Dockerfile after every test run.
 #
 # None of this belongs in an image regardless: the venv is a host-side
 # artefact built against the host's interpreter, and the container installs

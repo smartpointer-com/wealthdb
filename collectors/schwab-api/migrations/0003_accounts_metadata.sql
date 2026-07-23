@@ -9,8 +9,8 @@
 --                     Values: CASH or MARGIN. Describes margin
 --                     enablement; *not* tax treatment.
 --
---   preference_type — userPreference.accounts[].type. Currently only
---                     'BROKERAGE' is observed. Promoted for consistency
+--   preference_type — userPreference.accounts[].type. Schwab returns
+--                     'BROKERAGE' here. Promoted for consistency
 --                     and future-proofing.
 --
 --   nickname        — userPreference.accounts[].nickName. User-set free

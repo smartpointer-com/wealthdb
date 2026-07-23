@@ -9,7 +9,7 @@
 -- managers' books) — we never see a real cash balance.
 --
 -- This table records the dated cash EVENTS as positive magnitudes; `kind`
--- carries the direction + nature. The gold adapter (planned; see DESIGN.md
+-- carries the direction + nature. The gold adapter (see DESIGN.md
 -- §6 / wealthdb/docs/adapters/carta.md) projects each row as a balanced
 -- DOUBLE-ENTRY pair on a sentinel funding account, mirroring equityzen:
 --   exercise      -> deposit (+) + buy          (-)   shares acquired

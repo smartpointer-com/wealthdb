@@ -186,8 +186,7 @@ PENDO_OVERLAY_SELECTOR = '#pendo-base, ._pendo-backdrop, [class*="_pendo-"]'
 # Portfolio Overview page (Trading Platform #portfoliooverview)
 # ============================================================
 
-# Three export-flavoured buttons live on this page; only two are of
-# interest:
+# Three export-flavoured buttons live on this page, all used:
 #   - `.ExportButton`  (aria-label "Export"), next to the Positions
 #                       table — downloads the Positions XLS.
 #   - `.CaptionButton` (aria-label "Export"), next to the Assets
@@ -195,7 +194,8 @@ PENDO_OVERLAY_SELECTOR = '#pendo-base, ._pendo-backdrop, [class*="_pendo-"]'
 #                       (per-currency cash + FX rollup).
 #   - `.srp-ControlsPanel__printInfo` (aria-label "Export account
 #                       overview") — a third export near "Buying
-#                       power"; not used here (purpose unconfirmed).
+#                       power"; downloads the account-overview PDF
+#                       (see ACCOUNT_OVERVIEW_EXPORT_BUTTON below).
 POSITIONS_EXPORT_BUTTON = 'button.ExportButton[aria-label="Export"]'
 LIST_OF_ASSETS_EXPORT_BUTTON = 'button.CaptionButton[aria-label="Export"]'
 

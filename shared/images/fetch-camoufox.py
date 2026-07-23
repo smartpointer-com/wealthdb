@@ -5,9 +5,8 @@
 camoufox-py's own constraint — which bounds only the `beta.N` release
 suffix (`>=beta.19, <1`), not the Firefox major underneath. A routine
 image rebuild can therefore silently swap the browser under every
-camoufox collector at once: one rebuild jumped 135.0.1-beta.24 →
-152.0.4-beta.26, and the new browser's first start on an existing
-profile crashed mid-migration, killing a login with nothing but a
+camoufox collector at once — and a Firefox-major jump can crash
+profile migration on first start, killing a login with nothing but a
 masked TargetClosedError.
 
 This fetches one reviewed build instead, so rebuilds are reproducible.

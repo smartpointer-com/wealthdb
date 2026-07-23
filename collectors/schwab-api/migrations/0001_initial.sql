@@ -9,8 +9,8 @@
 --
 -- Storage convention: timestamps are INTEGER Unix seconds (UTC).
 -- Stable filter columns are promoted; everything else lives in the
--- `payload` JSON column. See the "Silver semi-relational" memory note
--- for the broader contract.
+-- `payload` JSON column. See DESIGN.md §4.2 for the broader
+-- contract.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;

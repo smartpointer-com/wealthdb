@@ -144,8 +144,8 @@ class ViacClient:
         return self.request("DELETE", path, **kwargs)
 
     def stream(self, method: str, path: str, **kwargs):
-        """Streaming variant for PDF downloads (avoid loading 1019
-        full PDF bodies into RAM at once)."""
+        """Streaming variant for PDF downloads (avoid loading the
+        full PDF archive into RAM at once)."""
         self._ensure_csrf_known()
         return self._client.stream(method, path, **kwargs)
 

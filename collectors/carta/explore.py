@@ -9,10 +9,10 @@ download.py can be written from real traces:
                                      headers and bodies. The primary
                                      artefact for finding the internal
                                      JSON/XHR endpoints the SPA hits.
-                                     Read it against the API map in
-                                     DESIGN.md §2 — the SPA's endpoints
-                                     likely mirror the public /v1alpha1/
-                                     shapes.
+                                     Read it against the observed
+                                     endpoint map in DESIGN.md §3 —
+                                     internal shapes differ from the
+                                     public /v1alpha1/ map of §2.
   - **Network log**
     (`network.jsonl`)              — crash-safe, line-flushed request +
                                      response log (the HAR only flushes on
@@ -44,12 +44,10 @@ Sell / Transfer / Accept / wire / e-sign / confirm control, and stay out
 of any issuer / company-admin or fund-admin console the login may surface
 — this collector observes the portfolio holder's own holdings only.
 
-What this run needs to map (see DESIGN.md §3): the login host + 2FA factor,
-whether Camoufox stealth is required (Carta is likely Akamai-fronted), and
-the surfaces + internal endpoints for each account family — the cap-table side (option grants w/ strike+vesting, exercises,
-certificates) and the fund-LP side (capital account, quarterly statements,
-distributions, K-1s). Note for each whether
-clean CSV/JSON export exists or it is PDF-only.
+Re-run this harness whenever Carta moves its UI or internal endpoints:
+the fresh HAR + trace pinpoint what changed against the observed
+endpoint map in DESIGN.md §3, so login.py / download.py can be updated
+from real captures.
 
 Recording stops when the last browser window is closed (Camoufox's
 persistent context fires `close`) or after `--max-duration` (default 1h) as
@@ -228,7 +226,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Skip pre-filling the Carta login form. Use when you want to "
               "verify the form selectors by typing the credentials "
               "yourself (recommended for the first run against Carta's "
-              "likely-Akamai-fronted login), or when $CARTA_EMAIL / "
+              "Cloudflare-Turnstile-fronted login), or when $CARTA_EMAIL / "
               "$CARTA_PASSWORD are intentionally unset."),
     )
     p.add_argument(

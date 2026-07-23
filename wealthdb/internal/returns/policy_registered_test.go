@@ -1,9 +1,9 @@
 package returns_test
 
 // This external test package blank-imports the silver adapters so their
-// init()-time returns.RegisterPolicy calls run, then pins that each source
-// resolves the EXACT FlowPolicy (via returns.ReturnsPolicyFor(kind).Flow) it had
-// under the old central switch. It lives in package returns_test (not returns) to avoid an import
+// init()-time returns.RegisterPolicy calls run, then pins the EXACT FlowPolicy
+// each source resolves to (via returns.ReturnsPolicyFor(kind).Flow). It lives
+// in package returns_test (not returns) to avoid an import
 // cycle: silver/<kind> imports internal/returns, so only an external test
 // package may pull the silver adapters in alongside the package under test.
 
@@ -98,7 +98,7 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	}
 
 	// fred is blank-imported but registers NO policy — it must fall to the
-	// Known=false default, exactly as under the old switch.
+	// Known=false default.
 	if rp, _ := returns.ReturnsPolicyFor("fred"); rp.Flow.Known {
 		t.Error("fred: registers no policy, must fall to Known=false default")
 	}

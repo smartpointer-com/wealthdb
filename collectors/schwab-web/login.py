@@ -29,7 +29,7 @@ Modes:
 Browser choice: Firefox rather than Chromium. Schwab's Akamai
 rejects every Chromium-family automation surface we tried
 (headless Chromium, patchright-patched Chromium, real Chrome
-unavailable on Linux ARM64). See README.md "Browser choice" for
+unavailable in the container). See README.md "Browser choice" for
 the full diagnostic chain.
 """
 
@@ -266,36 +266,17 @@ def stop_trace_if_active(context, trace: bool, screenshot_dir: Path | None,
 # Browser launch helpers
 # ============================================================
 
-def wait_for_dom(page, selector: str, timeout_s: float,
-                 poll_s: float = 0.5) -> bool:
-    """Poll `page.evaluate(document.querySelector(selector))` until
-    the element is present (and either visible or the body), or
-    `timeout_s` expires.
+def wait_for_dom_in_frame(frame_locator, selector: str,
+                          timeout_s: float, poll_s: float = 0.5) -> bool:
+    """Poll `frame_locator.locator(selector).count()` until the
+    element is present or `timeout_s` expires.
 
     Used instead of `locator.wait_for(state="visible")` against the
     Schwab SPA: Schwab's Angular code emits perpetual change-
     detection cycles that confuse Playwright's "is page navigating?"
     guard, so wait_for runs to its full timeout even when the
-    element is plainly there. evaluate() has no such guard.
+    element is plainly there. A count() poll has no such guard.
     """
-    js = (
-        "(sel) => { const e = document.querySelector(sel); "
-        "return e && (e.offsetParent !== null || e.tagName === 'BODY') ? 1 : 0; }"
-    )
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        try:
-            if page.evaluate(js, selector):
-                return True
-        except Exception as e:
-            log.debug("wait_for_dom eval err for %r: %s", selector, e)
-        time.sleep(poll_s)
-    return False
-
-
-def wait_for_dom_in_frame(frame_locator, selector: str,
-                          timeout_s: float, poll_s: float = 0.5) -> bool:
-    """wait_for_dom() variant for a FrameLocator."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -440,7 +421,8 @@ def run_check(profile_dir: Path, screenshot_dir: Path | None,
                 rc = 0
             else:
                 log.error(
-                    "session DEAD: %s — run `./schwab-web login` to mint a new session",
+                    "session DEAD: %s — run `./schwab-web download` "
+                    "(or `vnc-login`) to mint a new session",
                     url,
                 )
                 rc = 2
@@ -531,7 +513,7 @@ def run_manual(profile_dir: Path,
             else:
                 log.info(
                     "Firefox ready. Via VNC: click Log In, enter your "
-                    "VIP code, land on Account Summary. Then the script "
+                    "2FA code, land on Account Summary. Then the script "
                     "takes over and scrapes."
                 )
             auth_page = _wait_for_post_auth(
@@ -909,7 +891,7 @@ def _prompt_for_mfa_code() -> str:
     # Bookended by blanks so the prompt stands out in a busy log.
     sys.stderr.write("\n")
     sys.stderr.write("=" * 60 + "\n")
-    sys.stderr.write("Schwab 2FA: enter your VIP / SMS code, then press Enter.\n")
+    sys.stderr.write("Schwab 2FA: enter your 2FA code, then press Enter.\n")
     sys.stderr.write("> ")
     sys.stderr.flush()
     try:

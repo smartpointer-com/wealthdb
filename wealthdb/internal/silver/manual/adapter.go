@@ -6,8 +6,7 @@
 // Two hand-maintained CSV-backed silver tables back this source — positions, valuations —
 // for illiquid private holdings with no bank or portal: real estate, direct
 // private-company equity, convertible notes, fund LP interests, single-deal
-// SPVs, and other positions (escrow
-// receivables, private loans, …).
+// SPVs, and other positions (escrow receivables, private loans, …).
 //
 // Gold projection:
 //

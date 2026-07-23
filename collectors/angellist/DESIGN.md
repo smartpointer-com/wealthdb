@@ -1,7 +1,7 @@
 # angellist — design notes
 
-How the AngelList LP collector works, end to end. Implemented and proven
-against a real account (June 2026): `login` → `download` → `load` →
+How the AngelList LP collector works, end to end. Implemented:
+`login` → `download` → `load` →
 queryable SQLite silver.
 
 ## Why a separate collector
@@ -286,20 +286,19 @@ forward-fill:
   the position whose invest date is closest to the transaction date; and an
   EXITED investment (no current position) gets a thin instrument DERIVED FROM
   THE FUNDING LEDGER (emitted even though it holds nothing). Only external-bank
-  deposits / withdrawals stay account-level. The full ledger thus links — 0
-  contributions/distributions/refunds left unlinked.
+  deposits / withdrawals stay account-level. Every ledger row links to a
+  vehicle.
 - **Cash.** The funding account's current uninvested cash is one
   `BalanceKind=current` CashBalanceChange, so account value = positions + cash.
 
 Consequence: `positions.market_value` summed in gold won't equal
-`portfolio_summary.totalValue` for the current date — AngelList reports no
-FMV for ~half the positions, so those carry cost as a proxy.
+`portfolio_summary.totalValue` for the current date — positions without a
+reported FMV carry cost as a proxy.
 
-Verified end-to-end (isolated gold load): one account / one portfolio,
-positions reconstructing correctly for past dates (the book grows over
-time), and funding transactions (deposit / withdrawal / contribution /
-distribution) summing to the funding balance plus the current cash balance;
-`go build` + `go test ./...` green.
+The gold load reconstructs positions as of any past date from the
+event-sourced silver, and funding transactions (deposit / withdrawal /
+contribution / distribution) sum to the funding balance plus the current
+cash balance.
 
 ## Re-discovery
 

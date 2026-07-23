@@ -129,12 +129,12 @@ const (
 	AccountKindOverlay AccountKind = "overlay"
 	// Crypto kinds. The cointracking adapter uses the single
 	// `crypto` bucket — CT's wallet-display-name vocabulary
-	// (an exchange, a hardware wallet, a staking provider, …) doesn't carry a
-	// reliable exchange-vs-self-custody signal, and the rest of
-	// the stack values the holding the same way either way. The
-	// finer-grained `crypto_exchange` / `crypto_self_custody`
-	// values stay reserved for any future adapter that does
-	// surface the distinction at source.
+	// (an exchange, a hardware wallet, a staking provider, …)
+	// doesn't carry a reliable exchange-vs-self-custody signal,
+	// and the rest of the stack values the holding the same way
+	// either way. The finer-grained `crypto_exchange` /
+	// `crypto_self_custody` values stay reserved for any future
+	// adapter that does surface the distinction at source.
 	AccountKindCrypto            AccountKind = "crypto"
 	AccountKindCryptoExchange    AccountKind = "crypto_exchange"
 	AccountKindCryptoSelfCustody AccountKind = "crypto_self_custody"

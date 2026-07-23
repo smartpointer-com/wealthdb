@@ -1,5 +1,56 @@
 # wealthdb
 
+## ⚠️ Security & liability disclaimer
+
+> [!WARNING]
+> **The wealthdb suite handles fully privileged financial-account
+> credentials. Read this disclaimer in full before configuring any
+> credential anywhere in the suite.**
+
+The `wealthdb` gold engine itself only reads local silver databases
+and holds no credentials — but the [collectors](../collectors/)
+that feed it sign in to banks, brokerages, and pension providers
+with your credentials and your multi-factor confirmations. The
+web-scraping collectors **impersonate a human browser user**
+(a stealth-hardened browser session), and the API collectors hold
+**write-capable credentials**; in both cases the session is fully
+privileged — the same login a human uses to move money — and no
+provider offers a read-only sub-scope. Nothing but the codebase's
+own discipline restricts the collectors to reading. If malicious
+code were ever introduced into this repository, its dependency
+chain, or the container images it runs, it could act on your
+accounts with your full authority and cause **irreversible
+financial damage, up to the total loss of the assets reachable
+from those credentials**.
+
+**You are solely responsible for a thorough, independent security
+audit** of this code, its dependency chain, and its runtime images
+**before** entrusting the suite with credentials, and again after
+every update or rebuild. If you cannot perform such an audit, do
+not hand this software real credentials. Automated access may
+additionally breach a provider's terms of service; verifying that
+your use is permitted is likewise your responsibility.
+
+**No warranty; no liability.** This software is provided “AS IS”,
+without warranty of any kind, express or implied, including but
+not limited to the implied warranties of merchantability, fitness
+for a particular purpose, title, and non-infringement. To the
+maximum extent permitted by applicable law, **SmartPointer AG and
+the contributors accept no responsibility for, and shall not be
+liable for, any claim, damages, or other liability** — whether in
+an action of contract, tort, or otherwise — arising from, out of,
+or in connection with this software or its use, including without
+limitation unauthorized or erroneous transactions, loss of funds
+or other assets, credential or data compromise, account suspension
+or termination, and any direct, indirect, incidental, special,
+consequential, or punitive damages. Your use is entirely at your
+own risk. See [LICENSE](../LICENSE) for the governing terms. This
+software is not affiliated with, endorsed by, or sponsored by any
+financial institution; nothing in this repository is financial,
+legal, or tax advice.
+
+## Overview
+
 A personal-portfolio gold-layer CLI. Reads the per-source silver
 SQLite databases produced by the sibling
 [collectors](../collectors/) — one per bank, pension, and crypto
@@ -21,6 +72,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb load <id>\|-a` | Merge new silver snapshots into gold. |
 | `wealthdb reset <id>\|-a` | Purge a silver source's data from gold. |
 | `wealthdb reload <id>\|-a` | Reset then load (use after upgrading wealthdb). |
+| `wealthdb compact [--dry-run]` | Rewrite the gold DB into a fresh file to reclaim dead space. |
 | `wealthdb holdings <view>` | Point-in-time portfolio views: `positions`, `accounts`, `portfolios`, `sources`, `global` — each with currency conversion and `-d`/`-f`/`-x`/`-p` (and `-C` columns on all but `global`). |
 | `wealthdb returns <view>` | Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by `accounts`, `portfolios`, `sources`, `global` over a window. `--method`, `--period {monthly\|quarterly\|annual\|total}`, `--annualize`, `--netting`, `--inception`; historic FX, after fees & taxes. Account-grain is exact; coarse grains are best-effort — read the `quality` column. |
 | `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
@@ -28,6 +80,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
+| `wealthdb version` | Print the wealthdb version. |
 | `wealthdb help [<subcommand>]` | Help. |
 
 Adapters ship for every source: Schwab (API + web), UBS (PSN feed

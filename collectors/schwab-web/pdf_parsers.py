@@ -2,14 +2,13 @@
 Parsers for Schwab monthly brokerage statement PDFs.
 
 The primary use case is reconstructing transaction history for
-ACCOUNTS THAT HAVE BEEN CLOSED — those no longer appear in the
-Transaction History page, so the only retrievable record is in
-their archived monthly statements (and we can fetch the
-statements via download.py while at least one open account still
-shares the same login).
+ACCOUNTS THAT HAVE BEEN CLOSED — closed accounts disappear from
+the Transaction History page, so archived monthly statements are
+the only retrievable record (fetchable via download.py while any
+open account shares the login).
 
 For active accounts the Transaction History page is the
-authoritative source; we keep PDF parsing for cross-checks and
+authoritative source; PDF parsing remains for cross-checks and
 backfill.
 
 Design notes:
@@ -1692,8 +1691,8 @@ def _is_trailing_col_token(s: str) -> bool:
 # Schwab prints Endnote reference letters (single letters, occasionally
 # comma-joined) inline among a holding's numeric columns — e.g. an "e"
 # ("Data for this holding has been edited or provided by the account
-# holder") sitting between Cost Basis and Unrealized Gain on an
-# account-marked SPV / alternative interest, or an "S"/"t" on an
+# holder") sitting between Cost Basis and Unrealized Gain on a
+# holder-valued position, or an "S"/"t" on an
 # option / short / third-party-edited line. The right-to-left column
 # scan must step OVER such a marker instead of stopping at it;
 # otherwise the columns shift left (quantity reads the unrealized gain,

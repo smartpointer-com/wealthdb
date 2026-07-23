@@ -2,9 +2,8 @@
 
 A focused cross-repo memo for the `schwab-api` maintainer
 and the `wealthdb` gold-layer maintainer. Extracted from
-[DESIGN.md](DESIGN.md) §§4–5 plus the bronze observations from
-the May 2026 first-end-to-end run. Two silvers, one user, one
-gold layer that needs to converge them.
+[DESIGN.md](DESIGN.md) §§4–5. Two silvers, one gold layer
+that needs to converge them.
 
 ## TL;DR
 
@@ -115,8 +114,8 @@ substitutes synthetic descriptions.
 Empirically observed across multiple `schwab-web` scrape
 runs: the **same logical statement** (same account, same period,
 same Schwab-supplied filename) downloaded in two different
-sessions yields **different sha256s**. We've seen up to 4
-distinct sha256s for one statement. Schwab almost certainly
+sessions yields **different sha256s** — multiple distinct
+sha256s for one statement. Schwab almost certainly
 stamps a generation timestamp or download-token into the PDF
 on each request.
 
@@ -194,17 +193,15 @@ recomputed from the statement-transaction feed
 
 ---
 
-## 6. Asks for `schwab-api` (none required, one nice-to-have)
+## 6. Asks for `schwab-api` (none)
 
 The api silver already does the right thing in every spot we
-checked. The one nice-to-have:
+checked:
 
-- **Promote `account_number` as a column on `accounts`.** The
-  api already gets `accountNumber` back from
-  `/accounts/accountNumbers`, and the payload JSON already
-  carries it (per `schwab-api/migrations/0001` comments).
-  Promoting it would skip a `json_extract` step in the gold
-  bridge above. Low-priority; the payload pull is cheap.
+- **`account_number` is promoted as a column on `accounts`**
+  (api migration 0004). The api gets `accountNumber` back from
+  `/accounts/accountNumbers`; the promoted column spares the
+  gold bridge above a `json_extract` step.
 
 Everything else is web-side work or gold-side work. The api
 silver is correct as-is.
@@ -219,7 +216,7 @@ the web feed is and isn't carrying:
 
 | Gap | Impact on gold |
 | --- | --- |
-| pdf_parsers occasionally returns `amount=None` on Sale rows (≈1% — concentrated on money-market-fund proceeds and a handful of early-2025 fee rows) | A handful of missing transactions per year; gold can detect via a row-count sanity check |
+| pdf_parsers occasionally returns `amount=None` on Sale rows | A handful of missing transactions per year; gold can detect via a row-count sanity check |
 | Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and lets `form_1099b` supersede sales in its tax year (§8) |
 | Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold must bridge name → instrument (its symbol/CUSIP map), §8 |
@@ -230,20 +227,16 @@ the web feed is and isn't carrying:
 
 ## 8. Gold-layer hand-off: consuming the two new silver sources
 
-> **Paired task — schedule alongside the silver change.** Until the
-> gold reader (`wealthdb/internal/silver/schwab/web_reader.go`) handles
-> these sources, `form_1099b` and `third_party_distribution` rows
-> either double-count against the existing feeds or sit unused. The
-> silver side is complete; this is the gold side of the same feature.
->
-> **Status — implemented.** The gold side landed in `web_reader.go`:
-> `supersedeSalesWith1099B` makes the 1099-B authoritative for sales
-> within a covered `(account, tax_year)` (dropping the statement /
-> tx-history sells in that calendar year), and
-> `supersedeStatementCashWithDistributions` makes a cash distribution
-> authoritative over a matching statement / tx-history cash debit.
-> Securities transfers route through `externalFlowKinds`, drawing their
-> net-flow magnitude from `market_value` / `cash_amount`.
+The gold reader
+(`wealthdb/internal/silver/schwab/web_reader.go`) consumes both
+sources: `supersedeSalesWith1099B` makes the 1099-B authoritative
+for sales within a covered `(account, tax_year)` (dropping the
+statement / tx-history sells in that calendar year), and
+`supersedeStatementCashWithDistributions` makes a cash
+distribution authoritative over a matching statement / tx-history
+cash debit. Securities transfers route through
+`externalFlowKinds`, drawing their net-flow magnitude from
+`market_value` / `cash_amount`.
 
 ### 8.1 `form_1099b` — authoritative-for-sales within its tax year
 

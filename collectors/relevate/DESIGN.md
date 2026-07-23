@@ -31,12 +31,9 @@ Sections:
 
 ## 1. How the portal works
 
-The portal was originally mapped via a one-shot VNC-driven
-Playwright harness that captured every request / response / DOM
-snapshot during a manual login. The REST flow it revealed proved
-stable on first run; the harness has since been removed and the
-container is now slim Python + `requests`. What that discovery
-taught us:
+The portal is driven entirely over its REST surface; the
+container is slim Python + `requests`, no browser. What the
+portal looks like on the wire:
 
 **Auth stack — Airlock IAM:**
 - Vendor: Ergon Informatik's Airlock IAM (Swiss-banking-standard
@@ -66,8 +63,9 @@ flow-init probe, then `/password/check` for credentials, then
    `{"username": "...", "password": "..."}`. On 200, Airlock
    sends the mTAN and returns
    `data.attributes.{nextAuthStep, phoneNumber, resendPossible}`.
-   `phoneNumber` is masked (12 chars) — handy to echo to stderr
-   so the target device is identifiable.
+   `phoneNumber` comes back in full; login.py masks it
+   client-side before echoing it to stderr so the target device
+   is identifiable without leaking digits.
 - `POST /auth/rest/public/authentication/mtan/otp/check`
    — OTP verification. Body `{"otp": "..."}`. On 200 the
    existing `AL_SESS-S` cookie is promoted server-side from
@@ -83,7 +81,7 @@ flow-init probe, then `/password/check` for credentials, then
 **Authorization for application API — cookie-only, no bearer:**
 
 The `/middlelayer/v2/` REST endpoints' `Authorization: bearer X`
-header in Phase-1 was a red herring: the SPA stringifies a JS
+header is a red herring: the SPA stringifies a JS
 `undefined` and sends literally `Authorization: bearer undefined`
 (rest_len=9, prefix `un`, suffix `ed`). Airlock ignores it; the
 real session is carried by the `AL_SESS-S` cookie alone. We
@@ -111,10 +109,10 @@ auth POSTs require it; the middlelayer GETs do not.
 | `/document/generate/contract/pensionfundregulations?tId=N` | GET | On-demand contract regeneration; also returns a PDF. |
 | `/portfolio/services`, `/compliance/products`, `/contact/{messages, notification, language, risk-protection}`, `/sso/{claims, sync}` | GET | Ancillary endpoints. Probe-only for now; `/contact/messages` may carry foundation announcements worth preserving in bronze. |
 
-**Account taxonomy (observed):**
+**Account taxonomy:**
 
-- Multiple FZ portfolios (vested benefits / Pillar 2 /
-  Freizügigkeit) surface under one login. Both product keys are
+- The portal can surface multiple FZ portfolios (vested benefits /
+  Pillar 2 / Freizügigkeit) under one login. Both product keys are
   observable:
   - `product.key = FZPF` ("PensFree").
   - `product.key = FZI` ("Independent").
@@ -124,20 +122,19 @@ auth POSTs require it; the middlelayer GETs do not.
   the holder choose individual securities or funds. No human
   manager or advisor is in the loop (robo-advisor shape, not
   self-directed brokerage).
-- All observed portfolios are CHF-denominated, `isActive=true`,
-  `portfolioTypeId=0`, `portfolioStatusId=0`.
+- Portfolios are CHF-denominated.
 - The SPA exposes a `/dashboard/3a/depots` URL, but
   `/portfolio/investment-overview` returns only the products a
-  given login actually holds and omits Pillar 3a for FZ-only
-  logins. `download.py` walks whatever the overview lists — a
-  login holding 3a surfaces it there; no separate 3a probe.
+  given login actually holds. `download.py` walks whatever the
+  overview lists — a login holding 3a surfaces it there; no
+  separate 3a probe.
 
-**Document corpus (observed):**
+**Document corpus:**
 
-- A few dozen documents in the index. Recognisable types from the
-  fileName field: Quarterly Reports, Quarterly Fee Statements,
-  FZ Credit Notes (contribution arrivals), Pension Agreement,
-  Pension Plan, Investor Profile, Leaving Statement.
+- Recognisable types from the fileName field: Quarterly Reports,
+  Quarterly Fee Statements, FZ Credit Notes (contribution
+  arrivals), Pension Agreement, Pension Plan, Investor Profile,
+  Leaving Statement.
 - `documentType` is a numeric enum (observed values: 0, 1, 3, 4,
   7, 9). `category` is a separate numeric enum (0, 1, 2). The
   enum-to-name mapping isn't exposed in the responses we've
@@ -219,10 +216,10 @@ The script reproduces what the Angular SPA does:
    `X-CSRFT759` + `X-Continue-Flow: true` headers. Returns HTTP
    200 with `data.attributes.{nextAuthStep, phoneNumber,
    resendPossible}`. Airlock has sent the mTAN to the registered
-   number; the (masked) phone number comes back so it can be
-   surfaced on stderr.
-5. Display the phone number on stderr and read the OTP from
-   stdin via `getpass` (input hidden). Retry on rejection up to
+   number; the phone number comes back in full and is masked
+   client-side before being surfaced on stderr.
+5. Display the masked phone number on stderr and read the OTP
+   from stdin via `input()`. Retry on rejection up to
    `--max-otp-attempts` (default 3); each retry accepts the next
    code that arrived (mTANs are usually
    single-use but Airlock typically allows multiple-in-flight).
@@ -231,8 +228,7 @@ The script reproduces what the Angular SPA does:
    `X-Continue-Flow: true` headers. Returns HTTP 200. Server-side
    the existing `AL_SESS-S` session record is promoted from
    anonymous → authenticated; **the cookie value does not change**
-   (confirmed by Phase-1 cookie-length stability across the
-   pre/post-auth snapshots).
+   across the pre/post-auth exchanges.
 7. `GET /auth/rest/protected/self-service/ui/configuration/portal`
    — landmark probe to confirm the session is in fact live
    before persisting. 200 = good.
@@ -240,7 +236,7 @@ The script reproduces what the Angular SPA does:
    (chmod 0600), atomic via `mv tmp final`:
    ```json
    {
-     "minted_at": "2026-05-27T13:08:30+00:00",
+     "minted_at": "2026-01-01T12:00:00+00:00",
      "issuer": "portal.pens-expert.ch",
      "schema_version": 1,
      "cookies": [
@@ -253,9 +249,9 @@ The script reproduces what the Angular SPA does:
    }
    ```
    Only the Airlock-domain cookies + the device-trust cookie are
-   load-bearing; the Google Analytics cookies (`_ga`, `_gcl_au`,
-   `_ga_*`) are persisted too for completeness but the API
-   doesn't care about them.
+   load-bearing; the SPA's Google Analytics cookies (`_ga`,
+   `_gcl_au`, `_ga_*`) are JS-set and never appear in the
+   `requests` cookie jar.
 
 No bearer extraction step. No token decoding. Just cookies.
 
@@ -274,7 +270,7 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
   Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD). Allowed without
   user prompt (root CLAUDE.md §2).
 - `--max-otp-attempts` — retry budget for a mistyped OTP
-  (default 3). Attempts can pause indefinitely; `getpass`
+  (default 3). Attempts can pause indefinitely; `input()`
   blocks on stdin without a deadline. This
   is the "no immediate-response interactive flows" rule honoured
   by NOT having a timeout, rather than by setting a long one.
@@ -531,8 +527,8 @@ loop.
   have caught this; if not, it's mid-run). Record and continue —
   individual endpoints may have shorter-lived auth than the
   landmark.
-- HTTP 5xx → record and continue. Relevate hasn't 5xx-ed yet;
-  if it starts, a retry-with-backoff layer goes here.
+- HTTP 5xx → record and continue. No retry layer; a
+  retry-with-backoff layer would slot in here if needed.
 - HTTP 429 → record and continue. Same: not observed; defer.
 - Document GET returning HTML or `application/json` instead of
   `application/pdf` → save under `documents/<id>.unexpected.<ext>`
@@ -557,7 +553,7 @@ phases: `load_historical_snapshots` (quarterly-report holdings →
 
 ```
 $XDG_DATA_HOME/wealthdb/relevate/                     (= /data inside container)
-├── 20260527T142500Z/                        one bronze dump per run
+├── 20260101T120000Z/                        one bronze dump per run
 │   ├── run.json                             manifest
 │   ├── accounts/
 │   │   ├── investment-overview.json         master list
@@ -682,10 +678,9 @@ wealthdb relevate adapter — see [the canonical
 model](../../DESIGN.md) and the adapter source
 [`wealthdb/internal/silver/relevate/`](../../wealthdb/internal/silver/relevate/).
 
-### 7.2 Validation against a real load
+### 7.2 Load semantics verified
 
-A mix of dry-run and real bronze dumps loaded cleanly into
-silver, and the projected row shape matched expectations:
+The projected row shape:
 
 - one `accounts` row per (portfolio, snapshot);
 - one `cash_balances` row per (account, populated balance kind);
@@ -694,20 +689,19 @@ silver, and the projected row shape matched expectations:
 - one `instruments` row per distinct security across the
   modelportfolios;
 - ~N `performance_points` per (portfolio, non-dry-run snapshot);
-- `transactions` empty for FZ products (`/deposits` returns no
-  rows);
+- `transactions` may be empty for FZ products (`/deposits` can
+  return no rows);
 - `documents` content-deduped across the dumps.
 
 Each `positions` row carries an `asset_class` label (from
-`security.assetClass.name`) and an ISIN, which was populated on
-every observed row. Re-running `load` against the same bronze is
-a no-op (the `dump_runs.snapshot_at` PK is the idempotency
-anchor).
+`security.assetClass.name`) and an ISIN. Re-running `load`
+against the same bronze is a no-op (the `dump_runs.snapshot_at`
+PK is the idempotency anchor).
 
 ### 7.3 What's deliberately NOT a table
 
-- **`fx_rates`**: every observed portfolio is CHF-denominated and
-  every observed `currentValue` is in `currency.currencyCode = "CHF"`.
+- **`fx_rates`**: portfolios are CHF-denominated and
+  `currentValue` comes back in `currency.currencyCode = "CHF"`.
   If a future Relevate product surfaces foreign-currency holdings
   the loader will materialise an `fx_rates` table in a follow-on
   migration; doing it now would be empty-table speculation.
@@ -811,71 +805,31 @@ container is purely an HTTP client.
 
 ## 11. Open questions
 
-Resolved during the initial portal-mapping work:
-
-- ✓ 2FA mechanism — mTAN via SMS (user-confirmed).
-- ✓ Auth flow is three-step: `/b2c/access` (probe, 401) →
-  `/password/check` (creds, 200, mTAN sent) → `/mtan/otp/check`
-  (OTP, 200, session promoted).
-- ✓ Session model — Airlock IAM, cookie-only. No bearer token
-  exists; the SPA's `Authorization` header literally carries
-  `"bearer undefined"`. Cookie value (`AL_SESS-S`, 68 chars) is
-  promoted server-side, doesn't rotate.
-- ✓ CSRF — double-submit-cookie. `CSRFT759-S` cookie value
-  echoed as `X-CSRFT759` header on every POST. 22 chars,
-  stable within a session.
-- ✓ POST body shapes — `/b2c/access` is empty,
-  `/password/check` is `{username, password}`,
-  `/mtan/otp/check` is `{otp}`.
-- ✓ Response shapes — JSON:API envelope (`meta`, `data` with
-  `type/id/attributes`, `errors[]`). `/password/check` returns
-  the masked phone number, which identifies the target device.
-- ✓ Anti-bot posture — vanilla `requests` with mimicked Chrome
-  headers should suffice. No Akamai / Camoufox / JS-challenge
-  observed at the auth surface.
-- ✓ `account_external_id` shape — `portfolios[].externalId`
-  (`NNNN.NNNNNN.N`).
-- ✓ Number of accounts — a small handful of portfolios under one
-  login.
-- ✓ Export availability — REST API returns JSON for all
-  observed pages; documents return `application/pdf` directly.
-- ✓ Document types — quarterly reports, fee statements, credit
-  notes, agreements, plans, investor profile, leaving statement
-  (and probably more we haven't seen).
-
-Outstanding — to be resolved during silver-loader work or in
-follow-up:
-
 1. **Session TTL.** Airlock typically defaults to 30 min idle
    / 8 h absolute. Determine empirically by running
    `login.py --check` periodically after a fresh login and
    noting when it flips to DEAD.
-2. **Session-renewal mechanism.** No `/refresh` endpoint was
-   observed on the wire, but the SPA may issue keepalives we
-   didn't see. If Airlock has an idle-extending touch we can
-   issue without a fresh mTAN, hook it in.
-3. **`/deposits` query param.** Every observed year returned the
-   same empty `{transactions:[]}` envelope for these FZ accounts.
-   Either the endpoint isn't transaction-bearing for this
-   product, or transactions are accessed via a different path.
-   The credit-note PDFs cover the actual contribution data.
-4. **`documentType` + `category` enum mapping.** The numeric
+2. **Session-renewal mechanism.** No `/refresh` endpoint appears
+   on the wire, but the SPA may issue keepalives that haven't
+   been captured. If Airlock has an idle-extending touch that
+   can be issued without a fresh mTAN, hook it in.
+3. **`documentType` + `category` enum mapping.** The numeric
    values 0/1/3/4/7/9 (type) and 0/1/2 (category) — derive
    labels by correlating with fileName patterns, or look for a
    config endpoint that exposes the mapping.
-5. **Pillar 3a presence.** Endpoint `/dashboard/3a/depots`
+4. **Pillar 3a presence.** Endpoint `/dashboard/3a/depots`
    exists; investment-overview omits 3a entries for FZ-only
    logins. Confirm whether the absence is "the login doesn't have
    any" or "the API filters them out unless explicitly requested
    via a separate endpoint".
-6. **Actual unit holdings.** Modelportfolio gives target
+5. **Actual unit holdings.** Modelportfolio gives target
    allocation; investment-overview gives total currentValue.
    Is there an endpoint that returns the actual units held
    (e.g., `/positions`, `/holdings`)? If not, silver's
    `positions` table holds target allocations — fine for
    vested benefits but worth confirming.
-7. **OTP retry behaviour.** Does Airlock invalidate the mTAN
+6. **OTP retry behaviour.** Does Airlock invalidate the mTAN
    after one bad guess, or accept the next attempt? `login.py`
-   currently allows 3 attempts; verify a fat-finger can in fact
-   be corrected before the session locks.
+   allows 3 attempts; verify a fat-finger can in fact be
+   corrected before the session locks.
 

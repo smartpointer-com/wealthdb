@@ -10,7 +10,7 @@ import (
 
 // contentSpan is the MIN/MAX snapshot_at across the position-bearing content
 // tables. carta reconstructs one download into event-dated deltas (an
-// exercise in 2024, an acquisition in 2026, a quarterly NAV), which sit years
+// exercise, a later acquisition, a quarterly NAV), which sit years
 // before the download. The observable snapshot range — and the load window —
 // must track THIS span, not dump_runs (the download time), so the historical
 // deltas fall in-window and reach gold's as-of query.

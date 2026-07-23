@@ -13,9 +13,9 @@ Load semantics
   failure the partial dump is rolled back and the loader can retry
   on the next run.
 - Already-loaded dumps are skipped via the `dump_runs` table.
-- Transactions are UPSERTed on UBS Transaction no.
-  (`transaction_external_id`). Re-running a window converges to
-  UBS's current view.
+- Transactions are UPSERTed on the compound key
+  (`transaction_external_id`, `account_external_id`). Re-running a
+  window converges to UBS's current view.
 - Snapshot tables (banking_relationships, portfolios, accounts,
   positions) take a new row per `snapshot_at` (dedup-by-PK only).
 - Documents are indexed by `doc_token` (UBS API token); the binary
@@ -589,7 +589,8 @@ def _ingest_mortgage_row(conn: sqlite3.Connection, snapshot_at: int,
 def _load_transactions(conn: sqlite3.Connection, snapshot_at: int,
                        dump_dir: Path) -> int:
     """Parse every `transactions/cash_*.csv` in the dump dir;
-    UPSERT into transactions keyed by UBS Transaction no."""
+    UPSERT into transactions keyed by (transaction_external_id,
+    account_external_id)."""
     txn_dir = dump_dir / "transactions"
     if not txn_dir.is_dir():
         return 0
@@ -812,12 +813,11 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     if not work:
         return 0, 0, 0, 0
 
-    # Per-account MT940 cut-over floors: the CSV feed's coverage is
-    # UNEVEN per account (some accounts from 2024-01, one only from
-    # 2026-02, most never), so a single global floor would silently
-    # drop years of movements. PDF movements are ingested only BELOW
-    # each account's own MT940 floor; MT940 owns everything from the
-    # floor onward. Computed from the bronze tree, so it is
+    # Per-account MT940 cut-over floors: coverage can begin at
+    # different dates per account (or be absent), so a single global
+    # floor would silently drop movements. PDF movements are ingested
+    # only BELOW each account's own MT940 floor; MT940 owns everything
+    # from the floor onward. Computed from the bronze tree, so it is
     # independent of dump load order.
     mt940_floors = _mt940_floors_by_account(dump_dir)
 

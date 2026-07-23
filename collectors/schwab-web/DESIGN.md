@@ -16,7 +16,7 @@ The companion silvers:
 | Silver | Source | Coverage | Default path |
 | --- | --- | --- | --- |
 | `schwab-web` | Web scrape via Playwright + camoufox, PDF parsing | Deep historical: statement PDFs back to the UI's ~10-year cap, tax forms slightly deeper, transaction-history CSV/JSON/XML exports (~4-year "All" range) | `$XDG_DATA_HOME/wealthdb/schwab-web/schwab-web.db` |
-| `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from API access activation (mid-2024) | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` |
+| `schwab-api` | Trader API via OAuth refresh-token | Forward-only daily snapshots + transactions, from the date the deployment's Trader-API access was activated | `$XDG_DATA_HOME/wealthdb/schwab-api/schwab-api.db` |
 
 This split mirrors the `ubs-web` ↔ `ubs-psn` pattern: a
 slow, lossy, multi-year web archive plus a fast, lossless, recent
@@ -189,8 +189,8 @@ the data simply isn't in the api.
 Empirically: the same *logical* statement (same account, same
 period, same filename) downloaded from Schwab in two different
 sessions yields **different sha256s**. An archive can show
-the same (account, doc_date, filename) tuple appearing with up
-to 4 distinct sha256s across scrape runs. Schwab almost
+the same (account, doc_date, filename) tuple appearing with
+multiple distinct sha256s across scrape runs. Schwab almost
 certainly stamps a generation timestamp or download-token into
 the PDF on each request, making each physical fetch unique at
 the byte level.
@@ -269,11 +269,10 @@ silver doesn't strictly need any of them.
   payload stores `{accountNumber, hashValue}`. Good. The only
   thing gold needs to know is that the LAST 3 digits of
   `accountNumber` equal the web silver's `account_external_id`.)
-- **Optionally surface the full Schwab account-number string in
-  the promoted columns**. The current schema has only the
-  hashValue promoted; widening to `account_number` would skip a
-  JSON-parse step in gold. Low priority — the payload pull is
-  cheap.
+- **The full Schwab account-number string is promoted.** The api
+  silver's migration 0004 adds `account_number` as a real column
+  on `accounts`, so gold joins on it directly with no JSON-parse
+  step.
 
 ## 6. Bronze artefact layout (for reference)
 
@@ -372,7 +371,7 @@ position delta rather than as an activity row. Parsed by
   not know renders `COSTBASIS=0`; we null the promoted `cost_basis`
   for those (keeping the raw `0` + flags in payload) so a placeholder
   is never mistaken for a real zero. A genuine `$0` basis on a
-  *covered* lot (e.g. a lot with a zero basis) is preserved.
+  *covered* lot is preserved.
 - **No ticker / CUSIP.** Neither the XML nor the CSV carries a
   security identifier — only `security_name`. `instrument_key` is
   therefore `NULL`; resolving the name to an instrument is gold's job
@@ -412,11 +411,9 @@ and with no extra system dependency).
   in turn; the loader still passes `statement_year` as a
   fallback for the few pre-2025 quarterly headers that pdfplumber
   / pypdfium2 didn't surface.
-- **Some sale rows lose their amount** (concentrated on
-  money-market-fund proceeds and a handful of early-2025 fee
-  rows). Skipped during load with a warning rather than
-  failing the whole statement; about 1% of rows in the
-  archive we tested against. Worth a follow-up parser pass.
+- **Some sale rows lose their amount**. Such rows are skipped
+  during load with a warning rather than failing the whole
+  statement; worth a follow-up parser pass.
 - **Multiple overlapping transaction sources**. The same logical
   event can land in silver from more than one feed:
   `statement_pdf` (parser-derived, multi-year via quarterly
@@ -466,14 +463,13 @@ seen value. How gold maps this label to its canonical
 ### 8.1 Registration labels
 
 These are registration labels Schwab is known to print — i.e.
-the values the
-`account_registration` silver column can carry. Schwab's
-typography drifts a little across layout revisions: the
-registered-mark glyph migrates between "Schwab One® International Account" and "Schwab One International®
-Account" for the same account, so the column holds both
-forms across snapshots. (How gold collapses such variants and maps
-them to canonical wrappers is the adapter's job — see
-[the adapter doc](../../wealthdb/docs/adapters/schwab.md).)
+the values the `account_registration` silver column can carry.
+Schwab's typography drifts a little across layout revisions: the
+registered-mark glyph migrates between "Schwab One® International
+Account" and "Schwab One International® Account", so the column
+can hold both forms across snapshots. (How gold collapses such
+variants and maps them to canonical wrappers is the adapter's
+job — see [the adapter doc](../../wealthdb/docs/adapters/schwab.md).)
 
   Schwab One® Account
   Schwab One® International Account
@@ -511,7 +507,8 @@ refinement because it understands the Schwab statement
 format intimately; the wealthdb gold adapter then keys off a
 single column without having to re-read bronze.
 
-If neither marker is present (defensive — custodial statements carry one), the bare
+If neither marker is present (defensive — custodial
+statements carry one), the bare
 `Schwab One® Custodial Account` is preserved in the column; how
 gold resolves the undisambiguated case is the adapter's call —
 see [the adapter doc](../../wealthdb/docs/adapters/schwab.md).

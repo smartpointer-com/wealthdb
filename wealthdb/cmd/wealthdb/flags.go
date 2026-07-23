@@ -76,6 +76,7 @@ subcommands:
   transactions [flags]  print transactions over a date range (default past 30 days, oldest first)
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
-  web {start|stop|status}  manage the optional Metabase BI server (host-side; see web/README.md)
+  web <verb>            manage the optional Metabase BI server ('wealthdb web help'; host-side, see web/README.md)
+  version               print the wealthdb version
   help [<subcommand>]   help for a subcommand
 `

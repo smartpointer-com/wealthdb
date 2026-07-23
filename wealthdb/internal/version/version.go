@@ -9,11 +9,12 @@ import (
 	"time"
 )
 
-// Version is the symbolic build version. Default is "dev"; release
-// builds may override at link time:
+// Version is the symbolic build version, reported by `wealthdb
+// version`. Kept in lockstep with the repo's release tag; builds
+// may override at link time:
 //
-//	go build -ldflags '-X github.com/ptu-gh/wealthdb/wealthdb/internal/version.Version=v0.1.0'
-var Version = "dev"
+//	go build -ldflags '-X github.com/ptu-gh/wealthdb/wealthdb/internal/version.Version=v0.2.0'
+var Version = "v0.1.0"
 
 // BuildInfo is the binary's VCS-derived build identity.
 //

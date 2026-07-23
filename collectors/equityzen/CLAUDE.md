@@ -118,7 +118,7 @@ See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and §4
 (no private information in source). They apply in full here.
 
 This collector's PII surface is unusually sensitive. EquityZen data names
-the **private pre-IPO companies** in the book, plus the SPV/fund names,
+**private pre-IPO companies**, SPV/fund names,
 exact share counts, basis and fair-market-value figures, and K-1-equivalent
 tax-document contents (legal name, SSN/EIN fragments, per-vehicle dollar
 amounts). The **company name alone is identifying**. Never copy a real

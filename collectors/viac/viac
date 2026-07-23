@@ -33,8 +33,9 @@ Subcommands:
                       liveness probe (no MFA push).
   download [args...]  Bronze dump. Use --dry-run to walk JSON
                       endpoints without fetching PDFs. The per-event
-                      TRANSACTION PDFs (~950 docs) are pulled by
-                      default; --no-transaction-documents skips them.
+                      TRANSACTION PDFs (the bulk of the archive)
+                      are pulled by default;
+                      --no-transaction-documents skips them.
   load [args...]      Parse bronze into the silver SQLite DB.
   prune [args...]     Delete non-complete dumps (crashed/in-progress
                       walks and --dry-run shells) from the bronze

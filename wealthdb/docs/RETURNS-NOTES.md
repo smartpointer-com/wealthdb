@@ -110,7 +110,8 @@ joins the aggregate value spine mid-window ("staggered inception") must
 have each boundary-crossing dollar counted **exactly once**, in the same
 bucket as the value change it causes. An account fed only by month-end
 snapshots (a pension or 3a account, say) can be funded mid-month and
-first appear weeks or months later, so a naive near-debut funding dedup never fires and the engine
+first appear weeks or months later, so a naive near-debut funding dedup
+never fires and the engine
 books *both* the synthetic onboarding and the real funding — driving the
 chained TWR below −100%.
 
@@ -131,9 +132,8 @@ chained TWR below −100%.
   an orphaned phantom.
 
 Onboarding still legitimately recognizes **untracked pre-existing
-capital** — a late account whose backfill carries no funding transactions
-at all: booking its first value as onboarding is correct, not a
-double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
+capital** — a late account with no funding transactions at all: booking its first value as onboarding is
+correct, not a double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
 
 ## Pluggable per-source policy
 

@@ -26,9 +26,10 @@
 //     point-in-time, so for any quarter before the toolkit first
 //     ran we parse the quarterly + year-end statement PDFs into
 //     silver's `historical_position_snapshots` table (migration
-//     0004). Statement archives exist only for account groups that
-//     expose statements, so this path covers those alone. See historical.go for the
-//     dispatch.
+//     0004). Statement archives exist in this silver only for
+//     account groups that expose statements, so this path covers
+//     those alone. See historical.go for
+//     the dispatch.
 package fidelity
 
 import (

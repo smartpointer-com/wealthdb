@@ -8,13 +8,14 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
-// These regression tests lock the corrected staggered-inception semantics: a
-// constituent that joins (or leaves) the aggregate value spine mid-window has its
-// pre-debut funding (or closure drain) SUBSUMED by the synthetic onboarding (or
-// closure) amount, never double-counted. The pre-fix bug only surfaced when the
-// funding landed OUTSIDE the ±3-day fundingNear window — pension/3a accounts
-// funded months before their month-end debut snapshot — so every fixture below
-// dates the real funding well before debut. All data synthetic (CLAUDE.md §4).
+// These regression tests lock the staggered-inception semantics: a constituent
+// that joins (or leaves) the aggregate value spine mid-window has its pre-debut
+// funding (or closure drain) SUBSUMED by the synthetic onboarding (or closure)
+// amount, never double-counted. Subsumption (subsumesAtDebut / subsumesAtClosure
+// in returns_compute.go) covers the whole pre-debut region at any distance from
+// debut — an account fed by month-end snapshots can be funded months before its
+// first one — so every fixture below dates the real funding well before debut, far outside
+// the ±nettingWindowDay transfer-netting window. All data synthetic (CLAUDE.md §4).
 
 // netFlowOf returns the summary row's net_flow as a float for an entity.
 func netFlowOf(t *testing.T, rows []ReturnRow, entity string) float64 {
@@ -32,7 +33,7 @@ func netFlowOf(t *testing.T, rows []ReturnRow, entity string) float64 {
 
 // TestStaggeredPreDebutDepositSubsumed: a late constituent funded
 // by an external deposit dated MONTHS before its first month-end snapshot. The
-// deposit (outside the old ±3-day dedup window) must be subsumed by onboarding,
+// deposit (outside the ±nettingWindowDay netting window) must be subsumed by onboarding,
 // not counted on top of it, and the aggregate TWR must come out sane/positive
 // rather than driven below −100% by a pre-spine deposit booked against ΔV≈0.
 func TestStaggeredPreDebutDepositSubsumed(t *testing.T) {

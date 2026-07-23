@@ -86,6 +86,9 @@ from collectorkit import cli, debugcap, docdedup, session as ck_session
 # on, so the download-avoidance mode is chosen off the exact label load reads
 # figures from (a parsed kind can never be mis-linked). See _document_class.
 from load import doc_kind_from_filename
+# The one state-file → cookie-jar rehydrator; login.py owns the state
+# file's schema, so its reader is imported rather than duplicated.
+from login import state_into_jar
 
 BASE = "https://portal.pens-expert.ch"
 PROBE = f"{BASE}/auth/rest/protected/self-service/ui/configuration/portal"
@@ -162,18 +165,6 @@ logger = logging.getLogger("download")
 
 def load_state(path: Path) -> dict[str, Any] | None:
     return ck_session.load_state(path)
-
-
-def state_into_jar(state_cookies: list[dict[str, Any]], jar) -> None:
-    for c in state_cookies:
-        jar.set(
-            c["name"], c["value"],
-            domain=c.get("domain"),
-            path=c.get("path", "/"),
-            secure=c.get("secure", False),
-            expires=c.get("expires"),
-            rest=c.get("rest", {}),
-        )
 
 
 def new_session_from_state(
@@ -1095,7 +1086,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # bounds the iteration; documents are filtered client-side, since
     # the /middlelayer/v2/documents listing has no server-side date
     # filter (do_download applies it to each entry's createDate in
-    # fetch_documents() — see DESIGN §11). There is deliberately no
+    # fetch_documents() — see DESIGN §4.2). There is deliberately no
     # explicit-year escape hatch: a second window knob is what let a
     # bare year silently override the resolved window.
     cli.add_standard_args(p, verb="download")

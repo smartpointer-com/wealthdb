@@ -18,8 +18,9 @@ from __future__ import annotations
 # Where login.py lands. The header of this page embeds a
 # `#schwablmslogin` iframe carrying the actual login form (gateway
 # SPA at sws-gateway-nr.schwab.com). The form is pre-filled via
-# frame_locator; Log In and the Symantec VIP challenge are then
-# satisfied by hand over VNC.
+# frame_locator; Log In and the 2FA challenge are then satisfied
+# via the CLI-MFA stdin prompt by default (by hand over VNC as
+# the fallback).
 MARKETING_HOMEPAGE = "https://www.schwab.com/"
 
 # `id` of the login iframe on the marketing homepage.
@@ -36,7 +37,7 @@ PASSWORD_INPUT_ID = "passwordInput"
 LOGIN_BUTTON_ID = "btnLogin"
 LOGIN_BUTTON_TEXT = "Log In"
 
-# Symantec VIP / 2FA code entry. After the Log In click, a top-level
+# 2FA code entry. After the Log In click, a top-level
 # page on sws-gateway-nr.schwab.com is served with a code
 # input and a Continue button. Schwab has shipped at least two ids
 # for the input (`securityCode` and the older `txt-token`), and the
@@ -46,7 +47,7 @@ LOGIN_BUTTON_TEXT = "Log In"
 # A DOM snapshot is logged on miss so the selector list can be
 # narrowed across iterations.
 MFA_CODE_INPUT_CANDIDATES = (
-    # Current observation (Symantec VIP "Confirm Your Identity"
+    # Current observation ("Confirm Your Identity" 2FA
     # page): input id="placeholderCode" — named after the gateway
     # SPA's #/placeholder route. type="number" maxlength="6".
     "#placeholderCode",
@@ -147,16 +148,13 @@ PAGINATION_NEXT_LINK_ID = "pagination-next-link"
 PAGINATION_HIDDEN_LI_CLASS = "sdps-hide"
 
 # Date-range filter. <select id="date-range-select-id"> with the
-# preset <option value="..."> values below. The Schwab UI defaults
-# to "Last3Months" in the live SPA even though the saved-state HTML
-# snapshot in samples/ shows "Last10Years" selected — so we
-# explicitly drive select_option rather than trusting the default.
-# Both pages share the custom mode under the value
-# "SpecifyDateRange" (rendered label "Custom date range");
-# download.fill_custom_date_range drives the two datepickers a live
-# probe sampled. The saved-state sample's "Custom" value is gone from
-# the live page — the option set below is the live 2026-07 probe's,
-# which also carries month/year presets the sample predated.
+# preset <option value="..."> values below, as observed in the
+# live SPA. The UI defaults to "Last3Months", but a session can
+# land with a different value pre-selected — so select_option is
+# driven explicitly rather than trusting the default. Both pages
+# share the custom mode under the value "SpecifyDateRange"
+# (rendered label "Custom date range");
+# download.fill_custom_date_range drives its two datepickers.
 DATE_RANGE_SELECT_ID = "date-range-select-id"
 DATE_RANGE_VALUES = (
     "Today",
@@ -198,12 +196,6 @@ TX_DATE_RANGE_VALUES = (
     "Last6Months", "CurrentYear", "PreviousYear",
     "All", "SpecifyDateRange",
 )
-# Schwab's tx-history option set doesn't include a "Last3Months"
-# preset — the closest larger preset is "Last6Months". We use it
-# as the default to stay roughly aligned with the Statements
-# 3-month default; "All" is available for a full backfill.
-TX_DATE_RANGE_DEFAULT = "Last6Months"
-
 # Tx-history applies date-range / symbol filters via a Search
 # button (NOT an Apply button — that's only inside the
 # type-filter modal, which we don't currently drive).
@@ -216,7 +208,6 @@ TX_SEARCH_BUTTON_ID = "lbl_search-button"
 # fetch. The modal offers a choice of format (CSV/JSON/XML); all
 # three are captured — load ingests the JSON (it adds AcctgRuleCd),
 # CSV/XML stay as opaque documents.
-TX_EXPORT_MODAL_TITLE = "Export Transactions Data"
 TX_EXPORT_FORMATS = (
     # (display_label, radio_input_id, on-disk extension)
     ("Csv",  "input-csv",  "csv"),

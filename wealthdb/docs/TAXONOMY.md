@@ -63,7 +63,7 @@ data or history captured before the split.
 | `convertible_note` | Convertible note or SAFE | pre-conversion; converts to `stock` or writes to zero |
 | `loan` | Bilateral private loan | |
 | `option` | Option-shaped claim | listed options, employee options, warrants, FX options |
-| `future` | Listed future | enum-supported; none currently held |
+| `future` | Listed future | enum-supported; no adapter emits it yet |
 | `forward` | OTC forward | FX forwards |
 | `time_deposit` | Term-locked cash placement | time / fiduciary deposits, money-market contracts |
 | `demand_deposit` | On-demand account cash | plain cash balances, used where views union cash into allocation |
@@ -123,9 +123,10 @@ needed real classification logic; every other mapping is mechanical.
    bucket.
 5. **Warrants → `option`, RSUs → `stock`** — no dedicated vehicles
    until a use case demands the split.
-6. **`metal`, not `commodity`** — every observed holding is a
-   precious metal. A broad-commodities product would prompt either a
-   rename or a sibling `commodity` class.
+6. **`metal`, not `commodity`** — the metal holdings the sources
+   surface are precious metals, and `metal` names the class without
+   implying broad commodity exposure. A broad-commodities product
+   would prompt either a rename or a sibling `commodity` class.
 7. **Blends/target-date → `multi_asset`; absolute-return/long-short
    → `hedge_fund`.**
 8. **Money-market funds are `cash`**, not fixed income.
@@ -133,9 +134,9 @@ needed real classification logic; every other mapping is mechanical.
    at-sight account cash vs term-locked placements.
 10. **Convertible notes default to `private_debt`, but the pair
     `private_equity × convertible_note` is admitted** for notes that
-    are economically equity — e.g. a 0%-interest pre-seed note with no
-    repayment expectation, which either converts in the next round or
-    writes to zero. Adapters keep emitting `private_debt` (the legal
+    are economically equity — e.g. a hypothetical 0%-interest pre-seed
+    note with no repayment expectation, which either converts in the
+    next round or writes to zero. Adapters keep emitting `private_debt` (the legal
     form); an `instrument_overrides` entry pins the exposure to
     `private_equity` per holding.
 

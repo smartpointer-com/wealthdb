@@ -514,7 +514,7 @@ field. Both endpoints that touch accounts were probed exhaustively:
 |---|---|
 | `GET /trader/v1/accounts` and `/accounts/{hash}`, with or without `fields=…` | No. The `securitiesAccount.type` field is one of {`CASH`, `MARGIN`} — that is *margin enablement*, not tax treatment. The 9 returned keys are `accountNumber`, `type`, `roundTrips`, `isDayTrader`, `isClosingOnlyRestricted`, `pfcbFlag`, plus three balance blocks. Trying undocumented projections (`accountSubType`, `registrationType`, `type2`, `registration`, `all`, …) yields the same 9 keys; unknown projection values are silently ignored. |
 | `GET /trader/v1/accounts/accountNumbers` | No. Just `{accountNumber, hashValue}`. |
-| `GET /trader/v1/userPreference` per-account entry | The structured `type` field is `BROKERAGE` for every account — useless for discrimination. The only wrapper signal is the **`nickName`** free-text field. |
+| `GET /trader/v1/userPreference` per-account entry | The structured `type` field returns `BROKERAGE` — useless for discrimination. The only wrapper signal is the **`nickName`** free-text field. |
 
 The silver `accounts` table already promotes `nickName` as a real
 column (`nickname`, populated by `_build_account_metadata` from

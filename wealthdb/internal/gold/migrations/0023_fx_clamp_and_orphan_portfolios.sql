@@ -12,7 +12,7 @@
 --    account to the bucket named by its portfolio_external_id, but only the
 --    portfolios-table rows (+ a '' sentinel for NULL-portfolio accounts) were
 --    real buckets — so an account whose portfolio_external_id is set but absent
---    from the portfolios table (e.g. the UBS mortgage) was silently dropped from
+--    from the portfolios table (e.g. a mortgage account) was silently dropped from
 --    the rollup, making portfolios != accounts. Route those orphans to the same
 --    '' catch-all the NULL-portfolio accounts use.
 

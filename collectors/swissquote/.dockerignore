@@ -30,7 +30,6 @@ venv/
 # Documentation that the image doesn't need at runtime
 README.md
 CLAUDE.md
-DESIGN.md
 
 # Credentials and downloaded data — must never enter the image
 *.pem

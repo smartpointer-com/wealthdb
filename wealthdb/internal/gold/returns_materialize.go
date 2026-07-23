@@ -226,7 +226,7 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 // (snapshot days, source kinds, portfolio names, fx) are read once and shared.
 // The per-currency result is bit-identical to loadReturnsDataset(ccy).
 func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds) (map[string]*returnsDataset, error) {
-	kinds, err := loadSourceKinds(ctx, db)
+	kinds, err := SourceKinds(ctx, db)
 	if err != nil {
 		return nil, err
 	}

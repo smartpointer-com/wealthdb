@@ -28,10 +28,11 @@
 -- live and historical tables in its time-dispatch query, then
 -- emits one canonical `SnapshotBatch` per distinct snapshot_at.
 -- For dates that have only historical coverage (every quarter-end
--- before 2026-05-27), this is the only source of position +
--- cash data — and gold's `report_positions(p_asof)` /
+-- before the first live dump), this is the only source of
+-- position + cash data — and gold's `report_positions(p_asof)` /
 -- `report_portfolios(p_asof)` will pick the latest snapshot_at
--- <= p_asof per silver_source, which now extends back to Q2 2025.
+-- <= p_asof per silver_source, which extends back to the
+-- earliest quarterly report in bronze.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;

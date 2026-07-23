@@ -9,7 +9,7 @@ to the canonical /secrets location instead of requiring it.
 Also covers --debug, the gate on the bronze-resident landmark captures.
 Its payload runs inside run()'s live Playwright session, so what is
 asserted here is the surface: the flag parses, defaults off, and its
-help still promises captures rather than the warn-only stub it replaced.
+help promises captures.
 
 Run from the repo root inside the container:
     python3 -m unittest discover tests

@@ -274,8 +274,7 @@ func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 // reappear on the next dump as proper rows.
 //
 // `asset_class`, `currency`, and `is_core_position` are all
-// promoted columns on silver (added by the maintainer after the
-// first adapter review); the adapter relies on them directly
+// promoted columns on silver; the adapter relies on them directly
 // rather than re-deriving from instrument_key + description.
 func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-

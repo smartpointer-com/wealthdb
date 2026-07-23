@@ -15,7 +15,7 @@ playwright==1.59.0
 xlrd==1.2.0
 
 # pypdf is used by load.py to extract position snapshots from
-# Account Statement / Portfolio performance PDFs.
+# Portfolio performance PDFs.
 pypdf==5.1.0
 
 # pytest is bundled in the image so tests can be run inside the

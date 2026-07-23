@@ -12,6 +12,15 @@ This file covers what's **common** to all collectors. Each
 subdirectory's own `README.md` covers only what's specific to that
 source (its auth method, what it produces, its quirks).
 
+> [!WARNING]
+> Collectors hold **fully privileged financial-account
+> credentials**, and the browser-driven ones **impersonate a human
+> user**. Before configuring any credential, read the security &
+> liability disclaimer in the [repo README](../README.md) and in
+> the README of each collector you intend to use. Use requires a
+> prior independent security audit and is entirely at your own
+> risk; SmartPointer AG accepts no liability.
+
 ## The lifecycle
 
 Every collector exposes the same three steps:
@@ -62,7 +71,7 @@ session cookie.
 
 ```
 $XDG_DATA_HOME/wealthdb/<source>/
-├── 20260528T104753Z/      one bronze dump per run (UTC timestamp)
+├── 20260101T120000Z/      one bronze dump per run (UTC timestamp)
 │   └── …                  raw artefacts
 └── <source>.db            silver SQLite
 ```

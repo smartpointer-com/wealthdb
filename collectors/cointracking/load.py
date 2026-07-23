@@ -236,10 +236,12 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
     ).fetchone()[0]
 
 
-# run.json status values that mark a run dir as NOT a finished dump:
-# an "in-progress" marker left by a crashed walk, or a "dry-run" shell.
-# A run whose status is any of these is kept out of the silver load so
-# partial captures never reach gold; `prune` reclaims such dirs.
+# run.json status values that mark a run dir as NOT a finished dump.
+# "in-progress" is left by a crashed walk; "dry-run" is defensive
+# (download --dry-run materialises no run dir, so the value is never
+# actually written). A run whose status is any of these is kept out of
+# the silver load so partial captures never reach gold; `prune`
+# reclaims such dirs.
 NON_COMPLETE_STATUSES = ("in-progress", "dry-run")
 
 
@@ -1103,9 +1105,9 @@ def fetch_fx_rates(
     the crypto fetcher (missing = ON CONFLICT DO NOTHING +
     re-fetch latest; full = TRUNCATE + re-insert).
 
-    ECB doesn't publish weekend rates. Gaps for Saturday/Sunday
-    and ECB holidays are LEFT — the gold layer is expected to
-    forward-fill (standard FX-rate convention).
+    ECB doesn't publish weekend rates; the client forward-fills
+    across weekends and ECB holidays (standard FX-rate
+    convention), so every held day carries a rate.
 
     Returns (fiats_fetched, prices_written)."""
     if mode not in ("missing", "full"):

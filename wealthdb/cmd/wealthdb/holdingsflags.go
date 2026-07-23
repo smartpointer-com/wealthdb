@@ -13,9 +13,8 @@ import (
 // holdingsFlagSpec parameterises the shared readout-flag registration
 // and validation for the holdings subcommands (positions / accounts /
 // portfolios / sources / global). The per-command flag help text and
-// validation-prefix wording is passed in explicitly (not derived) so
-// each command's user-facing strings stay byte-for-byte what they
-// were before the shared helper.
+// validation-prefix wording is passed in explicitly per command, not
+// derived.
 type holdingsFlagSpec struct {
 	cmd           string // error-prefix and validation-message command name
 	currencyUsage string // -x short-flag help text
@@ -71,9 +70,9 @@ type holdingsValues struct {
 }
 
 // resolve validates the parsed flags (output format, as-of date),
-// loads the config, and resolves the output currency — in the exact
-// order and with the exact error-prefix strings the commands used
-// inline. Call after fs.Parse.
+// loads the config, and resolves the output currency — prefixing
+// errors with the command name passed in the spec. Call after
+// fs.Parse.
 func (hf *holdingsFlags) resolve(g globalFlags) (holdingsValues, error) {
 	spec := hf.spec
 

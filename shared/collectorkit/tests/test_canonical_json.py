@@ -1,7 +1,7 @@
 """Equivalence tests for collectorkit.silver.canonical_json.
 
-WI P12 unified the compact-JSON serializers that several loaders each defined
-locally. The migrated loaders (schwab-api, ubs-psn, equityzen) used the
+The shared helper unified the compact-JSON serializers that several loaders
+each defined locally. The migrated loaders (schwab-api, ubs-psn, equityzen) used the
 `ensure_ascii`-defaulting-True variant with `default=str`; adopting the shared
 helper is only sound if `silver.canonical_json(obj, ascii=True)` reproduces
 their output byte-for-byte. These tests pin that against inlined copies of the
