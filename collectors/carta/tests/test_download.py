@@ -20,6 +20,10 @@ carta mode mapping:
   * _tally routes an unmapped outcome to 'other', never inflating 'fetched';
   * --documents-force bypasses the cross-run index.
 
+Also covers the cap-table access gate: a holder the dashboard reports as
+having no cap-table access skips the cap-table-only endpoints entirely
+(no request, no recorded error).
+
 Synthetic ids / labels / bytes only — no real document ids, fund/company names,
 or figures.
 """
@@ -602,3 +606,60 @@ def test_debug_captures_landing_even_when_id_unresolved(tmp_path):
     with pytest.raises(RuntimeError):
         download.run(_FakeContext(page, _ROUTES), args, run_dir, 0, run_dir)
     assert _captures(run_dir) == {"10-landing.html", "10-landing.png"}
+
+
+# ---- cap-table access gate --------------------------------------------------
+# A holder without cap-table access (captable_access_level "no access", e.g.
+# a SAFE-only stake) gets a permanent 403 from the cap-table-only endpoints;
+# the walk must skip them (INFO, no recorded error) rather than request them.
+
+def test_captable_accessible_no_access_skips():
+    assert download._captable_accessible(
+        {"captable_access_level": "no access"}) is False
+
+
+def test_captable_accessible_fetches_otherwise():
+    # Any other level, a missing key, an unreadable dashboard, or schema
+    # drift keeps the fetch-and-see behaviour.
+    assert download._captable_accessible(
+        {"captable_access_level": "summary cap table"}) is True
+    assert download._captable_accessible({}) is True
+    assert download._captable_accessible(None) is True
+    assert download._captable_accessible(["not", "a", "dict"]) is True
+
+
+class _RecordingApi:
+    """Stub Api: canned 200 bodies per URL substring, every request logged."""
+
+    def __init__(self, dashboard: dict):
+        self._dashboard = dashboard
+        self.urls: list[str] = []
+        self.errors: list[dict] = []
+
+    def get(self, url, *, expect="json"):
+        self.urls.append(url)
+        if "holdings-dashboard" in url:
+            return 200, self._dashboard
+        return 200, {"rows": []}
+
+
+def _walk_captable(tmp_path, dashboard):
+    api = _RecordingApi(dashboard)
+    n_vest, captable_ok = download.capture_captable(
+        api, "111", "222", tmp_path / "corp_222")
+    return api, n_vest, captable_ok
+
+
+def test_captable_no_access_never_requests_gated_endpoints(tmp_path):
+    api, n_vest, captable_ok = _walk_captable(
+        tmp_path, {"captable_access_level": "no access"})
+    assert captable_ok is False and n_vest == 0
+    assert not [u for u in api.urls if "post-money-list" in u]
+    assert api.errors == []
+
+
+def test_captable_with_access_requests_post_money(tmp_path):
+    api, n_vest, captable_ok = _walk_captable(
+        tmp_path, {"captable_access_level": "summary cap table"})
+    assert captable_ok is True and n_vest == 0
+    assert [u for u in api.urls if "post-money-list" in u]

@@ -269,12 +269,26 @@ def capture_exercises(api: Api, corp_id: str, grant_ids: set[str],
     return n
 
 
+def _captable_accessible(hd) -> bool:
+    """Whether the holder can read the corporation's cap-table endpoints
+    (post-money-list, overview-captable summary). The holdings dashboard
+    reports `captable_access_level`; the explicit "no access" value (e.g. a
+    SAFE-only stake without cap-table visibility) means those endpoints
+    return a permanent 403 — an authorization boundary, not an error, so
+    the walk skips them. Any other value, a missing key, or an unreadable
+    dashboard keeps the fetch-and-see behaviour."""
+    return not (isinstance(hd, dict)
+                and hd.get("captable_access_level") == "no access")
+
+
 def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
-                     *, is_fund: bool = False) -> int:
+                     *, is_fund: bool = False) -> tuple[int, bool]:
     """Fetch the per-corporation holdings dashboard + every security-type
-    list, then the vesting schedule for each grant that has one. Returns the
-    number of grant vesting files written. is_fund skips post-money-list (a
-    cap-table-only endpoint that 403s for fund entities)."""
+    list, then the vesting schedule for each grant that has one. Returns
+    (number of grant vesting files written, cap-table accessible). The
+    cap-table-only endpoints are skipped when they can only 403: for fund
+    entities (is_fund) and for holders the dashboard reports as having no
+    cap-table access (_captable_accessible)."""
     # Per-corporation summary (held_since / ownership / cost) — distinct from
     # the {rows, totals} security lists below.
     _, hd = api.get(
@@ -282,6 +296,10 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
         f"/corporation/{corp_id}/holdings-dashboard/")
     if hd is not None:
         write_json(edir / "holdings-dashboard.json", hd)
+    captable_ok = _captable_accessible(hd)
+    if not captable_ok:
+        log.info("  no cap-table access — skipping post-money-list + "
+                 "captable summary (they 403 for this holder)")
 
     grant_ids: set[str] = set()
     for kind in SECURITY_TYPES:
@@ -297,7 +315,7 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
                 if row.get("has_vesting") and row.get("id") is not None:
                     grant_ids.add(str(row["id"]))
 
-    if not is_fund:
+    if not is_fund and captable_ok:
         _, pml = api.get(f"{APP}/api/corporations/{corp_id}/post-money-list/")
         if pml is not None:
             write_json(edir / "post-money-list.json", pml)
@@ -311,7 +329,7 @@ def capture_captable(api: Api, iid: str, corp_id: str, edir: Path,
             n_vest += 1
     if not is_fund:
         capture_exercises(api, corp_id, grant_ids, edir)
-    return n_vest
+    return n_vest, captable_ok
 
 
 def capture_captable_summary(api: Api, firm_id: str, entity_id: str,
@@ -627,15 +645,16 @@ def run(context, args, run_dir: Path, snapshot_at: int,
         if corp_id is None:
             continue
         # Holdings dashboard + security-type lists. Works for both families;
-        # a fund just returns empty security lists. is_fund skips the
-        # cap-table-only endpoints (post-money / captable summary) that 403
-        # for funds.
-        n_vest = capture_captable(api, iid, str(corp_id), edir, is_fund=is_fund)
+        # a fund just returns empty security lists. The cap-table-only
+        # endpoints (post-money / captable summary) are skipped where they
+        # can only 403: fund entities, and holders without cap-table access.
+        n_vest, captable_ok = capture_captable(api, iid, str(corp_id), edir,
+                                               is_fund=is_fund)
         if n_vest:
             log.info("  %d grant vesting schedule(s)", n_vest)
         if is_fund:
             capture_fund(api, iid, str(corp_id), edir)
-        else:
+        elif captable_ok:
             capture_captable_summary(api, firm_id, str(corp_id), edir)
 
     # Cross-run document download-avoidance index: rebuilt statelessly from the

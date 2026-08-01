@@ -58,9 +58,13 @@ PASS_ENV = "CARTA_PASSWORD"
 DEFAULT_PROFILE_DIR = Path("/secrets/carta-profile")
 DEFAULT_ENV_FILE = Path("/secrets/carta.env")
 
-# Login-form selectors. The email/password heuristic is the same one the
-# explore harness's pre-fill matched on Carta's form. The 2FA + submit ids
-# are the concrete ids observed in the explore click log.
+# Login-form selectors, matched to the two-step flow observed 2026-08-01:
+# step 1 takes the email (#username) behind #email-next-btn, step 2 renders
+# #email-display + #password behind #password-continue-btn — and neither
+# button is type=submit. The field selectors keep the generic fallbacks so
+# a single-step variant of the form still matches; on drift the error
+# paths dump a page_summary. The 2FA ids are the concrete ids from the
+# explore click log (pre-dating the two-step flow; unverified against it).
 USER_SELECTOR = (
     "input[type='email'], "
     "input[autocomplete='username'], "
@@ -70,7 +74,8 @@ USER_SELECTOR = (
     "input[name*='login' i]"
 )
 PWD_SELECTOR = "input[type='password']"
-LOGIN_BTN_SELECTOR = "#login-btn, button[type='submit']"
+EMAIL_NEXT_SELECTOR = "#email-next-btn"
+LOGIN_BTN_SELECTOR = "#password-continue-btn, button[type='submit']"
 CODE_2FA_SELECTOR = (
     "#two-factor-code-input, "
     "input[autocomplete='one-time-code'], "
@@ -96,6 +101,32 @@ def prompt_for_2fa() -> str:
     sys.stderr.write("=" * 60 + "\n")
     sys.stderr.flush()
     return line.strip()
+
+
+def page_summary(page) -> str:
+    """Compact page fingerprint for error messages: URL, title, and the
+    visible input/button inventory. Enough to tell a bot-detection
+    interstitial from a markup change in a headless failure log, without
+    dumping raw HTML."""
+    try:
+        parts = page.evaluate(
+            """() => {
+              const vis = el => el.offsetWidth || el.offsetHeight;
+              return {
+                title: document.title,
+                inputs: [...document.querySelectorAll('input')].filter(vis)
+                  .map(el => el.type + (el.id ? '#' + el.id : '')),
+                buttons: [...document.querySelectorAll('button')].filter(vis)
+                  .map(el => (el.id ? '#' + el.id : '<' + el.type + '>')
+                       + JSON.stringify((el.textContent || '')
+                                        .trim().slice(0, 25))),
+              };
+            }"""
+        )
+        return (f"Current URL: {page.url}; title {parts['title']!r}; "
+                f"visible inputs {parts['inputs']}; buttons {parts['buttons']}")
+    except Exception as exc:
+        return f"Current URL: {page.url} (page inspection failed: {exc!r})"
 
 
 def is_authenticated(page) -> bool:
@@ -144,19 +175,34 @@ def login(page, email: str, password: str) -> None:
 
     log.info("waiting for the login form")
     try:
-        page.wait_for_selector(PWD_SELECTOR, state="visible", timeout=30_000)
+        page.wait_for_selector(f"{USER_SELECTOR}, {PWD_SELECTOR}",
+                               state="visible", timeout=30_000)
     except Exception:
         raise RuntimeError(
-            f"login form did not appear. Current URL: {page.url}. Carta may "
+            f"login form did not appear. {page_summary(page)}. Carta may "
             f"be showing a Cloudflare interactive challenge or the markup "
             f"changed — re-run `./carta explore` to re-map."
         )
 
-    log.info("filling credentials")
-    page.locator(USER_SELECTOR).first.fill(email, timeout=10_000)
-    page.locator(PWD_SELECTOR).first.fill(password, timeout=10_000)
+    if page.locator(PWD_SELECTOR).count() == 0:
+        # Two-step flow: the email screen precedes the password screen.
+        log.info("submitting email (step 1 of 2)")
+        page.locator(USER_SELECTOR).first.fill(email, timeout=10_000)
+        page.locator(EMAIL_NEXT_SELECTOR).first.click(timeout=10_000)
+        try:
+            page.wait_for_selector(PWD_SELECTOR, state="visible",
+                                   timeout=25_000)
+        except Exception:
+            raise RuntimeError(
+                f"password step did not appear after the email submit. "
+                f"{page_summary(page)}"
+            )
+    elif page.locator(USER_SELECTOR).count() > 0:
+        # Single-step form: both fields on one screen.
+        page.locator(USER_SELECTOR).first.fill(email, timeout=10_000)
 
-    log.info("submitting login form")
+    log.info("filling password + submitting")
+    page.locator(PWD_SELECTOR).first.fill(password, timeout=10_000)
     page.locator(LOGIN_BTN_SELECTOR).first.click(timeout=10_000)
 
     # Wait for either the 2FA prompt OR a direct landing (device-trust still
@@ -169,10 +215,9 @@ def login(page, email: str, password: str) -> None:
         if is_authenticated(page):
             log.info("device-trust cookie valid; 2FA bypassed")
             return
-        body = page.content()[:1500].replace("\n", " ").strip()
         raise RuntimeError(
-            f"timed out waiting for the 2FA prompt. Current URL: {page.url}. "
-            f"Wrong credentials, or the login schema changed. Page head: {body}"
+            f"timed out waiting for the 2FA prompt. Wrong credentials, or "
+            f"the login schema changed. {page_summary(page)}"
         )
 
     code = prompt_for_2fa()
@@ -219,10 +264,9 @@ def login(page, email: str, password: str) -> None:
             timeout=45_000,
         )
     except Exception:
-        body = page.content()[:1500].replace("\n", " ").strip()
         raise RuntimeError(
-            f"did not leave the login host after 2FA. Current URL: "
-            f"{page.url}. Likely an invalid 2FA code. Page head: {body}"
+            f"did not leave the login host after 2FA (likely an invalid "
+            f"code). {page_summary(page)}"
         )
 
     log.info("login successful — landed on %s", page.url.split("?")[0])

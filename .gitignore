@@ -2,3 +2,8 @@
 # Python bytecode caches
 __pycache__/
 *.pyc
+
+# Browser coredumps. The explore verbs live-mount the collector dir as the
+# container's /app cwd, so a crashing camoufox drops its core file into the
+# checkout. Never track one — it is a memory image of a logged-in browser.
+core

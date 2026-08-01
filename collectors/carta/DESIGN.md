@@ -157,9 +157,12 @@ ubs-psn.
 ## 3. Discovery via `explore`
 
 `explore.py` launches Camoufox in the container's Xvfb display, opens
-carta.com, and records the live session via three channels — HAR (the
-primary signal for the SPA's internal JSON/XHR endpoints; read it against
-the §2 map), Playwright trace (DOM + screenshots), and a `clicks.jsonl`
+carta.com, and records the live session via three channels — HAR +
+`network.jsonl` (the primary signal for the SPA's internal JSON/XHR
+endpoints; read it against the §2 map), a Playwright trace (DOM +
+screenshots; `--trace` opt-in — the pinned Playwright 1.49 tracer crashes
+the camoufox 152.0.4 browser build, so it stays off until the pair is
+realigned), and a `clicks.jsonl`
 click log (VNC clicks bypass Playwright's API). Artefacts land under
 `/debug/<UTC-ts>/`, never under `/data`. The persistent Camoufox profile
 carries the post-2FA session between runs. Re-run it whenever Carta moves
@@ -175,7 +178,12 @@ below. (No values reproduced here — PII.)
 
 - **Auth / infra.** Login at `login.app.carta.com/credentials/login/`
   (SPA), creds POSTed to `…/credentials/bff/login/`, 2FA verified at
-  `…/credentials/2fa/bff/verify_challenge`. **Cloudflare** Turnstile front
+  `…/credentials/2fa/bff/verify_challenge`. Since 2026-08 the form is
+  **two-step** (same URL, client-side step change): an email screen
+  (`#username`, `#email-next-btn`) then a password screen
+  (`#email-display`, `#password`, `#password-continue-btn`) — neither
+  button is `type=submit`, and the email step advances for any
+  well-formed address (no existence check). **Cloudflare** Turnstile front
   (`/cdn-cgi/challenge-platform/`, `challenges.cloudflare.com`) — Camoufox
   cleared it. Session kept alive via `app.carta.com/common/keep_alive/`.
   Third-party noise to ignore: cloudfront, statuspage.io, stonly,
@@ -280,8 +288,10 @@ legal name + fund name → slug on capture; never let them reach the repo.
 
 Mirrors the `cointracking` / `fidelity-web` pattern: launch a persistent
 browser context on `/secrets/carta-profile/`, navigate to Carta,
-short-circuit if a prior session is still valid, else fill credentials
-(`CARTA_USERNAME`, or the legacy `CARTA_EMAIL` / `CARTA_PASSWORD`), submit,
+short-circuit if a prior session is still valid, else walk the two-step
+form (§3: email screen, then password screen; a single-screen variant is
+also handled) with `CARTA_USERNAME` (or the legacy `CARTA_EMAIL`) /
+`CARTA_PASSWORD`, submit,
 read the 2FA code from stdin,
 tick any "trust this device" box, and `context.close()` to flush the
 session back to the profile. `--check` probes the dashboard and exits 0/1
