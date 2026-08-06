@@ -20,12 +20,14 @@ func cmdSnapshots(ctx context.Context, g globalFlags, subargs []string, _ io.Rea
 	fs := flag.NewFlagSet("wealthdb snapshots", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("a", false, "list snapshots for every registered silver source")
+	latest := fs.Bool("latest", false, "print only the newest snapshot per source")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, `usage: wealthdb snapshots <silver_source_id> | -a
+		fmt.Fprintln(stderr, `usage: wealthdb snapshots <silver_source_id> | -a  [--latest]
 
 List every distinct snapshot_at that gold has data for under the
 given silver source (or under every configured silver with -a).
-Oldest first, formatted YYYY-MM-DD.
+Oldest first, formatted YYYY-MM-DD. With --latest, only the newest
+snapshot line per source is printed.
 
 Useful for "I expected to see a snapshot from yesterday and I
 don't" debugging.`)
@@ -84,36 +86,43 @@ don't" debugging.`)
 		if err != nil {
 			return err
 		}
-		if len(times) == 0 {
-			fmt.Fprintf(stdout, "%-*s  (no snapshots)\n", idWidth, id)
-			continue
-		}
-		// Group by calendar date — multiple intra-day dumps
-		// (common when reloading bronze) compress to a single
-		// line with a (×N) suffix. For sub-day forensics, use
-		// `wealthdb status <id>` instead.
-		var prevDate string
-		var count int
-		emit := func() {
-			if prevDate == "" {
-				return
-			}
-			if count > 1 {
-				fmt.Fprintf(stdout, "%-*s  %s (×%d)\n", idWidth, id, prevDate, count)
-			} else {
-				fmt.Fprintf(stdout, "%-*s  %s\n", idWidth, id, prevDate)
-			}
-		}
-		for _, t := range times {
-			d := formatDate(t)
-			if d == prevDate {
-				count++
-				continue
-			}
-			emit()
-			prevDate, count = d, 1
-		}
-		emit()
+		printSnapshotDates(stdout, idWidth, id, times, *latest)
 	}
 	return nil
+}
+
+// printSnapshotDates emits the per-day snapshot lines for one
+// source. times is oldest-first (gold.ListSnapshotTimes order) and
+// grouped by calendar date — multiple intra-day dumps (common when
+// reloading bronze) compress to a single line with a (×N) suffix.
+// For sub-day forensics, use `wealthdb status <id>` instead. With
+// latestOnly, only the newest day's line is printed.
+func printSnapshotDates(stdout io.Writer, idWidth int, id string, times []int64, latestOnly bool) {
+	if len(times) == 0 {
+		fmt.Fprintf(stdout, "%-*s  (no snapshots)\n", idWidth, id)
+		return
+	}
+	type day struct {
+		date  string
+		count int
+	}
+	var days []day
+	for _, t := range times {
+		d := formatDate(t)
+		if n := len(days); n > 0 && days[n-1].date == d {
+			days[n-1].count++
+			continue
+		}
+		days = append(days, day{date: d, count: 1})
+	}
+	if latestOnly {
+		days = days[len(days)-1:]
+	}
+	for _, d := range days {
+		if d.count > 1 {
+			fmt.Fprintf(stdout, "%-*s  %s (×%d)\n", idWidth, id, d.date, d.count)
+		} else {
+			fmt.Fprintf(stdout, "%-*s  %s\n", idWidth, id, d.date)
+		}
+	}
 }

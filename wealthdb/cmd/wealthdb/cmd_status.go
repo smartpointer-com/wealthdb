@@ -101,7 +101,7 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 	}
 
 	fmt.Fprintf(stdout, "%s [%s] %s\n", id, st.Kind, st.Path)
-	fmt.Fprintf(stdout, "  high_watermark:  %d%s\n", st.HighWatermark, advancedHint)
+	fmt.Fprintf(stdout, "  high_watermark:  %s%s\n", formatWatermark(st.HighWatermark), advancedHint)
 	fmt.Fprintf(stdout, "  first_loaded:    %s\n", formatDateTime(st.FirstLoadedAt))
 	fmt.Fprintf(stdout, "  last_loaded:     %s\n", formatDateTime(st.LastLoadedAt))
 	fmt.Fprintln(stdout, "  gold-side counts:")
@@ -178,8 +178,8 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.MissingVehicleCount)
 	}
 
-	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%d%s%s\n",
-		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, st.HighWatermark,
+	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%s%s%s\n",
+		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatWatermark(st.HighWatermark),
 		advanced, driftHint)
 }
 
@@ -240,4 +240,16 @@ func formatRange(oldest, latest int64) string {
 // audit/registration timestamps.
 func formatDateTime(epoch int64) string {
 	return time.Unix(epoch, 0).UTC().Format("2006-01-02 15:04:05Z")
+}
+
+// formatWatermark renders a stored change-number watermark as
+// "<epoch> (<UTC datetime>)". Change numbers are Unix seconds by
+// contract (canonical.Status — every adapter reports its newest
+// dump/snapshot time), so the datetime form is always meaningful;
+// non-positive values (sentinel / never loaded) stay bare.
+func formatWatermark(w int64) string {
+	if w <= 0 {
+		return fmt.Sprintf("%d", w)
+	}
+	return fmt.Sprintf("%d (%s)", w, formatDateTime(w))
 }

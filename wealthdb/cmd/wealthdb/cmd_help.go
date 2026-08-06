@@ -32,7 +32,7 @@ var helpText = map[string]string{
 	"sources":         "Roll each silver source's accounts into one row (-x CCY, -d date, -C cols).",
 	"global":          "Roll the whole portfolio into a single total row (-x CCY, -d date).",
 	"status":          "Report gold state vs each silver source (-v for taxonomy drift counts).",
-	"snapshots":       "List snapshots gold has loaded for a silver source (-a for all).",
+	"snapshots":       "List snapshots gold has loaded for a silver source (-a for all, --latest for newest only).",
 	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.symbol_resolution.model.",
 	"resolutions":     "Dump the symbol_resolutions table (LLM-derived + manual-override tickers).",
 	"version":         "Print the wealthdb version.",
