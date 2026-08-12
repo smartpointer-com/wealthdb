@@ -67,16 +67,30 @@ sample drops shared for debugging):
 - Real session cookies / bearer tokens / MFA codes.
 - Any source-returned data: balances, allocations, transactions,
   fees, holdings, document IDs, fund weights.
+- **The account roster / composition** — which accounts or products a
+  real login holds, how many, their types, or the *absence* of one, and
+  how many contact points (phone/email) are on file. This is
+  source-returned data **even in aggregate** and **even when written as
+  scope rationale or a capture note** — the trap is that it reads like
+  design context, not data. State a collector's scope by the account
+  *kinds* it handles ("deposit accounts: checking and savings; cards out
+  of scope"), never by what a real login was observed to contain. (Do not
+  reproduce a real roster even as a "forbidden example" — describe the
+  shape, not the specifics.)
 
 Fine to use: bank names, widely-held example tickers (SPX / QQQ /
-VTI), and IBAN-spec placeholder letters (`CH<chk><BBBB><RRRR>…`).
-Synthetic examples only — never copy a real account ID into an
-example, even in a comment.
+VTI), IBAN-spec placeholder letters (`CH<chk><BBBB><RRRR>…`), and a
+collector's scope stated as the account *kinds* it handles (a
+capability, not a roster). Synthetic examples only — never copy a
+real account ID into an example, even in a comment.
 
 **Pre-commit:** grep the staged diff for known real values
-*before* the first `git add`, not after. When the user pastes a
-captured response or log fragment in chat, strip identifiers
-before committing anything derived from it. When in doubt, ask.
+*before* the first `git add`, not after — **and** re-read added
+comments/docs for the roster/composition prose above, which no
+value-grep catches (any statement of account counts, product types
+present or absent, or contact points on file). When the user pastes a
+captured response or log fragment in chat, strip identifiers before
+committing anything derived from it. When in doubt, ask.
 
 ## 5. Git & commit conventions
 
