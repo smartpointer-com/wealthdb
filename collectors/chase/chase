@@ -1,0 +1,99 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the chase container. Mounts
+# ~/.secrets/ (RW; persistent Camoufox profile + env file), the bronze
+# tree (RW), and a /debug dir for explore-phase artefacts. Single-writer:
+# the session cookie + 2FA prompts can't tolerate concurrent invocations,
+# and the safety guard refuses to evict a container hosting a live VNC
+# session.
+#
+# `download` is a one-shot login + scrape with 2FA driven from the terminal
+# (no VNC): Chase invalidates the session on Firefox close and challenges
+# 2FA every time, so login + scrape share one Firefox lifetime — DESIGN.md
+# §F. `vnc-login` is the fallback that exposes VNC for a by-hand 2FA.
+# `login` folds into download; `load` / `prune` are pure Python. `explore`
+# is the retained discovery harness. `explore` and `vnc-login` forward a
+# free 5900-6000 host port for the VNC handoff.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+
+set -euo pipefail
+
+NAME=chase
+ENV_PREFIX=CHASE
+ENV_VARS=(CHASE_USERNAME CHASE_PASSWORD)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
+HAS_VNC=1           # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
+
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+    cat <<EOF
+chase — host wrapper
+
+Read-only scraper for the Chase retail deposit relationship (checking /
+savings). \`download\` is a one-shot login + scrape over VNC; \`load\`
+builds the SQLite silver. See DESIGN.md "Observed" for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (\`docker build\`).
+  download [args...]  One-shot login + scrape with 2FA driven from the
+                      TERMINAL (no VNC): pre-fills + submits the sign-in
+                      form, prompts for the code on stdin (push / SMS /
+                      voice), then exports each deposit account's activity
+                      (CSV + QFX) and statement PDFs into a UTC-stamped
+                      bronze run dir. --lookback bounds the window;
+                      --no-documents skips statements; --dry-run walks
+                      without exporting.
+  vnc-login [args...] Fallback for download when the CLI 2FA can't drive a
+                      challenge control: exposes VNC for a by-hand sign-in.
+  login [args...]     Folds into download (the session dies with Firefox,
+                      §F). \`login --check\` probes a session read-only
+                      (exit 0 alive / 1 dead).
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, statements). --force rebuilds from all
+                      bronze.
+  prune [args...]     Delete non-complete dumps from the bronze tree (runs
+                      host-side). --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / trace under /debug. --fresh wipes
+                      the profile so the next login forces a full 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+$(wrapper_mounts_help)
+
+Override mounts via env:
+  CHASE_SECRETS_DIR=/path/to/secrets
+  CHASE_DATA_DIR=/path/to/data
+  CHASE_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  CHASE_USERNAME / CHASE_PASSWORD are read from /secrets/chase.env inside
+  the container (= \$HOME/.secrets/chase.env on the host). chmod 0600.
+  The 2FA challenge is driven by hand in the VNC session.
+EOF
+    exit 0
+fi
+
+# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
+# container. Run it host-side like the other collectors so it bypasses the
+# single-writer safety guard and can reclaim disk while a download is
+# mid-flight (its own --min-age guard protects an in-flight dump). With
+# HAS_DEBUG=1 the wrapper also passes --debug-dir so the /debug cache is
+# reclaimed.
+if [[ "${1:-}" == "prune" ]]; then
+    wrapper_host_prune "$@"
+fi
+
+wrapper_main "$@"

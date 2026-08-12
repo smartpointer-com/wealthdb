@@ -1,0 +1,19 @@
+# camoufox + playwright pins live in shared/images/base-camoufox.Dockerfile
+# (camoufox[geoip] + the matching Playwright pin). Bump them there; this
+# collector picks them up via FROM wealthdb/base-camoufox. The pin
+# matters: a camoufox-py release downloads a specific Firefox build whose
+# juggler patches target one Playwright minor — a mismatched Playwright
+# crashes the camoufox-launched Firefox.
+#
+# collectorkit (the shared cli/envfile/launch helpers) is also installed
+# in the base image as an editable package; explore.py imports it
+# directly.
+
+# pytest is bundled in the image so tests run inside the container with
+# `./chase sh -c "cd /app && pytest"` (what `make test-chase` does), no
+# host-side Python toolchain required.
+pytest>=8,<9
+
+# Nothing else yet: Phase 1 is the discovery harness only. Parser deps
+# (statement PDFs, OFX/QFX exports) are chosen in Phase 3, once real
+# captures show what the exports actually contain.

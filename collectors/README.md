@@ -40,7 +40,7 @@ form and the **input contract** to gold. One silver DB per source.
 | Runtime | Collectors | Invocation |
 | --- | --- | --- |
 | **Host venv** | `schwab-api`, `ubs-psn`, `fred`, `manual`, `svb` | A wrapper runs the collector's `.py` under its `.venv` — pure-stdlib plus one thin dependency; no container. |
-| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `relevate`, `viac`, `cointracking`, `angellist`, `carta`, `equityzen` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
+| **Docker** | `schwab-web`, `ubs-web`, `swissquote`, `fidelity-web`, `chase`, `relevate`, `viac`, `cointracking`, `angellist`, `carta`, `equityzen` | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. Browser-based scrapers run headed inside the container. |
 
 `schwab-api` is **hybrid**: its weekly OAuth `login` runs in a
 Camoufox/VNC container (Schwab's 7-day refresh token needs an
@@ -76,7 +76,7 @@ $XDG_DATA_HOME/wealthdb/<source>/
 └── <source>.db            silver SQLite
 ```
 
-**Docker mounts** (the ten containerised collectors): the wrapper
+**Docker mounts** (the eleven containerised collectors): the wrapper
 bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 /data`, so inside the container credentials are at
 `/secrets/<source>.env` and bronze/silver at `/data`.
@@ -514,6 +514,7 @@ restated here.
 | [`ubs-web`](ubs-web/) | UBS netbanking | scraped session + QR | Docker |
 | [`swissquote`](swissquote/) | Swissquote eBanking | scraped session + push | Docker |
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | Docker (Camoufox) |
+| [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) — Phase 1, `explore` only |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |
