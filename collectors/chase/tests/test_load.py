@@ -8,12 +8,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+import statement_parser as sp  # noqa: E402
 
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -137,7 +139,7 @@ def _make_run(root: Path, slug: str, *, status="complete") -> Path:
     (d / "run.json").write_text(json.dumps(manifest))
     (d / "accounts.json").write_text(json.dumps([{
         "account_external_id": EXT, "account_type": "CHK",
-        "nickname": "TOTAL CHECKING", "mask": "…1234",
+        "nickname": "Example Checking", "mask": "…1234",
         "currency": "USD", "balance": 2257.50,
     }]))
     (d / "transactions" / f"{EXT}.qfx").write_text(QFX)
@@ -203,3 +205,191 @@ def test_main_force_rebuild_equals_incremental(tmp_path):
     assert load.main(["--bronze-dir", str(root), "--silver-db", str(db), "--force"]) == 0
     n2 = sqlite3.connect(db).execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     assert n1 == n2 == 4
+
+
+# ============================================================
+# Statement-PDF transactions — seam + import
+# ============================================================
+
+def _seed_export(conn, rows):
+    for posted, amt in rows:
+        load._insert_transaction(conn, EXT, {
+            "fitid": f"F{posted}_{amt}", "posted_at": posted, "amount": amt,
+            "kind": None, "description": "x", "check_number": None,
+            "balance": None, "source": "qfx", "payload": {}})
+    conn.commit()
+
+
+def test_export_seam_anchors_to_export_rows_only():
+    conn = _conn()
+    e1, e2 = _epoch(2024, 8, 15), _epoch(2026, 1, 1)
+    _seed_export(conn, [(e1, -10.0), (e2, 20.0)])
+    assert load._export_seam(conn) == e1
+    # an earlier STATEMENT-sourced row must not drag the seam down.
+    load._insert_transaction(conn, EXT, {
+        "fitid": "stmt_x", "posted_at": _epoch(2020, 1, 1), "amount": 5.0,
+        "kind": None, "description": None, "check_number": None,
+        "balance": None, "source": "statement", "payload": {}})
+    conn.commit()
+    assert load._export_seam(conn) == e1
+
+
+def test_export_seam_none_without_export():
+    assert load._export_seam(_conn()) is None
+
+
+def test_import_statement_gates_at_seam_and_reconstructs_balance():
+    conn = _conn()
+    seam = _epoch(2024, 8, 11)
+    parsed = _seg("100.00", "320.00", [
+        (date(2024, 7, 20), "50.00", "deposit"),        # before seam → kept
+        (date(2024, 8, 5), "-30.00", "withdrawal"),     # before seam → kept
+        (date(2024, 8, 15), "200.00", "post-seam"),     # on/after seam → dropped
+    ])
+    assert load._import_statement(conn, EXT, parsed, seam) == 2
+    rows = conn.execute("SELECT posted_at, balance, source FROM transactions "
+                        "ORDER BY posted_at").fetchall()
+    assert [r[0] for r in rows] == [_epoch(2024, 7, 20), _epoch(2024, 8, 5)]
+    assert all(r[2] == "statement" for r in rows)
+    assert rows[0][1] == 150.0 and rows[1][1] == 120.0   # 100+50, then -30
+
+
+def test_import_statement_disambiguates_identical_same_day():
+    conn = _conn()
+    parsed = _seg("0.00", "10.00", [
+        (date(2023, 3, 1), "5.00", "COFFEE"),
+        (date(2023, 3, 1), "5.00", "COFFEE"),            # identical → both survive
+    ])
+    assert load._import_statement(conn, EXT, parsed, None) == 2
+    assert conn.execute("SELECT COUNT(*) FROM transactions WHERE source='statement'"
+                        ).fetchone()[0] == 2
+
+
+def test_statement_fitid_stable_and_occurrence_distinct():
+    a = load._statement_fitid(EXT, 100, -5.0, "x", 0)
+    assert a == load._statement_fitid(EXT, 100, -5.0, "x", 0)   # deterministic
+    assert a != load._statement_fitid(EXT, 100, -5.0, "x", 1)   # occ disambiguates
+    assert a.startswith("stmt_")
+
+
+# ============================================================
+# Statement segments — anchor + balance chain
+# ============================================================
+
+def _seg(begin, end, txns=()):
+    return sp.StatementSegment(
+        beginning_balance=Decimal(begin), ending_balance=Decimal(end),
+        transactions=[sp.StatementTxn(posted_at=d, amount=Decimal(a),
+                                      description=desc) for d, a, desc in txns])
+
+
+def _multi(ps, pe, segs):
+    return sp.ParsedStatement(period_start=ps, period_end=pe, segments=segs)
+
+
+def _seed_export_balance(conn, posted, amount, balance):
+    load._insert_transaction(conn, EXT, {
+        "fitid": f"F{posted}", "posted_at": posted, "amount": amount,
+        "kind": None, "description": "x", "check_number": None,
+        "balance": balance, "source": "qfx", "payload": {}})
+    conn.commit()
+
+
+def test_chain_anchors_on_export_balance_and_walks_back():
+    conn = _conn()
+    # One export row inside the newest statement's period; its running balance
+    # identifies the account's segment (the other product's can't match).
+    _seed_export_balance(conn, _epoch(2024, 8, 12), -10.0, 1400.0)
+    newest = _multi(date(2024, 7, 20), date(2024, 8, 19), [
+        _seg("100.00", "130.00", [(date(2024, 8, 1), "30.00", "other product")]),
+        _seg("1300.00", "1400.00", [(date(2024, 7, 25), "100.00", "deposit")]),
+    ])
+    older = _multi(date(2024, 6, 20), date(2024, 7, 19), [
+        _seg("90.00", "100.00", []),
+        _seg("1250.00", "1300.00", [(date(2024, 7, 1), "50.00", "deposit")]),
+    ])
+    chained = load._chain_segments(conn, EXT, [newest, older])
+    assert [seg.ending_balance for _, seg in chained] == \
+        [Decimal("1400.00"), Decimal("1300.00")]
+
+
+def test_chain_stops_on_ambiguity_or_break():
+    conn = _conn()
+    _seed_export_balance(conn, _epoch(2024, 8, 12), -10.0, 1400.0)
+    newest = _multi(date(2024, 7, 20), date(2024, 8, 19), [
+        _seg("1300.00", "1400.00", []),
+    ])
+    # both segments end at the expected 1300.00 → ambiguous → stop
+    tie = _multi(date(2024, 6, 20), date(2024, 7, 19), [
+        _seg("1250.00", "1300.00", []), _seg("900.00", "1300.00", []),
+    ])
+    oldest = _multi(date(2024, 5, 20), date(2024, 6, 19), [
+        _seg("1200.00", "1250.00", []),
+    ])
+    chained = load._chain_segments(conn, EXT, [newest, tie, oldest])
+    assert len(chained) == 1                       # tie and older both dropped
+    # a gap (no segment ends at the expected balance) stops the walk too
+    gap = _multi(date(2024, 6, 20), date(2024, 7, 19), [
+        _seg("1000.00", "1111.00", []),
+    ])
+    assert len(load._chain_segments(conn, EXT, [newest, gap, oldest])) == 1
+
+
+def test_chain_without_export_anchor_matches_nothing():
+    conn = _conn()          # no export rows at all → no anchor candidates
+    newest = _multi(date(2024, 7, 20), date(2024, 8, 19),
+                    [_seg("1300.00", "1400.00", [])])
+    assert load._chain_segments(conn, EXT, [newest]) == []
+
+
+def test_load_statement_transactions_end_to_end(tmp_path, monkeypatch):
+    # Fake PDFs (bytes only matter for sha dedup); the parse is monkeypatched
+    # to synthetic statements so no pdftotext is needed.
+    conn = _conn()
+    seam = _epoch(2024, 8, 11)
+    _seed_export_balance(conn, seam, -10.0, 1400.0)
+    straddler = _multi(date(2024, 7, 20), date(2024, 8, 19), [
+        _seg("100.00", "130.00", [(date(2024, 8, 1), "30.00", "other product")]),
+        _seg("1310.00", "1400.00", [
+            (date(2024, 7, 25), "100.00", "pre-seam deposit"),
+            (date(2024, 8, 15), "-10.00", "post-seam row"),
+        ]),
+    ])
+    older = _multi(date(2024, 6, 20), date(2024, 7, 19), [
+        _seg("90.00", "100.00", [(date(2024, 7, 2), "10.00", "other product")]),
+        _seg("1250.00", "1310.00", [(date(2024, 7, 1), "60.00", "deposit")]),
+    ])
+    post_seam = _multi(date(2026, 6, 20), date(2026, 7, 19), [
+        _seg("1500.00", "1500.00", []),
+    ])
+    # 2026-07-19.pdf: its filename date is far past the seam, so the
+    # prefilter must skip it without ever invoking the parser.
+    by_name = {"a.pdf": straddler, "b.pdf": older, "c.pdf": post_seam,
+               "2026-07-19.pdf": post_seam}
+
+    for run in ("20260801T000000Z", "20260802T000000Z"):     # overlapping runs
+        d = tmp_path / run / "statements" / EXT
+        d.mkdir(parents=True)
+        for name in by_name:
+            (d / name).write_bytes(b"%PDF fake " + name.encode())
+    parsed_names = []
+
+    def fake_parse(path):
+        parsed_names.append(path.name)
+        return by_name[path.name]
+
+    monkeypatch.setattr(load.statement_parser, "parse_statement_pdf", fake_parse)
+
+    n = load.load_statement_transactions(conn, tmp_path)
+    assert "2026-07-19.pdf" not in parsed_names
+    assert n == 2                        # pre-seam rows only, imported once
+    rows = conn.execute(
+        "SELECT posted_at, amount, balance FROM transactions "
+        "WHERE source='statement' ORDER BY posted_at").fetchall()
+    assert [r[0] for r in rows] == [_epoch(2024, 7, 1), _epoch(2024, 7, 25)]
+    # running balances reconstructed within each segment
+    assert rows[0][2] == 1310.0 and rows[1][2] == 1410.0
+    # nothing from the other product's segments ever lands
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE description LIKE '%other%'"
+        ).fetchone()[0] == 0

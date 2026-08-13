@@ -13,6 +13,12 @@ FROM wealthdb/base-camoufox:latest
 
 WORKDIR /app
 
+# poppler's pdftotext extracts the statement-PDF text the loader parses for
+# transactions older than Chase's 24-month export cap (statement_parser.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install per-collector deps only — camoufox/playwright/collectorkit are
 # already in the base.
 COPY requirements.txt /app/
@@ -25,9 +31,11 @@ RUN pip install -r requirements.txt
 #   login.py       one-shot login + scrape driver (backs `download`)
 #   download.py    the walk() scrape + bronze layout
 #   auth_dialog.py the 2FA challenge contract as a tested CLI dialog
+#   statement_parser.py  Chase statement-PDF → transactions + balances
 #   load.py        bronze → SQLite silver
 #   prune.py       bronze reclaim
-COPY explore.py login.py download.py auth_dialog.py mdsui.py load.py prune.py /app/
+COPY explore.py login.py download.py auth_dialog.py mdsui.py \
+     statement_parser.py load.py prune.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

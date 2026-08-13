@@ -54,7 +54,7 @@ def test_css_attr_value_quotes_specials():
 def test_parse_download_options_keeps_deposit_drops_cards():
     body = {"downloadAccountActivityOptions": [
         {"accountId": 900001, "detailType": "CHK", "summaryType": "DDA",
-         "nickName": "TOTAL CHECKING", "mask": "1234"},
+         "nickName": "Example Checking", "mask": "1234"},
         {"accountId": 900002, "detailType": "SAV", "summaryType": "DDA",
          "nickName": "SAVINGS", "mask": "5678"},
         {"accountId": 900003, "detailType": "BAC", "summaryType": "CARD",
@@ -75,13 +75,13 @@ def test_parse_download_options_empty():
 
 def test_parse_account_detail():
     # The per-account shape the overview fires (DESIGN.md §B).
-    body = {"accountId": 900001, "nickname": "TOTAL CHECKING", "mask": "1234",
+    body = {"accountId": 900001, "nickname": "Example Checking", "mask": "1234",
             "detail": {"detailType": "CHK", "presentBalance": 2257.50,
                        "available": 2200.00}}
     out = download.parse_account_detail(body)
     assert out == [{
         "account_external_id": "900001", "account_type": "CHK",
-        "nickname": "TOTAL CHECKING", "mask": "…1234", "currency": "USD",
+        "nickname": "Example Checking", "mask": "…1234", "currency": "USD",
         "balance": 2257.50,
     }]
     # falls back to `available` when presentBalance is absent
@@ -93,11 +93,11 @@ def test_parse_account_detail():
 
 
 def test_collect_accounts_dedupes_both_shapes():
-    detail = {"accountId": 900001, "nickname": "TOTAL CHECKING", "mask": "1234",
+    detail = {"accountId": 900001, "nickname": "Example Checking", "mask": "1234",
               "detail": {"detailType": "CHK", "presentBalance": 2257.50}}
     options = {"downloadAccountActivityOptions": [
         {"accountId": 900001, "detailType": "CHK", "summaryType": "DDA",
-         "nickName": "TOTAL CHECKING", "mask": "1234"},
+         "nickName": "Example Checking", "mask": "1234"},
         {"accountId": 900002, "detailType": "SAV", "summaryType": "DDA",
          "nickName": "SAVINGS", "mask": "5678"},
         {"accountId": 900003, "detailType": "BAC", "summaryType": "CARD",

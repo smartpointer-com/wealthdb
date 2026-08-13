@@ -448,14 +448,18 @@ def _save_statements(page, out_dir: Path, since, until,
     """Page the statements table through each year in the export window,
     saving every statement PDF whose date falls in [since, until]."""
     _expand_statements(page)
+    avail = _available_statement_years(page)
+    years = statement_years(since, until, avail)
+    log.info("  statements: filter offers %s; paging %s", avail, years)
     got = 0
     seen: set[str] = set()
-    for year in statement_years(since, until, _available_statement_years(page)):
+    for year in years:
         if not _select_statement_year(page, year):
+            log.info("  statements: %d not shown, skipping", year)
             continue
-        _settle(page)
-        got += _save_visible_statements(page, out_dir, since, until, seen,
-                                        timeout_ms)
+        n = _save_visible_statements(page, out_dir, since, until, seen, timeout_ms)
+        log.info("  statements: saved %d for %d", n, year)
+        got += n
     return got
 
 
@@ -476,14 +480,19 @@ _STMT_YEARS_JS = (
 
 
 def _available_statement_years(page) -> list[int] | None:  # pragma: no cover
-    """The years the statements filter offers, or None if the filter is absent
-    (a build with a single year, or a different control)."""
-    for frame in mdsui.chase_frames(page):
-        with contextlib.suppress(Exception):
-            texts = frame.evaluate(_STMT_YEARS_JS)
-            years = sorted({int(t) for t in texts if t.isdigit()})
-            if years:
-                return years
+    """The years the statements filter offers, or None if the filter is absent.
+    The options lag the accordion after a navigation (they arrive together in
+    one styled-select), so poll a few seconds for them to populate — reading
+    too early truncated the year list and left --lookback all with only the
+    current year."""
+    for _ in range(8):
+        for frame in mdsui.chase_frames(page):
+            with contextlib.suppress(Exception):
+                texts = frame.evaluate(_STMT_YEARS_JS)
+                years = sorted({int(t) for t in texts if t.isdigit()})
+                if years:
+                    return years
+        page.wait_for_timeout(500)
     return None
 
 
@@ -502,15 +511,41 @@ _SELECT_YEAR_JS = r"""
 """
 
 
+def _table_year(page) -> int | None:  # pragma: no cover
+    """The year of the first statement row currently shown, or None if empty."""
+    loc = mdsui.first_in_frames(page, STMT_DATE_CELL.format(n=0))
+    if loc is None:
+        return None
+    try:
+        d = parse_statement_date(loc.text_content() or "")
+    except Exception:
+        d = None
+    return d.year if d else None
+
+
 def _select_statement_year(page, year: int) -> bool:  # pragma: no cover
-    """Select `year` in the styled-select filter. The options are plain
-    light-DOM `<a role=option>` whose click handler swaps the table, present
-    in the DOM whether or not the dropdown is open — so a native click on the
-    one matching the year is reliable (its text match beat a get_by_text)."""
-    for frame in mdsui.chase_frames(page):
-        with contextlib.suppress(Exception):
-            if frame.evaluate(_SELECT_YEAR_JS, year):
-                return True
+    """Switch the statements table to `year` and CONFIRM it changed. The options
+    are light-DOM `<a role=option>` in the styled-select; a native click on the
+    one matching the year swaps the table. Returns True only once the table's
+    first row is actually in `year` — so an unavailable year, or a click that
+    didn't take, returns False rather than leaving the caller to re-scrape the
+    year already shown (the bug that made --lookback all save only the current
+    year)."""
+    if _table_year(page) == year:
+        return True
+    for _ in range(2):
+        clicked = False
+        for frame in mdsui.chase_frames(page):
+            with contextlib.suppress(Exception):
+                if frame.evaluate(_SELECT_YEAR_JS, year):
+                    clicked = True
+                    break
+        if not clicked:
+            return False                    # no option for this year
+        _settle(page)
+        _wait_visible(page, STMT_DATE_CELL.format(n=0), 8)
+        if _table_year(page) == year:
+            return True
     return False
 
 

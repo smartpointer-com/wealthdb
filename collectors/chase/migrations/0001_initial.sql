@@ -69,7 +69,7 @@ CREATE TABLE accounts (
     snapshot_at         INTEGER NOT NULL,
     account_external_id TEXT    NOT NULL,
     account_type        TEXT,                              -- 'CHK', 'SAV', …
-    nickname            TEXT,                              -- e.g. "TOTAL CHECKING"
+    nickname            TEXT,                              -- e.g. "Example Checking"
     mask                TEXT,                              -- last-4, e.g. "…1234"
     currency            TEXT,                              -- ISO code, e.g. 'USD'
     balance             REAL,                              -- current balance if captured

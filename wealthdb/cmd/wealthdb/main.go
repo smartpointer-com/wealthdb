@@ -10,6 +10,7 @@ import (
 	// dispatcher runs.
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/chase"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/cointracking"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/equityzen"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fidelity"

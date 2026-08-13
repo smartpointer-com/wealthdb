@@ -383,6 +383,40 @@ page (read-only), it does not replay the POST. The proven mechanics:
   `expect_download`; CSV + QFX are saved to `transactions/<id>.{csv,qfx}`,
   and the roster to `accounts.json` (the loader's bronze contract).
 
+**The export is hard-capped at ~24 months; statements fill the tail.**
+`dateLo` earlier than the cap is rejected (the UI answers "choose a date
+after <cap>"), so the CSV/QFX ledger only reaches back two years. The
+statement PDFs, by contrast, list back seven years, and each one carries
+its own transaction detail — so they are the only source of the older
+rows.
+
+- **A combined statement carries one segment per product**, each opened by
+  a `*start*global product*` header with its own summary (beginning /
+  ending balance) and its own transaction sections — and the section names
+  repeat across segments, so rows must be attributed per-segment, never
+  pooled. `statement_parser` splits on the header and, per segment, reads
+  the deposit / withdrawal / check sections (signed by section) and
+  validates the parse against the segment's own balance pair.
+- **Segments carry no account ids the exports know** (the printed numbers
+  are a different form than the export `ACCTID`), so
+  `load.load_statement_transactions` attributes them by **balance
+  chaining**: the newest pre-seam statement anchors on the segment whose
+  ending balance appears among the export's running balances in-period,
+  and each older statement then chains on ending(month k) ==
+  beginning(month k+1). An ambiguous or broken link stops the walk — older
+  statements are skipped, never guessed at — and segments belonging to
+  other products on the statement are never touched (deposit-only scope).
+- Only the rows **before the export seam** — `MIN(posted_at)` over the
+  export-sourced (`qfx`/`csv`) rows — are imported. Anchoring the seam to
+  the export rows (never all rows) keeps the two sources disjoint and
+  keeps the seam from drifting as statements are added; a segment that
+  fails to reconcile (beginning + Σ ≠ ending) is skipped, never injected.
+  The running balance for a statement row is reconstructed from the
+  segment's beginning balance in posted-date order, so the end-of-day
+  balance is exact regardless of intra-day order — and the reconstructed
+  tail must land exactly on the export's opening balance, which the first
+  full-archive load verified to the cent.
+
 ### §F — Session persistence (answered: not persistent)
 
 Two clean re-logins after the first, each on the persistent Camoufox

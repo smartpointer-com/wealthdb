@@ -69,6 +69,11 @@ START_URL = "https://secure.chase.com"
 # See the module docstring: authenticated iff a signed-in /svc/ call is seen.
 AUTHED_SVC_MARKERS = ("/user/router/list", "/accounts/secure/")
 
+# How long to auto-detect an in-app-push approval before falling back to a
+# keypress. Long enough for a prompt approval to be caught hands-free; short
+# enough not to feel stuck when the pinned camoufox drops the completion event.
+PUSH_AUTODETECT_S = 90
+
 # Challenge-UI controls, from the captured DOM (§A/§5). The step-up page
 # ("Confirm Your Identity") is Chase's MDS design system: a list of methods
 # `<mds-list-item id=…>` picked by id, then a code field. Each factor maps to
@@ -207,13 +212,42 @@ def _pump(page, ms: int = 500) -> None:
     """Advance the Playwright sync event loop so `.on()` handlers fire.
 
     A bare time.sleep() does NOT deliver Playwright events in the sync API —
-    callbacks run only while the main thread is inside a Playwright call — so
-    the response watcher would never see the login complete. wait_for_timeout
-    pumps the loop; navigation churn during it is non-fatal."""
+    callbacks run only while the main thread is inside a Playwright call. The
+    approval navigation can make wait_for_timeout raise (context destroyed);
+    fall back to another Playwright call (wait_for_load_state), never a bare
+    sleep, so events keep being delivered."""
     try:
         page.wait_for_timeout(ms)
     except Exception:
-        time.sleep(ms / 1000)
+        with contextlib.suppress(Exception):
+            page.wait_for_load_state(timeout=ms)
+
+
+# The authenticated app shell renders a brand bar + primary nav (a sign-out
+# button, the Accounts menu) that the sign-in / challenge pages never do. A
+# live DOM poll for these is the robust auth signal: the pinned camoufox drops
+# some response/navigation events (see schwab-web `_wait_for_post_auth`), so the
+# response watcher alone can miss the completion across the approval navigation.
+_AUTHED_DOM_JS = (
+    "() => !!document.querySelector("
+    "'#brand_bar_sign_in_out, #primaryNavigationBar, #requestAccounts')")
+
+
+def _authenticated_live(page) -> bool:
+    """True when a live DOM check finds the authenticated app shell in a
+    chase frame — a poll that doesn't depend on the response events being
+    delivered."""
+    for frame in mdsui.chase_frames(page):
+        with contextlib.suppress(Exception):
+            if frame.evaluate(_AUTHED_DOM_JS):
+                return True
+    return False
+
+
+def _session_authed(page, watch: "_AuthWatch") -> bool:
+    """The one definition of "signed in": the response watcher saw the
+    authenticated call OR the live DOM shows the app shell."""
+    return watch.ok or _authenticated_live(page)
 
 
 def _wait_for(predicate, page, timeout_s: int) -> bool:
@@ -252,7 +286,7 @@ def run_check(profile_dir: Path) -> int:
             page.goto(START_URL, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
             log.warning("check navigation failed: %r", exc)
-        if _wait_for(lambda: watch.ok, page, 20):
+        if _wait_for(lambda: _session_authed(page, watch), page, 20):
             log.info("session ALIVE")
             return 0
     log.info("session DEAD — a fresh login is required (expected between runs)")
@@ -358,9 +392,11 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
     authenticated session, non-zero (with a captured DOM + a pointer to
     vnc-login) when a challenge control can't be driven."""
     # Wait for either the challenge menu or an already-authenticated session
-    # (a recently-trusted device may skip the challenge).
-    _wait_for(lambda: watch.ok or watch.challenge_options is not None, page, 60)
-    if watch.ok:
+    # (a recently-trusted device may skip the challenge and land signed in —
+    # detected via the live DOM check, not just the response event).
+    _wait_for(lambda: _session_authed(page, watch)
+              or watch.challenge_options is not None, page, 60)
+    if _session_authed(page, watch):
         return 0
     if watch.challenge_options is None:
         _capture(page, args, "post-signin-no-challenge")
@@ -398,7 +434,7 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
     if factor == auth_dialog.FACTOR_INAPP:
         # Push is sent when the method is selected. Confirm the invocation
         # fired (so a "click" that didn't register isn't mistaken for a sent
-        # push), then wait for the human to approve on the phone.
+        # push) before waiting on the approval.
         if not _wait_for(lambda: watch.invoked or watch.ok, page, 20):
             _capture(page, args, "push-not-sent")
             log.error("selected the app-approval method but Chase sent no "
@@ -406,8 +442,19 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
                       "with vnc-login. (DOM captured with --debug.)")
             return 1
         device = menu.devices[0].label if menu.devices else "your device"
-        input(f"Approve the sign-in in the Chase app on {device}, "
-              "then press Enter here… ")
+        log.info("approve the sign-in in the Chase app on %s — it continues "
+                 "automatically once approved.", device)
+        # Auto-detect the approval (Chase's JS completes the sign-in on its
+        # own). The pinned camoufox can drop the completion events across that
+        # navigation, so if it isn't confirmed within a short window, fall back
+        # to a keypress — by then the page has settled and the shared wait
+        # below sees it — rather than sit out the full MFA timeout.
+        if not _wait_for(lambda: _session_authed(page, watch),
+                         page, PUSH_AUTODETECT_S):
+            log.info("if you've approved the notification, press Enter to "
+                     "continue…")
+            with contextlib.suppress(EOFError):
+                input()
     else:
         # SMS / voice: a "which number?" step follows when more than one is on
         # file; picking it triggers the code send. The phone option is another
@@ -438,7 +485,8 @@ def _cli_two_factor(page, watch: "_AuthWatch", args) -> int:
                       "Retry with vnc-login. (DOM captured with --debug.)")
             return 1
 
-    if not _wait_for(lambda: watch.ok, page, args.mfa_timeout):
+    if not _wait_for(lambda: _session_authed(page, watch),
+                     page, args.mfa_timeout):
         _capture(page, args, "after-2fa-not-authenticated")
         log.error("2FA submitted but no authenticated session appeared. "
                   "Retry with vnc-login. (DOM captured with --debug.)")
@@ -492,7 +540,8 @@ def run_login_and_scrape(args: argparse.Namespace) -> int:
         else:
             log.info("Complete Sign In + 2FA in the browser over VNC "
                      "(waiting up to %ds). Any factor works.", args.mfa_timeout)
-            if not _wait_for(lambda: watch.ok, page, args.mfa_timeout):
+            if not _wait_for(lambda: _session_authed(page, watch),
+                             page, args.mfa_timeout):
                 log.error("timed out waiting for an authenticated session")
                 return 1
         log.info("authenticated — starting scrape")
