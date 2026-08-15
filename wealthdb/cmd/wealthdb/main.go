@@ -17,6 +17,7 @@ import (
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fred"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/raiffeisen_at"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"

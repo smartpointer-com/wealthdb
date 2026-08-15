@@ -83,12 +83,15 @@ is the retail-deposit playbook this one adapts, with
 [`firstcitizens`](../firstcitizens/) the most recent run of the same
 playbook.
 
-`login`, `download`, and `load` are **built and validated** — `login`
-and `download` live (pushTAN, full history + balances + statements to
-bronze), and `load` on the real bronze into the SQLite silver
-(transactions, a daily closing-balance series, the account roster, and
-the statement inventory). The **gold adapter** (Go) is the remaining
-phase.
+The full pipeline is **built and validated** — `login` and `download`
+live (pushTAN, full history + balances + statements to bronze), `load`
+on the real bronze into the SQLite silver (transactions, a daily
+closing-balance series, the account roster, and the statement
+inventory), and the **gold adapter**
+(`wealthdb/internal/silver/raiffeisen_at/`) projecting that silver into
+the canonical store (cash accounts, the closing-balance series, and the
+deposit ledger). What remains is operational: a `wealthdb load` merge
+into gold and adding the source to `wealthdb.cfg`.
 
 ## Setup
 

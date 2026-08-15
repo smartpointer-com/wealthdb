@@ -662,28 +662,35 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    transactions. Revisit only if that ~5-month slice is explicitly
    wanted.
 
-6. **Gold adapter (remaining)** — `wealthdb/internal/silver/raiffeisen_at/`
-   on the chase/firstcitizens model: cash accounts (from `accounts`), a
-   closing-balance series from the **`daily_balances`** table plus the
-   current roster balance, and every transaction (from `transactions`,
-   `amount` already signed). The account type / currency come from the
-   `accounts` columns, the interest rates from the account payload if
-   needed. `BaseCurrency` EUR. Plus the `silver_sources` whitelist
-   migration and the `main.go` registration. Conduit returns-exclusion
-   per §1.
+6. **Gold adapter — built** (`wealthdb/internal/silver/raiffeisen_at/`,
+   package `raiffeisenat`, kind `raiffeisen_at`). On the
+   chase/firstcitizens model: one cash account per deposit account (from
+   `accounts`; DisplayName = account type + mask, EUR, taxable_personal /
+   self_directed, all overridable via `account_overrides`), a CLOSING
+   cash balance per day from the **`daily_balances`** series plus a
+   CURRENT balance from the roster, and every transaction (from
+   `transactions`, `amount` already signed; interest / fee recognised
+   from the category / description, else deposit / withdrawal by sign).
+   Registered via the blank import in `cmd/wealthdb/main.go` and the
+   `silver_sources` whitelist migration
+   (`internal/gold/migrations/0035_silver_sources_raiffeisen_at.sql`).
+   Unit-tested; the whole gold suite passes. The cash accounts are
+   conduits, so returns-exclusion (config `returns_exclude`) applies
+   per §1 — a config step, not an engine change.
 
 ## 5. Handoff checklist / status
 
-**Status: pipeline through silver built and validated (2026-08-15).**
-`login` + `download` are validated live, and `load` is validated on the
-real bronze: a `download --lookback all` wrote complete bronze (roster,
-account-info detail, 394 transactions, daily balances, 41 statements
-across both EAZ + KDM lineages), and `load` ingested it into the SQLite
-silver (394 transactions, 238 daily balances, 41 documents, 1 account),
-idempotently. **Remaining: the gold adapter (Phase 6, Go — separate from
-the collector).** The §H probes (token refresh on a >300 s walk,
-`kontostaende` reach — the live series bottomed at the ~2023-07 history
-floor) fold into future runs.
+**Status: full pipeline through gold built and validated (2026-08-15).**
+`login` + `download` validated live; `load` validated on the real
+bronze into the SQLite silver, idempotently; and the **gold adapter**
+(`internal/silver/raiffeisen_at/`, kind `raiffeisen_at`) is built,
+registered, and unit-tested with the whole gold suite green. The
+collector is feature-complete. Remaining is operational, not code: a
+real `wealthdb load` merge into gold (the owner's step, like the
+download/load), plus adding the source to `wealthdb.cfg` (silver source
++ `returns_exclude` for the conduit accounts). The §H probes (token
+refresh on a >300 s walk; `kontostaende` reach — the live series
+bottomed at the ~2023-07 history floor) fold into future runs.
 
 - `make build-raiffeisen_at` builds the image;
   `make test-raiffeisen_at` runs the unit tests in the container.
