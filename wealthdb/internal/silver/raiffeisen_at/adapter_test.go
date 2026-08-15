@@ -287,3 +287,30 @@ func TestTransactions(t *testing.T) {
 }
 
 func unixKey(u int64) string { return time.Unix(u, 0).UTC().Format(time.RFC3339) }
+
+// TestTxKind pins the category/description classifier, whose short-token
+// substring matching once mistook "coffee" for a fee.
+func TestTxKind(t *testing.T) {
+	pos := canonical.NewDecimalFromFloat(10)
+	neg := canonical.NewDecimalFromFloat(-10)
+	cases := []struct {
+		name           string
+		category, desc string
+		amt            canonical.Decimal
+		want           canonical.TxKind
+	}{
+		{"plain credit", "income_other", "SALARY", pos, canonical.TxKindDeposit},
+		{"plain debit", "shopping", "GROCERY", neg, canonical.TxKindWithdrawal},
+		{"coffee is not a fee", "tv_phone_internet", "COFFEE BAR", neg, canonical.TxKindWithdrawal},
+		{"internet is not interest", "tv_phone_internet", "INTERNET", neg, canonical.TxKindWithdrawal},
+		{"fee slug token", "fees_bank", "", neg, canonical.TxKindFee},
+		{"german compound fee", "other", "KONTOFÜHRUNGSENTGELT", neg, canonical.TxKindFee},
+		{"german interest", "other", "HABENZINSEN", pos, canonical.TxKindInterest},
+		{"interest category", "interest_income", "", pos, canonical.TxKindInterest},
+	}
+	for _, tc := range cases {
+		if got := txKind(tc.category, tc.desc, tc.amt); got != tc.want {
+			t.Errorf("%s: txKind(%q,%q) = %q, want %q", tc.name, tc.category, tc.desc, got, tc.want)
+		}
+	}
+}

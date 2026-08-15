@@ -22,10 +22,12 @@ the banking app at `mein.elba.raiffeisen.at`. Two entry shapes (DESIGN.md
 Either way the SPA then shows a **pushTAN** wait screen with a 4-char
 Vergleichswert (announced to the terminal) and polls for approval on its
 own. There is nothing to type — the sign-in is approved in the Raiffeisen app
-and the SPA completes the OIDC hand-off. Auth is detected event-free by
-polling the SPA route (the app origin's dashboard) plus a REST probe
-(`GET produkte` 200) — never a lone Playwright response event, which the
-pinned Camoufox can drop across the OIDC navigation.
+and the SPA completes the OIDC hand-off. Auth is detected event-free by a
+REST probe — `GET produkte` returns 200 only with the harvested OIDC Bearer
+(it 401s on cookies alone) — never a lone Playwright response event (the
+pinned Camoufox can drop them) and never the SPA URL, which the app origin
+serves identically before and after login (the shared-URL trap, §A). The URL
+is used only to announce the pushTAN and to nudge a Bearer re-harvest.
 
 Modes:
   --check   probe the persisted profile against the app and exit 0 (alive) /
@@ -50,10 +52,10 @@ from pathlib import Path
 from collectorkit import cli, debugcap, envfile, launch
 
 import elba_client as elba
-# Reuse explore's origin-gated frame-aware prefill is not applicable here (the
-# Verfüger value is region-prefixed and the form is single-frame Angular), so
-# login drives the RDS controls directly. Credentials come from explore's env
-# names to stay in one place.
+# explore's frame-aware prefill does not apply here — the Verfüger value is
+# region-prefixed and the form is single-frame Angular — so login drives the
+# RDS controls directly. Only the credential env-var names are shared, to keep
+# them defined in one place.
 from explore import USER_ENV, PASS_ENV
 
 log = logging.getLogger("raiffeisen_at.login")
