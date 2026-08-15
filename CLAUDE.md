@@ -1,7 +1,7 @@
 # Notes for Claude / coding agents — repo-wide
 
 This is the **wealthdb** monorepo: a Go gold engine under
-`wealthdb/` plus sixteen bronze+silver collectors under
+`wealthdb/` plus a set of bronze+silver collectors under
 `collectors/<source>/`. See [DESIGN.md](DESIGN.md)
 for the bronze → silver → gold model.
 
@@ -148,8 +148,8 @@ Underneath, each component also builds directly:
 - **Gold engine** (`wealthdb/`): `./wealthdb build` then
   `./wealthdb <subcommand>`; tests via `./wealthdb-test ./...`
   (or `go test ./...` with a host toolchain).
-- **Host-venv collectors** (`schwab-api`, `ubs-psn`, `fred`,
-  `manual`, `svb`): `.venv/bin/python {download,load}.py`
-  (`manual` / `svb` are load-only — just `load.py`).
-- **Docker collectors** (the other eleven): the per-tool wrapper
-  (`./<tool> <login|download|load>`) drives `docker run`.
+- **Host-venv collectors** (a `requirements.txt`, no Dockerfile):
+  `.venv/bin/python {download,load}.py` (some are load-only — just
+  `load.py`).
+- **Docker collectors** (a Dockerfile + `entrypoint.sh`): the per-tool
+  wrapper (`./<tool> <login|download|load>`) drives `docker run`.

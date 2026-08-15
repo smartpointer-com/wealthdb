@@ -83,11 +83,10 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb version` | Print the wealthdb version. |
 | `wealthdb help [<subcommand>]` | Help. |
 
-Adapters ship for every source: Schwab (API + web), UBS (PSN feed
-+ web), Swissquote, Fidelity (web; SVB historical statements load
-through it), VIAC and Relevate (Swiss pension), CoinTracking
-(crypto), Carta, AngelList and EquityZen (private markets), the
-manual CSV source, and FRED (reference FX).
+An adapter ships for every collected source — Swiss and US banks and
+brokerages, pension providers, crypto, private markets, and reference
+FX. See [`../collectors/README.md`](../collectors/README.md) for the
+sources and [`internal/silver/`](internal/silver/) for their adapters.
 
 Accounts carry a three-dimensional taxonomy: `account_kind`
 (technical container — brokerage / cash / safekeeping / custody /

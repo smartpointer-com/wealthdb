@@ -64,7 +64,7 @@ the command; no setup, no paths, no flags required to connect.
 - **portfolios**: like accounts but the label column is `portfolio` (plus one sentinel row per source for accounts the bank didn't group)
 - **transactions**: `silver_source, date, account, kind, symbol, description, currency, gross_amount, net_amount, value_<CCY>`
 
-`silver_source` is the institution (`schwab`, `ubs`, `fidelity`, `swissquote`, `viac`, `relevate`, `cointracking`, `angellist`, `carta`, `equityzen`, `manual`). The value column shows as `value_USD`, `total_value_CHF`, etc. — matching your `-x`. Use `-C all` to list every column for a command.
+`silver_source` is the institution (e.g. `schwab`, `ubs`, `fidelity`, …); the configured sources are your silver DBs under `$WEALTHDB_DATA_ROOT`. The value column shows as `value_USD`, `total_value_CHF`, etc. — matching your `-x`. Use `-C all` to list every column for a command.
 
 Slice/group using these account attributes:
 - `account_kind`: brokerage, cash, custody, crypto, … 
@@ -155,7 +155,7 @@ to raw SQL only when the CLI genuinely can't express what you need. All data
 lives under the **`WEALTHDB_DATA_ROOT`** environment variable (set in a
 configured deployment), and you have read-only access:
 - **Gold** (the merged, canonical store the commands read — query this one): `$WEALTHDB_DATA_ROOT/wealthdb.db`, a **DuckDB** database.
-- **Silver** (per-source, source-shaped inputs to gold): `$WEALTHDB_DATA_ROOT/<collector>/<collector>.db`, **SQLite** — except `cointracking/cointracking.duckdb` (DuckDB). Collectors: `schwab-web, schwab-api, ubs-web, ubs-psn, swissquote, fidelity-web, relevate, viac, cointracking, carta, angellist, equityzen, manual, fred`.
+- **Silver** (per-source, source-shaped inputs to gold): `$WEALTHDB_DATA_ROOT/<collector>/<collector>.db`, **SQLite** — one directory per collector (except `cointracking/cointracking.duckdb`, which is DuckDB).
 - **Bronze** (raw, as-downloaded CSV/JSON/PDF): `$WEALTHDB_DATA_ROOT/<collector>/<UTC-timestamp>/`. Rarely needed for analysis.
 
 Always open these **read-only** (you have no write access, and a scheduled collection job may be writing). Don't assume column names — inspect with DuckDB `SHOW TABLES` / `DESCRIBE <table>` first.

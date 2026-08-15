@@ -101,21 +101,7 @@ See **[DESIGN.md](DESIGN.md)** for the bronze → silver
 | --- | --- | --- | --- |
 | [`wealthdb/`](wealthdb/) | Gold engine + `wealthdb` CLI | Go (Docker) | reads all silvers |
 | [`web/`](web/) | Optional Metabase BI server (`wealthdb web`) | Docker (Metabase) | reads a read-only gold snapshot |
-| [`collectors/schwab-api/`](collectors/schwab-api/) | Schwab holdings/tx | Python venv | Schwab Trader API (OAuth) |
-| [`collectors/schwab-web/`](collectors/schwab-web/) | Schwab statements/history | Docker (Camoufox) | client-web scrape |
-| [`collectors/ubs-psn/`](collectors/ubs-psn/) | UBS structured feed | Python venv | PSN SFTP (nightly) |
-| [`collectors/ubs-web/`](collectors/ubs-web/) | UBS netbanking export | Docker | netbanking scrape |
-| [`collectors/swissquote/`](collectors/swissquote/) | Swissquote holdings/tx | Docker | eBanking scrape |
-| [`collectors/fidelity-web/`](collectors/fidelity-web/) | Fidelity holdings/tx | Docker (Camoufox) | web scrape |
-| [`collectors/relevate/`](collectors/relevate/) | Relevate / Pensexpert (Pillar 2) | Docker | middlelayer REST |
-| [`collectors/viac/`](collectors/viac/) | VIAC (Pillar 3a / vested benefits) | Docker | web REST |
-| [`collectors/cointracking/`](collectors/cointracking/) | Crypto aggregator (all exchanges + wallets) | Docker (headless Firefox + Camoufox for re-discovery) | web scrape |
-| [`collectors/angellist/`](collectors/angellist/) | AngelList LP portal (SPVs / fund deals) | Docker (Camoufox) | web scrape |
-| [`collectors/carta/`](collectors/carta/) | Carta (private holdings / cap table) | Docker (Camoufox) | web scrape |
-| [`collectors/equityzen/`](collectors/equityzen/) | EquityZen (pre-IPO secondary SPVs) | Docker (Camoufox) | web scrape |
-| [`collectors/svb/`](collectors/svb/) | SVB Wealth Advisory (historical sideload) | Python venv | PDF statements (one-shot) |
-| [`collectors/manual/`](collectors/manual/) | Private holdings, no portal (CSV) | Python venv | manual entry |
-| [`collectors/fred/`](collectors/fred/) | Historic FX rates (reference data) | Python venv | FRED API (US Fed H.10) |
+| [`collectors/`](collectors/) | One bronze+silver collector per source — banks, brokerages, pensions, crypto, reference data | Docker or Python venv | **see [collectors/README.md](collectors/README.md)** for the full list |
 
 Each component has its own `README.md` (usage), `DESIGN.md`
 (internals), and `CLAUDE.md` (agent guidance) at its root.
@@ -162,10 +148,9 @@ cd wealthdb
 ```
 
 **Collectors** — every collector ships a wrapper exposing the same
-`login` / `download` / `load` verbs, whether it's a Docker collector
-(the web/REST ones) or a host-venv collector (`schwab-api`, `ubs-psn`,
-`fred`, `manual`, `svb`). Drive the whole fleet through the `wealthdb-collect`
-dispatcher:
+`login` / `download` / `load` verbs, whether it runs in Docker (the
+web/REST ones) or on a host venv. Drive the whole fleet through the
+`wealthdb-collect` dispatcher:
 
 ```sh
 make install                          # symlink wealthdb + wealthdb-collect into ~/.local/bin (BINDIR)
