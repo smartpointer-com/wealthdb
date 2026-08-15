@@ -27,8 +27,10 @@ RUN pip install -r requirements.txt
 #   elba_client.py  Mein ELBA wire contract (pure: endpoints, bodies, parsers)
 #   login.py        one-shot login (pushTAN) + shared authenticate()
 #   download.py     REST fetch → bronze (history, balances, statements)
+#   load.py         bronze → SQLite silver
 #   prune.py        bronze reclaim
-COPY explore.py elba_client.py login.py download.py prune.py /app/
+COPY explore.py elba_client.py login.py download.py load.py prune.py /app/
+COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

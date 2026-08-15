@@ -519,7 +519,7 @@ restated here.
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | Docker (Camoufox) |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
-| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — login + download built, load/gold pending |
+| [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — pipeline through silver, validated; gold pending |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |

@@ -8,8 +8,9 @@ are not complete dumps — ``run.json`` is missing (a crashed walk) or its
 marker or a ``"dry-run"`` shell). ``load`` skips such dirs, so removing one
 only surfaces on the next ``load --force`` rebuild.
 
-A COMPLETE dump's load inputs (``accounts.json``, ``history/*.json``,
-``balances/*.json``, ``statements/*/*.pdf``) are structurally protected: the
+A COMPLETE dump's load inputs (``accounts.json``, ``details/*.json``,
+``history/*.json``, ``balances/*.json``, ``statements/*/*.pdf``) are
+structurally protected: the
 engine only ever touches whole non-complete run dirs and the configured
 debug subdirs. This collector writes no in-bronze debug subdir — the
 ``explore``/``login`` diagnostics land in ``/debug`` (outside bronze) and

@@ -621,20 +621,37 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
      pushTAN wait, and the Bearer harvest are proven only once it lands
      (§H probes fold into it).
 
-4. **load** — bronze → SQLite silver, idempotent, migrations, unit
-   tests on synthetic fixtures only (synthetic IBANs:
-   `AT<chk><BBBBB><KKKKKKKKKKK>`). **The ledger source is the
-   `kontoumsaetze` JSON** (§C/§D): stable `id`, signed
-   `betrag.amount`, `buchungstag` + `valuta`, description /
-   counterparty / mandate fields, category. No CSV parsing and no
-   synthetic-id scheme needed. The `kontostaende` series loads as the
-   balance table. **Account attributes come from `details/<IBAN>.json`
-   (§C)**, parsed out of `detailgruppen` by `bezeichnung`: the account
-   type / name (Kontoart, Kontobezeichnung), currency, institution +
-   BIC, and — load-bearing for a savings account's returns — the credit
-   interest rate (Zinssatz Haben). The card block in that payload is
-   dropped (deposit-only). A small parser (`parse_konto_details`) is a
-   Phase-4 addition; the raw JSON is already in bronze.
+4. **load — built (`load.py` + `migrations/0001`), validated on the real
+   bronze.** bronze → SQLite silver, idempotent (snapshot gate +
+   `INSERT OR IGNORE`/content-dedup), unit-tested on synthetic fixtures
+   only. `account_external_id` is the **IBAN** (the ubs-web / ubs-psn
+   convention, so an Austrian cash account joins across sources on the
+   IBAN); the silver DB lives in the private data tree, never committed.
+   The tables:
+   - **transactions** — the `kontoumsaetze` JSON is the source of record
+     (§C/§D): stable `id` → `txn_id`, signed `betrag.amount`,
+     `buchungstag` → `posted_at` **and** `valuta` → `value_at` (both
+     kept), `kategorieCode` → `category`, Verwendungszweck →
+     `description`, Transaktionsteilnehmer → `counterparty`. No CSV
+     parsing, no synthetic-id scheme needed (a missing id is tolerated
+     with a content hash). **No per-row balance** (the source carries
+     none).
+   - **daily_balances** — the `kontostaende` `tagessalden` series
+     (account, day → closing saldo). This is the cash time series (the
+     history has no per-row balance), keyed (account, day) with
+     `INSERT OR REPLACE`.
+   - **accounts** — the roster row enriched with the curated
+     `details/<IBAN>.json` attributes (Kontoart → `account_type`,
+     currency, institution + BIC, and the Zinssatz Soll/Haben interest
+     rates in the payload). The card block **and the account-holder
+     name** are dropped (deposit-only; the name is PII a cash account
+     doesn't need). `mask` is the IBAN's last-4.
+   - **documents** — the statement PDFs, deduped by content sha256.
+
+   Validated on the 2026-08-15 bronze: 1 account, **394 transactions**
+   (25 credit / 369 debit), **238 daily balances** (2023-07-31 …
+   2026-08-10), **41 statements** (19 EAZ + 22 KDM), and a re-load is a
+   clean no-op.
 
 5. **Statement transaction-backfill — not planned (§G).** The document
    archive predates the transaction-history floor by only ~5 months
@@ -645,28 +662,28 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    transactions. Revisit only if that ~5-month slice is explicitly
    wanted.
 
-6. **Gold adapter** — `wealthdb/internal/silver/raiffeisen_at/` on the
-   chase/firstcitizens model: cash accounts, a closing-balance series
-   from the `kontostaende` daily balances (§C) plus a current roster
-   balance, and every transaction. The account name / type / currency
-   for the gold account come from the `details` attributes (§C).
-   `BaseCurrency` EUR. Plus the `silver_sources` whitelist migration and
-   the `main.go` registration. Conduit returns-exclusion per §1.
+6. **Gold adapter (remaining)** — `wealthdb/internal/silver/raiffeisen_at/`
+   on the chase/firstcitizens model: cash accounts (from `accounts`), a
+   closing-balance series from the **`daily_balances`** table plus the
+   current roster balance, and every transaction (from `transactions`,
+   `amount` already signed). The account type / currency come from the
+   `accounts` columns, the interest rates from the account payload if
+   needed. `BaseCurrency` EUR. Plus the `silver_sources` whitelist
+   migration and the `main.go` registration. Conduit returns-exclusion
+   per §1.
 
 ## 5. Handoff checklist / status
 
-**Status: Phase 3 (`login` + `download`) validated live (2026-08-15).**
-A real `download --lookback all` logged in via pushTAN and wrote
-complete bronze: the deposit roster, the account-information detail,
-394 transactions (full keyset-paginated history), the daily-balance
-series, and 19 statement PDFs. Follow-ups from the runs, both landed:
-the account `details` fetch was added (account type / currency /
-institution / interest rates — a live capture found the endpoint), and
-the older **KDM** statement 422s were resolved — a capture showed the
-download URL needs the document's `versionsId` in the path, now wired,
-so both statement lineages fetch (§E). **Next: not Phase 4 yet —
-pending the owner's go-ahead; the remaining §H probes (token refresh,
-`kontostaende` reach) fold into the next runs.**
+**Status: pipeline through silver built and validated (2026-08-15).**
+`login` + `download` are validated live, and `load` is validated on the
+real bronze: a `download --lookback all` wrote complete bronze (roster,
+account-info detail, 394 transactions, daily balances, 41 statements
+across both EAZ + KDM lineages), and `load` ingested it into the SQLite
+silver (394 transactions, 238 daily balances, 41 documents, 1 account),
+idempotently. **Remaining: the gold adapter (Phase 6, Go — separate from
+the collector).** The §H probes (token refresh on a >300 s walk,
+`kontostaende` reach — the live series bottomed at the ~2023-07 history
+floor) fold into future runs.
 
 - `make build-raiffeisen_at` builds the image;
   `make test-raiffeisen_at` runs the unit tests in the container.

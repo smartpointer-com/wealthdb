@@ -58,8 +58,9 @@ Subcommands:
                       (exit 0/1; dead between runs is expected).
   vnc-login [args...] Fallback for download: expose VNC and complete the
                       login by hand (form/card + pushTAN), then fetch.
-  load [args...]      Ingest bronze into silver — Phase 4, not implemented
-                      yet.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily balances, statements). --force
+                      rebuilds from all bronze.
   prune [args...]     Delete non-complete dumps from the bronze tree (runs
                       host-side). --dry-run prints the plan.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network

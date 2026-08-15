@@ -83,11 +83,12 @@ is the retail-deposit playbook this one adapts, with
 [`firstcitizens`](../firstcitizens/) the most recent run of the same
 playbook.
 
-The `login` + `download` verbs are **built and unit-tested** (the
-browserless halves) but **not yet live-validated** — no real session
-has driven them. The first live `download` (owner present, pushTAN) is
-the acceptance test. `load` (silver) and the gold adapter are the
-remaining phases.
+`login`, `download`, and `load` are **built and validated** — `login`
+and `download` live (pushTAN, full history + balances + statements to
+bronze), and `load` on the real bronze into the SQLite silver
+(transactions, a daily closing-balance series, the account roster, and
+the statement inventory). The **gold adapter** (Go) is the remaining
+phase.
 
 ## Setup
 
@@ -113,6 +114,8 @@ RAIFFEISEN_AT_REGION='...'     # the Mandant code selecting the regional bank (D
 ./raiffeisen_at download --fresh          # force the cold region/Verfüger/PIN form
 ./raiffeisen_at login --check             # is a session still alive? (dead between runs is expected)
 ./raiffeisen_at vnc-login                 # by-hand login fallback over VNC
+./raiffeisen_at load                      # bronze → silver SQLite
+./raiffeisen_at load --force              # rebuild the silver from all bronze
 
 ./raiffeisen_at explore                   # discovery harness over VNC
 ```

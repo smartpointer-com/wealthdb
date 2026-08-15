@@ -64,8 +64,9 @@ case "${1:-help}" in
         exit 0
         ;;
     load)
-        echo "raiffeisen_at: 'load' is not implemented yet (Phase 4)." >&2
-        exit 1
+        # Silver loader — pure SQLite + Python, no browser.
+        shift
+        exec python3 /app/load.py --bronze-dir /data "$@"
         ;;
     prune)
         # Bronze reclaim — pure file walk. Also reachable host-side via the
@@ -100,7 +101,8 @@ Subcommands:
   login       Folds into download (nothing to persist). 'login --check'
               probes a session read-only (exit 0 alive / 1 dead; dead
               between runs is expected).
-  load        Ingest bronze into silver — Phase 4, not implemented yet.
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              daily balances, statements). --force rebuilds from all bronze.
   prune       Delete non-complete dumps from the bronze tree. --dry-run
               prints the plan. Usually run host-side via the wrapper.
   sh|bash     Open an interactive shell.
