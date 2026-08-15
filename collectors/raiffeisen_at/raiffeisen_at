@@ -1,0 +1,100 @@
+#!/bin/bash
+# Host-side wrapper around `docker run` for the raiffeisen_at container.
+# Mounts ~/.secrets/ (RW; persistent Camoufox profile + env file), the
+# bronze tree (RW), and a /debug dir for explore/login artefacts.
+# Single-writer: the session + pushTAN prompts can't tolerate concurrent
+# invocations, and the safety guard refuses to evict a container hosting a
+# live VNC session.
+#
+# Mein ELBA fires a pushTAN at every sign-in (DESIGN.md §F), so — like chase
+# — `download` is a one-shot: login + REST fetch in one browser lifetime, the
+# pushTAN approved on the phone (no code to type, no VNC). `login` folds into
+# `download`; `vnc-login` is the by-hand fallback; `prune` is a pure file
+# walk that runs host-side.
+#
+# The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
+
+set -euo pipefail
+
+NAME=raiffeisen_at
+ENV_PREFIX=RAIFFEISEN_AT
+ENV_VARS=(RAIFFEISEN_AT_USERNAME RAIFFEISEN_AT_PASSWORD RAIFFEISEN_AT_REGION)
+HAS_DEBUG=1
+HAS_APP_MOUNT=1     # /app live-mount during iteration
+HAS_SAFETY=1        # refuse to evict a live container mid-pushTAN / mid-VNC
+HAS_VNC=1           # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/../../shared/wrappers/wrapper-lib.sh"
+wrapper_init
+
+if [[ "${1:-}" == "build" ]]; then
+    wrapper_build "$@"
+fi
+
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+    cat <<EOF
+raiffeisen_at — host wrapper
+
+Read-only collector for Mein ELBA, the Austrian Raiffeisen retail
+e-banking portal: deposit accounts (checking + savings), their
+transaction history, daily balances, and statement PDFs. Mein ELBA fires
+a pushTAN at every sign-in, so \`login\` folds into \`download\`: one
+browser lifetime per run, the challenge approved on your phone.
+
+Subcommands:
+  build               Build the Docker image (\`docker build\`).
+  download [args...]  One-shot login + REST fetch of the deposit accounts
+                      (history + daily balances + statement PDFs) into a
+                      UTC-stamped bronze run dir. The pushTAN is approved on
+                      your phone — no VNC, nothing to type. --lookback bounds
+                      the window; --no-documents skips statements; --dry-run
+                      enumerates without fetching; --fresh forces the cold
+                      region/Verfüger/PIN form.
+  login [args...]     Folds into download (nothing to persist). \`login
+                      --check\` reports whether a session is still alive
+                      (exit 0/1; dead between runs is expected).
+  vnc-login [args...] Fallback for download: expose VNC and complete the
+                      login by hand (form/card + pushTAN), then fetch.
+  load [args...]      Ingest bronze into silver — Phase 4, not implemented
+                      yet.
+  prune [args...]     Delete non-complete dumps from the bronze tree (runs
+                      host-side). --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug. --fresh
+                      wipes the profile so the next login forces the cold
+                      form.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+$(wrapper_mounts_help)
+
+Override mounts via env:
+  RAIFFEISEN_AT_SECRETS_DIR=/path/to/secrets
+  RAIFFEISEN_AT_DATA_DIR=/path/to/data
+  RAIFFEISEN_AT_DEBUG_DIR=/path/to/debug
+
+Credentials (read from /secrets/raiffeisen_at.env inside the container
+= \$HOME/.secrets/raiffeisen_at.env on the host; chmod 0600):
+  RAIFFEISEN_AT_USERNAME   the personal Verfüger number, WITHOUT the region prefix
+  RAIFFEISEN_AT_PASSWORD   the PIN
+  RAIFFEISEN_AT_REGION     the Mandant code selecting the regional bank
+  The pushTAN confirmation happens in the Raiffeisen mobile app.
+EOF
+    exit 0
+fi
+
+# prune is a pure file walk (collectorkit.prune + stdlib) — no browser, no
+# container. Run it host-side like the other collectors so it bypasses the
+# single-writer safety guard and can reclaim disk while a download is
+# mid-flight (its own --min-age guard protects an in-flight dump). With
+# HAS_DEBUG=1 the wrapper also passes --debug-dir so the /debug cache is
+# reclaimed.
+if [[ "${1:-}" == "prune" ]]; then
+    wrapper_host_prune "$@"
+fi
+
+wrapper_main "$@"
