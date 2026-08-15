@@ -217,7 +217,7 @@ Playwright + Chromium + PDF tooling is heavy; running it directly
 on the host pollutes the OS. This toolkit ships as a Docker image
 and runs entirely inside the container.
 
-Base image: `mcr.microsoft.com/playwright/python:v1.59.0-noble`
+Base image: `mcr.microsoft.com/playwright/python:v1.62.0-noble`
 (Ubuntu Noble, Chromium browser binary and all OS-level deps
 pre-installed at `/ms-playwright/`). The Playwright Python package
 itself is installed via `requirements.txt`, version-pinned to match

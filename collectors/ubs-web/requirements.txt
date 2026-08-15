@@ -1,11 +1,11 @@
-# The base image (mcr.microsoft.com/playwright/python:v1.59.0-noble)
+# The base image (mcr.microsoft.com/playwright/python:v1.62.0-noble)
 # ships only the *browser binaries* under /ms-playwright (with the
 # PLAYWRIGHT_BROWSERS_PATH env var pointing at them). The Python
 # `playwright` package itself must be installed here, and the version
 # MUST match the base-image tag so the package finds compatible
 # browser binaries. When bumping the Dockerfile FROM line, bump this
 # version in lockstep.
-playwright==1.59.0
+playwright==1.62.0
 
 # Pillow renders the Access-App QR PNG to the terminal as Unicode
 # half-blocks. The Playwright base image happens to ship a recent

@@ -3,7 +3,7 @@
 # Bump the tag in lockstep with the collectors' pinned `playwright` pip
 # version. Build context is shared/:
 #   docker build -f images/base-playwright.Dockerfile -t wealthdb/base-playwright:latest .
-FROM mcr.microsoft.com/playwright/python:v1.59.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 
 # Fetch Ubuntu's archives over HTTPS instead of the image default of HTTP.
 # Port 80 to the Ubuntu archive hosts is unreachable from some networks —
