@@ -220,6 +220,19 @@ Taxes & Documents page (`AccountDocumentsQuery`: `taxDocuments[]` with
 `pdfUrl`/`csvUrl` + completeness fields `documentType` /
 `k1Count`/`totalK1Count` / `updatedAt`; `financialDocuments[]`).
 
+**Fund financial reports → fair-value marks (built).** For proper funds
+AngelList also issues quarterly financial reports (and, at some
+year-ends, a dedicated capital-account statement). Both embed a per-LP
+capital statement whose ending balance is the partner's capital account
+at **fair value** — the roll-forward carries a "Net change in
+unrealized gains" line — which the K-1 (tax basis only) never shows.
+`statements.py` parses that page (`pdftotext -layout`) and `load.py`
+emits a `statement` event with `valuation_basis='fmv'` at each report's
+period end, matched to a `kind='fund'` offering by the longest
+normalised name (company or fund-legal) in the filename; a year-end
+fair-value statement replaces the same-dated tax-basis K-1 mark. SPVs
+get no financial reports, so their K-1/tender-free marks are unchanged.
+
 **Parsed (built).** `load.py` parses the K-1 CSVs in
 `angellist-documents/` into **`k1_capital_accounts`** — one row per
 `(tax_year, SPV)`: SPV legal name + EIN (the investment entity — the SPV,
@@ -240,10 +253,17 @@ way.
 
 **Fed into the timeline (built).** Each K-1 becomes a `statement` event in
 `position_snapshots` (tax-basis ending capital as the mark, dated Dec-31,
-with cumulative contributed / distributions), paired to its position by
-company name and — for the few multi-SPV companies — by investment year +
-cumulative contribution amount. The mark basis (`fmv` / `tax_basis` /
-`cost`) is recorded per event, never blended.
+with cumulative contributed / distributions). Pairing is by **fund
+identity**: the SPV legal name is stable, so a fund is matched to a
+position through every company label its K-1 rows ever carried — a renamed
+portfolio company keeps its old label on old tax years, and matching only
+the current label would split one fund across two instruments. Real
+offerings always beat funding-ledger-derived thin ones; multi-SPV
+companies disambiguate by investment year + cumulative contribution
+amount. Statement events are rebuilt from scratch on every load (they
+derive wholly from `k1_capital_accounts`), so a pairing that shifts leaves
+no stale marks behind. The mark basis (`fmv` / `tax_basis` / `cost`) is
+recorded per event, never blended.
 
 ## Gold mapping (implemented)
 
@@ -267,8 +287,9 @@ forward-fill:
   date the adapter emits each position's latest snapshot ≤ it, dropping the
   is_open=0 (exited) ones — a complete portfolio per date, which is what
   gold's as-of query reads. `market_value` = the collector's
-  `market_value_minor` (current FMV → annual tax-basis NAV → cost, never
-  blended within a snapshot); `book_value=contributed`; `quantity=NULL`;
+  `market_value_minor` (current FMV → quarterly fund fair-value statement
+  → annual tax-basis NAV → cost, never blended within a snapshot);
+  `book_value=contributed`; `quantity=NULL`;
   `acquisition_date=investment_date`.
 - **Transactions = the funding ledger** (`funding_transactions`). Each cash
   movement maps to a canonical kind by its source type:
@@ -283,9 +304,13 @@ forward-fill:
   `funding_transactions.position_external_id`): the company named in the
   description matches a current `offerings` row when still held; a multi-SPV
   company (the description names only the company) is disambiguated by picking
-  the position whose invest date is closest to the transaction date; and an
-  EXITED investment (no current position) gets a thin instrument DERIVED FROM
-  THE FUNDING LEDGER (emitted even though it holds nothing). Only external-bank
+  the position whose invest date is closest to the transaction date; a
+  pre-rename description (an old company label preserved in old K-1 rows)
+  resolves through the K-1 alias map to the renamed position; and an
+  EXITED investment (no match at all) gets a thin instrument DERIVED FROM
+  THE FUNDING LEDGER (emitted even though it holds nothing). `funding:`
+  offerings that no transaction references any more are dropped with their
+  snapshots at the end of each load. Only external-bank
   deposits / withdrawals stay account-level. Every ledger row links to a
   vehicle.
 - **Cash.** The funding account's current uninvested cash is one

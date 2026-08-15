@@ -296,6 +296,162 @@ def test_funding_links(tmp_path):
     c.close()
 
 
+def write_rename_k1_csvs(docs_dir):
+    """Two K-1 package CSVs for one fund whose portfolio company renamed:
+    the 2023 rows carry the old label, the 2024 rows the new one."""
+    docs_dir = Path(docs_dir)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    fund = "NEW Fund I, a series of X, LP"
+    with open(docs_dir / "Synthetic 2023 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_HDR, [
+            "Old Name Co", fund, "Issued", "$0", "$1,000", "$0", "", "", "",
+            "$1,000", "5.0", "No", "12-3456789"]])
+    with open(docs_dir / "Synthetic 2024 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_HDR, [
+            "New Name Co", fund, "Issued", "$1,000", "$0", "$500", "", "", "",
+            "$1,500", "5.0", "No", "12-3456789"]])
+
+
+def test_rename_pairs_fund_to_one_position(tmp_path):
+    """A renamed portfolio company must not split its fund across two
+    instruments: every K-1 year lands on the one real position (matched
+    through any label the fund ever carried), and a funding tx written
+    under the old label resolves through the K-1 alias map instead of
+    minting a phantom offering."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    cap = {"op": "InvestmentEntityQuery", "data": {"invest": {"investmentEntity": {
+        "entityId": "e1", "balance": m(0),
+        "transactions": [
+            {"id": "t1", "date": INV_DATE, "type": "investment", "amount": m(-100000),
+             "balance": m(0), "description": "Investment in Old Name Co",
+             "syndicateName": "x"}]}}}}
+    # The portal shows only the new name; contributed matches the K-1 total.
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([pos_node("pN", "new-name-co-s", name="New Name Co",
+                                    contributed=100000)]),
+        dashboard_capture(), cap])
+    write_rename_k1_csvs(tmp_path / "docs")
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db),
+                      "--documents-dir", str(tmp_path / "docs")]) == 0
+    c = sqlite3.connect(db)
+    # both tax years' statements sit on the real position
+    st = c.execute(
+        "SELECT market_value_minor FROM position_snapshots "
+        "WHERE position_external_id='pN' AND event_type='statement' "
+        "ORDER BY as_of_date").fetchall()
+    assert st == [(100000,), (150000,)]
+    # the old-label funding tx linked to the real position; no phantom minted
+    assert c.execute("SELECT position_external_id FROM funding_transactions "
+                     "WHERE transaction_external_id='t1'").fetchone()[0] == "pN"
+    assert c.execute("SELECT COUNT(*) FROM offerings "
+                     "WHERE position_external_id LIKE 'funding:%'").fetchone()[0] == 0
+    c.close()
+
+
+def test_rename_heals_existing_phantom(tmp_path):
+    """A silver DB that already carries a rename phantom (a funding:*
+    offering with statement marks stamped while the pairing was unstable)
+    self-heals on the next load: statements are rebuilt onto the real
+    position only, the funding tx relinks, and the phantom plus its
+    snapshots are dropped."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    cap = {"op": "InvestmentEntityQuery", "data": {"invest": {"investmentEntity": {
+        "entityId": "e1", "balance": m(0),
+        "transactions": [
+            {"id": "t1", "date": INV_DATE, "type": "investment", "amount": m(-100000),
+             "balance": m(0), "description": "Investment in Old Name Co",
+             "syndicateName": "x"}]}}}}
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([pos_node("pN", "new-name-co-s", name="New Name Co",
+                                    contributed=100000)]),
+        dashboard_capture(), cap])
+    write_rename_k1_csvs(tmp_path / "docs")
+    args = ["--bronze-dir", str(dest), "--silver-db", str(db),
+            "--documents-dir", str(tmp_path / "docs")]
+    assert load.main(args) == 0
+    # Simulate the pre-fix state: a phantom under the old label, carrying a
+    # duplicate statement mark and the funding-tx link.
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO offerings (position_external_id, kind, company_name, currency) "
+              "VALUES ('funding:old-name-co', 'spv', 'Old Name Co', 'USD')")
+    c.execute("INSERT INTO position_snapshots (position_external_id, as_of_date, "
+              "event_type, is_open, currency, market_value_minor, valuation_basis, snapshot_at) "
+              "VALUES ('funding:old-name-co', 1735603200, 'statement', 1, 'USD', "
+              "150000, 'tax_basis', 1)")
+    c.execute("UPDATE funding_transactions SET position_external_id='funding:old-name-co' "
+              "WHERE transaction_external_id='t1'")
+    c.commit()
+    c.close()
+    assert load.main(args) == 0   # bronze already loaded; doc+pairing passes rerun
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM offerings "
+                     "WHERE position_external_id LIKE 'funding:%'").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM position_snapshots "
+                     "WHERE position_external_id LIKE 'funding:%'").fetchone()[0] == 0
+    assert c.execute("SELECT position_external_id FROM funding_transactions "
+                     "WHERE transaction_external_id='t1'").fetchone()[0] == "pN"
+    # statements exist exactly once, on the real position
+    assert c.execute("SELECT COUNT(*) FROM position_snapshots "
+                     "WHERE event_type='statement'").fetchone()[0] == 2
+    c.close()
+
+
+FUND_STMT_TEXT = """\
+              Partner's Capital Statement (Unaudited)
+Capital account balance at December 31, 2025      $    233,300 $   233,300
+Paid in capital, since inception                       202,000
+Distributions, since inception                            (990)
+"""
+
+
+def test_financial_statement_fmv_overrides_k1(tmp_path, monkeypatch):
+    """A fund financial report's per-LP capital statement lands as a
+    basis='fmv' statement event at the period end, replacing a same-dated
+    K-1 tax-basis mark; the fund is matched by name from the filename and
+    SPVs never match. Quarter-end reports add their own dated events."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    docs = tmp_path / "docs"
+    write_run(dest, "20240101T000000Z", [
+        positions_capture([
+            pos_node("pF", "example-fund-of-funds-f", name="Example Fund-of-Funds",
+                     contributed=100000),
+            pos_node("pS", "example-co-s", name="Example Co")]),
+        dashboard_capture()])
+    docs.mkdir(parents=True)
+    # 2025 K-1 for the fund -> a Dec-31 tax-basis statement first.
+    fund = "Example Fund of Funds, LP"
+    with open(docs / "Synthetic 2025 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_HDR, [
+            "Example Fund-of-Funds", fund, "Issued", "$0", "$1,000", "$0", "",
+            "", "", "$460", "5.0", "No", "12-3456789"]])
+    # Two financial reports: a quarter end and the year end (same date as
+    # the K-1 statement). Content comes from the monkeypatched extractor.
+    (docs / "Example Fund of Funds, LP-2025-09-30 (X).pdf").write_bytes(b"%PDF")
+    (docs / "Example Fund of Funds, LP-2025-12-31 (X).pdf").write_bytes(b"%PDF")
+    q3 = FUND_STMT_TEXT.replace("December 31", "September 30").replace("233,300", "88,800")
+    monkeypatch.setattr(load.statements, "pdf_text",
+                        lambda p: q3 if "09-30" in p.name else FUND_STMT_TEXT)
+    assert load.main(["--bronze-dir", str(dest), "--silver-db", str(db),
+                      "--documents-dir", str(docs)]) == 0
+    c = sqlite3.connect(db)
+    rows = c.execute(
+        "SELECT strftime('%Y-%m-%d', datetime(as_of_date,'unixepoch')), "
+        "market_value_minor, valuation_basis FROM position_snapshots "
+        "WHERE position_external_id='pF' AND event_type='statement' "
+        "ORDER BY as_of_date").fetchall()
+    # Q3 fair value + Dec-31 fair value (which REPLACED the K-1 tax mark)
+    assert rows == [("2025-09-30", 8880000, "fmv"),
+                    ("2025-12-31", 23330000, "fmv")]
+    # the SPV got nothing from the reports
+    assert c.execute("SELECT COUNT(*) FROM position_snapshots "
+                     "WHERE position_external_id='pS' AND event_type='statement'"
+                     ).fetchone()[0] == 0
+    c.close()
+
+
 def test_idempotent_reload(tmp_path):
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
     write_run(dest, "20240101T000000Z",

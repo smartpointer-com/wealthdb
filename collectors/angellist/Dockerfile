@@ -26,7 +26,8 @@ RUN playwright install firefox && playwright install-deps firefox
 # flags the Camoufox/Playwright automation stack (see DESIGN.md). We then
 # read its plaintext cookies.sqlite to lift the session. libdbus-glib-1-2
 # is the one runtime lib Firefox needs that the Playwright/Camoufox deps
-# don't already pull in.
+# don't already pull in. poppler-utils provides `pdftotext`, used by
+# statements.py to parse the fund financial-report PDFs (load step).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget ca-certificates \
  && install -d -m 0755 /etc/apt/keyrings \
@@ -37,7 +38,7 @@ RUN apt-get update \
  && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' \
       > /etc/apt/preferences.d/mozilla \
  && apt-get update \
- && apt-get install -y --no-install-recommends firefox libdbus-glib-1-2 \
+ && apt-get install -y --no-install-recommends firefox libdbus-glib-1-2 poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy scripts last. Listed explicitly so accidentally-present host

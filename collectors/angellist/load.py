@@ -46,6 +46,8 @@ from pathlib import Path
 
 from collectorkit import bronze, cli, silver
 
+import statements
+
 log = logging.getLogger("angellist.load")
 
 HERE = Path(__file__).resolve().parent
@@ -497,9 +499,20 @@ def load_documents(conn, docs_dir: Path) -> None:
 # --------------------------------------------------------------------------
 
 def _pair_k1_to_positions(conn):
-    """Pair each K-1 SPV (fund_name) to a position. By company name, and for
-    the few multi-SPV companies by investment year + cumulative contribution
-    amount (each SPV's is distinct). Returns {fund_name: position_external_id}."""
+    """Pair each K-1 SPV (fund_name) to a position. The fund — not the
+    company label — is the stable identity: a renamed portfolio company
+    keeps its old label on old tax years, so a fund is matched through
+    EVERY label its K-1 rows ever carried. Real offerings always beat the
+    thin funding-ledger-derived ones (a `funding:` offering only pairs when
+    no real offering matches any label — a genuinely exited holding), and
+    multi-SPV companies disambiguate by investment year + cumulative
+    contribution amount (each SPV's is distinct).
+
+    Returns (fund_to_pid, alias_to_pid): the per-fund pairing, plus every
+    company label of a real-paired fund mapped to its position — the alias
+    map link_funding_transactions uses to resolve pre-rename descriptions.
+    A label claimed by two funds paired to different positions is dropped
+    from the alias map as ambiguous."""
     # Positions per company, with their latest contributed + investment year.
     pos_by_company = {}
     for pid, company, inv_date, contributed in conn.execute(
@@ -511,42 +524,66 @@ def _pair_k1_to_positions(conn):
         pos_by_company.setdefault((company or "").strip().lower(), []).append(
             {"pid": pid, "year": _year_of(inv_date), "contrib": contributed or 0})
 
-    # K-1 SPVs aggregated per company (first contribution year + lifetime
-    # contributions).
-    spv_by_company = {}
+    # K-1 SPVs aggregated per fund across all labels (first contribution
+    # year + lifetime contributions).
+    funds = {}
     for company, fund, year, contrib in conn.execute(
             "SELECT portfolio_company, fund_name, tax_year, contributions_minor "
             "FROM k1_capital_accounts").fetchall():
+        d = funds.setdefault(fund, {"labels": set(), "first_year": None, "total": 0})
         ck = (company or "").strip().lower()
-        d = spv_by_company.setdefault(ck, {}).setdefault(
-            fund, {"first_year": None, "total": 0})
+        if ck:
+            d["labels"].add(ck)
         if contrib:
             d["total"] += contrib
             d["first_year"] = year if d["first_year"] is None else min(d["first_year"], year)
 
-    fund_to_pid = {}
-    for ck, funds in spv_by_company.items():
-        avail = dict(funds)
-        for p in sorted(pos_by_company.get(ck, []), key=lambda x: -(x["contrib"] or 0)):
-            best, best_s = None, None
-            for fn, d in avail.items():
-                ys = 0 if d["first_year"] == p["year"] else abs((d["first_year"] or 0) - (p["year"] or 0)) * 10**15
-                s = ys + abs((d["total"] or 0) - (p["contrib"] or 0))
-                if best_s is None or s < best_s:
-                    best, best_s = fn, s
-            if best is not None:
-                fund_to_pid[best] = p["pid"]
-                del avail[best]
-    return fund_to_pid
+    # Score every (fund, candidate) pair, assign best-first, one position
+    # per fund and vice versa. Year mismatch dominates the contribution
+    # delta; the funding: penalty dominates both.
+    scored = []
+    for fund, d in funds.items():
+        seen = set()
+        for ck in d["labels"]:
+            for p in pos_by_company.get(ck, []):
+                if p["pid"] in seen:
+                    continue
+                seen.add(p["pid"])
+                s = (0 if d["first_year"] == p["year"]
+                     else abs((d["first_year"] or 0) - (p["year"] or 0)) * 10**15)
+                s += abs((d["total"] or 0) - (p["contrib"] or 0))
+                if p["pid"].startswith("funding:"):
+                    s += 10**18
+                scored.append((s, fund, p["pid"]))
+    fund_to_pid, taken = {}, set()
+    for s, fund, pid in sorted(scored, key=lambda t: (t[0], t[1], t[2])):
+        if fund in fund_to_pid or pid in taken:
+            continue
+        fund_to_pid[fund] = pid
+        taken.add(pid)
+
+    alias_to_pid = {}
+    for fund, d in funds.items():
+        pid = fund_to_pid.get(fund)
+        if pid is None or pid.startswith("funding:"):
+            continue
+        for ck in d["labels"]:
+            alias_to_pid[ck] = None if alias_to_pid.get(ck, pid) != pid else pid
+    return fund_to_pid, {k: v for k, v in alias_to_pid.items() if v}
 
 
-def build_k1_statement_snapshots(conn) -> None:
+def build_k1_statement_snapshots(conn, fund_to_pid) -> None:
     """For each K-1 SPV paired to a position, stamp the SPV's legal name + EIN
     onto the immutable offering, and emit one 'statement' position_snapshot
     per tax year at its Dec-31 — the tax-basis ending capital is the mark,
     cumulative contributions / distributions ride alongside. A final K-1
-    marks the position exited (is_open=0)."""
-    fund_to_pid = _pair_k1_to_positions(conn)
+    marks the position exited (is_open=0).
+
+    Statement events derive wholly from k1_capital_accounts, so they are
+    rebuilt from scratch each load: existing 'statement' rows are deleted
+    first. A pairing that shifts between loads (e.g. a company rename
+    healed by the alias matching) therefore leaves no stale marks on the
+    previously-paired position."""
     if not fund_to_pid:
         return
     latest_run = conn.execute("SELECT MAX(snapshot_at) FROM dump_runs").fetchone()[0] or 0
@@ -564,6 +601,7 @@ def build_k1_statement_snapshots(conn) -> None:
     n = 0
     conn.execute("BEGIN")
     try:
+        conn.execute("DELETE FROM position_snapshots WHERE event_type = 'statement'")
         for fund, pid in fund_to_pid.items():
             cum_c = cum_d = 0
             ein = next((y["ein"] for y in fund_years.get(fund, []) if y["ein"]), None)
@@ -589,6 +627,92 @@ def build_k1_statement_snapshots(conn) -> None:
         raise
     if n:
         log.info("k1 statement events: %d (paired SPVs: %d)", n, len(fund_to_pid))
+
+
+# --------------------------------------------------------------------------
+# Fund financial reports -> position_snapshots (fair-value statement events)
+# --------------------------------------------------------------------------
+
+_FIN_DATE_RE = re.compile(r"-(\d{4})-(\d{2})-(\d{2})")
+
+
+def _norm_alnum(s: str) -> str:
+    """Lowercased alphanumerics only — the loosest name form, for matching
+    fund legal names across punctuation/hyphenation variants."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def build_financial_statement_snapshots(conn, docs_dir: Path) -> None:
+    """Parse each fund financial report's per-LP capital statement and emit
+    a 'statement' snapshot with basis='fmv' at the report's period end —
+    the partner's fair-value capital account balance, the closest on-source
+    FMV mark a fund position has (the K-1 gives only tax basis).
+
+    Runs after the K-1 pass, so a year-end fair-value statement replaces
+    the same-dated tax-basis mark; the replaced row's cumulative
+    contributed / distributions and is_open carry over when the statement
+    page lacks its own. Reports match a fund offering (kind='fund' only —
+    financial reports are not issued for SPVs) by the longest normalised
+    offering name, company or fund-legal, contained in the filename."""
+    docs_dir = Path(docs_dir)
+    if not docs_dir.is_dir():
+        return
+    fund_names = []
+    for pid, company, fund in conn.execute(
+            "SELECT position_external_id, company_name, fund_name FROM offerings "
+            "WHERE kind = 'fund'"):
+        for name in (company, fund):
+            nn = _norm_alnum(name)
+            if len(nn) >= 8:
+                fund_names.append((nn, pid))
+    if not fund_names:
+        return
+    latest_run = conn.execute("SELECT MAX(snapshot_at) FROM dump_runs").fetchone()[0] or 0
+
+    n = 0
+    conn.execute("BEGIN")
+    try:
+        for path in sorted(docs_dir.iterdir()):
+            if (not path.is_file() or path.suffix.lower() != ".pdf"
+                    or "schedule k-1" in path.name.lower()):
+                continue
+            dm = _FIN_DATE_RE.search(path.name)
+            if not dm:
+                continue
+            fn = _norm_alnum(path.name)
+            matches = [(nn, pid) for nn, pid in fund_names if nn in fn]
+            if not matches:
+                continue
+            pid = max(matches, key=lambda t: len(t[0]))[1]
+            parsed = statements.parse_partner_capital_statement(
+                statements.pdf_text(path))
+            if not parsed:
+                continue
+            as_of = int(datetime.datetime(
+                int(dm.group(1)), int(dm.group(2)), int(dm.group(3)),
+                tzinfo=datetime.timezone.utc).timestamp())
+            prior = conn.execute(
+                "SELECT contributed_minor, distributions_minor, is_open "
+                "FROM position_snapshots "
+                "WHERE position_external_id = ? AND as_of_date = ?",
+                (pid, as_of)).fetchone()
+            put_snapshot(conn, pid, as_of, "statement", "USD",
+                         market=parsed["ending_capital_cents"], basis="fmv",
+                         contributed=parsed["contributed_cents"]
+                         if parsed["contributed_cents"] is not None
+                         else (prior[0] if prior else None),
+                         distributions=parsed["distributions_cents"]
+                         if parsed["distributions_cents"] is not None
+                         else (prior[1] if prior else None),
+                         is_open=prior[2] if prior else 1,
+                         status=None, snapshot_at=latest_run)
+            n += 1
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    if n:
+        log.info("fund fair-value statement events: %d", n)
 
 
 _PAREN_RE = re.compile(r"\s*\([^)]*\)")
@@ -619,19 +743,27 @@ def _funding_company(ty: str, desc: str):
     return m.group(1).strip() if m else None
 
 
-def link_funding_transactions(conn) -> None:
+def link_funding_transactions(conn, k1_aliases=None) -> None:
     """Link each funding transaction to the SPV/fund instrument it concerns.
     The company is parsed from the description and matched (normalised) to the
-    current offerings:
+    current offerings, extended by the K-1 alias map (old labels of renamed
+    companies -> their real position):
 
       * exactly one current position -> link to it;
       * several current positions    -> a multi-SPV company (the description
         names only the company, not which SPV) -> pick the SPV whose
         investment date is closest to the transaction date (heuristic); if no
         invest dates are available, left account-level (NULL);
-      * no current position          -> an EXITED investment: a thin offering
+      * a K-1 alias                  -> a pre-rename description of a held
+        position -> link to that position;
+      * no match at all              -> an EXITED investment: a thin offering
         is DERIVED FROM THE FUNDING LEDGER here (so the instrument exists for
         the transaction to link to), and the transaction links to it.
+
+    After linking, `funding:` offerings no transaction references any more
+    are dropped along with their snapshots — the residue of descriptions
+    that minted a phantom before the alias resolved them (a company rename
+    heals in place).
 
     External-bank deposits / withdrawals name no company and stay
     account-level. Returns nothing; logs the link / exited / multi-SPV tallies."""
@@ -639,10 +771,18 @@ def link_funding_transactions(conn) -> None:
     inv_date: dict[str, int] = {}
     for pid, name, idate in conn.execute(
             "SELECT position_external_id, company_name, investment_date FROM offerings "
-            "WHERE company_name IS NOT NULL AND company_name <> ''"):
+            "WHERE company_name IS NOT NULL AND company_name <> '' "
+            "AND position_external_id NOT LIKE 'funding:%'"):
         norm_to_pids.setdefault(_norm_company(name), set()).add(pid)
         if idate is not None:
             inv_date[pid] = idate
+    # Old labels of renamed companies resolve to the real position; a label
+    # already covered by a current offering keeps its current-company
+    # semantics (the alias only fills gaps).
+    for alias, pid in (k1_aliases or {}).items():
+        a = _norm_company(alias)
+        if a and a not in norm_to_pids:
+            norm_to_pids[a] = {pid}
     # bounded-substring patterns over the current companies, longest first so
     # the most specific name wins (a company name appears verbatim in every
     # description type, wherever it sits — so substring beats positional
@@ -699,13 +839,26 @@ def link_funding_transactions(conn) -> None:
                 "UPDATE funding_transactions SET position_external_id = ? "
                 "WHERE transaction_external_id = ?", (pid, txid))
             n_link += 1
+        # Drop phantoms nothing references: a description that once minted a
+        # thin offering now resolves through the K-1 aliases, so the phantom
+        # (and any snapshots stamped onto it while the pairing was unstable)
+        # is dead weight that would double-count the position in gold.
+        orphaned = ("SELECT position_external_id FROM offerings "
+                    "WHERE position_external_id LIKE 'funding:%' "
+                    "AND position_external_id NOT IN "
+                    "(SELECT position_external_id FROM funding_transactions "
+                    " WHERE position_external_id IS NOT NULL)")
+        n_drop = conn.execute(
+            "DELETE FROM position_snapshots WHERE position_external_id IN "
+            f"({orphaned})").rowcount
+        conn.execute(f"DELETE FROM offerings WHERE position_external_id IN ({orphaned})")
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
-    log.info("funding tx linked: %d (exited instruments derived: %d; "
+    log.info("funding tx linked: %d (exited instruments derived: %d, orphaned snapshots dropped: %d; "
              "multi-SPV disambiguated by date: %d; still unlinked: %d tx across %d companies)",
-             n_link, n_exit, n_date, sum(multi.values()), len(multi))
+             n_link, n_exit, n_drop, n_date, sum(multi.values()), len(multi))
 
 
 # --------------------------------------------------------------------------
@@ -764,8 +917,10 @@ def main(argv: list[str]) -> int:
         load_snapshot(conn, snap, run_dir)
         n += 1
     load_documents(conn, docs_dir)
-    build_k1_statement_snapshots(conn)
-    link_funding_transactions(conn)
+    fund_to_pid, k1_aliases = _pair_k1_to_positions(conn)
+    build_k1_statement_snapshots(conn, fund_to_pid)
+    build_financial_statement_snapshots(conn, docs_dir)
+    link_funding_transactions(conn, k1_aliases)
     conn.close()
     log.info("loaded %d snapshot(s) into %s", n, silver_db)
     return 0
