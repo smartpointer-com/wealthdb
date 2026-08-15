@@ -518,7 +518,7 @@ restated here.
 | [`swissquote`](swissquote/) | Swissquote eBanking | scraped session + push | Docker |
 | [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | Docker (Camoufox) |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
-| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — validated live, `load` is Phase 3 |
+| [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |

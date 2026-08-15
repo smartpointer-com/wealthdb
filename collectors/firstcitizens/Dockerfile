@@ -27,10 +27,11 @@ RUN pip install -r requirements.txt
 #   auth_dialog.py  the access-code 2FA challenge as a tested CLI dialog
 #   login.py        interactive login (device registration) + shared authenticate()
 #   download.py     unattended logon + REST fetch → bronze
-#   load.py         bronze → SQLite silver (Phase 3 stub)
+#   load.py         bronze → SQLite silver
 #   prune.py        bronze reclaim
 COPY explore.py q2client.py auth_dialog.py login.py download.py \
      load.py prune.py /app/
+COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh

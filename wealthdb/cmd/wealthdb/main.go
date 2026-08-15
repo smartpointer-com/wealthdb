@@ -14,6 +14,7 @@ import (
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/cointracking"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/equityzen"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fidelity"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fred"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/manual"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/relevate"

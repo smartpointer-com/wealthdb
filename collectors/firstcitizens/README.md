@@ -60,7 +60,7 @@ Part of the **wealthdb** suite — see
 gold model and [collectors/README.md](../README.md) for shared collector
 conventions.
 
-## Status: `login` + `download` validated live; `load` (silver) is Phase 3
+## Status: full pipeline through gold — `login` + `download` validated live
 
 Discovery (2026-08-13) mapped the surface: First Citizens' digital
 banking is a **Q2 white-label platform** exposing a clean `mobilews`
@@ -81,7 +81,18 @@ and every statement PDF. The pipeline splits into:
 - **`download`** (Camoufox, unattended) — the trusted device skips 2FA;
   fetches the deposit roster, per-account history, exports, and
   statement PDFs over REST into bronze.
-- **`load`** (silver) — Phase 3, not built yet.
+- **`load`** (silver) — parses each bronze run into a source-shaped
+  SQLite: the account roster, the transaction ledger, and the statement
+  inventory. The `accountHistory` JSON is the authoritative ledger (a
+  stable id **and** a running balance per row), so there is no
+  export-join or statement-PDF backfill — the export deepens no further
+  than the history, which reaches the account's full lifetime.
+
+A **gold adapter** (`wealthdb/internal/silver/firstcitizens/`) projects
+that silver into the canonical store on the chase model: cash accounts,
+a closing-balance series from the per-row running balance plus a current
+roster balance, and the whole deposit ledger. The cash accounts are
+conduits, so returns for them are excluded downstream.
 
 The [`chase`](../chase/) collector is the US-retail model this one
 adapts; see [DESIGN.md](DESIGN.md) §4.2 for the mapped flows and the
@@ -111,7 +122,7 @@ FIRSTCITIZENS_PASSWORD='...'
 ./firstcitizens download              # unattended: REST fetch → bronze (default window ~90 days)
 ./firstcitizens download --lookback all   # complete history (the initial backfill)
 ./firstcitizens download --dry-run    # enumerate roster + statements, export nothing
-./firstcitizens load                  # bronze → silver (Phase 3 — not built yet)
+./firstcitizens load                  # bronze → silver SQLite
 
 ./firstcitizens explore            # discovery harness over VNC
 ```

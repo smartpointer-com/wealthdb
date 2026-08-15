@@ -6,8 +6,9 @@
 # preLogonUser/logonUser (DESIGN.md §3) — so `login` and `download` both
 # launch Camoufox. `login` is interactive (registers the device, 2FA driven
 # from the terminal); `download` is unattended (the trusted device skips
-# 2FA). `vnc-login` is the by-hand fallback. `load` is Phase 3; `prune` is a
-# pure file walk. `explore` is the retained discovery harness.
+# 2FA). `vnc-login` is the by-hand fallback. `load` ingests bronze into the
+# SQLite silver; `prune` is a pure file walk. `explore` is the retained
+# discovery harness.
 #
 # Xvfb is started directly (not via xvfb-run) — the Noble xvfb-run's SIGUSR1
 # ready-signalling hangs under a non-root parent; socket-existence polling is
@@ -54,9 +55,9 @@ case "${1:-help}" in
         exec python3 /app/download.py --bronze-dir /data "$@"
         ;;
     load)
-        # Silver loader — pure SQLite + Python, no browser (Phase 3 stub).
+        # Silver loader — pure SQLite + Python, no browser.
         shift
-        exec python3 /app/load.py "$@"
+        exec python3 /app/load.py --bronze-dir /data "$@"
         ;;
     prune)
         # Bronze reclaim — pure file walk. Also reachable host-side via the
@@ -90,7 +91,7 @@ Subcommands:
               into a UTC-stamped bronze run dir under /data. --format picks
               export formats; --no-documents skips statements; --dry-run
               enumerates without exporting.
-  load        Ingest bronze into the SQLite silver (Phase 3 — not built yet).
+  load        Ingest bronze into the SQLite silver.
   prune       Delete non-complete dumps from the bronze tree. --dry-run
               prints the plan. Usually run host-side via the wrapper.
   sh|bash     Open an interactive shell.

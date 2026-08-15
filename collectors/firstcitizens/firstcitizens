@@ -9,8 +9,8 @@
 # The logon must run in the browser (Akamai gates preLogonUser/logonUser —
 # DESIGN.md §3), so `login` and `download` both drive Camoufox: `login` is
 # interactive (device registration, terminal 2FA), `download` unattended
-# (trusted device skips 2FA, then a REST fetch). `load` is Phase 3; `prune`
-# is a pure file walk that runs host-side.
+# (trusted device skips 2FA, then a REST fetch). `load` ingests bronze into
+# the SQLite silver; `prune` is a pure file walk that runs host-side.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh.
 
@@ -41,8 +41,8 @@ firstcitizens — host wrapper
 Read-only scraper for the First Citizens Bank retail deposit relationship
 (checking / savings) over the Q2 mobilews REST API. \`login\` registers the
 device once (interactive 2FA); \`download\` then runs unattended and fetches
-each deposit account's activity + statement PDFs. \`load\` (silver) is
-Phase 3. See DESIGN.md for the mapped flows.
+each deposit account's activity + statement PDFs. \`load\` ingests that
+bronze into the SQLite silver. See DESIGN.md for the mapped flows.
 
 Subcommands:
   build               Build the Docker image (\`docker build\`).
@@ -59,8 +59,7 @@ Subcommands:
                       statement PDFs) into a UTC-stamped bronze run dir.
                       --format picks export formats; --no-documents skips
                       statements; --dry-run enumerates without exporting.
-  load [args...]      Ingest bronze into the SQLite silver (Phase 3 — not
-                      built yet).
+  load [args...]      Ingest bronze into the SQLite silver.
   prune [args...]     Delete non-complete dumps from the bronze tree (runs
                       host-side). --dry-run prints the plan.
   explore [args...]   Discovery harness: Camoufox over VNC + HAR / network

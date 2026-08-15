@@ -195,16 +195,15 @@ skipped 2FA entirely. So:
   so a windowed download narrows the exports too; without it each export
   returns the account's full available history (~3 years, the
   post-SVB-migration lifetime).
-- **Format comparison (Phase 3, same question as chase):** the export
-  reaches ~3 years but statements only ~2, so **the export is the
-  deeper source and there is no statement-backfill tail to fill** — the
-  opposite of chase. Which format(s) to load is decided by the same
-  balance-vs-stable-id trade-off: pull the OFX-family format that
-  carries a stable `FITID` plus whichever format carries the per-row
-  running balance, compare the two (Ofx/QFX/Qbo are OFX variants; Csv/Xls
-  are the flat forms), and join in silver if neither is a superset.
-  `Qbo`/`QFX_1_0_2` are likely byte-identical OFX (the chase result) —
-  pull one. Confirm against the captured payloads in Phase 3.
+- **Format comparison (resolved in Phase 3):** the export reaches
+  ~3 years but statements only ~2, so **the export is the deeper source
+  and there is no statement-backfill tail to fill** — the opposite of
+  chase. And the `accountHistory` JSON turned out richer still: it
+  carries a stable `transactionId` **and** a per-row `runningBalance` in
+  one payload, so silver loads the **JSON as the authoritative ledger**
+  and needs no export join at all. The CSV/QFX exports are captured as
+  provenance only (a flat export can omit a pending/edge row the JSON
+  keeps), never the source of record.
 - Statements are still downloaded as **documents** (PDFs belong in
   bronze), but they are **not** a transaction source here.
 
@@ -308,20 +307,29 @@ skipped 2FA entirely. So:
    authentication-progress probe must never touch an
    authenticated-only endpoint mid-challenge.
 
-3. **load** — bronze → SQLite silver, idempotent, migrations, unit
-   tests on synthetic fixtures only. The `accountHistory` JSON already
-   carries a stable id + running balance in one payload, so the chase
-   CSV↔QFX join is unnecessary — parse the **JSON `history/<acct>.json`
-   as the authoritative ledger** (the `transactions` list). The flat CSV
+3. **load (built).** bronze → SQLite silver, idempotent, migrations
+   (`migrations/0001_initial.sql`), unit tests on synthetic fixtures
+   only (`tests/test_load.py`). The `accountHistory` JSON already carries
+   a stable id + running balance in one payload, so the chase CSV↔QFX
+   join is unnecessary — the loader parses the **JSON `history/<acct>.json`
+   as the authoritative ledger** (its `transactions` list): a stable
+   `transactionId`, the signed `amount` (magnitude × `isDebit`), the
+   per-row `runningBalance`, description and check number. The flat CSV
    export can carry slightly fewer rows than the JSON (a pending/edge
-   item the flat export omits), so it is provenance, not the source of
-   record; reconcile against the JSON if ever used.
+   item it omits), so it is provenance only, never the source of record.
+   The silver schema is column-compatible with chase's, so the two gold
+   adapters run in parallel. Statements are ingested as documents only
+   (no transaction backfill).
 
-4. **Gold adapter** — `wealthdb/internal/silver/firstcitizens` on
-   chase's model: cash accounts, a closing-balance series from the
-   running balance plus a current roster balance, every transaction;
-   the `silver_sources` whitelist migration and the `cmd/wealthdb`
-   registration. Conduit returns-exclusion per §1.
+4. **Gold adapter (built).** `wealthdb/internal/silver/firstcitizens/`
+   on chase's model: cash accounts (`AccountKind` cash, `taxable_personal`
+   / `self_directed`), a closing-balance series from the per-row running
+   balance plus a current roster balance, and every transaction (interest
+   / fee recognised from the description, else deposit/withdrawal by
+   sign). Registered via a blank import in `cmd/wealthdb/main.go` and the
+   `silver_sources` whitelist migration
+   (`internal/gold/migrations/0034_silver_sources_firstcitizens.sql`).
+   Conduit returns-exclusion per §1.
 
 **No statement-backfill phase.** Chase needed one because its export was
 capped at ~24 months while statements reached ~7 years; here the export
@@ -339,7 +347,11 @@ untrusted sign-in drives the Secure Access Code from the terminal
 trusted; `download` writes complete bronze — the deposit roster, the
 full paginated transaction history per account (every row to the
 SVB-migration date), CSV+QFX exports, and every statement PDF — with a
-`complete` run manifest. `load` (silver) is Phase 3.
+`complete` run manifest. **`load` (silver) and the gold adapter are
+built** (§4.3–4.4): `load` parses the history JSON into the SQLite
+silver, and `wealthdb/internal/silver/firstcitizens/` projects it into
+gold as cash accounts + a closing-balance series + the deposit ledger.
+Both ship with unit tests on synthetic fixtures.
 
 - `make build-firstcitizens` builds the image;
   `make test-firstcitizens` runs the unit tests in the container.
