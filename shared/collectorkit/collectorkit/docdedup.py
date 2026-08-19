@@ -1,7 +1,7 @@
 """Shared download-avoidance engine for collector ``download.py``.
 
 Where the shipped :mod:`collectorkit.dedup` reclaims duplicate disk *after*
-the bytes are already on disk (a host-side sweep between download and load),
+the bytes are already on disk (a host-side sweep, run post-load),
 ``docdedup`` acts *before* the fetch, inside a live ``download`` walk, and can
 avoid the fetch itself — the bandwidth, the authenticated request against a
 live financial source (the bot-detection surface that matters most), and the

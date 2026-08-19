@@ -17,9 +17,12 @@
 #              files across dumps — hardlink by default (portable across any
 #              hard-link filesystem), --strategy clone for copy-on-write
 #              reflinks where supported. Complete, quiescent dumps only;
-#              transparent to load. A manual one-off sweep, never scheduled.
-#              Sweeps every collector subtree under --data-dir (or one
-#              --source). Preview with --dry-run.
+#              content-preserving, but in an orchestrated run it must come
+#              AFTER load, never between download and load (a containerised
+#              load can hit stale Docker-VM file-share caches on the swept
+#              files — see collectorkit.dedup). Sweeps every collector
+#              subtree under --data-dir (or one --source). Preview with
+#              --dry-run.
 #   list       list the available sources
 #
 # flags:

@@ -33,11 +33,17 @@ tree.
 
 This rewrites **load inputs** (the actual data files), which is why it is a
 separate sweep and not part of ``prune`` (whose contract is *never touch a
-load input*). It is safe to run between ``download`` and ``load`` in
-orchestration — it is idempotent (hardlink) and content-preserving — an
-interim reclaim of the byte-dup each re-download creates, which becomes
-redundant once download-avoidance stops the re-fetch at the source. Its
-safety comes from a different place than prune's: it never removes content,
+load input*). In an orchestrated run it belongs **after** ``load``, never
+between ``download`` and ``load``: the sweep is content-preserving but runs
+host-side, and where containers reach bronze through a Docker-VM file share
+(e.g. Colima/Lima virtiofs), a containerised load started seconds later can
+still hold guest dentry-cache entries for the paths the download container
+just wrote — the swept files then ``open()`` as ENOENT until the guest
+cache expires (a few seconds). Swept-after-load reclaims the same bytes
+with no reader left to race. It is an interim reclaim of the byte-dup each
+re-download creates, which becomes redundant once download-avoidance stops
+the re-fetch at the source. Its safety comes from a different place than
+prune's: it never removes content,
 only re-backs a byte-identical duplicate onto the canonical copy, and it
 does so under the same envelope prune uses plus a verify-before-replace
 step:
@@ -537,9 +543,11 @@ def main(argv=None) -> int:
         description="Reclaim local disk by sharing byte-identical bronze "
                     "files (hardlink by default; --strategy clone for "
                     "copy-on-write reflinks where the filesystem supports "
-                    "them). Complete, quiescent dumps only; transparent to "
-                    "load; idempotent (hardlink), so safe to run in "
-                    "orchestration between download and load.",
+                    "them). Complete, quiescent dumps only; idempotent "
+                    "(hardlink). In orchestration run it AFTER load, never "
+                    "between download and load — a containerised load can "
+                    "hit stale Docker-VM file-share caches on the swept "
+                    "files (see the module docstring).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Data-root resolution matches the collector wrappers (host-lib.sh):
