@@ -12,6 +12,11 @@ MFA factor fires, which env vars hold the credentials); this file
 is the shared policy they all inherit. All of it is
 non-negotiable.
 
+A **new** collector is built by the phased playbook in
+[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md) — a kickoff-prompt
+template plus the fleet's accumulated build lessons. The rules below
+bind every phase of it.
+
 ## 1. Read-only access to every financial source
 
 Each collector drives a fully privileged session — the same login

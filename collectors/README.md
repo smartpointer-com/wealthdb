@@ -110,9 +110,11 @@ A collector lives in `collectors/<name>/`. Its one hard requirement is
 an **executable `collectors/<name>/<name>`** — the wrapper that
 `wealthdb-collect` dispatches to; everything else (Python scripts,
 migrations, Dockerfile, tests) is convention. The closest existing
-collector is usually the best starting point — a REST one
-([`viac`](viac/)), a browser one ([`schwab-web`](schwab-web/)), or a
-host-venv one ([`schwab-api`](schwab-api/)).
+collector is usually the best starting point — pick it via the
+archetype table in
+[../NEW-COLLECTOR-PROMPT.md](../NEW-COLLECTOR-PROMPT.md), which also
+carries the build playbook and the kickoff-prompt template for
+building a collector with a coding agent.
 
 Each collector is identified by a kebab-case `<name>` (e.g. `acme-bank`)
 and an upper-snake `ENV_PREFIX` (e.g. `ACME_BANK`); both thread through

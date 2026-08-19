@@ -202,6 +202,12 @@ forward one `--lookback` to every collector.
   layer ownership, canonical model.
 - **[CLAUDE.md](CLAUDE.md)** — agent ground rules shared across
   every component (security, PII, read-only access).
+- **[NEW-COLLECTOR-PROMPT.md](NEW-COLLECTOR-PROMPT.md)** — how to
+  build a collector for a new source with a coding agent: the phased
+  playbook, the user protocol, and a kickoff-prompt template. The
+  recommended flow: an authoring agent drafts the kickoff from the
+  template by interview + repo recon, the user reviews it, and a
+  fresh agent session builds from it.
 - **[wealthdb/docs/DESIGN.md](wealthdb/docs/DESIGN.md)** — deep
   gold-engine design (schema, plugin contract, load semantics).
 - Per-component `README.md` / `DESIGN.md` under each directory.
