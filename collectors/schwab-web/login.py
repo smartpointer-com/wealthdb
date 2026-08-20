@@ -189,8 +189,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--screenshot-dir", default=None, type=Path,
         help=("If set, write a screenshot + HTML capture at each "
               "navigation landmark to this host path (OUTSIDE the "
-              "bronze tree, e.g. the /debug mount). Useful for "
-              "debugging the login / landmark flow. NEVER commit "
+              "bronze tree, e.g. the /debug mount), plus a full "
+              "DEBUG-level run.log mirror of the run's output. Useful "
+              "for debugging the login / landmark flow. NEVER commit "
               "these — see CLAUDE.md §4."),
     )
     p.add_argument(
@@ -229,6 +230,38 @@ def maybe_source_env_files(args: argparse.Namespace) -> None:
 # ============================================================
 # Screenshot / trace helpers
 # ============================================================
+
+def tee_debug_log(screenshot_dir: Path | None,
+                  console_level: int) -> logging.Handler | None:
+    """Mirror the full DEBUG-level log into the debug dir, so a capture
+    bundle always includes at least everything the terminal showed —
+    a run whose only record was scrollback is a run that cannot be
+    diagnosed later. Console verbosity is unchanged. Returns the
+    attached handler, or None when there is nowhere to write."""
+    if screenshot_dir is None:
+        return None
+    try:
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(
+            screenshot_dir / f"{bronze.ts_slug()}-run.log",
+            encoding="utf-8")
+    except OSError as e:
+        log.warning("could not open the debug log file: %s", e)
+        return None
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    # Pin existing (console) handlers to their current verbosity, then
+    # open the root to DEBUG so the file sees everything.
+    for h in root.handlers:
+        if h.level == logging.NOTSET:
+            h.setLevel(console_level)
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    log.info("full debug log: %s", handler.baseFilename)
+    return handler
+
 
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """Capture page state at a navigation landmark: always save the
@@ -1305,10 +1338,12 @@ def _exact_window(lookback, since, until):
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    console_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=console_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    tee_debug_log(args.screenshot_dir, console_level)
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
     if args.capture_bodies and args.screenshot_dir is None:

@@ -67,6 +67,11 @@ PAGE_DETAIL_DEADLINE_S = 600
 DETAIL_HEARTBEAT_S = 30
 SLOW_LAP_NOTICE_S = 180
 MAX_DETAIL_RECOVERIES = 2
+# Consecutive intercepted More-clicks (with the modal overlay still
+# open after a dismissal attempt) before the walk declares the overlay
+# wedged and takes the reload-recovery path, instead of burning the
+# click timeout on every remaining row until the lap deadline fires.
+WEDGED_ROW_FAILS = 3
 RECOVERY_DEADLINE_S = 180
 
 # Bronze run-directory naming: <bronze-dir>/<UTC-timestamp>/
@@ -192,6 +197,13 @@ def enumerate_accounts(page) -> list[dict]:
 def select_account(page, entry_id: str) -> None:
     """Open the account selector and pick the entry with `entry_id`.
 
+    Starts by dismissing any modal a previous account's walk may have
+    leaked (observed live: an Escape-immune wire-details overlay
+    intercepted this very click for every account after the first), so
+    one account's stuck dialog can never cascade across the rest of
+    the loop. The open click is bounded, with a dispatch_event
+    fallback if something still intercepts it.
+
     Uses `dispatch_event('click')` for the entry rather than a
     real pointer click. Schwab can surface an overlay panel (e.g.
     "W-8 Form Status") that lands on top of the dropdown the
@@ -199,10 +211,20 @@ def select_account(page, entry_id: str) -> None:
     entry beneath. dispatch_event fires the click handler in JS
     directly, sidestepping the z-index race entirely.
     """
+    _dismiss_open_modal(page)
     selector_button = page.locator(
         f"button.{schwab.ACCOUNT_SELECTOR_BUTTON_CLASS}"
     ).first
-    selector_button.click()
+    try:
+        selector_button.click(timeout=10_000)
+    except Exception as e:
+        log.warning("account-selector click intercepted (%s); dismissing "
+                    "any overlay and dispatching the click directly",
+                    str(e).splitlines()[0])
+        # Something demonstrably covers the page — wait for it and
+        # dismiss it properly before falling back.
+        _dismiss_open_modal(page, expect_modal=True)
+        selector_button.dispatch_event("click")
     page.wait_for_selector(f"#{entry_id}", timeout=LANDMARK_TIMEOUT_MS)
     page.locator(f"#{entry_id}").dispatch_event("click")
 
@@ -707,39 +729,115 @@ def _safe(s: str, fallback: str = "x") -> str:
     out = _FN_SAFE.sub("-", s).strip("-")
     return out or fallback
 
-def _dismiss_open_modal(page) -> None:
-    """Dismiss any open Schwab modal and wait until its overlay is
-    actually gone.
+def _overlay_open(page) -> bool:
+    """Whether a modal overlay or dialog is up AND visible, asked
+    through Playwright's selector engine — the same view its
+    hit-testing uses. A raw document.querySelector probe can disagree
+    with hit-testing on this SPA; one such disagreement reported "all
+    clear" milliseconds before an in-flight dialog materialized and ate
+    a click. Visibility matters on both branches: sdps can leave the
+    `--open` class on an overlay it has already hidden (the cleanup
+    rides the close animation, which the lagging SPA can drop), and a
+    hidden overlay intercepts nothing — counting it only produces
+    cry-wolf "still open" warnings."""
+    try:
+        if page.locator(".sdps-modal__overlay--open:visible").count():
+            return True
+        return bool(page.locator('[role="dialog"]:visible').count())
+    except Exception:
+        return False
+
+
+def _modal_gone_settled(page, settle_s: float = 0.7) -> bool:
+    """Clean now AND still clean after a settle. A single instant probe
+    races the SPA's laggy event queue, where a dialog can materialize
+    seconds after the click that opened it."""
+    if _overlay_open(page):
+        return False
+    time.sleep(settle_s)
+    return not _overlay_open(page)
+
+
+def _capture_dialog_html(page, screenshot_dir: Path | None) -> None:
+    """Dump the visible dialog's outerHTML to the debug dir — ground
+    truth for refining MODAL_CLOSE_SELECTORS when a dismissal fails.
+    Lands OUTSIDE bronze under the screenshots' NEVER-commit contract;
+    a no-op without --screenshot-dir."""
+    if screenshot_dir is None:
+        return
+    try:
+        html = page.locator('[role="dialog"]:visible').first.evaluate(
+            "el => el.outerHTML")
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        path = screenshot_dir / f"{bronze.ts_slug()}-wedged-dialog.html"
+        path.write_text(html, encoding="utf-8")
+        log.info("wedged dialog DOM captured to %s", path)
+    except Exception as e:
+        log.debug("wedged-dialog capture failed: %s", e)
+
+
+def _click_modal_close_control(page) -> bool:
+    """Click the open dialog's dismiss-only close control ("X" /
+    Close), trying each MODAL_CLOSE_SELECTORS candidate. Returns True
+    once one was clicked. Never touches OK / Continue / action buttons
+    — on an unknown dialog those could confirm an action (read-only
+    contract, CLAUDE.md §1)."""
+    for sel in schwab.MODAL_CLOSE_SELECTORS:
+        try:
+            btn = page.locator(sel).first
+            if btn.count() == 0 or not btn.is_visible(timeout=300):
+                continue
+            btn.click(timeout=3_000)
+            log.info("dismissed modal via its close control (%s)", sel)
+            return True
+        except Exception as e:
+            log.debug("modal close control %s failed: %s", sel, e)
+    return False
+
+
+def _dismiss_open_modal(page, expect_modal: bool = False) -> None:
+    """Dismiss any open Schwab modal and wait until it is verifiably
+    gone.
 
     sdps-modal honors Escape per WAI-ARIA dialog conventions, but its
     `.sdps-modal__overlay--open` (z-index 101003) outlives the dialog
-    for the duration of the close animation — and anything it still
-    covers eats every click underneath, including pagination flips
-    (force-clicks skip actionability checks, not hit-testing). So
-    dismissal is verified: no-op when nothing is open, Escape and
-    re-check otherwise, warning if an overlay refuses to clear.
+    for the close animation, some variants ignore Escape outright
+    (observed live: the wire-details modal), and the SPA under load
+    applies queued input late — a dialog can materialize seconds after
+    the click that opened it, so an instant "nothing open" probe is a
+    race, not a verdict (one such race left a dialog standing through
+    an account's whole export phase). Hence: every clean verdict is
+    double-checked after a settle, `expect_modal` callers — who just
+    opened or clicked into a dialog — wait for it to materialize
+    first, and dismissal escalates from Escape probes to the dialog's
+    own dismiss-only close control before warning.
     """
-    overlay_gone = """() => !document.querySelector(
-            '.sdps-modal__overlay--open')
-        && !Array.from(document.querySelectorAll('[role="dialog"]'))
-            .some(d => d.offsetWidth || d.offsetHeight)"""
-    # Short probes with an Escape between each (a clean page returns
-    # on the first), then one longer grace for the close animation.
-    for _ in range(3):
+    if expect_modal:
         try:
-            page.wait_for_function(overlay_gone, timeout=500)
-            return
+            page.locator('[role="dialog"]:visible').first.wait_for(
+                state="visible", timeout=3_000)
         except Exception:
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-    try:
-        page.wait_for_function(overlay_gone, timeout=2_000)
-        return
-    except Exception:
-        log.warning("modal overlay still open after repeated Escape — "
-                    "the next click may be intercepted")
+            pass  # never materialized (or came and went) — probed below
+    for _ in range(3):
+        if _modal_gone_settled(page):
+            return
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        time.sleep(0.5)
+    # Escape didn't clear it: click the dialog's close control, then
+    # give the close animation a bounded grace either way.
+    clicked = _click_modal_close_control(page)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if _modal_gone_settled(page):
+            return
+        time.sleep(0.3)
+    log.warning("modal overlay still open after repeated Escape%s — "
+                "the next click may be intercepted",
+                " and its close control" if clicked
+                else " (no close control found)")
 
 def _confirm_export_tax_modal(page) -> None:
     """If Schwab popped its "Export Tax Data" confirmation modal,
@@ -1039,6 +1137,10 @@ def _export_tx_history(page, account_suffix: str, out_dir: Path) -> list[dict]:
 
     entries: list[dict] = []
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A leftover overlay from an earlier step would silently eat the
+    # Export click (observed live: a wedged wire-details overlay cost a
+    # run every export after the first account) — clear the field first.
+    _dismiss_open_modal(page)
     for fmt_label, radio_id, ext in schwab.TX_EXPORT_FORMATS:
         # Open the Export modal. The main-page Export button has
         # the same text as the modal's Export button, so scope by
@@ -1284,8 +1386,18 @@ def _parse_more_modal_text(text: str) -> dict:
                 fields[key] = val
     return fields
 
+# Rows whose "More" opens the wire-details dialog. That modal
+# lazy-loads its content, ignores Escape, and once wedged a whole run
+# (its leaked overlay intercepted every later click); it also carries
+# none of the securities enrichment fields (Settle Date / CUSIP /
+# Principal / Commission) the More walk exists for. Matched on the
+# row's cell text and skipped outright.
+_WIRE_ROW_RE = re.compile(r"\bwire\b", re.I)
+
+
 def _scrape_more_details(page, account_suffix: str,
-                         reapply=None) -> list[dict]:
+                         reapply=None,
+                         screenshot_dir: Path | None = None) -> list[dict]:
     """Walk every pagination page of the tx-history table,
     scroll-load all virtualised rows, click each row's "More"
     link, capture the per-row detail modal contents.
@@ -1296,9 +1408,14 @@ def _scrape_more_details(page, account_suffix: str,
 
     Best-effort throughout: rows without a "More" link are
     silently skipped (Dividend / Interest rows typically have
-    no More link), modal-open failures retry once then move on,
-    and a per-row exception doesn't abort the per-account
-    scrape.
+    no More link), wire rows are skipped by design (_WIRE_ROW_RE),
+    modal-open failures retry once then move on, and a per-row
+    exception doesn't abort the per-account scrape. An intercepted
+    More-click attempts a dismissal and drops the row from
+    `seen_keys` so a recovery pass can retry it; WEDGED_ROW_FAILS
+    consecutive interceptions with the overlay still standing
+    capture the dialog's DOM (ground truth for the close-control
+    selectors) and take the reload-recovery path immediately.
 
     Each page lap runs under a hard SIGALRM deadline: the SPA can
     degrade into a busy loop that starves every protocol call, and
@@ -1315,6 +1432,8 @@ def _scrape_more_details(page, account_suffix: str,
     seen_keys: set[str] = set()
     page_n = 0
     recoveries = 0
+    wire_skips = 0
+    click_fails = 0
     while True:
         page_n += 1
         log.info("more-detail …%s: scraping page %d", account_suffix, page_n)
@@ -1322,7 +1441,8 @@ def _scrape_more_details(page, account_suffix: str,
         advanced = False
         try:
             with _deadline(PAGE_DETAIL_DEADLINE_S,
-                           f"more-detail page {page_n}"):
+                           f"more-detail page {page_n} exceeded "
+                           f"{PAGE_DETAIL_DEADLINE_S}s"):
                 _scroll_tx_table(page)
                 rows = page.locator(schwab.TX_ROW_SELECTOR).all()
                 log.debug("more-detail …%s pg %d: %d rendered rows",
@@ -1342,6 +1462,9 @@ def _scrape_more_details(page, account_suffix: str,
                     if row_key in seen_keys:
                         continue
                     seen_keys.add(row_key)
+                    if _WIRE_ROW_RE.search(" ".join(cells)):
+                        wire_skips += 1
+                        continue
                     more_btn = row.locator(
                         'a:has-text("More"), button:has-text("More")'
                     ).first
@@ -1352,7 +1475,19 @@ def _scrape_more_details(page, account_suffix: str,
                     except Exception as e:
                         log.debug("more-detail row %d click failed: %s",
                                   row_idx, e)
+                        # Usually an overlay interception: dismiss, and
+                        # drop the row so a recovery pass retries it.
+                        seen_keys.discard(row_key)
+                        click_fails += 1
+                        _dismiss_open_modal(page)
+                        if (click_fails >= WEDGED_ROW_FAILS
+                                and _overlay_open(page)):
+                            _capture_dialog_html(page, screenshot_dir)
+                            raise _WalkStalled(
+                                f"modal overlay wedged ({click_fails} "
+                                f"consecutive More clicks intercepted)")
                         continue
+                    click_fails = 0
                     try:
                         # Playwright 1.49's Locator.filter() doesn't take
                         # a `visible` kwarg — that's a newer-version API.
@@ -1374,7 +1509,9 @@ def _scrape_more_details(page, account_suffix: str,
                         log.warning("more-detail row %d capture failed: %s",
                                     row_idx, e)
                     finally:
-                        _dismiss_open_modal(page)
+                        # The More click landed, so a dialog is coming
+                        # even if it has not painted yet.
+                        _dismiss_open_modal(page, expect_modal=True)
                 advanced = click_next_page(
                     page, schwab.TX_PAGINATION_ELEMENT_ID)
                 if advanced:
@@ -1386,14 +1523,14 @@ def _scrape_more_details(page, account_suffix: str,
             recover = (reapply is not None
                        and recoveries <= MAX_DETAIL_RECOVERIES)
             log.warning(
-                "more-detail …%s: %s exceeded %ds — %s", account_suffix,
-                stall, PAGE_DETAIL_DEADLINE_S,
+                "more-detail …%s: %s — %s", account_suffix, stall,
                 "reloading to shed the degraded SPA and resuming"
                 if recover else "keeping the details captured so far",
             )
             if not recover or not _recover_tx_page(page, reapply):
                 break
             page_n = 0
+            click_fails = 0
             continue
         lap_s = time.monotonic() - lap_start
         if lap_s > SLOW_LAP_NOTICE_S:
@@ -1401,8 +1538,10 @@ def _scrape_more_details(page, account_suffix: str,
                      "details keep accruing", account_suffix, page_n, lap_s)
         if not advanced:
             break
-    log.info("more-detail …%s: captured %d record(s) across %d page(s)",
-             account_suffix, len(details), page_n)
+    log.info("more-detail …%s: captured %d record(s) across %d page(s)"
+             "%s", account_suffix, len(details), page_n,
+             f" ({wire_skips} wire row(s) skipped by design)"
+             if wire_skips else "")
     return details
 
 def _click_visible_export_button(page, in_modal: bool) -> bool:
@@ -1588,7 +1727,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
             _apply_tx_filter(page, account["suffix"], tx_range, exact_window)
 
         details = _scrape_more_details(page, account["suffix"],
-                                       reapply=_reapply)
+                                       reapply=_reapply,
+                                       screenshot_dir=screenshot_dir)
         if details:
             try:
                 (out_dir / "more-details.json").write_text(
@@ -1656,6 +1796,19 @@ def run_transactions(page, accounts: list[dict], dest_dir: Path,
                 "suffix": acct["suffix"],
                 "error": str(e),
             }
+        else:
+            # The export files are the authoritative tx data; an
+            # account without any is a failed capture, not an "ok"
+            # entry — a wedged overlay once ate the Export clicks of
+            # six accounts while every entry still read as success.
+            if not entry.get("exports"):
+                log.error(
+                    "tx-history …%s: no export captured — the Export "
+                    "modal likely never opened (blocked click or UI "
+                    "drift); marking the account failed",
+                    acct["suffix"],
+                )
+                entry["error"] = "no export captured"
         results.append(entry)
     return results
 

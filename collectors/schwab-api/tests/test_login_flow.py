@@ -398,6 +398,24 @@ def test_trusted_device_skips_the_prompt(monkeypatch):
 # main(): --cli-mfa refuses a non-TTY stdin before any browser
 # ============================================================
 
+def test_debug_log_tee_captures_debug_lines(tmp_path):
+    import logging as _logging
+    root = _logging.getLogger()
+    prev_level = root.level
+    handler = login.tee_debug_log(tmp_path, _logging.INFO)
+    try:
+        assert handler is not None
+        _logging.getLogger("schwab-login").debug("dbg-marker")
+        handler.flush()
+        assert "dbg-marker" in Path(handler.baseFilename).read_text(
+            encoding="utf-8")
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+        root.setLevel(prev_level)
+    assert login.tee_debug_log(None, _logging.INFO) is None
+
+
 class _NoTty:
     def isatty(self):
         return False

@@ -118,6 +118,19 @@ DOC_TYPES_WANTED = frozenset({
 # rendered DOM.
 CHIP_SELECTED_ATTR = "selected"
 
+# Dismiss-only close controls inside an open sdps modal — the
+# escalation _dismiss_open_modal reaches for when Escape doesn't clear
+# the overlay (observed live: the wire-details modal a wire row's
+# "More" opens ignores Escape). Deliberately limited to dismissive
+# "X" / Close controls, never OK / Continue / action buttons: on an
+# unknown dialog those could confirm an action (read-only contract,
+# CLAUDE.md §1).
+MODAL_CLOSE_SELECTORS = (
+    '[role="dialog"]:visible button[aria-label*="close" i]',
+    '[role="dialog"]:visible .sdps-modal__close',
+    '[role="dialog"]:visible button:has-text("Close")',
+)
+
 # Account selector — opens a list of accounts; each entry has an
 # id of the form `account-selector-header-0-account-<N>`.
 ACCOUNT_SELECTOR_BUTTON_CLASS = "account-selector-button"

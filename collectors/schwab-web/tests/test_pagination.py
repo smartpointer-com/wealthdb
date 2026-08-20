@@ -93,25 +93,11 @@ def test_covered_link_is_dismissed_before_clicking(monkeypatch):
     link.evaluate.return_value = "DIV  sdps-modal__overlay--open"
     dismissed = []
     monkeypatch.setattr(download, "_dismiss_open_modal",
-                        lambda p: dismissed.append(True))
+                        lambda p, **kw: dismissed.append(True))
     assert download.click_next_page(page, "pagination") is True
     assert dismissed == [True]
     assert link.click.call_count == 1
 
 
-def test_dismiss_open_modal_clean_page_presses_nothing():
-    page = MagicMock()
-    page.wait_for_function.return_value = None
-    download._dismiss_open_modal(page)
-    page.keyboard.press.assert_not_called()
-
-
-def test_dismiss_open_modal_escapes_until_clear():
-    page = MagicMock()
-    # Two probes fail, the third succeeds after Escapes.
-    page.wait_for_function.side_effect = [
-        TimeoutError(), TimeoutError(), None]
-    download._dismiss_open_modal(page)
-    assert page.keyboard.press.call_count == 2
-    assert all(c.args == ("Escape",)
-               for c in page.keyboard.press.call_args_list)
+# _dismiss_open_modal's own escalation behaviour (settled probes,
+# Escape, close control) is covered in test_modal_dismiss.py.
