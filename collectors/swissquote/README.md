@@ -400,6 +400,12 @@ maps to `$XDG_DATA_HOME/wealthdb/swissquote/<UTC-timestamp>/` on the host.
 - **CSV header drift.** Swissquote occasionally renames CSV columns
   even when the UI stays put. `load.py` fails loud on unknown
   headers rather than skipping silently.
+- **XLS trailing-blank drift.** The XLS export engine has flapped on
+  emitting a trailing blank header cell: the Positions export
+  carried one through 2026-08-15 and dropped it on 2026-08-19, with
+  the labelled columns unchanged. The XLS header gates ignore
+  trailing blank cells (both variants load identically) but still
+  fail loud on any labelled-column change.
 - **Currency.** Swissquote returns multi-currency data; every
   position and transaction in silver carries an explicit `currency`
   column. There is no implicit "main currency" assumption.

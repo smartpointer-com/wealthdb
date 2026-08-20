@@ -283,11 +283,17 @@ def load_transactions_window(
 # Positions XLS parser
 # ============================================================
 
+# Labelled columns of the Positions XLS header. The leading "" is the
+# unlabelled section/asset-class column and is positional. Exports up
+# to 2026-08-15 also carried one trailing blank cell after
+# "Positions %" (14 cells); the 2026-08-19 export dropped it (13
+# cells) with the labelled columns unchanged, so `_check_xls_header`
+# ignores trailing blanks and both variants load identically.
 POSITIONS_EXPECTED_HEADER = [
     "", "Symbol", "Quantity", "Unit cost", "Total value",
     "Daily change", "Daily chg. %", "Price", "CCY",
     "P&L Nominal CHF", "P&L % CHF", "Total value CHF",
-    "Positions %", "",
+    "Positions %",
 ]
 
 
@@ -297,6 +303,30 @@ def _xls_row(sheet, r: int) -> list:
 
 def _strip_cells(row: list) -> list:
     return [c.strip() if isinstance(c, str) else c for c in row]
+
+
+def _trim_trailing_blanks(cells: list) -> list:
+    """Drop trailing empty-string cells (leading/interior ones stay)."""
+    end = len(cells)
+    while end and cells[end - 1] == "":
+        end -= 1
+    return cells[:end]
+
+
+def _check_xls_header(header: list, expected: list, path: Path,
+                      kind: str) -> None:
+    """Fail loud unless the header's labelled columns match `expected`
+    exactly. Trailing blank cells are ignored: the XLS export engine
+    has flapped on emitting one (see POSITIONS_EXPECTED_HEADER), and a
+    cosmetic blank must not block the load — but any change to a
+    labelled column (rename, reorder, add, remove) still aborts.
+    """
+    if _trim_trailing_blanks(header) != expected:
+        raise SystemExit(
+            f"Unexpected {kind} XLS header in {path}:\n"
+            f"  expected: {expected} (+ any trailing blank cells)\n"
+            f"  actual:   {header}"
+        )
 
 
 def parse_positions_xls(path: Path) -> list[dict]:
@@ -313,12 +343,7 @@ def parse_positions_xls(path: Path) -> list[dict]:
     if sheet.nrows == 0:
         raise SystemExit(f"{path}: empty sheet")
     header = _strip_cells(_xls_row(sheet, 0))
-    if header != POSITIONS_EXPECTED_HEADER:
-        raise SystemExit(
-            f"Unexpected positions XLS header in {path}:\n"
-            f"  expected: {POSITIONS_EXPECTED_HEADER}\n"
-            f"  actual:   {header}"
-        )
+    _check_xls_header(header, POSITIONS_EXPECTED_HEADER, path, "positions")
 
     out = []
     asset_class = None
@@ -703,6 +728,10 @@ def load_positions(
 # List of Assets XLS parser
 # ============================================================
 
+# Labelled columns of the List of Assets XLS header. No trailing
+# blank observed to date, but the sheet comes from the same export
+# engine as positions.xls (whose trailing blank came and went — see
+# POSITIONS_EXPECTED_HEADER), so the check tolerates one the same way.
 LOA_EXPECTED_HEADER = [
     "Currency", "Rate", "Cash balance", "Positions value",
     "Total value", "Valuation CHF", "Account %",
@@ -716,12 +745,7 @@ def parse_list_of_assets_xls(path: Path) -> list[dict]:
     if sheet.nrows == 0:
         raise SystemExit(f"{path}: empty sheet")
     header = _strip_cells(_xls_row(sheet, 0))
-    if header != LOA_EXPECTED_HEADER:
-        raise SystemExit(
-            f"Unexpected list-of-assets XLS header in {path}:\n"
-            f"  expected: {LOA_EXPECTED_HEADER}\n"
-            f"  actual:   {header}"
-        )
+    _check_xls_header(header, LOA_EXPECTED_HEADER, path, "list-of-assets")
     out = []
     for r in range(1, sheet.nrows):
         row = _strip_cells(_xls_row(sheet, r))
