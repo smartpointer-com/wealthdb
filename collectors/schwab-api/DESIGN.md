@@ -50,6 +50,68 @@ interactive prompt mid-cron.
 - File mode 0600 on the credential file, programmatically. Don't
   trust user umask.
 
+#### Incident note (2026-08): blind consent clicks on an unresolved 2FA challenge
+
+A routine `login` run ended with the Schwab account locked. Reconstructed
+control flow (all in one thread — the Ctrl-C traceback pinned the main
+flow inside `_wait_for_callback → _drive_consent → _click_first`, proving
+the stdin prompt had already returned):
+
+1. The login form was pre-filled and submitted; the 2FA input was found
+   on the gateway SPA (`sws-gateway.schwab.com/ui/host/#/placeholder`)
+   and the stdin code prompt opened.
+2. `sys.stdin.readline()` returned an empty line immediately — stdin was
+   at EOF (the wrapper passes docker `-i` only when stdin AND stdout are
+   TTYs, so a piped/tee'd run gets a closed stdin; a stray buffered
+   newline produces the same result). The empty code took a **silent**
+   no-submit path and the flow fell through to the consent wait.
+3. The consent wait called `_drive_consent` every ~0.5 s, whose last act
+   was an unconditional click of the first visible advance-button
+   candidate — `button:has-text('Continue')` — with no check of which
+   page was showing, no verification that a click changed anything, and
+   no budget. The page was still the 2FA challenge, so its own Continue
+   was clicked ~11 times in 8 s, each submitting an empty/stale code.
+   Repeated failed 2FA verifications are the presumed lockout trigger.
+4. Re-runs then submitted the password again; the gateway served its
+   terminal notice route (`…/ui/host/#/information/<code>`), which
+   nothing recognized: the 2FA wait burned its full timeout, logged the
+   misleading "no 2FA prompt detected", and the consent wait spun to its
+   own timeout.
+
+Defect class and hardening (applies to schwab-web's separate MFA
+machinery too):
+
+- **No blind clicks.** An advance/consent click fires only on a page
+  positively classified as part of the consent flow (URL route or DOM
+  heading), never on a challenge, interstitial, or unknown page.
+- **Click budget + change check.** Every click loop verifies the page
+  state changed after a click; an unchanged page is never re-clicked,
+  and a stalled or over-budget flow captures ground truth and fails.
+- **MFA is a barrier.** Nothing drives the page while a challenge is
+  unresolved; an empty/EOF stdin code is terminal (and a non-TTY stdin
+  fails fast before any credential is submitted).
+- **One shot per run.** One credential submission and at most one 2FA
+  submission; any failure after that is terminal — the provider's own
+  on-page message is logged verbatim and the run exits nonzero.
+  Re-running is the recovery path.
+- **Terminal pages end the run.** The gateway notice route family
+  (`#/information/<code>`) stops all interaction immediately; a lockout
+  message additionally says the account must be unlocked with Schwab
+  directly. Unrecognized interstitials fail with a capture instead of a
+  silent multi-minute wait.
+
+Confirmed against the locked account with one instrumented run per
+collector (captures in the debug cache): both flows stop on the notice
+route after the single credential submission, with no further
+interaction. The gateway's content catalog maps that notice code to the
+identity-verification wording ("we need to verify your identity before
+proceeding … please call") — a lockout marker — while two sibling codes
+render a generic "there's a problem logging you in" and stay
+non-lockout. The notice text renders into the page's `#msgLabel`
+container via an async fetch seconds after the route change, so message
+extraction polls for that container before falling back to body text
+(an immediate body read yields only footer boilerplate).
+
 ### 3.2 `download.py` — bronze fetch
 
 Owns "talk to the bank, write what came back to disk verbatim".

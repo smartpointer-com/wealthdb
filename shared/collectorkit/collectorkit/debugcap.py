@@ -8,6 +8,10 @@ one helper per kind rather than one shape for all:
     Camoufox collectors).
   * :class:`HttpTrace`    — request metadata for a REST collector: what was
     asked, what came back, how long it took.
+  * :class:`BodyCapture`  — the exception to the bronze-resident rule:
+    buffered response bodies for one-off *login*-flow diagnosis, landing in
+    a debug dir outside bronze (there is no bronze run to house them), under
+    the screenshots' NEVER-commit contract.
 
 The contract, identical for both:
 
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.parse
 from pathlib import Path
@@ -183,3 +188,90 @@ class HttpTrace:
             return {}
         return {k.lower(): v for k, v in items
                 if k.lower() in _SAFE_RESPONSE_HEADERS}
+
+
+class BodyCapture:
+    """Response-body capture for a Playwright BrowserContext — one-off
+    login/flow diagnosis instrumentation. The per-screen DOM captures
+    show what rendered; the bodies show what the server actually said.
+
+    Split into two halves because Playwright's sync API forbids blocking
+    calls inside event handlers: :meth:`attach` registers a listener
+    that only *records* matching responses (cheap, non-blocking), and
+    :meth:`flush` — called from the main flow, typically right before
+    the context closes or on a terminal error — reads the buffered
+    bodies and writes one JSON file per response (redacted URL, status,
+    content type, truncated body) named ``body-NNN-<status>-<slug>.json``.
+
+    Auth-host bodies can carry session identifiers, so captures belong
+    in a debug dir outside bronze and outside the repo — the same
+    NEVER-commit contract as screenshots. Best effort throughout: a
+    capture failure never disturbs the run being diagnosed.
+
+    A no-op when constructed with ``out_dir=None``, so call sites attach
+    and flush unconditionally instead of guarding every call.
+    """
+
+    def __init__(self, out_dir: Path | None, *, host_markers,
+                 log: logging.Logger, max_bytes: int = 200_000,
+                 max_responses: int = 300) -> None:
+        self._log = log
+        self._out_dir = Path(out_dir) if out_dir is not None else None
+        self._host_markers = tuple(m.lower() for m in host_markers)
+        self._max_bytes = max_bytes
+        self._max_responses = max_responses
+        self._responses: list = []
+
+    def attach(self, context) -> None:
+        """Register the recording listener. No-op when disabled."""
+        if self._out_dir is None:
+            return
+        context.on("response", self._record)
+
+    def _record(self, response) -> None:
+        """Buffer a matching response. Non-blocking — body reads wait
+        for flush(). Never raises."""
+        try:
+            if len(self._responses) >= self._max_responses:
+                return
+            host = urllib.parse.urlsplit(response.url).netloc.lower()
+            if any(m in host for m in self._host_markers):
+                self._responses.append(response)
+        except Exception:  # noqa: BLE001 — diagnostics never break the run
+            pass
+
+    def flush(self) -> int:
+        """Write the buffered bodies; returns how many files landed.
+        Bodies that are gone (redirects, evicted buffers) are skipped."""
+        if self._out_dir is None or not self._responses:
+            return 0
+        written = 0
+        try:
+            self._out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._log.warning("body capture dir unavailable: %s", e)
+            return 0
+        for n, resp in enumerate(self._responses, start=1):
+            try:
+                ctype = (resp.headers or {}).get("content-type", "")
+                if not any(t in ctype for t in ("json", "html", "text",
+                                                "xml")):
+                    continue
+                body = resp.text()[:self._max_bytes]
+                slug = re.sub(r"[^A-Za-z0-9._-]+", "-",
+                              urllib.parse.urlsplit(resp.url).path).strip("-")
+                name = f"body-{n:03d}-{resp.status}-{slug[:60]}.json"
+                (self._out_dir / name).write_text(json.dumps({
+                    "url": redact_url(resp.url),
+                    "status": resp.status,
+                    "content_type": ctype,
+                    "body": body,
+                }, ensure_ascii=False, indent=1), encoding="utf-8")
+                written += 1
+            except Exception as e:  # noqa: BLE001
+                self._log.debug("body capture write failed: %s", e)
+        self._responses.clear()
+        if written:
+            self._log.info("captured %d response bodies to %s",
+                           written, self._out_dir)
+        return written

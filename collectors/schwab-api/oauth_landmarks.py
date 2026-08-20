@@ -22,6 +22,8 @@ drift is a one-file fix.
 
 from __future__ import annotations
 
+import urllib.parse
+
 # ============================================================
 # OAuth endpoints / callback
 # ============================================================
@@ -41,6 +43,53 @@ def is_callback_url(url: str, callback_url: str) -> bool:
     consent succeeded and Schwab handed back the `?code=…`. We compare on
     the scheme+host+port prefix because the path/query carry the code."""
     return url.startswith(callback_url)
+
+
+# ============================================================
+# Gateway terminal-notice pages
+# ============================================================
+
+# The login + 2FA portion runs on Schwab's gateway SPA
+# (sws-gateway*.schwab.com — schwab-web sees the sws-gateway-nr host,
+# this flow sws-gateway). When the gateway ends a session with a notice
+# — account lockout among them — it routes to `#/information/<code>`.
+# That page is terminal: no flow can proceed past it, so every wait loop
+# treats it as an immediate, non-retryable stop. Mirrored in
+# schwab-web/landmarks.py.
+def is_gateway_notice_url(url: str) -> bool:
+    """True for the gateway SPA's terminal-notice route family
+    (`https://sws-gateway*.schwab.com/ui/host/#/information/<code>`)."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    host = parts.netloc.lower()
+    if not (host.startswith("sws-gateway") and host.endswith(".schwab.com")):
+        return False
+    return parts.fragment.startswith("/information")
+
+
+# Where the notice page renders its message: a #msgLabel span inside
+# the <lms-information> element (observed live). The content arrives
+# via an async fetch seconds after the route change, so extraction
+# polls for these before falling back to whole-body text.
+NOTICE_MESSAGE_SELECTORS = ("#msgLabel", "lms-information")
+
+# Case-insensitive substrings that mark a notice page as an account
+# lockout rather than a generic interstitial, verified against the
+# gateway's live content catalog: the lockout notice renders "we need to
+# verify your identity before proceeding" — the identity-verification
+# lock behind which web/mobile logins sit — while sibling codes render a
+# generic "There's a problem logging you in" (deliberately not matched:
+# the run always prints the page's own text verbatim either way, and
+# this only selects the extra "unlock with Schwab" hint).
+LOCKOUT_TEXT_MARKERS = ("locked", "verify your identity")
+
+
+def looks_locked(page_text: str) -> bool:
+    """Whether visible notice-page text reads as an account lockout."""
+    lowered = page_text.lower()
+    return any(m in lowered for m in LOCKOUT_TEXT_MARKERS)
 
 
 # ============================================================
@@ -124,13 +173,21 @@ ACCOUNT_LINK_HEADING = "Select your Schwab accounts to link"
 # checkbox must be ticked before Continue enables).
 TERMS_HEADING = "End User Terms and Conditions"
 
+# Heading that identifies the final review page (its advance button is
+# "Done").
+REVIEW_HEADING = "Review your selected accounts"
+
 # Account-row checkboxes. Generic on purpose: the link page contains only
 # the per-account boxes, and Playwright's .check() is idempotent (never
 # unchecks), so checking every box here is safe.
 ACCOUNT_CHECKBOX_SELECTOR = "input[type='checkbox'], [role='checkbox']"
 
-# Buttons that advance the grant (used by --cli-mfa to drive the pages
-# above). Positive-only — never "Cancel".
+# Buttons that advance the grant. Positive-only — never "Cancel" — and
+# only ever clicked on a page login.classify_page has positively placed
+# in the consent flow (Terms / account-link / review): the selectors are
+# generic enough to match a challenge page's own Continue, which is
+# exactly the click that must never fire (see DESIGN.md §3.1's incident
+# note).
 ADVANCE_BUTTON_CANDIDATES = (
     "button:has-text('Continue')",
     "button:has-text('Done')",

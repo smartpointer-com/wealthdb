@@ -45,9 +45,24 @@ from pathlib import Path
 
 import landmarks as schwab
 
-from collectorkit import bronze, cli, envfile, launch
+from collectorkit import bronze, cli, debugcap, envfile, launch
 
 log = logging.getLogger("schwab-web.login")
+
+
+class TerminalPageError(RuntimeError):
+    """The browser landed on a page the flow must never interact with —
+    the gateway's terminal notice route (account lockout among them).
+    Stops the run immediately: no retries, no long waits (see
+    schwab-api's DESIGN.md §3.1 incident note for the defect class)."""
+
+    exit_code = 9
+
+    def __init__(self, message: str, *, page_text: str = "",
+                 locked: bool = False):
+        super().__init__(message)
+        self.page_text = page_text
+        self.locked = locked
 
 # Playwright timeouts (milliseconds). Generous defaults — WAN
 # latency from arbitrary cloud regions to Schwab can be high, and
@@ -183,6 +198,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=("Capture a Playwright trace bundle. Requires "
               "--screenshot-dir; the bundle lands there alongside "
               "screenshots."),
+    )
+    p.add_argument(
+        "--capture-bodies", action="store_true",
+        help=("Debug aid: also save response bodies from the Schwab "
+              "gateway host to --screenshot-dir (login-flow diagnosis). "
+              "Requires --screenshot-dir. NEVER commit these — see "
+              "CLAUDE.md §4."),
     )
     return p.parse_args(argv)
 
@@ -446,7 +468,8 @@ def run_manual(profile_dir: Path,
                cli_mfa: bool = True,
                mfa_timeout_s: int,
                debug: bool = False,
-               exact_window: tuple | None = None) -> int:
+               exact_window: tuple | None = None,
+               capture_bodies: bool = False) -> int:
     """One-shot: CLI-MFA login → scrape → exit, in one Firefox
     lifetime (the session-invalidation constraint in the module
     docstring).
@@ -474,6 +497,10 @@ def run_manual(profile_dir: Path,
 
     log.info("opening Firefox")
     with open_camoufox_context(profile_dir, trace=False) as context:
+        bodies = debugcap.BodyCapture(
+            screenshot_dir if capture_bodies else None,
+            host_markers=("sws-gateway",), log=log)
+        bodies.attach(context)
         page = open_page(context)
         page.on("pageerror", lambda exc: log.warning("browser pageerror: %s", exc))
         try:
@@ -570,6 +597,10 @@ def run_manual(profile_dir: Path,
         except KeyboardInterrupt:
             log.info("interrupted; closing browser")
             return 0
+        except TerminalPageError as e:
+            maybe_screenshot(page, screenshot_dir, "terminal-page")
+            _report_terminal_page(e)
+            return e.exit_code
         except Exception as e:
             log.exception("login + scrape failed: %s", e)
             try:
@@ -577,6 +608,8 @@ def run_manual(profile_dir: Path,
             except Exception:
                 pass
             return 1
+        finally:
+            bodies.flush()
 
 
 def _live_url(page) -> str:
@@ -604,6 +637,79 @@ def _live_url(page) -> str:
     return page.url
 
 
+def _visible_page_text(scope, limit: int = 600) -> str:
+    """Visible body text of a page or frame, whitespace-collapsed and
+    capped — the provider's own words for terminal error reports."""
+    try:
+        text = scope.evaluate(
+            "() => (document.body && document.body.innerText) || ''")
+        return " ".join(str(text).split())[:limit]
+    except Exception:
+        return ""
+
+
+def _notice_scope(page):
+    """The page or frame currently on the gateway's terminal notice
+    route (landmarks.is_gateway_notice_url), or None. Checks frames too
+    — on the homepage the gateway runs inside the login iframe."""
+    if schwab.is_gateway_notice_url(_live_url(page)):
+        return page
+    try:
+        frames = [f for f in page.frames if f.parent_frame is not None]
+    except Exception:
+        frames = []
+    for f in frames:
+        if schwab.is_gateway_notice_url(f.url or ""):
+            return f
+    return None
+
+
+def _notice_message(scope, settle_s: float = 8.0, poll_s: float = 0.5) -> str:
+    """The notice page's own message, read from its message container
+    (landmarks.NOTICE_MESSAGE_SELECTORS), waiting for the SPA to render
+    it — the content arrives via an async fetch seconds after the route
+    change, and reading too early yields footer boilerplate. Falls back
+    to whole-body text when the container never shows."""
+    deadline = time.monotonic() + settle_s
+    while time.monotonic() < deadline:
+        for sel in schwab.NOTICE_MESSAGE_SELECTORS:
+            try:
+                loc = scope.locator(sel).first
+                if not loc.count():
+                    continue
+                text = " ".join((loc.inner_text(timeout=1_000) or "").split())
+                if text:
+                    return text[:600]
+            except Exception:
+                continue
+        time.sleep(poll_s)
+    return _visible_page_text(scope)
+
+
+def _notice_error(scope) -> TerminalPageError:
+    """Build the terminal error for a gateway notice page, carrying the
+    page's own visible text verbatim."""
+    text = _notice_message(scope)
+    locked = schwab.looks_locked(text)
+    what = ("an account-lockout notice" if locked
+            else "a terminal notice page")
+    return TerminalPageError(
+        f"Schwab ended the login with {what} (gateway #/information "
+        f"route); stopping all interaction",
+        page_text=text, locked=locked)
+
+
+def _report_terminal_page(exc: TerminalPageError) -> None:
+    """Log a terminal notice page: the diagnosis, the provider's own
+    page text verbatim, and — for a lockout — where recovery lives."""
+    log.error("%s", exc)
+    if exc.page_text:
+        log.error("Schwab's page says (verbatim): %s", exc.page_text)
+    if exc.locked:
+        log.error("The Schwab account is locked; it must be unlocked "
+                  "with Schwab directly before another login attempt.")
+
+
 def _wait_for_post_auth(page, context, timeout_s: float,
                         poll_s: float = 1.0):
     """Wait for any page in `context` to land on a post-auth URL.
@@ -619,7 +725,9 @@ def _wait_for_post_auth(page, context, timeout_s: float,
     pre-login value indefinitely.
 
     Returns the matching Page object, or None on timeout or if all
-    pages were closed before login completed.
+    pages were closed before login completed. Raises TerminalPageError
+    when any page lands on the gateway's terminal notice route — waiting
+    longer can never succeed there.
     """
     deadline = time.monotonic() + timeout_s
     last_state = None
@@ -635,45 +743,71 @@ def _wait_for_post_auth(page, context, timeout_s: float,
         for p, u in zip(pages, urls):
             if schwab.is_post_auth_url(u):
                 return p
+        for p in pages:
+            scope = _notice_scope(p)
+            if scope is not None:
+                raise _notice_error(scope)
         time.sleep(poll_s)
     return None
 
 
-def _submit_login_form(page) -> bool:
-    """Submit the login form inside the homepage's `#schwablmslogin`
-    iframe. Returns True if any submit path landed.
+def _password_field_present(gateway) -> bool:
+    """Whether the login iframe still shows its password field."""
+    try:
+        loc = gateway.locator(f"#{schwab.PASSWORD_INPUT_ID}")
+        return loc.count() > 0 and loc.first.is_visible(timeout=500)
+    except Exception:
+        return False
 
-    Strategy (most-human-like first):
-      1. Pause ~1.5s — humans don't click 50ms after the last
-         keypress, and Schwab's anti-bot heuristics flag tight
-         pre-fill→submit timing.
-      2. Press Enter inside the password field. Native HTML form
-         submit; no synthetic mouse click; Angular sees a real
-         keyboard event that travels through the proper change-
-         detection cycle.
-      3. If Enter doesn't visibly progress (iframe URL unchanged
-         after a poll), fall back to clicking the Log In button.
+
+def _submit_login_form(page) -> str:
+    """Submit the login form inside the homepage's `#schwablmslogin`
+    iframe, with a hard budget of submit gestures: Enter on the password
+    field first (native submit, most human-like — Schwab's anti-bot
+    heuristics flag tight pre-fill→submit timing and synthetic clicks),
+    then, ONLY when the form is demonstrably still sitting there
+    un-submitted, a single Log In button click. Never more — a gesture
+    that may have registered is never repeated blind (the defect class
+    behind schwab-api's lockout incident, DESIGN.md §3.1 there).
+
+    Returns "progress" (the gateway moved), "error" (Schwab shows an
+    on-page error, logged verbatim), or "failed" (nothing registered).
     """
     gateway = page.frame_locator(f"#{schwab.LOGIN_IFRAME_ID}")
     pre_iframe_url = _iframe_url(page)
     log.debug("pre-submit iframe url: %s", pre_iframe_url)
 
-    # 1) Pre-submit pause.
+    # Pre-submit pause — humans don't click 50ms after the last keypress.
     time.sleep(1.5)
 
-    # 2) Enter on password field.
+    entered = False
     try:
         pwd = gateway.locator(f"#{schwab.PASSWORD_INPUT_ID}")
         if pwd.count() > 0:
             pwd.press("Enter")
+            entered = True
             log.info("submitted login form via Enter on password field")
             if _wait_iframe_progress(page, pre_iframe_url, timeout_s=8):
-                return True
-            log.info("iframe URL unchanged after Enter — trying button click")
+                return "progress"
     except Exception as e:
         log.debug("Enter on password failed: %s", e)
 
-    # 3) Button click fallback.
+    err = _visible_error_text_anywhere(page)
+    if err:
+        log.error("Schwab reports:\n  - %s", err)
+        return "error"
+
+    if entered and not _password_field_present(gateway):
+        # Enter was dispatched and the form is gone, yet nothing moved —
+        # ambiguous mid-transition state; a second submit could double up.
+        log.error("login form no longer visible but the gateway did not "
+                  "move; not submitting again — re-run to retry")
+        return "failed"
+
+    # One fallback click: the form is demonstrably still sitting there
+    # (or Enter never dispatched), so either the SPA ignored the Enter
+    # or it never happened. The first matching candidate is clicked and
+    # that is the last gesture, progress or not.
     candidates = [
         ("id",   f"#{schwab.LOGIN_BUTTON_ID}"),
         ("text", f"button:has-text('{schwab.LOGIN_BUTTON_TEXT}')"),
@@ -686,18 +820,24 @@ def _submit_login_form(page) -> bool:
                 log.debug("login button candidate %s (%s): no match", sel, kind)
                 continue
             btn.click(timeout=10_000)
-            log.info("submitted login form via %s selector %s", kind, sel)
-            if _wait_iframe_progress(page, pre_iframe_url, timeout_s=8):
-                return True
-            log.info("iframe URL unchanged after click — trying next candidate")
+            log.info("submitted login form via %s selector %s "
+                     "(single fallback)", kind, sel)
+            if _wait_iframe_progress(page, pre_iframe_url, timeout_s=20):
+                return "progress"
+            break  # one submit click only — never hammer further candidates
         except Exception as e:
             log.debug("login button candidate %s (%s) failed: %s", sel, kind, e)
+
+    err = _visible_error_text_anywhere(page)
+    if err:
+        log.error("Schwab reports:\n  - %s", err)
+        return "error"
     log.error(
-        "form did not visibly submit after all attempts — see debug "
-        "screenshots; the iframe may show an error or Schwab may have "
-        "silently rejected the submit"
+        "form did not visibly submit; not retrying — see debug "
+        "screenshots (the iframe may show an error or Schwab may have "
+        "silently rejected the submit)"
     )
-    return False
+    return "failed"
 
 
 def _iframe_url(page) -> str | None:
@@ -847,7 +987,10 @@ def _wait_for_mfa_input(page, timeout_s: float, poll_s: float = 0.5):
     iframe) or inside the gateway iframe itself.
 
     Returns `(scope_label, Locator)` on hit, or `None` on timeout
-    / if the page already redirected to a post-auth URL."""
+    / if the page already redirected to a post-auth URL. Raises
+    TerminalPageError on the gateway's terminal notice route — the
+    challenge is never coming there (this is where a locked account
+    previously burned the whole timeout)."""
     deadline = time.monotonic() + timeout_s
     last_log = 0.0
     while time.monotonic() < deadline:
@@ -857,6 +1000,9 @@ def _wait_for_mfa_input(page, timeout_s: float, poll_s: float = 0.5):
                 "device already trusted or no 2FA required"
             )
             return None
+        scope = _notice_scope(page)
+        if scope is not None:
+            raise _notice_error(scope)
         scopes = [("page", page)]
         for f in page.frames:
             if f.parent_frame is None:
@@ -931,9 +1077,6 @@ def _submit_mfa_code(page, code_locator, code: str) -> str | None:
         return None
 
 
-# Codes tried before giving up. Each prompt wants a NEW code —
-# Schwab rejects a code submitted twice.
-MFA_CODE_ATTEMPTS = 3
 
 
 def _verify_mfa_outcome(page, code_input, *, budget_s: float = 60,
@@ -943,11 +1086,15 @@ def _verify_mfa_outcome(page, code_input, *, budget_s: float = 60,
     after the grace period), 'login' (the login iframe is back — the
     challenge session ended), or 'pending' (nothing conclusive
     within the budget; the caller's long post-auth wait takes over).
+    Raises TerminalPageError on the gateway's terminal notice route.
     The grace period covers the navigation lag after Continue."""
     start = time.monotonic()
     while time.monotonic() - start < budget_s:
         if schwab.is_post_auth_url(_live_url(page)):
             return "auth"
+        scope = _notice_scope(page)
+        if scope is not None:
+            raise _notice_error(scope)
         if time.monotonic() - start >= grace_s:
             try:
                 if code_input.is_visible():
@@ -996,34 +1143,44 @@ def _visible_error_text(page) -> str:
         return ""
 
 
-def _continue_button_present(page) -> bool:
-    """Whether any known Continue-button selector is visible. A
-    challenge page that dropped its button cannot be submitted —
-    pressing Enter in the input goes nowhere on that page."""
-    for sel in schwab.MFA_CONTINUE_BUTTON_CANDIDATES:
-        try:
-            btn = page.locator(sel).first
-            if btn.count() and btn.is_visible(timeout=200):
-                return True
-        except Exception:
-            continue
-    return False
+def _visible_error_text_anywhere(page) -> str:
+    """_visible_error_text across the page and every attached frame —
+    login errors render inside the gateway iframe, which a top-level
+    DOM query cannot see."""
+    texts = []
+    try:
+        scopes = [page, *[f for f in page.frames
+                          if f.parent_frame is not None]]
+    except Exception:
+        scopes = [page]
+    for scope in scopes:
+        t = _visible_error_text(scope)
+        if t:
+            texts.append(t)
+    return "\n  - ".join(dict.fromkeys(texts))
 
 
 def _run_cli_mfa(page, screenshot_dir: Path | None,
                  mfa_wait_s: float = 300) -> str:
-    """Auto-submit the login form, wait for the 2FA page, prompt for
-    the code, submit, and verify the outcome. No cleverer than the
-    web page: a rejection logs Schwab's own error and re-prompts
-    (new code each time), a dead challenge aborts fast — re-running
-    the command is the fresh start.
+    """Auto-submit the login form (single submit gesture with one
+    DOM-verified fallback), wait for the 2FA page, prompt for the code,
+    submit it ONCE, and verify the outcome. No cleverer than the web
+    page: any failure after the submissions is terminal — Schwab's own
+    on-page error is logged verbatim and re-running the command is the
+    fresh start. Repeated challenge submissions are the defect class
+    that locked an account via schwab-api (see that collector's
+    DESIGN.md §3.1).
 
     Verdicts: "ok" (landed, pending, or trusted-device skip),
     "manual" (selectors missed; VNC can still finish, so the caller
-    keeps its long wait), "abort" (exit instead of waiting).
+    keeps its long wait), "abort" (exit instead of waiting). Terminal
+    notice pages raise TerminalPageError out of the wait helpers.
     """
     maybe_screenshot(page, screenshot_dir, "pre-login-submit")
-    if not _submit_login_form(page):
+    submit = _submit_login_form(page)
+    if submit == "error":
+        return "abort"
+    if submit == "failed":
         maybe_screenshot(page, screenshot_dir, "submit-failed")
         _dump_visible_form_elements(page, "login-submit-failed")
         return "manual"
@@ -1054,35 +1211,26 @@ def _run_cli_mfa(page, screenshot_dir: Path | None,
     sel, loc = hit
     log.info("MFA code input found (%s); prompting for code on stdin", sel)
     maybe_screenshot(page, screenshot_dir, "mfa-prompt")
-    for attempt in range(1, MFA_CODE_ATTEMPTS + 1):
-        code = _prompt_for_mfa_code()
-        if not code:
-            log.error("no 2FA code entered; aborting login")
-            return "abort"
-        submitted = _submit_mfa_code(page, loc, code)
-        if submitted is None:
-            return "manual"
-        maybe_screenshot(page, screenshot_dir, "post-mfa-submit")
-        outcome = _verify_mfa_outcome(page, loc)
-        if outcome in ("auth", "pending"):
-            return "ok"
-        err = _visible_error_text(page)
-        if err:
-            log.warning("Schwab reports:\n  - %s", err)
-        if outcome == "login":
-            log.warning("the login form is back — the challenge session "
-                        "ended; re-run download to start fresh")
-            return "abort"
-        if not _continue_button_present(page):
-            log.error("the challenge page no longer offers a Continue "
-                      "button, so further codes cannot be submitted; "
-                      "aborting — re-run download to start fresh")
-            return "abort"
-        if attempt < MFA_CODE_ATTEMPTS:
-            log.warning("2FA code rejected; enter a new code "
-                        "(attempt %d/%d)", attempt, MFA_CODE_ATTEMPTS)
-    log.error("2FA code rejected %d times; aborting — re-run download "
-              "to start a fresh login", MFA_CODE_ATTEMPTS)
+    code = _prompt_for_mfa_code()
+    if not code:
+        log.error("no 2FA code entered; aborting login")
+        return "abort"
+    submitted = _submit_mfa_code(page, loc, code)
+    if submitted is None:
+        return "manual"
+    maybe_screenshot(page, screenshot_dir, "post-mfa-submit")
+    outcome = _verify_mfa_outcome(page, loc)
+    if outcome in ("auth", "pending"):
+        return "ok"
+    err = _visible_error_text_anywhere(page)
+    if err:
+        log.warning("Schwab reports:\n  - %s", err)
+    if outcome == "login":
+        log.warning("the login form is back — the challenge session "
+                    "ended; re-run download to start fresh")
+    else:
+        log.error("2FA code rejected; one submission per run — re-run "
+                  "download to start fresh with a new code")
     return "abort"
 
 
@@ -1163,6 +1311,9 @@ def main(argv: list[str]) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §3).")
+    if args.capture_bodies and args.screenshot_dir is None:
+        raise SystemExit("--capture-bodies requires --screenshot-dir "
+                         "(see CLAUDE.md §4).")
     # Translate the one window flag into the Schwab preset that covers it.
     # An ISO-date --lookback expresses an exact window; tx-history can
     # honour it verbatim via its custom date-range mode, so the resolved
@@ -1179,6 +1330,11 @@ def main(argv: list[str]) -> int:
             "--bronze-dir is required for the scrape path (or pass --check "
             "to validate the existing profile)."
         )
+    if args.cli_mfa and not sys.stdin.isatty():
+        raise SystemExit(
+            "--cli-mfa reads the 2FA code from stdin, which is not a TTY "
+            "here — nothing could answer the prompt. Run from a terminal, "
+            "or pass --no-cli-mfa and drive the login over VNC.")
     return run_manual(
         args.profile_dir, args.screenshot_dir,
         bronze_dir=args.bronze_dir,
@@ -1190,6 +1346,7 @@ def main(argv: list[str]) -> int:
         mfa_timeout_s=args.mfa_timeout,
         debug=args.debug,
         exact_window=args.exact_window,
+        capture_bodies=args.capture_bodies,
     )
 
 

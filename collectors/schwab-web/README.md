@@ -154,15 +154,20 @@ kills it on close), so login + scrape happen in one continuous
 session. Each `download` invocation pays one fresh MFA challenge
 — Schwab won't honour a persisted session across runs.
 
-Observed 2FA challenge behaviour (2026-07): a **wrong code is
-recoverable** — the form stays up and a fresh code on the same
-challenge lands, so the stdin prompt simply repeats, quoting
-Schwab's error. **Letting the form sit idle is fatal for that
+Observed 2FA challenge behaviour (2026-07): a wrong code leaves
+the form up with Schwab's error shown. The flow still submits **at
+most one code per run** — repeated challenge submissions are the
+defect class that locked an account via schwab-api (2026-08; see
+that collector's DESIGN.md §3.1) — so a rejection quotes Schwab's
+on-page error verbatim and aborts with rc 8; a re-run mints a
+fresh challenge. **Letting the form sit idle is fatal for that
 login attempt** — Schwab locks it behind an identity-verification
-banner, removes the Continue button, and rejects every further
-code however fresh. The flow detects the missing button, aborts
-with rc 8, and a re-run mints a fresh challenge that works; the
-lock is per-attempt, not per-account.
+banner and rejects every further code however fresh; that lock is
+per-attempt, not per-account, and a re-run recovers. A gateway
+terminal notice (`#/information/<code>` — account lockout among
+them) aborts immediately in every wait loop with the page's own
+message, rc 9; an account lockout must be cleared with Schwab
+directly — nothing here retries into it.
 
 The CLI is intentionally minimal:
 

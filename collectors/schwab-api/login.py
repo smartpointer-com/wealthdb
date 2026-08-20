@@ -29,6 +29,12 @@ Modes:
   - --check            Inspect the existing token file's age. No browser,
                        no network.
 
+Failure discipline (see DESIGN.md §3.1's incident note): one credential
+submission and at most one 2FA submission per run; every page-advancing
+click is classification-gated and budgeted; Schwab's terminal notice
+pages (account lockout among them) stop the run immediately with the
+page's own message. Re-running is the only retry.
+
 Run this whenever `download.py` reports a refresh failure (the 7-day
 window expired), or to mint the first token.
 """
@@ -48,7 +54,7 @@ from pathlib import Path
 
 import oauth_landmarks as lm
 
-from collectorkit import cli, envfile, launch, session
+from collectorkit import cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("schwab-login")
 
@@ -150,6 +156,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Debug aid: dump HTML+PNG of each distinct page during the "
              "wait (to --screenshot-dir) for mapping the OAuth flow / "
              "pinning the account-checkbox selectors.",
+    )
+    p.add_argument(
+        "--capture-bodies", action="store_true",
+        help="Debug aid: also save response bodies from the Schwab "
+             "gateway / authorize hosts to --screenshot-dir (flow "
+             "diagnosis). NEVER commit these — see CLAUDE.md §4.",
     )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
@@ -382,27 +394,279 @@ def _prompt_for_mfa_code() -> str:
     return code.strip()
 
 
+class LoginFlowError(RuntimeError):
+    """Terminal login-flow failure: the run stops, reports, and exits
+    nonzero. Re-running login is the recovery path — there are no in-run
+    retries (see DESIGN.md §3.1's incident note)."""
+
+    exit_code = 8
+
+    def __init__(self, message: str, *, page_text: str = "",
+                 locked: bool = False):
+        super().__init__(message)
+        self.page_text = page_text
+        self.locked = locked
+
+
+class TerminalPageError(LoginFlowError):
+    """The browser landed on a page the flow must never interact with —
+    the gateway's terminal notice route (account lockout among them)."""
+
+    exit_code = 7
+
+
+def _visible_page_text(scope, limit: int = 600) -> str:
+    """Visible body text of a page or frame, whitespace-collapsed and
+    capped — the provider's own words for terminal error reports."""
+    try:
+        text = scope.evaluate(
+            "() => (document.body && document.body.innerText) || ''")
+        return " ".join(str(text).split())[:limit]
+    except Exception:
+        return ""
+
+
+# Innermost visible error/alert text. Mirrors schwab-web's extractor:
+# role=alert regions preferred over the generic aria-live/error-classed
+# fallback; containers of other matches dropped so one blob doesn't
+# swallow its children.
+_ERROR_TEXT_JS = """() => {
+    const grab = (sel) => {
+        const els = Array.from(document.querySelectorAll(sel))
+            .filter(el => el.offsetWidth || el.offsetHeight);
+        return els
+            .filter(el => !els.some(o => o !== el && el.contains(o)))
+            .map(el => el.textContent.replace(/\\s+/g, ' ').trim())
+            .filter(t => t && t.length <= 300);
+    };
+    return {
+        alerts: grab('[role="alert"]'),
+        other: grab('[aria-live], [class*="error" i], [class*="alert" i]'),
+    };
+}"""
+
+
+def _visible_error_text(page) -> str:
+    """Visible error text across the page and its frames, one message
+    per line — Schwab's own words, logged verbatim on a rejection."""
+    texts: list[str] = []
+    scopes = [page, *[f for f in page.frames
+                      if f.parent_frame is not None]]
+    for scope in scopes:
+        try:
+            found = scope.evaluate(_ERROR_TEXT_JS)
+        except Exception:
+            continue
+        texts.extend(found.get("alerts") or found.get("other") or [])
+    return "\n  - ".join(list(dict.fromkeys(texts))[:5])
+
+
+def _notice_scope(page):
+    """The page or frame currently on the gateway's terminal notice
+    route, or None."""
+    if lm.is_gateway_notice_url(_live_url(page)):
+        return page
+    try:
+        frames = [f for f in page.frames if f.parent_frame is not None]
+    except Exception:
+        frames = []
+    for f in frames:
+        if lm.is_gateway_notice_url(f.url or ""):
+            return f
+    return None
+
+
+def _notice_message(scope, settle_s: float = 8.0, poll_s: float = 0.5) -> str:
+    """The notice page's own message, read from its message container
+    (lm.NOTICE_MESSAGE_SELECTORS), waiting for the SPA to render it —
+    the content arrives via an async fetch seconds after the route
+    change, and reading too early yields footer boilerplate. Falls back
+    to whole-body text when the container never shows."""
+    deadline = time.monotonic() + settle_s
+    while time.monotonic() < deadline:
+        for sel in lm.NOTICE_MESSAGE_SELECTORS:
+            try:
+                loc = scope.locator(sel).first
+                if not loc.count():
+                    continue
+                text = " ".join((loc.inner_text(timeout=1_000) or "").split())
+                if text:
+                    return text[:600]
+            except Exception:
+                continue
+        time.sleep(poll_s)
+    return _visible_page_text(scope)
+
+
+def _notice_error(scope) -> TerminalPageError:
+    """Build the terminal error for a gateway notice page, carrying the
+    page's own visible text verbatim."""
+    text = _notice_message(scope)
+    locked = lm.looks_locked(text)
+    what = ("an account-lockout notice" if locked
+            else "a terminal notice page")
+    return TerminalPageError(
+        f"Schwab ended the login with {what} (gateway #/information "
+        f"route); stopping all interaction",
+        page_text=text, locked=locked)
+
+
+# ============================================================
+# Page classification & click guard
+# ============================================================
+
+# classify_page states that belong to the OAuth consent flow — the ONLY
+# pages an advance button may be clicked on.
+CONSENT_PAGES = frozenset({"terms", "account-link", "review"})
+
+
+def _heading_present(page, heading: str) -> bool:
+    try:
+        return page.get_by_text(heading, exact=False).count() > 0
+    except Exception:
+        return False
+
+
+def _scan_for_mfa_input(page):
+    """The first visible 2FA code input across the page + frames, or
+    None. One non-blocking sweep — polling is the caller's job."""
+    scopes = [page, *[f for f in page.frames
+                      if f.parent_frame is not None]]
+    for scope in scopes:
+        for sel in lm.MFA_CODE_INPUT_CANDIDATES:
+            try:
+                loc = scope.locator(sel).first
+                if loc.count() and loc.is_visible(timeout=500):
+                    return loc
+            except Exception:
+                continue
+    return None
+
+
+def _login_form_present(page) -> bool:
+    scopes = [page, *[f for f in page.frames
+                      if f.parent_frame is not None]]
+    for scope in scopes:
+        for sel in lm.PASSWORD_INPUT_CANDIDATES:
+            try:
+                loc = scope.locator(sel).first
+                if loc.count() and loc.is_visible(timeout=300):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def classify_page(page, callback_url: str) -> str:
+    """Positively classify the current page: 'callback', 'notice' (the
+    gateway's terminal notice route), 'mfa' (a 2FA input is visible),
+    'terms' / 'account-link' / 'review' (the consent flow, by heading),
+    'login' (the credential form), or 'unknown'. Ordered so terminal and
+    challenge states win over anything else the DOM might still show."""
+    url = _live_url(page)
+    if lm.is_callback_url(url, callback_url):
+        return "callback"
+    if _notice_scope(page) is not None:
+        return "notice"
+    if _scan_for_mfa_input(page) is not None:
+        return "mfa"
+    if _heading_present(page, lm.TERMS_HEADING):
+        return "terms"
+    if _heading_present(page, lm.ACCOUNT_LINK_HEADING):
+        return "account-link"
+    if _heading_present(page, lm.REVIEW_HEADING):
+        return "review"
+    if _login_form_present(page):
+        return "login"
+    return "unknown"
+
+
+class AdvanceGuard:
+    """Budget + progress guard for the consent-drive loop.
+
+    Two invariants (DESIGN.md §3.1 incident note): a page that did not
+    change since the last advance click is never clicked again, and a
+    page that stops changing at all — clicked or not — fails the run
+    after STALL_LIMIT_S instead of spinning. CLICK_BUDGET caps total
+    advance clicks well above the flow's three known pages."""
+
+    CLICK_BUDGET = 8
+    STALL_LIMIT_S = 60.0
+
+    def __init__(self):
+        self.clicks = 0
+        self._sig = None
+        self._sig_since = time.monotonic()
+        self._clicked_sig = None
+
+    def observe(self, kind: str, sig: str) -> None:
+        """Track the page state; raise once it has stalled too long."""
+        now = time.monotonic()
+        if sig != self._sig:
+            self._sig = sig
+            self._sig_since = now
+            return
+        if now - self._sig_since > self.STALL_LIMIT_S:
+            raise LoginFlowError(
+                f"page stopped changing for {int(self.STALL_LIMIT_S)}s "
+                f"while driving the consent flow (state: {kind}); not "
+                f"clicking further — re-run login, or drive it over VNC "
+                f"(vnc-login)")
+
+    def may_click(self) -> bool:
+        """Whether an advance click is allowed: the page must have
+        changed since the last click. Budget exhaustion raises."""
+        if self.clicks >= self.CLICK_BUDGET:
+            raise LoginFlowError(
+                f"advance-click budget ({self.CLICK_BUDGET}) exhausted "
+                f"without reaching the callback; not clicking further")
+        return self._sig != self._clicked_sig
+
+    def record_click(self) -> None:
+        self.clicks += 1
+        self._clicked_sig = self._sig
+
+
+def _page_signature(page) -> str:
+    """Hash of the page URL + structural DOM signature, for deciding
+    whether a click actually changed anything. Text-insensitive, so a
+    ticking countdown doesn't read as progress."""
+    try:
+        struct = page.evaluate(_STRUCT_SIG_JS)
+    except Exception:
+        struct = ""
+    raw = f"{_live_url(page)}|{struct}"
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def _wait_for_mfa_input(page, timeout_s: float, callback_url: str,
                         poll_s: float = 0.5):
-    """Poll for the first visible 2FA input across the page + frames.
-    Returns a Locator, or None on timeout / if we already reached the
-    callback (no 2FA needed)."""
+    """Poll until the login lands somewhere recognizable. Returns
+    ("mfa", Locator) when a 2FA input is visible, or ("callback", None) /
+    ("consent", None) when the flow skipped the challenge (trusted
+    device). Raises TerminalPageError on the gateway notice route and
+    LoginFlowError when nothing recognizable appears within timeout_s —
+    a timeout is never read as "no 2FA needed": that assumption is what
+    let a locked-out re-run spin (DESIGN.md §3.1)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if lm.is_callback_url(_live_url(page), callback_url):
-            return None
-        scopes = [page, *[f for f in page.frames
-                          if f.parent_frame is not None]]
-        for scope in scopes:
-            for sel in lm.MFA_CODE_INPUT_CANDIDATES:
-                try:
-                    loc = scope.locator(sel).first
-                    if loc.count() and loc.is_visible(timeout=500):
-                        return loc
-                except Exception:
-                    continue
+        kind = classify_page(page, callback_url)
+        if kind == "callback":
+            return "callback", None
+        if kind == "notice":
+            raise _notice_error(_notice_scope(page) or page)
+        if kind == "mfa":
+            loc = _scan_for_mfa_input(page)
+            if loc is not None:
+                return "mfa", loc
+        if kind in CONSENT_PAGES:
+            return "consent", None
         time.sleep(poll_s)
-    return None
+    raise LoginFlowError(
+        f"neither a 2FA input nor a consent page appeared within "
+        f"{timeout_s:.0f}s — unrecognized page; re-run login, or drive "
+        f"it over VNC (vnc-login)",
+        page_text=_visible_page_text(page))
 
 
 def _click_first(page, candidates) -> bool:
@@ -524,18 +788,22 @@ def _explore_dump(page, screenshot_dir, state) -> None:
         log.debug("explore capture failed: %s", e)
 
 
-def _drive_consent(page) -> None:
-    """For --cli-mfa: tick the Terms agreement box (on the T&C page) and
-    the account boxes (on the link page), then click the advance button
-    (Continue / Done / Allow). Never clicks Cancel; .check() never
-    unchecks. Best-effort — the step can be driven by hand over VNC."""
-    try:
-        if page.get_by_text(lm.TERMS_HEADING, exact=False).count() > 0:
-            _check_visible_checkboxes(page)
-    except Exception:
-        pass
-    select_all_link_accounts(page)
-    _click_first(page, lm.ADVANCE_BUTTON_CANDIDATES)
+def _drive_consent(page, guard: AdvanceGuard, callback_url: str) -> None:
+    """One iteration of the --cli-mfa consent drive: classify the page,
+    tick the Terms agreement box when on the T&C page, and click the
+    advance button (Continue / Done / Allow) — but ONLY on a page
+    positively classified as consent-flow, never on a challenge, login,
+    or unknown page, and only when the page changed since the last click
+    (guard). Never clicks Cancel; .check() never unchecks. A stalled or
+    over-budget flow raises instead of clicking again."""
+    kind = classify_page(page, callback_url)
+    guard.observe(kind, _page_signature(page))
+    if kind == "terms":
+        _check_visible_checkboxes(page)
+    if kind not in CONSENT_PAGES:
+        return
+    if guard.may_click() and _click_first(page, lm.ADVANCE_BUTTON_CANDIDATES):
+        guard.record_click()
 
 
 # ============================================================
@@ -556,23 +824,31 @@ def _wait_for_callback(page, captured: list, callback_url: str,
     and return the full received URL with the `?code=…`. While waiting,
     auto-tick every account checkbox on the "Select your accounts to link"
     page (both modes — so a new account is linked without manual clicking);
-    with `drive` (--cli-mfa), also click through the consent pages; with
-    `explore`, dump each distinct page's DOM."""
+    with `drive` (--cli-mfa), also click through the consent pages —
+    classification-gated and budgeted (AdvanceGuard); with `explore`, dump
+    each distinct page's DOM. Raises TerminalPageError when the gateway
+    serves its terminal notice route (both modes — no flow proceeds past
+    it), LoginFlowError when the driven flow stalls or exhausts its click
+    budget."""
     deadline = time.monotonic() + timeout_s
     last_log = 0.0
     seen_link = [False]
     explore_state = [set(), 0]
+    guard = AdvanceGuard()
     while time.monotonic() < deadline:
         if captured:
             return captured[0]
         url = _live_url(page)
         if lm.is_callback_url(url, callback_url):
             return url
+        scope = _notice_scope(page)
+        if scope is not None:
+            raise _notice_error(scope)
         if explore:
             _explore_dump(page, screenshot_dir, explore_state)
         select_all_link_accounts(page, screenshot_dir, seen_link)
         if drive:
-            _drive_consent(page)
+            _drive_consent(page, guard, callback_url)
         now = time.monotonic()
         if now - last_log > 15:
             log.info("waiting for consent redirect to %s … (current: %s)",
@@ -616,6 +892,10 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
                 pass
 
         context.on("request", _on_request)
+        bodies = debugcap.BodyCapture(
+            args.screenshot_dir if args.capture_bodies else None,
+            host_markers=("sws-gateway", "api.schwabapi.com"), log=log)
+        bodies.attach(context)
         page = context.new_page()
         try:
             page.goto(ctx.authorization_url, wait_until="domcontentloaded")
@@ -625,21 +905,31 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
         prefill_login(page, login_id, password)
         maybe_capture_html(page, args.screenshot_dir, "02-prefilled")
 
-        if args.cli_mfa:
-            _attempt_cli_mfa(page, args)
-        else:
-            sys.stderr.write(
-                "\n" + "=" * 60 + "\n"
-                "Drive the login over VNC: log in, satisfy 2FA, pick the\n"
-                "account(s), and click Allow. This script captures the\n"
-                "redirect and exchanges it automatically.\n"
-                + "=" * 60 + "\n")
-            sys.stderr.flush()
+        try:
+            if args.cli_mfa:
+                _attempt_cli_mfa(page, args)
+            else:
+                sys.stderr.write(
+                    "\n" + "=" * 60 + "\n"
+                    "Drive the login over VNC: log in, satisfy 2FA, pick the\n"
+                    "account(s), and click Allow. This script captures the\n"
+                    "redirect and exchanges it automatically.\n"
+                    + "=" * 60 + "\n")
+                sys.stderr.flush()
 
-        received_url = _wait_for_callback(page, captured, args.callback_url,
-                                          args.mfa_timeout,
-                                          args.screenshot_dir, args.cli_mfa,
-                                          args.explore)
+            received_url = _wait_for_callback(page, captured,
+                                              args.callback_url,
+                                              args.mfa_timeout,
+                                              args.screenshot_dir,
+                                              args.cli_mfa, args.explore)
+        except LoginFlowError as exc:
+            maybe_capture_html(page, args.screenshot_dir, "99-terminal")
+            stop_trace_if_active(context, args.trace, args.screenshot_dir,
+                                 "login-terminal")
+            _report_flow_error(exc, args.screenshot_dir)
+            return exc.exit_code
+        finally:
+            bodies.flush()
         maybe_capture_html(page, args.screenshot_dir, "03-postconsent")
         if received_url is None:
             stop_trace_if_active(context, args.trace, args.screenshot_dir,
@@ -676,30 +966,88 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
     return 0
 
 
+def _verify_mfa_outcome(page, callback_url: str, *, budget_s: float = 60.0,
+                        grace_s: float = 5.0, poll_s: float = 1.0) -> str:
+    """Classify what Schwab did with the submitted 2FA code: "advanced"
+    (callback or a consent page reached), "rejected" (still on the
+    challenge with an on-page error), "stuck" (still on the challenge,
+    no error, budget spent), or "pending" (left the challenge for
+    nowhere recognizable yet; the consent wait's own guards take over).
+    Raises TerminalPageError on the gateway notice route. The grace
+    period covers navigation lag after Continue."""
+    start = time.monotonic()
+    kind = "unknown"
+    while time.monotonic() - start < budget_s:
+        kind = classify_page(page, callback_url)
+        if kind == "callback" or kind in CONSENT_PAGES:
+            return "advanced"
+        if kind == "notice":
+            raise _notice_error(_notice_scope(page) or page)
+        if kind == "mfa" and time.monotonic() - start >= grace_s:
+            if _visible_error_text(page):
+                return "rejected"
+        time.sleep(poll_s)
+    return "stuck" if kind == "mfa" else "pending"
+
+
 def _attempt_cli_mfa(page, args: argparse.Namespace) -> None:
-    """Auto-submit login, prompt for 2FA on stdin, click
-    through consent. Best-effort — on selector drift the flow can be
-    driven by hand over VNC and the redirect capture still completes."""
+    """Submit the login form once, resolve the 2FA challenge with at
+    most ONE code submission, and return with the flow ready for the
+    consent wait. Any ambiguity is terminal (LoginFlowError /
+    TerminalPageError) rather than a fallthrough: the incident in
+    DESIGN.md §3.1 came from driving the consent pages while the
+    challenge was still unresolved."""
     if not _click_first(page, lm.LOGIN_SUBMIT_CANDIDATES):
         log.warning("login submit button not found; complete login over VNC")
         return
-    code_loc = _wait_for_mfa_input(page, args.mfa_page_timeout, args.callback_url)
-    if code_loc is None:
-        log.info("no 2FA prompt detected (trusted device or already past it)")
-    else:
-        code = _prompt_for_mfa_code()
-        if code:
-            try:
-                code_loc.fill(code)
-            except Exception as e:
-                log.warning("could not fill 2FA code: %s", e)
-            if not _click_first(page, lm.MFA_CONTINUE_BUTTON_CANDIDATES):
-                try:
-                    code_loc.press("Enter")
-                except Exception as e:
-                    log.warning("could not submit 2FA: %s", e)
+    state, code_loc = _wait_for_mfa_input(page, args.mfa_page_timeout,
+                                          args.callback_url)
+    if state != "mfa":
+        log.info("no 2FA challenge served (%s reached); continuing", state)
+        return
+    code = _prompt_for_mfa_code()
+    if not code:
+        raise LoginFlowError(
+            "no 2FA code entered (empty line or closed stdin); aborting "
+            "before touching the challenge page — re-run login to retry")
+    try:
+        code_loc.fill(code)
+    except Exception as e:
+        raise LoginFlowError(f"could not fill the 2FA code input: {e}")
+    if not _click_first(page, lm.MFA_CONTINUE_BUTTON_CANDIDATES):
+        try:
+            code_loc.press("Enter")
+        except Exception as e:
+            raise LoginFlowError(f"could not submit the 2FA code: {e}")
+    outcome = _verify_mfa_outcome(page, args.callback_url)
+    if outcome == "rejected":
+        raise LoginFlowError(
+            "Schwab rejected the 2FA code; one submission per run — "
+            "re-run login to try again with a fresh code",
+            page_text=_visible_error_text(page))
+    if outcome == "stuck":
+        raise LoginFlowError(
+            "the 2FA challenge page did not move after the code was "
+            "submitted; not retrying — re-run login",
+            page_text=_visible_page_text(page))
+    log.info("2FA submission outcome: %s; the consent wait takes over",
+             outcome)
     # The Terms / account-selection / review pages are then driven from
     # the wait loop (_drive_consent), which ticks the boxes and advances.
+
+
+def _report_flow_error(exc: LoginFlowError, screenshot_dir: Path | None) -> None:
+    """Log a terminal flow failure: the diagnosis, the provider's own
+    page text verbatim, and — for a lockout — where recovery lives."""
+    log.error("%s", exc)
+    if exc.page_text:
+        log.error("Schwab's page says (verbatim): %s", exc.page_text)
+    if exc.locked:
+        log.error("The Schwab account is locked; it must be unlocked "
+                  "with Schwab directly before another login attempt.")
+    if screenshot_dir is None:
+        log.error("(re-run with --screenshot-dir /debug to capture the "
+                  "page for diagnosis)")
 
 
 def cmd_login_manual(args: argparse.Namespace) -> int:
@@ -740,11 +1088,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.trace and args.screenshot_dir is None:
         raise SystemExit("--trace requires --screenshot-dir (see CLAUDE.md §4).")
+    if args.capture_bodies and args.screenshot_dir is None:
+        raise SystemExit("--capture-bodies requires --screenshot-dir "
+                         "(see CLAUDE.md §4).")
     if args.check:
         return cmd_check(args)
     source_env_files(args.env_file)
     if args.manual:
         return cmd_login_manual(args)
+    if args.cli_mfa and not sys.stdin.isatty():
+        raise SystemExit(
+            "--cli-mfa reads the 2FA code from stdin, which is not a TTY "
+            "here — nothing could answer the prompt, and an unanswered "
+            "prompt must never fall through to page driving (DESIGN.md "
+            "§3.1). Run from a terminal, or use vnc-login.")
     return cmd_login_browser(args)
 
 

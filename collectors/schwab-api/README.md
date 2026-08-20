@@ -127,6 +127,15 @@ through the wrapper) and land in the debug dir
 (`~/.cache/wealthdb/debug/schwab-api`), which sits outside bronze and is reclaimed
 by [`prune`](#prunepy) once a bundle has aged past `--min-age-hours`.
 
+The flow is strict about failure (see DESIGN.md §3.1's incident note):
+one credential submission and at most one 2FA submission per run, and
+advance clicks fire only on pages positively classified as the consent
+flow, under a click budget with a page-change check. Schwab's terminal
+notice pages (`#/information/<code>` on the gateway — account lockout
+among them) abort immediately with the page's own message (exit 7;
+other terminal flow failures exit 8). Re-running `login` is the
+recovery path; a locked account must be unlocked with Schwab directly.
+
 This is why schwab-api is a **hybrid** collector: `login` runs in a
 Camoufox container while `download` and `load` run on the host venv
 (plain schwab-py REST + SQLite). The OAuth app credentials
@@ -176,6 +185,7 @@ remaining refresh-window life (no browser):
 | `--mfa-page-timeout` | `300` | With `--cli-mfa`: seconds to wait for the 2FA input field to appear. |
 | `--screenshot-dir` / `--trace` | — | Capture page HTML/screenshots, and (with `--trace`) a Playwright trace bundle, to the dir. Opt-in — pass `--screenshot-dir /debug --trace` through the wrapper (the entrypoint no longer injects them; a trace also crashes the base image's Firefox on `tracing.start()`). NEVER commit these. |
 | `--explore` | off | Debug: dump each distinct page's DOM to `--screenshot-dir` (for pinning selectors). |
+| `--capture-bodies` | off | Debug: also save response bodies from the Schwab gateway / authorize hosts to `--screenshot-dir` (flow diagnosis). Requires `--screenshot-dir`; NEVER commit these. |
 | `--manual` | off | No-browser paste-the-URL flow (schwab-py). |
 | `--check` | off | Inspect the token file's age. No browser, no network. |
 | `-v`, `--verbose` | off | DEBUG-level logging. |

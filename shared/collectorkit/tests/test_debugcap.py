@@ -199,5 +199,97 @@ class CapturePageTest(unittest.TestCase):
         self.assertFalse((d / "landing.png").exists())
 
 
+class _Resp:
+    """The slice of a Playwright Response BodyCapture touches."""
+
+    def __init__(self, url, status=200, ctype="application/json",
+                 body='{"ok": true}', text_raises=False):
+        self.url = url
+        self.status = status
+        self.headers = {"content-type": ctype}
+        self._body = body
+        self._raises = text_raises
+
+    def text(self):
+        if self._raises:
+            raise RuntimeError("body evicted")
+        return self._body
+
+
+class _Context:
+    def __init__(self):
+        self.handlers = {}
+
+    def on(self, event, handler):
+        self.handlers[event] = handler
+
+    def emit(self, resp):
+        self.handlers["response"](resp)
+
+
+class BodyCaptureTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name) / "captures"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _capture(self, out_dir="default"):
+        return debugcap.BodyCapture(
+            self.out if out_dir == "default" else out_dir,
+            host_markers=("sws-gateway",), log=log)
+
+    def test_records_only_matching_hosts_and_flushes_bodies(self):
+        cap, ctx = self._capture(), _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp("https://sws-gateway.example.invalid/api/v1/notice"))
+        ctx.emit(_Resp("https://cdn.example.invalid/app.js"))
+        self.assertEqual(cap.flush(), 1)
+        files = list(self.out.glob("body-*.json"))
+        self.assertEqual(len(files), 1)
+        blob = json.loads(files[0].read_text())
+        self.assertEqual(blob["status"], 200)
+        self.assertEqual(blob["body"], '{"ok": true}')
+
+    def test_redacts_the_url_it_writes(self):
+        cap, ctx = self._capture(), _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp(
+            "https://sws-gateway.example.invalid/a?session=SECRET123"))
+        cap.flush()
+        blob = next(self.out.glob("body-*.json")).read_text()
+        self.assertNotIn("SECRET123", blob)
+
+    def test_non_text_bodies_are_skipped(self):
+        cap, ctx = self._capture(), _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp("https://sws-gateway.example.invalid/logo",
+                       ctype="image/png"))
+        self.assertEqual(cap.flush(), 0)
+
+    def test_a_gone_body_is_skipped_not_fatal(self):
+        cap, ctx = self._capture(), _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp("https://sws-gateway.example.invalid/a",
+                       text_raises=True))
+        ctx.emit(_Resp("https://sws-gateway.example.invalid/b"))
+        self.assertEqual(cap.flush(), 1)
+
+    def test_disabled_attaches_and_flushes_as_a_no_op(self):
+        cap, ctx = self._capture(out_dir=None), _Context()
+        cap.attach(ctx)
+        self.assertNotIn("response", ctx.handlers)   # no listener at all
+        self.assertEqual(cap.flush(), 0)
+
+    def test_flush_drains_the_buffer(self):
+        cap, ctx = self._capture(), _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp("https://sws-gateway.example.invalid/a"))
+        self.assertEqual(cap.flush(), 1)
+        self.assertEqual(cap.flush(), 0)   # nothing written twice
+
+
 if __name__ == "__main__":
     unittest.main()
