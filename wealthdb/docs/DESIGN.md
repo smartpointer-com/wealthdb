@@ -1393,20 +1393,30 @@ upsert is:
 INSERT INTO accounts (...) VALUES (...)
 ON CONFLICT (silver_source_id, account_external_id) DO UPDATE
    SET display_name    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                              THEN EXCLUDED.display_name ELSE accounts.display_name END,
+                              THEN COALESCE(EXCLUDED.display_name, accounts.display_name)
+                              ELSE COALESCE(accounts.display_name, EXCLUDED.display_name) END,
        base_currency   = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                              THEN EXCLUDED.base_currency ELSE accounts.base_currency END,
-       /* ...same CASE pattern for the other attribute columns and payload... */
+                              THEN COALESCE(EXCLUDED.base_currency, accounts.base_currency)
+                              ELSE COALESCE(accounts.base_currency, EXCLUDED.base_currency) END,
+       /* ...same pattern for the other nullable attribute columns and
+          payload; non-nullable columns (account_kind, asset_class)
+          keep a bare newer-wins CASE... */
        first_seen_at   = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
        last_seen_at    = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at);
 ```
 
-The per-column `CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at`
-guard means re-emitting an *older* observation doesn't overwrite
-newer-observed attributes. The seen-at range still expands in both
-directions regardless — re-emitting an older snapshot pulls
-`first_seen_at` backward but never disturbs the attributes that a
-newer observation set.
+Per column: **the newest non-NULL observation wins, and an older
+observation still fills a column no newer record has carried** —
+recency arbitrates conflicts, absence never wins. NULL means "this
+record doesn't carry the field", not "set it to NULL", in both
+directions: a newer record's NULL doesn't erase an older value, and
+an older record's value isn't discarded just because a newer,
+field-less record exists. (The one-directional form of this guard
+silently dropped attributes only an older observation carries on
+every full rebuild — schwab-web's statement-derived `tax_wrapper`,
+dated at its silver snapshot, lost to newer wrapper-less api rows.)
+The seen-at range expands in both directions regardless —
+re-emitting an older snapshot pulls `first_seen_at` backward.
 
 (An earlier sketch used a single `WHERE EXCLUDED.last_seen_at >=
 accounts.last_seen_at` at the end of the SET clause; that gated
@@ -1420,15 +1430,10 @@ Adapters re-emit accounts / instruments alongside every snapshot
 they walk — tens of thousands of emissions folding onto a few
 hundred entities — and executing the guard once per emission made
 dimension upserts dominate load time. The fold applies records in
-arrival order with the guard semantics above, so against an entity
-gold has not seen (every `reload -a` rebuild) the folded single
-upsert stores exactly what record-by-record upserts would. Against
-a pre-existing row the two can differ in one narrow interleave: an
-in-load record older than the stored row followed by a newer one
-missing a column — folded, the older in-load value fills that
-column. That only arises when an adapter emits observations
-predating already-loaded data (a historical backfill landing in an
-incremental window).
+arrival order with the guard semantics above. Because both fold and
+SQL are symmetric-coalescing per column, the folded single upsert
+stores exactly what record-by-record upserts would — emission order
+no longer affects which attributes survive.
 
 ### 8.5 Silver-went-backwards detection
 

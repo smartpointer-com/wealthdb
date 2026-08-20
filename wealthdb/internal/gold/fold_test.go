@@ -424,3 +424,73 @@ func TestChangeAccumulatorFoldsToOneRowPerEntity(t *testing.T) {
 		t.Errorf("got name=%q range=[%d,%d], want Name 100 [1,100]", name, fs, ls)
 	}
 }
+
+// ---- older observation fills absent columns -------------------------------
+//
+// The schwab full-rebuild regression: the statement-derived
+// tax_wrapper/account_category ride an account record dated at the
+// web silver's snapshot, while fresher api records carry neither.
+// Under the one-directional guard the newer wrapper-less records
+// discarded the older record's attributes on every rebuild, and the
+// wrapper silently fell back to the taxable_personal render
+// default. Per column, recency
+// arbitrates conflicts — absence never wins — in both the fold and
+// the record-by-record SQL, in either arrival order.
+func TestOlderObservationFillsAbsentColumns(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	older := canonical.AccountChange{
+		SilverSourceID:  "test-src",
+		AccountKind:     canonical.AccountKindBrokerage,
+		AccountCategory: ptr("Contributory IRA"),
+		TaxWrapper:      ptr(canonical.TaxWrapperTraditionalIRA),
+		FirstSeenAt:     10,
+		LastSeenAt:      10,
+	}
+	newer := canonical.AccountChange{
+		SilverSourceID: "test-src",
+		AccountKind:    canonical.AccountKindBrokerage,
+		Nickname:       ptr("api nickname"),
+		FirstSeenAt:    90,
+		LastSeenAt:     90,
+	}
+
+	check := func(t *testing.T, id string) {
+		var wrapper, category, nickname sql.NullString
+		err := db.QueryRowContext(ctx, `
+			SELECT tax_wrapper, account_category, nickname
+			  FROM accounts WHERE account_external_id = ?`, id).
+			Scan(&wrapper, &category, &nickname)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wrapper.String != string(canonical.TaxWrapperTraditionalIRA) {
+			t.Errorf("tax_wrapper = %q, want traditional_ira", wrapper.String)
+		}
+		if category.String != "Contributory IRA" {
+			t.Errorf("account_category = %q, want the older record's label", category.String)
+		}
+		if nickname.String != "api nickname" {
+			t.Errorf("nickname = %q, want the newer record's", nickname.String)
+		}
+	}
+
+	withID := func(r canonical.AccountChange, id string) canonical.AccountChange {
+		r.AccountExternalID = id
+		return r
+	}
+
+	// Record-by-record, worst order: newer stored first, older arrives
+	// against a fresher stored row.
+	upsertSeq(t, ctx, db,
+		[]canonical.AccountChange{withID(newer, "SEQ"), withID(older, "SEQ")},
+		(*Writer).UpsertAccounts)
+	check(t, "SEQ")
+
+	// Folded, same order.
+	acc := NewChangeAccumulator()
+	mustAdd(t, acc, &canonical.SnapshotBatch{Accounts: []canonical.AccountChange{withID(newer, "FOLD")}})
+	mustAdd(t, acc, &canonical.SnapshotBatch{Accounts: []canonical.AccountChange{withID(older, "FOLD")}})
+	inTx(t, db, ctx, func(w *Writer) error { return acc.Flush(ctx, w) })
+	check(t, "FOLD")
+}

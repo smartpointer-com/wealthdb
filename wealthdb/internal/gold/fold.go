@@ -16,22 +16,17 @@ import (
 // emission dominated load time.
 //
 // Add applies records in arrival order with exactly the §8.4 guard
-// semantics the SQL applies (attributes update only when the
-// incoming last_seen_at is >= the accumulated one, per-column
-// COALESCE so a missing value never clobbers a present one; the
-// seen-at range unions either way). Folding first and upserting once
-// is therefore equivalent to upserting record-by-record whenever the
-// entity is new to gold — which covers every `reload -a` rebuild.
-// When gold already holds the entity, one narrow interleave differs:
-// an in-load record OLDER than the stored row, followed by a NEWER
-// one that lacks a value for some column. Record-by-record, the
-// older record's value is discarded against the stored row before
-// the newer record arrives, so the column keeps the stored value;
-// folded, the older value survives into the merged record and wins.
-// That interleave needs an adapter to emit observations predating
-// data gold has already loaded (a historical backfill landing in an
-// incremental window) — see TestChangeAccumulatorPreexistingRow,
-// which pins the folded outcome.
+// semantics the SQL applies: per column, the newest non-nil
+// observation wins, an older observation still fills a column no
+// newer record has carried, and the seen-at range unions either way.
+// Recency arbitrates conflicts; absence never wins — the guard that
+// makes attribute survival independent of emission order, so a full
+// rebuild folding an old attribute-bearing record after newer
+// attribute-less ones (schwab-web's statement-derived tax_wrapper vs
+// fresher api rows) keeps the attribute. Because every step is
+// symmetric-coalescing, folding first and upserting once is
+// equivalent to upserting record-by-record — see
+// TestChangeAccumulatorPreexistingRow.
 //
 // An accumulator is single-use: Add batches, then Flush once.
 type ChangeAccumulator struct {
@@ -123,17 +118,20 @@ func dimKey(sourceID, externalID string) string {
 }
 
 // foldPortfolio applies next onto acc exactly as the §8.4 upsert
-// would if next arrived while acc were the stored row.
+// would if next arrived while acc were the stored row: the newer
+// record's non-nil attributes win, and the older record's fill
+// whatever is still absent.
 func foldPortfolio(acc, next canonical.PortfolioChange) canonical.PortfolioChange {
-	out := acc
-	if next.LastSeenAt >= acc.LastSeenAt {
-		out = next
-		out.DisplayName = coalesce(next.DisplayName, acc.DisplayName)
-		out.BaseCurrency = coalesce(next.BaseCurrency, acc.BaseCurrency)
-		out.RelationshipID = coalesce(next.RelationshipID, acc.RelationshipID)
-		out.Nickname = coalesce(next.Nickname, acc.Nickname)
-		out.Payload = coalesceJSON(next.Payload, acc.Payload)
+	newer, older := next, acc
+	if next.LastSeenAt < acc.LastSeenAt {
+		newer, older = acc, next
 	}
+	out := newer
+	out.DisplayName = coalesce(newer.DisplayName, older.DisplayName)
+	out.BaseCurrency = coalesce(newer.BaseCurrency, older.BaseCurrency)
+	out.RelationshipID = coalesce(newer.RelationshipID, older.RelationshipID)
+	out.Nickname = coalesce(newer.Nickname, older.Nickname)
+	out.Payload = coalesceJSON(newer.Payload, older.Payload)
 	out.FirstSeenAt = min(acc.FirstSeenAt, next.FirstSeenAt)
 	out.LastSeenAt = max(acc.LastSeenAt, next.LastSeenAt)
 	return out
@@ -141,21 +139,23 @@ func foldPortfolio(acc, next canonical.PortfolioChange) canonical.PortfolioChang
 
 // foldAccount mirrors UpsertAccounts' guard. AccountKind is
 // non-nullable — the newer record's value wins outright, like the
-// SQL's bare CASE (no COALESCE).
+// SQL's bare CASE (no COALESCE). Ties (equal LastSeenAt) go to
+// `next`, matching the SQL's `>=`.
 func foldAccount(acc, next canonical.AccountChange) canonical.AccountChange {
-	out := acc
-	if next.LastSeenAt >= acc.LastSeenAt {
-		out = next
-		out.DisplayName = coalesce(next.DisplayName, acc.DisplayName)
-		out.BaseCurrency = coalesce(next.BaseCurrency, acc.BaseCurrency)
-		out.RelationshipID = coalesce(next.RelationshipID, acc.RelationshipID)
-		out.Nickname = coalesce(next.Nickname, acc.Nickname)
-		out.AccountCategory = coalesce(next.AccountCategory, acc.AccountCategory)
-		out.PortfolioExternalID = coalesce(next.PortfolioExternalID, acc.PortfolioExternalID)
-		out.TaxWrapper = coalesce(next.TaxWrapper, acc.TaxWrapper)
-		out.ManagementStyle = coalesce(next.ManagementStyle, acc.ManagementStyle)
-		out.Payload = coalesceJSON(next.Payload, acc.Payload)
+	newer, older := next, acc
+	if next.LastSeenAt < acc.LastSeenAt {
+		newer, older = acc, next
 	}
+	out := newer
+	out.DisplayName = coalesce(newer.DisplayName, older.DisplayName)
+	out.BaseCurrency = coalesce(newer.BaseCurrency, older.BaseCurrency)
+	out.RelationshipID = coalesce(newer.RelationshipID, older.RelationshipID)
+	out.Nickname = coalesce(newer.Nickname, older.Nickname)
+	out.AccountCategory = coalesce(newer.AccountCategory, older.AccountCategory)
+	out.PortfolioExternalID = coalesce(newer.PortfolioExternalID, older.PortfolioExternalID)
+	out.TaxWrapper = coalesce(newer.TaxWrapper, older.TaxWrapper)
+	out.ManagementStyle = coalesce(newer.ManagementStyle, older.ManagementStyle)
+	out.Payload = coalesceJSON(newer.Payload, older.Payload)
 	out.FirstSeenAt = min(acc.FirstSeenAt, next.FirstSeenAt)
 	out.LastSeenAt = max(acc.LastSeenAt, next.LastSeenAt)
 	return out
@@ -164,16 +164,17 @@ func foldAccount(acc, next canonical.AccountChange) canonical.AccountChange {
 // foldInstrument mirrors UpsertInstruments' guard. AssetClass and
 // Vehicle are non-nullable — the newer record's pair wins outright.
 func foldInstrument(acc, next canonical.InstrumentChange) canonical.InstrumentChange {
-	out := acc
-	if next.LastSeenAt >= acc.LastSeenAt {
-		out = next
-		out.ISIN = coalesce(next.ISIN, acc.ISIN)
-		out.CUSIP = coalesce(next.CUSIP, acc.CUSIP)
-		out.Symbol = coalesce(next.Symbol, acc.Symbol)
-		out.Name = coalesce(next.Name, acc.Name)
-		out.Currency = coalesce(next.Currency, acc.Currency)
-		out.Payload = coalesceJSON(next.Payload, acc.Payload)
+	newer, older := next, acc
+	if next.LastSeenAt < acc.LastSeenAt {
+		newer, older = acc, next
 	}
+	out := newer
+	out.ISIN = coalesce(newer.ISIN, older.ISIN)
+	out.CUSIP = coalesce(newer.CUSIP, older.CUSIP)
+	out.Symbol = coalesce(newer.Symbol, older.Symbol)
+	out.Name = coalesce(newer.Name, older.Name)
+	out.Currency = coalesce(newer.Currency, older.Currency)
+	out.Payload = coalesceJSON(newer.Payload, older.Payload)
 	out.FirstSeenAt = min(acc.FirstSeenAt, next.FirstSeenAt)
 	out.LastSeenAt = max(acc.LastSeenAt, next.LastSeenAt)
 	return out
