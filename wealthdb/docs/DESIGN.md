@@ -2003,7 +2003,7 @@ for why we don't separate stages.
 
 ### 12.1 Image
 
-Base: `golang:1.25-bookworm` (glibc, full Go toolchain, gcc/g++
+Base: `golang:1.26-bookworm` (glibc, full Go toolchain, gcc/g++
 for CGO). The Dockerfile:
 
 1. Copies `go.mod` / `go.sum` and runs `go mod download` in its own
