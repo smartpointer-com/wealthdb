@@ -130,6 +130,9 @@ cleanall-collectors: $(addprefix cleanall-,$(COLLECTORS))
 # zstandard so the compress / recompress suites execute rather than skip.
 CK_DIR  := shared/collectorkit
 CK_VENV := $(CK_DIR)/.venv
+# Test-only deps of the collectorkit venv (the library itself is
+# dependency-free). Shared with update-venvs so the two can't drift.
+CK_TEST_DEPS := pytest zstandard
 
 test-collectorkit:
 	@echo "==> test collectorkit"
@@ -142,7 +145,7 @@ test-collectorkit:
 		rm -rf $(CK_VENV); \
 		$(PYTHON) -m venv $(CK_VENV); \
 	fi
-	@$(CK_VENV)/bin/pip install -q -e $(CK_DIR) pytest zstandard
+	@$(CK_VENV)/bin/pip install -q -e $(CK_DIR) $(CK_TEST_DEPS)
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
 
 test-wrappers:
@@ -274,7 +277,8 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 #
 # `make update` brings every layer of the toolchain forward in one shot:
 #
-#   - pip + project deps in every host venv (schwab-api, ubs-psn, …)
+#   - pip + project deps in every host venv: the collectors' own
+#     (schwab-api, ubs-psn, …) plus collectorkit's test venv
 #   - Go modules in wealthdb/ (go get -u + go mod tidy, run by the
 #     image's own toolchain — see update-wealthdb)
 #   - Shared Docker base images, rebuilt with --pull so the underlying
@@ -287,7 +291,9 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # Host venvs are auto-discovered as any collectors/<name>/.venv that
 # already exists — the venv has to have been created by `make build-<name>`
 # at least once. Docker collectors have no .venv on the host; their pip
-# is inside the image and refreshes when the image rebuilds.
+# is inside the image and refreshes when the image rebuilds. The one venv
+# outside collectors/ is collectorkit's own test venv (created by
+# `make test-collectorkit`), updated alongside them.
 HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
 
 update: update-venvs update-wealthdb update-bases
@@ -295,8 +301,8 @@ update: update-venvs update-wealthdb update-bases
 	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
 
 update-venvs:
-	@if [ -z "$(HOST_VENV_COLLECTORS)" ]; then \
-		echo "==> no host venvs to update (collectors/*/.venv)"; \
+	@if [ -z "$(HOST_VENV_COLLECTORS)" ] && [ ! -x $(CK_VENV)/bin/python ]; then \
+		echo "==> no host venvs to update"; \
 	fi
 	@for c in $(HOST_VENV_COLLECTORS); do \
 		venv=collectors/$$c/.venv; \
@@ -307,6 +313,11 @@ update-venvs:
 		fi; \
 		"$$venv/bin/python" -m pip install --upgrade -e shared/collectorkit; \
 	done
+	@if [ -x $(CK_VENV)/bin/python ]; then \
+		echo "==> update $(CK_VENV)"; \
+		$(CK_VENV)/bin/python -m pip install --upgrade pip setuptools wheel; \
+		$(CK_VENV)/bin/python -m pip install --upgrade -e $(CK_DIR) $(CK_TEST_DEPS); \
+	fi
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
 # host's: build first so the pinned toolchain exists, resolve against it,
