@@ -61,7 +61,7 @@ func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 	d0101 := unixDate(t, "2023-01-01")
 	d0630 := unixDate(t, "2023-06-30")
-	dExit := unixDate(t, "2026-02-02")
+	dExit := unixDate(t, "2025-09-09")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -78,7 +78,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
     flow_date, amount, shares, price_per_share, currency, payload) VALUES
     ('exercise:100:1', '100', 1700000000, 'exercise',     '01/01/2023',    500, 1000, 0.5,  'USD', '{}'),
-    ('exit:100',       '100', 1700000000, 'exit',         '2026-02-02',      0, 1000, 0,    'USD', '{}'),
+    ('exit:100',       '100', 1700000000, 'exit',         '2025-09-09',      0, 1000, 0,    'USD', '{}'),
     ('call:200:s1',    '200', 1700000000, 'capital_call', '06/30/2023', 100000, NULL, NULL, 'USD', '{}'),
     ('dist:200:s2',    '200', 1700000000, 'distribution', '03/31/2025',   2500, NULL, NULL, 'USD', '{}');`,
 		d0101, d0630, d0101, dExit, d0630)
@@ -103,10 +103,10 @@ func TestStatusTransactionExtrema(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Transaction extrema track the cash-flow dates: 2023-01-01 (first
-	// exercise) .. 2026-02-02 (the exit).
-	if s.OldestTransactionAt != unixDate(t, "2023-01-01") || s.LatestTransactionAt != unixDate(t, "2026-02-02") {
+	// exercise) .. 2025-09-09 (the exit).
+	if s.OldestTransactionAt != unixDate(t, "2023-01-01") || s.LatestTransactionAt != unixDate(t, "2025-09-09") {
 		t.Errorf("tx extrema = [%d,%d], want [%d,%d]", s.OldestTransactionAt,
-			s.LatestTransactionAt, unixDate(t, "2023-01-01"), unixDate(t, "2026-02-02"))
+			s.LatestTransactionAt, unixDate(t, "2023-01-01"), unixDate(t, "2025-09-09"))
 	}
 	if s.LatestChangeNumber != 1700000000 {
 		t.Errorf("LatestChangeNumber = %d, want 1700000000", s.LatestChangeNumber)
@@ -242,7 +242,7 @@ func TestTransactions(t *testing.T) {
 // sale + its withdrawals net to 0 on the custody account.
 func TestSideLoadedLegsEmit1to1(t *testing.T) {
 	path, db := newFixtureSilver(t)
-	d := unixDate(t, "2026-02-02")
+	d := unixDate(t, "2025-09-09")
 	if _, err := db.Exec(fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');
@@ -252,9 +252,9 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
     position_status, currency, payload) VALUES (%d, 100, 'share', 1, 'exited', '$', '{}');
 INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, kind,
     flow_date, amount, shares, price_per_share, currency, description, payload) VALUES
-    ('tx:100:0', '100', 1700000000, 'sell',       '2026-02-02', 7000, 1500, 4.6667, 'USD', 'sale of all shares', '{}'),
-    ('tx:100:1', '100', 1700000000, 'withdrawal', '2026-02-02', 6500, NULL, NULL,   'USD', 'to bank',            '{}'),
-    ('tx:100:2', '100', 1700000000, 'withdrawal', '2026-02-02',  500, NULL, NULL,   'USD', 'to escrow',          '{}');`,
+    ('tx:100:0', '100', 1700000000, 'sell',       '2025-09-09', 7000, 1500, 4.6667, 'USD', 'sale of all shares', '{}'),
+    ('tx:100:1', '100', 1700000000, 'withdrawal', '2025-09-09', 6000, NULL, NULL,   'USD', 'to bank',            '{}'),
+    ('tx:100:2', '100', 1700000000, 'withdrawal', '2025-09-09', 1000, NULL, NULL,   'USD', 'to second bank',     '{}');`,
 		d, d)); err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestSnapshotsEmitClosureMarker(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	dEmpty := unixDate(t, "2022-06-01") // entity known, nothing held yet
 	dHeld := unixDate(t, "2023-01-01")
-	dExit := unixDate(t, "2026-02-02")
+	dExit := unixDate(t, "2025-09-09")
 	stmts := fmt.Sprintf(`
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
     VALUES (1700000000, 3, 'run', 'IND1', '{}');

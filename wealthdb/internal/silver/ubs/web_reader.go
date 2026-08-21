@@ -130,9 +130,11 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 		}
 	}
 	mins, maxs := []sql.NullInt64{snapMin, txMin}, []sql.NullInt64{snapMax, txMax}
+	startSet := false
 	for _, m := range mins {
-		if m.Valid && (!w.HasChanges || m.Int64 < w.Start) {
+		if m.Valid && (!startSet || m.Int64 < w.Start) {
 			w.Start = m.Int64
+			startSet = true
 		}
 	}
 	for _, m := range maxs {
@@ -201,13 +203,8 @@ func (r *webReader) snapshotsForOverlap(
 		byTime[t] = &canonical.SnapshotBatch{}
 	}
 
-	// Dimensions only — portfolios, accounts, instruments.
-	// Positions / cash come from the PSN side (with web payload
-	// folded in by the orchestrator). Web's instruments-via-
-	// description are a strict upgrade over PSN's InstrNm.LngNm-
-	// English (which is colon-formatted and less user-readable),
-	// so emit them here and let the per-column upsert guard pick
-	// the latest snapshot's name.
+	// Dimensions only — portfolios, accounts, instruments. Positions / cash
+	// come from the PSN side (with web payload folded in by the orchestrator).
 	if err := r.appendWebPortfolios(ctx, w, byTime, cutoffByWebRel); err != nil {
 		return nil, err
 	}
@@ -388,33 +385,18 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
-		// Classify each deposit/withdrawal as EXTERNAL (boundary-
-		// crossing owner capital) or INTERNAL (conduit churn) at the
-		// relationship boundary. UBS cash/current accounts are
-		// CONDUITS — external capital enters as cash and is routed
-		// into securities / mandates / FX, whose value spine carries
-		// the return — so internal churn fed into a flow-based return
-		// double-counts. INTERNAL rows are demoted to a non-flow kind
-		// (TxKindOther, absent from BankExternal) so they stay
-		// queryable in gold but out of the return. Two layers:
+		// Classify each deposit/withdrawal as EXTERNAL (boundary-crossing
+		// owner capital) or INTERNAL (conduit churn); INTERNAL rows are
+		// demoted to a non-flow kind (TxKindOther) so they stay queryable
+		// in gold but out of the return. Two layers:
 		//
-		//  1. The same-day offset veto (buildSameDayOffsetVeto)
-		//     demotes any leg — PDF or MT940 — whose mirror leg is
-		//     booked on another own account on the same value day:
-		//     the movement provably never left the relationship.
+		//  1. The same-day offset veto (buildSameDayOffsetVeto) demotes
+		//     any leg — either feed — whose mirror books on another own
+		//     account the same value day.
 		//  2. PDF-backfill rows additionally pass pdfCashIsExternal
-		//     (default INTERNAL, counter-IBAN + rail-booking based,
-		//     PII-free); MT940 rows carry structured kinds and need
-		//     no per-row classifier beyond the veto. The rail
-		//     promotion inside the classifier is era-gated to rows
-		//     on/after the MT940 feed's first covered day
-		//     (mt940FeedStart) — see the classifier's doc for why the
-		//     deep backfill era stays conservative in BOTH directions.
-		//
-		// The engine's UBS policy (OnboardPerEntityOnce +
-		// ConduitKinds:[cash] + ExternalOnly + Inception=first-real-
-		// snapshot) then onboards debut step-ups and counts external
-		// deposits on top, so capital is counted exactly once.
+		//     (default INTERNAL; counter-IBAN + era-gated rail bookings —
+		//     its doc carries the conduit model and the engine-policy
+		//     interplay).
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
 			railEra := mt940Start > 0 && valueDate >= mt940Start
 			switch {
@@ -625,7 +607,7 @@ SELECT a.account_external_id, a.banking_relationship_id
 // transaction payload's counter_account normalizes to. account_external_id IS the
 // IBAN (schema: "IBAN no-spaces upper"), so this is a name-free, PII-free key:
 // membership decides internal-vs-external without any holder name. Used by the
-// pre-2024 PDF cash-flow classifier to recognise inter-own-account moves as a
+// PDF-backfill cash-flow classifier to recognise inter-own-account moves as a
 // SUPPLEMENT to the parser's internal_transfer boolean: it can demote a KNOWN own
 // counter to internal, but it cannot promote — the parser flag is checked first
 // and is authoritative, so an own mandate/portfolio destination absent from
@@ -1089,8 +1071,7 @@ SELECT MIN(value_date) FROM transactions
 }
 
 // isPDFCashBackfill reports whether a transaction came from the
-// pre-2024 Account-Statement PDF backfill (source=
-// "account_statement_pdf"). Gates the per-row external/internal
+// Account-Statement PDF backfill (source="account_statement_pdf"). Gates the per-row external/internal
 // classifier (pdfCashIsExternal); the MT940 feed carries no such
 // marker and needs no per-row classifier beyond the same-day
 // offset veto.
@@ -1348,9 +1329,7 @@ func (r *webReader) appendWebMortgages(ctx context.Context,
 	}
 	const q = `
 SELECT snapshot_at, account_external_id, banking_relationship_id,
-       portfolio_external_id, currency_iso, outstanding_balance,
-       start_date, end_date, rate_type, collateral_description,
-       description, payload
+       portfolio_external_id, currency_iso, description, payload
   FROM mortgages
  WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
@@ -1360,36 +1339,27 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			snap                                            int64
-			extID, currency, payload                        string
-			relID, portfolioID, rateType, collateral, descr sql.NullString
-			outstanding                                     sql.NullFloat64
-			startDate, endDate                              sql.NullInt64
+			snap                      int64
+			extID, currency, payload  string
+			relID, portfolioID, descr sql.NullString
 		)
 		if err := rows.Scan(&snap, &extID, &relID, &portfolioID,
-			&currency, &outstanding, &startDate, &endDate, &rateType,
-			&collateral, &descr, &payload); err != nil {
+			&currency, &descr, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
 			continue
 		}
-		_ = startDate // promoted into payload via the JSON below
-		_ = endDate
-		_ = rateType
-		_ = collateral
-		_ = outstanding // mortgage Positions are injected by the
-		// psn-web fold stream, NOT emitted here. Emitting a Position
-		// at the web dump's snapshot_at would create a "mortgage-only"
-		// gold snapshot at the web dump time — and gold's "latest
-		// snapshot per silver source" query (MAX over
-		// positions.snapshot_at) would then land on that
-		// mortgage-only time and hide every other UBS position from
-		// the "today" view. The fold stream injects mortgages only
-		// into PSN batches that already carry Positions, keeping
-		// snapshot times aligned.
-
+		// Dimensions only: the balance and terms stay inside payload, and
+		// mortgage Positions are injected by the psn-web fold stream, NOT
+		// emitted here. Emitting a Position at the web dump's snapshot_at
+		// would create a "mortgage-only" gold snapshot at that time — and
+		// gold's "latest snapshot per silver source" query (MAX over
+		// positions.snapshot_at) would then land on it and hide every other
+		// UBS position from the "today" view. The fold stream injects
+		// mortgages only into PSN batches that already carry Positions,
+		// keeping snapshot times aligned.
 		batch.Accounts = append(batch.Accounts, canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindMortgage,

@@ -373,18 +373,22 @@ func TestMatchCrossTransfersPrefersExactAmount(t *testing.T) {
 // guards the invariant for future OnboardNone sources with transfer kinds.
 func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 	winFrom, winTo := int64(100), int64(300)
+	// matchCrossTransfers indexes every linked account's transferLike slice;
+	// direct construction must uphold that invariant.
 	sender := &accountData{
 		src: "s1", acct: "A",
-		series:       []dayVal{{day: 100, val: 50000}, {day: 300, val: 40000}},
-		transferLike: []returns.Flow{{Day: 150, Amount: -10000, ID: "out"}},
-		crossLinks:   map[string]crossLink{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
+		series:          []dayVal{{day: 100, val: 50000}, {day: 300, val: 40000}},
+		transferLike:    []returns.Flow{{Day: 150, Amount: -10000, ID: "out"}},
+		crossLinks:      map[string]crossLink{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
+		transferLikeIDs: map[string]bool{"out": true},
 	}
 	receiver := &accountData{
 		src: "s2", acct: "B",
 		// Debuts AFTER the flow: day 150 is pre-debut for the day-200 spine.
-		series:       []dayVal{{day: 200, val: 10000}, {day: 300, val: 11000}},
-		transferLike: []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
-		crossLinks:   map[string]crossLink{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
+		series:          []dayVal{{day: 200, val: 10000}, {day: 300, val: 11000}},
+		transferLike:    []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
+		crossLinks:      map[string]crossLink{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
+		transferLikeIDs: map[string]bool{"in": true},
 	}
 	receiver.rpolicy.OnboardScope = returns.OnboardNone
 
@@ -395,8 +399,8 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 
 	// Control: the same shape on the nonTransfer slice IS live under
 	// OnboardNone (the deposit is the capital event there) and nets.
-	sender.nonTransfer, sender.transferLike = sender.transferLike, nil
-	receiver.nonTransfer, receiver.transferLike = receiver.transferLike, nil
+	sender.nonTransfer, sender.transferLike, sender.transferLikeIDs = sender.transferLike, nil, nil
+	receiver.nonTransfer, receiver.transferLike, receiver.transferLikeIDs = receiver.transferLike, nil, nil
 	drops, pairs = crossMatchedDrops([]*accountData{sender, receiver}, winFrom, winTo)
 	if pairs != 1 || len(drops) != 2 {
 		t.Errorf("OnboardNone nonTransfer pre-debut pair must net: pairs=%d drops=%v", pairs, drops)

@@ -17,8 +17,8 @@ func init() {
 // cmdWebMaterialize rewrites the report_returns table in the live gold DB:
 // the full RunReturns matrix (4 grains × 4 periods × 3 currencies, plus the
 // per-year windowed since-<year> summaries) with the CLI-default knobs and the
-// config's inception_overrides / returns_exclude / returns_policy_overrides
-// applied — each base partition is the verbatim output of a bare
+// same wealthdb.cfg returns settings a CLI run applies (returnsCfgSettings)
+// — each base partition is the verbatim output of a bare
 // `wealthdb returns <grain> --period <granularity> --method both -x <CCY>`.
 // The host-side `wealthdb web` wrapper runs it right before snapshotting so
 // the Metabase Returns dashboards are as fresh as the holdings. Hidden from

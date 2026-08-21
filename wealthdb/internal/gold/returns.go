@@ -52,7 +52,7 @@ type ReturnParams struct {
 	Method    string // twr | mwr | both
 	Period    string // monthly | quarterly | annual | total
 	Annualize string // auto | always | never
-	Netting   bool   // net heuristically-matched internal transfers at coarse grains
+	Netting   bool   // net internal transfers at coarse grains (heuristic netter + cross-source matched pairs)
 	Inception string // full | strict
 	// InceptionOverrides carries user-configured per-entity inception
 	// floors from wealthdb.cfg. Nil ⇒ every entity keeps its data-derived
@@ -133,9 +133,8 @@ func entityHidden(level string, members []*accountData, h *ReturnsHide) bool {
 // (wealthdb.cfg `returns_policy_overrides`, translated by the CLI). Nil
 // pointer fields keep the registered policy's values. A FlowRegime override
 // replaces the whole flow classification with the regime's canonical kind
-// sets (returns.FlowPolicyForRegime) and re-derives the NavOnly mirror; it
-// also marks the policy Known — an explicitly declared classification is not
-// an unknown-adapter condition.
+// sets (returns.FlowPolicyForRegime); it also marks the policy Known — an
+// explicitly declared classification is not an unknown-adapter condition.
 type ReturnsPolicyOverride struct {
 	FlowRegime    *returns.Regime
 	AccountsGrain *returns.AccountsGrainMode
@@ -239,7 +238,6 @@ const (
 // reused across every (grain, period) computation for its currency; see
 // MaterializeReturns, which loads three currencies in a single pass.
 type returnsDataset struct {
-	outCcy    string
 	accts     map[string]*accountData
 	fx        fxBounds
 	globalMax int64 // spine's latest emitted day across all accounts (≈ today)
@@ -258,7 +256,7 @@ func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBou
 	if err := attachFlows(ctx, db, outCcy, accts, fx, tm); err != nil {
 		return nil, err
 	}
-	ds := &returnsDataset{outCcy: outCcy, accts: accts, fx: fx}
+	ds := &returnsDataset{accts: accts, fx: fx}
 	ds.finalize()
 	return ds, nil
 }
@@ -436,7 +434,10 @@ type accountData struct {
 	// leg, filled by matchCrossTransfers when transfer matching is enabled
 	// (nil otherwise). Consumed per entity in entityFlows: a linked pair nets
 	// only where both legs are live members of the same entity window.
-	crossLinks map[string]crossLink
+	// transferLikeIDs indexes the transferLike slice for accounts with links,
+	// so per-window liveness checks resolve a partner leg's slice in O(1).
+	crossLinks      map[string]crossLink
+	transferLikeIDs map[string]bool
 }
 
 // crossLink identifies the counterparty leg of a cross-source-matched
@@ -444,15 +445,6 @@ type accountData struct {
 type crossLink struct {
 	src, acct, txID string
 	day             int64
-}
-
-// allExternal returns every policy-external flow (used at the accounts grain,
-// where there is nothing to net).
-func (a *accountData) allExternal() []returns.Flow {
-	out := make([]returns.Flow, 0, len(a.nonTransfer)+len(a.transferLike))
-	out = append(out, a.nonTransfer...)
-	out = append(out, a.transferLike...)
-	return out
 }
 
 func (a *accountData) firstDay() int64 {
@@ -627,8 +619,8 @@ func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]strin
 
 // applyPolicyOverride composes a source's config-side override (if any) on
 // top of its registered policy. A FlowRegime override swaps in the regime's
-// canonical FlowPolicy wholesale (kind sets included) and keeps the NavOnly
-// mirror consistent; unset fields leave the registered values untouched.
+// canonical FlowPolicy wholesale (kind sets included); unset fields leave the
+// registered values untouched.
 func applyPolicyOverride(rp returns.ReturnsPolicy, ov map[string]ReturnsPolicyOverride, src string) returns.ReturnsPolicy {
 	o, ok := ov[src]
 	if !ok {
@@ -636,7 +628,6 @@ func applyPolicyOverride(rp returns.ReturnsPolicy, ov map[string]ReturnsPolicyOv
 	}
 	if o.FlowRegime != nil {
 		rp.Flow = returns.FlowPolicyForRegime(*o.FlowRegime)
-		rp.NavOnly = *o.FlowRegime == returns.RegimeNavOnly
 	}
 	if o.AccountsGrain != nil {
 		rp.AccountsGrain = *o.AccountsGrain
@@ -809,17 +800,10 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	if !ok {
 		return false // unresolved FX on the flow — skip (documented limitation)
 	}
-	// ExternalOnly: count only boundary-crossing flows; internal churn
-	// (cash<->securities settlements, inter-account transfers, FX, mandate
-	// funding) is NOT a flow. The engine drops an internal flow here ONLY via a
-	// non-nil ClassifyFlow hook (gated by ExternalOnly); ExternalOnly alone does
-	// nothing in the engine. UBS sets ExternalOnly=true but ships NO ClassifyFlow
-	// — it pre-tags the classification in silver instead (internal rows are
-	// emitted under a non-flow kind, so they never reach IsExternal here), which
-	// keeps the counter-account / own-IBAN logic — and any PII — entirely inside
-	// the collector. For UBS, therefore, ExternalOnly is a silver-side contract
-	// and this branch is inert. This is source-scoped via a.rpolicy, so non-UBS
-	// sources (ExternalOnly=false) are untouched.
+	// ExternalOnly gates the ClassifyFlow hook: a non-nil hook may drop a
+	// flow as internal; ExternalOnly without a hook is inert here — a
+	// silver-side pre-tagging contract (see ReturnsPolicy.ExternalOnly).
+	// Source-scoped via a.rpolicy.
 	if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
 		if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
 			return false
@@ -919,18 +903,38 @@ func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map
 			acc.crossLinks[a.txID] = crossLink{src: b.src, acct: b.acct, txID: b.txID, day: b.day}
 		}
 	}
+	// Per-currency credit index, preserving the global sorted order, so each
+	// debit scans only its currency's day band instead of every credit.
+	type ccyPart struct {
+		idx  []int   // indices into credits, day-ascending
+		days []int64 // credits[idx[k]].day, for the band search
+	}
+	parts := map[string]*ccyPart{}
+	for i, c := range credits {
+		cp := parts[c.ccy]
+		if cp == nil {
+			cp = &ccyPart{}
+			parts[c.ccy] = cp
+		}
+		cp.idx = append(cp.idx, i)
+		cp.days = append(cp.days, c.day)
+	}
 	for _, d := range debits {
+		cp := parts[d.ccy]
+		if cp == nil {
+			continue
+		}
+		lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.day-int64(tm.WindowDays) })
 		best, bestGap, bestDist := -1, 0.0, int64(0)
-		for i, c := range credits {
-			if used[i] || c.src == d.src || c.ccy != d.ccy {
+		for k := lo; k < len(cp.idx) && cp.days[k] <= d.day+int64(tm.WindowDays); k++ {
+			i := cp.idx[k]
+			c := credits[i]
+			if used[i] || c.src == d.src {
 				continue
 			}
 			dist := c.day - d.day
 			if dist < 0 {
 				dist = -dist
-			}
-			if dist > int64(tm.WindowDays) {
-				continue
 			}
 			eps := 0.01
 			if r := tm.TolerancePct / 100 * math.Max(math.Abs(d.amt), c.amt); r > eps {
@@ -953,6 +957,17 @@ func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map
 		used[best] = true
 		link(d, credits[best])
 		link(credits[best], d)
+	}
+	// Index the transferLike slices of linked accounts so per-window liveness
+	// checks (crossMatchedDrops) resolve a leg's slice without scanning.
+	for _, acc := range byKey {
+		if len(acc.crossLinks) == 0 || acc.transferLikeIDs != nil {
+			continue
+		}
+		acc.transferLikeIDs = make(map[string]bool, len(acc.transferLike))
+		for _, f := range acc.transferLike {
+			acc.transferLikeIDs[f.ID] = true
+		}
 	}
 }
 

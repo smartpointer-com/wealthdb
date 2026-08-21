@@ -144,7 +144,7 @@ func TestOffsetVetoLeavesUnmirroredWireExternal(t *testing.T) {
 	seedRailEraAnchor(t, r)
 	seedWebAccount(t, r, vetoAcctA)
 	seedWebAccount(t, r, vetoAcctB)
-	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -300000, true)
+	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -123400, true)
 
 	kinds := emittedKinds(t, r, nil)
 	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindWithdrawal {
@@ -412,10 +412,34 @@ func TestOffsetVetoProbeSkipsSuppressedWebRows(t *testing.T) {
 func TestDeepEraWireStaysInternal(t *testing.T) {
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, vetoAcctA)
-	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -300000, true)
+	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -123400, true)
 
 	kinds := emittedKinds(t, r, nil)
 	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {
 		t.Errorf("deep-era outbound payment order = %v, want other", got)
+	}
+}
+
+// TestWebChangeWindowStartIsTrueMinimum pins the window-start regression: the
+// start must be the SMALLEST valid minimum across the snapshot and
+// transaction ranges, whichever order the two are scanned in. (The old guard
+// short-circuited on a flag no prior code set, leaving Start at the LAST
+// valid minimum — wrong whenever snapshots begin before transactions.)
+func TestWebChangeWindowStartIsTrueMinimum(t *testing.T) {
+	r := newWebTxFixture(t)
+	if _, err := r.db.Exec(`
+        CREATE TABLE dump_runs (snapshot_at INTEGER, silver_schema_version INTEGER, run_dir TEXT);
+        INSERT INTO dump_runs VALUES (500, 1, '/x/1');`); err != nil {
+		t.Fatalf("seed dump_runs: %v", err)
+	}
+	seedWebAccount(t, r, vetoAcctA)
+	seedWebTx(t, r, "T1", vetoAcctA, 900, "CHF", 100, false) // txMin AFTER snapMin
+
+	w, err := r.ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatalf("ChangeWindow: %v", err)
+	}
+	if !w.HasChanges || w.Start != 500 {
+		t.Errorf("Start = %d (HasChanges=%v), want the snapshot minimum 500", w.Start, w.HasChanges)
 	}
 }

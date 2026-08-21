@@ -87,8 +87,7 @@ func NewFlowPolicy(regime Regime, external, transferLike []canonical.TxKind) Flo
 // BankExternal is the standard flow-complete external kind set. Including kinds
 // an adapter never emits (e.g. fidelity emits only journal) is harmless — no
 // such transactions exist — and keeps the policy robust to adapter evolution.
-// Exported so the flow-complete bank/pension silver packages register the
-// identical set without duplicating the literal.
+// Exported as BankFlowPolicy's building block and for the policy-shape tests.
 func BankExternal() []canonical.TxKind {
 	return []canonical.TxKind{
 		canonical.TxKindDeposit, canonical.TxKindWithdrawal,
@@ -110,6 +109,47 @@ func BankTransferLike() []canonical.TxKind {
 // set covers them; fidelity moves capital only via `journal`.
 func BankFlowPolicy() FlowPolicy {
 	return NewFlowPolicy(RegimeFlowComplete, BankExternal(), BankTransferLike())
+}
+
+// DepositBankPolicy is the shared policy of the flow-complete deposit-bank
+// collectors (checking / savings / money-market conduits). The ledger is the
+// complete cash history, so the standard bank external set applies (such
+// adapters emit only deposit/withdrawal/interest/fee; the set's unused
+// transfer/journal kinds are harmless). AccountsGrainHidden: a deposit
+// account is pure cash plumbing — money passes through it between other
+// sources — so its rows are noise at every grain (a drained-then-refunded
+// account chains a permanent −100%) and none are emitted; the balances and
+// flows still enter every aggregate, where transfer legs against tracked
+// sources cancel.
+func DepositBankPolicy() ReturnsPolicy {
+	p := DefaultReturnsPolicy(BankFlowPolicy())
+	p.AccountsGrain = AccountsGrainHidden
+	return p
+}
+
+// PrivateMarketLedgerPolicy is the shared policy of private-market collectors
+// whose cash-flow ledger is complete double-entry on the custody account: the
+// deposit/withdrawal legs are real dated cash crossings of the source
+// boundary, so they count as external capital, while
+// buy/sell/contribution/distribution are the internal halves of those pairs
+// and must NOT count — marking both legs external would cancel every event to
+// a net-0 flow. No transfer-like set: deposit/withdrawal never participate in
+// netting. CapitalCallRisk keeps the nav_only_capital_call_risk tag on any
+// window that observes no flows (a positions-only silver), so value-growth
+// returns stay flagged when the ledger is absent. ClosureLedgerExact: an
+// exit's withdrawal legs are the realized proceeds, dated on the exit day
+// itself (the adapter emits a zero snapshot there), so a full-portfolio
+// closure books the real proceeds and the realized-vs-last-mark delta shows
+// as return.
+func PrivateMarketLedgerPolicy() ReturnsPolicy {
+	p := DefaultReturnsPolicy(NewFlowPolicy(
+		RegimeFlowComplete,
+		[]canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal},
+		nil,
+	))
+	p.CapitalCallRisk = true
+	p.ClosureScope = ClosureLedgerExact
+	return p
 }
 
 // defaultFlowPolicy is the ReturnsPolicyFor miss-fallback: the conservative bank

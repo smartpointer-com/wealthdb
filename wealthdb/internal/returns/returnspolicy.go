@@ -19,15 +19,11 @@ import (
 // or hiding the per-account display for sweep/conduit sources),
 // CapitalCallRisk (regimeFlags in returns_compute.go, tagging flow-less
 // windows), and ClosureScope (entityFlows, ledger-exact vs subsumed
-// closures).
-// The remaining knobs — NettingTol, SpineDensity, InKindJumpTol, the NavOnly
-// mirror, and the OnboardAmount hook — are a declared forward contract for the
-// per-source returns-policy migration: defined and defaulted here so a source
-// can declare intent that takes effect once the corresponding engine site reads
-// the knob. Every knob defaults to the engine's baseline behavior, so
+// closures). Every knob defaults to the engine's baseline behavior, so
 // DefaultReturnsPolicy() is a strict no-op: a source without a registered
-// policy stays byte-identical, and each consumed knob only changes numbers when
-// a source opts into a non-default value.
+// policy stays byte-identical, and each consumed knob only changes numbers
+// when a source opts into a non-default value. A knob is added together with
+// the engine site that reads it — no forward stubs.
 //
 // A source declares its ReturnsPolicy co-located in its silver package and
 // registers it via RegisterPolicy from that package's init(). The engine
@@ -78,32 +74,12 @@ type ReturnsPolicy struct {
 	// transferLike).
 	ExternalOnly bool
 
-	// ---- forward-contract knobs; defined and defaulted, awaiting engine sites ----
-
-	// NettingTol: transfer-netting window / epsilon. Zero value matches the
-	// engine's module-level netting constants.
-	NettingTol Tolerance
-	// SpineDensity: daily vs. sparse-carry-forward value spine. Zero value =
-	// the engine's baseline spine.
-	SpineDensity SpineMode
-	// NavOnly: capital-call-risk vehicles (suppress flow-based return, surface
-	// NAV growth). The engine derives NAV-only from Flow.Regime ==
-	// RegimeNavOnly; this knob mirrors that (set by DefaultReturnsPolicy) as
-	// the forward contract for reading it directly, and defaults false.
-	NavOnly bool
-	// InKindJumpTol: suspected-in-kind honesty-flag tolerance. Zero = the
-	// engine's baseline tolerance.
-	InKindJumpTol canonical.Decimal
-
 	// ---- escape hatches; optional, nil => default behavior ----
 
 	// ClassifyFlow, if non-nil, overrides external-vs-internal flow
 	// classification under ExternalOnly. nil => the FlowPolicy
 	// kind-set rule (UBS pre-tags in silver instead, so it ships nil).
 	ClassifyFlow func(FlowCtx) FlowClass
-	// OnboardAmount, if non-nil, overrides the synthetic onboarding amount.
-	// nil => the engine's default. Forward contract: no engine site reads it.
-	OnboardAmount func(DebutCtx) canonical.Decimal
 }
 
 // OnboardScope selects the grain at which synthetic onboarding fires.
@@ -198,25 +174,6 @@ const (
 	InceptionFirstRealSnapshot
 )
 
-// SpineMode selects value-spine density.
-type SpineMode int
-
-const (
-	// SpineDefault is the engine's baseline spine density.
-	SpineDefault SpineMode = iota
-	// SpineDaily forces a daily spine.
-	SpineDaily
-	// SpineSparseCarryForward carries values forward over sparse snapshots.
-	SpineSparseCarryForward
-)
-
-// Tolerance is a netting window / epsilon knob. Its zero value matches the
-// engine's module-level netting constants (forward contract).
-type Tolerance struct {
-	Days int
-	Eps  canonical.Decimal
-}
-
 // FlowCtx is the input to the optional ClassifyFlow hook. Shape is
 // provisional; the hook is nil in every default policy.
 type FlowCtx struct {
@@ -235,20 +192,11 @@ const (
 	FlowExternal
 )
 
-// DebutCtx is the input to the optional OnboardAmount hook. Provisional; part
-// of the OnboardAmount forward contract.
-type DebutCtx struct {
-	Day int64
-}
-
 // DefaultReturnsPolicy returns the baseline policy: the given FlowPolicy plus
 // all other knobs at their zero/default values (no-op). Sources build their
 // ReturnsPolicy from this and override only what they need.
 func DefaultReturnsPolicy(flow FlowPolicy) ReturnsPolicy {
-	return ReturnsPolicy{
-		Flow:    flow,
-		NavOnly: flow.Regime == RegimeNavOnly,
-	}
+	return ReturnsPolicy{Flow: flow}
 }
 
 // ---- kind-keyed policy registry (mirrors internal/silver's adapter registry) ----

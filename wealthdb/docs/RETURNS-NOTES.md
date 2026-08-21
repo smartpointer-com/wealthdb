@@ -51,11 +51,11 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
   past the last snapshot is excluded; a window with no interior valuation
   falls back to a single `[winFrom, winTo]` bucket. Dense (daily-snapshot)
   sources are unchanged. Guard: `TestRunReturnsSparseSnapshotNoChainCollapse`.
-- **Onboarding = the unexplained remainder.** A staggered constituent's
-  synthetic onboarding flow is `firstValue − realDebutFunding`, injected
-  only when `> tol` — not a binary suppress. This subsumes the binary case
-  (full real funding → 0 → suppressed) and also handles *partial* real
-  funding (inject only the uncovered opening).
+- **Onboarding books the debut value.** A staggered constituent's real
+  debut-region flows are subsumed first (`flowSubsumed` in `entityFlows`),
+  then synthetic onboarding books the full first-snapshot value — or, under
+  per-entity-once, the sibling-netted step (`groupOnboardStep`). A ~0 or
+  negative amount is suppressed, never injected.
 - **XIRR:** Newton-Raphson (analytic derivative) from a 10% guess, with a
   bisection fallback scanning `[−0.9999, 100]` at 0.01 resolution for the
   first sign-change bracket. The rate is floored at −0.9999 (never worse
@@ -148,7 +148,7 @@ never fires and the engine
 books *both* the synthetic onboarding and the real funding — driving the
 chained TWR below −100%.
 
-**Mechanism (`subsumesAt` + `entityFlows`):**
+**Mechanism (`flowSubsumed` + `entityFlows`):**
 
 - A constituent debuting at `d > winFrom` has every own external flow dated
   `≤ d` **dropped** from the aggregate flow series; onboarding books the
@@ -167,8 +167,9 @@ chained TWR below −100%.
   an orphaned phantom.
 
 Onboarding still legitimately recognizes **untracked pre-existing
-capital** — a late account with no funding transactions at all: booking its first value as onboarding is
-correct, not a double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
+capital** — a late account whose backfill carries no funding transactions
+at all: booking its first value as onboarding is correct, not a
+double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
 
 ## Pluggable per-source policy
 
@@ -229,10 +230,11 @@ source:
   or every event would cancel to a net-0 flow; `CapitalCallRisk` keeps the
   honesty tag on flow-less windows; `ClosureLedgerExact` books full exits at
   their real proceeds); manual = NAV-only.
-- **Dormant knobs.** `SpineDensity`, `NettingTol`, `InKindJumpTol`, the
-  `NavOnly` mirror, and the `ClassifyFlow` / `OnboardAmount` hooks are
-  defined and defaulted but not yet consumed — NAV-only and crypto handling
-  still ride `Flow.Regime`, not dedicated knobs. Forward stubs.
+- **No dormant knobs.** Every `ReturnsPolicy` field has a live engine
+  site; a knob is added together with the code that reads it. The
+  `ClassifyFlow` hook's site is live (`attachOneFlow`) but every current
+  source ships it nil — UBS pre-tags external/internal in silver instead.
+  NAV-only and crypto handling ride `Flow.Regime`.
 
 **Abandoned — residual onboarding.** An earlier attempt reconciled
 per-constituent onboarding with conduit cash deposits by subtracting counted

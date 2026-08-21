@@ -294,8 +294,8 @@ Flags:
   --method M        twr (default) | mwr | both
   --period P        monthly | quarterly (default) | annual | total
                     (per-bucket TWR rows + a since-inception summary row; the
-                    summary's cumulative TWR is pinned to a canonical daily/
-                    monthly bucket, NOT --period)
+                    summary's cumulative TWR is chained over the entity's
+                    actual snapshot days, NOT --period)
   --annualize MODE  auto (default; only spans >= 1y) | always | never
   --netting on|off  net internal transfers at coarse grains (default on; the
                     accounts view is always exact and ignores this)

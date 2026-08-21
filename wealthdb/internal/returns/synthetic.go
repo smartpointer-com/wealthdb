@@ -1,31 +1,27 @@
 package returns
 
-// onboardingDedupTol is the absolute (output-currency) tolerance below which a
-// real funding flow in the debut bucket is treated as "explaining" the opening
-// value, suppressing the synthetic onboarding inflow.
-const onboardingDedupTol = 1e-6
+// syntheticTol is the absolute (output-currency) value below which no
+// synthetic onboarding/closure flow is booked — a ~0 or negative amount
+// (a per-entity-once step-up fully netted by sibling funding drops, a
+// closure with nothing left at the boundary) is suppressed, not injected.
+const syntheticTol = 1e-6
 
 // OnboardingFlow returns the synthetic onboarding inflow for an aggregate
-// constituent's debut, so the step-up in the aggregate value series on the day a
-// constituent first appears is booked as capital-in rather than performance.
-//
-// realDebutFunding is the sum of real external capital-in flows already recorded
-// in the debut bucket. The synthetic inflow covers only the *unexplained*
-// opening value (firstValue - realDebutFunding); when a real funding flow
-// already accounts for the opening value, nothing is injected (dedup). The
-// returned Flow is dated on the debut day with capital-in (positive) sign.
-func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow, bool) {
-	synthetic := firstValue - realDebutFunding
-	if synthetic <= onboardingDedupTol {
+// constituent's debut, so the step-up in the aggregate value series on the day
+// a constituent first appears is booked as capital-in rather than performance.
+// The caller subsumes the constituent's real pre-debut flows first
+// (entityFlows), so the synthetic books the full debut amount; ~0/negative
+// amounts are suppressed. The returned Flow is dated on the debut day with
+// capital-in (positive) sign.
+func OnboardingFlow(debutDay int64, firstValue float64) (Flow, bool) {
+	if firstValue <= syntheticTol {
 		return Flow{}, false
 	}
-	return Flow{Day: debutDay, Amount: synthetic}, true
+	return Flow{Day: debutDay, Amount: firstValue}, true
 }
 
 // ClosureFlow returns the synthetic closure outflow for an explicitly-closed
-// aggregate constituent, plus the day from which the constituent's spine
-// contribution is zeroed (zeroFrom accompanies every explicit closure,
-// injected flow or not, so value and flow stay atomic).
+// aggregate constituent.
 //
 // The synthetic books lastValue — the caller passes the value carried on the
 // day before the closure day, which is non-zero only when the account zeroes
@@ -36,14 +32,14 @@ func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow,
 // real flows and skips this synthesis entirely. ok is false when there is no
 // explicit closure (closureDay==0) or no value to book. Staleness/dormancy
 // must never reach here.
-func ClosureFlow(closureDay int64, lastValue float64) (flow Flow, zeroFrom int64, ok bool) {
+func ClosureFlow(closureDay int64, lastValue float64) (Flow, bool) {
 	if closureDay == 0 {
-		return Flow{}, 0, false
+		return Flow{}, false
 	}
-	if lastValue <= onboardingDedupTol {
-		return Flow{}, closureDay, false // nothing left to book at the boundary
+	if lastValue <= syntheticTol {
+		return Flow{}, false // nothing left to book at the boundary
 	}
-	return Flow{Day: closureDay, Amount: -lastValue}, closureDay, true
+	return Flow{Day: closureDay, Amount: -lastValue}, true
 }
 
 // ZeroedValue is the atomic counterpart to ClosureFlow: a constituent's

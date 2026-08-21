@@ -1842,7 +1842,9 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
 `global`) computes **time-weighted** (TWR) and **money-weighted** (MWR / XIRR)
 returns over a window. Unlike the holdings views it is **not** a Metabase model:
 the XIRR root-find and geometric chaining are iterative, not expressible as a
-DuckDB macro. It is a CLI-only, hybrid computation:
+DuckDB macro. The computation lives in Go — the CLI computes on demand, and
+`web-materialize` snapshots the same engine's output into `report_returns` for
+the dashboards — as a hybrid:
 
 - **SQL assembles**, reusing existing macros — no new migration. The per-account
   carry-forward value series comes from `report_accounts_history(p_ccy)` (§10.7;
@@ -1858,7 +1860,7 @@ DuckDB macro. It is a CLI-only, hybrid computation:
   to every grain.
 
 Method and conventions (see `docs/RETURNS-NOTES.md` for the full rationale and
-the verified per-adapter flow table):
+the per-adapter flow classification):
 
 - **TWR** = chained period-Modified-Dietz; `--period {monthly|quarterly|annual|
   total}` controls the per-bucket rows, but the since-inception cumulative figure

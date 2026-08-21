@@ -26,8 +26,8 @@ var (
 // MaterializeParams configures a MaterializeReturns run. ToEpoch is the
 // window end (Unix seconds; inception → ToEpoch, the CLI's default window);
 // ComputedAt is stamped on every row so readers can tell how fresh the run
-// is. InceptionOverrides / ReturnsExclude / ReturnsHide / PolicyOverrides
-// carry the same wealthdb.cfg settings a CLI run applies.
+// is. The remaining fields carry the same wealthdb.cfg returns settings a
+// CLI run applies (returnsCfgSettings).
 type MaterializeParams struct {
 	ToEpoch            int64
 	ComputedAt         int64
@@ -320,7 +320,7 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 
 	out := make(map[string]*returnsDataset, len(materializeCurrencies))
 	for _, ccy := range materializeCurrencies {
-		ds := &returnsDataset{outCcy: ccy, accts: byCcy[ccy], fx: fx}
+		ds := &returnsDataset{accts: byCcy[ccy], fx: fx}
 		ds.finalize()
 		out[ccy] = ds
 	}

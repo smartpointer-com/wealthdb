@@ -1,12 +1,12 @@
 ---
 name: wealthdb-ro
-description: Query the owner's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, and investment returns (time-weighted TWR & money-weighted MWR/XIRR) — through the read-only `wealthdb` CLI. Use whenever a question is about what the owner holds, what an account or portfolio is worth, allocation, money in/out, or how an account / portfolio / the whole portfolio has performed over a period.
+description: Query the user's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, and investment returns (time-weighted TWR & money-weighted MWR/XIRR) — through the read-only `wealthdb` CLI. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in/out, or how an account / portfolio / the whole portfolio has performed over a period.
 ---
 
 # wealthdb — portfolio queries (read-only)
 
 `wealthdb` is a **read-only** command-line tool over one canonical database
-that merges every bank, broker, pension, and crypto source the owner uses.
+that merges every configured bank, broker, pension, and crypto source.
 The point-in-time portfolio views live under one parent command,
 **`wealthdb holdings <view>`** (`<view>` = positions, accounts, portfolios,
 sources, or global); **`wealthdb transactions`** is the separate money-in/out
@@ -104,7 +104,7 @@ Answers "how did it do?", not "what is it worth?". `<view>` is `accounts`,
 - **TWR** (time-weighted, the default & headline) — the return of the strategy,
   stripping out the timing of deposits/withdrawals. Use for "how did the
   investments perform?".
-- **MWR** (money-weighted / XIRR) — the return *the owner actually earned*, which
+- **MWR** (money-weighted / XIRR) — the return *actually earned* on the money, which
   depends on when money went in/out. Use for "what did I actually make?". Add
   `--method both` to see both, or `--method mwr`.
 
@@ -133,7 +133,10 @@ account opening), `staggered_inception` / `unmatched_transfers` /
 old — treat the figure as stale). **Account-grain
 returns are exact; portfolios/sources/global are best-effort.** Returns are
 **not additive across grains** — don't sum account returns to get a portfolio
-return; query the grain you want.
+return; query the grain you want. Some sources are pure cash plumbing
+(deposit banks): they emit **no returns rows at any view by design** — not
+missing data; their balances and flows still feed the sources/global
+aggregates, and global always includes everything.
 
 ```sh
 # Per-account TWR, quarterly, for 2025 (parseable)

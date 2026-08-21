@@ -37,11 +37,9 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			currencyISO                   *string
 			occurredAt                    int64
 		)
-		var ccyNull *string
-		if err := rows.Scan(&eventID, &occurredAt, &extID, &kind, &ccyNull, &payload); err != nil {
+		if err := rows.Scan(&eventID, &occurredAt, &extID, &kind, &currencyISO, &payload); err != nil {
 			return nil, fmt.Errorf("ubs Transactions scan: %w", err)
 		}
-		currencyISO = ccyNull
 
 		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload)
 		if err != nil {
@@ -105,7 +103,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return tx, err
 		}
-		tx.Kind = canonical.TxKindBuy
+		tx.Kind = kindFor(silverKind, "", "") // Buy default; side flips below
 		if p.Side == "S" || p.Side == "SELL" {
 			tx.Kind = canonical.TxKindSell
 		}
@@ -156,7 +154,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return tx, err
 		}
-		tx.Kind = canonical.TxKindCorporateAction
+		tx.Kind = kindFor(silverKind, "", "")
 		if p.ISIN != "" {
 			tx.InstrumentExternalID = &p.ISIN
 		}

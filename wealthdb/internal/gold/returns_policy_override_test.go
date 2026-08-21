@@ -153,7 +153,4 @@ func TestPolicyOverrideMultiLoader(t *testing.T) {
 	if acct.policy.Regime != returns.RegimeFlowComplete || !acct.policy.IsExternal(canonical.TxKindDeposit) {
 		t.Errorf("multi loader must apply the override (regime=%v)", acct.policy.Regime)
 	}
-	if acct.rpolicy.NavOnly {
-		t.Error("NavOnly mirror must be re-derived by the override")
-	}
 }

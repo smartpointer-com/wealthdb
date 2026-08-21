@@ -155,7 +155,7 @@ func TestRunReturnsPortfolioNameResolved(t *testing.T) {
 
 // TestRunReturnsStaggeredOnboarding covers the aggregate path: synthetic
 // onboarding (the late constituent's full debut value, with its own debut-region
-// deposit subsumed — see subsumesAt) and the staggered_inception flag.
+// deposit subsumed — see flowSubsumed) and the staggered_inception flag.
 func TestRunReturnsStaggeredOnboarding(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ubs", "ubs")

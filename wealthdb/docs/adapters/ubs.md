@@ -141,7 +141,7 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 
 | UBS | Gold | Adapter notes |
 | --- | --- | --- |
-| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` | from MT940 `:86:` narrative (adapter splits — see §6) |
+| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` | from MT940 `:86:` narrative (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account is demoted to `other` (same-day offset veto, `buildSameDayOffsetVeto`) |
 | `securities_movement` | `transfer_in` / `transfer_out` | sign-driven |
 | `trade_confirmation` | `buy` or `sell` | from MT515 payload `side` |
 | `fx_confirmation` | `fx` | MT300 |

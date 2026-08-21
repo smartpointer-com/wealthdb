@@ -46,7 +46,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 		return sum, any
 	}
 
-	flows, qFlowTags := entityFlows(assets, p, winFrom, winTo, av, aggregate)
+	flows, qFlowTags := entityFlows(assets, p, winFrom, winTo, aggregate)
 
 	// Snapshot-day union (real snapshots) for inception, the canonical headline
 	// bucket, and empty- / stale-bucket detection.
@@ -315,8 +315,8 @@ type ownedFlow struct {
 // Each constituent's flows in a region the aggregate value series cannot yet (or
 // no longer) reflect are subsumed by the synthetic amount, so each dollar
 // crossing the entity boundary is counted exactly once, in the same bucket as the
-// value change it causes. See subsumesAt / RETURNS-NOTES §"staggered inception".
-func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av func(int64) (float64, bool), aggregate bool) ([]returns.Flow, []string) {
+// value change it causes. See flowSubsumed / RETURNS-NOTES §"staggered inception".
+func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string) {
 	var flows []returns.Flow
 	var tags []string
 
@@ -324,7 +324,8 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		// Accounts grain, single constituent: every policy-external flow is exact.
 		// (Cross-source links never net here: the partner is by definition in
 		// another source, so it can't be a member of a single-account entity.)
-		return flowsIn(assets[0].allExternal(), winFrom, winTo), tags
+		a := assets[0]
+		return append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...), tags
 	}
 
 	// Cross-source matched pairs obey the same --netting switch as the
@@ -350,16 +351,11 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// ClosureLedgerExact, where a zero-tail flow is a real dated exit leg (an
 	// exit's proceeds land on the zeroing day itself) and IS the capital event.
 	for _, a := range assets {
-		onboardNone := a.rpolicy.OnboardScope == returns.OnboardNone
-		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
 			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
 				continue
 			}
-			if !ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo) {
-				continue
-			}
-			if !onboardNone && subsumesAtDebut(a, f.Day, winFrom, winTo) {
+			if flowSubsumed(a, f.Day, winFrom, winTo, false) {
 				continue
 			}
 			flows = append(flows, f)
@@ -375,14 +371,11 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// netting can't consume them again.
 	var cand []ownedFlow
 	for _, a := range assets {
-		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
 			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
 				continue
 			}
-			sub := subsumesAtDebut(a, f.Day, winFrom, winTo) ||
-				(!ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo))
-			cand = append(cand, ownedFlow{Flow: f, subsumed: sub})
+			cand = append(cand, ownedFlow{Flow: f, subsumed: flowSubsumed(a, f.Day, winFrom, winTo, true)})
 		}
 	}
 	if p.Netting {
@@ -450,7 +443,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		debut := a.firstDay()
 		if debut > winFrom && debut <= winTo {
 			v, _ := a.valueAt(debut)
-			if of, ok := returns.OnboardingFlow(debut, v, 0); ok {
+			if of, ok := returns.OnboardingFlow(debut, v); ok {
 				flows = append(flows, of)
 			}
 		}
@@ -464,7 +457,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	for _, grp := range perEntityGroups {
 		for _, day := range groupDebutDays(grp, winFrom, winTo) {
 			step := groupOnboardStep(grp, day)
-			if of, ok := returns.OnboardingFlow(day, step, 0); ok {
+			if of, ok := returns.OnboardingFlow(day, step); ok {
 				flows = append(flows, of)
 			}
 		}
@@ -482,7 +475,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		}
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
-			if cf, _, ok := returns.ClosureFlow(cd, last); ok {
+			if cf, ok := returns.ClosureFlow(cd, last); ok {
 				flows = append(flows, cf)
 			}
 		}
@@ -586,54 +579,56 @@ func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]
 	for _, a := range assets {
 		members[acctKey(a.src, a.acct)] = a
 	}
-	// isTransferLike reports which slice a member's flow id lives in, so the
-	// liveness check can mirror that slice's exact subsumption rule: the
-	// nonTransfer loop keeps pre-debut flows under OnboardNone (the deposit IS
-	// the capital event there), while the transferLike path subsumes pre-debut
-	// legs unconditionally.
-	isTransferLike := func(a *accountData, id string) bool {
-		for _, f := range a.transferLike {
-			if f.ID == id {
-				return true
-			}
-		}
-		return false
-	}
-	live := func(a *accountData, id string, day int64) bool {
-		if day <= winFrom || day > winTo {
-			return false
-		}
-		if subsumesAtDebut(a, day, winFrom, winTo) &&
-			(isTransferLike(a, id) || a.rpolicy.OnboardScope != returns.OnboardNone) {
-			return false
-		}
-		if a.rpolicy.ClosureScope != returns.ClosureLedgerExact && subsumesAtClosure(a, day, winFrom, winTo) {
-			return false
-		}
-		return true
+	live := func(a *accountData, day int64, transferLike bool) bool {
+		return day > winFrom && day <= winTo && !flowSubsumed(a, day, winFrom, winTo, transferLike)
 	}
 	drops := map[string]bool{}
 	pairs := 0
 	for _, a := range assets {
-		for _, f := range append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...) {
+		if len(a.crossLinks) == 0 {
+			continue // links are sparse; skip unlinked members entirely
+		}
+		check := func(f returns.Flow, transferLike bool) {
 			link, ok := a.crossLinks[f.ID]
 			if !ok {
-				continue
+				return
 			}
 			// Process each pair once, from its lexicographically-smaller leg.
 			me, other := acctKey(acctKey(a.src, a.acct), f.ID), acctKey(acctKey(link.src, link.acct), link.txID)
 			if me > other {
-				continue
+				return
 			}
 			partner := members[acctKey(link.src, link.acct)]
-			if partner == nil || !live(a, f.ID, f.Day) || !live(partner, link.txID, link.day) {
-				continue
+			if partner == nil || !live(a, f.Day, transferLike) ||
+				!live(partner, link.day, partner.transferLikeIDs[link.txID]) {
+				return
 			}
 			drops[me], drops[other] = true, true
 			pairs++
 		}
+		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
+			check(f, false)
+		}
+		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
+			check(f, true)
+		}
 	}
 	return drops, pairs
+}
+
+// flowSubsumed reports whether a constituent's flow on `day` falls in a
+// region the synthetic onboarding/closure amount represents instead, per the
+// flow's slice: the nonTransfer path keeps pre-debut flows under OnboardNone
+// (the deposit IS the capital event there — no onboarding replaces it), while
+// the transferLike path subsumes pre-debut legs unconditionally. Closure
+// drains are subsumed unless the source books ledger-exact exits.
+func flowSubsumed(a *accountData, day, winFrom, winTo int64, transferLike bool) bool {
+	if subsumesAtDebut(a, day, winFrom, winTo) &&
+		(transferLike || a.rpolicy.OnboardScope != returns.OnboardNone) {
+		return true
+	}
+	return a.rpolicy.ClosureScope != returns.ClosureLedgerExact &&
+		subsumesAtClosure(a, day, winFrom, winTo)
 }
 
 // subsumesAtDebut reports whether a flow on `day` falls in a late constituent's
@@ -654,21 +649,6 @@ func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
 	cd := a.closureDay()
 	return cd > winFrom && cd <= winTo && day > a.lastNonzeroDay() && day <= cd
 }
-
-// Subsumption regions — a constituent's flow is subsumed (dropped in favor of
-// the synthetic onboarding/closure amount) when it lands in a region the
-// aggregate value series does not reflect:
-//
-//   - PRE-DEBUT: the constituent debuts (joins the value spine) at d > winFrom and
-//     the flow is dated on or before d. The aggregate value series is 0 for this
-//     constituent until d, so a pre-debut deposit/journal-in caused no visible
-//     ΔV; onboarding books the whole firstValue at d instead.
-//   - CLOSURE-DRAIN: the constituent closes (value → 0) at cd ≤ winTo and the flow
-//     is dated after the last snapshot that still carried a non-zero value, up to
-//     cd. The carried value is flat across that gap (no visible ΔV), so a drain
-//     there would double-count with the synthetic closure outflow at cd — unless
-//     the closure is ledger-exact, in which case no synthetic is booked and the
-//     real drains ARE the counted exit.
 
 // netOwnedTransfers greedily matches opposite-direction transfer legs (largest
 // first) whose output-currency magnitudes agree within ε and whose days are
@@ -849,18 +829,11 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 // hasExternalFlowBefore reports whether the constituent's ledger carries any
 // policy-external flow dated strictly before day. A flow ON the day is not an
 // exclusion — it is subsumed into the opening base, like any debut-day flow.
+// Both flow slices are appended in occurred_at order (the loaders' pinned
+// ORDER BY), so checking each slice's first element is exact.
 func hasExternalFlowBefore(a *accountData, day int64) bool {
-	for _, f := range a.nonTransfer {
-		if f.Day < day {
-			return true
-		}
-	}
-	for _, f := range a.transferLike {
-		if f.Day < day {
-			return true
-		}
-	}
-	return false
+	return (len(a.nonTransfer) > 0 && a.nonTransfer[0].Day < day) ||
+		(len(a.transferLike) > 0 && a.transferLike[0].Day < day)
 }
 
 func entityIdentity(level string, assets []*accountData) (id, label string) {
@@ -1047,9 +1020,11 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 // attached flows count: synthetic onboarding/closure flows are assembled per
 // entity at compute time and never stored on the account.
 func hasObservedFlowIn(a *accountData, from, to int64) bool {
-	for _, f := range a.allExternal() {
-		if f.Day > from && f.Day <= to {
-			return true
+	for _, fs := range [][]returns.Flow{a.nonTransfer, a.transferLike} {
+		for _, f := range fs {
+			if f.Day > from && f.Day <= to {
+				return true
+			}
 		}
 	}
 	return false

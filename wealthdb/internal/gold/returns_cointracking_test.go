@@ -11,7 +11,7 @@ import (
 // These tests lock the cointracking migration onto the pluggable ReturnsPolicy:
 // OnboardScope=OnboardNone (no phantom per-constituent onboarding for cold-storage
 // wallets that debut mid-window funded by within-entity crypto transfers already
-// excluded from flows) and AccountsGrainMeaningless=true (per-wallet return rows
+// excluded from flows) and AccountsGrain=blanked (per-wallet return rows
 // are meaningless — coins sweep between wallets on arrival — so the accounts grain
 // is blanked while portfolios/sources/global stay valid). Source id -> silver_kind
 // "cointracking" selects that policy. All data synthetic / placeholder (CLAUDE.md §4).
@@ -205,11 +205,11 @@ func TestCointrackingFeedDropContributesZeroNoFabricatedOutflow(t *testing.T) {
 	}
 }
 
-// TestCointrackingAccountsGrainMeaningless locks AccountsGrainMeaningless: on the
+// TestCointrackingAccountsGrainBlanked locks AccountsGrainBlanked: on the
 // accounts (per-wallet) grain a cointracking wallet row keeps start/end values but
 // blanks TWR/MWR to n/a plus the accounts_grain_meaningless flag, while the
 // portfolios, sources, and global grains all still compute real numbers.
-func TestCointrackingAccountsGrainMeaningless(t *testing.T) {
+func TestCointrackingAccountsGrainBlanked(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctag", "cointracking")
 

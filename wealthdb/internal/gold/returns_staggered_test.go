@@ -230,7 +230,7 @@ func TestStaggeredClosureNoSyntheticAfterWindow(t *testing.T) {
 }
 
 // TestStaggeredPostClosureFlowSubsumed exercises the closure-drain branch of
-// subsumesAt (and lastNonzeroDay): with the window run out to today, a closed
+// flowSubsumed (and lastNonzeroDay): with the window run out to today, a closed
 // account's closureDay (today, via the 0-carry spine) is in-window, so a stray
 // flow dated in the flat zero-carry gap — after the last non-zero day — is
 // subsumed rather than booked as a spurious exit with no matching value move.

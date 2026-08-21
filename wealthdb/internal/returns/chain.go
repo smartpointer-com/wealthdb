@@ -13,8 +13,7 @@ const minAnnualizeDays = 365.0
 type BucketKind int
 
 const (
-	BucketDaily BucketKind = iota
-	BucketMonthly
+	BucketMonthly BucketKind = iota
 	BucketQuarterly
 	BucketAnnual
 	BucketTotal // a single bucket spanning the whole window
@@ -100,7 +99,7 @@ func boundaryDays(fromDay, toDay int64, kind BucketKind) []int64 {
 	}
 	out := []int64{fromDay}
 	for d := fromDay; d < toDay; d++ {
-		if (kind == BucketDaily || isPeriodEnd(d, kind)) && d != fromDay {
+		if isPeriodEnd(d, kind) && d != fromDay {
 			out = append(out, d)
 		}
 	}

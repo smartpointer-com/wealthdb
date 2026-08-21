@@ -414,9 +414,9 @@ The pre-capture belief (and the harness scaffold) framed statements as
 generated on demand over custom ranges. **The second capture
 (2026-08-15) corrected this: statements are pre-generated PDFs in a
 document archive** — the "Dokumente" surface, widget
-`bankingquer-dokumentenablage`. There is no custom-range generator;
-the owner's "could not find a way to generate statements older than
-~2023" is exactly this — the archive simply doesn't retain older ones.
+`bankingquer-dokumentenablage`. There is no custom-range generator —
+statements older than the archive's retention simply cannot be produced;
+the archive doesn't retain them.
 So the shape is firstcitizens' (list + download by id), not chase's,
 and the deterministic-range-convention worry evaporates (documents
 carry stable ids). Endpoints:
@@ -440,8 +440,8 @@ carry stable ids). Endpoints:
   idempotent dedup in bronze/silver is trivial (no content-hashing,
   no range convention).
 - **The download URL carries the `versionsId` when present (resolved
-  2026-08-15).** The first full `download` 422'd on all 22 older
-  **KDM**-system Kontoauszüge (`versionsId: 1`) while the 19 newer
+  2026-08-15).** The first full `download` 422'd on every older
+  **KDM**-system Kontoauszug (`versionsId: 1`) while the newer
   **EAZ** ones (`versionsId: null`) downloaded fine. A follow-up capture
   settled it: the working KDM call puts the version in the path —
   `POST …/dokumente/KDM/<dokumentenId>/<versionsId>/download {}` — while
@@ -497,13 +497,13 @@ whether the profile card is present on the identify screen.
 
 ### §G — History floor vs archive floor: no deep backfill (Phase 5 verdict)
 
-- Transaction-history JSON floor (§C): **~2023-08** (rolling 36
-  months).
-- Statement archive floor (§E): the earliest **Kontoauszug** in the
-  capture was **~2023-04**; older archive entries are only annual fee
-  notices (from 2021), which carry no transactions.
+- Transaction-history JSON floor (§C): a rolling 36-month window —
+  the platform retention, not an account property.
+- Statement archive floor (§E): the Kontoauszug archive reaches a few
+  months further back than the JSON window; entries beyond it are only
+  annual fee notices, which carry no transactions.
 
-The statement PDFs therefore predate the JSON ledger by only ~4–5
+The statement PDFs therefore predate the JSON ledger by only a few
 months (≈ 2023-03…2023-07), and it is a **fixed, non-growing** window
 (both floors roll forward together). Unlike chase (7-year statements
 behind a 2-year export), there is **no deep tail worth a
@@ -535,7 +535,7 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    CLAUDE.md. `make build-raiffeisen_at` / `make test-raiffeisen_at`
    run via the root Makefile's collector auto-discovery.
 
-2. **Explore** (live, owner-triggered) — **done (two sessions,
+2. **Explore** (live, user-triggered) — **done (two sessions,
    2026-08-15)**, §3-Observed. Session 1: login + pushTAN + history +
    exports. Session 2: the statement archive (§E) and the trust probe
    (§F). Only the §H minor probes remain (token refresh, `kontostaende`
@@ -649,10 +649,9 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
      doesn't need). `mask` is the IBAN's last-4.
    - **documents** — the statement PDFs, deduped by content sha256.
 
-   Validated on the 2026-08-15 bronze: 1 account, **394 transactions**
-   (25 credit / 369 debit), **238 daily balances** (2023-07-31 …
-   2026-08-10), **41 statements** (19 EAZ + 22 KDM), and a re-load is a
-   clean no-op.
+   Validated on a live bronze: the account roster, full transaction
+   history, daily balances, and both statement lineages (EAZ + KDM) load,
+   and a re-load is a clean no-op.
 
 5. **Statement transaction-backfill — not planned (§G).** The document
    archive predates the transaction-history floor by only ~5 months
@@ -688,7 +687,7 @@ bronze into the SQLite silver, idempotently; and the **gold adapter**
 (`internal/silver/raiffeisen_at/`, kind `raiffeisen_at`) is built,
 registered, and unit-tested with the whole gold suite green. The
 collector is feature-complete. Remaining is operational, not code: a
-real `wealthdb load` merge into gold (the owner's step, like the
+real `wealthdb load` merge into gold (user-triggered, like the
 download/load), plus adding the source to `wealthdb.cfg` (a silver
 source entry; conduit row-hiding ships in the registered
 ReturnsPolicy, no config needed). The §H probes (token
@@ -702,7 +701,7 @@ bottomed at the ~2023-07 history floor) fold into future runs.
   `RAIFFEISEN_AT_PASSWORD` (the PIN), and `RAIFFEISEN_AT_REGION` (the
   Mandant code, §B) — single-quote values containing `$`, `!`, or
   backticks; the file is created by hand, never by tooling. (In place.)
-- **The acceptance test is a live `download`** (owner present):
+- **The acceptance test is a live `download`** (user present):
   `wealthdb-collect raiffeisen_at download --dry-run` first (logs in,
   enumerates the roster, fetches nothing), then a real
   `download --lookback all`. It needs no TTY — the pushTAN is a phone
@@ -712,9 +711,9 @@ bottomed at the ~2023-07 history floor) fold into future runs.
 - Re-run discovery any time: `./raiffeisen_at explore`. `--fresh` wipes
   the profile to force the full region/Verfüger/PIN + pushTAN challenge
   (the warm profile otherwise shows just the identity card, §F).
-- Live sessions only when explicitly requested with the owner present
-  (CLAUDE.md §0); every wait on the owner uses long timeouts (1h+);
-  never fire logins in quick succession.
+- Live sessions only when the user explicitly requests one and is
+  present (CLAUDE.md §0); every human-in-the-loop wait uses long
+  timeouts (1h+); never fire logins in quick succession.
 - Iterate cheap after a login: hold the session (session-holder
   pattern — watch a trigger file, `importlib.reload` bind-mounted code
   against the live page) instead of paying a pushTAN per probe.

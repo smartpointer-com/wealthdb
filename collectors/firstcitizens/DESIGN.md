@@ -158,7 +158,7 @@ skipped 2FA entirely. So:
 
 - **List:** `GET …/mobilews/accountStatement/<acctId>` → `{"data": [
   {"period": "MM/DD/YYYY", "value": <docId>}, … ]}` — per account,
-  **monthly, ~2 years deep**.
+  monthly; the archive is shallower than the transaction export.
 - **PDF:** `POST …/mobilews/accountStatement/<acctId>/<docId>/pdf` →
   `application/pdf`. The POST **requires the `q2token` as a multipart form
   field** (like the export); a header-only POST 400s (verified
@@ -176,7 +176,8 @@ skipped 2FA entirely. So:
   + `page[size]` (SPA default 100), `sort=postedDate%1Fd` (descending;
   the field/direction separator is a literal `US`/0x1F). Without a filter
   it carries the **full history** back to the account's
-  `oldestTransactionDate` (the SVB-migration date). It also **narrows
+  `oldestTransactionDate` (for a migrated account, its migration date). It
+  also **narrows
   server-side to a `postedDate` window**:
   `postedDate=<from>\x1f<to>` in `M/D/YYYY`, the `to` end carrying
   `23:59:59.999` — exactly what the account-detail "Time Period" /
@@ -194,10 +195,10 @@ skipped 2FA entirely. So:
   `q2token`** (the CSRF token download.py must harvest). It honours the
   **same `postedDate` window as a URL query param** (verified 2026-08-15),
   so a windowed download narrows the exports too; without it each export
-  returns the account's full available history (~3 years, the
-  post-SVB-migration lifetime).
-- **Format comparison (resolved in Phase 3):** the export reaches
-  ~3 years but statements only ~2, so **the export is the deeper source
+  returns the account's full available history back to
+  `oldestTransactionDate`.
+- **Format comparison (resolved in Phase 3):** the export reaches further
+  back than the statement archive, so **the export is the deeper source
   and there is no statement-backfill tail to fill** — the opposite of
   chase. And the `accountHistory` JSON turned out richer still: it
   carries a stable `transactionId` **and** a per-row `runningBalance` in
@@ -287,8 +288,8 @@ skipped 2FA entirely. So:
    register device → authenticated) and leaves the device trusted for
    later unattended runs. `download` fetches over `page.request` with the
    harvested `q2token` and writes complete bronze: the deposit roster,
-   the **full paginated history** per account (every row back to the
-   SVB-migration date, counts matching `transactionCount`), CSV+QFX
+   the **full paginated history** per account (every row back to
+   `oldestTransactionDate`, counts matching `transactionCount`), CSV+QFX
    exports, and every statement PDF, and `--lookback` narrows the fetch
    server-side via the `postedDate` window (windowed and full runs both
    verified live 2026-08-15).
@@ -346,8 +347,8 @@ run end-to-end: trusted sign-in reaches `#/landingPage` in seconds;
 untrusted sign-in drives the Secure Access Code from the terminal
 (pick delivery → enter code → register device) and leaves the device
 trusted; `download` writes complete bronze — the deposit roster, the
-full paginated transaction history per account (every row to the
-SVB-migration date), CSV+QFX exports, and every statement PDF — with a
+full paginated transaction history per account (every row to
+`oldestTransactionDate`), CSV+QFX exports, and every statement PDF — with a
 `complete` run manifest. **`load` (silver) and the gold adapter are
 built** (§4.3–4.4): `load` parses the history JSON into the SQLite
 silver, and `wealthdb/internal/silver/firstcitizens/` projects it into
@@ -364,6 +365,7 @@ Both ship with unit tests on synthetic fixtures.
   the forwarded port, walk the flows. `--fresh` wipes the profile to
   force the full 2FA challenge again; `--no-prefill` types the
   credentials by hand.
-- Live sessions only when explicitly requested with the owner present
-  (CLAUDE.md §0); waits on the owner use long timeouts (1h+); never
+- Live sessions only when the user explicitly requests one and is
+  present (CLAUDE.md §0); human-in-the-loop waits use long timeouts
+  (1h+); never
   fire logins in quick succession.

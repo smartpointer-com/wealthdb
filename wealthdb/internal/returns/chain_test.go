@@ -122,13 +122,6 @@ func TestBucketBoundaries(t *testing.T) {
 		t.Errorf("total = %v, want one [%d,%d]", tot, from, to)
 	}
 
-	// Daily: a 4-day span ⇒ 4 one-day buckets.
-	d := BucketBoundaries(100, 104, BucketDaily)
-	if len(d) != 4 {
-		t.Errorf("daily buckets = %d, want 4", len(d))
-	}
-	assertContiguous(t, d, 100, 104)
-
 	// Quarterly across a year boundary: Nov 2021 → Feb 2022 ⇒ Q4-end split.
 	qf, qt := day(2021, time.November, 1), day(2022, time.February, 1)
 	q := BucketBoundaries(qf, qt, BucketQuarterly)
