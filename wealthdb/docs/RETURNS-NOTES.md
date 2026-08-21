@@ -257,7 +257,7 @@ every approximation is tagged. Computed set:
 `unmatched_transfers=N`, `journal_present`, `nav_only`,
 `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
 `unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
-`after_tax`.
+`flows_before_inception`, `after_tax`.
 
 `configured_inception` marks a window truncated to a configured
 inception override (DESIGN.md §5.4) rather than the data's own start.
@@ -289,8 +289,19 @@ against the adapter and policy registries (fred exempt: a pure FX reference
 source that never reaches the returns engine). The flag itself stays as
 defense-in-depth, unit-tested at the policy-resolution level.
 
+`flows_before_inception` marks an entity whose observed external ledger
+flows reach back before its resolved inception (data-derived, policy
+anchor, or a §5.4 `inception_overrides` floor): those flows sit outside
+every window the entity can produce, so the measurement cannot see them.
+With a configured override the flag documents exactly what the override
+excludes; without one it means the transaction backfill reaches further
+back than the value spine supports (the case the §5.4 override is the
+remedy for). Purely diagnostic — no flow handling changes — and anchored
+on the inception, so an explicit `--from` / windowed-partition clip never
+raises it.
+
 Deferred flags: `corp_action_present` / `corp_action_split_timing`,
-`dormant_carryforward`, `flows_before_inception`.
+`dormant_carryforward`.
 
 ## Deferred / out of scope
 

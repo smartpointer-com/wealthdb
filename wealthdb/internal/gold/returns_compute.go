@@ -726,7 +726,38 @@ func entityWindow(assets []*accountData, p ReturnParams, toDay int64) (from, to 
 	if aggregate && incMax > from {
 		flags = append(flags, "staggered_inception")
 	}
+	// Observed external ledger flows dated strictly before the resolved
+	// inception are outside every window this entity can produce (flowsIn is
+	// (from, to], and from never precedes the inception), so the measurement
+	// cannot see them. Surface the exclusion: with a configured override the
+	// flag documents exactly what the override cuts off; without one it means
+	// the transaction history reaches further back than the value spine
+	// supports. Compared against the inception, NOT the window start, so a
+	// --from / windowed-partition clip never raises it.
+	for _, a := range assets {
+		if hasExternalFlowBefore(a, entityInception) {
+			flags = append(flags, "flows_before_inception")
+			break
+		}
+	}
 	return from, to, flags
+}
+
+// hasExternalFlowBefore reports whether the constituent's ledger carries any
+// policy-external flow dated strictly before day. A flow ON the day is not an
+// exclusion — it is subsumed into the opening base, like any debut-day flow.
+func hasExternalFlowBefore(a *accountData, day int64) bool {
+	for _, f := range a.nonTransfer {
+		if f.Day < day {
+			return true
+		}
+	}
+	for _, f := range a.transferLike {
+		if f.Day < day {
+			return true
+		}
+	}
+	return false
 }
 
 func entityIdentity(level string, assets []*accountData) (id, label string) {

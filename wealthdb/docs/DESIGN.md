@@ -549,6 +549,11 @@ source, not just crypto.
   `configured_inception` (replacing `since_data_inception`). Composes with
   the policy `Inception` mode (e.g. UBS `first-real-snapshot`) as `max`.
   MOIC is unaffected (time-insensitive); this re-anchors the TWR/MWR chain.
+  Ledger flows dated before the resolved inception fall outside every
+  window; the `flows_before_inception` quality flag surfaces that exclusion
+  (and, conversely, marks the entities where this override is the
+  documented remedy — a transaction backfill reaching further back than
+  the value spine supports).
 - Absent block ⇒ every entity keeps its data-derived inception, byte for
   byte. A typo'd portfolio/account id silently no-ops (it can't be checked
   against gold at load) — a known v1 gap; a source-id typo fails the load.
@@ -1879,7 +1884,8 @@ every approximation is tagged (`since_data_inception`, `configured_inception`,
 `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
 `mwr_negative_net_capital`, `unmatched_transfers=N`, `journal_present`, `nav_only`,
 `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
-`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts + hidden
+`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
+`flows_before_inception`, `after_tax`). Cross-grain note: `global == Σ accounts + hidden
 plumbing` is a **value** identity (verified by reconciliation test; hidden
 conduit rows, §5.7, are in global but emit no accounts row), and **returns
 are not additive across grains**.

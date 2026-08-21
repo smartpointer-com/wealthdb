@@ -117,3 +117,83 @@ func TestRunReturnsConfiguredInception(t *testing.T) {
 		t.Error("inception after all data must collapse the window (no PF1 row)")
 	}
 }
+
+// TestRunReturnsFlowsBeforeInception pins the flows_before_inception flag: it
+// fires when observed external ledger flows predate the entity's resolved
+// inception (data-derived or configured), and stays quiet for at- or
+// post-inception flows and for plain --from window clipping.
+func TestRunReturnsFlowsBeforeInception(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "ubs", "ubs")
+	pf := "PF1"
+	t0 := dy(2020, time.January, 2)
+	tMid := dy(2022, time.January, 3)
+	end := eod(2023, time.January, 2)
+
+	// The ledger reaches back before the value spine: a deposit half a year
+	// before the first snapshot, plus a normal mid-life deposit.
+	seedAcct(t, db, ctx, "ubs", "A1", canonical.AccountKindBrokerage, &pf,
+		[]snap{{t0, 100}, {tMid, 500}, {dy(2023, time.January, 2), 600}},
+		[]txn{{dy(2019, time.June, 1), canonical.TxKindDeposit, 90},
+			{dy(2021, time.June, 1), canonical.TxKindDeposit, 50}})
+
+	row := func(rows []ReturnRow) ReturnRow {
+		t.Helper()
+		r, ok := summaryFor(rows, "PF1")
+		if !ok {
+			t.Fatal("no PF1 row")
+		}
+		return r
+	}
+
+	// Pre-spine flow ⇒ flagged even with no override.
+	base, err := RunReturns(ctx, db, params("portfolios", 0, end))
+	if err != nil {
+		t.Fatalf("base: %v", err)
+	}
+	if r := row(base); !qualityHas(r, "flows_before_inception") {
+		t.Errorf("pre-spine ledger flow must flag flows_before_inception; flags=%v", r.Quality)
+	}
+
+	// A configured inception past the 2021 deposit keeps the flag (now it also
+	// documents what the override excludes) alongside configured_inception.
+	p := params("portfolios", 0, end)
+	p.InceptionOverrides = &InceptionOverrides{
+		Portfolios: map[string]map[string]int64{"ubs": {"PF1": tMid}},
+	}
+	over, err := RunReturns(ctx, db, p)
+	if err != nil {
+		t.Fatalf("override: %v", err)
+	}
+	if r := row(over); !qualityHas(r, "flows_before_inception") || !qualityHas(r, "configured_inception") {
+		t.Errorf("override must carry configured_inception + flows_before_inception; flags=%v", r.Quality)
+	}
+
+	// Control: flows on and after the inception day never flag.
+	seedAcct(t, db, ctx, "ubs", "A2", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 200}, {dy(2023, time.January, 2), 300}},
+		[]txn{{t0, canonical.TxKindDeposit, 200},
+			{dy(2021, time.March, 1), canonical.TxKindDeposit, 25}})
+	clean, err := RunReturns(ctx, db, params("accounts", 0, end))
+	if err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+	if r, ok := summaryFor(clean, "A2"); !ok {
+		t.Fatal("no A2 row")
+	} else if qualityHas(r, "flows_before_inception") {
+		t.Errorf("at/post-inception flows must not flag; flags=%v", r.Quality)
+	}
+
+	// Window clipping is not an inception: a --from past the 2021 deposit
+	// leaves that flow outside the window without ever raising
+	// flows_before_inception (the comparison anchors on the inception).
+	clipped, err := RunReturns(ctx, db, params("accounts", dy(2022, time.June, 1), end))
+	if err != nil {
+		t.Fatalf("clipped: %v", err)
+	}
+	if r, ok := summaryFor(clipped, "A2"); !ok {
+		t.Fatal("no clipped A2 row")
+	} else if qualityHas(r, "flows_before_inception") {
+		t.Errorf("clip must not raise flows_before_inception; flags=%v", r.Quality)
+	}
+}
