@@ -21,10 +21,13 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
 - **Mortgage / net-negative entities** are excluded from return rollups;
   per-entity twr/mwr = n/a + `nonpositive_base`, reported on a separate
   liability line.
-- **NAV-only sources** (manual, carta, equityzen) report value-growth TWR
-  tagged `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows`.
+- **The NAV-only source** (manual) reports value-growth TWR tagged
+  `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows`.
   A blended aggregate MWR is still computed and tagged
-  `mwr_incomplete_flows` — disclose, don't refuse.
+  `mwr_incomplete_flows` — disclose, don't refuse. carta / equityzen count
+  the real boundary flows of their double-entry ledgers (see "Pluggable
+  per-source policy"); a window of theirs with no observed flow keeps
+  `nav_only_capital_call_risk` via the `CapitalCallRisk` knob.
 
 ## The math (`internal/returns`)
 
@@ -177,8 +180,11 @@ source:
   `Inception = InceptionFirstRealSnapshot` (anchors the window past sparse
   cash-only pre-history, so a tiny opening base cannot inflate the return).
 - **Flow classification** is one member of the policy: banks / pension =
-  flow-complete; crypto = fiat flows only (transfer legs excluded); manual /
-  carta / equityzen = NAV-only.
+  flow-complete; crypto = fiat flows only (transfer legs excluded); carta /
+  equityzen = boundary deposit/withdrawal only (the holding legs of their
+  double-entry pairs — buy/sell/contribution/distribution — stay internal,
+  or every event would cancel to a net-0 flow; `CapitalCallRisk` keeps the
+  honesty tag on flow-less windows); manual = NAV-only.
 - **Dormant knobs.** `SpineDensity`, `NettingTol`, `InKindJumpTol`, the
   `NavOnly` mirror, and the `ClassifyFlow` / `OnboardAmount` hooks are
   defined and defaulted but not yet consumed — NAV-only and crypto handling
@@ -255,12 +261,12 @@ Deferred flags: `corp_action_present` / `corp_action_split_timing`,
 
 - **Per-source policy migrations** still pending — each its own reviewed
   change with a per-source before/after: schwab appreciated-transfer
-  handling folded into the policy + `ClassifyFlow`; the NAV-only sources
-  onto the `NavOnly` knob (they currently derive NAV-only from
-  `Flow.Regime`); svb drained-closure handling. End state: no source-named
-  code in the returns calculation — all source-specificity is a declarative
-  policy (+ rare hook) co-located in `internal/silver/<source>/`.
-- **Real capital-call / distribution flows** for carta / equityzen (would
-  make their TWR/MWR trustworthy beyond onboarding) — needs adapter work to
-  expose the non-sentinel leg; tracked via `nav_only_capital_call_risk`.
+  handling folded into the policy + `ClassifyFlow`; manual onto the
+  `NavOnly` knob (it derives NAV-only from `Flow.Regime`); svb
+  drained-closure handling. End state: no source-named code in the returns
+  calculation — all source-specificity is a declarative policy (+ rare
+  hook) co-located in `internal/silver/<source>/`. (Done: carta / equityzen
+  count their ledgers' real boundary flows — the pairs moved from the
+  funding sentinel onto the custody account, making them spine-visible —
+  with `CapitalCallRisk` covering flow-less windows.)
 - **`--gross-of-fees`** (v2); returns ship net-of-fees / after-tax.

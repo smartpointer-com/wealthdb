@@ -1789,7 +1789,8 @@ the verified per-adapter flow table):
   resolved policy (onboarding grain, conduit kinds, external-only, inception
   anchor) and the policy is source-scoped even at the global grain. **Flow
   classification** is one member of that policy (banks/pension = flow-complete;
-  crypto = fiat flows only; manual/carta/equityzen = NAV-only). `value_outccy`
+  crypto = fiat flows only; carta/equityzen = boundary deposit/withdrawal
+  only; manual = NAV-only). `value_outccy`
   already carries the canonical sign, so Dietz `F_i = +value_outccy` and XIRR
   `cf = -value_outccy` with no per-kind exception.
 - **Historic-FX**: FX movement is part of the return. **Net

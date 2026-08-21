@@ -17,10 +17,10 @@ const (
 	// an unclassifiable mix (internal moves + airdrops/gifts) and are excluded
 	// (cointracking). TWR from the value series + fiat flows; MWR partial.
 	RegimeCryptoPartial
-	// RegimeNavOnly: no usable external flows (manual = none; carta/equityzen =
-	// synthetic double-entries on a 0-pinned sentinel). Returns from the NAV /
-	// value series; MWR = n/a; TWR reliable only while capital is static after
-	// onboarding (nav_only_capital_call_risk).
+	// RegimeNavOnly: no usable external flows (manual — its wires are already
+	// captured by the bank collectors). Returns from the NAV / value series;
+	// MWR = n/a; TWR reliable only while capital is static after onboarding
+	// (nav_only_capital_call_risk).
 	RegimeNavOnly
 )
 

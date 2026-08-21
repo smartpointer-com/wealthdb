@@ -23,13 +23,15 @@ SELECT c.cash_flow_external_id, c.deal_external_id,
  ORDER BY occurred, c.cash_flow_external_id`
 
 // Transactions yields the buyer's cash ledger as DOUBLE-ENTRY pairs on the
-// sentinel funding account (fundingAccountKey). EquityZen does not expose the
-// real external funding account (unlike the angellist sibling, whose source
-// carries a true funding ledger), so each investment leg is paired with an
-// offsetting cash-conduit leg. The two legs of every event net to zero, so the
-// funding account's derived balance is always exactly 0 — it is a pure
-// pass-through clearing account, signalling that the real external balance is
-// unobserved. Every leg is linked to the offering's instrument.
+// custody account — the account carrying the value spine, so the returns
+// engine sees the flows. EquityZen does not expose the real external funding
+// account (unlike the angellist sibling, whose source carries a true funding
+// ledger), so each investment leg is paired with an offsetting cash-conduit
+// leg: deposit/withdrawal is the cash crossing the EquityZen boundary (the
+// external flow the ReturnsPolicy counts), the investment leg the internal
+// half. The two legs of every event net to zero, so no cash position is
+// implied on the account (the same shape as a brokerage's same-day deposit +
+// buy). Every leg is linked to the offering's instrument.
 //
 //	purchase, spv          deposit (+) + buy          (−)   shares bought
 //	purchase, private_fund deposit (+) + contribution (−)   capital contributed
@@ -69,14 +71,14 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		isZero := !amount.Valid || amount.Float64 == 0
 
 		// emit appends one leg of the double-entry pair — both legs sit on the
-		// sentinel funding account and link to the deal's instrument.
+		// custody account and link to the deal's instrument.
 		emit := func(kind canonical.TxKind, withLot bool) {
 			signed := canonical.ApplyCanonicalSign(kind, silver.DecimalPtrFromNullFloat(amount))
 			inst := deal
 			tx := canonical.TransactionChange{
 				TransactionExternalID: cfID + ":" + string(kind),
 				OccurredAt:            occurred,
-				AccountExternalID:     fundingAccountKey,
+				AccountExternalID:     accountKey,
 				InstrumentExternalID:  &inst,
 				Kind:                  kind,
 				Currency:              ccy,

@@ -409,21 +409,16 @@ values. The only gold-schema change is migration `0015`, which widens the
 
 ### Account / instrument / position model
 
-- **Two accounts** (the silver has no buyer-id column and both ids are
-  constant within a relationship):
-  - `equityzen` — the **custody** account holding the positions (one per
-    offering; no per-SPV accounts, no portfolio grouping). `account_kind =
-    custody` (EquityZen administers the interests; the buyer places no trades
-    — not a trading `brokerage`). `tax_wrapper = taxable_personal`,
-    `management_style = self_directed` — the holder chooses *which* interests
-    to hold; the GP management *inside* each vehicle is not modelled (the
-    carta/angellist consensus). Overridable via gold `account_overrides`.
-  - `equityzen-funding` — a **sentinel cash account** carrying the
-    double-entry transaction pairs (see `transactions.go`). EquityZen does
-    not expose the real external funding account (unlike angellist, whose
-    source carries a true funding ledger), so each event is a *balanced* pair
-    and this account's derived balance is always **exactly 0** — a pure
-    pass-through clearing account. No positions, no `cash_balance` row.
+- **One account** (the silver has no buyer-id column and the id is constant
+  within a relationship): `equityzen` — the **custody** account holding the
+  positions (one per offering; no per-SPV accounts, no portfolio grouping)
+  and the double-entry transaction pairs (see `transactions.go`).
+  `account_kind = custody` (EquityZen administers the interests; the buyer
+  places no trades — not a trading `brokerage`). `tax_wrapper =
+  taxable_personal`, `management_style = self_directed` — the holder chooses
+  *which* interests to hold; the GP management *inside* each vehicle is not
+  modelled (the carta/angellist consensus). Overridable via gold
+  `account_overrides`.
 - **One instrument per offering**, keyed by the raw `deal_external_id`
   (matching angellist's use of `position_external_id`), `asset_class = spv |
   private_fund` (from `offerings.kind`), `name` = the company / fund label.
@@ -451,9 +446,12 @@ values. The only gold-schema change is migration `0015`, which widens the
   event `≤ t` (by `event_seq`) **where `is_open = 1`** (so an exited deal
   drops out at its exit date), one `PositionChange` + one `InstrumentChange`
   per held deal, plus the single account.
-- `transactions.go` — `cash_flows` → **double-entry pairs** on the sentinel
-  funding account, each event netting to 0 so the account's derived balance
-  is always exactly 0. The investment leg's kind splits by `offerings.kind`
+- `transactions.go` — `cash_flows` → **double-entry pairs** on the custody
+  account (the account carrying the value spine, so the returns engine sees
+  the flows; EquityZen does not expose the real external funding account —
+  unlike angellist, whose source carries a true funding ledger — so each
+  event is a *balanced* pair netting to 0, implying no cash position). The
+  investment leg's kind splits by `offerings.kind`
   (the source bucket can't distinguish a membership-sale from a true
   distribution — an SPV sale and a fund distribution share the identical
   `distributedTransactions` shape, no `sellOrders`):
@@ -473,9 +471,12 @@ values. The only gold-schema change is migration `0015`, which widens the
     Every leg links to the offering's instrument. EquityZen is funded
     upfront, so there are no capital calls beyond the initial purchase.
 - `classmap.go` — `offerings.kind` → `asset_class`.
-- `policy.go` — registers the source's NAV-only `ReturnsPolicy`: the
-  synthetic funding-account double-entries net to 0, so there are no usable
-  external flows and returns are NAV-driven (matching `carta`).
+- `policy.go` — registers the source's `ReturnsPolicy`: the ledger's
+  `deposit`/`withdrawal` legs are real dated cash crossings of the EquityZen
+  boundary and count as external capital; the paired investment legs stay
+  internal (counting both halves would cancel every event). `CapitalCallRisk`
+  keeps the `nav_only_capital_call_risk` tag on flow-less windows (matching
+  `carta`).
 
 The parsed `capital_account_statements` / `k1_documents` stay silver-only:
 the statement **NAV already reaches gold via the `positions` `statement`
@@ -494,9 +495,9 @@ ChangeWindow / forward-fill per event date (cost → tender → statement NAV,
 exited drop-out, spv-quantity vs fund-NULL) / the double-entry transaction
 pairs (deposit+buy, deposit+contribution, sell+withdrawal,
 distribution+withdrawal, the $0-exit withdrawal omission) including the
-**funding ledger nets to exactly 0** invariant. An end-to-end gold load of
+**paired ledger nets to exactly 0** invariant. An end-to-end gold load of
 real silver reproduced the expected position and valuation series, and
-the funding account's transactions sum to 0.
+the custody account's transactions sum to 0.
 
 ## 7. Future work
 

@@ -15,7 +15,7 @@ collector's valuation series), rather than inventing prices.
 Single-source. The silver is a per-position **change delta** series (collector
 `DESIGN.md` §5.1) that the adapter forward-fills into a complete portfolio at
 every event date (§5), plus a `cash_flows` ledger projected as double-entry
-transaction pairs on a sentinel funding account (§7).
+transaction pairs on the custody account (§7).
 
 ## 1. Silver source
 
@@ -56,11 +56,11 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 
 | Gold table   | Carta silver source                              | Notes |
 |--------------|--------------------------------------------------|-------|
-| accounts     | `dump_runs` (`individual_id`)                    | the custody account (positions) + the `carta-funding` sentinel (transactions) |
+| accounts     | `dump_runs` (`individual_id`)                    | one custody account carrying the positions and the transaction pairs |
 | instruments  | `entities`                                       | one per held company |
 | positions    | `securities` (cap-table, lots aggregated) + `fund_metrics` (fund) | one per company, forward-filled — see §5 |
-| transactions | `cash_flows`                                     | double-entry pairs on the funding sentinel — see §7 |
-| cash_balances| —                                                | none; the funding sentinel's 0 is implicit in the paired ledger |
+| transactions | `cash_flows`                                     | double-entry pairs on the custody account — see §7 |
+| cash_balances| —                                                | none; each transaction pair nets to 0, so no cash position is implied |
 | portfolios   | —                                                | not grouped at source (the engine rolls the accounts up under "(no portfolio)") |
 | fx_rates     | —                                                | adapter emits none (holdings are USD) |
 
@@ -171,13 +171,14 @@ migration was needed for the enums — only migration `0013` widening the
 ## 7. Transactions
 
 The silver `cash_flows` ledger (collector DESIGN.md §5.2) is projected as
-**balanced double-entry pairs** on a sentinel funding account
-(`carta-funding`) — Carta exposes no real cash balance (a capital call is wired
-from an external bank straight into the SPV/fund, an exercise is paid
-externally, proceeds leave to an external account), so each event splits into an
-external-bank leg and a holding leg that net to zero. The funding account is a
-pure pass-through clearing account whose derived balance is always exactly 0
-(`AccountKind = cash`, no `cash_balance` row). Every leg links to the company's
+**balanced double-entry pairs** on the custody account — the account carrying
+the value spine, so the returns engine sees the flows. Carta exposes no real
+cash balance (a capital call is wired from an external bank straight into the
+SPV/fund, an exercise is paid externally, proceeds leave to an external
+account), so each event splits into an external-bank leg
+(`deposit`/`withdrawal`: the boundary flows the returns policy counts) and a
+holding leg that net to zero — no cash position is implied (the same shape as
+a brokerage's same-day deposit + buy). Every leg links to the company's
 instrument; the buy / sell legs carry the share lot + price.
 
 | `cash_flows.kind` | gold pair (signed via `ApplyCanonicalSign`) |

@@ -14,8 +14,9 @@ import (
 // The engine consumes these knobs: OnboardScope (returns_compute.go,
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
 // anchor), ConduitKinds via IsConduit (returns.go), the ClassifyFlow/ExternalOnly
-// hook path (attachFlows in returns.go), and AccountsGrainMeaningless
-// (returns.go, suppressing the per-wallet accounts grain for crypto sources).
+// hook path (attachFlows in returns.go), AccountsGrainMeaningless (returns.go,
+// blanking the accounts grain for sweep/conduit sources), and CapitalCallRisk
+// (regimeFlags in returns_compute.go, tagging flow-less windows).
 // The remaining knobs — NettingTol, SpineDensity, InKindJumpTol, the NavOnly
 // mirror, and the OnboardAmount hook — are a declared forward contract for the
 // per-source returns-policy migration: defined and defaulted here so a source
@@ -47,6 +48,17 @@ type ReturnsPolicy struct {
 	// valid because they aggregate coherent units. Default false leaves every
 	// grain's TWR/MWR computed.
 	AccountsGrainMeaningless bool
+	// CapitalCallRisk: the source's value growth can embed unobserved capital
+	// calls (private-market vehicles), so value-growth returns are only
+	// trustworthy alongside observed flows. A window in which such a
+	// constituent's OWN accounts observed no external ledger flow keeps the
+	// nav_only_capital_call_risk tag on the summary row (a positions-only
+	// silver stays flagged; a flow-bearing one reports clean) — the check is
+	// per constituent, so neither a sibling source's flows in a merged entity
+	// nor a synthetic onboarding/closure flow can mask it. RegimeNavOnly
+	// implies the tag unconditionally; this knob covers such a source migrated
+	// to a flow-counting regime. Default false.
+	CapitalCallRisk bool
 	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode
 	// ConduitKinds: account kinds that are plumbing (e.g. UBS cash), not a

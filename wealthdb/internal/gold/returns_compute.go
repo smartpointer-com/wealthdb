@@ -61,7 +61,7 @@ func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx 
 	// Entity-level quality that applies to every row.
 	entityQ := append([]string{}, incFlags...)
 	entityQ = append(entityQ, qFlowTags...)
-	entityQ = append(entityQ, regimeFlags(assets)...)
+	entityQ = append(entityQ, regimeFlags(assets, winFrom, winTo)...)
 	if preFxHistory(assets, p.OutCcy, winFrom, fx) {
 		entityQ = append(entityQ, "pre_fx_history")
 	}
@@ -835,7 +835,7 @@ func anyNavOnly(assets []*accountData) bool {
 	return false
 }
 
-func regimeFlags(assets []*accountData) []string {
+func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 	var flags []string
 	if allNavOnly(assets) {
 		flags = append(flags, "nav_only", "nav_only_capital_call_risk")
@@ -848,13 +848,21 @@ func regimeFlags(assets []*accountData) []string {
 	// iteration order made a multi-asset entity's flag ordering depend on which
 	// constituent happened to be visited first (non-deterministic for e.g.
 	// cointracking).
-	var crypto, journal, unknown, clamped, dropped bool
+	var crypto, journal, unknown, clamped, dropped, capRiskFlowless bool
 	for _, a := range assets {
 		crypto = crypto || (a.policy.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)
 		journal = journal || a.journalPresent
 		unknown = unknown || !a.policy.Known
 		clamped = clamped || a.hasClampedFlow
 		dropped = dropped || a.droppedNonzero
+		// A CapitalCallRisk constituent whose OWN accounts observed no
+		// external ledger flow in the window: its value growth may embed
+		// unobserved capital calls, so the summary keeps the honesty tag even
+		// under a flow-counting regime. Deliberately per constituent — the
+		// assembled entity flow series would let a sibling source's flows (at
+		// coarse grains) or a synthetic onboarding/closure flow mask the gap.
+		capRiskFlowless = capRiskFlowless ||
+			(a.rpolicy.CapitalCallRisk && !hasObservedFlowIn(a, winFrom, winTo))
 	}
 	if crypto {
 		flags = append(flags, "crypto_unclassified_transfers")
@@ -871,7 +879,23 @@ func regimeFlags(assets []*accountData) []string {
 	if dropped {
 		flags = append(flags, "dropped_while_nonzero")
 	}
+	if capRiskFlowless {
+		flags = append(flags, "nav_only_capital_call_risk")
+	}
 	return dedupeStrings(flags)
+}
+
+// hasObservedFlowIn reports whether the account itself observed an external
+// ledger flow inside (from, to] — the same bounds flowsIn uses. Only real
+// attached flows count: synthetic onboarding/closure flows are assembled per
+// entity at compute time and never stored on the account.
+func hasObservedFlowIn(a *accountData, from, to int64) bool {
+	for _, f := range a.allExternal() {
+		if f.Day > from && f.Day <= to {
+			return true
+		}
+	}
+	return false
 }
 
 func periodLabel(bs, be int64, period string) string {

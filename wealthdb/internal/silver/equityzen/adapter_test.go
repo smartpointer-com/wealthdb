@@ -283,21 +283,21 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 		t.Errorf("d1 acquisition_date = %v, want 2022-01-01", ad)
 	}
 
-	// Two accounts: the custody account (positions) and the sentinel funding
-	// cash account (the transaction pairs).
+	// One account: the custody account carries the positions AND the
+	// transaction pairs — no funding sentinel.
 	if a, ok := accts["equityzen"]; !ok || a.AccountKind != canonical.AccountKindCustody {
 		t.Errorf("custody account = %+v (ok=%v), want kind custody", a, ok)
 	}
-	if a, ok := accts[fundingAccountKey]; !ok || a.AccountKind != canonical.AccountKindCash {
-		t.Errorf("funding account = %+v (ok=%v), want kind cash", a, ok)
+	if len(accts) != 1 {
+		t.Errorf("accounts = %d (%v), want the custody account only", len(accts), accts)
 	}
 }
 
-// TestTransactions verifies the double-entry funding-account model: each cash
-// flow becomes a balanced pair (deposit+buy / deposit+contribution /
-// sell+withdrawal / distribution+withdrawal), every leg sits on the sentinel
-// funding account and links to its instrument, a $0 distribution omits the $0
-// withdrawal, and the whole ledger nets to exactly 0.
+// TestTransactions verifies the double-entry model: each cash flow becomes a
+// balanced pair (deposit+buy / deposit+contribution / sell+withdrawal /
+// distribution+withdrawal), every leg sits on the custody account and links
+// to its instrument, a $0 distribution omits the $0 withdrawal, and the whole
+// ledger nets to exactly 0.
 func TestTransactions(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
@@ -325,8 +325,8 @@ func TestTransactions(t *testing.T) {
 	sum := canonical.NewDecimalFromInt(0)
 	for _, tx := range batch.Transactions {
 		byID[tx.TransactionExternalID] = tx
-		if tx.AccountExternalID != fundingAccountKey {
-			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		if tx.AccountExternalID != accountKey {
+			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
 		}
 		if tx.InstrumentExternalID == nil || *tx.InstrumentExternalID == "" {
 			t.Errorf("%s has no instrument link", tx.TransactionExternalID)
@@ -335,9 +335,9 @@ func TestTransactions(t *testing.T) {
 			sum = sum.Add(*tx.NetAmount)
 		}
 	}
-	// The sentinel invariant: the funding account's derived balance is 0.
+	// The double-entry invariant: the paired ledger implies no cash position.
 	if !sum.IsZero() {
-		t.Errorf("funding ledger nets to %s, want 0.00", sum.StringFixed(2))
+		t.Errorf("paired ledger nets to %s, want 0.00", sum.StringFixed(2))
 	}
 
 	want := func(id, deal string, kind canonical.TxKind, net string) canonical.TransactionChange {

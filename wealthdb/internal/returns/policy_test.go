@@ -55,12 +55,13 @@ func TestBankFlowPolicyShape(t *testing.T) {
 	}
 }
 
-// TestOnboardNoneAndAccountsGrainMeaninglessDefaults pins the cointracking-
-// migration knobs: OnboardNone is a distinct enum value appended after the existing
-// scopes (so their numeric values are preserved), and DefaultReturnsPolicy leaves
-// OnboardScope==OnboardPerConstituent and AccountsGrainMeaningless==false — a strict
-// no-op for every unmigrated source.
-func TestOnboardNoneAndAccountsGrainMeaninglessDefaults(t *testing.T) {
+// TestPolicyKnobDefaults pins the opt-in policy knobs: OnboardNone is a
+// distinct enum value appended after the existing scopes (so their numeric
+// values are preserved), and DefaultReturnsPolicy leaves OnboardScope ==
+// OnboardPerConstituent, AccountsGrainMeaningless == false, and
+// CapitalCallRisk == false — a strict no-op for every source that doesn't
+// set them.
+func TestPolicyKnobDefaults(t *testing.T) {
 	// Numeric values of the pre-existing scopes are unchanged by the append.
 	if OnboardPerConstituent != 0 || OnboardPerEntityOnce != 1 {
 		t.Errorf("existing OnboardScope values shifted: PerConstituent=%d PerEntityOnce=%d, want 0,1",
@@ -74,13 +75,16 @@ func TestOnboardNoneAndAccountsGrainMeaninglessDefaults(t *testing.T) {
 		t.Errorf("OnboardNone = %d, want 2 (appended after the existing values)", OnboardNone)
 	}
 
-	// DefaultReturnsPolicy leaves both new knobs at their no-op defaults.
+	// DefaultReturnsPolicy leaves the opt-in knobs at their no-op defaults.
 	dp := DefaultReturnsPolicy(BankFlowPolicy())
 	if dp.OnboardScope != OnboardPerConstituent {
 		t.Errorf("default OnboardScope = %d, want OnboardPerConstituent", dp.OnboardScope)
 	}
 	if dp.AccountsGrainMeaningless {
 		t.Error("default AccountsGrainMeaningless must be false")
+	}
+	if dp.CapitalCallRisk {
+		t.Error("default CapitalCallRisk must be false")
 	}
 }
 

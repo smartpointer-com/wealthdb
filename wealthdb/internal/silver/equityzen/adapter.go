@@ -8,17 +8,14 @@
 // plus a purchase/distribution cash ledger; this adapter forward-fills the
 // positions and maps the ledger to transactions. Notable shapes:
 //
-//   - Two accounts, both constants (the silver has no buyer-id column and the
+//   - One account, a constant (the silver has no buyer-id column and the
 //     holder has one relationship). "equityzen" is the custody account holding
-//     the positions: account_kind = custody (EquityZen administers the
+//     the positions AND the double-entry transaction pairs (see
+//     transactions.go): account_kind = custody (EquityZen administers the
 //     interests; the buyer places no trades — cf. carta / angellist),
 //     tax_wrapper = taxable_personal, management_style = self_directed (the
 //     holder chooses which interests to hold; the GP management inside each
-//     vehicle is not modelled; config overrides win). "equityzen-funding" is a
-//     sentinel cash account carrying the double-entry transaction pairs (see
-//     transactions.go): EquityZen does not expose the real external funding
-//     account, so each event is a balanced pair and this account's derived
-//     balance is always exactly 0 (a pure pass-through clearing account).
+//     vehicle is not modelled; config overrides win).
 //
 //   - One instrument + position per offering (silver `offerings`, keyed by
 //     deal_external_id — the SPV/fund interest, never merged). asset_class
@@ -39,7 +36,7 @@
 //     ISO TEXT; the adapter converts to unix seconds (strftime).
 //
 //   - Transactions from the `cash_flows` ledger, as balanced double-entry
-//     pairs on the funding account: a purchase -> deposit + buy (spv) or
+//     pairs on the custody account: a purchase -> deposit + buy (spv) or
 //     deposit + contribution (fund); a distribution -> sell + withdrawal for
 //     an SPV (a tax-transparent single-stock vehicle realizes the
 //     underlying), or distribution + withdrawal for a multi-company fund

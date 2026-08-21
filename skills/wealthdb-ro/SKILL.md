@@ -122,9 +122,10 @@ taxes paid**.
 ALWAYS has a reason there; never report a blank or a bogus number. Common tags:
 `nonpositive_base` (a mortgage/liability or net-negative entity — no meaningful
 return; shown on its own line and excluded from rollups), `mwr_no_flows` (no
-external cash flows — MWR undefined; e.g. manually-valued private holdings and
-Carta/EquityZen, which are `nav_only`), `nav_only` / `nav_only_capital_call_risk`
-(value-only source; its TWR omits capital-call timing — caveat it),
+external cash flows — MWR undefined; e.g. manually-valued private holdings,
+which are `nav_only`), `nav_only` / `nav_only_capital_call_risk`
+(value-only source or a private-market window with no observed flows; its TWR
+may omit capital-call timing — caveat it),
 `since_data_inception` (since-inception means since the **first snapshot**, not
 account opening), `staggered_inception` / `unmatched_transfers` /
 `empty_bucket` (coarse-grain or stale-data approximations), `stale_snapshot`

@@ -237,8 +237,9 @@ record — a purchase wire, rent, a fee, sale proceeds — is a real movement in
 the bank accounts, already captured by the bank collectors; re-representing it
 on a sentinel only duplicates them. The one datum the acquisition transaction
 carried that positions/valuations don't (the acquisition date) already rides on
-the position. carta/equityzen *need* their funding sentinel because those
-sources' cash is invisible to everything else; manual's is not.
+the position. carta/equityzen *need* their double-entry ledgers (booked on
+their custody accounts) because those sources' cash is invisible to everything
+else; manual's is not.
 
 **Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
 widens the `silver_sources` `silver_kind` whitelist (the 0007–0015

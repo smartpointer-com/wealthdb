@@ -33,17 +33,44 @@ import (
 )
 
 func TestRegisteredFlowPolicies(t *testing.T) {
-	// NAV-only sources: nav_only regime, no external kinds.
-	for _, k := range []string{"manual", "carta", "equityzen"} {
+	// The NAV-only source: manual emits no transactions at all, so nothing is
+	// countable — nav_only regime, no external kinds.
+	man, _ := returns.ReturnsPolicyFor("manual")
+	if !man.Flow.Known {
+		t.Error("manual: policy must be Known (registered)")
+	}
+	if man.Flow.Regime != returns.RegimeNavOnly {
+		t.Errorf("manual: regime %v, want nav_only", man.Flow.Regime)
+	}
+	if man.Flow.IsExternal(canonical.TxKindDeposit) || man.Flow.IsExternal(canonical.TxKindContribution) {
+		t.Error("manual: nav-only must have no external kinds")
+	}
+
+	// carta / equityzen: complete double-entry ledgers on the custody account.
+	// The deposit/withdrawal boundary legs are external capital; the holding
+	// legs (buy/sell/contribution/distribution) are the internal halves of
+	// those pairs and must not count. CapitalCallRisk keeps the honesty tag on
+	// flow-less windows.
+	for _, k := range []string{"carta", "equityzen"} {
 		rp, _ := returns.ReturnsPolicyFor(k)
 		if !rp.Flow.Known {
 			t.Errorf("%s: policy must be Known (registered)", k)
 		}
-		if rp.Flow.Regime != returns.RegimeNavOnly {
-			t.Errorf("%s: regime %v, want nav_only", k, rp.Flow.Regime)
+		if rp.Flow.Regime != returns.RegimeFlowComplete {
+			t.Errorf("%s: regime %v, want flow_complete", k, rp.Flow.Regime)
 		}
-		if rp.Flow.IsExternal(canonical.TxKindDeposit) || rp.Flow.IsExternal(canonical.TxKindContribution) {
-			t.Errorf("%s: nav-only must have no external kinds", k)
+		if !rp.Flow.IsExternal(canonical.TxKindDeposit) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal) {
+			t.Errorf("%s: deposit/withdrawal must be external", k)
+		}
+		if rp.Flow.IsExternal(canonical.TxKindBuy) || rp.Flow.IsExternal(canonical.TxKindSell) ||
+			rp.Flow.IsExternal(canonical.TxKindContribution) || rp.Flow.IsExternal(canonical.TxKindDistribution) {
+			t.Errorf("%s: holding legs are INTERNAL (counting both halves cancels every event)", k)
+		}
+		if rp.Flow.IsTransferLike(canonical.TxKindDeposit) || rp.Flow.IsTransferLike(canonical.TxKindWithdrawal) {
+			t.Errorf("%s: deposit/withdrawal must never net", k)
+		}
+		if !rp.CapitalCallRisk {
+			t.Errorf("%s: CapitalCallRisk must be set", k)
 		}
 	}
 

@@ -504,8 +504,11 @@ as hard rules rather than advice.
   after an identity shift); destructive loaders validate their input
   before touching existing output.
 - **Private-market portals differ from banks:** no transaction feed
-  (synthesize a sentinel funding ledger from balanced pairs netting to
-  zero), sparse event-dated valuations (changes-only, at-most-daily;
+  (synthesize a balanced double-entry ledger on the custody account —
+  each event nets to zero, and the deposit/withdrawal boundary legs are
+  the flows the returns policy counts; a separate sentinel account is
+  invisible to the value spine), sparse event-dated valuations
+  (changes-only, at-most-daily;
   forward-fill in gold; never extrapolate a valuation backward), and
   documents that vanish (portals purge after exits — archive early,
   content-addressed). Expect permanent per-holding authorization

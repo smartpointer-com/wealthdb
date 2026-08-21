@@ -11,7 +11,7 @@
 -- This table records the dated cash EVENTS as positive magnitudes; `kind`
 -- carries the direction + nature. The gold adapter (see DESIGN.md
 -- §6 / wealthdb/docs/adapters/carta.md) projects each row as a balanced
--- DOUBLE-ENTRY pair on a sentinel funding account, mirroring equityzen:
+-- DOUBLE-ENTRY pair on the custody account, mirroring equityzen:
 --   exercise      -> deposit (+) + buy          (-)   shares acquired
 --   capital_call  -> deposit (+) + contribution (-)   capital into a fund
 --   exit          -> sell    (+) + withdrawal   (-)   shares realized

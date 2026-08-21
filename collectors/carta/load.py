@@ -824,7 +824,7 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
     — stock exercises / exit from the cap-table certs + cancellation, and fund
     capital calls / distributions from the capital-account statements. Amounts
     are positive magnitudes; the gold adapter projects each as a balanced
-    double-entry pair on the sentinel funding account (DESIGN.md §6)."""
+    double-entry pair on the custody account (DESIGN.md §6)."""
     entities_dir = run_dir / "entities"
     if not entities_dir.is_dir():
         return 0

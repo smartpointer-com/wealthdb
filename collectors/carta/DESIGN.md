@@ -378,7 +378,7 @@ the tables follow the observed responses.
 | `cap_calls` | (snapshot_at, entity_external_id, call_external_id) | Active LP capital calls. |
 | `documents` | content_sha256 | PDF archive index (K-1 / 1042-S / statements / financials), content-deduped on SHA-256; the PDF blobs stay under the bronze tree. |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
-| `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on a sentinel funding account (§6). |
+| `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on the custody account (§6). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
 
 Identity: `entity_external_id` = Carta's `corporation_id`;
@@ -451,7 +451,7 @@ dates) and the per-share price both move correctly over time. The fund side,
 by contrast, *is* already a true per-quarter NAV series, so it needs no
 override.
 
-### 5.2 Cash-flow ledger + the sentinel funding account (migration 0003)
+### 5.2 Cash-flow ledger (migration 0003)
 
 Carta exposes holdings but not the cash mechanics — an exercise is paid from an
 external bank, a fund capital call is wired straight into the SPV/fund, and
@@ -482,9 +482,9 @@ carries the nature + direction), reconstructed from data we *do* have:
   differenced instead.
 
 The gold adapter (§6.1) pairs each auto-derived event into a balanced
-double-entry on a sentinel funding account, so its derived balance is always
-exactly 0; side-loaded explicit legs are emitted 1:1 (the CSV supplies both
-halves, so they too net to 0).
+double-entry on the custody account, so each event nets to exactly 0;
+side-loaded explicit legs are emitted 1:1 (the CSV supplies both halves, so
+they too net to 0).
 
 ### Why SQLite, not DuckDB
 
@@ -499,7 +499,7 @@ The gold adapter is **built** — `wealthdb/internal/silver/carta/`, documented
 in [`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md).
 It projects this silver into canonical `accounts` / `instruments` /
 `positions`, plus a `transactions` projection from the cash-flow ledger
-(§6.1) as balanced double-entry pairs on a sentinel funding account:
+(§6.1) as balanced double-entry pairs on the custody account:
 
 - **Asset classes** — two new canonical values in
   `internal/canonical/enums.go`: `private_fund` (the fund LP interest) and
@@ -532,15 +532,16 @@ the **forward-filled** state — every position's latest delta
 per-source snapshot reaches gold's as-of query and an exited holding drops out
 exactly at its disposition date.
 
-### 6.1 Transactions — the sentinel funding account
+### 6.1 Transactions — double-entry pairs on the custody account
 
-Following equityzen, the gold adapter projects the `cash_flows` ledger (§5.2) as
-balanced double-entry transaction PAIRS on a sentinel funding account
-(`carta-funding`, analogous to `equityzen-funding`) — distinct from the custody
-account that holds the positions. Carta exposes no real funding balance, so
-every event is a self-cancelling pair and the sentinel's derived balance is
-always exactly 0 (a pass-through clearing account). `amount` is the positive
-magnitude; the adapter signs + splits it:
+Following equityzen, the gold adapter projects the `cash_flows` ledger (§5.2)
+as balanced double-entry transaction PAIRS on the custody account — the
+account carrying the value spine, so the returns engine sees the flows (the
+`deposit`/`withdrawal` legs are the external boundary flows its ReturnsPolicy
+counts). Carta exposes no real funding balance, so every event is a
+self-cancelling pair — no cash position is implied, the same shape as a
+brokerage's same-day deposit + buy. `amount` is the positive magnitude; the
+adapter signs + splits it:
 
 | cash_flow `kind` | gold pair (signed) |
 |---|---|
@@ -556,9 +557,9 @@ canonical kinds directly — `sell` / `withdrawal` / `deposit` / `buy` /
 supplies both halves of the exit (a sale plus the withdrawals it splits into), so they net to 0 without synthesis.
 
 Every leg links to the company's instrument (mirroring equityzen); the buy /
-sell legs additionally carry the share lot + price. The funding account is an
-`accounts` row of kind `cash` with **no** `cash_balance` row — the 0 is implicit
-in the paired ledger (no real external balance is observed). `Status` reports
+sell legs additionally carry the share lot + price. No `cash_balance` row is
+emitted — each pair nets to 0, so no cash balance is implied (no real external
+balance is observed). `Status` reports
 the `cash_flows` date range as the transaction extrema; the load window already
 covers them (they coincide with the securities / fund_metrics deltas).
 `TxKindContribution` already exists in `internal/canonical/enums.go` (added for

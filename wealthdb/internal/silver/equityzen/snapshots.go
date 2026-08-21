@@ -10,14 +10,11 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-// accountKey is the custody account holding the positions; fundingAccountKey
-// is the sentinel cash account carrying the double-entry transaction pairs
-// (transactions.go). The silver has no buyer-id column and the holder has one
-// relationship, so both are constants.
-const (
-	accountKey        = "equityzen"
-	fundingAccountKey = "equityzen-funding"
-)
+// accountKey is the single custody account: it holds the positions AND the
+// double-entry transaction pairs (transactions.go), so the value spine and
+// the cash flows meet on one entity at every returns grain. The silver has no
+// buyer-id column and the holder has one relationship, so it is a constant.
+const accountKey = "equityzen"
 
 // Snapshots forward-fills the per-day portfolio from the silver's
 // event-sourced `positions` table. The collector already replays each deal's
@@ -183,21 +180,6 @@ SELECT p.deal_external_id,
 		BaseCurrency:      &usd,
 		TaxWrapper:        &wrapper,
 		ManagementStyle:   &style,
-		FirstSeenAt:       t,
-		LastSeenAt:        t,
-	})
-
-	// The sentinel funding account: a synthetic cash conduit carrying the
-	// double-entry transaction pairs (transactions.go). Every investment leg is
-	// offset by a deposit/withdrawal leg, so its derived balance is always
-	// exactly 0 — EquityZen's real external funding account is unobserved. No
-	// positions and no cash_balance row: the 0 is implicit in the paired ledger.
-	fundingName := "EquityZen (funding)"
-	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-		AccountExternalID: fundingAccountKey,
-		AccountKind:       canonical.AccountKindCash,
-		DisplayName:       &fundingName,
-		BaseCurrency:      &usd,
 		FirstSeenAt:       t,
 		LastSeenAt:        t,
 	})

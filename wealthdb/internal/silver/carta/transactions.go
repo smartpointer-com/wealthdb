@@ -34,15 +34,17 @@ func flowDateUnix(s string) (int64, bool) {
 }
 
 // Transactions projects the cash-flow ledger (collector DESIGN.md §5.2) as
-// DOUBLE-ENTRY pairs on the sentinel funding account (fundingAccountKey). Carta
-// exposes no real cash balance — a capital call is wired from an external bank
-// straight into the SPV/fund, an exercise is paid externally, and exit /
-// distribution proceeds leave to an external account — so each event splits
-// into an external-bank leg (deposit/withdrawal) and a holding leg
-// (buy/sell/contribution/distribution) that net to zero. The funding account is
-// therefore a pure pass-through clearing account whose derived balance is
-// always exactly 0. Every leg links to the company's instrument; the buy/sell
-// legs additionally carry the share lot + price.
+// DOUBLE-ENTRY pairs on the custody account — the account carrying the value
+// spine, so the returns engine sees the flows. Carta exposes no real cash
+// balance — a capital call is wired from an external bank straight into the
+// SPV/fund, an exercise is paid externally, and exit / distribution proceeds
+// leave to an external account — so each event splits into an external-bank
+// leg (deposit/withdrawal: cash crossing the Carta boundary, the external
+// flows the ReturnsPolicy counts) and a holding leg
+// (buy/sell/contribution/distribution: the internal half). The pair nets to
+// zero, so no cash position is implied on the account (the same shape as a
+// brokerage's same-day deposit + buy). Every leg links to the company's
+// instrument; the buy/sell legs additionally carry the share lot + price.
 //
 //	exercise             deposit (+) + buy          (−)   shares acquired
 //	convertible_purchase deposit (+) + buy          (−)   SAFE / note (no lot)
@@ -57,6 +59,10 @@ func flowDateUnix(s string) (int64, bool) {
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
+	}
+	acct, err := c.accountKey(ctx)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := c.db.QueryContext(ctx, cashFlowQuery)
 	if err != nil {
@@ -83,8 +89,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		isZero := !amount.Valid || amount.Float64 == 0
 		inst := instrumentID(entityID)
 
-		// emit appends one leg of the pair — both sit on the sentinel funding
-		// account and link to the company's instrument; the silver cash-flow
+		// emit appends one leg of the pair — both sit on the custody account
+		// and link to the company's instrument; the silver cash-flow
 		// description (e.g. a withdrawal's destination bank) rides on
 		// each leg.
 		emit := func(txKind canonical.TxKind, withLot bool) {
@@ -93,7 +99,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			tx := canonical.TransactionChange{
 				TransactionExternalID: cfID + ":" + string(txKind),
 				OccurredAt:            occurred,
-				AccountExternalID:     fundingAccountKey,
+				AccountExternalID:     acct,
 				InstrumentExternalID:  &i,
 				Kind:                  txKind,
 				Currency:              ccy,
@@ -134,8 +140,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			}
 		// Side-loaded explicit legs (collector `<account_id>-transactions.csv`)
 		// → one canonical transaction each; the CSV provides both halves (e.g.
-		// a sale plus the withdrawals it splits into), so they net
-		// to 0 on the funding account without auto-pairing.
+		// a sale plus the withdrawals it splits into), so they net to 0
+		// without auto-pairing.
 		case "sell":
 			emit(canonical.TxKindSell, true)
 		case "withdrawal":

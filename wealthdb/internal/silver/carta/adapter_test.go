@@ -113,7 +113,7 @@ func TestStatusTransactionExtrema(t *testing.T) {
 	}
 }
 
-func TestSnapshotsEmitsFundingSentinel(t *testing.T) {
+func TestSnapshotsEmitCustodyAccountOnly(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
 	conn := openAdapter(t, path)
@@ -138,20 +138,20 @@ func TestSnapshotsEmitsFundingSentinel(t *testing.T) {
 			break
 		}
 	}
-	// Two accounts: the custody account (positions) and the sentinel funding
-	// cash account (the transaction pairs).
+	// One account: the custody account carries the positions AND the
+	// transaction pairs — no funding sentinel.
 	if a, ok := accts["IND1"]; !ok || a.AccountKind != canonical.AccountKindCustody {
 		t.Errorf("custody account = %+v (ok=%v), want kind custody", a, ok)
 	}
-	if a, ok := accts[fundingAccountKey]; !ok || a.AccountKind != canonical.AccountKindCash {
-		t.Errorf("funding account = %+v (ok=%v), want kind cash", a, ok)
+	if len(accts) != 1 {
+		t.Errorf("accounts = %d (%v), want the custody account only", len(accts), accts)
 	}
 }
 
-// TestTransactions verifies the double-entry funding-account model: each cash
-// flow becomes a balanced pair, every leg sits on the sentinel funding account
-// and links to its instrument, a $0 exit omits the $0 withdrawal, and the whole
-// ledger nets to exactly 0.
+// TestTransactions verifies the double-entry model: each cash flow becomes a
+// balanced pair, every leg sits on the custody account and links to its
+// instrument, a $0 exit omits the $0 withdrawal, and the whole ledger nets to
+// exactly 0.
 func TestTransactions(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
@@ -178,8 +178,8 @@ func TestTransactions(t *testing.T) {
 	sum := canonical.NewDecimalFromInt(0)
 	for _, tx := range batch.Transactions {
 		byID[tx.TransactionExternalID] = tx
-		if tx.AccountExternalID != fundingAccountKey {
-			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		if tx.AccountExternalID != "IND1" {
+			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
 		}
 		if tx.InstrumentExternalID == nil || *tx.InstrumentExternalID == "" {
 			t.Errorf("%s has no instrument link", tx.TransactionExternalID)
@@ -188,9 +188,9 @@ func TestTransactions(t *testing.T) {
 			sum = sum.Add(*tx.NetAmount)
 		}
 	}
-	// The sentinel invariant: the funding account's derived balance is 0.
+	// The double-entry invariant: the paired ledger implies no cash position.
 	if !sum.IsZero() {
-		t.Errorf("funding ledger nets to %s, want 0.00", sum.StringFixed(2))
+		t.Errorf("paired ledger nets to %s, want 0.00", sum.StringFixed(2))
 	}
 
 	want := func(id, inst string, kind canonical.TxKind, net string) canonical.TransactionChange {
@@ -239,7 +239,7 @@ func TestTransactions(t *testing.T) {
 // TestSideLoadedLegsEmit1to1 verifies that side-loaded canonical kinds
 // (sell / withdrawal / …, from `<account_id>-transactions.csv`) are emitted as
 // single transactions (NOT auto-paired) — the CSV supplies both halves, so the
-// sale + its withdrawals net to 0 on the funding account.
+// sale + its withdrawals net to 0 on the custody account.
 func TestSideLoadedLegsEmit1to1(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	d := unixDate(t, "2026-02-02")
@@ -279,8 +279,8 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 	sum := canonical.NewDecimalFromInt(0)
 	for _, tx := range batch.Transactions {
 		byID[tx.TransactionExternalID] = tx
-		if tx.AccountExternalID != fundingAccountKey {
-			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		if tx.AccountExternalID != "IND1" {
+			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
 		}
 		if tx.NetAmount != nil {
 			sum = sum.Add(*tx.NetAmount)
@@ -473,7 +473,7 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 }
 
 // TestConvertiblePurchasePair verifies a `convertible_purchase` cash flow
-// projects to a balanced deposit+buy pair on the funding account, where the buy
+// projects to a balanced deposit+buy pair on the custody account, where the buy
 // carries NO share lot (a SAFE has no shares yet) and the pair nets to 0.
 func TestConvertiblePurchasePair(t *testing.T) {
 	path, db := newFixtureSilver(t)
@@ -512,8 +512,8 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 	sum := canonical.NewDecimalFromInt(0)
 	for _, tx := range batch.Transactions {
 		byID[tx.TransactionExternalID] = tx
-		if tx.AccountExternalID != fundingAccountKey {
-			t.Errorf("%s account = %q, want %q", tx.TransactionExternalID, tx.AccountExternalID, fundingAccountKey)
+		if tx.AccountExternalID != "IND1" {
+			t.Errorf("%s account = %q, want the custody account", tx.TransactionExternalID, tx.AccountExternalID)
 		}
 		if tx.NetAmount != nil {
 			sum = sum.Add(*tx.NetAmount)
