@@ -100,11 +100,29 @@ returns migration:
   deterministic — `netOwnedTransfers` sorts stably by `(|amount|, day, id)`.
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
-- **Explicit closure** is detected only when an account's last snapshot
-  value is ~0 (`|v| < valueTol`) — mere staleness never triggers it. Real
-  drains across the zeroing gap are subsumed by the synthetic closure
-  outflow (`subsumesAtClosure`), which books the full boundary value, so
-  a "withdraw everything" closure is not double-counted.
+- **Explicit closure** is detected only when an account's value series ends
+  in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.
+  The per-source `ClosureScope` knob decides how the exit is accounted:
+  - `ClosureSubsumeDrains` (default): flows dated inside the flat zero-carry
+    tail show no ΔV and are subsumed as strays (`subsumesAtClosure`); the
+    zeroing value drop itself is the exit signal, offset by real drains that
+    preceded the zeroing snapshot. Safe when the ledger may be missing or
+    mis-dated around a closure.
+  - `ClosureLedgerExact` (carta / equityzen): zero-tail flows are real dated
+    exit legs — those ledgers put the proceeds on the zeroing day itself —
+    so they are KEPT and no closure synthetic is booked: the realized-vs-
+    last-mark delta shows as return (a late escrow release after the zeroing
+    likewise books as gain). A flow-less zeroing reads as a full loss under
+    either scope, tagged via `CapitalCallRisk`.
+
+  The closure day is the zero tail's END, so the machinery engages when the
+  window reaches it. The exit-day zero snapshot itself comes from the
+  adapters (`silver.ClosureMarkerBatch`): when a carta / equityzen portfolio
+  fully empties, the disposition date's batch replays the previous
+  snapshot's positions at zero value — an empty batch is invisible to gold's
+  history and as-of queries, which would otherwise carry the pre-exit marks
+  forward as phantom value. The closure mirror of an inception anchor: the
+  track record ends at a real, dated zero.
 
 ## Staggered-inception subsumption
 
@@ -124,9 +142,11 @@ chained TWR below −100%.
   `≤ d` **dropped** from the aggregate flow series; onboarding books the
   **full first-snapshot value** at `d`. An account already alive at
   `winFrom` keeps all in-window flows and gets no onboarding.
-- The **closure mirror** (`lastNonzeroDay`): a closing constituent's drains
-  dated after its last non-zero carried value, up to the zeroing day, are
-  subsumed by the synthetic closure outflow.
+- The **closure mirror** (`lastNonzeroDay`): a closing constituent's flows
+  dated after its last non-zero carried value — anywhere in the terminal
+  zero-carry tail — land where the series shows no ΔV and are subsumed as
+  strays under the default `ClosureScope` (the zeroing value drop is the
+  exit signal); `ClosureLedgerExact` keeps them as the real exit legs.
 - **Netting interaction:** transfer/journal netting runs over the full
   candidate set (pre-debut legs included) **before** subsumption, so
   genuine internal pairs annihilate and only a constituent's own surviving
@@ -184,7 +204,8 @@ source:
   equityzen = boundary deposit/withdrawal only (the holding legs of their
   double-entry pairs — buy/sell/contribution/distribution — stay internal,
   or every event would cancel to a net-0 flow; `CapitalCallRisk` keeps the
-  honesty tag on flow-less windows); manual = NAV-only.
+  honesty tag on flow-less windows; `ClosureLedgerExact` books full exits at
+  their real proceeds); manual = NAV-only.
 - **Dormant knobs.** `SpineDensity`, `NettingTol`, `InKindJumpTol`, the
   `NavOnly` mirror, and the `ClassifyFlow` / `OnboardAmount` hooks are
   defined and defaulted but not yet consumed — NAV-only and crypto handling

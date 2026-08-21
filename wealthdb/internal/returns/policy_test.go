@@ -86,6 +86,9 @@ func TestPolicyKnobDefaults(t *testing.T) {
 	if dp.CapitalCallRisk {
 		t.Error("default CapitalCallRisk must be false")
 	}
+	if dp.ClosureScope != ClosureSubsumeDrains {
+		t.Errorf("default ClosureScope = %d, want ClosureSubsumeDrains", dp.ClosureScope)
+	}
 }
 
 func TestRegimeString(t *testing.T) {

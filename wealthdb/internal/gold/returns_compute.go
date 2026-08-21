@@ -253,7 +253,15 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 	// before another's later deposits, or a journal-out whose funding trade isn't a
 	// counted flow) does not mean the capital was ever truly negative, so a window
 	// that ends net-positive still gets a valid MWR.
-	if mwrNetCapitalNonPositive(v0, windowFlows) {
+	//
+	// One shape is exempt: a FULLY-REALIZED window (end value ~0) whose cash-flow
+	// sequence has exactly one sign change — the textbook profitable exit
+	// (committed capital repaid at more than cost, e.g. a ledger-exact closure
+	// sold above its invested basis). Its IRR is unique and well-defined; blanking
+	// it would deny an MWR to precisely the gains the flow-counting policies
+	// exist to surface, while losses (net capital still positive) compute one.
+	if mwrNetCapitalNonPositive(v0, windowFlows) &&
+		(v1 > valueTol || returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) != 1) {
 		return nil, nil, append(q, "mwr_negative_net_capital")
 	}
 	rate, err := returns.XIRR(v0, v1, winFrom, winTo, windowFlows)
@@ -320,11 +328,14 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// debut value instead; under OnboardNone there is no onboarding, so a real
 	// debut-region deposit IS the capital event and must be kept (otherwise the
 	// funded value shows up as pure performance). Closure-drain flows are still
-	// subsumed — explicit closure fires regardless of OnboardScope.
+	// subsumed — explicit closure fires regardless of OnboardScope — except under
+	// ClosureLedgerExact, where a zero-tail flow is a real dated exit leg (an
+	// exit's proceeds land on the zeroing day itself) and IS the capital event.
 	for _, a := range assets {
 		onboardNone := a.rpolicy.OnboardScope == returns.OnboardNone
+		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
-			if subsumesAtClosure(a, f.Day, winFrom, winTo) {
+			if !ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo) {
 				continue
 			}
 			if !onboardNone && subsumesAtDebut(a, f.Day, winFrom, winTo) {
@@ -340,8 +351,11 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// sits on an already-alive account still annihilates and is never orphaned.
 	var cand []ownedFlow
 	for _, a := range assets {
+		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
-			cand = append(cand, ownedFlow{Flow: f, subsumed: subsumesAt(a, f.Day, winFrom, winTo)})
+			sub := subsumesAtDebut(a, f.Day, winFrom, winTo) ||
+				(!ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo))
+			cand = append(cand, ownedFlow{Flow: f, subsumed: sub})
 		}
 	}
 	if p.Netting {
@@ -362,9 +376,11 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		}
 	}
 
-	// Synthetic onboarding (the late constituent's whole arrival) + explicit closure
-	// (its whole exit). The real pre-debut / closure-drain flows were subsumed above,
-	// so the synthetic amount is the FULL boundary value — no near-day dedup needed.
+	// Synthetic onboarding (the late constituent's whole arrival) + explicit
+	// closure. The real pre-debut / closure-drain flows were subsumed above, so
+	// no near-day dedup is needed: onboarding books the FULL debut value, and the
+	// closure loop below books whatever value remains the day before the closure
+	// day (in practice only a final-day zeroing — see that loop's comment).
 	//
 	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
 	// constituent debuts after winFrom:
@@ -427,13 +443,19 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		}
 	}
 
-	// Explicit closure (a constituent's whole exit) is unchanged by OnboardScope /
-	// ConduitKinds: the carry-forward spine keeps lastValue past the closure day, so
-	// the zeroing outflow is mandatory whether or not the account onboarded.
+	// Explicit closure, unchanged by OnboardScope / ConduitKinds. In practice the
+	// synthetic books value only when an account zeroes on the spine's final day
+	// (valueAt(cd-1) is ~0 anywhere inside a longer zero tail), so the zeroing
+	// value DROP is the usual exit signal and this outflow is its final-day
+	// complement. A ledger-exact closure books nothing here — its kept real flows
+	// are the exit.
 	for _, a := range assets {
+		if a.rpolicy.ClosureScope == returns.ClosureLedgerExact {
+			continue
+		}
 		if cd := a.closureDay(); cd > winFrom && cd <= winTo {
 			last, _ := a.valueAt(cd - 1)
-			if cf, _, ok := returns.ClosureFlow(cd, last, 0); ok {
+			if cf, _, ok := returns.ClosureFlow(cd, last); ok {
 				flows = append(flows, cf)
 			}
 		}
@@ -521,16 +543,18 @@ func subsumesAtDebut(a *accountData, day, winFrom, winTo int64) bool {
 }
 
 // subsumesAtClosure reports whether a flow drains into a constituent's closure
-// (the explicit closure outflow accounts for it). Independent of OnboardScope —
-// explicit closure fires regardless.
+// (the flat zero-carry tail already shows no ΔV for it, so counting it would
+// book a phantom exit). Independent of OnboardScope — explicit closure fires
+// regardless. Callers bypass it under ClosureLedgerExact, where a zero-tail
+// flow is a real dated exit leg and is kept.
 func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
 	cd := a.closureDay()
 	return cd > winFrom && cd <= winTo && day > a.lastNonzeroDay() && day <= cd
 }
 
-// subsumesAt reports whether a constituent's flow on `day` lands in a region the
-// aggregate value series does not reflect, so it is subsumed by the synthetic
-// onboarding/closure amount rather than counted as a visible flow:
+// Subsumption regions — a constituent's flow is subsumed (dropped in favor of
+// the synthetic onboarding/closure amount) when it lands in a region the
+// aggregate value series does not reflect:
 //
 //   - PRE-DEBUT: the constituent debuts (joins the value spine) at d > winFrom and
 //     the flow is dated on or before d. The aggregate value series is 0 for this
@@ -539,10 +563,9 @@ func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
 //   - CLOSURE-DRAIN: the constituent closes (value → 0) at cd ≤ winTo and the flow
 //     is dated after the last snapshot that still carried a non-zero value, up to
 //     cd. The carried value is flat across that gap (no visible ΔV), so a drain
-//     there would double-count with the synthetic closure outflow at cd.
-func subsumesAt(a *accountData, day, winFrom, winTo int64) bool {
-	return subsumesAtDebut(a, day, winFrom, winTo) || subsumesAtClosure(a, day, winFrom, winTo)
-}
+//     there would double-count with the synthetic closure outflow at cd — unless
+//     the closure is ledger-exact, in which case no synthetic is booked and the
+//     real drains ARE the counted exit.
 
 // netOwnedTransfers greedily matches opposite-direction transfer legs (largest
 // first) whose output-currency magnitudes agree within ε and whose days are

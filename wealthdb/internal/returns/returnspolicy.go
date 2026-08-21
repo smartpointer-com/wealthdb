@@ -15,8 +15,9 @@ import (
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
 // anchor), ConduitKinds via IsConduit (returns.go), the ClassifyFlow/ExternalOnly
 // hook path (attachFlows in returns.go), AccountsGrainMeaningless (returns.go,
-// blanking the accounts grain for sweep/conduit sources), and CapitalCallRisk
-// (regimeFlags in returns_compute.go, tagging flow-less windows).
+// blanking the accounts grain for sweep/conduit sources), CapitalCallRisk
+// (regimeFlags in returns_compute.go, tagging flow-less windows), and
+// ClosureScope (entityFlows, ledger-exact vs subsumed closures).
 // The remaining knobs — NettingTol, SpineDensity, InKindJumpTol, the NavOnly
 // mirror, and the OnboardAmount hook — are a declared forward contract for the
 // per-source returns-policy migration: defined and defaulted here so a source
@@ -59,6 +60,10 @@ type ReturnsPolicy struct {
 	// implies the tag unconditionally; this knob covers such a source migrated
 	// to a flow-counting regime. Default false.
 	CapitalCallRisk bool
+	// ClosureScope: how an explicit closure (a constituent's value → ~0)
+	// accounts for the departing capital — subsume-and-synthesize (default)
+	// vs ledger-exact. See the ClosureScope constants.
+	ClosureScope ClosureScope
 	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode
 	// ConduitKinds: account kinds that are plumbing (e.g. UBS cash), not a
@@ -118,6 +123,32 @@ const (
 	// double-count. Appended last so OnboardPerConstituent(0) and
 	// OnboardPerEntityOnce(1) keep their numeric values.
 	OnboardNone
+)
+
+// ClosureScope selects how an explicit closure (a constituent's value → ~0)
+// accounts for the capital that left — the closure mirror of the inception
+// anchor: where InceptionMode decides where a track record starts, this
+// decides how it ends.
+type ClosureScope int
+
+const (
+	// ClosureSubsumeDrains is the default: flows dated inside the terminal
+	// zero-carry tail (after the last non-zero day, up to the closure day) are
+	// treated as strays and subsumed — the value series already reads 0 there,
+	// so counting them would book a phantom exit with no matching value move.
+	// The zeroing value drop itself is the loss/exit signal, offset by
+	// whatever real drains preceded the zeroing snapshot. Safe when the
+	// ledger may be missing or mis-dated around a closure.
+	ClosureSubsumeDrains ClosureScope = iota
+	// ClosureLedgerExact: the source's ledger is authoritative at closure —
+	// zero-tail flows are real dated exit legs (an exit's proceeds land on
+	// the zeroing day itself) and are KEPT, and no closure synthetic is
+	// booked, so the realized-vs-last-mark delta shows as return: an exit
+	// above the mark is a gain, one below a loss. A flow-less zeroing still
+	// reads as a full loss (with CapitalCallRisk keeping it tagged). Set live
+	// by carta / equityzen, whose double-entry ledgers date the exit proceeds
+	// exactly.
+	ClosureLedgerExact
 )
 
 // InceptionMode selects the window anchor.

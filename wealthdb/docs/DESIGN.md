@@ -1809,8 +1809,11 @@ the verified per-adapter flow table):
   yet reflect the account, so counting them too would double-count the capital and
   drive the chained TWR below −100%. A constituent already alive at `winFrom`
   keeps every in-window flow and gets no onboarding. The symmetric **closure**
-  case subsumes a closing constituent's drains across its zeroing gap into the
-  synthetic closure outflow. The netting interaction is handled by running
+  case: flows a closing constituent dates inside its terminal zero-carry tail
+  are subsumed as strays under the default per-source `ClosureScope` (the
+  zeroing value drop is the exit signal), while `ClosureLedgerExact` sources
+  (carta / equityzen) keep them as the real, dated exit proceeds
+  (RETURNS-NOTES.md §"Netting and closure"). The netting interaction is handled by running
   transfer/journal netting over the *full* candidate set (pre-debut legs included)
   **before** subsumption, so genuine internal pairs annihilate and only a
   constituent's own surviving pre-debut/closure capital is subsumed — never

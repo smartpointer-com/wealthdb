@@ -23,30 +23,27 @@ func OnboardingFlow(debutDay int64, firstValue, realDebutFunding float64) (Flow,
 }
 
 // ClosureFlow returns the synthetic closure outflow for an explicitly-closed
-// aggregate constituent, plus the day from which the constituent's carried-
-// forward spine contribution MUST be zeroed.
+// aggregate constituent, plus the day from which the constituent's spine
+// contribution is zeroed (zeroFrom accompanies every explicit closure,
+// injected flow or not, so value and flow stay atomic).
 //
-// The spine zeroing (zeroFrom) is returned whenever there is an explicit closure,
-// independent of whether a synthetic flow is injected — the carry-forward spine
-// keeps lastValue in V_end past the closure day, so the zeroing is mandatory.
-//
-// The synthetic outflow is deduped against any REAL closing capital-out near the
-// closure day (realClosing = magnitude of real withdrawal/transfer_out flows),
-// mirroring the onboarding side: the textbook "withdraw everything" closure books
-// a real −lastValue AND drives the snapshot to ~0, so injecting another
-// −lastValue would double-count and depress the closure-link return.
-// Only the unexplained remainder (lastValue − realClosing) is synthesized; ok is
-// false (no flow) when a real closing flow already covers it, or when there is no
-// explicit closure (closureDay==0). Staleness/dormancy must never reach here.
-func ClosureFlow(closureDay int64, lastValue, realClosing float64) (flow Flow, zeroFrom int64, ok bool) {
+// The synthetic books lastValue — the caller passes the value carried on the
+// day before the closure day, which is non-zero only when the account zeroes
+// on the spine's final day (inside a longer zero tail it is ~0 and ok is
+// false; the zeroing value drop is then the exit signal). Under
+// ClosureSubsumeDrains the caller subsumes the real closure-window flows, so
+// no near-day dedup is needed; under ClosureLedgerExact the caller keeps the
+// real flows and skips this synthesis entirely. ok is false when there is no
+// explicit closure (closureDay==0) or no value to book. Staleness/dormancy
+// must never reach here.
+func ClosureFlow(closureDay int64, lastValue float64) (flow Flow, zeroFrom int64, ok bool) {
 	if closureDay == 0 {
 		return Flow{}, 0, false
 	}
-	synthetic := lastValue - realClosing
-	if synthetic <= onboardingDedupTol {
-		return Flow{}, closureDay, false // real closing flow already explains the exit
+	if lastValue <= onboardingDedupTol {
+		return Flow{}, closureDay, false // nothing left to book at the boundary
 	}
-	return Flow{Day: closureDay, Amount: -synthetic}, closureDay, true
+	return Flow{Day: closureDay, Amount: -lastValue}, closureDay, true
 }
 
 // ZeroedValue is the atomic counterpart to ClosureFlow: a constituent's

@@ -428,3 +428,62 @@ func TestTaxonomyForKind(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotsEmitClosureMarker pins the exit-day zero snapshot: when the
+// LAST open deal exits, that date's batch replays the previous snapshot's
+// positions at zero value (silver.ClosureMarkerBatch) instead of dropping to
+// an empty batch, so gold registers the closure on the exit day itself.
+func TestSnapshotsEmitClosureMarker(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	if _, err := db.Exec(`
+        INSERT INTO dump_runs(snapshot_at) VALUES (1700000000);
+        INSERT INTO offerings(deal_external_id, kind, company_name, ticker_symbol, currency, payload) VALUES
+            ('d9', 'spv', 'Solo SPV', 'SOLO', 'USD', '{"deal":"d9"}');
+        INSERT INTO positions(deal_external_id, event_seq, as_of_date, event_type,
+            is_open, shares_held, cost_basis_remaining, market_value) VALUES
+            ('d9', 0, '2022-01-01', 'investment', 1, 100, 1000, 1000),
+            ('d9', 1, '2024-01-01', 'exit',       0,   0,    0,    0);
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var batches []canonical.SnapshotBatch
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, b)
+		if !more {
+			break
+		}
+	}
+	if len(batches) != 2 {
+		t.Fatalf("batches = %d, want the held snapshot and the closure marker", len(batches))
+	}
+	marker := batches[1]
+	if len(marker.Positions) != 1 || len(marker.Accounts) != 1 || len(marker.Instruments) != 1 {
+		t.Fatalf("marker shape = %d pos / %d accts / %d insts, want 1/1/1", len(marker.Positions), len(marker.Accounts), len(marker.Instruments))
+	}
+	p := marker.Positions[0]
+	if p.PositionKey != "d9" || p.MarketValue == nil || !p.MarketValue.IsZero() {
+		t.Errorf("marker position = %+v, want d9 at zero value", p)
+	}
+	if p.Quantity == nil || !p.Quantity.IsZero() {
+		t.Errorf("marker quantity = %v, want explicit zero (SPV share count)", p.Quantity)
+	}
+	if p.SnapshotAt != iso(t, "2024-01-01") {
+		t.Errorf("marker snapshot_at = %d, want the exit date", p.SnapshotAt)
+	}
+	if marker.Accounts[0].AccountExternalID != accountKey {
+		t.Errorf("marker account = %q, want the custody account", marker.Accounts[0].AccountExternalID)
+	}
+}

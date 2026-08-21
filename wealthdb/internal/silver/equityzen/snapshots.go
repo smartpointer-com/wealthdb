@@ -23,7 +23,9 @@ const accountKey = "equityzen"
 // (each deal's latest event on/before that date, keeping only the is_open
 // ones), which is what gold's as-of query reads (the latest snapshot_at per
 // source, all its positions). An exited deal drops out exactly at its exit
-// date.
+// date. When the LAST deal exits, the exit date gets the exit-day zero
+// snapshot instead (silver.ClosureMarkerBatch) — dropping to an empty batch
+// would leave the pre-exit marks carried forward as phantom value.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -32,12 +34,30 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	// The held→empty transition is tracked within the walked window, so the
+	// closure marker depends on ChangeWindow spanning the full content history
+	// (it does — see status.go): a window starting between the last held date
+	// and the exit date would miss the transition and re-emit nothing.
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
+	var lastHeld canonical.SnapshotBatch
+	prevHeld := false
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t)
 		if err != nil {
 			return nil, err
 		}
+		held := len(batch.Positions) > 0
+		switch {
+		case held:
+			lastHeld = batch
+		case prevHeld:
+			// The book just emptied: emit the exit-day zero snapshot so the
+			// value spine and the as-of holdings register the closure ON the
+			// exit date instead of carrying the last marks forward (an empty
+			// batch is invisible to gold's queries).
+			batch = silver.ClosureMarkerBatch(lastHeld, t, custodyAccount(t))
+		}
+		prevHeld = held
 		batches = append(batches, batch)
 	}
 	return silver.NewSnapshotStream(batches), nil
@@ -163,17 +183,21 @@ SELECT p.deal_external_id,
 	if !any {
 		return batch, nil // nothing held at t
 	}
+	batch.Accounts = append(batch.Accounts, custodyAccount(t))
+	return batch, nil
+}
 
-	// One account for the whole EquityZen book. management_style is
-	// self_directed: the holder chooses which interests to buy/hold/sell — we
-	// do not model the GP management happening inside each vehicle. The
-	// per-position asset_class (spv / private_fund) carries the vehicle
-	// distinction.
+// custodyAccount is the single EquityZen account's change record as of t.
+// management_style is self_directed: the holder chooses which interests to
+// buy/hold/sell — the GP management happening inside each vehicle is not
+// modelled. The per-position asset_class (spv / private_fund) carries the
+// vehicle distinction.
+func custodyAccount(t int64) canonical.AccountChange {
 	wrapper := canonical.TaxWrapperTaxablePersonal
 	style := canonical.ManagementStyleSelfDirected
 	name := "EquityZen"
 	usd := "USD"
-	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
+	return canonical.AccountChange{
 		AccountExternalID: accountKey,
 		AccountKind:       canonical.AccountKindCustody,
 		DisplayName:       &name,
@@ -182,6 +206,5 @@ SELECT p.deal_external_id,
 		ManagementStyle:   &style,
 		FirstSeenAt:       t,
 		LastSeenAt:        t,
-	})
-	return batch, nil
+	}
 }

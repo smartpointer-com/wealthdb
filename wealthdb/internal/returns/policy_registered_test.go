@@ -72,6 +72,9 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if !rp.CapitalCallRisk {
 			t.Errorf("%s: CapitalCallRisk must be set", k)
 		}
+		if rp.ClosureScope != returns.ClosureLedgerExact {
+			t.Errorf("%s: ClosureScope must be ledger-exact (the exit ledger is authoritative)", k)
+		}
 	}
 
 	// cointracking: crypto_partial, fiat deposit/withdrawal external, crypto

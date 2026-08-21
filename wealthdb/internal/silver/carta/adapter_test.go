@@ -539,3 +539,74 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 		t.Errorf("buy instrument = %v, want entity:300", buy.InstrumentExternalID)
 	}
 }
+
+// TestSnapshotsEmitClosureMarker pins the exit-day zero snapshot: when the
+// LAST holding exits, that date's batch replays the previous snapshot's
+// positions at zero value (silver.ClosureMarkerBatch) instead of dropping to
+// an empty batch — and an empty date BEFORE the first holding stays empty (no
+// pre-inception zero).
+func TestSnapshotsEmitClosureMarker(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	dEmpty := unixDate(t, "2022-06-01") // entity known, nothing held yet
+	dHeld := unixDate(t, "2023-01-01")
+	dExit := unixDate(t, "2026-02-02")
+	stmts := fmt.Sprintf(`
+INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, individual_id, payload)
+    VALUES (1700000000, 3, 'run', 'IND1', '{}');
+INSERT INTO entities(snapshot_at, entity_external_id, individual_id, is_fund_investment, legal_name, payload) VALUES
+    (%d, 100, 'IND1', 0, 'ACME Inc', '{}');
+INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_external_id,
+    quantity, cost, market_value, position_status, currency, payload) VALUES
+    (%d, 100, 'share', 1, 1000, 500, 5000, 'held',   '$', '{}'),
+    (%d, 100, 'share', 1, 1000, 500,    0, 'exited', '$', '{}');`,
+		dEmpty, dHeld, dExit)
+	if _, err := db.Exec(stmts); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var batches []canonical.SnapshotBatch
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, b)
+		if !more {
+			break
+		}
+	}
+	if len(batches) != 3 {
+		t.Fatalf("batches = %d, want pre-holding empty + held + closure marker", len(batches))
+	}
+	if len(batches[0].Positions) != 0 || len(batches[0].Accounts) != 0 {
+		t.Errorf("pre-holding batch must stay empty (no pre-inception zero): %+v", batches[0])
+	}
+	if len(batches[1].Positions) != 1 {
+		t.Fatalf("held batch positions = %d, want 1", len(batches[1].Positions))
+	}
+	marker := batches[2]
+	if len(marker.Positions) != 1 || len(marker.Accounts) != 1 || len(marker.Instruments) != 1 {
+		t.Fatalf("marker shape = %d pos / %d accts / %d insts, want 1/1/1", len(marker.Positions), len(marker.Accounts), len(marker.Instruments))
+	}
+	p := marker.Positions[0]
+	if p.PositionKey != "entity:100" || p.MarketValue == nil || !p.MarketValue.IsZero() {
+		t.Errorf("marker position = %+v, want entity:100 at zero value", p)
+	}
+	if p.Quantity == nil || !p.Quantity.IsZero() {
+		t.Errorf("marker quantity = %v, want explicit zero (share count existed)", p.Quantity)
+	}
+	if p.SnapshotAt != dExit {
+		t.Errorf("marker snapshot_at = %d, want the exit date %d", p.SnapshotAt, dExit)
+	}
+	if marker.Accounts[0].AccountExternalID != "IND1" {
+		t.Errorf("marker account = %q, want the custody account", marker.Accounts[0].AccountExternalID)
+	}
+}

@@ -530,7 +530,11 @@ widens its change window to the content tables' `snapshot_at` span (not just
 the **forward-filled** state — every position's latest delta
 `snapshot_at <= that date`, dropping `position_status='exited'` — so a complete
 per-source snapshot reaches gold's as-of query and an exited holding drops out
-exactly at its disposition date.
+exactly at its disposition date. When the LAST holding exits, the disposition
+date instead gets the exit-day zero snapshot (`silver.ClosureMarkerBatch` in
+the gold adapter): the previous snapshot's positions replayed at zero value,
+so gold registers the closure on the exit day itself instead of carrying the
+pre-exit marks forward as phantom value.
 
 ### 6.1 Transactions — double-entry pairs on the custody account
 

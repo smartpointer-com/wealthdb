@@ -21,6 +21,9 @@ import (
 // lot's latest delta on/before that date, keep only the `held` ones, then
 // aggregate them per company into a single position. An exited holding drops
 // out exactly at its disposition date; a full portfolio exists at every date.
+// When the LAST holding exits, the disposition date gets the exit-day zero
+// snapshot instead (silver.ClosureMarkerBatch) — dropping to an empty batch
+// would leave the pre-exit marks carried forward as phantom value.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -37,12 +40,30 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	// The held→empty transition is tracked within the walked window, so the
+	// closure marker depends on ChangeWindow spanning the full content history
+	// (it does — see status.go): a window starting between the last held date
+	// and the exit date would miss the transition and re-emit nothing.
 	batches := make([]canonical.SnapshotBatch, 0, len(times))
+	var lastHeld canonical.SnapshotBatch
+	prevHeld := false
 	for _, t := range times {
 		batch, err := c.buildBatch(ctx, t, meta, acct)
 		if err != nil {
 			return nil, err
 		}
+		held := len(batch.Positions) > 0
+		switch {
+		case held:
+			lastHeld = batch
+		case prevHeld:
+			// The portfolio just emptied: emit the exit-day zero snapshot so
+			// the value spine and the as-of holdings register the closure ON
+			// the disposition date instead of carrying the last marks forward
+			// (an empty batch is invisible to gold's queries).
+			batch = silver.ClosureMarkerBatch(lastHeld, t, custodyAccount(acct, t))
+		}
+		prevHeld = held
 		batches = append(batches, batch)
 	}
 	return silver.NewSnapshotStream(batches), nil
@@ -63,6 +84,29 @@ const accountKeyFallback = "carta"
 // instrument (one position per security, brokerage-style).
 func instrumentID(entityID int64) string { return "entity:" + strconv.FormatInt(entityID, 10) }
 func positionKey(entityID int64) string  { return instrumentID(entityID) }
+
+// custodyAccount is the Carta login's one account's change record as of t.
+// management_style is an account-level field (the canonical position carries
+// none), so the GP-managed fund vs equity vs pre-conversion SAFE distinction
+// rides on each position's (asset_class, vehicle) pair ((private_equity, fund)
+// vs (private_equity, stock) vs (private_debt, convertible_note)), not here;
+// the account is self-directed — the holder controls what the portfolio holds.
+func custodyAccount(acct string, t int64) canonical.AccountChange {
+	wrapper := canonical.TaxWrapperTaxablePersonal
+	style := canonical.ManagementStyleSelfDirected
+	usd := "USD"
+	name := "Carta"
+	return canonical.AccountChange{
+		AccountExternalID: acct,
+		AccountKind:       canonical.AccountKindCustody,
+		TaxWrapper:        &wrapper,
+		ManagementStyle:   &style,
+		BaseCurrency:      &usd,
+		DisplayName:       &name,
+		FirstSeenAt:       t,
+		LastSeenAt:        t,
+	}
+}
 
 // accountKey is the gold account_external_id for the single Carta account: the
 // individual-portfolio id (falling back to the firm id, then a constant). All
@@ -185,27 +229,7 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	// One account for the whole Carta portfolio. management_style is an
-	// account-level field (the canonical position carries none), so the
-	// GP-managed fund vs equity vs pre-conversion SAFE distinction rides on
-	// each position's (asset_class, vehicle) pair ((private_equity, fund) vs
-	// (private_equity, stock) vs (private_debt, convertible_note)), not here;
-	// the account is self-directed — the holder controls what the portfolio
-	// holds.
-	wrapper := canonical.TaxWrapperTaxablePersonal
-	style := canonical.ManagementStyleSelfDirected
-	usd := "USD"
-	name := "Carta"
-	batch.Accounts = append(batch.Accounts, canonical.AccountChange{
-		AccountExternalID: acct,
-		AccountKind:       canonical.AccountKindCustody,
-		TaxWrapper:        &wrapper,
-		ManagementStyle:   &style,
-		BaseCurrency:      &usd,
-		DisplayName:       &name,
-		FirstSeenAt:       t,
-		LastSeenAt:        t,
-	})
+	batch.Accounts = append(batch.Accounts, custodyAccount(acct, t))
 
 	for _, eid := range ids {
 		info := meta[eid]

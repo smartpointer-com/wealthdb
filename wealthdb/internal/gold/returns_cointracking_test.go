@@ -120,8 +120,9 @@ func TestCointrackingOnboardNoneKeepsLateDebutDeposit(t *testing.T) {
 
 // TestCointrackingDeadCoinClosureSurvivesOnboardNone proves genuine drain-to-zero
 // losses survive OnboardNone: a wallet draining to ~0 while STILL emitting a real
-// (zeroing) snapshot books a ClosureFlow outflow (closureDay != 0). OnboardNone
-// only suppresses synthetic INFLOWS at debut; the closure path is untouched.
+// (zeroing) snapshot surfaces the loss through its value series — no flow is
+// fabricated. OnboardNone only suppresses synthetic INFLOWS at debut; the
+// closure treatment of the zeroing drop is untouched.
 func TestCointrackingDeadCoinClosureSurvivesOnboardNone(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "ctdead", "cointracking")
@@ -135,8 +136,8 @@ func TestCointrackingDeadCoinClosureSurvivesOnboardNone(t *testing.T) {
 	seedAcct(t, db, ctx, "ctdead", "ANCHOR", canonical.AccountKindBrokerage, nil,
 		[]snap{{wStart, 10000}, {mid, 10000}, {end, 10000}}, nil)
 	// DEADCOIN: alive from wStart worth 2000, then the token goes to ~0 (a real
-	// zeroing snapshot at end) — a genuine total loss, NOT a feed drop. The closure
-	// path books a ClosureFlow outflow (closureDay != 0) regardless of OnboardNone.
+	// zeroing snapshot at end) — a genuine total loss, NOT a feed drop, and the
+	// value series carries the whole story regardless of OnboardNone.
 	seedAcct(t, db, ctx, "ctdead", "DEADCOIN", canonical.AccountKindBrokerage, nil,
 		[]snap{{wStart, 2000}, {mid, 2000}, {end, 0}}, nil)
 
@@ -148,10 +149,10 @@ func TestCointrackingDeadCoinClosureSurvivesOnboardNone(t *testing.T) {
 	if !ok {
 		t.Fatal("no ctdead source row")
 	}
-	// No fiat flows crossed the boundary in-window: net_flow is 0. The closure
-	// outflow is a synthetic zeroing marker (net_flow is the sum of the real flow
-	// set; the closure flow's sign makes it net to 0 against nothing else here) —
-	// the point is the drain-to-zero LOSS surfaces in TWR, not a phantom inflow.
+	// No fiat flows crossed the boundary in-window and nothing is synthesized
+	// (the zero-carry tail ends past the window, and its interior value is ~0
+	// anyway), so net_flow is exactly 0 — the drain-to-zero LOSS surfaces in
+	// TWR through the value series, never as a phantom flow.
 	if nf := netFlowOf(t, rows, "ctdead"); math.Abs(nf) > 1e-6 {
 		t.Errorf("net_flow = %.2f, want 0 (no in-window fiat flows)", nf)
 	}

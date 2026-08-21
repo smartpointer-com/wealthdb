@@ -96,7 +96,12 @@ source, so for every event date the adapter emits a **complete forward-filled**
 snapshot: each lot's latest delta on/before that date, **dropping** those whose
 latest `position_status` is `exited`, then **aggregating the surviving lots
 into one position per company**. An exited holding disappears exactly at its
-disposition date, with no full-portfolio re-storage in silver.
+disposition date, with no full-portfolio re-storage in silver. When the LAST
+holding exits, the disposition date instead carries the **exit-day zero
+snapshot** (`silver.ClosureMarkerBatch`): the previous snapshot's positions
+replayed at zero value, so gold's value spine and as-of holdings register the
+closure on the exit day itself rather than carrying the pre-exit marks
+forward as phantom value.
 
 **Cap-table** (the held `securities` lots of one company → one position, whose
 (`asset_class`, `vehicle`) pair is derived from the aggregated security types —

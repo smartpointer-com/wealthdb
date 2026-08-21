@@ -428,7 +428,10 @@ func (a *accountData) valueAt(day int64) (float64, bool) {
 
 // closureDay returns the explicit-closure day (the account's value went to ~0)
 // or 0 when it merely stopped updating (staleness must NOT synthesize a
-// divestment).
+// divestment). The daily carry-forward spine extends a zeroing row into a flat
+// zero tail reaching the spine's end, so this is the tail's END: the closure
+// machinery engages only when the window reaches it, and the subsumption
+// window (lastNonzeroDay, closureDay] spans the whole tail.
 func (a *accountData) closureDay() int64 {
 	if len(a.series) == 0 {
 		return 0
@@ -441,11 +444,12 @@ func (a *accountData) closureDay() int64 {
 }
 
 // lastNonzeroDay returns the day of the last carry-forward value that is still
-// non-zero — the day on which the synthetic closure outflow's lastValue was
-// established. The value is flat (carried) from here to the zeroing closure day,
-// so a closing constituent's drains dated after this day have no visible ΔV and
-// are subsumed by the closure outflow (the closure mirror of pre-debut). Returns
-// the first day for an all-zero series.
+// non-zero — the day before the daily spine drops into its terminal zero tail.
+// A closing constituent's flows dated after this day land where the series
+// already reads ~0 (no visible ΔV), so under the default ClosureScope they are
+// subsumed as strays (the closure mirror of pre-debut); ClosureLedgerExact
+// keeps them as the real exit legs. Returns the first day for an all-zero
+// series.
 func (a *accountData) lastNonzeroDay() int64 {
 	for i := len(a.series) - 1; i >= 0; i-- {
 		if math.Abs(a.series[i].val) >= valueTol {

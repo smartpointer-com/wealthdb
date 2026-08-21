@@ -486,7 +486,12 @@ cap-calls stay silver-only).
 **Exit representation.** Forward-fill drops an exited deal from snapshots at
 its exit date (its latest event is the `is_open=0` exit), so exited
 positions disappear from the as-of holdings — matching carta/angellist and
-the public-equity convention (no tombstone row).
+the public-equity convention (no tombstone row). The one exception is the
+LAST open deal: dropping it would leave an empty batch, which is invisible
+to gold, so the exit date instead gets the exit-day zero snapshot
+(`silver.ClosureMarkerBatch` in the gold adapter) — the previous snapshot's
+positions replayed at zero value, registering the closure on the exit day
+itself instead of carrying the pre-exit marks forward as phantom value.
 
 ### Verification
 
