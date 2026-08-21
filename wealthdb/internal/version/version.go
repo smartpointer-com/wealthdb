@@ -14,7 +14,7 @@ import (
 // may override at link time:
 //
 //	go build -ldflags '-X github.com/ptu-gh/wealthdb/wealthdb/internal/version.Version=v0.2.0'
-var Version = "v0.1.1"
+var Version = "v0.1.2"
 
 // BuildInfo is the binary's VCS-derived build identity.
 //
