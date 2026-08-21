@@ -1,0 +1,35 @@
+#!/bin/sh
+# wealthdb-go — run a `go` subcommand inside the wealthdb container.
+# Argv is handed to `go` verbatim. See docs/DESIGN.md §12.5.
+#
+# The image's toolchain is the only Go that ever touches this module:
+# the repo is bind-mounted read-write, so `go get -u` / `go mod tidy`
+# write go.mod and go.sum from inside the container, and the image
+# ships GOTOOLCHAIN=local. A dependency needing a newer Go therefore
+# fails loudly here ("go.mod requires go >= X; GOTOOLCHAIN=local")
+# instead of raising the `go` directive past the version the Dockerfile
+# pins — which would leave the module graph unbuildable in the image
+# that has to build it. Whatever Go the host happens to have is
+# irrelevant to the result.
+set -eu
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="wealthdb:latest"
+# Go toolchain caches under the XDG cache dir, namespaced with the
+# rest of the fleet's caches (debug dirs, startupcache).
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
+
+mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
+
+exec docker run --rm \
+    -u "$(id -u):$(id -g)" \
+    -e HOME="$HOME" \
+    -e GOCACHE="$CACHE/go-build" \
+    -e GOMODCACHE="$CACHE/go-mod" \
+    -e GOPATH="$CACHE/gopath" \
+    -v "$REPO:$REPO" \
+    -v "$CACHE:$CACHE" \
+    -w "$REPO" \
+    --entrypoint go \
+    "$IMAGE" \
+    "$@"

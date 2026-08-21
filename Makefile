@@ -32,6 +32,7 @@ COLLECTORS := $(sort $(notdir $(patsubst %/.,%,$(wildcard collectors/*/.))))
 
 WEALTHDB      := wealthdb/wealthdb
 WEALTHDB_TEST := wealthdb/wealthdb-test
+WEALTHDB_GO   := wealthdb/wealthdb-go
 
 # Interpreter for the host-venv collectors (schwab-api, ubs-psn, fred,
 # manual, svb). Their
@@ -274,7 +275,8 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # `make update` brings every layer of the toolchain forward in one shot:
 #
 #   - pip + project deps in every host venv (schwab-api, ubs-psn, …)
-#   - Go modules in wealthdb/ (go get -u all + go mod tidy)
+#   - Go modules in wealthdb/ (go get -u + go mod tidy, run by the
+#     image's own toolchain — see update-wealthdb)
 #   - Shared Docker base images, rebuilt with --pull so the underlying
 #     OS layers also refresh
 #
@@ -306,9 +308,19 @@ update-venvs:
 		"$$venv/bin/python" -m pip install --upgrade -e shared/collectorkit; \
 	done
 
+# The module graph is refreshed by the IMAGE's Go toolchain, never the
+# host's: build first so the pinned toolchain exists, resolve against it,
+# then rebuild so the refreshed modules land in the build cache. The image
+# ships GOTOOLCHAIN=local, so a dependency that needs a newer Go fails here
+# with "go.mod requires go >= X" instead of raising the `go` directive past
+# what wealthdb/Dockerfile pins — the fix for that is to bump the base image,
+# which is the single place the toolchain version is declared.
 update-wealthdb:
-	@echo "==> update wealthdb/ go modules"
-	@cd wealthdb && go get -u ./... && go mod tidy
+	@echo "==> rebuild wealthdb image (its Go toolchain resolves the modules)"
+	$(WEALTHDB) build
+	@echo "==> update wealthdb/ go modules inside the image"
+	$(WEALTHDB_GO) get -u ./...
+	$(WEALTHDB_GO) mod tidy
 	@echo "==> rebuild wealthdb image so the refreshed modules land in the build cache"
 	$(WEALTHDB) build
 

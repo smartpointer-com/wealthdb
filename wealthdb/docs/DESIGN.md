@@ -1948,7 +1948,8 @@ wealthdb/
 ├── README.md                       — user-facing usage
 ├── Dockerfile                      — single-stage; Go toolchain + binary in one image (ENTRYPOINT is the binary)
 ├── wealthdb                        — host-side wrapper around `docker run` (production binary)
-├── wealthdb-test                   — host-side wrapper around `docker run go test ...` (§12.5)
+├── wealthdb-go                     — host-side wrapper around `docker run go ...` (§12.5)
+├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
 │   ├── DESIGN.md · RETURNS-NOTES.md · TAXONOMY.md
@@ -2135,16 +2136,19 @@ unchanged. Exit code is `go test`'s exit code.
 
 #### Wrapper shape
 
+`./wealthdb-test` is a thin alias over `./wealthdb-go`, which owns the
+container geometry and runs ANY `go` subcommand in the image:
+
 ```sh
 #!/bin/sh
-# wealthdb-test — run `go test` inside the wealthdb container
+# wealthdb-go — run a `go` subcommand inside the wealthdb container
 set -eu
 REPO="$(cd "$(dirname "$0")" && pwd)"
 
 # Persist Go's caches across invocations so incremental builds
 # stay fast — bind-mount the host's cache dirs (or dedicated
 # named-volumes; the host paths are simpler to inspect).
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go-test"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
 mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 
 docker run --rm \
@@ -2158,12 +2162,23 @@ docker run --rm \
     -w "$REPO" \
     --entrypoint go \
     wealthdb:latest \
-    test "$@"
+    "$@"
 ```
+
+#### The image toolchain owns the module graph
+
+The repo is mounted read-write, so `go get -u` / `go mod tidy` run
+through this wrapper write `go.mod` and `go.sum` from inside the
+container — which is how `make update` refreshes them. The image ships
+`GOTOOLCHAIN=local`, so a dependency requiring a newer Go fails with
+`go.mod requires go >= X` instead of raising the `go` directive past the
+version `wealthdb/Dockerfile` pins; the base-image tag stays the single
+declaration of the toolchain version, and a host Go (any version, or
+none) cannot influence the result.
 
 #### One image, not two
 
-`./wealthdb-test` uses the same `wealthdb:latest` image as the
+`./wealthdb-go` uses the same `wealthdb:latest` image as the
 production wrapper, just with `--entrypoint go`. The single image
 carries the full Go toolchain so `go test` works against the
 mounted source tree; no separate builder image is needed.
@@ -2171,15 +2186,16 @@ mounted source tree; no separate builder image is needed.
 #### Cache locations
 
 Go's build cache (`GOCACHE`) and module cache (`GOMODCACHE`) live
-on the host under `${XDG_CACHE_HOME:-~/.cache}/wealthdb/go-test/` so that incremental
+on the host under `${XDG_CACHE_HOME:-~/.cache}/wealthdb/go/` so that incremental
 re-runs are fast across container restarts. The cache dir is
 isolated from any host-side Go toolchain — running tests via the
 wrapper never pollutes a host `$GOPATH`.
 
 #### No host Go required
 
-A user with only Docker installed can run the entire test suite
-end-to-end. This is the same contract as `./wealthdb` itself.
+A user with only Docker installed can run the entire test suite — and
+`make update` — end-to-end. This is the same contract as `./wealthdb`
+itself.
 
 ## 13. Open questions / future work
 

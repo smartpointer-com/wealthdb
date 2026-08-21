@@ -151,8 +151,11 @@ root, no `cd`-ing into subdirectories:
 Underneath, each component also builds directly:
 
 - **Gold engine** (`wealthdb/`): `./wealthdb build` then
-  `./wealthdb <subcommand>`; tests via `./wealthdb-test ./...`
-  (or `go test ./...` with a host toolchain).
+  `./wealthdb <subcommand>`; tests via `./wealthdb-test ./...`, any
+  other Go command via `./wealthdb-go <subcommand>`. Both run the
+  image's toolchain — no host Go, and `make update` resolves the
+  module graph there too, so the Dockerfile's base-image tag is the
+  only place the Go version is declared.
 - **Host-venv collectors** (a `requirements.txt`, no Dockerfile):
   `.venv/bin/python {download,load}.py` (some are load-only — just
   `load.py`).

@@ -150,6 +150,7 @@ matches both sides.
 ./wealthdb build               # build the wealthdb:latest image
 ./wealthdb <subcommand> ...    # run wealthdb in the container
 ./wealthdb-test ./...          # run `go test` inside the container
+./wealthdb-go mod tidy         # any `go` subcommand, same toolchain
 ```
 
 See [docs/DESIGN.md §12](docs/DESIGN.md) for the container model

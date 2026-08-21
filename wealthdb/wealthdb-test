@@ -1,25 +1,7 @@
 #!/bin/sh
 # wealthdb-test — run `go test` inside the wealthdb container.
 # Argv is handed to `go test` verbatim. See docs/DESIGN.md §12.5.
+# Thin alias over wealthdb-go, which owns the container geometry.
 set -eu
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="wealthdb:latest"
-# Go toolchain caches under the XDG cache dir, namespaced with the
-# rest of the fleet's caches (debug dirs, startupcache).
-CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go-test"
-
-mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
-
-exec docker run --rm \
-    -u "$(id -u):$(id -g)" \
-    -e HOME="$HOME" \
-    -e GOCACHE="$CACHE/go-build" \
-    -e GOMODCACHE="$CACHE/go-mod" \
-    -e GOPATH="$CACHE/gopath" \
-    -v "$REPO:$REPO" \
-    -v "$CACHE:$CACHE" \
-    -w "$REPO" \
-    --entrypoint go \
-    "$IMAGE" \
-    test "$@"
+exec "$(cd "$(dirname "$0")" && pwd)/wealthdb-go" test "$@"
