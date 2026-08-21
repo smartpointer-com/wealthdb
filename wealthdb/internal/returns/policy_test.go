@@ -58,7 +58,7 @@ func TestBankFlowPolicyShape(t *testing.T) {
 // TestPolicyKnobDefaults pins the opt-in policy knobs: OnboardNone is a
 // distinct enum value appended after the existing scopes (so their numeric
 // values are preserved), and DefaultReturnsPolicy leaves OnboardScope ==
-// OnboardPerConstituent, AccountsGrainMeaningless == false, and
+// OnboardPerConstituent, AccountsGrain == AccountsGrainNormal, and
 // CapitalCallRisk == false — a strict no-op for every source that doesn't
 // set them.
 func TestPolicyKnobDefaults(t *testing.T) {
@@ -80,8 +80,8 @@ func TestPolicyKnobDefaults(t *testing.T) {
 	if dp.OnboardScope != OnboardPerConstituent {
 		t.Errorf("default OnboardScope = %d, want OnboardPerConstituent", dp.OnboardScope)
 	}
-	if dp.AccountsGrainMeaningless {
-		t.Error("default AccountsGrainMeaningless must be false")
+	if dp.AccountsGrain != AccountsGrainNormal {
+		t.Errorf("default AccountsGrain = %d, want AccountsGrainNormal", dp.AccountsGrain)
 	}
 	if dp.CapitalCallRisk {
 		t.Error("default CapitalCallRisk must be false")

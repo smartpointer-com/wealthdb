@@ -89,6 +89,9 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if ct.Flow.IsExternal(canonical.TxKindTransferIn) || ct.Flow.IsExternal(canonical.TxKindTransferOut) {
 		t.Error("cointracking: crypto transfer legs must be excluded")
 	}
+	if ct.AccountsGrain != returns.AccountsGrainBlanked {
+		t.Error("cointracking: AccountsGrain must be blanked (per-wallet rows are noise, but shown)")
+	}
 
 	// fidelity: bank set — journal is its only capital-movement kind.
 	fid, _ := returns.ReturnsPolicyFor("fidelity")
@@ -131,8 +134,8 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	}
 
 	// The cash-conduit deposit banks: complete ledgers on the shared bank set,
-	// but a single deposit account is not a return-bearing unit, so the
-	// accounts grain is blanked.
+	// but the accounts are pure plumbing — no rows of their own anywhere,
+	// values and flows still aggregate.
 	for _, k := range []string{"chase", "firstcitizens", "raiffeisen_at"} {
 		rp, _ := returns.ReturnsPolicyFor(k)
 		if !rp.Flow.Known {
@@ -144,8 +147,8 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if !rp.Flow.IsExternal(canonical.TxKindDeposit) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal) {
 			t.Errorf("%s: deposit/withdrawal must be external", k)
 		}
-		if !rp.AccountsGrainMeaningless {
-			t.Errorf("%s: AccountsGrainMeaningless must be set (cash-conduit accounts)", k)
+		if rp.AccountsGrain != returns.AccountsGrainHidden {
+			t.Errorf("%s: AccountsGrain must be hidden (cash plumbing)", k)
 		}
 	}
 

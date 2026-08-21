@@ -16,10 +16,10 @@ capture (§3), the phase roadmap (§4), and the handoff checklist (§5).
   scope note for the rationale and the cards-as-future-expansion path.
 - **Conduit accounts.** The cash accounts are conduits — cash passes
   through them on its way to and from other sources. Their transactions
-  matter for cross-source money-flow tracking; per-account returns are
-  meaningless and are blanked by the registered ReturnsPolicy
-  (`internal/silver/chase/policy.go`, `AccountsGrainMeaningless`); the
-  coarse grains keep the accounts and count their flows — see §4.
+  matter for cross-source money-flow tracking; their own return rows are
+  noise and are hidden by the registered ReturnsPolicy
+  (`internal/silver/chase/policy.go`, `AccountsGrainHidden`); the coarse
+  grains keep the balances and count the flows — see §4.
   (Credit cards, if scoped in, are **not** conduits — they are
   revolving-credit liabilities, a different `account_kind` with
   different endpoints and no conduit-returns rationale.)
@@ -497,16 +497,17 @@ scoped in (see below), they map to a liability `account_kind` (revolving
 credit), not cash.
 
 **Returns: conduit accounts.** The Chase **cash** accounts are conduits
-— their transactions feed cross-source money-flow tracking, but a single
-deposit account's own TWR/MWR is noise. Resolved by the registered
-ReturnsPolicy (`internal/silver/chase/policy.go`): the bank flow set with
-`AccountsGrainMeaningless = true`, which blanks the accounts-grain
-TWR/MWR (values and rows stay) while the source/global grains keep the
-accounts and count their external flows. No `returns_exclude` config is
-involved — that block (docs/DESIGN.md §5.5) exists for another person's
-holdings in a shared login and would drop the accounts and their flows
-from coarse grains entirely; per-deployment policy adjustments go
-through `returns_policy_overrides` (docs/DESIGN.md §5.6) instead.
+— their transactions feed cross-source money-flow tracking, but their own
+return rows are noise. Resolved by the registered ReturnsPolicy
+(`internal/silver/chase/policy.go`): the bank flow set with
+`AccountsGrain = AccountsGrainHidden`, which emits no rows for them at
+any grain while the coarse aggregates keep their balances and count
+their external flows (transfer legs against tracked sources cancel). No
+`returns_exclude` config is involved — that block (docs/DESIGN.md §5.5)
+exists for another person's holdings in a shared login and would drop
+the accounts and their flows from coarse grains entirely; per-deployment
+adjustments go through `returns_policy_overrides` / `returns_hide`
+(docs/DESIGN.md §5.6-§5.7) instead.
 
 ### Scope decision: credit cards — deposit-only
 

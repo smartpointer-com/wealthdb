@@ -85,6 +85,16 @@ type Config struct {
 	// dimension is future work). Absent ⇒ nothing excluded. See docs/DESIGN.md
 	// §5.5 and internal/gold groupAccounts.
 	ReturnsExclude *ReturnsExclude `json:"returns_exclude,omitempty"`
+	// ReturnsHide suppresses accounts' or portfolios' OWN return rows at
+	// every grain while their values and flows keep contributing to every
+	// aggregate — the display mirror of ReturnsExclude (which removes an
+	// entity from the coarse-grain math instead). Same grain-keyed shape as
+	// returns_exclude. Use it for plumbing whose flows matter but whose own
+	// return is noise (per-source policies already hide whole conduit
+	// sources; this block covers deployment-specific ids). Absent ⇒ nothing
+	// hidden beyond policy. See docs/DESIGN.md §5.7 and internal/gold
+	// entityHidden.
+	ReturnsHide *ReturnsHide `json:"returns_hide,omitempty"`
 	// ReturnsPolicyOverrides adjusts a silver source's registered
 	// ReturnsPolicy, keyed by silver_sources[].id (NOT adapter kind — two
 	// sources sharing an adapter override independently). Partial: only the
@@ -94,8 +104,8 @@ type Config struct {
 	// escape hatch for a deployment whose data completeness differs from
 	// the registered default (e.g. pin a flow-counting source back to
 	// "nav_only" when its silver carries no transaction history).
-	// `accounts_grain_meaningless` blanks (true) or restores (false) the
-	// per-account TWR/MWR rows. Absent block ⇒ registered policies apply
+	// `accounts_grain` sets the per-account display mode ("normal" |
+	// "blanked" | "hidden"). Absent block ⇒ registered policies apply
 	// unchanged. See docs/DESIGN.md §5.6 and internal/gold newAccountData.
 	ReturnsPolicyOverrides map[string]*ReturnsPolicyOverride `json:"returns_policy_overrides,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
@@ -353,6 +363,24 @@ type ReturnsExclude struct {
 	Accounts   map[string][]string `json:"accounts,omitempty"`   // source_id -> [account_external_id...]
 }
 
+// ReturnsHide is the `returns_hide` block of wealthdb.cfg — the display
+// mirror of `returns_exclude`: listed accounts / portfolios keep contributing
+// their values and flows to every aggregate, but emit no rows of their own at
+// any grain. Same shape and keys as ReturnsExclude.
+type ReturnsHide struct {
+	Portfolios map[string][]string `json:"portfolios,omitempty"` // source_id -> [portfolio_external_id...]
+	Accounts   map[string][]string `json:"accounts,omitempty"`   // source_id -> [account_external_id...]
+}
+
+// Sets turns the hide lists into source-keyed membership sets the returns
+// engine tests against. A nil receiver returns two nil maps.
+func (h *ReturnsHide) Sets() (portfolios, accounts map[string]map[string]bool) {
+	if h == nil {
+		return nil, nil
+	}
+	return excludeSets(h.Portfolios), excludeSets(h.Accounts)
+}
+
 // Sets turns the exclude lists into source-keyed membership sets the returns
 // engine tests against. A nil receiver returns two nil maps.
 func (e *ReturnsExclude) Sets() (portfolios, accounts map[string]map[string]bool) {
@@ -385,9 +413,10 @@ type ReturnsPolicyOverride struct {
 	// FlowRegime names the flow-classification regime that replaces the
 	// registered one: "flow_complete", "crypto_partial", or "nav_only".
 	FlowRegime *string `json:"flow_regime,omitempty"`
-	// AccountsGrainMeaningless blanks (true) or restores (false) the
-	// accounts-grain TWR/MWR rows.
-	AccountsGrainMeaningless *bool `json:"accounts_grain_meaningless,omitempty"`
+	// AccountsGrain names the per-account display mode that replaces the
+	// registered one: "normal" (full rows), "blanked" (values shown, TWR/MWR
+	// n/a), or "hidden" (no rows anywhere; values and flows still aggregate).
+	AccountsGrain *string `json:"accounts_grain,omitempty"`
 }
 
 // Regime returns the parsed FlowRegime and whether one is set. Only call
@@ -402,6 +431,19 @@ func (o *ReturnsPolicyOverride) Regime() (returns.Regime, bool) {
 		return 0, false
 	}
 	return r, true
+}
+
+// AccountsGrainMode returns the parsed AccountsGrain display mode and whether
+// one is set, under the same only-after-Validate contract as Regime.
+func (o *ReturnsPolicyOverride) AccountsGrainMode() (returns.AccountsGrainMode, bool) {
+	if o == nil || o.AccountsGrain == nil {
+		return 0, false
+	}
+	m, err := returns.ParseAccountsGrainMode(*o.AccountsGrain)
+	if err != nil {
+		return 0, false
+	}
+	return m, true
 }
 
 // Load reads and parses the JSON config at the given path,

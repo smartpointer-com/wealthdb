@@ -212,30 +212,45 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// returns_exclude: source ids must name a declared silver source; listed
-	// portfolio/account ids must be non-empty. Portfolio/account ids can't be
-	// checked against gold here (no DB access at load).
+	// returns_exclude / returns_hide: source ids must name a declared silver
+	// source; listed portfolio/account ids must be non-empty. Portfolio/
+	// account ids can't be checked against gold here (no DB access at load).
 	if e := c.ReturnsExclude; e != nil {
-		if err := validateExcludeNested("portfolios", e.Portfolios, seenIDs); err != nil {
+		if err := validateIDListNested("returns_exclude", "portfolios", e.Portfolios, seenIDs); err != nil {
 			return err
 		}
-		if err := validateExcludeNested("accounts", e.Accounts, seenIDs); err != nil {
+		if err := validateIDListNested("returns_exclude", "accounts", e.Accounts, seenIDs); err != nil {
+			return err
+		}
+	}
+	if h := c.ReturnsHide; h != nil {
+		if err := validateIDListNested("returns_hide", "portfolios", h.Portfolios, seenIDs); err != nil {
+			return err
+		}
+		if err := validateIDListNested("returns_hide", "accounts", h.Accounts, seenIDs); err != nil {
 			return err
 		}
 	}
 
 	// returns_policy_overrides: source ids must name a declared silver
-	// source; flow_regime must name a known regime. An empty or null
-	// override object is a no-op, not an error.
+	// source; flow_regime and accounts_grain must name known values. An
+	// empty or null override object is a no-op, not an error.
 	for sourceID, ov := range c.ReturnsPolicyOverrides {
 		if !seenIDs[sourceID] {
 			return fmt.Errorf("config: returns_policy_overrides[%q]: no silver_sources[].id matches", sourceID)
 		}
-		if ov == nil || ov.FlowRegime == nil {
+		if ov == nil {
 			continue
 		}
-		if _, err := returns.ParseRegime(*ov.FlowRegime); err != nil {
-			return fmt.Errorf("config: returns_policy_overrides[%q].flow_regime: %w", sourceID, err)
+		if ov.FlowRegime != nil {
+			if _, err := returns.ParseRegime(*ov.FlowRegime); err != nil {
+				return fmt.Errorf("config: returns_policy_overrides[%q].flow_regime: %w", sourceID, err)
+			}
+		}
+		if ov.AccountsGrain != nil {
+			if _, err := returns.ParseAccountsGrainMode(*ov.AccountsGrain); err != nil {
+				return fmt.Errorf("config: returns_policy_overrides[%q].accounts_grain: %w", sourceID, err)
+			}
 		}
 	}
 
@@ -269,16 +284,17 @@ func validateInceptionNested(grain string, m map[string]map[string]string, seenI
 	return nil
 }
 
-// validateExcludeNested checks one grain map of returns_exclude (portfolios or
-// accounts): every source id must be declared, every listed id non-empty.
-func validateExcludeNested(grain string, m map[string][]string, seenIDs map[string]bool) error {
+// validateIDListNested checks one grain map of an id-list block
+// (returns_exclude / returns_hide, portfolios or accounts): every source id
+// must be declared, every listed id non-empty.
+func validateIDListNested(block, grain string, m map[string][]string, seenIDs map[string]bool) error {
 	for sourceID, ids := range m {
 		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: returns_exclude.%s[%q]: no silver_sources[].id matches", grain, sourceID)
+			return fmt.Errorf("config: %s.%s[%q]: no silver_sources[].id matches", block, grain, sourceID)
 		}
 		for _, id := range ids {
 			if id == "" {
-				return fmt.Errorf("config: returns_exclude.%s[%q]: empty external-id in list", grain, sourceID)
+				return fmt.Errorf("config: %s.%s[%q]: empty external-id in list", block, grain, sourceID)
 			}
 		}
 	}

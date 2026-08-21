@@ -16,9 +16,10 @@ import (
 //     within-entity crypto transfer_in legs already excluded from flows (their
 //     fiat was counted once at the exchange), so per-constituent onboarding would
 //     book a phantom +debut-value inflow and drag the aggregate TWR negative.
-//   - AccountsGrainMeaningless=true: per-wallet (accounts-grain) return rows are
-//     meaningless (coins sweep between wallets on arrival); the portfolios grain
-//     and up stay valid, so returns are reported per portfolio and above.
+//   - AccountsGrain=Blanked: per-wallet (accounts-grain) return rows are
+//     meaningless (coins sweep between wallets on arrival), so they show values
+//     with TWR/MWR blanked; the portfolios grain and up stay valid, so returns
+//     are reported per portfolio and above.
 func init() {
 	p := returns.DefaultReturnsPolicy(
 		returns.NewFlowPolicy(
@@ -28,6 +29,6 @@ func init() {
 		),
 	)
 	p.OnboardScope = returns.OnboardNone
-	p.AccountsGrainMeaningless = true
+	p.AccountsGrain = returns.AccountsGrainBlanked
 	returns.RegisterPolicy(kindName, p)
 }

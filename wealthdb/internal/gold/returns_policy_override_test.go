@@ -86,10 +86,10 @@ func TestPolicyOverrideFlowRegime(t *testing.T) {
 	}
 }
 
-// TestPolicyOverrideAccountsGrain pins the accounts_grain_meaningless
-// override in the restoring direction: chase registers the blanking by
-// default (see internal/silver/chase/policy.go), and the override turns the
-// per-account rows back into computed returns.
+// TestPolicyOverrideAccountsGrain pins the accounts_grain override in the
+// restoring direction: chase registers hidden plumbing by default (see
+// internal/silver/chase/policy.go), so its rows are absent everywhere — and
+// the "normal" override brings them back as fully computed returns.
 func TestPolicyOverrideAccountsGrain(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "chx", "chase")
@@ -99,22 +99,30 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 		[]snap{{a, 4000}, {b, 4100}}, nil)
 	end := eod(2024, time.December, 30)
 
-	off := false
+	rows, err := RunReturns(ctx, db, params("accounts", 0, end))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	if _, ok := summaryFor(rows, "CHK"); ok {
+		t.Fatal("hidden plumbing must emit no accounts row without the override")
+	}
+
+	normal := returns.AccountsGrainNormal
 	p := params("accounts", 0, end)
-	p.PolicyOverrides = map[string]ReturnsPolicyOverride{"chx": {AccountsGrainMeaningless: &off}}
-	rows, err := RunReturns(ctx, db, p)
+	p.PolicyOverrides = map[string]ReturnsPolicyOverride{"chx": {AccountsGrain: &normal}}
+	rows, err = RunReturns(ctx, db, p)
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
 	r, ok := summaryFor(rows, "CHK")
 	if !ok {
-		t.Fatal("no CHK accounts row")
+		t.Fatal("no CHK accounts row under the normal override")
 	}
 	if r.TWR == nil {
-		t.Error("override false must restore the accounts-grain TWR")
+		t.Error("the normal override must restore a computed accounts-grain TWR")
 	}
 	if qualityHas(r, "accounts_grain_meaningless") {
-		t.Errorf("override false must drop the flag: %v", r.Quality)
+		t.Errorf("the normal override must not blank: %v", r.Quality)
 	}
 }
 

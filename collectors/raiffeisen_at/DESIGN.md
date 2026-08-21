@@ -29,10 +29,10 @@ complete (two capture sessions); the only residual probes are in
   source differs.
 - **Conduit accounts.** The cash accounts are conduits — cash passes
   through them on its way to and from other sources. Their transactions
-  matter for cross-source money-flow tracking; per-account returns are
-  meaningless and are blanked by the registered ReturnsPolicy
-  (`internal/silver/raiffeisen_at/policy.go`, `AccountsGrainMeaningless`);
-  the coarse grains keep the accounts and count their flows.
+  matter for cross-source money-flow tracking; their own return rows are
+  noise and are hidden by the registered ReturnsPolicy
+  (`internal/silver/raiffeisen_at/policy.go`, `AccountsGrainHidden`); the
+  coarse grains keep the balances and count the flows.
 - **2FA is pushTAN (confirmed §3-Observed·§A):** the login is
   confirmed in the Raiffeisen mobile app; nothing is typed. The
   completion signal is a plain REST poll (`loggedIn` flip), the
@@ -677,8 +677,8 @@ unless that slice is explicitly wanted — a low-value PDF-parser build.
    (`internal/gold/migrations/0035_silver_sources_raiffeisen_at.sql`).
    Unit-tested; the whole gold suite passes. The cash accounts are
    conduits, so the registered ReturnsPolicy (`policy.go` beside the
-   adapter) blanks their accounts-grain TWR/MWR; the coarse grains keep
-   the accounts and count their flows.
+   adapter) hides their return rows at every grain; the coarse grains
+   keep the balances and count the flows.
 
 ## 5. Handoff checklist / status
 
@@ -690,7 +690,7 @@ registered, and unit-tested with the whole gold suite green. The
 collector is feature-complete. Remaining is operational, not code: a
 real `wealthdb load` merge into gold (the owner's step, like the
 download/load), plus adding the source to `wealthdb.cfg` (a silver
-source entry; conduit accounts-grain blanking ships in the registered
+source entry; conduit row-hiding ships in the registered
 ReturnsPolicy, no config needed). The §H probes (token
 refresh on a >300 s walk; `kontostaende` reach — the live series
 bottomed at the ~2023-07 history floor) fold into future runs.

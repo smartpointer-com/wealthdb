@@ -60,10 +60,55 @@ type ReturnParams struct {
 	// ReturnsExclude omits accounts/portfolios from higher-grain aggregates
 	// (sources, global). Nil ⇒ nothing excluded. See groupAccounts.
 	ReturnsExclude *ReturnsExclude
+	// ReturnsHide suppresses accounts'/portfolios' own display rows at every
+	// grain while keeping their values and flows in every aggregate — the
+	// display mirror of ReturnsExclude, which removes an entity from the
+	// coarse-grain math instead. Composes with the policy-side
+	// AccountsGrainHidden mode. Nil ⇒ nothing hidden beyond policy. See
+	// entityHidden.
+	ReturnsHide *ReturnsHide
 	// PolicyOverrides adjusts per-source ReturnsPolicies from wealthdb.cfg's
 	// returns_policy_overrides block, keyed by silver_source_id. Nil/absent ⇒
 	// registered policies apply unchanged. See newAccountData.
 	PolicyOverrides map[string]ReturnsPolicyOverride
+}
+
+// ReturnsHide holds the source-keyed membership sets of accounts and
+// portfolios whose OWN rows are suppressed at every grain while their values
+// and flows stay inside every aggregate, built from wealthdb.cfg's
+// returns_hide block. Nil ⇒ nothing hidden config-side.
+type ReturnsHide struct {
+	Portfolios map[string]map[string]bool // source_id -> portfolio_external_id -> true
+	Accounts   map[string]map[string]bool // source_id -> account_external_id -> true
+}
+
+// hiddenConstituent reports whether one account's own display presence is
+// suppressed: its source policy declares the accounts grain hidden
+// (AccountsGrainHidden plumbing), it is listed in returns_hide, or it belongs
+// to a listed portfolio. A nil receiver hides nothing config-side.
+func (h *ReturnsHide) hiddenConstituent(a *accountData) bool {
+	if a.rpolicy.AccountsGrain == returns.AccountsGrainHidden {
+		return true
+	}
+	if h == nil {
+		return false
+	}
+	return h.Accounts[a.src][a.acct] || h.Portfolios[a.src][a.portfolio]
+}
+
+// entityHidden reports whether a computed entity emits no rows: every
+// constituent is display-hidden and the grain is not global — hidden plumbing
+// still aggregates, and the global row always shows it doing so.
+func entityHidden(level string, members []*accountData, h *ReturnsHide) bool {
+	if level == "global" || len(members) == 0 {
+		return false
+	}
+	for _, a := range members {
+		if !h.hiddenConstituent(a) {
+			return false
+		}
+	}
+	return true
 }
 
 // ReturnsPolicyOverride carries one source's config-side policy adjustments
@@ -74,8 +119,8 @@ type ReturnParams struct {
 // also marks the policy Known — an explicitly declared classification is not
 // an unknown-adapter condition.
 type ReturnsPolicyOverride struct {
-	FlowRegime               *returns.Regime
-	AccountsGrainMeaningless *bool
+	FlowRegime    *returns.Regime
+	AccountsGrain *returns.AccountsGrainMode
 }
 
 // ReturnsExclude holds the source-keyed membership sets of accounts and
@@ -239,6 +284,12 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 	var out []ReturnRow
 	for _, key := range order {
 		members := groups[key]
+		// Display-hidden plumbing (policy AccountsGrainHidden / config
+		// returns_hide): the entity emits no rows of its own — its values and
+		// flows already live inside every aggregate that contains it.
+		if entityHidden(p.Level, members, p.ReturnsHide) {
+			continue
+		}
 		// Mortgage / liability accounts: excluded from coarse rollups; on the
 		// accounts grain they surface as their own n/a + nonpositive_base line.
 		liability, assets := splitLiabilities(members)
@@ -251,14 +302,14 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 			continue
 		}
 		rows := computeEntityReturn(assets, p, toDay, ds.fx)
-		// AccountsGrainMeaningless: per-account (accounts-grain) rows for a
-		// sweep/conduit source (crypto wallets, deposit-bank cash accounts) are
-		// economically meaningless, so keep their start/end values but blank
-		// TWR/MWR to n/a and flag it. Gate STRICTLY on the group's
-		// per-constituent rpolicy so ONLY that source's account rows change; the
-		// portfolios/sources/global grains are NEVER gated (they aggregate
-		// coherent units, which ARE valid). One row per account is still emitted.
-		if p.Level == "accounts" && accountsGrainMeaningless(assets) {
+		// AccountsGrainBlanked: per-account (accounts-grain) rows for a sweep
+		// source (crypto wallets) are economically meaningless, so keep their
+		// start/end values but blank TWR/MWR to n/a and flag it. Gate STRICTLY
+		// on the group's per-constituent rpolicy so ONLY that source's account
+		// rows change; the portfolios/sources/global grains are NEVER gated
+		// (they aggregate coherent units, which ARE valid). One row per account
+		// is still emitted.
+		if p.Level == "accounts" && accountsGrainBlanked(assets) {
 			for i := range rows {
 				rows[i].TWR, rows[i].TWRAnnualized = nil, nil
 				rows[i].MWR, rows[i].MWRAnnualized = nil, nil
@@ -286,14 +337,14 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 	return computeReturns(ds, p), nil
 }
 
-// accountsGrainMeaningless reports whether the group's constituent policy marks
-// the per-account (accounts) grain meaningless (AccountsGrainMeaningless). At the
-// accounts grain every constituent of a group shares one source (groupAccounts
-// keys on src), so the whole group carries one rpolicy; reading the first
-// constituent is exact and source-scoped. Default policy (false) leaves every
-// other source untouched.
-func accountsGrainMeaningless(assets []*accountData) bool {
-	return len(assets) > 0 && assets[0].rpolicy.AccountsGrainMeaningless
+// accountsGrainBlanked reports whether the group's constituent policy blanks
+// the per-account (accounts) grain (AccountsGrainBlanked). At the accounts
+// grain every constituent of a group shares one source (groupAccounts keys on
+// src), so the whole group carries one rpolicy; reading the first constituent
+// is exact and source-scoped. The default mode leaves every other source
+// untouched.
+func accountsGrainBlanked(assets []*accountData) bool {
+	return len(assets) > 0 && assets[0].rpolicy.AccountsGrain == returns.AccountsGrainBlanked
 }
 
 // fxBounds holds the earliest FX-rate day per currency, so the engine can flag
@@ -556,8 +607,8 @@ func applyPolicyOverride(rp returns.ReturnsPolicy, ov map[string]ReturnsPolicyOv
 		rp.Flow = returns.FlowPolicyForRegime(*o.FlowRegime)
 		rp.NavOnly = *o.FlowRegime == returns.RegimeNavOnly
 	}
-	if o.AccountsGrainMeaningless != nil {
-		rp.AccountsGrainMeaningless = *o.AccountsGrainMeaningless
+	if o.AccountsGrain != nil {
+		rp.AccountsGrain = *o.AccountsGrain
 	}
 	return rp
 }

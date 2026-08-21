@@ -16,8 +16,9 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
 - **Account-grain is exact; coarse grains** (portfolios / sources /
   global) **are best-effort** — heuristic transfer netting plus synthetic
   onboarding for staggered inception. Returns are **not additive across
-  grains**: `global == Σ accounts` is a *value* identity (guarded by a
-  reconciliation test), never a return identity.
+  grains**: `global == Σ accounts + hidden plumbing` is a *value* identity
+  (guarded by a reconciliation test; AccountsGrainHidden / returns_hide rows
+  are in global but emit no accounts-grain row), never a return identity.
 - **Mortgage / net-negative entities** are excluded from return rollups;
   per-entity twr/mwr = n/a + `nonpositive_base`, reported on a separate
   liability line.
@@ -185,8 +186,10 @@ source:
   silver_source_id and composed at the engine's single resolution point
   (`newAccountData`), so the CLI and the materialized `report_returns` always
   agree: `flow_regime` replaces the flow classification with a regime's
-  canonical kind sets (`FlowPolicyForRegime`); `accounts_grain_meaningless`
-  toggles the accounts-grain blanking. The escape hatch for data completeness
+  canonical kind sets (`FlowPolicyForRegime`); `accounts_grain` sets the
+  per-account display mode (normal / blanked / hidden). The `returns_hide`
+  config block (DESIGN.md §5.7) hides specific account/portfolio ids the
+  same way — rows suppressed, values and flows still aggregated. The escape hatch for data completeness
   that differs from the registered default (e.g. a flow-counting source whose
   silver carries no transactions pins back to `nav_only`).
 - **UBS knobs (live).** UBS's policy sets four source-scoped knobs:
@@ -250,8 +253,10 @@ every approximation is tagged. Computed set:
 `configured_inception` marks a window truncated to a configured
 inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
-sweep/conduit sources (a single crypto wallet's or deposit account's
-return is noise; the coarser grains stay valid).
+sweep sources (a single crypto wallet's return is noise; the coarser
+grains stay valid). Conduit plumbing goes further: `AccountsGrainHidden`
+sources (the deposit banks) and `returns_hide` ids emit no rows at all
+while still feeding every aggregate.
 `mwr_negative_net_capital` reports XIRR as n/a because the
 window's net invested capital (opening base plus net external flow) is
 zero or below.

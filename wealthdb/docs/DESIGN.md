@@ -493,7 +493,8 @@ Example config file:
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
-| `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain_meaningless` blanks (`true`) or restores (`false`) the per-account TWR/MWR rows. Unset fields keep the registered policy's values. See §5.6. |
+| `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
+| `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`, `thinkingFormat`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
@@ -568,8 +569,9 @@ tracked in a shared login that belong to another person.
 - **Keys** are the same stable external ids as elsewhere
   (`portfolio_external_id`, `account_external_id`), from the `entity_id` column.
 - **Semantics:** an excluded entity still shows at its OWN grain — the accounts
-  grain shows every account, and an excluded PORTFOLIO still shows its own
-  portfolios row (only an excluded ACCOUNT drops from its portfolio there). At
+  grain shows every non-hidden account (§5.7), and an excluded PORTFOLIO still
+  shows its own portfolios row (only an excluded ACCOUNT drops from its
+  portfolio there). At
   the sources and global grains, an excluded account, and every account of an
   excluded portfolio, are omitted from the aggregate.
 - **Returns only.** Holdings / net-worth views are unaffected; excluding
@@ -588,7 +590,7 @@ silver holding positions but no transaction history).
 ```json
 "returns_policy_overrides": {
     "carta":  { "flow_regime": "nav_only" },
-    "mycoin": { "accounts_grain_meaningless": false }
+    "mycoin": { "accounts_grain": "normal" }
 }
 ```
 
@@ -602,15 +604,48 @@ silver holding positions but no transaction history).
   only the regime name would leave the old kind sets attached — a hybrid no
   regime defines. A regime override also marks the policy known, so
   `unknown_adapter_policy` clears.
-- **`accounts_grain_meaningless`** blanks (`true`) or restores (`false`) the
-  per-account TWR/MWR rows; values and the flag behave as under a registered
-  policy (RETURNS-NOTES.md "Quality flags").
+- **`accounts_grain`** (`"normal"` | `"blanked"` | `"hidden"`) replaces the
+  per-account display mode: full rows, rows with TWR/MWR blanked to n/a +
+  `accounts_grain_meaningless`, or no rows at all (plumbing — values and
+  flows still enter every aggregate; the deposit-bank conduit sources
+  register `hidden` as their default). Overriding to `"normal"` is how a
+  deployment re-surfaces a hidden source's rows.
 - **Partial semantics:** unset fields keep the registered policy's values;
   code-side knobs without a config field (onboarding scope, conduit kinds,
   inception mode, …) are never touched.
 - Applied identically by `wealthdb returns` and the materialized
   `report_returns` behind the web dashboard. Absent ⇒ registered policies
   apply unchanged, byte-identical to before.
+
+### 5.7 Returns hiding (display only)
+
+`returns_hide` suppresses accounts' or portfolios' OWN rows at every returns
+grain while their values and flows keep contributing to every aggregate that
+contains them — the display mirror of `returns_exclude` (§5.5), which removes
+an entity from the coarse-grain math instead.
+
+```json
+"returns_hide": {
+    "accounts":   { "ubs-main": ["<iban-account-id>"] },
+    "portfolios": { "cointracking": ["cu_000002"] }
+}
+```
+
+- **Keys** are the same stable external ids as elsewhere, per
+  `silver_sources[].id` (validated at load).
+- **Semantics:** a hidden account emits no accounts-grain row; a hidden
+  portfolio emits no portfolios-grain row and hides its member accounts'
+  rows too. An entity consisting ONLY of hidden constituents (a source whose
+  every account is hidden, a no-portfolio bucket of hidden accounts) emits
+  no row either. The global grain always shows — hidden plumbing still
+  aggregates there, values and flows included.
+- **Policy composition:** per-source policies already hide whole conduit
+  sources (`AccountsGrainHidden` — the deposit-bank collectors register it
+  by default); this block covers deployment-specific ids on top. An id in
+  both `returns_hide` and `returns_exclude` is excluded from the math AND
+  shows nowhere.
+- **Returns only.** Holdings / net-worth views are unaffected.
+- Absent ⇒ nothing hidden beyond policy, byte-identical to before.
 
 ## 6. Plugin / adapter architecture
 
@@ -1799,8 +1834,9 @@ the verified per-adapter flow table):
   as a separate `nonpositive_base` liability line.
 - **Account-grain is exact**; coarse grains are best-effort (heuristic transfer
   netting, synthetic onboarding for staggered inception). **Returns are NOT
-  additive across grains** — `global == Σ accounts` is a *value* identity, not a
-  return identity.
+  additive across grains** — `global == Σ accounts + hidden plumbing` is a
+  *value* identity, not a return identity (hidden conduit rows, §5.7, are in
+  global but emit no accounts-grain row).
 - **Staggered inception (corrected semantics).** When a constituent joins a
   coarse aggregate *mid-window* (debut `d > winFrom`), its arrival is booked once
   as a synthetic onboarding inflow of its **full** first-snapshot value at `d`,
@@ -1843,9 +1879,10 @@ every approximation is tagged (`since_data_inception`, `configured_inception`,
 `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
 `mwr_negative_net_capital`, `unmatched_transfers=N`, `journal_present`, `nav_only`,
 `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
-`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts` is a
-**value** identity (verified by reconciliation test), but **returns are not
-additive across grains**.
+`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`, `after_tax`). Cross-grain note: `global == Σ accounts + hidden
+plumbing` is a **value** identity (verified by reconciliation test; hidden
+conduit rows, §5.7, are in global but emit no accounts row), and **returns
+are not additive across grains**.
 
 ## 11. Repository layout
 

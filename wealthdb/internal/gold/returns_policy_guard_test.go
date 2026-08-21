@@ -97,53 +97,59 @@ func TestEveryCheckKindHasAdapterAndPolicy(t *testing.T) {
 	}
 }
 
-// TestDepositBankAccountsGrainBlanked locks the deposit-bank conduit policy
-// end to end: a chase-kind account row keeps its start/end values but blanks
-// TWR/MWR with accounts_grain_meaningless, carries no unknown_adapter_policy,
-// and the sources grain still computes a real, ungated number.
-func TestDepositBankAccountsGrainBlanked(t *testing.T) {
+// TestDepositBankPlumbingHidden locks the deposit-bank conduit policy end to
+// end: a chase-kind source emits NO rows of its own at the accounts or
+// sources grain (AccountsGrainHidden plumbing), while its balances and flows
+// still enter the global aggregate.
+func TestDepositBankPlumbingHidden(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedReturnsSource(t, db, ctx, "chx", "chase")
+	seedReturnsSource(t, db, ctx, "sq", "swissquote")
 
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
 	seedAcct(t, db, ctx, "chx", "CHK", canonical.AccountKindCash, nil,
 		[]snap{{a, 4000}, {b, 4100}},
 		[]txn{{dy(2024, time.June, 3), canonical.TxKindDeposit, 100}})
+	seedAcct(t, db, ctx, "sq", "BRK", canonical.AccountKindBrokerage, nil,
+		[]snap{{a, 1000}, {b, 1100}}, nil)
 	end := eod(2024, time.December, 30)
 
 	acctRows, err := RunReturns(ctx, db, params("accounts", 0, end))
 	if err != nil {
 		t.Fatalf("RunReturns accounts: %v", err)
 	}
-	r, ok := summaryFor(acctRows, "CHK")
-	if !ok {
-		t.Fatal("no CHK accounts row")
+	if _, ok := summaryFor(acctRows, "CHK"); ok {
+		t.Error("hidden plumbing must emit no accounts-grain row")
 	}
-	if r.StartValue == nil || r.EndValue == nil {
-		t.Errorf("account start/end must be populated (start=%v end=%v)", r.StartValue, r.EndValue)
-	}
-	if r.TWR != nil || r.MWR != nil {
-		t.Errorf("account TWR/MWR must be n/a (got TWR=%v MWR=%v)", r.TWR, r.MWR)
-	}
-	if !qualityHas(r, "accounts_grain_meaningless") {
-		t.Errorf("quality = %v, want accounts_grain_meaningless", r.Quality)
-	}
-	if qualityHas(r, "unknown_adapter_policy") {
-		t.Errorf("quality = %v: chase registers a policy, unknown_adapter_policy must not fire", r.Quality)
+	if _, ok := summaryFor(acctRows, "BRK"); !ok {
+		t.Error("the non-plumbing account must still emit its row")
 	}
 
 	srcRows, err := RunReturns(ctx, db, params("sources", 0, end))
 	if err != nil {
 		t.Fatalf("RunReturns sources: %v", err)
 	}
-	s, ok := summaryFor(srcRows, "chx")
+	if _, ok := summaryFor(srcRows, "chx"); ok {
+		t.Error("an all-plumbing source must emit no sources-grain row")
+	}
+
+	// Global: the chase balance and its deposit are inside the math — start
+	// 5000, end 5200, net flow 100.
+	globRows, err := RunReturns(ctx, db, params("global", 0, end))
+	if err != nil {
+		t.Fatalf("RunReturns global: %v", err)
+	}
+	g, ok := summaryFor(globRows, "")
 	if !ok {
-		t.Fatal("no chx source row")
+		t.Fatal("no global row")
 	}
-	if s.TWR == nil {
-		t.Error("sources-grain TWR must be a real number")
+	if v, ok := parseFloatPtr(g.StartValue); !ok || v != 5000 {
+		t.Errorf("global start = %v, want 5000 (plumbing balance included)", g.StartValue)
 	}
-	if qualityHas(s, "accounts_grain_meaningless") || qualityHas(s, "unknown_adapter_policy") {
-		t.Errorf("sources grain must be ungated and policy-known: %v", s.Quality)
+	if nf := netFlowOf(t, globRows, ""); nf != 100 {
+		t.Errorf("global net_flow = %.2f, want 100 (plumbing deposit counted)", nf)
+	}
+	if g.TWR == nil || qualityHas(g, "unknown_adapter_policy") {
+		t.Errorf("global must compute with a known policy (TWR=%v q=%v)", g.TWR, g.Quality)
 	}
 }

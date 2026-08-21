@@ -92,8 +92,8 @@ A **gold adapter** (`wealthdb/internal/silver/firstcitizens/`) projects
 that silver into the canonical store on the chase model: cash accounts,
 a closing-balance series from the per-row running balance plus a current
 roster balance, and the whole deposit ledger. The cash accounts are
-conduits, so the registered returns policy blanks their per-account
-returns; the coarse return grains keep them and count their flows.
+conduits, so the registered returns policy hides their return rows; the
+coarse return grains keep the balances and count the flows.
 
 The [`chase`](../chase/) collector is the US-retail model this one
 adapts; see [DESIGN.md](DESIGN.md) §4.2 for the mapped flows and the

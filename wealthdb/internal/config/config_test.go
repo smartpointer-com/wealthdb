@@ -488,7 +488,7 @@ func TestValidateRejectsBadWebPort(t *testing.T) {
 
 func TestLoadReturnsPolicyOverrides(t *testing.T) {
 	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"carta","kind":"carta","path":"/tmp/c.db"},{"id":"ct","kind":"cointracking","path":"/tmp/ct.db"},{"id":"mx","kind":"manual","path":"/tmp/m.db"}],`
-	c, err := Load(writeConfig(t, base+`"returns_policy_overrides":{"carta":{"flow_regime":"nav_only"},"ct":{"accounts_grain_meaningless":false},"mx":{}}}`))
+	c, err := Load(writeConfig(t, base+`"returns_policy_overrides":{"carta":{"flow_regime":"nav_only"},"ct":{"accounts_grain":"normal"},"mx":{}}}`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -499,8 +499,8 @@ func TestLoadReturnsPolicyOverrides(t *testing.T) {
 	if _, ok := ct.Regime(); ok {
 		t.Error("ct sets no flow_regime; Regime() must report unset")
 	}
-	if ct.AccountsGrainMeaningless == nil || *ct.AccountsGrainMeaningless {
-		t.Errorf("ct accounts_grain_meaningless = %v, want explicit false", ct.AccountsGrainMeaningless)
+	if m, ok := ct.AccountsGrainMode(); !ok || m != returns.AccountsGrainNormal {
+		t.Errorf("ct AccountsGrainMode() = %v, %v; want normal, true", m, ok)
 	}
 	// An empty override object is accepted as a no-op.
 	if mx, ok := c.ReturnsPolicyOverrides["mx"]; !ok || mx == nil {
@@ -517,6 +517,34 @@ func TestLoadReturnsPolicyOverridesRejects(t *testing.T) {
 	cases := map[string]string{
 		"unknown source": `"returns_policy_overrides":{"nope":{"flow_regime":"nav_only"}}}`,
 		"bad regime":     `"returns_policy_overrides":{"carta":{"flow_regime":"freeform"}}}`,
+		"bad grain mode":  `"returns_policy_overrides":{"carta":{"accounts_grain":"invisible"}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}
+
+func TestLoadReturnsHide(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+	c, err := Load(writeConfig(t, base+`"returns_hide":{"accounts":{"sq":["A1","A2"]},"portfolios":{"sq":["P1"]}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pf, ac := c.ReturnsHide.Sets()
+	if !ac["sq"]["A1"] || !ac["sq"]["A2"] || !pf["sq"]["P1"] {
+		t.Errorf("Sets() = %v, %v; want the listed ids", pf, ac)
+	}
+	// The nil receiver returns nil sets.
+	var nilHide *ReturnsHide
+	if p2, a2 := nilHide.Sets(); p2 != nil || a2 != nil {
+		t.Error("nil ReturnsHide must yield nil sets")
+	}
+
+	cases := map[string]string{
+		"unknown source": `"returns_hide":{"accounts":{"nope":["A"]}}}`,
+		"empty inner id": `"returns_hide":{"accounts":{"sq":[""]}}}`,
 	}
 	for name, block := range cases {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {

@@ -130,13 +130,13 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	}
 	defer db.Close()
 
-	inceptionOv, exclude, policyOv := returnsCfgSettings(cfg)
+	inceptionOv, exclude, hide, policyOv := returnsCfgSettings(cfg)
 	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
 		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
 		Method: *method, Period: *period, Annualize: *annualize,
 		Netting: *netting == "on", Inception: *inception,
 		InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-		PolicyOverrides: policyOv,
+		ReturnsHide: hide, PolicyOverrides: policyOv,
 	})
 	if err != nil {
 		return err
@@ -145,10 +145,10 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
-// and policy-override sets from wealthdb.cfg. Shared by `returns` and the
-// hidden `web-materialize` so a materialized partition carries exactly the
-// settings a CLI run applies.
-func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, map[string]gold.ReturnsPolicyOverride) {
+// hide, and policy-override sets from wealthdb.cfg. Shared by `returns` and
+// the hidden `web-materialize` so a materialized partition carries exactly
+// the settings a CLI run applies.
+func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, *gold.ReturnsHide, map[string]gold.ReturnsPolicyOverride) {
 	var inceptionOv *gold.InceptionOverrides
 	if cfg.InceptionOverrides != nil {
 		s, p, a := cfg.InceptionOverrides.Epochs()
@@ -159,6 +159,11 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 		pf, ac := cfg.ReturnsExclude.Sets()
 		exclude = &gold.ReturnsExclude{Portfolios: pf, Accounts: ac}
 	}
+	var hide *gold.ReturnsHide
+	if cfg.ReturnsHide != nil {
+		pf, ac := cfg.ReturnsHide.Sets()
+		hide = &gold.ReturnsHide{Portfolios: pf, Accounts: ac}
+	}
 	var policyOv map[string]gold.ReturnsPolicyOverride
 	if len(cfg.ReturnsPolicyOverrides) > 0 {
 		policyOv = make(map[string]gold.ReturnsPolicyOverride, len(cfg.ReturnsPolicyOverrides))
@@ -166,14 +171,17 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 			if ov == nil {
 				continue
 			}
-			g := gold.ReturnsPolicyOverride{AccountsGrainMeaningless: ov.AccountsGrainMeaningless}
+			var g gold.ReturnsPolicyOverride
 			if r, ok := ov.Regime(); ok {
 				g.FlowRegime = &r
+			}
+			if m, ok := ov.AccountsGrainMode(); ok {
+				g.AccountsGrain = &m
 			}
 			policyOv[id] = g
 		}
 	}
-	return inceptionOv, exclude, policyOv
+	return inceptionOv, exclude, hide, policyOv
 }
 
 // parseReturnsWindow defaults a bare invocation to since-inception → today
@@ -270,6 +278,10 @@ Views (coarsest → finest):
   portfolios   one row per portfolio (+ a per-source no-portfolio bucket)
   accounts     one row per account (exact — the headline; coarse views are best-effort)
 
+Conduit plumbing (deposit-bank cash sources, config returns_hide ids) emits
+no rows of its own at any view; its balances and flows still feed every
+aggregate. The global view always includes everything.
+
 Window (positional, optional; default: since first snapshot → today):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period
   FROM TO                       explicit range; '-' is open-ended
@@ -294,7 +306,8 @@ The quality column is load-bearing: n/a returns always carry a reason
 (nonpositive_base, mwr_no_flows, dietz_degenerate, empty_bucket, nav_only,
 staggered_inception, unmatched_transfers, …). Account-grain flow-complete
 returns are exact; everything else is best-effort. Returns are NOT additive
-across grains (global is a value identity, not a return identity).
+across grains (global is a value identity over all accounts INCLUDING hidden
+plumbing, not a return identity).
 
 Available columns:
   ` + joinColumnNames(registry) + `

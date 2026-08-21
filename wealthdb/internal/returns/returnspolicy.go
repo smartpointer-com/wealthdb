@@ -1,6 +1,7 @@
 package returns
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -14,10 +15,11 @@ import (
 // The engine consumes these knobs: OnboardScope (returns_compute.go,
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
 // anchor), ConduitKinds via IsConduit (returns.go), the ClassifyFlow/ExternalOnly
-// hook path (attachFlows in returns.go), AccountsGrainMeaningless (returns.go,
-// blanking the accounts grain for sweep/conduit sources), CapitalCallRisk
-// (regimeFlags in returns_compute.go, tagging flow-less windows), and
-// ClosureScope (entityFlows, ledger-exact vs subsumed closures).
+// hook path (attachFlows in returns.go), AccountsGrain (returns.go, blanking
+// or hiding the per-account display for sweep/conduit sources),
+// CapitalCallRisk (regimeFlags in returns_compute.go, tagging flow-less
+// windows), and ClosureScope (entityFlows, ledger-exact vs subsumed
+// closures).
 // The remaining knobs — NettingTol, SpineDensity, InKindJumpTol, the NavOnly
 // mirror, and the OnboardAmount hook — are a declared forward contract for the
 // per-source returns-policy migration: defined and defaulted here so a source
@@ -41,14 +43,12 @@ type ReturnsPolicy struct {
 	// OnboardScope: whether synthetic onboarding fires per constituent account
 	// (default), once per computed entity at inception, or never.
 	OnboardScope OnboardScope
-	// AccountsGrainMeaningless: per-account (accounts-grain) return rows are
-	// economically meaningless for this source — its accounts are not coherent
-	// return-bearing units (crypto wallets that coins sweep between on arrival,
-	// deposit-bank cash conduits that money passes through), so a single
-	// account's return is noise; the portfolios/sources/global grains stay
-	// valid because they aggregate coherent units. Default false leaves every
-	// grain's TWR/MWR computed.
-	AccountsGrainMeaningless bool
+	// AccountsGrain: how the source's individual accounts surface in returns
+	// output — full rows (default), blanked rows (values shown, TWR/MWR n/a +
+	// accounts_grain_meaningless), or no rows at all (plumbing; values and
+	// flows still enter every aggregate). Config `returns_hide` hides
+	// specific ids the same way. See the AccountsGrainMode constants.
+	AccountsGrain AccountsGrainMode
 	// CapitalCallRisk: the source's value growth can embed unobserved capital
 	// calls (private-market vehicles), so value-growth returns are only
 	// trustworthy alongside observed flows. A window in which such a
@@ -124,6 +124,42 @@ const (
 	// OnboardPerEntityOnce(1) keep their numeric values.
 	OnboardNone
 )
+
+// AccountsGrainMode selects how a source's individual accounts surface in
+// returns output (the coarser grains always aggregate their values and flows
+// regardless).
+type AccountsGrainMode int
+
+const (
+	// AccountsGrainNormal: full per-account TWR/MWR rows. The default.
+	AccountsGrainNormal AccountsGrainMode = iota
+	// AccountsGrainBlanked: accounts-grain rows are emitted with start/end
+	// values but TWR/MWR blanked to n/a + accounts_grain_meaningless — the
+	// accounts are return-bearing in aggregate but individually meaningless
+	// (crypto wallets that coins sweep between on arrival).
+	AccountsGrainBlanked
+	// AccountsGrainHidden: no rows of their own at ANY grain — the accounts
+	// are pure plumbing (deposit-bank cash conduits money passes through).
+	// Values and flows still enter every aggregate they belong to; an entity
+	// consisting only of hidden constituents (such a source's own sources-
+	// grain row, or its no-portfolio bucket) is hidden too. The global grain
+	// is never hidden.
+	AccountsGrainHidden
+)
+
+// ParseAccountsGrainMode maps an accounts-grain mode name back to the enum —
+// the vocabulary of the config-side `returns_policy_overrides` block.
+func ParseAccountsGrainMode(s string) (AccountsGrainMode, error) {
+	switch s {
+	case "normal":
+		return AccountsGrainNormal, nil
+	case "blanked":
+		return AccountsGrainBlanked, nil
+	case "hidden":
+		return AccountsGrainHidden, nil
+	}
+	return 0, fmt.Errorf("unknown accounts_grain mode %q (want normal, blanked, or hidden)", s)
+}
 
 // ClosureScope selects how an explicit closure (a constituent's value → ~0)
 // accounts for the capital that left — the closure mirror of the inception

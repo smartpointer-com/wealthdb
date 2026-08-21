@@ -26,13 +26,14 @@ var (
 // MaterializeParams configures a MaterializeReturns run. ToEpoch is the
 // window end (Unix seconds; inception → ToEpoch, the CLI's default window);
 // ComputedAt is stamped on every row so readers can tell how fresh the run
-// is. InceptionOverrides / ReturnsExclude / PolicyOverrides carry the same
-// wealthdb.cfg settings a CLI run applies.
+// is. InceptionOverrides / ReturnsExclude / ReturnsHide / PolicyOverrides
+// carry the same wealthdb.cfg settings a CLI run applies.
 type MaterializeParams struct {
 	ToEpoch            int64
 	ComputedAt         int64
 	InceptionOverrides *InceptionOverrides
 	ReturnsExclude     *ReturnsExclude
+	ReturnsHide        *ReturnsHide
 	PolicyOverrides    map[string]ReturnsPolicyOverride
 }
 
@@ -76,6 +77,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 					Netting: true, Inception: "full",
 					InceptionOverrides: p.InceptionOverrides,
 					ReturnsExclude:     p.ReturnsExclude,
+					ReturnsHide:        p.ReturnsHide,
 				})
 				parts = append(parts, partition{grain: grain, granularity: period, currency: ccy, rows: rows})
 			}
@@ -98,6 +100,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 					Netting: true, Inception: "full",
 					InceptionOverrides: p.InceptionOverrides,
 					ReturnsExclude:     p.ReturnsExclude,
+					ReturnsHide:        p.ReturnsHide,
 				})
 				parts = append(parts, partition{grain: grain, granularity: "total", currency: ccy, windowFromYear: y, rows: rows})
 			}

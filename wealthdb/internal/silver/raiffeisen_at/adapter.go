@@ -11,7 +11,8 @@
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. These are conduit accounts — cash passes through them
 //     between other sources — so the registered ReturnsPolicy (policy.go)
-//     blanks per-account returns; only the transaction flow matters.
+//     hides their return rows at every grain; the balances and flows still
+//     enter the aggregates, where only the transaction flow matters.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     A CLOSING balance for every day the daily-balance series carries a saldo
