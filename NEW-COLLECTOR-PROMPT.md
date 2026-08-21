@@ -240,8 +240,12 @@ entries are cheap when framed this way — correct them and move on.
 6. **Gold adapter** — wealthdb/internal/silver/<name>/ modeled on the
    newest comparable adapter (contract: wealthdb/docs/DESIGN.md §6):
    the Adapter/Connection interface, a silver_sources whitelist
-   migration, the blank import in wealthdb/cmd/wealthdb/main.go,
-   fixture tests. Map accounts and transactions into the canonical
+   migration, the blank import in wealthdb/cmd/wealthdb/main.go, a
+   co-located ReturnsPolicy (policy.go beside adapter.go, plus the
+   test blank-import lists in internal/returns/policy_registered_test.go
+   and internal/gold/returns_policy_import_test.go — a gold guard test
+   fails when a whitelisted kind registers no policy), fixture tests.
+   Map accounts and transactions into the canonical
    enums; unrecognised values fall through to `other` with the raw
    value in payload — never fail the load. Validation gate: the user
    registers the new source in their private wealthdb.cfg

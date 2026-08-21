@@ -24,9 +24,10 @@ the measured answer, the way [chase](../chase/DESIGN.md) did.
   source differs.
 - **Conduit accounts.** The cash accounts are conduits — cash passes
   through them on its way to and from other sources. Their transactions
-  matter for cross-source money-flow tracking; returns for the accounts
-  themselves are meaningless. The gold phase reuses chase's
-  returns-exclude reasoning as-is.
+  matter for cross-source money-flow tracking; per-account returns are
+  meaningless and are blanked by the registered ReturnsPolicy
+  (`internal/silver/firstcitizens/policy.go`), reusing chase's
+  conduit reasoning as-is.
 - **The data surface is a clean Q2 REST API (measured §3).** The digital
   banking runs on a **Q2 white-label platform** at
   `digitalbanking.firstcitizens.com/FCBTCOnline/`, and every datum —

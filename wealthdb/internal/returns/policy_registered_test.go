@@ -17,11 +17,14 @@ import (
 	// cmd/wealthdb/main.go, so registration runs before the assertions.
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/chase"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/cointracking"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/equityzen"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fidelity"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/firstcitizens"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/fred"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/manual"
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/raiffeisen_at"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/relevate"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/schwab"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/swissquote"
@@ -94,6 +97,25 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		}
 		if rp.Flow.IsTransferLike(canonical.TxKindDeposit) {
 			t.Errorf("%s: deposit must not be transfer-like", k)
+		}
+	}
+
+	// The cash-conduit deposit banks: complete ledgers on the shared bank set,
+	// but a single deposit account is not a return-bearing unit, so the
+	// accounts grain is blanked.
+	for _, k := range []string{"chase", "firstcitizens", "raiffeisen_at"} {
+		rp, _ := returns.ReturnsPolicyFor(k)
+		if !rp.Flow.Known {
+			t.Errorf("%s: policy must be Known (registered)", k)
+		}
+		if rp.Flow.Regime != returns.RegimeFlowComplete {
+			t.Errorf("%s: regime %v, want flow_complete", k, rp.Flow.Regime)
+		}
+		if !rp.Flow.IsExternal(canonical.TxKindDeposit) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal) {
+			t.Errorf("%s: deposit/withdrawal must be external", k)
+		}
+		if !rp.AccountsGrainMeaningless {
+			t.Errorf("%s: AccountsGrainMeaningless must be set (cash-conduit accounts)", k)
 		}
 	}
 

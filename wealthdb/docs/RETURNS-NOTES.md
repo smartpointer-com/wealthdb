@@ -214,8 +214,9 @@ every approximation is tagged. Computed set:
 `configured_inception` marks a window truncated to a configured
 inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
-sweep sources (a single wallet's return is noise; the coarser grains
-stay valid). `mwr_negative_net_capital` reports XIRR as n/a because the
+sweep/conduit sources (a single crypto wallet's or deposit account's
+return is noise; the coarser grains stay valid).
+`mwr_negative_net_capital` reports XIRR as n/a because the
 window's net invested capital (opening base plus net external flow) is
 zero or below.
 
@@ -230,9 +231,13 @@ is inferred and the flag stays off.
 
 `unknown_adapter_policy` is unreachable via the real pipeline
 (`silver_sources.silver_kind` has a CHECK constraint admitting only the
-known adapter kinds, each of which registers a policy from its `init()`) —
-kept as defense-in-depth for a future adapter added to the CHECK without a
-policy, and unit-tested at the policy-resolution level.
+known adapter kinds, each of which registers a policy from its `init()`).
+That invariant once silently broke — three collectors shipped into the
+CHECK without a `policy.go` — so it is now enforced by a guard test
+(`TestEveryCheckKindHasAdapterAndPolicy`) that cross-checks the CHECK list
+against the adapter and policy registries (fred exempt: a pure FX reference
+source that never reaches the returns engine). The flag itself stays as
+defense-in-depth, unit-tested at the policy-resolution level.
 
 Deferred flags: `corp_action_present` / `corp_action_split_timing`,
 `dormant_carryforward`, `flows_before_inception`.

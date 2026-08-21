@@ -16,12 +16,13 @@ capture (§3), the phase roadmap (§4), and the handoff checklist (§5).
   scope note for the rationale and the cards-as-future-expansion path.
 - **Conduit accounts.** The cash accounts are conduits — cash passes
   through them on its way to and from other sources. Their transactions
-  matter for cross-source money-flow tracking; returns for the accounts
-  themselves are meaningless. §4 records the two ways Phase 4 can keep
-  them out of higher-grain return aggregates. (Credit cards, if scoped
-  in, are **not** conduits — they are revolving-credit liabilities, a
-  different `account_kind` with different endpoints and no
-  returns-exclude rationale.)
+  matter for cross-source money-flow tracking; per-account returns are
+  meaningless and are blanked by the registered ReturnsPolicy
+  (`internal/silver/chase/policy.go`, `AccountsGrainMeaningless`); the
+  coarse grains keep the accounts and count their flows — see §4.
+  (Credit cards, if scoped in, are **not** conduits — they are
+  revolving-credit liabilities, a different `account_kind` with
+  different endpoints and no conduit-returns rationale.)
 - **No self-service API.** Chase's programmatic access for retail data
   runs through aggregator gateways (Akoya / Plaid-class), which are
   partner-gated — not something an individual retail login can
@@ -496,29 +497,24 @@ scoped in (see below), they map to a liability `account_kind` (revolving
 credit), not cash.
 
 **Returns: conduit accounts.** The Chase **cash** accounts are conduits
-— their transactions feed cross-source money-flow tracking, but returns
-for the accounts themselves are meaningless and would pollute
-source/global aggregates. `wealthdb.cfg` already has a `returns_exclude`
-block (`internal/config/config.go`, docs/DESIGN.md §5.5) that omits
-accounts or portfolios per source from higher-grain aggregates. Two
-options, recorded here so Phase 4 starts from both; the choice belongs to
-Phase 4, not now:
-
-1. **Config-only:** list every Chase account external id under
-   `returns_exclude.accounts["chase"]`. No engine change, but the list
-   must track account openings/closings by hand.
-2. **Whole-source dimension:** extend `ReturnsExclude` with a `sources`
-   list (mirroring the `sources` grain `inception_overrides` already
-   has), then exclude `chase` wholesale. An engine change, but
-   config-stable as accounts come and go.
+— their transactions feed cross-source money-flow tracking, but a single
+deposit account's own TWR/MWR is noise. Resolved by the registered
+ReturnsPolicy (`internal/silver/chase/policy.go`): the bank flow set with
+`AccountsGrainMeaningless = true`, which blanks the accounts-grain
+TWR/MWR (values and rows stay) while the source/global grains keep the
+accounts and count their external flows. No `returns_exclude` config is
+involved — that block (docs/DESIGN.md §5.5) exists for another person's
+holdings in a shared login and would drop the accounts and their flows
+from coarse grains entirely; per-deployment policy adjustments go
+through `returns_policy_overrides` (docs/DESIGN.md §5.6) instead.
 
 ### Scope decision: credit cards — deposit-only
 
 Decision: **deposit-only** — the collector covers the deposit accounts
 (checking, and savings if present); any credit-card or other products the
 same login may expose are out of scope in code and docs, exactly like the
-investment surface. This is the smallest build and the conduit /
-returns-exclude reasoning above applies as-is. CLAUDE.md keeps card
+investment surface. This is the smallest build and the conduit-returns
+reasoning above applies as-is. CLAUDE.md keeps card
 surfaces out of scope for both reads and writes (card *management* stays
 forbidden regardless).
 
@@ -527,7 +523,7 @@ real value — liabilities for net worth, card spend + statement-balance
 payments for money-flow — but is a materially larger build: separate
 card-activity / card-statement endpoints in Phase 2, a liability
 `account_kind` and revolving-credit shape in Phases 3–4, and no
-returns-exclude rationale (a card is not a conduit). Adding it later is a
+conduit-returns rationale (a card is not a conduit). Adding it later is a
 deliberate scope expansion, not a default.
 
 ## 5. Status & operation

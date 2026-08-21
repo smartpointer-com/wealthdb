@@ -39,11 +39,13 @@ type ReturnsPolicy struct {
 	// OnboardScope: whether synthetic onboarding fires per constituent account
 	// (default), once per computed entity at inception, or never.
 	OnboardScope OnboardScope
-	// AccountsGrainMeaningless: per-wallet (accounts-grain) return rows are
-	// economically meaningless for this source (coins sweep between wallets on
-	// arrival, so a single wallet's return is noise); the portfolios/sources/global
-	// grains stay valid because they aggregate coherent units. Default false leaves
-	// every grain's TWR/MWR computed.
+	// AccountsGrainMeaningless: per-account (accounts-grain) return rows are
+	// economically meaningless for this source — its accounts are not coherent
+	// return-bearing units (crypto wallets that coins sweep between on arrival,
+	// deposit-bank cash conduits that money passes through), so a single
+	// account's return is noise; the portfolios/sources/global grains stay
+	// valid because they aggregate coherent units. Default false leaves every
+	// grain's TWR/MWR computed.
 	AccountsGrainMeaningless bool
 	// Inception: full-window (default) vs. anchored at the first real snapshot.
 	Inception InceptionMode

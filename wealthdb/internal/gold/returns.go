@@ -235,13 +235,13 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 			continue
 		}
 		rows := computeEntityReturn(assets, p, toDay, ds.fx)
-		// AccountsGrainMeaningless: per-wallet (accounts-grain) rows for a crypto-
-		// sweep source are economically meaningless (coins sweep between wallets on
-		// arrival), so keep their start/end values but blank TWR/MWR to n/a and flag
-		// it. Gate STRICTLY on the group's per-constituent rpolicy so ONLY that
-		// source's wallet rows change; the portfolios/sources/global grains are NEVER
-		// gated (they aggregate coherent units, which ARE valid). One row per wallet
-		// is still emitted.
+		// AccountsGrainMeaningless: per-account (accounts-grain) rows for a
+		// sweep/conduit source (crypto wallets, deposit-bank cash accounts) are
+		// economically meaningless, so keep their start/end values but blank
+		// TWR/MWR to n/a and flag it. Gate STRICTLY on the group's
+		// per-constituent rpolicy so ONLY that source's account rows change; the
+		// portfolios/sources/global grains are NEVER gated (they aggregate
+		// coherent units, which ARE valid). One row per account is still emitted.
 		if p.Level == "accounts" && accountsGrainMeaningless(assets) {
 			for i := range rows {
 				rows[i].TWR, rows[i].TWRAnnualized = nil, nil
@@ -271,7 +271,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 }
 
 // accountsGrainMeaningless reports whether the group's constituent policy marks
-// the per-wallet (accounts) grain meaningless (AccountsGrainMeaningless). At the
+// the per-account (accounts) grain meaningless (AccountsGrainMeaningless). At the
 // accounts grain every constituent of a group shares one source (groupAccounts
 // keys on src), so the whole group carries one rpolicy; reading the first
 // constituent is exact and source-scoped. Default policy (false) leaves every

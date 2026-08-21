@@ -1823,8 +1823,9 @@ wealthdb/
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
 │   ├── silver/                     — adapter interface + registry, one package per source:
-│   │   │                             angellist carta cointracking equityzen fidelity fred
-│   │   │                             manual relevate schwab swissquote ubs viac
+│   │   │                             angellist carta chase cointracking equityzen fidelity
+│   │   │                             firstcitizens fred manual raiffeisen_at relevate schwab
+│   │   │                             swissquote ubs viac
 │   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go

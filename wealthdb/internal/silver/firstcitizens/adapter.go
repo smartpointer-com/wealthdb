@@ -10,8 +10,8 @@
 //     the nickname (falling back to the last-4 mask); TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. These are conduit accounts — cash passes through them
-//     between other sources — so returns for the accounts themselves are
-//     excluded downstream; only the transaction flow matters.
+//     between other sources — so the registered ReturnsPolicy (policy.go)
+//     blanks per-account returns; only the transaction flow matters.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     They land in gold's cash_balances table (report_cash synthesises a
