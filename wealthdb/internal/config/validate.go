@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
@@ -220,6 +221,21 @@ func (c *Config) Validate() error {
 		}
 		if err := validateExcludeNested("accounts", e.Accounts, seenIDs); err != nil {
 			return err
+		}
+	}
+
+	// returns_policy_overrides: source ids must name a declared silver
+	// source; flow_regime must name a known regime. An empty or null
+	// override object is a no-op, not an error.
+	for sourceID, ov := range c.ReturnsPolicyOverrides {
+		if !seenIDs[sourceID] {
+			return fmt.Errorf("config: returns_policy_overrides[%q]: no silver_sources[].id matches", sourceID)
+		}
+		if ov == nil || ov.FlowRegime == nil {
+			continue
+		}
+		if _, err := returns.ParseRegime(*ov.FlowRegime); err != nil {
+			return fmt.Errorf("config: returns_policy_overrides[%q].flow_regime: %w", sourceID, err)
 		}
 	}
 

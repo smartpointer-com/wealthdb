@@ -25,13 +25,13 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFxBounds: %v", err)
 	}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx)
+	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, nil)
 	if err != nil {
 		t.Fatalf("loadReturnsDatasetsMulti: %v", err)
 	}
 
 	for _, ccy := range materializeCurrencies {
-		single, err := loadReturnsDataset(ctx, db, ccy, fx)
+		single, err := loadReturnsDataset(ctx, db, ccy, fx, nil)
 		if err != nil {
 			t.Fatalf("loadReturnsDataset %s: %v", ccy, err)
 		}
@@ -254,7 +254,7 @@ func TestGroupAccountsMemberOrderDeterministic(t *testing.T) {
 			[]snap{{t0, 1000}, {t1, 1100}}, nil)
 	}
 
-	accts, err := loadAccountData(ctx, db, "USD")
+	accts, err := loadAccountData(ctx, db, "USD", nil)
 	if err != nil {
 		t.Fatalf("loadAccountData: %v", err)
 	}

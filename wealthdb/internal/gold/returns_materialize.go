@@ -26,13 +26,14 @@ var (
 // MaterializeParams configures a MaterializeReturns run. ToEpoch is the
 // window end (Unix seconds; inception → ToEpoch, the CLI's default window);
 // ComputedAt is stamped on every row so readers can tell how fresh the run
-// is. InceptionOverrides / ReturnsExclude carry the same wealthdb.cfg
-// settings a CLI run applies.
+// is. InceptionOverrides / ReturnsExclude / PolicyOverrides carry the same
+// wealthdb.cfg settings a CLI run applies.
 type MaterializeParams struct {
 	ToEpoch            int64
 	ComputedAt         int64
 	InceptionOverrides *InceptionOverrides
 	ReturnsExclude     *ReturnsExclude
+	PolicyOverrides    map[string]ReturnsPolicyOverride
 }
 
 // MaterializeReturns rewrites the report_returns table. It writes the full
@@ -52,7 +53,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	if err != nil {
 		return 0, fmt.Errorf("MaterializeReturns fx: %w", err)
 	}
-	datasets, err := loadReturnsDatasetsMulti(ctx, db, fx)
+	datasets, err := loadReturnsDatasetsMulti(ctx, db, fx, p.PolicyOverrides)
 	if err != nil {
 		return 0, err
 	}
@@ -225,7 +226,7 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 // versus three scans each if loaded per currency. Currency-independent inputs
 // (snapshot days, source kinds, portfolio names, fx) are read once and shared.
 // The per-currency result is bit-identical to loadReturnsDataset(ccy).
-func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds) (map[string]*returnsDataset, error) {
+func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov map[string]ReturnsPolicyOverride) (map[string]*returnsDataset, error) {
 	kinds, err := SourceKinds(ctx, db)
 	if err != nil {
 		return nil, err
@@ -267,9 +268,9 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds) (map
 			return nil, fmt.Errorf("MaterializeReturns history scan: %w", err)
 		}
 		day := asOf / 86400
-		appendSeries(byCcy["USD"], kinds, pfNames, src, acct, kind, label, base, pf, day, totUSD)
-		appendSeries(byCcy["CHF"], kinds, pfNames, src, acct, kind, label, base, pf, day, totCHF)
-		appendSeries(byCcy["EUR"], kinds, pfNames, src, acct, kind, label, base, pf, day, totEUR)
+		appendSeries(byCcy["USD"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totUSD)
+		appendSeries(byCcy["CHF"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totCHF)
+		appendSeries(byCcy["EUR"], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, totEUR)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()

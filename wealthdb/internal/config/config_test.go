@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -481,5 +483,44 @@ func TestValidateRejectsBadWebPort(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "web.port") {
 		t.Fatalf("err = %v, want web.port range complaint", err)
+	}
+}
+
+func TestLoadReturnsPolicyOverrides(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"carta","kind":"carta","path":"/tmp/c.db"},{"id":"ct","kind":"cointracking","path":"/tmp/ct.db"},{"id":"mx","kind":"manual","path":"/tmp/m.db"}],`
+	c, err := Load(writeConfig(t, base+`"returns_policy_overrides":{"carta":{"flow_regime":"nav_only"},"ct":{"accounts_grain_meaningless":false},"mx":{}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r, ok := c.ReturnsPolicyOverrides["carta"].Regime(); !ok || r != returns.RegimeNavOnly {
+		t.Errorf("carta Regime() = %v, %v; want nav_only, true", r, ok)
+	}
+	ct := c.ReturnsPolicyOverrides["ct"]
+	if _, ok := ct.Regime(); ok {
+		t.Error("ct sets no flow_regime; Regime() must report unset")
+	}
+	if ct.AccountsGrainMeaningless == nil || *ct.AccountsGrainMeaningless {
+		t.Errorf("ct accounts_grain_meaningless = %v, want explicit false", ct.AccountsGrainMeaningless)
+	}
+	// An empty override object is accepted as a no-op.
+	if mx, ok := c.ReturnsPolicyOverrides["mx"]; !ok || mx == nil {
+		t.Errorf("mx empty override must parse as a present no-op, got %v, %v", mx, ok)
+	}
+	// The nil receiver reports unset.
+	if _, ok := c.ReturnsPolicyOverrides["absent"].Regime(); ok {
+		t.Error("nil override must report no regime")
+	}
+}
+
+func TestLoadReturnsPolicyOverridesRejects(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"carta","kind":"carta","path":"/tmp/c.db"}],`
+	cases := map[string]string{
+		"unknown source": `"returns_policy_overrides":{"nope":{"flow_regime":"nav_only"}}}`,
+		"bad regime":     `"returns_policy_overrides":{"carta":{"flow_regime":"freeform"}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
 	}
 }

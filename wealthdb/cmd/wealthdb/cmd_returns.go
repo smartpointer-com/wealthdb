@@ -130,12 +130,13 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	}
 	defer db.Close()
 
-	inceptionOv, exclude := returnsCfgSettings(cfg)
+	inceptionOv, exclude, policyOv := returnsCfgSettings(cfg)
 	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
 		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
 		Method: *method, Period: *period, Annualize: *annualize,
 		Netting: *netting == "on", Inception: *inception,
 		InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
+		PolicyOverrides: policyOv,
 	})
 	if err != nil {
 		return err
@@ -143,10 +144,11 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	return writeFormatted(stdout, fmtChoice, rowsToTable(rows, colSet, *privacy, fmtChoice))
 }
 
-// returnsCfgSettings builds the engine-side inception-override and exclusion
-// sets from wealthdb.cfg. Shared by `returns` and the hidden `web-materialize`
-// so a materialized partition carries exactly the settings a CLI run applies.
-func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude) {
+// returnsCfgSettings builds the engine-side inception-override, exclusion,
+// and policy-override sets from wealthdb.cfg. Shared by `returns` and the
+// hidden `web-materialize` so a materialized partition carries exactly the
+// settings a CLI run applies.
+func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, map[string]gold.ReturnsPolicyOverride) {
 	var inceptionOv *gold.InceptionOverrides
 	if cfg.InceptionOverrides != nil {
 		s, p, a := cfg.InceptionOverrides.Epochs()
@@ -157,7 +159,21 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 		pf, ac := cfg.ReturnsExclude.Sets()
 		exclude = &gold.ReturnsExclude{Portfolios: pf, Accounts: ac}
 	}
-	return inceptionOv, exclude
+	var policyOv map[string]gold.ReturnsPolicyOverride
+	if len(cfg.ReturnsPolicyOverrides) > 0 {
+		policyOv = make(map[string]gold.ReturnsPolicyOverride, len(cfg.ReturnsPolicyOverrides))
+		for id, ov := range cfg.ReturnsPolicyOverrides {
+			if ov == nil {
+				continue
+			}
+			g := gold.ReturnsPolicyOverride{AccountsGrainMeaningless: ov.AccountsGrainMeaningless}
+			if r, ok := ov.Regime(); ok {
+				g.FlowRegime = &r
+			}
+			policyOv[id] = g
+		}
+	}
+	return inceptionOv, exclude, policyOv
 }
 
 // parseReturnsWindow defaults a bare invocation to since-inception → today

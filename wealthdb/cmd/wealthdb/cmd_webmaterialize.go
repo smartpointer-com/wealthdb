@@ -17,8 +17,8 @@ func init() {
 // cmdWebMaterialize rewrites the report_returns table in the live gold DB:
 // the full RunReturns matrix (4 grains × 4 periods × 3 currencies, plus the
 // per-year windowed since-<year> summaries) with the CLI-default knobs and the
-// config's inception_overrides / returns_exclude applied — each base partition
-// is the verbatim output of a bare
+// config's inception_overrides / returns_exclude / returns_policy_overrides
+// applied — each base partition is the verbatim output of a bare
 // `wealthdb returns <grain> --period <granularity> --method both -x <CCY>`.
 // The host-side `wealthdb web` wrapper runs it right before snapshotting so
 // the Metabase Returns dashboards are as fresh as the holdings. Hidden from
@@ -41,7 +41,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	}
 	defer db.Close()
 
-	inceptionOv, exclude := returnsCfgSettings(cfg)
+	inceptionOv, exclude, policyOv := returnsCfgSettings(cfg)
 	now := time.Now()
 	n, err := gold.MaterializeReturns(ctx, db, gold.MaterializeParams{
 		// The same end-of-today anchor a bare CLI run gets from
@@ -50,6 +50,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		ComputedAt:         now.Unix(),
 		InceptionOverrides: inceptionOv,
 		ReturnsExclude:     exclude,
+		PolicyOverrides:    policyOv,
 	})
 	if err != nil {
 		return err

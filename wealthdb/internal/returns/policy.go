@@ -1,6 +1,10 @@
 package returns
 
-import "github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+import (
+	"fmt"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+)
 
 // Regime classifies how much of an entity's return is recoverable from flows.
 type Regime int
@@ -115,6 +119,38 @@ func defaultFlowPolicy() FlowPolicy {
 	p := BankFlowPolicy()
 	p.Known = false
 	return p
+}
+
+// ParseRegime maps a regime's String() name back to the Regime — the
+// vocabulary of the config-side `returns_policy_overrides` block.
+func ParseRegime(s string) (Regime, error) {
+	switch s {
+	case "flow_complete":
+		return RegimeFlowComplete, nil
+	case "crypto_partial":
+		return RegimeCryptoPartial, nil
+	case "nav_only":
+		return RegimeNavOnly, nil
+	}
+	return 0, fmt.Errorf("unknown flow regime %q (want flow_complete, crypto_partial, or nav_only)", s)
+}
+
+// FlowPolicyForRegime returns the named regime's canonical FlowPolicy — the
+// exact kind sets the regime's reference sources register: flow_complete →
+// the bank sets, crypto_partial → fiat deposit/withdrawal external with no
+// netting set (cointracking's shape), nav_only → empty sets. A config-side
+// regime override REPLACES a source's whole flow classification with this
+// shape; swapping only the enum would leave the old kind sets attached — a
+// hybrid no regime defines.
+func FlowPolicyForRegime(r Regime) FlowPolicy {
+	switch r {
+	case RegimeCryptoPartial:
+		return NewFlowPolicy(RegimeCryptoPartial,
+			[]canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal}, nil)
+	case RegimeNavOnly:
+		return NewFlowPolicy(RegimeNavOnly, nil, nil)
+	}
+	return BankFlowPolicy()
 }
 
 // CapitalDirection returns the effect of an external flow kind on the entity's

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
@@ -84,6 +85,19 @@ type Config struct {
 	// dimension is future work). Absent ⇒ nothing excluded. See docs/DESIGN.md
 	// §5.5 and internal/gold groupAccounts.
 	ReturnsExclude *ReturnsExclude `json:"returns_exclude,omitempty"`
+	// ReturnsPolicyOverrides adjusts a silver source's registered
+	// ReturnsPolicy, keyed by silver_sources[].id (NOT adapter kind — two
+	// sources sharing an adapter override independently). Partial: only the
+	// set fields change; every other knob keeps what the source's silver
+	// package registers. `flow_regime` replaces the whole flow
+	// classification with the named regime's canonical kind sets — the
+	// escape hatch for a deployment whose data completeness differs from
+	// the registered default (e.g. pin a flow-counting source back to
+	// "nav_only" when its silver carries no transaction history).
+	// `accounts_grain_meaningless` blanks (true) or restores (false) the
+	// per-account TWR/MWR rows. Absent block ⇒ registered policies apply
+	// unchanged. See docs/DESIGN.md §5.6 and internal/gold newAccountData.
+	ReturnsPolicyOverrides map[string]*ReturnsPolicyOverride `json:"returns_policy_overrides,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -361,6 +375,33 @@ func excludeSets(in map[string][]string) map[string]map[string]bool {
 		out[src] = set
 	}
 	return out
+}
+
+// ReturnsPolicyOverride is one entry of the `returns_policy_overrides` block
+// of wealthdb.cfg: config-side adjustments to a source's registered
+// ReturnsPolicy. Pointer fields distinguish "not set" (keep the registered
+// value) from an explicit override; an empty object is a no-op.
+type ReturnsPolicyOverride struct {
+	// FlowRegime names the flow-classification regime that replaces the
+	// registered one: "flow_complete", "crypto_partial", or "nav_only".
+	FlowRegime *string `json:"flow_regime,omitempty"`
+	// AccountsGrainMeaningless blanks (true) or restores (false) the
+	// accounts-grain TWR/MWR rows.
+	AccountsGrainMeaningless *bool `json:"accounts_grain_meaningless,omitempty"`
+}
+
+// Regime returns the parsed FlowRegime and whether one is set. Only call
+// after Validate has vetted the name (Load does); an unvetted name reports
+// unset. A nil receiver reports unset.
+func (o *ReturnsPolicyOverride) Regime() (returns.Regime, bool) {
+	if o == nil || o.FlowRegime == nil {
+		return 0, false
+	}
+	r, err := returns.ParseRegime(*o.FlowRegime)
+	if err != nil {
+		return 0, false
+	}
+	return r, true
 }
 
 // Load reads and parses the JSON config at the given path,

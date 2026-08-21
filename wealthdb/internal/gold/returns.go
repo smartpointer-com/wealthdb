@@ -60,6 +60,22 @@ type ReturnParams struct {
 	// ReturnsExclude omits accounts/portfolios from higher-grain aggregates
 	// (sources, global). Nil ⇒ nothing excluded. See groupAccounts.
 	ReturnsExclude *ReturnsExclude
+	// PolicyOverrides adjusts per-source ReturnsPolicies from wealthdb.cfg's
+	// returns_policy_overrides block, keyed by silver_source_id. Nil/absent ⇒
+	// registered policies apply unchanged. See newAccountData.
+	PolicyOverrides map[string]ReturnsPolicyOverride
+}
+
+// ReturnsPolicyOverride carries one source's config-side policy adjustments
+// (wealthdb.cfg `returns_policy_overrides`, translated by the CLI). Nil
+// pointer fields keep the registered policy's values. A FlowRegime override
+// replaces the whole flow classification with the regime's canonical kind
+// sets (returns.FlowPolicyForRegime) and re-derives the NavOnly mirror; it
+// also marks the policy Known — an explicitly declared classification is not
+// an unknown-adapter condition.
+type ReturnsPolicyOverride struct {
+	FlowRegime               *returns.Regime
+	AccountsGrainMeaningless *bool
 }
 
 // ReturnsExclude holds the source-keyed membership sets of accounts and
@@ -171,8 +187,8 @@ type returnsDataset struct {
 // converted to outCcy, then the derived globalMax / droppedNonzero. fx is
 // currency-independent, so a caller materializing several currencies loads it
 // once and shares it.
-func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds) (*returnsDataset, error) {
-	accts, err := loadAccountData(ctx, db, outCcy)
+func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds, ov map[string]ReturnsPolicyOverride) (*returnsDataset, error) {
+	accts, err := loadAccountData(ctx, db, outCcy, ov)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +279,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 	if err != nil {
 		return nil, err
 	}
-	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx)
+	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +455,7 @@ func (a *accountData) lastNonzeroDay() int64 {
 	return a.firstDay()
 }
 
-func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string]*accountData, error) {
+func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[string]ReturnsPolicyOverride) (map[string]*accountData, error) {
 	byKey := map[string]*accountData{}
 
 	kinds, err := SourceKinds(ctx, db)
@@ -471,7 +487,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf, &tot); err != nil {
 			return nil, fmt.Errorf("RunReturns scan: %w", err)
 		}
-		appendSeries(byKey, kinds, pfNames, src, acct, kind, label, base, pf, asOf/86400, tot)
+		appendSeries(byKey, kinds, pfNames, ov, src, acct, kind, label, base, pf, asOf/86400, tot)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -486,9 +502,13 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string) (map[string
 // newAccountData builds the currency-independent metadata record for an
 // account (kind, portfolio, base currency, label, and the resolved
 // ReturnsPolicy). The value series and flows are attached afterwards, per
-// currency.
-func newAccountData(kinds, pfNames map[string]string, src, acct, kind string, label, base, pf sql.NullString) *accountData {
+// currency. This is the single policy-resolution point: the config-side
+// override (keyed by silver_source_id, not adapter kind) composes here, so
+// every downstream knob site — a.policy and a.rpolicy alike — sees the
+// overridden policy at every grain.
+func newAccountData(kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString) *accountData {
 	rp, _ := returns.ReturnsPolicyFor(kinds[src])
+	rp = applyPolicyOverride(rp, ov, src)
 	a := &accountData{src: src, acct: acct, kind: kind, policy: rp.Flow, rpolicy: rp}
 	a.portfolio = pf.String
 	a.portfolioName = pfNames[acctKey(src, pf.String)]
@@ -505,7 +525,7 @@ func newAccountData(kinds, pfNames map[string]string, src, acct, kind string, la
 // the series, matching the single- and multi-currency loaders. Rows must arrive
 // in ascending day order per account (the loaders' ORDER BY guarantees it), so
 // each series is ascending for valueAt's binary search.
-func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]string, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
+func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
 	v, ok := parseFloat(tot)
 	if !ok {
 		return
@@ -513,10 +533,29 @@ func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]strin
 	k := acctKey(src, acct)
 	a := byKey[k]
 	if a == nil {
-		a = newAccountData(kinds, pfNames, src, acct, kind, label, base, pf)
+		a = newAccountData(kinds, pfNames, ov, src, acct, kind, label, base, pf)
 		byKey[k] = a
 	}
 	a.series = append(a.series, dayVal{day: day, val: v})
+}
+
+// applyPolicyOverride composes a source's config-side override (if any) on
+// top of its registered policy. A FlowRegime override swaps in the regime's
+// canonical FlowPolicy wholesale (kind sets included) and keeps the NavOnly
+// mirror consistent; unset fields leave the registered values untouched.
+func applyPolicyOverride(rp returns.ReturnsPolicy, ov map[string]ReturnsPolicyOverride, src string) returns.ReturnsPolicy {
+	o, ok := ov[src]
+	if !ok {
+		return rp
+	}
+	if o.FlowRegime != nil {
+		rp.Flow = returns.FlowPolicyForRegime(*o.FlowRegime)
+		rp.NavOnly = *o.FlowRegime == returns.RegimeNavOnly
+	}
+	if o.AccountsGrainMeaningless != nil {
+		rp.AccountsGrainMeaningless = *o.AccountsGrainMeaningless
+	}
+	return rp
 }
 
 // SourceKinds maps each configured silver_source_id to its

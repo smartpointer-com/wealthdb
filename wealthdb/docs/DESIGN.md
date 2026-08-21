@@ -493,6 +493,7 @@ Example config file:
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name doesn't give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. See §13.9. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
+| `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain_meaningless` blanks (`true`) or restores (`false`) the per-account TWR/MWR rows. Unset fields keep the registered policy's values. See §5.6. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`, `thinkingFormat`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
@@ -574,6 +575,42 @@ tracked in a shared login that belong to another person.
 - **Returns only.** Holdings / net-worth views are unaffected; excluding
   someone's holdings from your net worth is a separate owner-dimension task.
 - Absent ⇒ nothing excluded, byte-identical to before.
+
+### 5.6 Returns policy overrides (per source)
+
+Every source's returns behaviour is driven by a `ReturnsPolicy` registered in
+code beside its adapter (docs/RETURNS-NOTES.md "Pluggable per-source
+policy") — a default chosen for the data the collector normally delivers.
+`returns_policy_overrides` adjusts that policy per deployment, for setups
+whose data completeness differs from the default's assumption (e.g. a carta
+silver holding positions but no transaction history).
+
+```json
+"returns_policy_overrides": {
+    "carta":  { "flow_regime": "nav_only" },
+    "mycoin": { "accounts_grain_meaningless": false }
+}
+```
+
+- **Keys** are `silver_sources[].id` values (validated at load), NOT adapter
+  kinds — two sources sharing an adapter override independently.
+- **`flow_regime`** (`"flow_complete"` | `"crypto_partial"` | `"nav_only"`)
+  REPLACES the source's whole flow classification with the named regime's
+  canonical kind sets: flow_complete → the bank external + netting sets,
+  crypto_partial → fiat deposit/withdrawal external with no netting set,
+  nav_only → no counted flows. Wholesale replacement is deliberate: swapping
+  only the regime name would leave the old kind sets attached — a hybrid no
+  regime defines. A regime override also marks the policy known, so
+  `unknown_adapter_policy` clears.
+- **`accounts_grain_meaningless`** blanks (`true`) or restores (`false`) the
+  per-account TWR/MWR rows; values and the flag behave as under a registered
+  policy (RETURNS-NOTES.md "Quality flags").
+- **Partial semantics:** unset fields keep the registered policy's values;
+  code-side knobs without a config field (onboarding scope, conduit kinds,
+  inception mode, …) are never touched.
+- Applied identically by `wealthdb returns` and the materialized
+  `report_returns` behind the web dashboard. Absent ⇒ registered policies
+  apply unchanged, byte-identical to before.
 
 ## 6. Plugin / adapter architecture
 

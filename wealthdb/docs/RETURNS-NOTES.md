@@ -157,6 +157,15 @@ source:
   entity), which makes the cross-grain leak structurally impossible.
   `DefaultReturnsPolicy()` reproduces current behavior, so a
   recognised-but-unmigrated source is a strict no-op.
+- **Config overrides.** A deployment can adjust a source's registered policy
+  from wealthdb.cfg (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
+  silver_source_id and composed at the engine's single resolution point
+  (`newAccountData`), so the CLI and the materialized `report_returns` always
+  agree: `flow_regime` replaces the flow classification with a regime's
+  canonical kind sets (`FlowPolicyForRegime`); `accounts_grain_meaningless`
+  toggles the accounts-grain blanking. The escape hatch for data completeness
+  that differs from the registered default (e.g. a flow-counting source whose
+  silver carries no transactions pins back to `nav_only`).
 - **UBS knobs (live).** UBS's policy sets four source-scoped knobs:
   `OnboardScope = OnboardPerEntityOnce` (books the relationship's inception
   step-up once, net of same-day negative sibling funding drops, floored at
