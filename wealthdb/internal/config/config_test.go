@@ -552,3 +552,56 @@ func TestLoadReturnsHide(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadReturnsTransferMatching(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	// Enabled with explicit knobs.
+	c, err := Load(writeConfig(t, base+`"returns_transfer_matching":{"enabled":true,"window_days":3,"tolerance_pct":1.5}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m := c.ReturnsTransferMatching
+	if m == nil || !m.Enabled || m.Window() != 3 || m.Tolerance() != 1.5 {
+		t.Errorf("explicit knobs: got %+v (window %d, tol %g)", m, m.Window(), m.Tolerance())
+	}
+
+	// Enabled with knobs omitted: the documented defaults apply.
+	c2, err := Load(writeConfig(t, base+`"returns_transfer_matching":{"enabled":true}}`))
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	m2 := c2.ReturnsTransferMatching
+	if m2.Window() != DefaultTransferMatchWindowDays || m2.Tolerance() != DefaultTransferMatchTolerancePct {
+		t.Errorf("defaults: window %d tol %g", m2.Window(), m2.Tolerance())
+	}
+
+	// Absent block: nil (feature off).
+	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
+	if err != nil {
+		t.Fatalf("Load absent: %v", err)
+	}
+	if c3.ReturnsTransferMatching != nil {
+		t.Error("absent block must stay nil")
+	}
+
+	// Nil-receiver accessors report the defaults (safe on the absent block).
+	var nilM *ReturnsTransferMatching
+	if nilM.Window() != DefaultTransferMatchWindowDays || nilM.Tolerance() != DefaultTransferMatchTolerancePct {
+		t.Error("nil receiver must yield the defaults")
+	}
+
+	// Out-of-range knobs fail the load — even when the block is disabled.
+	cases := map[string]string{
+		"window too wide":    `"returns_transfer_matching":{"enabled":true,"window_days":31}}`,
+		"window negative":    `"returns_transfer_matching":{"enabled":true,"window_days":-1}}`,
+		"tolerance too big":  `"returns_transfer_matching":{"enabled":true,"tolerance_pct":6}}`,
+		"tolerance negative": `"returns_transfer_matching":{"enabled":true,"tolerance_pct":-0.1}}`,
+		"disabled but bad":   `"returns_transfer_matching":{"enabled":false,"window_days":99}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}

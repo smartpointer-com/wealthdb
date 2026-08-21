@@ -495,6 +495,7 @@ Example config file:
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep holdings tracked in a shared login that belong to another person out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
+| `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
 | `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`, `thinkingFormat`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
@@ -651,6 +652,54 @@ an entity from the coarse-grain math instead.
   shows nowhere.
 - **Returns only.** Holdings / net-worth views are unaffected.
 - Absent ⇒ nothing hidden beyond policy, byte-identical to before.
+
+### 5.8 Cross-source transfer matching (opt-in)
+
+Per-source flow classification can never pair the two legs of a
+cross-custodian move: the sending source books a real withdrawal/journal, the
+receiving one a real deposit, and each is correct at its own boundary — but an
+aggregate containing BOTH accounts double-represents the move (the
+`unmatched_transfers=N` population is dominated by exactly these legs).
+`returns_transfer_matching` closes that gap:
+
+```json
+"returns_transfer_matching": {
+    "enabled": true,
+    "window_days": 5,
+    "tolerance_pct": 0.5
+}
+```
+
+- **Matching** links opposite-sign external legs across DIFFERENT sources —
+  same native currency, equal amount within `tolerance_pct` of the larger leg
+  (absolute floor 0.01, so `0` means exact-to-a-cent; the default 0.5% covers
+  wire fees deducted in transit), within `window_days` — 1:1 greedy,
+  deterministic, ranked by (amount gap, day distance) so an exact-amount
+  partner beats a nearer-day coincidence. Native amounts (not output-currency
+  conversions) drive the match, so the three materialized currency partitions
+  derive identical pairs whenever their attached-flow universes coincide (a
+  leg whose FX is unresolved in a partition is a candidate only where it
+  attached and can shift greedy pairings there). Same-source pairs are out of scope: within a source
+  the silver classifier and the transferLike netter own internality.
+  Equity-transfer ledger legs (`xfer:` ids) are exempt — an intentionally
+  recorded pair the transferLike netter already handles.
+- **Netting is per entity**: a linked pair nets only in aggregates where BOTH
+  legs are live members of the window — both accounts in the entity (post
+  `returns_exclude`), both days inside it, neither leg in a subsumption
+  region (a pre-debut or closure-drain leg is represented by its synthetic
+  onboarding/closure amount, so its live partner keeps counting). The
+  sources/portfolios grains therefore keep counting each leg as the real
+  boundary flow it is for them; typically only global nets.
+- **Quality:** entities that netted pairs tag `cross_source_netted=N`;
+  their `unmatched_transfers` count shrinks accordingly. Cross-source
+  netting obeys `--netting off` like the heuristic netter — the diagnostic
+  view shows every raw leg.
+- **Off by default.** Absent block or `enabled: false` ⇒ the matcher never
+  runs; output is byte-identical to the per-source heuristics alone. A
+  matched-nothing run is also byte-identical.
+- **Limitations (v1):** same-native-currency pairs only (a CHF→USD
+  cross-source wire never matches); one-to-one only (a split wire — one
+  withdrawal, two deposits — pairs at most one deposit).
 
 ## 6. Plugin / adapter architecture
 
@@ -1882,7 +1931,7 @@ every approximation is tagged (`since_data_inception`, `configured_inception`,
 `empty_bucket`/`carried_forward`, `boundary_same_snapshot`, `stale_snapshot`,
 `dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`, `mwr_no_flows`,
 `mwr_no_sign_change`, `mwr_nonunique`, `mwr_no_converge`, `mwr_incomplete_flows`,
-`mwr_negative_net_capital`, `unmatched_transfers=N`, `journal_present`, `nav_only`,
+`mwr_negative_net_capital`, `unmatched_transfers=N`, `cross_source_netted=N`, `journal_present`, `nav_only`,
 `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
 `unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
 `flows_before_inception`, `after_tax`). Cross-grain note: `global == Σ accounts + hidden

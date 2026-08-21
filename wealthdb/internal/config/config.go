@@ -108,6 +108,15 @@ type Config struct {
 	// "blanked" | "hidden"). Absent block ⇒ registered policies apply
 	// unchanged. See docs/DESIGN.md §5.6 and internal/gold newAccountData.
 	ReturnsPolicyOverrides map[string]*ReturnsPolicyOverride `json:"returns_policy_overrides,omitempty"`
+	// ReturnsTransferMatching enables the opt-in cross-source transfer
+	// matcher: an unmatched external leg whose counterparty leg exists in
+	// another source (opposite sign, same native currency, equal amount
+	// within the tolerance, within the day window) nets out of every return
+	// aggregate that contains BOTH legs, while finer grains keep counting
+	// each leg. Absent block or enabled=false ⇒ the matcher never runs and
+	// returns are byte-identical to the per-source heuristics alone. See
+	// docs/DESIGN.md §5.8.
+	ReturnsTransferMatching *ReturnsTransferMatching `json:"returns_transfer_matching,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -417,6 +426,46 @@ type ReturnsPolicyOverride struct {
 	// registered one: "normal" (full rows), "blanked" (values shown, TWR/MWR
 	// n/a), or "hidden" (no rows anywhere; values and flows still aggregate).
 	AccountsGrain *string `json:"accounts_grain,omitempty"`
+}
+
+// ReturnsTransferMatching is the `returns_transfer_matching` block of
+// wealthdb.cfg. Pointer fields distinguish "not set" (use the default) from
+// an explicit value.
+type ReturnsTransferMatching struct {
+	// Enabled turns the matcher on. False (or an absent block) keeps returns
+	// byte-identical to the per-source heuristics alone.
+	Enabled bool `json:"enabled"`
+	// WindowDays is the max day distance between the two legs of a pair
+	// (default 5: cross-border wires settle within a business week; wider
+	// windows raise the false-pair risk).
+	WindowDays *int `json:"window_days,omitempty"`
+	// TolerancePct is the relative amount tolerance in percent of the larger
+	// leg (default 0.5; an absolute floor of 0.01 always applies, so 0 means
+	// exact-to-a-cent). Covers wire fees deducted in transit.
+	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
+}
+
+// Defaults for the returns_transfer_matching knobs when the block is enabled
+// with fields omitted.
+const (
+	DefaultTransferMatchWindowDays   = 5
+	DefaultTransferMatchTolerancePct = 0.5
+)
+
+// Window returns the effective day window.
+func (m *ReturnsTransferMatching) Window() int {
+	if m == nil || m.WindowDays == nil {
+		return DefaultTransferMatchWindowDays
+	}
+	return *m.WindowDays
+}
+
+// Tolerance returns the effective relative tolerance in percent.
+func (m *ReturnsTransferMatching) Tolerance() float64 {
+	if m == nil || m.TolerancePct == nil {
+		return DefaultTransferMatchTolerancePct
+	}
+	return *m.TolerancePct
 }
 
 // Regime returns the parsed FlowRegime and whether one is set. Only call

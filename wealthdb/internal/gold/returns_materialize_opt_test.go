@@ -25,13 +25,13 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadFxBounds: %v", err)
 	}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, nil)
+	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, nil, nil)
 	if err != nil {
 		t.Fatalf("loadReturnsDatasetsMulti: %v", err)
 	}
 
 	for _, ccy := range materializeCurrencies {
-		single, err := loadReturnsDataset(ctx, db, ccy, fx, nil)
+		single, err := loadReturnsDataset(ctx, db, ccy, fx, nil, nil)
 		if err != nil {
 			t.Fatalf("loadReturnsDataset %s: %v", ccy, err)
 		}

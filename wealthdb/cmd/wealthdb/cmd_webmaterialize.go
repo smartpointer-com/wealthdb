@@ -41,7 +41,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	}
 	defer db.Close()
 
-	inceptionOv, exclude, hide, policyOv := returnsCfgSettings(cfg)
+	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
 	now := time.Now()
 	n, err := gold.MaterializeReturns(ctx, db, gold.MaterializeParams{
 		// The same end-of-today anchor a bare CLI run gets from
@@ -52,6 +52,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		ReturnsExclude:     exclude,
 		ReturnsHide:        hide,
 		PolicyOverrides:    policyOv,
+		TransferMatching:   matching,
 	})
 	if err != nil {
 		return err

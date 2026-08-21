@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
@@ -71,6 +72,23 @@ type ReturnParams struct {
 	// returns_policy_overrides block, keyed by silver_source_id. Nil/absent ⇒
 	// registered policies apply unchanged. See newAccountData.
 	PolicyOverrides map[string]ReturnsPolicyOverride
+	// TransferMatching enables the opt-in cross-source transfer matcher from
+	// wealthdb.cfg's returns_transfer_matching block. Nil (the default) ⇒ the
+	// matcher never runs and output is byte-identical to a build without it.
+	// See matchCrossTransfers.
+	TransferMatching *TransferMatching
+}
+
+// TransferMatching configures the cross-source transfer matcher: an unmatched
+// external leg (deposit/withdrawal/transfer/journal) whose counterparty leg
+// exists in ANOTHER source — opposite sign, same native currency, equal amount
+// within the tolerance, within the day window — is linked to it, and entities
+// containing BOTH legs net the pair out (the money never left the entity)
+// while finer grains keep counting each leg as the real boundary flow it is
+// for them. See docs/DESIGN.md §5.8.
+type TransferMatching struct {
+	WindowDays   int     // max |day distance| between the two legs
+	TolerancePct float64 // relative amount tolerance, percent of the larger leg
 }
 
 // ReturnsHide holds the source-keyed membership sets of accounts and
@@ -232,12 +250,12 @@ type returnsDataset struct {
 // converted to outCcy, then the derived globalMax / droppedNonzero. fx is
 // currency-independent, so a caller materializing several currencies loads it
 // once and shares it.
-func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds, ov map[string]ReturnsPolicyOverride) (*returnsDataset, error) {
+func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds, ov map[string]ReturnsPolicyOverride, tm *TransferMatching) (*returnsDataset, error) {
 	accts, err := loadAccountData(ctx, db, outCcy, ov)
 	if err != nil {
 		return nil, err
 	}
-	if err := attachFlows(ctx, db, outCcy, accts, fx); err != nil {
+	if err := attachFlows(ctx, db, outCcy, accts, fx, tm); err != nil {
 		return nil, err
 	}
 	ds := &returnsDataset{outCcy: outCcy, accts: accts, fx: fx}
@@ -330,7 +348,7 @@ func RunReturns(ctx context.Context, db *sql.DB, p ReturnParams) ([]ReturnRow, e
 	if err != nil {
 		return nil, err
 	}
-	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides)
+	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides, p.TransferMatching)
 	if err != nil {
 		return nil, err
 	}
@@ -407,12 +425,25 @@ type accountData struct {
 
 	policy         returns.FlowPolicy    // the Flow member (classification) — hot path
 	rpolicy        returns.ReturnsPolicy // full per-source policy incl. the consumed engine knobs (OnboardScope/Inception/ConduitKinds/ExternalOnly)
-	nonTransfer    []returns.Flow        // external deposit/withdrawal — always kept (never netted)
+	nonTransfer    []returns.Flow        // external deposit/withdrawal — never heuristically netted; a cross-source-matched pair may drop (crossLinks)
 	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
 	cryptoExcluded bool
 	hasClampedFlow bool // a flow was valued at the migration-0023 day-0 clamped FX rate
 	droppedNonzero bool // dropped out of a later same-source snapshot while still holding value
+
+	// crossLinks maps a flow's transaction id to its cross-source counterparty
+	// leg, filled by matchCrossTransfers when transfer matching is enabled
+	// (nil otherwise). Consumed per entity in entityFlows: a linked pair nets
+	// only where both legs are live members of the same entity window.
+	crossLinks map[string]crossLink
+}
+
+// crossLink identifies the counterparty leg of a cross-source-matched
+// transfer pair.
+type crossLink struct {
+	src, acct, txID string
+	day             int64
 }
 
 // allExternal returns every policy-external flow (used at the accounts grain,
@@ -688,23 +719,31 @@ func loadSnapshotDays(ctx context.Context, db *sql.DB, byKeys ...map[string]*acc
 
 // attachFlows loads transactions once and distributes the policy-external ones
 // to their accounts, tagging each flow with its source id (for deterministic
-// netting) and flagging any valued at the day-0 clamped FX rate.
-func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[string]*accountData, fx fxBounds) error {
+// netting) and flagging any valued at the day-0 clamped FX rate. With
+// transfer matching enabled it also collects the attached flows as match
+// candidates and links cross-source pairs.
+func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[string]*accountData, fx fxBounds, tm *TransferMatching) error {
 	txns, err := loadFlowTransactions(ctx, db, outCcy)
 	if err != nil {
 		return err
 	}
+	var cands []crossCandidate
 	for _, t := range txns {
-		attachOneFlow(byKey, fx, outCcy, t.src, t.acct,
+		attached := attachOneFlow(byKey, fx, outCcy, t.src, t.acct,
 			canonical.TxKind(t.kind), t.occurredAt, t.txID, t.ccy, t.valueOut)
+		if attached && tm != nil {
+			cands = appendCrossCandidate(cands, t.src, t.acct, t.txID, t.ccy, t.occurredAt, t.netAmt)
+		}
 	}
+	matchCrossTransfers(cands, tm, byKey)
 	return nil
 }
 
 // flowTxnRow is the lean projection of report_transactions the returns engine
-// needs: only the seven fields attachOneFlow reads, not the 20-column display
-// row TransactionsBetween builds. Selecting just these lets DuckDB prune the
-// macro's account/instrument LEFT JOINs, which the flow path never consults.
+// needs: only the fields attachOneFlow and the transfer matcher read, not the
+// 20-column display row TransactionsBetween builds. Selecting just these lets
+// DuckDB prune the macro's account/instrument LEFT JOINs, which the flow path
+// never consults.
 type flowTxnRow struct {
 	src, acct  string
 	occurredAt int64
@@ -712,6 +751,7 @@ type flowTxnRow struct {
 	ccy        string
 	txID       string
 	valueOut   *string
+	netAmt     *string // native-currency net amount (transfer matching)
 }
 
 // loadFlowTransactions reads every transaction's flow-relevant fields in the
@@ -721,7 +761,7 @@ type flowTxnRow struct {
 func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flowTxnRow, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT silver_source_id, account_external_id, occurred_at, kind, currency,
-		        transaction_external_id, value_outccy
+		        transaction_external_id, value_outccy, net_amount
 		   FROM report_transactions(?, ?, ?)
 		  ORDER BY occurred_at, silver_source_id, transaction_external_id`,
 		int64(0), maxEpoch, outCcy)
@@ -732,13 +772,14 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 	var out []flowTxnRow
 	for rows.Next() {
 		var (
-			r        flowTxnRow
-			valueOut sql.NullString
+			r               flowTxnRow
+			valueOut, netAmt sql.NullString
 		)
-		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID, &valueOut); err != nil {
+		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID, &valueOut, &netAmt); err != nil {
 			return nil, fmt.Errorf("attachFlows transactions scan: %w", err)
 		}
 		r.valueOut = trimmedDecimalPtr(valueOut)
+		r.netAmt = trimmedDecimalPtr(netAmt)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -746,25 +787,27 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 
 // attachOneFlow classifies one transaction as an external flow for its account
 // in byKey (a no-op if the account isn't loaded), shared by the single- and
-// multi-currency loaders. valueOut is the transaction's net amount already
-// converted to outCcy (nil ⇒ unresolved FX ⇒ not a flow); txCcy is the
-// transaction's own currency, for the day-0 clamp check.
-func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string) {
+// multi-currency loaders, and reports whether a flow was attached (the
+// transfer matcher's candidate universe — only attached flows can pair).
+// valueOut is the transaction's net amount already converted to outCcy (nil ⇒
+// unresolved FX ⇒ not a flow); txCcy is the transaction's own currency, for
+// the day-0 clamp check.
+func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string) bool {
 	a := byKey[acctKey(src, acct)]
 	if a == nil {
-		return
+		return false
 	}
 	if a.policy.Regime == returns.RegimeCryptoPartial &&
 		(kind == canonical.TxKindTransferIn || kind == canonical.TxKindTransferOut) {
 		a.cryptoExcluded = true
-		return
+		return false
 	}
 	if !a.policy.IsExternal(kind) {
-		return
+		return false
 	}
 	val, ok := parseFloatPtr(valueOut)
 	if !ok {
-		return // unresolved FX on the flow — skip (documented limitation)
+		return false // unresolved FX on the flow — skip (documented limitation)
 	}
 	// ExternalOnly: count only boundary-crossing flows; internal churn
 	// (cash<->securities settlements, inter-account transfers, FX, mandate
@@ -779,7 +822,7 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	// sources (ExternalOnly=false) are untouched.
 	if a.rpolicy.ExternalOnly && a.rpolicy.ClassifyFlow != nil {
 		if a.rpolicy.ClassifyFlow(returns.FlowCtx{Kind: kind, Amount: canonical.NewDecimalFromFloat(val)}) == returns.FlowInternal {
-			return
+			return false
 		}
 	}
 	day := occurredAt / 86400
@@ -794,6 +837,122 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 		a.transferLike = append(a.transferLike, f)
 	} else {
 		a.nonTransfer = append(a.nonTransfer, f)
+	}
+	return true
+}
+
+// crossCandidate is one attached external flow in the transfer matcher's
+// candidate pool, carrying the transaction's NATIVE currency and amount:
+// native amounts are identical across the three output-currency datasets, so
+// every currency partition derives the same pairings (matching on converted
+// amounts would let day-gap FX drift pair differently per partition).
+type crossCandidate struct {
+	src, acct, txID string
+	day             int64
+	ccy             string
+	amt             float64
+}
+
+// appendCrossCandidate adds an attached flow to the matcher's candidate pool.
+// Skipped: equity-transfer ledger legs (`xfer:` ids — an intentionally
+// recorded pair the transferLike netter already handles), rows with no native
+// amount, and zero amounts (nothing to pair).
+func appendCrossCandidate(cands []crossCandidate, src, acct, txID, ccy string, occurredAt int64, netAmt *string) []crossCandidate {
+	if strings.HasPrefix(txID, "xfer:") {
+		return cands
+	}
+	amt, ok := parseFloatPtr(netAmt)
+	if !ok || amt == 0 {
+		return cands
+	}
+	return append(cands, crossCandidate{
+		src: src, acct: acct, txID: txID, day: occurredAt / 86400, ccy: ccy, amt: amt,
+	})
+}
+
+// matchCrossTransfers links opposite-sign external legs across DIFFERENT
+// sources — same native currency, equal amount within the tolerance, within
+// the day window — writing symmetric crossLink entries onto both owning
+// accounts. Same-source pairs are out of scope: within a source the silver
+// classifier and the transferLike netter own internality. Matching is 1:1
+// greedy in deterministic order (candidates sorted by day, source, account,
+// id; each debit takes the eligible credit with the smallest amount gap, then
+// the nearest day, earliest on ties), so
+// repeated runs produce identical links, and the currency partitions derive
+// identical pairs whenever their attached-flow universes coincide (a leg
+// whose FX is unresolved in some partition is a candidate only where it
+// attached and can shift greedy pairings there).
+// The links are only POTENTIAL internality: entityFlows nets a pair strictly
+// when both legs are live members of the same entity window, so finer grains
+// keep counting each leg as the boundary flow it is for them.
+func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map[string]*accountData) {
+	if tm == nil || len(cands) < 2 {
+		return
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.day != b.day {
+			return a.day < b.day
+		}
+		if a.src != b.src {
+			return a.src < b.src
+		}
+		if a.acct != b.acct {
+			return a.acct < b.acct
+		}
+		return a.txID < b.txID
+	})
+	var debits, credits []crossCandidate
+	for _, c := range cands {
+		if c.amt < 0 {
+			debits = append(debits, c)
+		} else {
+			credits = append(credits, c)
+		}
+	}
+	used := make([]bool, len(credits))
+	link := func(a, b crossCandidate) {
+		if acc := byKey[acctKey(a.src, a.acct)]; acc != nil {
+			if acc.crossLinks == nil {
+				acc.crossLinks = map[string]crossLink{}
+			}
+			acc.crossLinks[a.txID] = crossLink{src: b.src, acct: b.acct, txID: b.txID, day: b.day}
+		}
+	}
+	for _, d := range debits {
+		best, bestGap, bestDist := -1, 0.0, int64(0)
+		for i, c := range credits {
+			if used[i] || c.src == d.src || c.ccy != d.ccy {
+				continue
+			}
+			dist := c.day - d.day
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist > int64(tm.WindowDays) {
+				continue
+			}
+			eps := 0.01
+			if r := tm.TolerancePct / 100 * math.Max(math.Abs(d.amt), c.amt); r > eps {
+				eps = r
+			}
+			gap := math.Abs(d.amt + c.amt)
+			if gap > eps {
+				continue
+			}
+			// Rank by (amount gap, day distance): an exact-amount partner
+			// beats a nearer-day coincidence within the tolerance, which is
+			// the main false-pair pressure at loose tolerances.
+			if best < 0 || gap < bestGap || (gap == bestGap && dist < bestDist) {
+				best, bestGap, bestDist = i, gap, dist
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		used[best] = true
+		link(d, credits[best])
+		link(credits[best], d)
 	}
 }
 

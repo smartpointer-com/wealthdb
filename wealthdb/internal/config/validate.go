@@ -254,6 +254,19 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// returns_transfer_matching: bound the knobs whether or not the block is
+	// enabled — a mis-typed disabled block should fail loudly, not lie in
+	// wait. The window cap keeps a fat-fingered value from pairing unrelated
+	// month-apart flows; the tolerance cap likewise.
+	if m := c.ReturnsTransferMatching; m != nil {
+		if m.WindowDays != nil && (*m.WindowDays < 0 || *m.WindowDays > 30) {
+			return fmt.Errorf("config: returns_transfer_matching.window_days %d out of range [0, 30]", *m.WindowDays)
+		}
+		if m.TolerancePct != nil && (*m.TolerancePct < 0 || *m.TolerancePct > 5) {
+			return fmt.Errorf("config: returns_transfer_matching.tolerance_pct %g out of range [0, 5]", *m.TolerancePct)
+		}
+	}
+
 	// web: optional dockerized BI server. Only the port needs a
 	// shape check; an absent block or zero port means "use the
 	// default" (DefaultWebPort), resolved at read time.

@@ -306,7 +306,9 @@ type ownedFlow struct {
 }
 
 // entityFlows assembles the entity's external flow series at a coarse grain:
-//   - deposit/withdrawal flows (never netted — see RETURNS-NOTES);
+//   - deposit/withdrawal flows (never heuristically netted — see
+//     RETURNS-NOTES; a cross-source-matched pair whose both legs are live
+//     members drops);
 //   - transfer-like flows, netted to drop internal moves;
 //   - the synthetic onboarding/closure flows (which never enter netting).
 //
@@ -320,11 +322,27 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
+		// (Cross-source links never net here: the partner is by definition in
+		// another source, so it can't be a member of a single-account entity.)
 		return flowsIn(assets[0].allExternal(), winFrom, winTo), tags
 	}
 
-	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES).
-	// Pre-debut flows are normally subsumed because synthetic onboarding books the
+	// Cross-source matched pairs obey the same --netting switch as the
+	// heuristic netter: netting off is the diagnostic view of every raw leg.
+	var crossDrop map[string]bool
+	if p.Netting {
+		var crossPairs int
+		crossDrop, crossPairs = crossMatchedDrops(assets, winFrom, winTo)
+		if crossPairs > 0 {
+			tags = append(tags, fmt.Sprintf("cross_source_netted=%d", crossPairs))
+		}
+	}
+
+	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES,
+	// with the one exception of a cross-source-matched pair whose both legs are
+	// live members of this entity window: the money provably moved between the
+	// entity's own pockets, so both legs drop). Pre-debut flows are normally
+	// subsumed because synthetic onboarding books the
 	// debut value instead; under OnboardNone there is no onboarding, so a real
 	// debut-region deposit IS the capital event and must be kept (otherwise the
 	// funded value shows up as pure performance). Closure-drain flows are still
@@ -335,6 +353,9 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 		onboardNone := a.rpolicy.OnboardScope == returns.OnboardNone
 		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
+			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
+				continue
+			}
 			if !ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo) {
 				continue
 			}
@@ -349,10 +370,16 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, av
 	// THEN subsume any surviving pre-debut / closure-drain leg. Netting runs over the
 	// full candidate set (subsumed legs included) so an internal pair whose other leg
 	// sits on an already-alive account still annihilates and is never orphaned.
+	// Cross-source-matched legs are already accounted for (their pair dropped
+	// above) and are withheld from the candidate pool so greedy heuristic
+	// netting can't consume them again.
 	var cand []ownedFlow
 	for _, a := range assets {
 		ledgerExact := a.rpolicy.ClosureScope == returns.ClosureLedgerExact
 		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
+			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
+				continue
+			}
 			sub := subsumesAtDebut(a, f.Day, winFrom, winTo) ||
 				(!ledgerExact && subsumesAtClosure(a, f.Day, winFrom, winTo))
 			cand = append(cand, ownedFlow{Flow: f, subsumed: sub})
@@ -531,6 +558,82 @@ func groupOnboardStep(grp []*accountData, day int64) float64 {
 		step = 0
 	}
 	return step
+}
+
+// crossMatchedDrops resolves the cross-source transfer links (crossLinks,
+// written by matchCrossTransfers) against THIS entity window: a linked pair
+// nets — both legs dropped — strictly when BOTH legs are live members, i.e.
+// the partner's account is in the entity, both legs' days are inside
+// (winFrom, winTo], and neither leg sits in a subsumption region (a pre-debut
+// or closure-drain leg is represented by its synthetic onboarding/closure
+// amount, so dropping its live partner too would count the capital
+// asymmetrically). Legs failing any condition keep their normal treatment:
+// at finer grains — and for pairs straddling the window — each leg stays the
+// real boundary flow it is for that view. Keys are
+// acctKey(acctKey(src,acct), txID); the returned count is netted PAIRS.
+func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, int) {
+	any := false
+	for _, a := range assets {
+		if len(a.crossLinks) > 0 {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return nil, 0
+	}
+	members := make(map[string]*accountData, len(assets))
+	for _, a := range assets {
+		members[acctKey(a.src, a.acct)] = a
+	}
+	// isTransferLike reports which slice a member's flow id lives in, so the
+	// liveness check can mirror that slice's exact subsumption rule: the
+	// nonTransfer loop keeps pre-debut flows under OnboardNone (the deposit IS
+	// the capital event there), while the transferLike path subsumes pre-debut
+	// legs unconditionally.
+	isTransferLike := func(a *accountData, id string) bool {
+		for _, f := range a.transferLike {
+			if f.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	live := func(a *accountData, id string, day int64) bool {
+		if day <= winFrom || day > winTo {
+			return false
+		}
+		if subsumesAtDebut(a, day, winFrom, winTo) &&
+			(isTransferLike(a, id) || a.rpolicy.OnboardScope != returns.OnboardNone) {
+			return false
+		}
+		if a.rpolicy.ClosureScope != returns.ClosureLedgerExact && subsumesAtClosure(a, day, winFrom, winTo) {
+			return false
+		}
+		return true
+	}
+	drops := map[string]bool{}
+	pairs := 0
+	for _, a := range assets {
+		for _, f := range append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...) {
+			link, ok := a.crossLinks[f.ID]
+			if !ok {
+				continue
+			}
+			// Process each pair once, from its lexicographically-smaller leg.
+			me, other := acctKey(acctKey(a.src, a.acct), f.ID), acctKey(acctKey(link.src, link.acct), link.txID)
+			if me > other {
+				continue
+			}
+			partner := members[acctKey(link.src, link.acct)]
+			if partner == nil || !live(a, f.ID, f.Day) || !live(partner, link.txID, link.day) {
+				continue
+			}
+			drops[me], drops[other] = true, true
+			pairs++
+		}
+	}
+	return drops, pairs
 }
 
 // subsumesAtDebut reports whether a flow on `day` falls in a late constituent's

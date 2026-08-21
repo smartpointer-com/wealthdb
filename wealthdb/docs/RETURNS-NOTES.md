@@ -101,6 +101,17 @@ returns migration:
   deterministic — `netOwnedTransfers` sorts stably by `(|amount|, day, id)`.
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
+- **Cross-source transfer matching** (opt-in, DESIGN.md §5.8) is the one
+  sanctioned crossing of that deposit/withdrawal line: a pair explicitly
+  matched ACROSS sources (opposite sign, same native currency, equal
+  amount within tolerance, day window) nets in entities containing both
+  legs live — tagged `cross_source_netted=N` — because the cross-source
+  evidence is exactly what the within-entity heuristic lacks. Matched
+  legs are withheld from `netOwnedTransfers`' candidate pool, matching
+  operates on native amounts (partitions derive identical pairs whenever
+  their attached-flow universes coincide), and `--netting off` disables
+  cross-source drops along with the heuristic netter. Off ⇒
+  byte-identical.
 - **Explicit closure** is detected only when an account's value series ends
   in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.
   The per-source `ClosureScope` knob decides how the exit is accounted:
@@ -254,8 +265,8 @@ every approximation is tagged. Computed set:
 `dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`,
 `mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
 `mwr_no_converge`, `mwr_incomplete_flows`, `mwr_negative_net_capital`,
-`unmatched_transfers=N`, `journal_present`, `nav_only`,
-`nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
+`unmatched_transfers=N`, `cross_source_netted=N`, `journal_present`,
+`nav_only`, `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
 `unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
 `flows_before_inception`, `after_tax`.
 

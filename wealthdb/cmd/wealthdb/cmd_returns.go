@@ -61,7 +61,7 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	method := fs.String("method", "twr", "twr | mwr | both")
 	period := fs.String("period", "quarterly", "monthly | quarterly | annual | total")
 	annualize := fs.String("annualize", "auto", "auto | always | never")
-	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains")
+	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains (incl. cross-source matched pairs)")
 	inception := fs.String("inception", "full", "full | strict — aggregate since-inception handling")
 	format := fs.String("f", "table", "output format: table | csv | csv_plain | json")
 	fs.StringVar(format, "format", "table", "output format: table | csv | csv_plain | json")
@@ -130,13 +130,13 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 	}
 	defer db.Close()
 
-	inceptionOv, exclude, hide, policyOv := returnsCfgSettings(cfg)
+	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
 	rows, err := gold.RunReturns(ctx, db, gold.ReturnParams{
 		Level: view, FromEpoch: fromEpoch, ToEpoch: toEpoch, OutCcy: outCcy,
 		Method: *method, Period: *period, Annualize: *annualize,
 		Netting: *netting == "on", Inception: *inception,
 		InceptionOverrides: inceptionOv, ReturnsExclude: exclude,
-		ReturnsHide: hide, PolicyOverrides: policyOv,
+		ReturnsHide: hide, PolicyOverrides: policyOv, TransferMatching: matching,
 	})
 	if err != nil {
 		return err
@@ -145,10 +145,10 @@ func runReturnsView(ctx context.Context, g globalFlags, view string, args []stri
 }
 
 // returnsCfgSettings builds the engine-side inception-override, exclusion,
-// hide, and policy-override sets from wealthdb.cfg. Shared by `returns` and
-// the hidden `web-materialize` so a materialized partition carries exactly
-// the settings a CLI run applies.
-func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, *gold.ReturnsHide, map[string]gold.ReturnsPolicyOverride) {
+// hide, policy-override, and transfer-matching settings from wealthdb.cfg.
+// Shared by `returns` and the hidden `web-materialize` so a materialized
+// partition carries exactly the settings a CLI run applies.
+func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, *gold.ReturnsHide, map[string]gold.ReturnsPolicyOverride, *gold.TransferMatching) {
 	var inceptionOv *gold.InceptionOverrides
 	if cfg.InceptionOverrides != nil {
 		s, p, a := cfg.InceptionOverrides.Epochs()
@@ -181,7 +181,11 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 			policyOv[id] = g
 		}
 	}
-	return inceptionOv, exclude, hide, policyOv
+	var matching *gold.TransferMatching
+	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
+		matching = &gold.TransferMatching{WindowDays: m.Window(), TolerancePct: m.Tolerance()}
+	}
+	return inceptionOv, exclude, hide, policyOv, matching
 }
 
 // parseReturnsWindow defaults a bare invocation to since-inception → today

@@ -142,7 +142,7 @@ func TestPolicyOverrideMultiLoader(t *testing.T) {
 	}
 	fc := returns.RegimeFlowComplete
 	ov := map[string]ReturnsPolicyOverride{"man": {FlowRegime: &fc}}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, ov)
+	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, ov, nil)
 	if err != nil {
 		t.Fatalf("loadReturnsDatasetsMulti: %v", err)
 	}
