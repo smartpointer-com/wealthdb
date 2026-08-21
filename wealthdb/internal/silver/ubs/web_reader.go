@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -317,21 +319,34 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // Transaction No. (e.g. `0104030TXNNNNNNN`), PSN events use
 // MT-prefixed strings (e.g. `mt515:...`). Any cross-source
 // identity match would be heuristic and risk double-counting.
-func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, error) {
+//
+// The second return value is the PSN half of the same-day offset veto: the
+// event ids of PSN cash movements whose mirror leg pairs a web row. The
+// caller demotes those in the PSN stream — a pair must drop on BOTH sides
+// or the surviving side books a one-sided phantom external flow.
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, map[string]bool, error) {
 	if !w.HasChanges {
-		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil, nil
 	}
 	cutoff, err := buildPSNStartByWebRel(ctx, psn, rels)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	accountToRel, err := r.buildAccountToRelMap(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ownIBANs, err := r.buildOwnIBANSet(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	mt940Start, err := r.mt940FeedStart(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	const q = `
@@ -341,7 +356,7 @@ SELECT transaction_external_id, value_date, account_external_id,
  WHERE value_date BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
-		return nil, fmt.Errorf("ubs-web Transactions: %w", err)
+		return nil, nil, fmt.Errorf("ubs-web Transactions: %w", err)
 	}
 	defer rows.Close()
 
@@ -354,7 +369,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			kindStr                       sql.NullString
 		)
 		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &kindStr, &payload); err != nil {
-			return nil, fmt.Errorf("ubs-web Transactions scan: %w", err)
+			return nil, nil, fmt.Errorf("ubs-web Transactions scan: %w", err)
 		}
 		// Hard cut at PSN_start per relationship.
 		if rel, ok := accountToRel[accountID]; ok {
@@ -373,25 +388,39 @@ SELECT transaction_external_id, value_date, account_external_id,
 		netPtr := net
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
-		// Pre-2024 Account-Statement PDF cash backfill: classify each
-		// deposit/withdrawal as EXTERNAL (boundary-crossing owner
-		// capital) or INTERNAL (conduit churn) at the relationship
-		// boundary. UBS cash/current accounts are CONDUITS — external
-		// capital enters as cash and is routed into securities /
-		// mandates / FX, whose value spine carries the return — so
-		// internal churn fed into a flow-based return double-counts.
-		// The conservative rule (pdfCashIsExternal, default INTERNAL,
-		// own-IBAN-based, PII-free) keeps only provably-external moves
-		// in the flow stream; INTERNAL rows are demoted to a non-flow
-		// kind (TxKindOther, absent from BankExternal) so they stay
-		// queryable in gold but out of the return. The engine's UBS
-		// policy (OnboardPerEntityOnce + ConduitKinds:[cash] +
-		// ExternalOnly + Inception=first-real-snapshot) then onboards
-		// the relationship's inception value ONCE and counts external
-		// deposits on top, so capital is counted exactly once. MT940
-		// rows (post-2024) carry no source marker and are unaffected.
+		// Classify each deposit/withdrawal as EXTERNAL (boundary-
+		// crossing owner capital) or INTERNAL (conduit churn) at the
+		// relationship boundary. UBS cash/current accounts are
+		// CONDUITS — external capital enters as cash and is routed
+		// into securities / mandates / FX, whose value spine carries
+		// the return — so internal churn fed into a flow-based return
+		// double-counts. INTERNAL rows are demoted to a non-flow kind
+		// (TxKindOther, absent from BankExternal) so they stay
+		// queryable in gold but out of the return. Two layers:
+		//
+		//  1. The same-day offset veto (buildSameDayOffsetVeto)
+		//     demotes any leg — PDF or MT940 — whose mirror leg is
+		//     booked on another own account on the same value day:
+		//     the movement provably never left the relationship.
+		//  2. PDF-backfill rows additionally pass pdfCashIsExternal
+		//     (default INTERNAL, counter-IBAN + rail-booking based,
+		//     PII-free); MT940 rows carry structured kinds and need
+		//     no per-row classifier beyond the veto. The rail
+		//     promotion inside the classifier is era-gated to rows
+		//     on/after the MT940 feed's first covered day
+		//     (mt940FeedStart) — see the classifier's doc for why the
+		//     deep backfill era stays conservative in BOTH directions.
+		//
+		// The engine's UBS policy (OnboardPerEntityOnce +
+		// ConduitKinds:[cash] + ExternalOnly + Inception=first-real-
+		// snapshot) then onboards debut step-ups and counts external
+		// deposits on top, so capital is counted exactly once.
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
-			if isPDFCashBackfill(payload) && !pdfCashIsExternal(payload, ownIBANs) {
+			railEra := mt940Start > 0 && valueDate >= mt940Start
+			switch {
+			case offsetVeto[txID+"@"+accountID]:
+				kind = canonical.TxKindOther
+			case isPDFCashBackfill(payload) && !pdfCashIsExternal(payload, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
 				kind = canonical.TxKindOther
 			}
 		}
@@ -439,7 +468,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			Payload:               json.RawMessage(payload),
 		})
 	}
-	return silver.NewTransactionStream(out), rows.Err()
+	return silver.NewTransactionStream(out), psnVeto, rows.Err()
 }
 
 // dumpRunTimesInWindow returns the chronologically-sorted set of
@@ -616,6 +645,210 @@ func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error
 		out[normalizeIBAN(iban)] = true
 	}
 	return out, rows.Err()
+}
+
+// offsetVetoEps bounds the amount mismatch for the same-day offset veto. Book
+// transfers preserve the amount exactly, so the tolerance only absorbs float
+// scanning noise, never fees.
+const offsetVetoEps = 0.01
+
+// offsetLeg is one deposit/withdrawal-kinded cash row in the same-day offset
+// probe. vetoKey carries the leg's emitted TransactionExternalID form —
+// txID@acct for web rows, the event id for PSN rows — routed to the matching
+// feed's veto map on a pair. Legs the classifier already demotes (parser
+// internal flag, deep era, non-rail shape) still participate: an internal
+// leg's same-day mirror on another own account is genuinely internal too
+// (the parser-flagged UEBERTRAG orders whose receiving legs land in the
+// MT940 feed are the live proof), and since a pair always drops on BOTH
+// sides, even a coincidental false pair costs only a net-zero same-day pair.
+type offsetLeg struct {
+	vetoKey string
+	psnLeg  bool
+	txID    string
+	acct    string
+	amt     float64
+}
+
+// buildSameDayOffsetVeto pairs cash rows that offset each other on the same
+// value day — same currency, equal amount (within offsetVetoEps), opposite
+// direction, different own account — and returns the emitted-row keys of the
+// paired legs per feed (web: txID@acct; PSN: event id) so BOTH transaction
+// loops can demote them to a non-flow kind. Demoting both sides is what makes
+// a pair — true or false — cost at most a net-zero same-day pair dropped from
+// the flow stream; a one-sided demotion would fabricate a phantom external
+// flow, the exact failure the veto exists to prevent.
+//
+// An intra-relationship move recorded without a counter IBAN is
+// indistinguishable from an external payment on the row alone (both feeds
+// record many shapes with a free-text beneficiary only), but the receiving own
+// account books the mirror leg on the same value day. That mirror's membership
+// in the own-account universe is the IBAN-free form of the same-relationship
+// test, and it works across the feed seams (PDF ↔ MT940 ↔ PSN) where the ID
+// schemes differ. The probe covers the EMITTED universe: web rows below their
+// relationship's PSN cutover (a suppressed web row is represented by its PSN
+// duplicate and must not consume a match) plus PSN cash movements, over the
+// FULL silver rather than the load window — a row's classification depends
+// only on silver contents, never on load slicing; a mirror leg that lands in
+// a later dump is picked up on the next `reload`.
+//
+// Matching is 1:1 greedy and deterministic, in two global phases: first every
+// bank-linked twin (shared Transaction no. — UBS stamps both sides of an
+// inter-account transfer with one number; FX legs share it too but differ in
+// currency, so they never pair here), then loose same-day offsets among the
+// remaining legs. The twin phase is global so a twin-less leg that merely
+// sorts earlier can never steal another leg's bank-linked twin.
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string) (webVeto, psnVeto map[string]bool, err error) {
+	type groupKey struct {
+		day int64
+		ccy string
+	}
+	groups := map[groupKey][]offsetLeg{}
+
+	rows, err := r.db.QueryContext(ctx, `
+SELECT transaction_external_id, value_date, account_external_id,
+       currency_iso, amount_debit, amount_credit, description_kind
+  FROM transactions`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (web): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			txID, acct, ccy string
+			valueDate       int64
+			debit, credit   sql.NullFloat64
+			kindStr         sql.NullString
+		)
+		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr); err != nil {
+			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (web): %w", err)
+		}
+		// Emitted-universe filter: mirror the transaction loop's hard cut at
+		// the per-relationship PSN cutover.
+		if rel, ok := accountToRel[acct]; ok {
+			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
+				continue
+			}
+		}
+		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
+		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+			continue
+		}
+		amt := credit.Float64 - debit.Float64
+		k := groupKey{day: valueDate / 86400, ccy: ccy}
+		groups[k] = append(groups[k], offsetLeg{
+			vetoKey: txID + "@" + acct, txID: txID, acct: acct, amt: amt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if psn != nil {
+		prows, err := psn.db.QueryContext(ctx, `
+SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
+  FROM events
+ WHERE kind = 'cash_movement'`)
+		if err != nil {
+			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (psn): %w", err)
+		}
+		defer prows.Close()
+		for prows.Next() {
+			var (
+				eventID, acct string
+				ccy           sql.NullString
+				ts            int64
+				payload       string
+			)
+			if err := prows.Scan(&eventID, &ts, &acct, &ccy, &payload); err != nil {
+				return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (psn): %w", err)
+			}
+			var p cashMovementPayload
+			if err := json.Unmarshal([]byte(payload), &p); err != nil || p.Amount == nil {
+				continue
+			}
+			kind := cashMovementKind(p.Narrative, p.CreditDebit)
+			if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+				continue
+			}
+			amt, _ := p.Amount.Float64()
+			if p.CreditDebit == "D" && amt > 0 {
+				amt = -amt
+			}
+			if p.Account != "" {
+				acct = p.Account
+			}
+			c := ccy.String
+			if p.Funds != "" {
+				c = p.Funds
+			}
+			k := groupKey{day: ts / 86400, ccy: c}
+			groups[k] = append(groups[k], offsetLeg{
+				vetoKey: eventID, psnLeg: true, txID: eventID, acct: acct, amt: amt,
+			})
+		}
+		if err := prows.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	webVeto, psnVeto = map[string]bool{}, map[string]bool{}
+	record := func(l offsetLeg) {
+		if l.psnLeg {
+			psnVeto[l.vetoKey] = true
+		} else {
+			webVeto[l.vetoKey] = true
+		}
+	}
+	for _, legs := range groups {
+		var debits, credits []offsetLeg
+		for _, l := range legs {
+			if l.amt < 0 {
+				debits = append(debits, l)
+			} else if l.amt > 0 {
+				credits = append(credits, l)
+			}
+		}
+		less := func(s []offsetLeg) func(i, j int) bool {
+			return func(i, j int) bool {
+				if s[i].acct != s[j].acct {
+					return s[i].acct < s[j].acct
+				}
+				return s[i].txID < s[j].txID
+			}
+		}
+		sort.Slice(debits, less(debits))
+		sort.Slice(credits, less(credits))
+		matchOf := make([]int, len(debits))
+		for i := range matchOf {
+			matchOf[i] = -1
+		}
+		used := make([]bool, len(credits))
+		for pass := 0; pass < 2; pass++ {
+			for di, d := range debits {
+				if matchOf[di] >= 0 {
+					continue
+				}
+				for i, c := range credits {
+					if used[i] || c.acct == d.acct || math.Abs(d.amt+c.amt) > offsetVetoEps {
+						continue
+					}
+					if pass == 0 && c.txID != d.txID {
+						continue // twin phase: shared Transaction no. only
+					}
+					matchOf[di], used[i] = i, true
+					break
+				}
+			}
+		}
+		for di, ci := range matchOf {
+			if ci < 0 {
+				continue
+			}
+			record(debits[di])
+			record(credits[ci])
+		}
+	}
+	return webVeto, psnVeto, nil
 }
 
 // buildPSNStartByWebRel resolves the PSN-start cutoff per web
@@ -837,11 +1070,30 @@ func securitiesSide(hasDebit, hasCredit bool) canonical.TxKind {
 	return canonical.TxKindBuy
 }
 
+// mt940FeedStart returns the earliest value_date carried by the MT940/CSV
+// feed (rows without the PDF backfill's source marker), or 0 when the silver
+// holds no MT940 rows at all. This is the era boundary for the classifier's
+// rail promotion: from this day on, PDF rows are per-account gap-fills inside
+// an era whose arrivals the MT940 feed counts, so they adopt MT940 semantics;
+// before it, the deep backfill era stays conservative (see pdfCashIsExternal).
+// A PDF-only silver (no MT940 coverage yet) therefore never promotes.
+func (r *webReader) mt940FeedStart(ctx context.Context) (int64, error) {
+	var start sql.NullInt64
+	err := r.db.QueryRowContext(ctx, `
+SELECT MIN(value_date) FROM transactions
+ WHERE payload NOT LIKE '%account_statement_pdf%'`).Scan(&start)
+	if err != nil {
+		return 0, fmt.Errorf("mt940FeedStart: %w", err)
+	}
+	return start.Int64, nil
+}
+
 // isPDFCashBackfill reports whether a transaction came from the
 // pre-2024 Account-Statement PDF backfill (source=
-// "account_statement_pdf"). Used to hold those cash movements out of
-// the return flow stream; the MT940 feed carries no such marker and
-// is unaffected.
+// "account_statement_pdf"). Gates the per-row external/internal
+// classifier (pdfCashIsExternal); the MT940 feed carries no such
+// marker and needs no per-row classifier beyond the same-day
+// offset veto.
 func isPDFCashBackfill(payload string) bool {
 	var p struct {
 		Source string `json:"source"`
@@ -859,26 +1111,94 @@ func normalizeIBAN(s string) string {
 	return strings.ToUpper(strings.ReplaceAll(s, " ", ""))
 }
 
-// pdfCashIsExternal decides whether a pre-2024 PDF-backfill cash movement is a
-// genuine boundary-crossing (EXTERNAL) owner-capital flow or internal churn.
+// outboundPaymentRailBookings are the Account-Statement booking types of
+// owner-initiated payments through the domestic payment rails and debit
+// channels: payment orders (e-banking / paper / telephone / standing),
+// e-bill (PayNet), direct debit (LSV), QR-bill, ATM cash, card and TWINT
+// debits. These pay a beneficiary OUTSIDE the relationship by construction —
+// moves between own accounts book as transfer forms that the collector's
+// internal markers flag, carry an own counter IBAN, or mirror on the
+// receiving own account and fall to the same-day offset veto — so a debit
+// with one of these types that survives those checks is a boundary-crossing
+// payment even when the statement records no counter IBAN (it usually
+// doesn't: the beneficiary appears in free text only). Matching is exact on
+// the upper-cased booking type, mirroring webKind's exact-match rationale.
+var outboundPaymentRailBookings = map[string]bool{
+	"E-BANKING PAYMENT ORDER":    true,
+	"MULTI E-BANKING ORDER":      true,
+	"PAYMENT ORDER":              true,
+	"SPECIAL PAYMENT ORDER":      true,
+	"PAYMENT ORDER BY TELEPHONE": true,
+	"VARIOUS STANDING ORDERS":    true,
+	"PAYNET ORDER":               true,
+	"MULTI PAYNET ORDER":         true,
+	"DIRECT DEBIT":               true,
+	"QR-BILL (INSTANT PAYMENT)":  true,
+	"ATM WITHDRAWAL":             true,
+	"UBS BANCOMAT WITHDRAWAL":    true,
+	"PAYMENT TO CARD":            true,
+	"DEBIT CARD PAYMENT":         true,
+	"PAYMENT UBS TWINT":          true,
+	"DEBIT UBS TWINT":            true,
+}
+
+// inboundArrivalBookings are the booking types of payments ARRIVING through
+// the interbank rails: the generic credit-transfer booking (an incoming
+// SIC/SWIFT wire), its e-banking flavour, and salary. The mirror of the
+// outbound set — the MT940 feed counts the identical arrivals as deposits via
+// the direction fallback, so demoting the PDF era's copies would understate
+// inflows against counted outflows and fabricate return. Own-product cash
+// parkings (CALL DEPOSIT / FIXED TERM DEPOSIT increases, decreases,
+// repayments) deliberately stay OUT of the set: they settle an own product
+// inside the relationship.
+var inboundArrivalBookings = map[string]bool{
+	"CREDIT":           true,
+	"E-BANKING CREDIT": true,
+	"SALARY PAYMENT":   true,
+}
+
+// pdfCashIsExternal decides whether a PDF-backfill cash movement is a genuine
+// boundary-crossing (EXTERNAL) owner-capital flow or internal churn. outbound
+// reports the row's direction (debit side); railEra reports whether the row
+// falls on/after the MT940 feed's first covered day (mt940FeedStart).
 //
 // UBS cash/current accounts are conduits: external cash lands and is routed into
 // securities / mandates / FX inside the relationship, and the securities value
 // spine carries the return. Feeding that internal churn into a flow-based return
 // double-counts capital. The rule is therefore CONSERVATIVE toward internal —
-// default INTERNAL, mark EXTERNAL only when the counterparty is PROVABLY a
-// non-own party — because a missed external merely understates capital (safe)
-// while a fabricated external double-counts (catastrophic — loose org-marker
-// heuristics fabricate externals). It uses ONLY the normalized
-// counter_account IBAN against the relationship's own-IBAN set — NO holder name,
-// NO free-text counterparty, NO org markers, i.e. no PII.
+// default INTERNAL, mark EXTERNAL only when the movement PROVABLY crosses the
+// relationship boundary — because a fabricated external double-counts capital
+// (catastrophic — loose org-marker heuristics fabricate externals). It uses
+// ONLY the normalized counter_account IBAN, the structured booking type, and
+// the row's direction — NO holder name, NO free-text counterparty, i.e. no PII.
 //
-// EXTERNAL iff the parser did NOT already flag the row internal_transfer AND
-// counter_account is a populated, non-own Swiss/Liechtenstein IBAN that is not a
-// mortgage (HYPOTHEK) payoff or a structured-product maturity / closing.
-// Everything else — parser-confirmed internal_transfer, null counter, own IBAN,
-// non-CH/LI IBAN, mortgage amortisation, maturity/closing — is INTERNAL.
-func pdfCashIsExternal(payload string, own map[string]bool) bool {
+// Decision order:
+//  1. parser-confirmed internal_transfer         ⇒ INTERNAL (authoritative)
+//  2. own counter IBAN                           ⇒ INTERNAL
+//  3. HYPOTHEK / MATURITY / CLOSING booking      ⇒ INTERNAL (own liability /
+//     product settling inside the relationship)
+//  4. railEra + direction-matching rail booking  ⇒ EXTERNAL (outbound:
+//     outboundPaymentRailBookings; inbound: inboundArrivalBookings). No
+//     counter IBAN required — the MT940 feed counts the identical bookings
+//     as withdrawals/deposits via its direction fallback, so demoting the
+//     gap-fill PDF copies would make returns depend on which feed covered
+//     the month, and demoting only ONE direction fabricates return
+//     outright. The intra-relationship shapes these rails could smuggle in
+//     are peeled off first: rules 1–3 here, plus the same-day offset veto
+//     at the call site.
+//  5. populated non-own CH/LI counter IBAN       ⇒ EXTERNAL
+//  6. everything else                            ⇒ INTERNAL (own-product cash
+//     parkings, unrecognized shapes — conservative default)
+//
+// Rule 4 is era-gated: in the DEEP backfill era (before any MT940 coverage)
+// both directions stay conservative-internal. That era's inbound capital is
+// carried by the engine's onboarding step-ups (relationship and sub-entity
+// debuts), so counting arrival credits as deposits double-counts it — and a
+// per-row shape cannot distinguish a mid-life external arrival from migration
+// funding a debut books days later. Swallowing both directions keeps the two
+// errors offsetting instead of fabricating one-sided return; the honest fix
+// for that era is transaction-complete counterparty data, not a looser rule.
+func pdfCashIsExternal(payload string, own map[string]bool, outbound, railEra bool) bool {
 	var p struct {
 		CounterAccount   string `json:"counter_account"`
 		BookingType      string `json:"booking_type"`
@@ -890,9 +1210,9 @@ func pdfCashIsExternal(payload string, own map[string]bool) bool {
 	// The collector's own name-free markers (UEBERTRAG/UMBUCHUNG/MANDAT/MANAGE/
 	// PORTFOLIO/REDUK on the continuation lines) already identified this row as an
 	// intra-relationship mandate-funding / book-transfer move. That is authoritative
-	// and VETOES external BEFORE the IBAN promotion below: a mandate/portfolio
-	// destination absent from `accounts` is a known-internal row whose counter IBAN
-	// would otherwise pass all four EXTERNAL conditions and fabricate owner capital
+	// and VETOES external BEFORE any promotion below: a mandate/portfolio
+	// destination absent from `accounts` is a known-internal row that would
+	// otherwise pass the EXTERNAL conditions and fabricate owner capital
 	// (the conduit direction this model exists to prevent). own-IBAN membership is a
 	// supplement that can only DEMOTE a known-own counter to internal; it cannot
 	// catch such a row, so the parser flag must gate first.
@@ -900,21 +1220,27 @@ func pdfCashIsExternal(payload string, own map[string]bool) bool {
 		return false // parser-confirmed internal reshuffle ⇒ never external
 	}
 	ctr := normalizeIBAN(p.CounterAccount)
-	if ctr == "" {
-		return false // no counterparty IBAN ⇒ not provably external ⇒ INTERNAL
-	}
-	if own[ctr] {
-		return false // inter-own-account move: supplement demoting a KNOWN own counter (parser flag already handled unknown-destination internals above)
-	}
-	if !strings.HasPrefix(ctr, "CH") && !strings.HasPrefix(ctr, "LI") {
-		return false // only Swiss/Liechtenstein counterparties count; anything else stays INTERNAL
+	if ctr != "" && own[ctr] {
+		return false // inter-own-account move: a KNOWN own counter demotes regardless of booking shape
 	}
 	// Mortgage amortisation + structured-product maturity/closing net inside the
 	// relationship (payoff of an own liability / roll of an own product), not owner
 	// capital crossing the boundary.
-	bt := strings.ToUpper(p.BookingType)
+	bt := strings.ToUpper(strings.TrimSpace(p.BookingType))
 	if strings.Contains(bt, "HYPOTHEK") || strings.Contains(bt, "MATURITY") || strings.Contains(bt, "CLOSING") {
 		return false
+	}
+	if railEra && outbound && outboundPaymentRailBookings[bt] {
+		return true // owner-initiated payment through the rails ⇒ boundary-crossing
+	}
+	if railEra && !outbound && inboundArrivalBookings[bt] {
+		return true // interbank arrival ⇒ boundary-crossing
+	}
+	if ctr == "" {
+		return false // no counterparty IBAN and no rail evidence ⇒ INTERNAL
+	}
+	if !strings.HasPrefix(ctr, "CH") && !strings.HasPrefix(ctr, "LI") {
+		return false // only Swiss/Liechtenstein counterparties count; anything else stays INTERNAL
 	}
 	return true
 }

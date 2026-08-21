@@ -198,8 +198,17 @@ source:
   0 — an internal cash→securities move onboards nothing); `ConduitKinds =
   [cash]` (cash feeds the value spine but emits no per-account onboarding);
   `ExternalOnly = true` (honored in silver — UBS pre-tags external/internal
-  via the own-IBAN rule and demotes internal rows to a non-flow kind, so the
-  engine's `ExternalOnly`/`ClassifyFlow` branch is inert for UBS);
+  and demotes internal rows to a non-flow kind, so the engine's
+  `ExternalOnly`/`ClassifyFlow` branch is inert for UBS; the silver
+  classifier combines the parser's internal markers, the own-counter-IBAN
+  rule, a direction-symmetric interbank-rail promotion era-gated to the
+  MT940-covered era, and a same-day offset veto that recognises a mirror
+  leg on another own account across all three feeds — see
+  `pdfCashIsExternal` / `buildSameDayOffsetVeto`. The deep backfill era
+  before any MT940 coverage stays conservative in BOTH directions: its
+  inbound capital rides the onboarding step-ups, so one-sided or symmetric
+  counting there fabricates return — that era's honest fix is
+  counterparty-complete data, tracked separately);
   `Inception = InceptionFirstRealSnapshot` (anchors the window past sparse
   cash-only pre-history, so a tiny opening base cannot inflate the return).
 - **Flow classification** is one member of the policy: banks / pension =

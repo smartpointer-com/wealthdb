@@ -9,7 +9,13 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
 )
 
-func (c *psnReader) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
+// Transactions emits PSN events. offsetVeto carries the event ids whose cash
+// movement pairs a web-side mirror in the same-day offset veto (see
+// buildSameDayOffsetVeto); those are demoted to a non-flow kind here, exactly
+// as the web loop demotes its half — a pair must drop on both sides or the
+// survivor books a one-sided phantom external flow. Nil when the merged
+// connection has no web subsource.
+func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, offsetVeto map[string]bool) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
@@ -40,6 +46,13 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload)
 		if err != nil {
 			return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+		}
+		// Same-day offset veto, PSN half. The kind flips AFTER
+		// ApplyCanonicalSign ran inside buildTransaction, so the signed
+		// amount is untouched — only the flow classification changes.
+		if offsetVeto[eventID] &&
+			(tx.Kind == canonical.TxKindDeposit || tx.Kind == canonical.TxKindWithdrawal) {
+			tx.Kind = canonical.TxKindOther
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}

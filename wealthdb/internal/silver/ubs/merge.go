@@ -251,15 +251,19 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // overlap merge.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	streams := make([]silver.TransactionStream, 0, 2)
+	// The web side builds the same-day offset veto over both feeds and hands
+	// back the PSN half, so a vetoed pair drops on both sides of the seam.
+	var psnVeto map[string]bool
 	if c.web != nil {
-		s, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
+		s, veto, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Transactions: %w", err)
 		}
+		psnVeto = veto
 		streams = append(streams, s)
 	}
 	if c.psn != nil {
-		s, err := c.psn.Transactions(ctx, w)
+		s, err := c.psn.Transactions(ctx, w, psnVeto)
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Transactions: %w", err)
 		}
