@@ -334,3 +334,136 @@ func TestClassifyHistoricalPair(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotsDAFTaxonomy covers the Donor-Advised Fund projection
+// (fidelity-web DESIGN.md §12.3): silver portfolios.kind='daf' →
+// AccountKind donor_advised_fund + TaxWrapper charitable, the
+// management style from the silver column, and a daf_pool position
+// mapping to (multi_asset, fund) — all through the single fidelity
+// source, alongside the retail rows.
+func TestSnapshotsDAFTaxonomy(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 7, '/x/1');
+        INSERT INTO portfolios(snapshot_at, portfolio_external_id, kind, payload) VALUES
+            (1000, 'PORT1', '529', '{}'),
+            (1000, 'Fidelity Charitable Giving', 'daf', '{}');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (1000, 'ACC1', 'PORT1', 'College', NULL, '{}'),
+            (1000, '9990001', 'Fidelity Charitable Giving', 'Example Giving Account', 'automated', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, currency, is_core_position, quantity, current_value, payload) VALUES
+            (1000, 'ACC1', 'VTI', 'Vanguard Total Market', 'etf', 'USD', 0, 10, 2500.00, '{}'),
+            (1000, '9990001', 'POOLX1', 'Example Growth Pool', 'daf_pool', 'USD', 0, 1000, 100000.00, '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	if len(batch.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2 (529 + daf)", len(batch.Accounts))
+	}
+	var daf *canonical.AccountChange
+	for i := range batch.Accounts {
+		if batch.Accounts[i].AccountExternalID == "9990001" {
+			daf = &batch.Accounts[i]
+		}
+	}
+	if daf == nil {
+		t.Fatal("daf account missing from batch")
+	}
+	if daf.AccountKind != canonical.AccountKindDonorAdvisedFund {
+		t.Errorf("account_kind = %q, want donor_advised_fund", daf.AccountKind)
+	}
+	if daf.TaxWrapper == nil || *daf.TaxWrapper != canonical.TaxWrapperCharitable {
+		t.Errorf("tax_wrapper = %v, want charitable", daf.TaxWrapper)
+	}
+	if daf.ManagementStyle == nil || *daf.ManagementStyle != canonical.ManagementStyleAutomated {
+		t.Errorf("management_style = %v, want automated (from silver column)", daf.ManagementStyle)
+	}
+
+	var pool *canonical.PositionChange
+	for i := range batch.Positions {
+		if batch.Positions[i].PositionKey == "POOLX1" {
+			pool = &batch.Positions[i]
+		}
+	}
+	if pool == nil {
+		t.Fatal("daf pool position missing from batch")
+	}
+	if pool.AssetClass != canonical.AssetClassMultiAsset || pool.Vehicle != canonical.VehicleFund {
+		t.Errorf("daf_pool (exposure, vehicle) = (%q, %q), want (multi_asset, fund)", pool.AssetClass, pool.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(pool.AssetClass, pool.Vehicle) {
+		t.Errorf("daf_pool pair (%q, %q) not an admitted taxonomy pair", pool.AssetClass, pool.Vehicle)
+	}
+}
+
+// TestHistoricalDAFPoolClassification covers the statement-PDF
+// reconstruction path for the Donor-Advised Fund (fidelity-web
+// DESIGN.md §12): a historical_position_snapshots row on a DAF
+// account — pool name as description, retired pool so no
+// instrument_key cross-walk — projects as (multi_asset, fund) with
+// the DAF taxonomy on the back-projected account master, rather than
+// falling through the shape heuristics to (public_equity, stock).
+func TestHistoricalDAFPoolClassification(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (2000, 7, '/x/1');
+        INSERT INTO portfolios(snapshot_at, portfolio_external_id, kind, payload) VALUES
+            (2000, 'Fidelity Charitable Giving', 'daf', '{}');
+        INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
+            (2000, '9990001', 'Fidelity Charitable Giving', 'Example Giving Account', 'automated', '{}');
+        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, currency, is_core_position, quantity, current_value, payload) VALUES
+            (2000, '9990001', 'POOLX1', 'Example Pool', 'daf_pool', 'USD', 0, 1000, 100000.00, '{}');
+        INSERT INTO historical_position_snapshots(as_of_date, account_external_id, description, instrument_key, quantity, price, market_value, currency, payload) VALUES
+            (1000, '9990001', 'Example Growth', NULL, 500, 100.0, 50000.00, 'USD', '{}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Snapshots(context.Background(), w)
+	defer stream.Close()
+
+	var histPos *canonical.PositionChange
+	var histAcct *canonical.AccountChange
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range batch.Positions {
+			if batch.Positions[i].SnapshotAt == 1000 {
+				histPos = &batch.Positions[i]
+			}
+		}
+		for i := range batch.Accounts {
+			if batch.Accounts[i].FirstSeenAt == 1000 {
+				histAcct = &batch.Accounts[i]
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	if histPos == nil {
+		t.Fatal("historical DAF position missing from stream")
+	}
+	if histPos.AssetClass != canonical.AssetClassMultiAsset || histPos.Vehicle != canonical.VehicleFund {
+		t.Errorf("historical daf pool (exposure, vehicle) = (%q, %q), want (multi_asset, fund)",
+			histPos.AssetClass, histPos.Vehicle)
+	}
+	if histAcct == nil {
+		t.Fatal("back-projected DAF account master missing at historical date")
+	}
+	if histAcct.AccountKind != canonical.AccountKindDonorAdvisedFund {
+		t.Errorf("historical account_kind = %q, want donor_advised_fund", histAcct.AccountKind)
+	}
+	if histAcct.TaxWrapper == nil || *histAcct.TaxWrapper != canonical.TaxWrapperCharitable {
+		t.Errorf("historical tax_wrapper = %v, want charitable", histAcct.TaxWrapper)
+	}
+}

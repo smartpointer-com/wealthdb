@@ -152,16 +152,20 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 //
 //   - kind=529           → TaxWrapper=529 (US education-savings).
 //   - kind=trust_managed → TaxWrapper=trust_non_grantor.
+//   - kind=daf           → AccountKind=donor_advised_fund +
+//     TaxWrapper=charitable (Fidelity Charitable Giving Account;
+//     fidelity-web DESIGN.md §12.3).
 //   - kind=other         → leave TaxWrapper nil so a config-side
 //     override can pin per-account values.
 //
 // ManagementStyle comes from silver's promoted column
 // `accounts.management_style` (added in fidelity-web silver
-// migration 0003 — '529' → 'self_directed', 'trust_managed' →
-// 'discretionary', 'other'/NULL → NULL). Pre-v3 silvers don't
-// have the column; the adapter degrades gracefully via a
-// PRAGMA-based hasColumn probe and falls back to deriving the
-// style from portfolios.kind in the same shape.
+// migration 0003, with 0006 correcting the 529 value — '529' →
+// 'automated' (a model-portfolio plan, not free selection),
+// 'trust_managed' → 'discretionary', 'other'/NULL → NULL). Pre-v3
+// silvers don't have the column; the adapter degrades gracefully
+// via a PRAGMA-based hasColumn probe and falls back to deriving
+// the style from portfolios.kind in the same shape.
 //
 // All taxonomy columns stay nil for accounts whose portfolio has
 // no classification or no portfolio at all; the gold COALESCE
@@ -218,7 +222,7 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 			// Silver-side management_style (v3+) wins over the
 			// adapter-derived value: trust_managed accounts get
 			// discretionary from both paths and agree; 529
-			// accounts get self_directed from silver only (the
+			// accounts get automated from silver only (the
 			// adapter's kind→style mapping doesn't have a 529
 			// entry, intentionally — the silver column is the
 			// canonical source for that).
@@ -230,17 +234,18 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 	return rows.Err()
 }
 
-// applyPortfolioKindTaxonomy stamps TaxWrapper (and on pre-v3
-// silvers, ManagementStyle) on an AccountChange based on the
-// joined silver portfolios.kind. See appendAccounts for the
-// mapping rationale. No-op when kind is empty or 'other'.
+// applyPortfolioKindTaxonomy stamps TaxWrapper (plus AccountKind
+// for the DAF, and on pre-v3 silvers ManagementStyle) on an
+// AccountChange based on the joined silver portfolios.kind. See
+// appendAccounts for the mapping rationale. No-op when kind is
+// empty or 'other'.
 //
 // ManagementStyle here is only meaningful for the trust_managed
 // branch — it's the backward-compat path for silvers without
 // the v3 management_style column. v3+ silvers overwrite this
 // in the caller with the explicit silver value (which also
-// covers 529 → self_directed, the case this helper doesn't
-// classify).
+// covers 529 → automated and daf → automated, the cases this
+// helper doesn't classify).
 func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 	switch kind {
 	case "529":
@@ -251,6 +256,14 @@ func applyPortfolioKindTaxonomy(kind string, change *canonical.AccountChange) {
 		s := canonical.ManagementStyleDiscretionary
 		change.TaxWrapper = &w
 		change.ManagementStyle = &s
+	case "daf":
+		// Donor-Advised Fund (fidelity-web silver v7+, DESIGN.md
+		// §12.3): its own container kind so gold can include or
+		// exclude the irrevocably-donated balance by kind, under
+		// the charitable tax wrapper.
+		change.AccountKind = canonical.AccountKindDonorAdvisedFund
+		w := canonical.TaxWrapperCharitable
+		change.TaxWrapper = &w
 	}
 }
 

@@ -144,7 +144,15 @@ const (
 	// principal payments flow in as transactions debited from a
 	// regular cash account with counterparty "Maturity".
 	AccountKindMortgage AccountKind = "mortgage"
-	AccountKindOther    AccountKind = "other"
+	// AccountKindDonorAdvisedFund is a charitable giving account
+	// (e.g. a Fidelity Charitable Giving Account): assets are
+	// irrevocably donated into the fund, invested in sponsor pools,
+	// and granted out to charities over time. Modeled as its own
+	// container kind (paired with TaxWrapperCharitable) so
+	// deployments can include or exclude DAF balances from
+	// net-worth calculations by kind.
+	AccountKindDonorAdvisedFund AccountKind = "donor_advised_fund"
+	AccountKindOther            AccountKind = "other"
 )
 
 var accountKindValues = map[AccountKind]struct{}{
@@ -153,8 +161,9 @@ var accountKindValues = map[AccountKind]struct{}{
 	AccountKindOverlay:        {},
 	AccountKindCrypto:         {},
 	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
-	AccountKindMortgage: {},
-	AccountKindOther:    {},
+	AccountKindMortgage:         {},
+	AccountKindDonorAdvisedFund: {},
+	AccountKindOther:            {},
 }
 
 func (a AccountKind) Valid() bool {
@@ -195,8 +204,12 @@ const (
 	TaxWrapperCoverdellESA TaxWrapper = "coverdell_esa"
 	TaxWrapperHSA          TaxWrapper = "hsa"
 
-	// US charitable.
-	TaxWrapperDAF TaxWrapper = "daf" // donor-advised fund
+	// US charitable. The charitable wrapper marks assets held for
+	// charitable purposes (donor-advised funds foremost — the
+	// container itself is AccountKindDonorAdvisedFund); the value
+	// was renamed from the never-emitted 'daf' so the wrapper names
+	// the tax treatment rather than duplicating the account kind.
+	TaxWrapperCharitable TaxWrapper = "charitable"
 
 	// US custodial-for-minors.
 	TaxWrapperCustodialUTMA TaxWrapper = "custodial_utma"
@@ -223,7 +236,7 @@ var taxWrapperValues = map[TaxWrapper]struct{}{
 	TaxWrapperSEPIRA: {}, TaxWrapperSIMPLEIRA: {},
 	TaxWrapper401k: {}, TaxWrapper403b: {}, TaxWrapper457b: {},
 	TaxWrapper529: {}, TaxWrapperCoverdellESA: {}, TaxWrapperHSA: {},
-	TaxWrapperDAF:           {},
+	TaxWrapperCharitable:    {},
 	TaxWrapperCustodialUTMA: {}, TaxWrapperCustodialUGMA: {},
 	TaxWrapperTrustGrantor: {}, TaxWrapperTrustNonGrantor: {}, TaxWrapperTrustCharitable: {},
 	TaxWrapperPillar2: {}, TaxWrapperVestedBenefits: {}, TaxWrapperPillar3a: {},

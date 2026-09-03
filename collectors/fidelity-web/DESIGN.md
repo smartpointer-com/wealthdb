@@ -53,7 +53,7 @@ into a stable `portfolios.kind`:
 | ---                            | ---               | --- |
 | `Education`                    | `529`             | 529 College Investing Plan participant accounts. Statement PDFs are generated and surface in the document center's Statements sub-page. |
 | `Authorized`                   | `trust_managed`   | Accounts under a trust agreement whose investments a third-party manager runs, with Fidelity as custodian (see §1.3). The web document center may serve no statement PDFs for this group; statements supplied out-of-band are ingested separately (see §4.5). Its tax forms surface in the read-through view. |
-| `Fidelity Charitable® Giving`  | (auto-excluded)   | Donor-Advised Fund. Fidelity uses a shorter account-id length for DAFs than for brokerage / trust / 529 accounts; `download.py` auto-excludes by id length so DAFs never enter silver. |
+| `Fidelity Charitable® Giving`  | `daf`             | Donor-Advised Fund. Ingested by the DAF walk phase (§12) over the Fidelity Charitable JSON REST API, reached by an SSO hop; the retail phases still auto-exclude it by its 7-digit id length (it has no brokerage-side surfaces). Gold: `account_kind = donor_advised_fund`, `tax_wrapper = charitable`, `management_style = automated` (§12.3). |
 | any other label                | `other`           | Fall-through so future Fidelity labels don't need a schema migration. |
 
 ### 1.3 Third-party managers and institutional feeds
@@ -70,7 +70,7 @@ bronze subdirectory holds documents that arrive out-of-band.
   login.
 - **Trade execution, money movement, account configuration.** See
   [CLAUDE.md](CLAUDE.md) §1 — the contract is read-only.
-- **The Fidelity Charitable DAF.** Excluded by id length.
+
 - **Akoya / FDX / Plaid / SnapTrade.** B2B-only.
 - **Prospectuses / fund supplements / disclosures.** Out of
   document-center scope (CLAUDE.md §1).
@@ -103,6 +103,18 @@ bronze subdirectory holds documents that arrive out-of-band.
 │   ├── performance/
 │   │   └── performance.html.zst                full-page DOM (no structured export;
 │   │                                           return % surface only via rendered text)
+│   ├── daf/                                    Donor-Advised Fund phase (§12); only when the
+│   │   │                                       account selector lists a Fidelity Charitable section
+│   │   ├── accounts.json                       giving-account roster — NOT compressed
+│   │   └── <account_key>/                      one per giving account (sha256(acctNbr)[:16])
+│   │       ├── account.json                    balance + pending buckets + establish date
+│   │       ├── pool_balances.json              investment-pool positions (today's snapshot)
+│   │       ├── grants.json / contributions.json / gifts.json
+│   │       ├── pool_exchanges.json / adjustments.json   (unioned across active years)
+│   │       ├── documents_index.json            listing metadata for the PDFs below
+│   │       ├── exports/*.csv.zst               server-side CSV exports (corroborating)
+│   │       └── documents/*.pdf                 statements, grant/contribution confirmations,
+│   │                                           Form 8283 — NOT compressed
 │   └── screenshots/                            only with `download --debug` / `--explore`
 │       └── <ts>-<label>.{html,png}             per-landmark diagnostics for selector drift
 │                                               (+ <ts>-<label>.dominv.json with --explore) — NOT compressed
@@ -413,15 +425,23 @@ account UI signals (Fidelity emits none — see §11.6):
 
 | `portfolios.kind` | `accounts.management_style` |
 | --- | --- |
-| `529`            | `self_directed`             |
+| `529`            | `automated`                 |
 | `trust_managed`  | `discretionary`             |
 | `other` / NULL   | NULL                        |
 
-### 4.5 Historical reconstruction — two PDF sources
+A Fidelity 529 is `automated`, not `self_directed`: the plan offers
+only percentage-wise allocation across a small menu of funds and
+age-based strategies — a model portfolio, not free security
+selection. Migration 0003 originally classified it `self_directed`;
+migration 0006 corrected it in place (the loader writes the corrected
+value on every fresh/`--force` load).
 
-`historical_position_snapshots` is populated from **two distinct
-statement-PDF archives**, each with its own parser, both feeding
-the same silver table:
+### 4.5 Historical reconstruction — three PDF sources
+
+`historical_position_snapshots` is populated from **three distinct
+statement-PDF archives**, each with its own parser, all feeding
+the same silver table — the two below, plus the Donor-Advised
+Fund's Giving Account statements (`pdf_parsers_daf`; see §12.3):
 
 **(a) Document-center statements — auto-scraped.** Fidelity's *web
 document center* exposes monthly / quarterly statement PDFs for the
@@ -680,6 +700,21 @@ rows for every visible account. Two CSVs per scrape (one per
 preset view); account dimension lives in the `Account Number`
 column.
 
+**CSV header drift (observed 2026-07-10, diagnosed 2026-09-02).**
+Fidelity re-cased every positions-CSV header from title case to
+sentence case (`Account Number` → `Account number`, `Last Price` →
+`Last price`, …) and renamed the dividend view's `Dist. yield` /
+`Distribution yield as of` to the `rate` spellings. The download side
+was unaffected (files kept landing, `run.json` reported ok) but the
+loader's exact-name lookups matched nothing, silently zeroing the
+positions load for ~8 weeks until the DAF work surfaced it. The
+loader now resolves columns case-insensitively (`_row_ci`) and
+accepts both yield/rate spellings, `validate()` warns loudly whenever
+positions-covering dumps keep landing while the retail positions
+table stops advancing, and a `load --force` rebuild recovers the
+whole gap from bronze. The activity CSV headers were spared this
+round; their lookups are case-insensitive now too.
+
 ### 8.4 Activity & Orders
 
 | Element | Selector |
@@ -767,7 +802,6 @@ the rendered HTML; silver scrapes from there.
 
 - OFX — dead (§1.1).
 - Akoya / FDX / Plaid / SnapTrade — B2B-only.
-- The Fidelity Charitable DAF — auto-excluded.
 - Prospectuses / supplementary documents.
 - Trade / transfer / config writes — see [CLAUDE.md](CLAUDE.md) §1.
 - MFA automation — human-in-the-loop on every truly-fresh login.
@@ -792,7 +826,12 @@ the rendered HTML; silver scrapes from there.
 | `migrations/0002_*.sql` (currency + asset_class + is_core_position; drop cosmetic `*_present` flags) | done |
 | Statement-PDF parser (529 historical reconstruction) | done — `pdf_parsers.py` + migration 0004 populate `historical_position_snapshots` |
 | Per-account `account_registration` | deferred — see §11.5 |
-| `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `self_directed`, trust_managed → `discretionary`) | done — see §11.6 |
+| `migrations/0003_*.sql` (`accounts.management_style` derived from `portfolios.kind`: 529 → `automated` (via 0006; 0003 first wrote `self_directed`), trust_managed → `discretionary`) | done — see §4.4 / §11.6 |
+| `migrations/0006_*.sql` (correct 529 `management_style` → `automated`) | done — see §4.4 |
+| `download.py` — Donor-Advised Fund phase (SSO hop → JSON REST API → CSV exports + PDF documents; rides modes `all`/`positions`) | done — see §12 |
+| `migrations/0007_*.sql` + `load._load_daf` (DAF bronze → shared silver tables; `portfolios.kind='daf'`) | done — see §12.3 |
+| `wealthdb` DAF taxonomy (`donor_advised_fund` kind + `charitable` wrapper, gold migration 0036, adapter mapping) | done — see §12.3 |
+| `pdf_parsers_daf.py` + `load._load_daf_historical` (Giving Account statement PDFs → `historical_position_snapshots`, reconciliation-gated) | done — see §12.3 |
 | `wealthdb` Fidelity adapter | sibling component (`wealthdb/`) |
 
 ## 11. Open questions
@@ -877,8 +916,8 @@ proxy and the column stays unimplemented.
 
 ### 11.6 Advisory vs discretionary within `trust_managed`
 Migration 0003 promotes `accounts.management_style`, derived
-from `portfolios.kind` (see §4.4):
-- `529` → `self_directed`
+from `portfolios.kind` (see §4.4; 0006 corrected the 529 value):
+- `529` → `automated`
 - `trust_managed` → `discretionary`
 - other / unknown kind → NULL
 
@@ -900,3 +939,243 @@ candidates: a `data-testid$='-managed-by-label'` on the
 account-detail page, or an `aria-label` on the section header
 that names the advisory product — the path mirrors §11.5:
 extend `download.py`, schema migration, loader populates.
+
+## 12. Donor-Advised Fund extension
+
+A Fidelity Charitable Donor-Advised Fund appears in the account
+selector under `Fidelity Charitable® Giving`. It sits behind a
+distinct web UI, so this surface followed the fleet discovery
+playbook (NEW-COLLECTOR-PROMPT.md): a human-driven `explore` session
+(§12.1) mapped it, and the DAF walk phase (§12.2) was built from the
+captures. The retail phases auto-exclude the DAF by account-id length
+(§1.2/§3.1; it has no brokerage-side surfaces); the DAF phase enters
+it via the charitable API.
+
+`explore.py` is the discovery harness — copy-adapted from the firstcitizens
+sibling (the tracked convention: per-collector copies, no shared
+library). It opens the standard signin on the shared
+`/secrets/fidelity-web-profile` (so Akamai + device trust carry over
+and the session costs at most a 2FA code), pre-fills the known login
+form (§8.2; fill gated to fidelity.com hosts), and records the
+VNC-driven session: crash-safe `network.jsonl` with text response
+bodies, `clicks.jsonl`, browser downloads, and structure-deduped DOM
+snapshots for every fidelity.com / fidelitycharitable.org|com frame.
+Distinct from `download --explore`, which only adds DOM inventories
+along the scripted walk. Allow/forbid surface: CLAUDE.md §1a —
+Grant / Contribute / Exchange are the DAF's money-movement controls
+and are never clicked, in discovery or ever.
+
+### 12.1 Surface map
+
+**Entry / SSO.** The portfolio's account-selector DAF link lands on
+`https://charitablegift.fidelity.com/cgfweb/CGFLogon.cgfdo?Ref_at=ng`,
+which consumes the existing `.fidelity.com` session cookie — no
+second credential, no extra challenge — and redirects into the donor
+SPA at `/cgfweb/fc-donor/?Ref_at=ng`. The SPA routes by URL hash
+(`#/Dashboard/summary`, `#/History/grant-history`,
+`#/History/statements-confirmations`, `#/Invest/view-investment-
+selections`, …).
+
+**Technology + bot defense.** An Angular SPA over a clean JSON REST
+API rooted at `/fc-services/api/v1/`. Akamai sensor beacons are
+present on the host (the random-path `POST`s of Bot Manager), so the
+browser-everywhere runtime stays; data calls themselves are plain
+cookie-authenticated GETs — `page.request` territory, no DOM
+scraping needed. Every observed API call returned 2xx; no challenge
+fired mid-session.
+
+**Identity bootstrap.** `POST /fc-services/api/v1/identity/self`
+returns `{loginKeyId, partyId}`; `GET /user/<partyId>/accounts` is
+the giving-account roster (per-account `accountNbr`, `gaName`,
+`gaBalance`, `role`, `privileges`, `asOfDate`). The giving-account
+number is 7 digits, confirming §3.1's exclusion criterion.
+
+**Data endpoints** (all GET, query-param-driven):
+
+| Surface | Endpoint | Notes |
+| --- | --- | --- |
+| Account master | `givingAccounts/<acctNbr>` | balance + `balanceDate`, pending buckets (grant / contribution / adjustment / …), YTD + two prior-year contribution and YTD grant totals, program-membership flags, registration code |
+| Pool positions | `poolBalances?accountNumber&endDate&numberOfDays=1` | per pool: `poolId`, `poolName`, `poolCategory`, `unitQuantity`, `poolUnitPrice`, `marketValue`, `percentage`; plus `poolPriceDate` + `totalMarketValue`. `numberOfDays` suggests a history series — unverified (§12.4) |
+| Grant history | `transactionHistory/grants?accountId&page&size` (+`fromDate`/`endDate` or `viewingFilter=SINCE_INCEPTION`) | paginated envelope (`totalItems`, `items[]`); each item carries `grantId`, `charityId`, `charityName`, `taxId`, `amount`, submit/approval/settlement/check dates, check status, EFT flag, `designation`, `acknowledgement` |
+| Grant detail | `transactionHistory/grants/<grantId>` | |
+| Contribution history | `transactionHistory/contributions?accountId&…` | same envelope; detail at `/contributions/<id>-1` |
+| Pool exchanges | `poolExchange?accountNumber&year` | year-scoped |
+| Gift4Giving | `gift?donorAccountNumber&page&size&year` | paginated envelope |
+| Adjustments | `transactionHistory/adjustment?accountNumber&year&page&size` | year-scoped ("all other transactions") |
+| Document listing | `document?accountNumber&documentType&fromDate&endDate` | types observed: `STATEMENT` (quarterly + year-end), `GRANT` (donor grant confirmations), `CONTRIBUTION`, `FORM_8283` (IRS form). Rows carry `id`, `documentName`, `correspondenceDate`, `generatedDate`, and the composite `legacyDocumentKey` the download needs |
+| Document fetch | `document/download?accountNumber&legacyDocumentKey&documentType` | returns `application/pdf` directly — no base64-in-JSON dance (unlike the retail document center, §8.5) |
+
+**Server-side CSV exports.** Every history surface also has a
+`…/download?format=csv` twin: `transactionHistory/grants/download`
+and `…/contributions/download` (both accept
+`viewingFilter=SINCE_INCEPTION` — full history in one GET),
+`poolExchange/download?year`, `gift/download?asOfDate`,
+`transactionHistory/adjustment/download?year`, and
+`poolBalances/download`. The UI serves them as `blob:` downloads;
+the underlying response is the CSV. Shape: a title line, preamble
+rows (account name, established date, view, as-of), then the header
+row. The JSON is richer than the CSVs (ids, charity ids, status
+detail), so per fleet lessons JSON is the primary silver source and
+the CSVs are corroborating bronze.
+
+**Session model.** The hop rides the one Camoufox process; nothing
+suggests a DAF-side session independent of the retail one
+(browser-lifetime binding, §5, presumed to apply across the hop).
+
+### 12.2 Walk phase (built)
+
+`scrape_daf` in `download.py` — runs whenever the account enumeration
+carries a Fidelity Charitable relationship (a retail-only login skips
+the SSO hop and writes nothing): the full phase in `--mode all`, and
+a master + pool-balances slice (`positions_only`) in
+`--mode positions`. There is deliberately **no DAF-only mode** — the
+completeness invariant (§12.3) requires every positions-bearing dump
+to cover both channels. The full phase:
+
+1. Takes the SSO hop (`_daf_navigate_sso`): navigates
+   `CGFLogon.cgfdo`, waits for a `charitablegift.fidelity.com`
+   landing, and returns `no-daf` if it bounces to signin instead
+   (session timeout, or a login with no charitable relationship).
+2. Bootstraps auth (`_daf_bootstrap`): `POST identity/self` mints the
+   `fid-cgf-auth-jwt` session token (read from the response header)
+   and returns the donor `partyId`. Every subsequent call is a
+   cookie-authenticated `page.request` GET carrying that header —
+   no DOM scraping (the firstcitizens REST pattern).
+3. Reads the roster (`GET user/<partyId>/accounts`) and **iterates
+   every giving account** it returns. Per account (`_daf_scrape_account`):
+   the JSON surfaces (account master, pool balances, grants,
+   contributions, gifts — paged to `totalItems`; pool exchanges +
+   adjustments unioned across the account's active years), the
+   server-side CSV exports (zstd-compressed), and the PDF document
+   set. The window honours `--lookback` exactly like the retail
+   phases (default 90 days; `--lookback all` or an ISO date backfills
+   full history); silver is cumulative, so nightly windows keep
+   recent events fresh while the initial backfill captures history.
+
+Bronze layout (see §2): `daf/accounts.json` (roster) + one
+`daf/<account_key>/` per giving account, holding `account.json`,
+`pool_balances.json`, `grants.json`, `contributions.json`,
+`gifts.json`, `pool_exchanges.json`, `adjustments.json`,
+`documents_index.json`, `exports/*.csv.zst`, and `documents/*.pdf`.
+JSON is the primary silver source (richer than the CSVs — stable
+ids, charity ids, status detail); CSVs are corroborating; PDFs are a
+document archive. Documents download as raw `application/pdf` (no
+base64-in-JSON dance) and dedup on content hash, with a `%PDF`
+magic-byte guard rejecting a non-PDF body.
+
+**Dry-run.** `--dry-run` still exercises the DAF surface (unlike the
+retail phases, whose export surfaces the account enumeration already
+reaches, the DAF sits behind its own SSO hop + API): the dry-run hops,
+bootstraps, reads the roster, and reads the per-account JSON counts +
+document listing — but fetches no CSV export or PDF and writes no
+bronze (root CLAUDE.md §2 "export nothing"). So a cheap
+`download --dry-run` validates reachability + auth before a full run,
+and its plan log carries the real per-account counts.
+
+**Validation.** A full `--lookback all` DAF walk exercises the SSO
+hop, the JWT bootstrap, the roster read, pagination, and the
+per-account JSON, CSV and PDF paths. Two checks confirm its bronze:
+every PDF is a valid `%PDF`, and the JSON grant count matches the CSV
+export. The `--dry-run` path hops, bootstraps and counts while writing
+nothing.
+
+**Several giving accounts.** The roster loop iterates any number of
+giving accounts. The year-union and pagination logic is uniform per
+account. One detail may still differ on a login with several DAFs:
+whether the party scope is shared or per account.
+
+### 12.3 Silver + gold model (implemented)
+
+**Silver** (migration 0007 + `load._load_daf`): the DAF bronze under
+`<dump>/daf/` lands in the shared silver tables so the adapter
+composes uniformly — a `portfolios` row (`kind='daf'`, external id =
+the `Fidelity Charitable® Giving` label), one `accounts` row per
+giving account (`management_style='automated'`), pool positions
+(`instrument_key` = poolId, `asset_class='daf_pool'`), transactions
+from grants / contributions / gifts / pool exchanges / adjustments
+(PK `daf-<sha>` over the source's own stable id — grantId,
+contributionId, … — so re-downloads collapse; grants and gifts signed
+negative, contributions positive), and the PDF archive in `documents`
+under namespaced kinds (`daf_statement`, `daf_tax_form`,
+`daf_grant_confirmation`, `daf_contribution_confirmation`).
+
+**Historical reconstruction.** Giving Account statements come
+quarterly and at year-end, and page 1 of each carries a per-pool
+holdings table (units, unit price, period-begin/-end market value)
+plus a beginning →
+ending value reconciliation. `pdf_parsers_daf` parses them (pure
+text-level parsers, pdfplumber extraction — the §4.5 architecture) and
+`load._load_daf_historical` back-fills `historical_position_snapshots`
+with the period-END pool rows, gated on the fleet reconciliation rule:
+the pool values must sum to the statement's own stated total and
+ending value, or the statement is skipped and logged. Pool names
+cross-walk to the live poolId via `positions.description`; a retired
+pool's rows keep the description with a NULL key (gold synthesises
+identity, as for sold 529 funds). The gold adapter classifies
+DAF-account historical rows as (multi_asset, fund) — pool names carry
+none of the shape signals the 529 heuristics key on — and the
+back-projected account master carries the §12.3 taxonomy, so the
+DAF's value spine (and its returns inception) starts at its first
+statement quarter-end rather than the toolkit's first live run.
+
+**Gold.** The DAF flows through the single `fidelity` source (the
+1:1 silver:source relationship is preserved). A DAF maps to
+
+- `account_kind` = `donor_advised_fund` (canonical enum + gold
+  migration 0036)
+- `tax_wrapper` = `charitable` (renamed from the never-emitted `daf`
+  value in 0036 — the wrapper names the tax treatment, the kind
+  carries the DAF-ness)
+- `management_style` = `automated`, from the silver column (Fidelity
+  DAF pools are model portfolios — allocation across a fixed pool
+  menu, not free selection)
+
+The `daf_pool` asset class projects as (multi_asset, fund), like the
+529 plan funds; grants/gifts map to `withdrawal` and contributions to
+`deposit`, so the standard bank returns policy counts them as
+external flows. A DAF balance is irrevocably donated, so gold
+surfaces it under its own kind + wrapper (and its own portfolio row)
+and leaves the include/exclude-from-net-worth choice to the
+deployment's queries and config rather than dropping or
+force-including it.
+
+**The completeness invariant (fleet lesson).** Gold's report macros
+anchor holdings on the latest positions-bearing snapshot **per
+source**, treating every such snapshot as a complete observation of
+that source. A partial dump therefore corrupts: the retired
+`--mode daf` produced a one-account positions snapshot that became
+the fidelity anchor and zeroed every retail holding. The invariant
+is enforced at both ends:
+
+- **Download**: every positions-bearing mode covers both channels —
+  `all` runs the full DAF phase, `positions` runs the master + pool
+  slice, and a DAF-only mode does not exist. When the account
+  selector enumerated a DAF but the charitable walk comes back
+  empty, the walk records `daf_results.status='error'` rather than
+  `no-daf`, so the failure is legible downstream.
+- **Load** (`_positions_completeness_gate`): positions are
+  all-or-nothing per dump. A dump whose observation is partial — a
+  legacy `mode='daf'` dump, a DAF-phase failure alongside landed
+  retail CSVs, or retail rows parsing to zero while the pool landed —
+  contributes NO positions at all, with a loud warning. Stale beats
+  partial: the anchor stays on the last complete dump. Events,
+  documents, and master data still load (keyed rows, not
+  snapshots), and the loader skips the retail master rows of a
+  legacy `mode='daf'` dump (its `account_dimensions` is an
+  enumeration-only capture).
+
+### 12.4 Remaining open questions
+
+1. Whether `poolBalances?numberOfDays=N` (N > 1) returns a NAV/value
+   time series. The quarterly statement reconstruction (§12.3) now
+   covers history, so this would only add intra-quarter granularity;
+   one read-only probe with a larger N answers it.
+2. PDF byte stability across repeated downloads (dedup key choice —
+   content hash vs logical identity; same question as §11.1). The
+   walk dedups within a run by content hash; cross-run silver dedup
+   is the silver loader's concern.
+3. Retail idle-timeout behaviour across the hop for long walks
+   (~15 min, §5.1) — matters only if the DAF phase runs late in a
+   long dump.
+4. Gold treatment beyond the wrapper: the include/exclude default in
+   the user's config (§12.3).

@@ -73,6 +73,18 @@ func kindFor(raw string, quantity *canonical.Decimal, payload string) canonical.
 		return canonical.TxKindCorporateAction
 	case "ADJUSTMENT":
 		return canonical.TxKindOther
+	// Donor-Advised Fund event kinds (fidelity-web DESIGN.md §12).
+	// From the giving account's perspective a GRANT / Gift4Giving
+	// GIFT is cash irrevocably out (external flow), a CONTRIBUTION
+	// external capital in, and an EXCHANGE an internal pool shuffle.
+	// CONTRIBUTION also covers the retail 529 contribution rows —
+	// external capital in there too.
+	case "GRANT", "GIFT":
+		return canonical.TxKindWithdrawal
+	case "CONTRIBUTION":
+		return canonical.TxKindDeposit
+	case "EXCHANGE":
+		return canonical.TxKindOther
 	}
 	return canonical.TxKindOther
 }

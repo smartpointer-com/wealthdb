@@ -514,7 +514,10 @@ def test_management_style_derived_from_portfolio_kind(migrated, tmp_path):
         "ORDER BY a.account_external_id"
     ).fetchall()
     by_kind = {kind: style for _, kind, style in rows}
-    assert by_kind["529"] == "self_directed"
+    # A Fidelity 529 is model-portfolio (percentage allocation across a
+    # small fund/strategy menu) → 'automated', not 'self_directed'
+    # (migration 0006 corrected the original 0003 mapping).
+    assert by_kind["529"] == "automated"
     assert by_kind["trust_managed"] == "discretionary"
 
 
@@ -819,3 +822,46 @@ def test_changed_parser_version_misses_cache(tmp_path):
     assert cache.get("sha", v_new) is None
     reopened = load.ParseCache(sidecar_dir=tmp_path / "pc")
     assert reopened.get("sha", v_new) is None
+
+
+# ============================================================
+# 2026-07 CSV header re-casing (sentence case + yield→rate rename)
+# ============================================================
+
+def test_positions_load_sentence_case_headers(migrated, tmp_path):
+    """Fidelity re-cased the positions headers in 2026-07
+    ('Account Number' → 'Account number') and renamed the dividend
+    view's 'Dist. yield' to 'Dist. rate' — a drift that silently
+    zeroed the positions load for weeks. The loader must read the
+    new-era format identically to the old."""
+    dump = tmp_path / "20260101T120000Z"
+    (dump / "positions").mkdir(parents=True)
+    (dump / "run.json").write_text("{}")
+    (dump / "positions" / "positions_summary.csv").write_text(
+        "﻿Account number,Account name,Symbol,Description,"
+        "Quantity,Last price,Last price change,Current value,"
+        "Today's gain/loss dollar,Today's gain/loss percent,"
+        "Total gain/loss dollar,Total gain/loss percent,"
+        "Percent of account,Cost basis total,Average cost basis,Type\n"
+        f"{ACCT_529},Beneficiary,{SYM_529},STATE PLACEHOLDER FUND,"
+        "100,$10.00,+$0.05,$1000.00,+$5,+0.5%,+$100,+11%,80%,"
+        "$900,$9.00,Cash,\n"
+    )
+    (dump / "positions" / "positions_dividend.csv").write_text(
+        "﻿Account number,Account name,Symbol,Description,"
+        "Quantity,Last price,Last price change,Current value,"
+        "Percent of account,Ex-date,Amount per share,Pay date,"
+        "Dist. rate,Distribution rate as of,SEC yield,"
+        "SEC yield as of,Est. annual income,Type\n"
+        f"{ACCT_529},Beneficiary,{SYM_529},STATE PLACEHOLDER FUND,"
+        "100,$10.00,+$0.05,$1000.00,80%,"
+        "01/15/2026,$0.25,02/15/2026,5%,01/15/2026,4.8%,"
+        "01/15/2026,$12.50,Cash,\n"
+    )
+    load.load_dump(migrated, dump, 7)
+    row = migrated.execute(
+        "SELECT quantity, last_price, current_value, cost_basis_total, "
+        "distribution_yield, est_annual_income "
+        "FROM positions WHERE account_external_id = ? AND instrument_key = ?",
+        (ACCT_529, SYM_529)).fetchone()
+    assert row == (100.0, 10.0, 1000.0, 900.0, 0.05, 12.50)

@@ -41,6 +41,12 @@ func assetClassVehicleFor(silverClass, name string) (canonical.AssetClass, canon
 		// 529 investment-option wrapper: a blended allocation, so
 		// multi_asset exposure held through a fund vehicle.
 		return canonical.AssetClassMultiAsset, canonical.VehicleFund
+	case "daf_pool":
+		// Donor-Advised Fund investment pool (fidelity-web
+		// DESIGN.md §12): the sponsor's pooled model portfolio —
+		// same shape as the 529 plan fund, a blended allocation
+		// held through a fund vehicle.
+		return canonical.AssetClassMultiAsset, canonical.VehicleFund
 	case "bond":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
 	case "money_market":

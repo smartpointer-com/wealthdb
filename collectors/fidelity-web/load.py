@@ -54,6 +54,7 @@ from pathlib import Path
 from collectorkit import bronze, cli, compress, silver, srcfp
 
 import pdf_parsers
+import pdf_parsers_daf
 import pdf_parsers_supplied
 
 # Re-export for backward compatibility with existing tests that call
@@ -88,6 +89,10 @@ _SUPPLIED_PARSER_FINGERPRINT = (
     f"supplied.v{pdf_parsers_supplied.PARSER_VERSION}."
     + srcfp.parser_fingerprint([pdf_parsers_supplied], _EXTRACTOR_DISTS)
 )
+_DAF_STATEMENT_PARSER_VERSION = (
+    f"dafstmt.v{pdf_parsers_daf.PARSER_VERSION}."
+    + srcfp.parser_fingerprint([pdf_parsers_daf], _EXTRACTOR_DISTS)
+)
 
 
 def _logical_bronze_path(path):
@@ -114,6 +119,11 @@ CASH_ONLY_ACTIONS = {
     "ACH", "WIRE", "DEBIT", "CREDIT", "CHECK",
     "DISTRIBUTION", "CONTRIBUTION", "ROLLOVER",
     "ADJUSTMENT", "ADJUST",
+    # Donor-Advised Fund event kinds (§12): a grant/gift is cash out to
+    # a charity, a pool exchange nets across pools — none carries a
+    # security. A CONTRIBUTION of stock DOES carry a CUSIP and is stored
+    # with an instrument_key; the cash-contribution case is exempt here.
+    "GRANT", "GIFT", "EXCHANGE",
 }
 
 # Fidelity selector group labels we know how to classify. Anything
@@ -127,15 +137,27 @@ PORTFOLIO_KIND = {
 # Per-portfolio-kind default management style. Fidelity does not
 # emit a per-account style indicator (see DESIGN.md §11.6), but
 # kind alone pins the style for the categories silver models:
-#   529            → self_directed (holder picks the investment
-#                    option from the plan menu; no manager).
+#   529            → automated (the plan offers only percentage-wise
+#                    allocation across a small menu of funds and
+#                    age-based strategies — a model portfolio, not
+#                    free security selection).
 #   trust_managed  → discretionary (a third-party manager places
 #                    trades; custodian executes).
 # 'other' / unknown labels stay NULL — gold handles them.
 MANAGEMENT_STYLE_BY_KIND = {
-    "529": "self_directed",
+    "529": "automated",
     "trust_managed": "discretionary",
+    # A Fidelity DAF invests in model pools (§12.3) — automated, like
+    # the 529.
+    "daf": "automated",
 }
+
+# The portfolio grouping the DAF phase lands under. The retail
+# portfolios key on the account-selector group label; the DAF bronze
+# comes from the charitable API, not the selector, so the loader stamps
+# this stable label (matching the selector's 'Fidelity Charitable®
+# Giving' section) with kind='daf'.
+DAF_PORTFOLIO_LABEL = "Fidelity Charitable® Giving"
 
 
 # ============================================================
@@ -250,6 +272,12 @@ def main(argv=None):
                     coord.enqueue(
                         coord.sha_for(path), _STATEMENT_PARSER_VERSION,
                         _parse_statement_pdf_worker, str(path))
+                if schema_version >= 7:
+                    for path in _daf_statement_pdf_candidates(dump):
+                        coord.enqueue(
+                            coord.sha_for(path),
+                            _DAF_STATEMENT_PARSER_VERSION,
+                            _parse_daf_statement_pdf_worker, str(path))
             if schema_version >= 4:
                 supplied_version = _supplied_parser_version(signature)
                 for path in _supplied_pdf_candidates(supplied_dir):
@@ -359,6 +387,28 @@ def parse_decimal(s):
     return v / 100.0 if is_pct else v
 
 
+def _row_ci(row):
+    """Case-insensitive view of a CSV row, keyed on casefolded header
+    names. Fidelity re-cased its positions-export headers in 2026-07
+    ('Account Number' → 'Account number', 'Last Price' → 'Last price',
+    …) which silently zeroed the positions load for weeks; casefolded
+    lookups read both eras identically. The original row (source-cased
+    keys) still lands in payload."""
+    return {(k or "").strip().casefold(): v for k, v in row.items()
+            if k is not None}
+
+
+def _ci_get(ci_row, *names):
+    """First present value among casefolded column ``names`` — for
+    columns Fidelity has renamed outright (e.g. the dividend view's
+    'Dist. yield' → 'Dist. rate')."""
+    for name in names:
+        v = ci_row.get(name)
+        if v is not None:
+            return v
+    return None
+
+
 def normalize_payload(data):
     # csv.DictReader bundles extra columns (trailing commas) under
     # a None key. Drop those — they're not safely sortable in JSON.
@@ -391,16 +441,47 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
     portfolio_count, account_count = _load_master(
         conn, snapshot_at, dump_dir, run_meta,
     )
-    pos_count = _load_positions(conn, snapshot_at, dump_dir)
+
+    # Positions are all-or-nothing per dump — see
+    # _positions_completeness_gate for the invariant and its signals.
+    merged = _parse_positions(dump_dir)
+    skip_positions, skip_reason = _positions_completeness_gate(
+        dump_dir, run_meta, merged, schema_version)
+    if skip_positions:
+        log.warning(
+            "%s: skipping ALL positions from this dump — %s "
+            "(partial holdings observation; the positions anchor "
+            "stays on the last complete dump)",
+            dump_dir.name, skip_reason)
+        pos_count = 0
+    else:
+        pos_count = _load_positions(conn, snapshot_at, merged)
     txn_count = _load_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos_count = _load_historical_from_pdfs(conn, dump_dir, coord)
 
+    # Donor-Advised Fund phase (schema v7+ allows portfolios.kind='daf').
+    daf = {}
+    daf_hist_count = 0
+    if schema_version >= 7:
+        daf = _load_daf(conn, snapshot_at, dump_dir,
+                        skip_positions=skip_positions)
+        daf_hist_count = _load_daf_historical(conn, dump_dir, coord)
+
     log.info(
         "loaded %s: portfolios=%d accounts=%d positions=%d "
-        "transactions=%d documents=%d hist_positions=%d",
-        dump_dir.name, portfolio_count, account_count, pos_count,
-        txn_count, doc_count, hist_pos_count,
+        "transactions=%d documents=%d hist_positions=%d%s",
+        dump_dir.name, portfolio_count + daf.get("portfolios", 0),
+        account_count + daf.get("accounts", 0),
+        pos_count + daf.get("positions", 0),
+        txn_count + daf.get("transactions", 0),
+        doc_count + daf.get("documents", 0),
+        hist_pos_count + daf_hist_count,
+        (f" [daf: accounts={daf.get('accounts', 0)} "
+         f"positions={daf.get('positions', 0)} "
+         f"transactions={daf.get('transactions', 0)} "
+         f"documents={daf.get('documents', 0)} "
+         f"hist_positions={daf_hist_count}]") if daf else "",
     )
 
 
@@ -443,6 +524,19 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
 # ------------------------------------------------------------
 
 def _load_master(conn, snapshot_at, dump_dir, run_meta):
+    # A dump only vouches for the accounts its phases covered. A
+    # mode='daf' dump ran no retail phase — its account_dimensions is
+    # an enumeration-only capture of the account selector — so writing
+    # retail master rows at that snapshot would pair accounts with no
+    # value rows, which latest-snapshot-wins consumers read as the
+    # accounts having emptied. Partial coverage must never masquerade
+    # as observation (the DAF master rows come from _load_daf, whose
+    # phase did run).
+    mode = (run_meta.get("cli_config") or {}).get("mode")
+    if mode == "daf":
+        log.debug("mode=daf dump: retail master load skipped "
+                  "(enumeration-only capture)")
+        return 0, 0
     dims = run_meta.get("account_dimensions") or {}
     if not dims:
         log.debug("no account_dimensions in run.json; skipping master load")
@@ -510,14 +604,15 @@ POSITIONS_FILES = {
 }
 
 
-def _load_positions(conn, snapshot_at, dump_dir):
+def _parse_positions(dump_dir):
+    """Parse both positions views into a (account, instrument) →
+    {view: row} map without touching silver — so `load_dump` can judge
+    the dump's positions completeness BEFORE anything is inserted (the
+    all-or-nothing guard)."""
     pos_dir = dump_dir / "positions"
-    if not pos_dir.is_dir():
-        return 0
-    # Parse both views into a (account, instrument) → {view: row} map,
-    # then merge into one silver row each. The summary view's columns
-    # land first; dividend-view columns merge over.
     merged = {}
+    if not pos_dir.is_dir():
+        return merged
     for view, fname in POSITIONS_FILES.items():
         # download / recompress may have written positions_<view>.csv
         # as .csv.zst; resolve whichever variant is on disk (plain wins).
@@ -525,13 +620,20 @@ def _load_positions(conn, snapshot_at, dump_dir):
         if path is None:
             continue
         for row in _iter_positions_rows(path):
-            account_ext = row.get("Account Number", "").strip()
-            instr = row.get("Symbol", "").strip()
+            ci = _row_ci(row)
+            account_ext = (ci.get("account number") or "").strip()
+            instr = (ci.get("symbol") or "").strip()
             if not account_ext or not instr:
                 continue
             key = (account_ext, instr)
             entry = merged.setdefault(key, {})
             entry[view] = row
+    return merged
+
+
+def _load_positions(conn, snapshot_at, merged):
+    # The summary view's columns land first; dividend-view columns
+    # merge over (``merged`` comes from _parse_positions).
     inserted = 0
     for (account_ext, raw_instr), views in merged.items():
         # Strip trailing '*' chars Fidelity appends to money-market
@@ -544,9 +646,15 @@ def _load_positions(conn, snapshot_at, dump_dir):
         instr = raw_instr.rstrip("*")
         summary = views.get("summary", {})
         dividend = views.get("dividend", {})
+        # Case-insensitive views for lookups (payload keeps the
+        # source-cased rows); 'Dist. yield' / 'Distribution yield …'
+        # were renamed to 'rate' spellings in the same 2026-07 format
+        # change that re-cased every header.
+        ci_sum = _row_ci(summary)
+        ci_div = _row_ci(dividend)
+        ci_pri = ci_sum or ci_div
         # Prefer summary's quantity/value/cost; fall back to dividend.
-        primary = summary or dividend
-        description = primary.get("Description") or None
+        description = ci_pri.get("description") or None
         asset_class = _classify_asset_class(instr, description, is_core)
         conn.execute(
             "INSERT OR REPLACE INTO positions ("
@@ -560,18 +668,18 @@ def _load_positions(conn, snapshot_at, dump_dir):
             (
                 snapshot_at, account_ext, instr,
                 description,
-                parse_decimal(primary.get("Quantity")),
-                parse_decimal(primary.get("Last Price")),
-                parse_decimal(primary.get("Current Value")),
-                parse_decimal(summary.get("Cost Basis Total")),
-                parse_decimal(summary.get("Average Cost Basis")),
-                primary.get("Type") or None,
-                ts_from_mdy(dividend.get("Ex-date")),
-                parse_decimal(dividend.get("Amount per share")),
-                ts_from_mdy(dividend.get("Pay date")),
-                parse_decimal(dividend.get("Dist. yield")),
-                parse_decimal(dividend.get("SEC yield")),
-                parse_decimal(dividend.get("Est. annual income")),
+                parse_decimal(ci_pri.get("quantity")),
+                parse_decimal(ci_pri.get("last price")),
+                parse_decimal(ci_pri.get("current value")),
+                parse_decimal(ci_sum.get("cost basis total")),
+                parse_decimal(ci_sum.get("average cost basis")),
+                ci_pri.get("type") or None,
+                ts_from_mdy(ci_div.get("ex-date")),
+                parse_decimal(ci_div.get("amount per share")),
+                ts_from_mdy(ci_div.get("pay date")),
+                parse_decimal(_ci_get(ci_div, "dist. yield", "dist. rate")),
+                parse_decimal(ci_div.get("sec yield")),
+                parse_decimal(ci_div.get("est. annual income")),
                 normalize_payload({"summary": summary, "dividend": dividend}),
                 "USD",
                 asset_class,
@@ -660,8 +768,9 @@ def _iter_positions_rows(csv_path):
     text = text[:cutoff]
     reader = csv.DictReader(text.splitlines())
     for row in reader:
-        sym = (row.get("Symbol") or "").strip()
-        acct = (row.get("Account Number") or "").strip()
+        ci = _row_ci(row)
+        sym = (ci.get("symbol") or "").strip()
+        acct = (ci.get("account number") or "").strip()
         if not acct:
             continue
         if not sym or sym in SKIP_INSTRUMENTS:
@@ -732,24 +841,31 @@ def _ingest_activity_csv(conn, snapshot_at, csv_path):
     # than the file sha256 + global CSV row index — is the dedup key.
     occ_counter: dict[str, int] = {}
     for row in reader:
-            run_date = (row.get("Run Date") or "").strip()
+            # Case-insensitive lookups (_row_ci): the 2026-07 format
+            # change re-cased the positions headers and silently
+            # zeroed that load for weeks — the activity headers were
+            # spared then, but the same drift is one release away.
+            # Values (which the activity identity hashes) are
+            # untouched, so ids are stable across header re-casings.
+            ci = _row_ci(row)
+            run_date = (ci.get("run date") or "").strip()
             # Footer "Date downloaded..." rows surface as a single
             # field that doesn't match Fidelity's data shape.
             if not run_date or not re.match(r"^\d{2}/\d{2}/\d{4}$", run_date):
                 continue
-            account_ext = (row.get("Account Number") or "").strip()
+            account_ext = (ci.get("account number") or "").strip()
             if not account_ext:
                 continue
             ts = ts_from_mdy(run_date)
             if ts is None:
                 continue
-            action = (row.get("Action") or "").strip()
+            action = (ci.get("action") or "").strip()
             kind = _classify_action(action)
-            symbol = (row.get("Symbol") or "").strip() or None
-            quantity = parse_decimal(row.get("Quantity"))
-            price = parse_decimal(row.get("Price ($)"))
-            amount = parse_decimal(row.get("Amount ($)"))
-            settlement = ts_from_mdy(row.get("Settlement Date"))
+            symbol = (ci.get("symbol") or "").strip() or None
+            quantity = parse_decimal(ci.get("quantity"))
+            price = parse_decimal(ci.get("price ($)"))
+            amount = parse_decimal(ci.get("amount ($)"))
+            settlement = ts_from_mdy(ci.get("settlement date"))
             payload = normalize_payload(dict(row))
             identity = _activity_identity(
                 account_ext, ts, kind, symbol, quantity, price, amount,
@@ -1010,13 +1126,421 @@ def _ingest_document(conn, snapshot_at, path, classification, *,
 
 
 # ============================================================
+# Donor-Advised Fund (Fidelity Charitable) — §12
+# ============================================================
+#
+# The DAF bronze under <dump>/daf/ is the charitable API's own JSON,
+# not the retail CSV/HTML exports. It lands in the SAME silver tables
+# as the retail data so the gold adapter composes uniformly:
+#   * one portfolio row  (kind='daf')            per dump
+#   * one accounts row   (management_style='automated')  per giving account
+#   * positions rows      from the investment pools (instrument = poolId)
+#   * transactions rows   from grants / contributions / gifts / pool
+#                         exchanges / adjustments (stable id per source id)
+#   * documents rows      from the statement / confirmation / tax-form PDFs
+# The rich per-event fields the retail columns don't model live in the
+# JSON `payload`. See DESIGN.md §12.
+
+
+def _read_json_file(path):
+    """Read + parse a JSON bronze file, or None if absent/unreadable."""
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        log.warning("DAF: could not read %s: %s", path.name, e)
+        return None
+
+
+def _daf_ts(value):
+    """Parse a DAF date (ISO 'YYYY-MM-DD', ISO datetime, or US
+    'MM/DD/YYYY') to Unix seconds UTC, or None."""
+    if not value or not isinstance(value, str):
+        return None
+    return ts_from_iso(value[:10]) or ts_from_mdy(value)
+
+
+def _daf_first(rec, keys):
+    """First present, non-empty value among ``keys`` in ``rec``."""
+    for k in keys:
+        v = rec.get(k)
+        if v not in (None, "", "--"):
+            return v
+    return None
+
+
+def _daf_activity_id(kind, account_ext, source_id, payload):
+    """Deterministic transactions PK for a DAF event. Keyed on the
+    source's own stable id (grantId, contributionId, …) when present so
+    a re-download collapses onto one row; falls back to a hash of the
+    account + normalized payload when the source offers no id."""
+    basis = (f"{kind}:{account_ext}:{source_id}" if source_id
+             else f"{kind}:{account_ext}:{normalize_payload(payload)}")
+    return "daf-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:28]
+
+
+# One spec per DAF event file. ``unwrap`` names a nested object the row
+# fields live under (grants wrap them in "grant"); ``sign`` fixes the
+# amount direction (grants/gifts out = -1, contributions in = +1,
+# exchanges/adjustments kept as-is = 0). Candidate key lists absorb
+# field-name variation across the endpoints without over-fitting a
+# single observed shape.
+_DAF_EVENT_SPECS = (
+    dict(file="grants.json", kind="GRANT", unwrap="grant", sign=-1,
+         id_keys=("grantId",), amount_keys=("amount",),
+         date_keys=("approvalDate", "settlementDate", "submitDate",
+                    "creationDate", "updateDate"),
+         instrument_keys=()),
+    dict(file="contributions.json", kind="CONTRIBUTION", unwrap=None, sign=1,
+         id_keys=("contributionId", "id"),
+         amount_keys=("estimatedAmount", "fmv", "FMV", "netProceeds",
+                      "amount"),
+         date_keys=("receivedDate", "tradeDate", "settlementDate",
+                    "submittedDate", "submitDate"),
+         instrument_keys=("cusip", "CUSIP", "symbol", "Symbol")),
+    dict(file="gifts.json", kind="GIFT", unwrap=None, sign=-1,
+         id_keys=("id", "giftId"), amount_keys=("giftAmount", "amount"),
+         date_keys=("processed", "processedDate", "date"),
+         instrument_keys=()),
+    dict(file="pool_exchanges.json", kind="EXCHANGE", unwrap=None, sign=0,
+         id_keys=("id", "exchangeId"), amount_keys=("amount",),
+         date_keys=("processDate", "submitDate", "date"),
+         instrument_keys=()),
+    dict(file="adjustments.json", kind="ADJUSTMENT", unwrap=None, sign=0,
+         id_keys=("id", "adjustmentId"), amount_keys=("amount",),
+         date_keys=("processed", "processedDate", "date"),
+         instrument_keys=()),
+)
+
+
+def _daf_pool_count(dump_dir):
+    """Count parseable pool entries across the dump's DAF account
+    dirs, without touching silver — the completeness gate's DAF-side
+    signal."""
+    daf_dir = dump_dir / "daf"
+    if not daf_dir.is_dir():
+        return 0
+    n = 0
+    for acct_dir in daf_dir.iterdir():
+        if not acct_dir.is_dir():
+            continue
+        pb = _read_json_file(acct_dir / "pool_balances.json")
+        if isinstance(pb, list) and pb:
+            n += len((pb[0] or {}).get("poolInfoList") or [])
+    return n
+
+
+def _positions_completeness_gate(dump_dir, run_meta, merged,
+                                 schema_version):
+    """Decide whether this dump's positions may enter silver at all.
+    Returns (skip, reason); (False, None) means the observation is
+    complete and both retail and DAF pool rows load.
+
+    A positions-bearing snapshot is read downstream (gold's per-source
+    latest-snapshot anchor) as a COMPLETE holdings observation, so a
+    dump that observed only one channel must contribute NO positions:
+    stale beats partial, and the anchor stays on the last complete
+    dump. Events, documents, and master data are unaffected (keyed
+    rows, not snapshots). See DESIGN.md §12.3.
+
+    Partiality signals:
+      * mode='daf' — the retired DAF-only mode; such legacy dumps
+        cover a single account and are partial by construction.
+      * daf_results.status='error' — the walk expected a DAF (the
+        account selector enumerated one) but the charitable phase
+        failed; loading the retail rows alone would zero the pool.
+      * retail rows parse to zero while the dump carries DAF pool
+        rows and the roster says retail accounts were in scope — the
+        retail export failed (or its format drifted); loading the
+        pool alone would zero the retail holdings.
+    """
+    mode = (run_meta.get("cli_config") or {}).get("mode")
+    if mode == "daf":
+        return True, "legacy mode=daf dump covers only the DAF"
+    daf_res = run_meta.get("daf_results")
+    if merged and isinstance(daf_res, dict) \
+            and daf_res.get("status") == "error":
+        return True, "the DAF phase failed while retail positions landed"
+    pool_rows = _daf_pool_count(dump_dir) if schema_version >= 7 else 0
+    if not merged and pool_rows and (run_meta.get("accounts_in_scope")
+                                     or []):
+        return True, ("retail positions parsed to zero rows while the "
+                      "DAF pool landed")
+    return False, None
+
+
+def _load_daf(conn, snapshot_at, dump_dir, *, skip_positions=False):
+    """Load the Donor-Advised Fund bronze (<dump>/daf/) into silver.
+    Returns a per-table count dict (empty if the dump has no DAF).
+    ``skip_positions`` (the completeness gate) suppresses the pool
+    position rows while master / events / documents still load."""
+    daf_dir = dump_dir / "daf"
+    if not daf_dir.is_dir():
+        return {}
+    counts = {"portfolios": 0, "accounts": 0, "positions": 0,
+              "transactions": 0, "documents": 0}
+    portfolio_written = False
+    for acct_dir in sorted(p for p in daf_dir.iterdir() if p.is_dir()):
+        master = _read_json_file(acct_dir / "account.json")
+        if not isinstance(master, dict):
+            continue
+        account_ext = str(master.get("accountNbr")
+                          or master.get("accountNumber") or "").strip()
+        if not account_ext:
+            continue
+        if not portfolio_written:
+            conn.execute(
+                "INSERT OR REPLACE INTO portfolios ("
+                "snapshot_at, portfolio_external_id, kind, payload"
+                ") VALUES (?, ?, 'daf', ?)",
+                (snapshot_at, DAF_PORTFOLIO_LABEL,
+                 normalize_payload({"source": "daf/accounts.json"})),
+            )
+            portfolio_written = True
+            counts["portfolios"] = 1
+        conn.execute(
+            "INSERT OR REPLACE INTO accounts ("
+            "snapshot_at, account_external_id, portfolio_external_id, "
+            "nickname, payload, management_style"
+            ") VALUES (?, ?, ?, ?, ?, 'automated')",
+            (snapshot_at, account_ext, DAF_PORTFOLIO_LABEL,
+             master.get("gaName"),
+             normalize_payload({"source": "daf/account.json", **master})),
+        )
+        counts["accounts"] += 1
+        if not skip_positions:
+            counts["positions"] += _load_daf_pools(
+                conn, snapshot_at, account_ext, acct_dir)
+        counts["transactions"] += _load_daf_events(
+            conn, snapshot_at, account_ext, acct_dir)
+        counts["documents"] += _load_daf_documents(
+            conn, snapshot_at, account_ext, acct_dir)
+    return counts
+
+
+def _load_daf_pools(conn, snapshot_at, account_ext, acct_dir):
+    """Load the investment-pool positions from pool_balances.json. The
+    latest date bucket's poolInfoList is the current holding snapshot;
+    each pool is one positions row keyed on poolId."""
+    pb = _read_json_file(acct_dir / "pool_balances.json")
+    if not isinstance(pb, list) or not pb:
+        return 0
+    bucket = pb[0] or {}
+    price_date = bucket.get("poolPriceDate")
+    inserted = 0
+    for pool in bucket.get("poolInfoList") or []:
+        instrument_key = str(pool.get("poolId")
+                             or pool.get("poolName") or "").strip()
+        if not instrument_key:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO positions ("
+            "snapshot_at, account_external_id, instrument_key, "
+            "description, quantity, last_price, current_value, "
+            "type, currency, asset_class, is_core_position, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'daf_pool', 0, ?)",
+            (snapshot_at, account_ext, instrument_key,
+             pool.get("poolName"),
+             parse_decimal(pool.get("unitQuantity")),
+             parse_decimal(pool.get("poolUnitPrice")),
+             parse_decimal(pool.get("marketValue")),
+             pool.get("poolCategory"),
+             normalize_payload({"pool_price_date": price_date, **pool})),
+        )
+        inserted += 1
+    return inserted
+
+
+def _load_daf_events(conn, snapshot_at, account_ext, acct_dir):
+    """Load grants / contributions / gifts / pool-exchanges / adjustments
+    into the transactions table, one row per event, keyed on a stable
+    per-source id (see _daf_activity_id)."""
+    inserted = 0
+    for spec in _DAF_EVENT_SPECS:
+        path = acct_dir / spec["file"]
+        items = _read_json_file(path)
+        if not isinstance(items, list) or not items:
+            continue
+        source_sha = bronze.sha256_file(path)[0]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rec = item.get(spec["unwrap"]) if spec["unwrap"] else item
+            if not isinstance(rec, dict):
+                rec = item
+            amount = parse_decimal(_daf_first(rec, spec["amount_keys"]))
+            if amount is not None and spec["sign"]:
+                amount = spec["sign"] * abs(amount)
+            ts = _daf_ts(_daf_first(rec, spec["date_keys"])) or snapshot_at
+            instr = _daf_first(rec, spec["instrument_keys"])
+            source_id = _daf_first(rec, spec["id_keys"])
+            activity_id = _daf_activity_id(
+                spec["kind"], account_ext, source_id, item)
+            conn.execute(
+                "INSERT OR REPLACE INTO transactions ("
+                "activity_id, timestamp, account_external_id, kind, "
+                "instrument_key, amount, currency, source_sha256, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, 'USD', ?, ?)",
+                (activity_id, ts, account_ext, spec["kind"],
+                 (str(instr).strip() or None) if instr else None,
+                 amount, source_sha, normalize_payload(item)),
+            )
+            inserted += 1
+    return inserted
+
+
+# DAF document filename stems (download._daf_doc_stem): '<TYPE>_<date>',
+# TYPE ∈ {STATEMENT, GRANT, CONTRIBUTION, FORM_8283}. The kind is
+# namespaced 'daf_*' so DAF documents never mix with the retail
+# statement / tax-form rows.
+_DAF_DOC_KINDS = {
+    "STATEMENT": "daf_statement",
+    "FORM_8283": "daf_tax_form",
+    "GRANT": "daf_grant_confirmation",
+    "CONTRIBUTION": "daf_contribution_confirmation",
+}
+_DAF_DOC_STEM_RE = re.compile(
+    r"^(STATEMENT|FORM_8283|GRANT|CONTRIBUTION)_(\d{4})")
+
+
+def _classify_daf_pdf(filename, account_ext):
+    """Kind + tax_year + account for a DAF documents/*.pdf, from the
+    '<TYPE>_<YYYY>_...' stem download.py writes."""
+    info = {"file_format": "pdf", "doc_kind": "daf_statement",
+            "account_external_id": account_ext}
+    m = _DAF_DOC_STEM_RE.match(filename)
+    if m:
+        info["doc_kind"] = _DAF_DOC_KINDS.get(m.group(1), "daf_statement")
+        if info["doc_kind"] == "daf_tax_form":
+            info["tax_year"] = int(m.group(2))
+    return info
+
+
+def _load_daf_documents(conn, snapshot_at, account_ext, acct_dir):
+    """Index the DAF PDF archive into the documents table (deduped on
+    content_sha256 like every other document)."""
+    docs_dir = acct_dir / "documents"
+    if not docs_dir.is_dir():
+        return 0
+    inserted = 0
+    for pdf in sorted(docs_dir.glob("*.pdf")):
+        inserted += _ingest_document(
+            conn, snapshot_at, pdf,
+            _classify_daf_pdf(pdf.name, account_ext))
+    return inserted
+
+
+# ------------------------------------------------------------
+# DAF historical position snapshots (statement-PDF parsing)
+# ------------------------------------------------------------
+#
+# The quarterly + year-end Giving Account statements carry per-pool
+# end-of-period units / unit price / market value (DESIGN.md §12),
+# so they back-fill `historical_position_snapshots` for the DAF
+# exactly the way the 529 statements do for 529 accounts (§4.5) —
+# same table, same parse-cache pool, its own parser
+# (`pdf_parsers_daf`) and reconciliation gate.
+
+
+def _parse_daf_statement_pdf_worker(path):
+    """ProcessPoolExecutor target — module-level so it pickles
+    cleanly under spawn (macOS); errors return a dict rather than
+    crashing the pool."""
+    try:
+        return pdf_parsers_daf.parse_daf_statement_pdf(path)
+    except Exception as e:
+        return {"_error": repr(e), "path": str(path)}
+
+
+def _daf_statement_pdf_candidates(dump_dir):
+    """The DAF statement PDFs across a dump's giving-account dirs
+    (``daf/<account_key>/documents/STATEMENT_*.pdf``), sorted for
+    deterministic INSERT OR REPLACE ordering."""
+    daf_dir = dump_dir / "daf"
+    if not daf_dir.is_dir():
+        return []
+    return sorted(daf_dir.glob("*/documents/STATEMENT_*.pdf"))
+
+
+def _daf_account_for_statement(path):
+    """The giving-account id owning a statement PDF, from the
+    ``account.json`` beside its documents dir; None when absent."""
+    master = _read_json_file(path.parents[1] / "account.json")
+    if not isinstance(master, dict):
+        return None
+    aid = str(master.get("accountNbr") or master.get("accountNumber")
+              or "").strip()
+    return aid or None
+
+
+def _load_daf_historical(conn, dump_dir, coord=None):
+    """Parse every DAF statement PDF in this dump and insert the
+    period-end pool rows into ``historical_position_snapshots``. The
+    reconciliation gate is enforced here: a statement whose pool sum
+    doesn't tie out to its own stated ending value is skipped and
+    logged, never imported."""
+    candidates = _daf_statement_pdf_candidates(dump_dir)
+    if not candidates:
+        return 0
+    coord = coord or _transient_coordinator()
+    log.info("daf historical: ingesting %d statement PDF(s) from %s",
+             len(candidates), dump_dir.name)
+    inserted = 0
+    for path in candidates:
+        sha = coord.sha_for(path)
+        parsed = coord.resolve(
+            sha, _DAF_STATEMENT_PARSER_VERSION,
+            _parse_daf_statement_pdf_worker, str(path),
+        )
+        if "_error" in parsed:
+            log.warning("daf historical: parse failed for %s: %s",
+                        path.name, parsed["_error"])
+            continue
+        if not parsed.get("reconciled"):
+            log.warning(
+                "daf historical: %s failed reconciliation (%s); skipped",
+                path.name, parsed.get("reconcile_error"))
+            continue
+        as_of = ts_from_iso(parsed.get("as_of_date"))
+        aid = _daf_account_for_statement(path)
+        if as_of is None or not aid:
+            log.warning("daf historical: %s missing as-of date or "
+                        "account master; skipped", path.name)
+            continue
+        for pool in parsed.get("pools", []):
+            desc = (pool.get("description") or "").strip()
+            if not desc:
+                continue
+            instrument_key = _crosswalk_description_to_instrument(
+                conn, aid, desc)
+            conn.execute(
+                "INSERT OR REPLACE INTO historical_position_snapshots ("
+                "as_of_date, account_external_id, description, "
+                "instrument_key, quantity, price, market_value, "
+                "percent_of_total, currency, source_sha256, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'USD', ?, ?)",
+                (
+                    as_of, aid, desc, instrument_key,
+                    pool.get("quantity"), pool.get("price"),
+                    pool.get("market_value"),
+                    sha, normalize_payload(pool),
+                ),
+            )
+            inserted += 1
+    return inserted
+
+
+# ============================================================
 # Historical position snapshots (529 statement-PDF parsing)
 # ============================================================
 #
 # Fidelity's positions UI is point-in-time; the only available
 # source for pre-toolkit-era snapshots is the statement PDF
-# archive. Two distinct PDF layouts feed two distinct loader
-# paths into the same `historical_position_snapshots` table:
+# archive. Three distinct PDF layouts feed three loader paths into
+# the same `historical_position_snapshots` table — the two below,
+# plus the DAF Giving Account statements (`_load_daf_historical`,
+# beside the other DAF loaders):
 #
 #   1. 529 statements — quarterly + year-end PDFs that download.py
 #      scrapes into `<dump>/documents/Statement<MMDDYYYY>.pdf`.
@@ -1690,6 +2214,41 @@ def validate(conn):
             "validation: %d transaction kinds with NULL instrument_key "
             "fell outside the CASH_ONLY_ACTIONS allowlist: %s",
             len(unexpected), unexpected,
+        )
+
+    # Positions staleness: dumps whose mode covers the positions phase
+    # keep landing while the retail positions table stops growing —
+    # the signature of a silently failing export (format/selector
+    # drift; see DESIGN.md §8.3's dated note). Make it loud.
+    cur = conn.execute(
+        "SELECT MAX(snapshot_at) FROM dump_runs "
+        "WHERE mode IN ('all', 'positions')"
+    )
+    latest_pos_dump = cur.fetchone()[0]
+    # Retail positions only — a fresher DAF pool row (its own phase,
+    # its own cadence) must not mask a stale retail export.
+    cur = conn.execute(
+        "SELECT MAX(snapshot_at) FROM positions "
+        "WHERE account_external_id NOT IN ("
+        "  SELECT DISTINCT a.account_external_id FROM accounts a"
+        "  JOIN portfolios p ON p.snapshot_at = a.snapshot_at"
+        "   AND p.portfolio_external_id = a.portfolio_external_id"
+        "  WHERE p.kind = 'daf')"
+    )
+    latest_pos_row = cur.fetchone()[0]
+    if latest_pos_dump is not None and (
+            latest_pos_row is None or latest_pos_row < latest_pos_dump):
+        gap_days = (latest_pos_dump - (latest_pos_row or 0)) // 86400
+        log.warning(
+            "validation: the latest positions-covering dump (%s) carries "
+            "NO positions rows — newest positions snapshot is %s "
+            "(~%d day(s) behind). The positions export is likely failing "
+            "silently (selector drift?); check the newest run.json's "
+            "positions_results and re-run with --debug.",
+            datetime.fromtimestamp(latest_pos_dump, tz=timezone.utc).date(),
+            ("none" if latest_pos_row is None else
+             datetime.fromtimestamp(latest_pos_row, tz=timezone.utc).date()),
+            gap_days,
         )
 
     cur = conn.execute(

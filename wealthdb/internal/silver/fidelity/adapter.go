@@ -19,8 +19,9 @@
 //   - Portfolios. Fidelity's selector groups accounts under
 //     labelled sections; silver promotes the label as
 //     portfolio_external_id and a kind classifier ('529' /
-//     'trust_managed' / 'other'). We emit one PortfolioChange
-//     per silver portfolio so `wealthdb portfolios` rolls up each kind separately.
+//     'trust_managed' / 'daf' / 'other'). We emit one
+//     PortfolioChange per silver portfolio so `wealthdb
+//     portfolios` rolls up each kind separately.
 //
 //   - Historical 529 snapshots. Fidelity's positions UI is
 //     point-in-time, so for any quarter before the toolkit first

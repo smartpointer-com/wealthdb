@@ -77,6 +77,33 @@ SELECT DISTINCT as_of_date
 	return out, rows.Err()
 }
 
+// dafAccountIDs returns the set of account ids grouped under a
+// kind='daf' portfolio in any snapshot — the Donor-Advised Fund
+// domain, whose historical rows are pool holdings (see
+// appendHistoricalPositions). Empty (not an error) on pre-v7 silvers
+// with no daf portfolios.
+func (c *Connection) dafAccountIDs(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT DISTINCT a.account_external_id
+  FROM accounts a JOIN portfolios p
+    ON p.snapshot_at = a.snapshot_at
+   AND p.portfolio_external_id = a.portfolio_external_id
+ WHERE p.kind = 'daf'`)
+	if err != nil {
+		return nil, fmt.Errorf("dafAccountIDs: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 // appendHistoricalAccounts projects the per-account master rows
 // captured in the live `accounts` table backwards onto each
 // historical as_of_date. Without this, `wealthdb accounts
@@ -196,6 +223,10 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 // The fallback is "fidelity-hist:" + sha-prefix(description) and
 // is deterministic per description, so re-loads converge.
 func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+	dafAccounts, err := c.dafAccountIDs(ctx)
+	if err != nil {
+		return err
+	}
 	const q = `
 SELECT as_of_date, account_external_id,
        COALESCE(instrument_key, ''),
@@ -228,8 +259,15 @@ SELECT as_of_date, account_external_id,
 			continue
 		}
 		// Classified from the raw instrKey/desc (before the synthetic
-		// key substitution below).
+		// key substitution below). Rows on a Donor-Advised Fund
+		// account are pool holdings by construction — the shape
+		// heuristics don't apply to pool names ("Growth"), so they
+		// get the same (multi_asset, fund) pair the live daf_pool
+		// class maps to.
 		assetClassNew, vehicle := classifyHistoricalPair(instrKey, desc)
+		if _, isDAF := dafAccounts[acct]; isDAF {
+			assetClassNew, vehicle = canonical.AssetClassMultiAsset, canonical.VehicleFund
+		}
 		if instrKey == "" {
 			instrKey = syntheticHistoricalInstrumentKey(desc)
 		}

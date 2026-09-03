@@ -2365,18 +2365,23 @@ structured-enum columns):
 
 - **`account_kind`** — the technical container the bank exposes:
   `brokerage`, `cash`, `safekeeping`, `custody`, `overlay`,
-  `crypto`, `mortgage`, `other` (with `crypto_exchange` /
-  `crypto_self_custody` reserved for a future adapter that
-  distinguishes them). Required; every adapter stamps this.
+  `crypto`, `mortgage`, `donor_advised_fund`, `other` (with
+  `crypto_exchange` / `crypto_self_custody` reserved for a future
+  adapter that distinguishes them). Required; every adapter
+  stamps this. A `donor_advised_fund` holds irrevocably donated
+  charitable assets — its own kind so deployments can include or
+  exclude DAF balances from net-worth calculations.
 - **`tax_wrapper`** — the tax / regulatory registration.
   Nullable; defaults to `taxable_personal` at render time.
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,
   `simple_ira`, `401k`, `403b`, `457b`, `529`, `coverdell_esa`,
-  `hsa`, `daf`, `custodial_utma`, `custodial_ugma`,
+  `hsa`, `charitable`, `custodial_utma`, `custodial_ugma`,
   `trust_grantor`, `trust_non_grantor`, `trust_charitable`) and
   Switzerland (`pillar_2`, `vested_benefits` /
   Freizügigkeitskonto, `pillar_3a`), plus generic
   `taxable_personal`, `taxable_joint`, `foundation`, `other`.
+  (`charitable` pairs with the `donor_advised_fund` kind; it
+  replaced the never-emitted `daf` value in migration 0036.)
 - **`management_style`** — who places trades. Nullable;
   defaults to `self_directed` at render time. Values:
   `self_directed`, `advisory`, `discretionary`, `automated`.

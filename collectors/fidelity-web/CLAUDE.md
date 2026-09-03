@@ -60,6 +60,49 @@ every account-type the login surfaces — do not use any elevated
 permission the login may transitively grant for anything beyond
 observation.
 
+## 1a. Donor-Advised Fund (Fidelity Charitable) surface
+
+The DAF sits behind a distinct SPA on `charitablegift.fidelity.com`,
+reached by an SSO hop that consumes the retail session cookie
+(DESIGN.md §12). The `daf` phase drives its JSON REST API over
+`page.request` rather than the DOM. The read-only contract applies
+there in full, with DAF-specific stakes: on a DAF, "Recommend a
+grant" and "Contribute" are the money-movement surfaces, and an
+investment-pool "Exchange" reallocates assets.
+
+Allowed — the SSO hop, the auth bootstrap, and read-only GETs under
+`/fc-services/api/v1/` only:
+
+- `CGFLogon.cgfdo` (the SSO hop) and `identity/self` / `self`
+  (session-JWT + partyId bootstrap — the charitable-side analogue of
+  login; the ONLY non-GET permitted here).
+- The giving-account roster (`user/<partyId>/accounts`) and per-
+  account master (`givingAccounts/<acctNbr>`).
+- Investment pool positions (`poolBalances`) and exchanges
+  (`poolExchange`).
+- Grant, contribution, gift, and adjustment history
+  (`transactionHistory/grants`, `.../contributions`, `gift`,
+  `transactionHistory/adjustment`) and their `…/download` CSV twins.
+- Document listing (`document`) and PDF fetch (`document/download`)
+  for statements, grant/contribution confirmations, and tax forms.
+
+Forbidden — never navigate into, click through, or call:
+
+- Grant recommendation flows (`Recommend a grant`, `Grant`, charity
+  search-to-grant funnels, recurring-grant setup) — this moves real
+  money out of the fund, irreversibly.
+- Contribution flows (`Contribute`, `Add funds`, asset transfers into
+  the DAF) — money movement, even though it is "inbound".
+- Investment pool exchanges / reallocation / model changes.
+- Successor, advisor, or third-party access elections; profile,
+  alerts, or settings mutations of any kind.
+- Any "confirm" / "submit" / "review" button beyond read-only filter
+  Apply and explicit export/download triggers.
+
+When in doubt during `explore`, treat a DAF surface as forbidden
+until it appears in the allow-list above; mapping a new endpoint does
+not widen scope.
+
 ## Authentication & private data
 
 See the repo-root [CLAUDE.md](../../CLAUDE.md) §3 (authentication) and

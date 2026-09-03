@@ -102,6 +102,7 @@ import time
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from collectorkit import bronze, cli, compress, envfile, launch
 
@@ -272,6 +273,23 @@ def parse_exclude_list(value):
     if not value:
         return set()
     return {x.strip() for x in value.split(",") if x.strip()}
+
+
+def _login_has_daf(dimensions):
+    """True when the account selector enumerated a Fidelity Charitable
+    Donor-Advised Fund. Primary signal is the ``Fidelity Charitable®
+    Giving`` section label (matched loosely on 'charitable'); the
+    fallback is the DAF's tell-tale non-9-digit account id (the retail
+    accounts are all 9-digit — §3.1). Used to decide whether ``--mode
+    all`` takes the DAF SSO hop, so a retail-only login skips it."""
+    for d in dimensions:
+        label = (d.get("portfolio") or "")
+        if "charitable" in label.lower():
+            return True
+        aid = d.get("account_id") or ""
+        if aid and len(aid) != 9:
+            return True
+    return False
 
 
 def live_url(page):
@@ -1879,6 +1897,548 @@ def scrape_performance(page, bronze_dir, capture_dir):
 
 
 # ---------------------------------------------------------------------------
+# Donor-Advised Fund (Fidelity Charitable) phase
+# ---------------------------------------------------------------------------
+#
+# The DAF sits behind a distinct SPA on charitablegift.fidelity.com,
+# reached by an SSO hop that consumes the existing .fidelity.com
+# session cookie (DESIGN.md §12). Unlike the retail phases, which
+# scrape a rendered UI, the DAF surface is a clean JSON REST API under
+# /fc-services/api/v1/ — so this phase drives it over ``page.request``
+# (same cookie jar as the browser context), the firstcitizens REST
+# pattern. The retail account enumeration auto-excludes the DAF by its
+# 7-digit id length; this phase is what actually ingests it, from the
+# charitable API's own account roster.
+
+DAF_HOST = "charitablegift.fidelity.com"
+DAF_ORIGIN = f"https://{DAF_HOST}"
+# CGFLogon consumes the retail session cookie and redirects into the
+# donor SPA — the SSO hop. Navigating it (rather than the SPA URL
+# directly) is what plants the charitablegift.fidelity.com session
+# cookies that page.request then reuses.
+DAF_SSO_URL = f"{DAF_ORIGIN}/cgfweb/CGFLogon.cgfdo?Ref_at=ng"
+DAF_SPA_URL = f"{DAF_ORIGIN}/cgfweb/fc-donor/?Ref_at=ng"
+DAF_API = f"{DAF_ORIGIN}/fc-services/api/v1"
+# The API bootstrap: POST identity/self mints the per-session auth JWT
+# (returned in the fid-cgf-auth-jwt response header) and returns the
+# donor's partyId. Subsequent GETs carry the JWT as a request header.
+DAF_IDENTITY_URL = f"{DAF_API}/identity/self"
+DAF_JWT_HEADER = "fid-cgf-auth-jwt"
+# Document types the listing endpoint serves (DESIGN.md §12.1). Each is
+# queried over the full [establish-date, today] window; every returned
+# row is fetched as a PDF via document/download.
+DAF_DOCUMENT_TYPES = ("STATEMENT", "GRANT", "CONTRIBUTION", "FORM_8283")
+DAF_PAGE_SIZE = 100
+
+
+def _daf_ep(url):
+    """A PII-safe endpoint label for logs. Account / party / grant ids
+    ride in BOTH the path (``givingAccounts/<acctNbr>``) and the query
+    (``?accountId=<acctNbr>``) of the charitable API, so this strips the
+    query, drops the API-root prefix, and masks every long digit run —
+    the log shows ``givingAccounts/<id>``, never a real account number."""
+    path = url.split("?", 1)[0]
+    for prefix in (DAF_API, DAF_ORIGIN):
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    return re.sub(r"\d{4,}", "<id>", path.lstrip("/")) or path
+
+
+def _daf_get(page, url, jwt):
+    """One authenticated GET against the charitable API over
+    ``page.request`` (shares the browser cookie jar). Returns the
+    Playwright APIResponse, or None on transport failure. The JWT is
+    sent as the fid-cgf-auth-jwt header the SPA uses; cookies alone may
+    suffice, but the header matches what the live UI sends."""
+    headers = {"accept": "application/json, text/plain, */*"}
+    if jwt:
+        headers[DAF_JWT_HEADER] = jwt
+    try:
+        return page.request.get(url, headers=headers, timeout=30_000)
+    except Exception as e:  # noqa: BLE001
+        log.warning("  DAF GET %s failed: %s", _daf_ep(url), e)
+        return None
+
+
+def _daf_navigate_sso(page):
+    """Take the SSO hop into the donor SPA so page.request inherits the
+    charitablegift.fidelity.com session cookies. Returns True once a
+    charitable host has loaded, False if the hop never lands there
+    (e.g. a login with no Fidelity Charitable relationship, or a
+    session-timeout bounce back to signin)."""
+    try:
+        goto_and_wait(page, DAF_SSO_URL, wait_timeout_s=30)
+    except Exception as e:
+        log.warning("DAF SSO nav failed: %s", e)
+        return False
+    # The hop redirects CGFLogon → fc-donor SPA; both are on DAF_HOST.
+    # Give the redirect a moment to settle, then confirm the host.
+    for _ in range(20):
+        url = live_url(page)
+        if DAF_HOST in url:
+            return True
+        if "/prgw/digital/signin" in url:
+            log.warning("DAF SSO bounced to signin (session timeout?)")
+            return False
+        time.sleep(0.5)
+    log.warning("DAF SSO did not land on %s (at %s)", DAF_HOST,
+                live_url(page))
+    return False
+
+
+def _daf_bootstrap(page):
+    """POST identity/self to mint the session JWT and read the donor's
+    partyId. Returns (jwt, party_id); either may be None if the call
+    fails. The JWT rides subsequent GETs; the partyId keys the account
+    roster. The browser must already be on the DAF host (cookies set)
+    for this to authenticate."""
+    try:
+        resp = page.request.post(
+            DAF_IDENTITY_URL,
+            data=json.dumps({"channelID": "DONOR"}),
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json, text/plain, */*",
+                "origin": DAF_ORIGIN,
+            },
+            timeout=30_000,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("DAF identity bootstrap failed: %s", e)
+        return None, None
+    if not resp.ok:
+        log.warning("DAF identity/self returned HTTP %d", resp.status)
+        return None, None
+    jwt = resp.headers.get(DAF_JWT_HEADER)
+    party_id = None
+    try:
+        party_id = resp.json().get("partyId")
+    except Exception as e:  # noqa: BLE001
+        log.debug("DAF identity/self body parse: %s", e)
+    if not jwt:
+        log.warning("DAF identity/self carried no %s header; will try "
+                    "cookie-only auth", DAF_JWT_HEADER)
+    return jwt, party_id
+
+
+def _daf_fetch_json(page, url, jwt):
+    """GET a JSON endpoint, returning (parsed_obj, raw_bytes) or
+    (None, None). raw_bytes is what lands in bronze (the JSON is the
+    primary silver source; storing it verbatim keeps every field)."""
+    resp = _daf_get(page, url, jwt)
+    if resp is None or not resp.ok:
+        if resp is not None:
+            log.warning("  DAF %s → HTTP %d", _daf_ep(url), resp.status)
+        return None, None
+    raw = resp.body()
+    try:
+        return json.loads(raw), raw
+    except Exception as e:  # noqa: BLE001
+        log.warning("  DAF %s body not JSON: %s", _daf_ep(url), e)
+        return None, raw
+
+
+def _daf_fetch_paged(page, base_url, jwt):
+    """Fetch every page of a paginated charitable-history envelope
+    (``{totalItems, itemsPerPage, currentItemCount, items:[...]}``) and
+    return the flattened item list. ``base_url`` already carries the
+    filter params; this appends ``page``/``size``. Stops when the
+    collected count reaches totalItems, a page comes back empty, or a
+    hard page cap trips (a runaway-loop backstop)."""
+    sep = "&" if "?" in base_url else "?"
+    items = []
+    page_no = 1
+    total = None
+    while page_no <= 1000:
+        url = f"{base_url}{sep}page={page_no}&size={DAF_PAGE_SIZE}"
+        obj, _ = _daf_fetch_json(page, url, jwt)
+        if obj is None:
+            break
+        batch = obj.get("items") or []
+        items.extend(batch)
+        if total is None:
+            total = obj.get("totalItems")
+        if not batch or (total is not None and len(items) >= total):
+            break
+        page_no += 1
+    return items
+
+
+def _daf_save_json(dest_dir, name, raw_bytes):
+    """Persist a raw JSON body under ``dest_dir``/``name`` (bronze;
+    never compressed — kept greppable and small). No-op (returns None)
+    when ``dest_dir`` is None (dry-run) or the body is None, so callers
+    can invoke it unconditionally."""
+    if dest_dir is None or raw_bytes is None:
+        return None
+    out = dest_dir / name
+    out.write_bytes(raw_bytes)
+    return out
+
+
+def _daf_save_items(dest_dir, name, items):
+    """Persist a merged item list (paginated envelopes flattened, or
+    per-year unions) as pretty JSON under ``dest_dir``/``name``. No-op
+    (returns None) when ``dest_dir`` is None (dry-run), so callers can
+    invoke it unconditionally."""
+    if dest_dir is None:
+        return None
+    out = dest_dir / name
+    bronze.atomic_write_json(out, items)
+    return out
+
+
+def _daf_fetch_csv(page, url, jwt, dest_dir, stem):
+    """GET a server-side CSV export and persist it zstd-compressed
+    (parity with the retail CSV bronze). Returns the on-disk path or
+    None. The CSV is corroborating bronze — the JSON is the primary
+    silver source — so a failure is a warning, not fatal."""
+    resp = _daf_get(page, url, jwt)
+    if resp is None or not resp.ok:
+        if resp is not None:
+            log.warning("  DAF CSV %s → HTTP %d", stem, resp.status)
+        return None
+    out = dest_dir / f"{stem}.csv"
+    out.write_bytes(resp.body())
+    return compress_export(out)
+
+
+def _daf_scrape_documents(page, jwt, account_nbr, since_date, acct_dir):
+    """List and download the DAF's PDF documents across every type.
+
+    Queries the document listing per type over [since_date, today],
+    then fetches each row's PDF via document/download (the endpoint
+    returns application/pdf directly — no base64-in-JSON dance like the
+    retail document center). Dedups on the PDF content hash so a
+    document that appears under several types / windows is stored once.
+    The PDFs land in ``acct_dir/documents/`` and the listing metadata in
+    ``acct_dir/documents_index.json``. Pass ``acct_dir=None`` for a
+    dry-run: only the listing is read (for the count), nothing is
+    downloaded, and nothing is written. Returns a result dict."""
+    dry_run = acct_dir is None
+    docs_dir = None if dry_run else acct_dir / "documents"
+    if docs_dir is not None:
+        docs_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).date()
+    index = []
+    seen_hashes = set()
+    saved = 0
+    errors = []
+    for dtype in DAF_DOCUMENT_TYPES:
+        list_url = (
+            f"{DAF_API}/document?accountNumber={account_nbr}"
+            f"&documentType={dtype}"
+            f"&fromDate={since_date.isoformat()}&endDate={today.isoformat()}"
+        )
+        obj, _ = _daf_fetch_json(page, list_url, jwt)
+        rows = obj if isinstance(obj, list) else []
+        log.info("  DAF documents[%s]: %d listed", dtype, len(rows))
+        for row in rows:
+            key = row.get("legacyDocumentKey")
+            if not key:
+                continue
+            index.append({
+                "documentType": row.get("documentType"),
+                "documentName": row.get("documentName"),
+                "correspondenceDate": row.get("correspondenceDate"),
+                "generatedDate": row.get("generatedDate"),
+                "id": row.get("id"),
+            })
+            if dry_run:
+                # Listing only — the PDF fetch is a read-only export
+                # trigger the dry-run contract forbids.
+                continue
+            dl_url = (
+                f"{DAF_API}/document/download?accountNumber={account_nbr}"
+                f"&legacyDocumentKey={quote(key, safe='')}"
+                f"&documentType={row.get('documentType') or dtype}"
+            )
+            resp = _daf_get(page, dl_url, jwt)
+            if resp is None or not resp.ok:
+                # Label the failure by type, never by the legacyDocumentKey
+                # (it embeds account-scoped tokens — kept out of run.json).
+                errors.append(row.get("documentName") or f"{dtype} document")
+                continue
+            body = resp.body()
+            if body[:4] != b"%PDF":
+                log.warning("  DAF document %s not a PDF (%d bytes); "
+                            "skipping", row.get("documentName"), len(body))
+                errors.append(row.get("documentName") or f"{dtype} document")
+                continue
+            digest = hashlib.sha256(body).hexdigest()
+            if digest in seen_hashes:
+                continue
+            seen_hashes.add(digest)
+            stem = _daf_doc_stem(row, dtype)
+            _write_doc_bytes(docs_dir, f"{stem}.pdf", body)
+            saved += 1
+    _daf_save_items(acct_dir, "documents_index.json", index)
+    return {"listed": len(index), "saved_pdfs": saved,
+            "errors": errors}
+
+
+def _daf_doc_stem(row, dtype):
+    """Readable bronze filename stem for a DAF document row, prefixed by
+    type so a directory listing sorts by kind. PII (account/document
+    ids) stays out of the name — the date + type is enough to
+    disambiguate, and the canonical mapping lives inside the PDF."""
+    date = (row.get("correspondenceDate") or row.get("generatedDate")
+            or "")[:10]
+    base = re.sub(r"[^A-Za-z0-9]+", "_",
+                  f"{dtype}_{date}").strip("_")[:60]
+    return base or dtype
+
+
+def _daf_year_span(since_date, establish_date):
+    """Inclusive list of calendar years to sweep for the year-scoped
+    endpoints (poolExchange, adjustments). Runs from the later of the
+    requested window start and the account's establish date up to the
+    current year — so a since-inception default covers the account's
+    whole life without probing years before it existed."""
+    today = datetime.now(timezone.utc).date()
+    start_year = since_date.year if since_date else today.year
+    if establish_date is not None:
+        start_year = max(start_year, establish_date.year) \
+            if since_date else establish_date.year
+    return list(range(start_year, today.year + 1))
+
+
+def _daf_parse_establish_date(account_master):
+    """Pull the account establish date (YYYY-MM-DD or MM/DD/YYYY) from
+    the givingAccounts master, returning a date or None. Bounds the
+    year-scoped sweeps and the document-listing window."""
+    raw = (account_master or {}).get("establishDate") \
+        or (account_master or {}).get("establishmentDate")
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw[:19], fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _daf_scrape_account(page, jwt, account, since_date, daf_root, *,
+                        dry_run=False, positions_only=False):
+    """Scrape one giving account: the JSON surfaces (master, pools,
+    grants, contributions, exchanges, gifts, adjustments), the
+    server-side CSV exports, and the PDF document set. Bronze lands
+    under ``daf_root/<account_key>/``. Returns a per-account result
+    dict.
+
+    ``positions_only`` (the --mode positions slice) stops after the
+    account master + pool balances, so a positions-bearing dump is a
+    complete holdings observation without pulling the whole event /
+    document archive.
+
+    On ``dry_run`` it does the pure-read JSON enumeration (so the plan
+    log carries real counts and any auth/SSO failure surfaces) but
+    fetches no CSV export or PDF and writes no bronze — honouring the
+    root CLAUDE.md §2 "export nothing" dry-run contract."""
+    account_nbr = str(account.get("accountNbr") or account.get("accountNumber")
+                      or "")
+    if not account_nbr:
+        return {"status": "error", "error": "roster row had no accountNbr"}
+    # On a dry-run every bronze dir is None; the _daf_save_* helpers and
+    # _daf_scrape_documents all no-op on a None dir, so the enumeration
+    # reads run unguarded and simply write nothing.
+    if dry_run:
+        acct_dir = exports_dir = None
+    else:
+        acct_dir = daf_root / account_key(account_nbr)
+        exports_dir = acct_dir / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).date()
+    result = {"status": "dry-run" if dry_run else "complete"}
+
+    # Account master (balance + pending buckets + establish date).
+    master, master_raw = _daf_fetch_json(
+        page, f"{DAF_API}/givingAccounts/{account_nbr}", jwt)
+    _daf_save_json(acct_dir, "account.json", master_raw)
+    establish = _daf_parse_establish_date(master)
+    result["establish_date"] = establish.isoformat() if establish else None
+
+    # Pool positions (a snapshot; numberOfDays=1 = today's holdings).
+    pools, pools_raw = _daf_fetch_json(
+        page,
+        f"{DAF_API}/poolBalances?accountNumber={account_nbr}"
+        f"&endDate={today.isoformat()}&numberOfDays=1",
+        jwt)
+    _daf_save_json(acct_dir, "pool_balances.json", pools_raw)
+    # poolBalances is a list of date buckets, each with a poolInfoList;
+    # count the pools in the latest bucket for the run manifest.
+    result["pools"] = (
+        len((pools[0] or {}).get("poolInfoList") or [])
+        if isinstance(pools, list) and pools else 0
+    )
+    if positions_only:
+        # The --mode positions slice stops here: master + pool only.
+        # History / exports / documents belong to the full phase.
+        return result
+
+    # History surfaces honour the resolved window (--lookback) exactly
+    # like the retail activity/documents phases: with a window it filters
+    # fromDate/endDate; with none (only the helper/tests reach this) it
+    # falls back to the source's SINCE_INCEPTION filter. Silver is
+    # cumulative — a 90-day nightly window keeps recent events fresh
+    # while an initial ``--lookback all`` backfills the whole history.
+    if since_date:
+        window = (f"&fromDate={since_date.isoformat()}T00:00:00.000Z"
+                  f"&endDate={today.isoformat()}T23:59:59.999Z")
+    else:
+        window = "&viewingFilter=SINCE_INCEPTION"
+
+    grants = _daf_fetch_paged(
+        page, f"{DAF_API}/transactionHistory/grants?accountId={account_nbr}"
+        f"{window}", jwt)
+    _daf_save_items(acct_dir, "grants.json", grants)
+    result["grants"] = len(grants)
+
+    contribs = _daf_fetch_paged(
+        page,
+        f"{DAF_API}/transactionHistory/contributions?accountId={account_nbr}"
+        f"{window}", jwt)
+    _daf_save_items(acct_dir, "contributions.json", contribs)
+    result["contributions"] = len(contribs)
+
+    gifts = _daf_fetch_paged(
+        page, f"{DAF_API}/gift?donorAccountNumber={account_nbr}", jwt)
+    _daf_save_items(acct_dir, "gifts.json", gifts)
+    result["gifts"] = len(gifts)
+
+    # Year-scoped surfaces: union across the account's active years.
+    years = _daf_year_span(since_date, establish)
+    exchanges = []
+    adjustments = []
+    for year in years:
+        yx, _ = _daf_fetch_json(
+            page,
+            f"{DAF_API}/poolExchange?accountNumber={account_nbr}&year={year}",
+            jwt)
+        if isinstance(yx, list):
+            exchanges.extend(yx)
+        adj = _daf_fetch_paged(
+            page,
+            f"{DAF_API}/transactionHistory/adjustment?accountNumber="
+            f"{account_nbr}&year={year}", jwt)
+        adjustments.extend(adj)
+    _daf_save_items(acct_dir, "pool_exchanges.json", exchanges)
+    _daf_save_items(acct_dir, "adjustments.json", adjustments)
+    result["exchanges"] = len(exchanges)
+    result["adjustments"] = len(adjustments)
+
+    # PDF documents (statements, grant confirmations, contribution
+    # confirmations, Form 8283) from the establish date (or the
+    # requested window start) forward. On a dry-run (acct_dir None) only
+    # the listing is read for the plan count; nothing is downloaded.
+    doc_since = since_date or establish or (
+        today - timedelta(days=365 * 10))
+    result["documents"] = _daf_scrape_documents(
+        page, jwt, account_nbr, doc_since, acct_dir)
+    if dry_run:
+        # A dry-run stops here: the CSV exports below are read-only
+        # export triggers, which "export nothing" forbids.
+        return result
+
+    # Server-side CSV exports (corroborating bronze; JSON is primary).
+    # Same window as the JSON above so the two views agree.
+    _daf_fetch_csv(
+        page,
+        f"{DAF_API}/transactionHistory/grants/download?accountId="
+        f"{account_nbr}{window}&format=csv", jwt, exports_dir, "grants")
+    _daf_fetch_csv(
+        page,
+        f"{DAF_API}/transactionHistory/contributions/download?accountId="
+        f"{account_nbr}{window}&format=csv", jwt, exports_dir,
+        "contributions")
+    _daf_fetch_csv(
+        page,
+        f"{DAF_API}/poolBalances/download?accountNumber={account_nbr}"
+        f"&numberOfDays=1&endDate={today.isoformat()}&format=csv",
+        jwt, exports_dir, "pool_balances")
+    _daf_fetch_csv(
+        page,
+        f"{DAF_API}/gift/download?donorAccountNumber={account_nbr}"
+        f"&asOfDate={today.isoformat()}&format=csv", jwt, exports_dir,
+        "gifts")
+    for year in years:
+        _daf_fetch_csv(
+            page,
+            f"{DAF_API}/poolExchange/download?accountNumber={account_nbr}"
+            f"&year={year}&format=csv", jwt, exports_dir,
+            f"pool_exchanges_{year}")
+        _daf_fetch_csv(
+            page,
+            f"{DAF_API}/transactionHistory/adjustment/download?accountNumber="
+            f"{account_nbr}&format=csv&year={year}", jwt, exports_dir,
+            f"adjustments_{year}")
+
+    return result
+
+
+def scrape_daf(page, bronze_dir, capture_dir, since_date, *,
+               dry_run=False, positions_only=False):
+    """Ingest the Fidelity Charitable Donor-Advised Fund surface.
+
+    Takes the SSO hop into the donor SPA, bootstraps the session JWT +
+    partyId, reads the giving-account roster, and scrapes each account
+    over the JSON REST API (plus CSV exports and PDF documents). Bronze
+    lands under ``<run>/daf/``. ``positions_only`` restricts each
+    account to the master + pool-balances slice (the --mode positions
+    path); ``dry_run`` still hops, bootstraps, and reads the roster +
+    per-account counts but fetches no export and writes no bronze
+    (``bronze_dir`` may be None).
+
+    Iterates every giving account the roster returns, so a login that
+    holds more than one DAF is covered (DESIGN.md §12). A login with no
+    charitable relationship yields
+    ``status: 'no-daf'`` and writes nothing."""
+    if not _daf_navigate_sso(page):
+        return {"status": "no-daf",
+                "note": "SSO hop did not reach the charitable host"}
+    capture(page, capture_dir, "daf-spa-landed")
+    jwt, party_id = _daf_bootstrap(page)
+    if party_id is None:
+        return {"status": "error",
+                "error": "identity bootstrap returned no partyId"}
+
+    roster_obj, roster_raw = _daf_fetch_json(
+        page, f"{DAF_API}/user/{party_id}/accounts", jwt)
+    accounts = roster_obj if isinstance(roster_obj, list) else []
+    if not accounts:
+        return {"status": "no-daf", "note": "empty giving-account roster"}
+    daf_root = None
+    if not dry_run:
+        daf_root = bronze_dir / "daf"
+        daf_root.mkdir(parents=True, exist_ok=True)
+        _daf_save_json(daf_root, "accounts.json", roster_raw)
+    log.info("DAF: %d giving account(s) in roster%s", len(accounts),
+             " (dry-run: enumerate only, no writes)" if dry_run else "")
+
+    per_account = {}
+    for account in accounts:
+        nbr = str(account.get("accountNbr") or account.get("accountNumber")
+                  or "")
+        if not nbr:
+            continue
+        log.info("DAF: %s giving account %s",
+                 "enumerating" if dry_run else "scraping", account_key(nbr))
+        try:
+            per_account[account_key(nbr)] = _daf_scrape_account(
+                page, jwt, account, since_date, daf_root,
+                dry_run=dry_run, positions_only=positions_only)
+        except Exception as e:  # noqa: BLE001
+            log.exception("DAF account scrape failed")
+            per_account[account_key(nbr)] = {"status": "error",
+                                             "error": str(e)}
+    return {"status": "dry-run" if dry_run else "complete",
+            "accounts": len(accounts),
+            "per_account": per_account}
+
+
+# ---------------------------------------------------------------------------
 # walk() — orchestrates the per-phase scrapes against a live session
 # ---------------------------------------------------------------------------
 
@@ -2048,9 +2608,9 @@ def walk(context, page, config):
 
     if dry_run:
         # Log the plan (what a real run WOULD fetch: counts, scope,
-        # windows) and stop. No run dir was created and no run.json is
-        # written — the dry-run persists nothing under the bronze dest.
-        # (run_json above is built solely to shape this plan log.)
+        # windows). No run dir was created and no run.json is written —
+        # the dry-run persists nothing under the bronze dest. (run_json
+        # above is built solely to shape this plan log.)
         log.info(
             "dry-run: enumerated %d account(s), %d in scope; "
             "phases=%s activity_window=%s documents_since=%s. "
@@ -2060,6 +2620,17 @@ def walk(context, page, config):
             run_json["activity_window"], documents_since.isoformat(),
             dest_root,
         )
+        # The DAF phase lives behind an SSO hop + its own JSON API, so
+        # unlike the retail phases (whose surfaces the enumeration above
+        # already reached) a dry-run has to exercise it explicitly to
+        # cover that surface — the read-only enumeration hops, bootstraps,
+        # reads the roster + per-account counts, and writes nothing.
+        if mode in ("all", "positions") and _login_has_daf(dimensions):
+            daf_plan = scrape_daf(
+                page, None, None, since_date, dry_run=True,
+                positions_only=(mode == "positions"))
+            log.info("dry-run: DAF plan — %s", json.dumps(daf_plan,
+                     default=str))
         return
 
     if mode in ("all", "positions"):
@@ -2086,6 +2657,35 @@ def walk(context, page, config):
         run_json["performance_results"] = scrape_performance(
             page, bronze_dir, capture_dir,
         )
+    if mode in ("all", "positions") and _login_has_daf(dimensions):
+        # The DAF rides every positions-bearing mode so each such dump
+        # is a COMPLETE holdings observation (retail + DAF) — gold's
+        # per-source latest-snapshot anchor treats it as one, and a
+        # partial dump would read as the uncovered accounts having
+        # emptied. --mode all runs the full DAF phase (events, exports,
+        # documents); --mode positions runs the master + pool slice.
+        # There is deliberately no DAF-only mode for the same reason.
+        daf_results = scrape_daf(
+            page, bronze_dir, capture_dir, since_date,
+            positions_only=(mode == "positions"),
+        )
+        if daf_results.get("status") == "no-daf":
+            # The account enumeration said this login HAS a DAF, so a
+            # no-daf outcome here is a failure (SSO bounce, empty
+            # roster), not an absence — escalate so the loader's
+            # completeness guard treats the dump's positions as
+            # partial rather than loading a retail-only observation.
+            daf_results = {"status": "error",
+                           "error": "DAF expected (enumerated in the "
+                                    "account selector) but the "
+                                    "charitable walk found none",
+                           **{k: v for k, v in daf_results.items()
+                              if k != "status"}}
+            log.warning("DAF phase failed: %s", daf_results["error"])
+        run_json["daf_results"] = daf_results
+    elif mode in ("all", "positions"):
+        log.info("no Fidelity Charitable relationship enumerated; "
+                 "skipping DAF phase")
     run_json["status"] = "complete"
 
     # Atomic (tmp + rename) so a prune racing the finalisation never
@@ -2777,9 +3377,13 @@ def parse_args(argv):
         "--mode", default="all",
         choices=("all", "positions", "activity", "documents",
                  "balances", "performance", "none"),
-        help=("Which phase to run. 'all' (default) runs every "
-              "phase. 'none' is for --vnc handoffs that only seed "
-              "the profile dir."),
+        help=("Which phase to run. 'all' (default) runs every phase, "
+              "including the full Donor-Advised Fund phase when the "
+              "login carries one; 'positions' includes the DAF pool "
+              "snapshot. Every positions-bearing dump covers both "
+              "channels — hence no DAF-only mode (DESIGN.md §12.3). "
+              "'none' is for --vnc handoffs that only seed the "
+              "profile dir."),
     )
     # Shared date-window contract. Fidelity bisects the activity
     # range into ≤93-day chunks internally; the statements +

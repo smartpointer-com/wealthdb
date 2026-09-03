@@ -51,3 +51,18 @@ CREATE TABLE transactions (
     amount              REAL,
     payload             TEXT    NOT NULL
 );
+
+CREATE TABLE historical_position_snapshots (
+    as_of_date          INTEGER NOT NULL,
+    account_external_id TEXT    NOT NULL,
+    description         TEXT    NOT NULL,
+    instrument_key      TEXT,
+    quantity            REAL,
+    price               REAL,
+    market_value        REAL,
+    percent_of_total    REAL,
+    currency            TEXT NOT NULL DEFAULT 'USD',
+    source_sha256       TEXT,
+    payload             TEXT,
+    PRIMARY KEY (as_of_date, account_external_id, description)
+);

@@ -72,6 +72,10 @@ Login, bronze fetch, and silver loader are operational.
 | [`load.py`](load.py) / [silver schema](migrations/0001_initial.sql) | implemented (positions + activity + documents loaders; 529 vs `trust_managed` portfolio classification; ticker-coverage validation pass). |
 | [`pdf_parsers.py`](pdf_parsers.py) + [migration 0004](migrations/0004_historical_position_snapshots.sql) | implemented — 529 statement-PDF parser back-fills `historical_position_snapshots` for any quarter the statement archive covers. Accounts whose statements Fidelity does not serve (see [DESIGN.md §4.5](DESIGN.md)) are back-filled from `pdf_parsers_supplied.py` instead. |
 | `wealthdb` Fidelity adapter | implemented — see [`wealthdb/internal/silver/fidelity/`](../../wealthdb/internal/silver/fidelity/) |
+| [`explore.py`](explore.py) DAF discovery harness | implemented — VNC-driven recording session that mapped the Donor-Advised Fund surface ([DESIGN.md §12.1](DESIGN.md)) |
+| [`download.py`](download.py) DAF phase | implemented — SSO hop into the Fidelity Charitable SPA, then its JSON REST API, CSV exports, and PDF document set per giving account. Rides `--mode all` (full) and `--mode positions` (pool snapshot); no DAF-only mode, so every positions-bearing dump covers both channels ([DESIGN.md §12.2–12.3](DESIGN.md)) |
+| DAF silver + gold ([migration 0007](migrations/0007_portfolio_kind_daf.sql) + `load._load_daf`; gold migration 0036 + adapter) | implemented — DAF bronze loads into the shared silver tables under `portfolios.kind='daf'`, flowing through the single `fidelity` gold source as `donor_advised_fund` / `charitable` / `automated`; the loader's completeness gate keeps partial positions observations out ([DESIGN.md §12.3](DESIGN.md)) |
+| [`pdf_parsers_daf.py`](pdf_parsers_daf.py) DAF statement reconstruction | implemented — parses the quarterly Giving Account statement PDFs into `historical_position_snapshots` (reconciliation-gated), extending the DAF value spine back to the first statement ([DESIGN.md §12.3](DESIGN.md)) |
 
 The current open punch list lives in [DESIGN.md §11](DESIGN.md).
 
@@ -106,10 +110,13 @@ to pass. See [DESIGN.md §6](DESIGN.md) / `vnc-login` subcommand.
 Fidelity's account selector groups accounts under section labels
 (`Education` for 529 sleeves, `Authorized` for trust accounts
 under a third-party investment manager, `Fidelity Charitable®
-Giving` for DAFs, etc.). The toolkit auto-excludes the DAF by
-account-id length (Fidelity uses a shorter id for it than for
-brokerage / trust / 529 accounts) and dumps everything else into
-one bronze run.
+Giving` for DAFs, etc.). The retail positions / activity /
+documents phases exclude the DAF by account-id length (Fidelity
+uses a shorter id for it than for brokerage / trust / 529
+accounts, and it has no brokerage-side surfaces to scrape) and
+dump every other account into one bronze run. The DAF is ingested
+by its own walk phase over the Fidelity Charitable API — see
+[DESIGN.md §12](DESIGN.md).
 
 Silver classifies each section label into a stable
 `portfolios.kind`:
@@ -203,13 +210,38 @@ and exits; the profile dir now holds the trust cookies.
 Drop the `--mode none` to also run the walk after the VNC-driven
 login lands.
 
+#### DAF discovery sessions
+
+```sh
+./fidelity-web explore
+```
+
+Opens the standard signin under Camoufox with a VNC handoff (same
+port banner as `vnc-login`) and records the whole human-driven
+session — crash-safe network log with response bodies, click log,
+browser downloads, and per-screen DOM snapshots — under the debug
+dir. It maps a surface the scripted walk does not cover, such as
+the Donor-Advised Fund behind the `Fidelity Charitable® Giving`
+account-selector link; see [DESIGN.md §12](DESIGN.md) for the
+walk script and open questions. Reuses the download profile dir, so
+a session costs at most a 2FA code. Recording stops when the
+browser window closes (or Ctrl-C). Distinct from
+`download --explore`, which only adds DOM inventories along the
+scripted walk.
+
 #### Routine dumps
 
 Once the profile dir is seeded, every run is one-shot:
 
 ```sh
 ./fidelity-web download --mode all     # positions + activity + documents + balances + performance
-./fidelity-web download --mode positions
+                                        # + the full DAF phase (Fidelity Charitable: JSON REST,
+                                        #  CSV exports, PDF documents) when the login carries one
+./fidelity-web download --mode positions   # retail positions CSVs + the DAF pool snapshot —
+                                            # every positions-bearing dump covers BOTH channels
+                                            # (a partial dump would read downstream as the
+                                            #  uncovered accounts having emptied; there is no
+                                            #  DAF-only mode for the same reason)
 ./fidelity-web download --mode activity
 ./fidelity-web download --mode documents
 ./fidelity-web download --mode balances    # balances.html (no CSV export)

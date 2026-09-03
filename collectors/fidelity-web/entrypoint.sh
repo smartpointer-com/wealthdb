@@ -20,6 +20,16 @@ set -euo pipefail
 source /opt/entrypoint-lib.sh
 
 case "${1:-help}" in
+    explore)
+        # Discovery harness (DAF / Fidelity Charitable surface):
+        # Camoufox over VNC + HAR / network log / click log / DOM
+        # snapshots under /debug. The human drives; the harness
+        # records. See DESIGN.md §12.
+        start_xvfb
+        start_x11vnc explore
+        shift
+        exec python3 /app/explore.py "$@"
+        ;;
     download)
         # One-shot: login → walk → logout → exit. Drives Camoufox
         # through the Fidelity login form, prompts for the 2FA
@@ -81,6 +91,9 @@ Usage:
   <wrapper> <subcommand> [args...]
 
 Subcommands:
+  explore     Discovery harness (DAF surface): Camoufox over VNC +
+              HAR/network log/click log/DOM snapshots under /debug.
+              See DESIGN.md §12.
   download    One-shot login → walk → logout → exit. Prompts on stdin
               for the Fidelity 2FA code; auto-skips MFA when the
               device-trust cookie in --profile-dir is still valid.
