@@ -123,3 +123,31 @@ func TestWriteTableColumnAlignment(t *testing.T) {
 		t.Errorf("rows not aligned:\nh: %s\n1: %s\n2: %s", lines[0], lines[2], lines[3])
 	}
 }
+
+func TestWriteTableMultibyteRunePadding(t *testing.T) {
+	// A cell with a multibyte rune ('®': one column, two UTF-8
+	// bytes) must pad to the same DISPLAY width as its ASCII
+	// neighbours — byte-based padding left such rows one column
+	// short.
+	var buf bytes.Buffer
+	err := WriteTable(&buf, Table{
+		Columns: []string{"portfolio", "kind"},
+		Rows: [][]string{
+			{"Example Giving® Account", "daf"},
+			{"A plain ASCII name of size", "529"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	// Every rendered line (header, separator, both rows) must have
+	// the same display width (rune count).
+	want := len([]rune(lines[0]))
+	for i, line := range lines[:4] {
+		if got := len([]rune(line)); got != want {
+			t.Errorf("line %d display width = %d, want %d: %q",
+				i, got, want, line)
+		}
+	}
+}

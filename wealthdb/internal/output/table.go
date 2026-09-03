@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // WriteTable renders the table in postgres-psql style — column
@@ -23,14 +24,14 @@ func WriteTable(w io.Writer, t Table) error {
 
 	widths := make([]int, len(t.Columns))
 	for i, c := range t.Columns {
-		widths[i] = len(c)
+		widths[i] = cellWidth(c)
 	}
 	for _, row := range t.Rows {
 		for i, cell := range row {
 			if i >= len(widths) {
 				break
 			}
-			if l := len(cell); l > widths[i] {
+			if l := cellWidth(cell); l > widths[i] {
 				widths[i] = l
 			}
 		}
@@ -69,6 +70,16 @@ func WriteTable(w io.Writer, t Table) error {
 	return nil
 }
 
+// cellWidth is a cell's display width in terminal columns. Rune
+// count, not byte length — a multibyte rune like '®' occupies one
+// column but two UTF-8 bytes, and byte-based padding leaves any row
+// containing one visibly short. (Double-width CJK runes would still
+// count 1; none of the sources emit them, and psql shares the
+// limitation without a locale-aware width table.)
+func cellWidth(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
 // writeRow emits a single padded row. Cells beyond len(widths)
 // are ignored (defensive; producers should match column count).
 // The table's Aligns slice controls per-column padding direction.
@@ -79,7 +90,7 @@ func writeRow(w io.Writer, cells []string, widths []int, t Table) error {
 		if i < len(cells) {
 			cell = cells[i]
 		}
-		pad := strings.Repeat(" ", width-len(cell))
+		pad := strings.Repeat(" ", width-cellWidth(cell))
 		if t.alignAt(i) == AlignRight {
 			parts[i] = " " + pad + cell + " "
 		} else {
