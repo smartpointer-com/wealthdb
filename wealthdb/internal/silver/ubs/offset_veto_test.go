@@ -28,7 +28,7 @@ CREATE TABLE transactions (
     transaction_external_id TEXT NOT NULL, account_external_id TEXT NOT NULL,
     snapshot_at INTEGER NOT NULL, value_date INTEGER NOT NULL,
     currency_iso TEXT NOT NULL, amount_debit REAL, amount_credit REAL,
-    description_kind TEXT, payload TEXT NOT NULL,
+    counterparty TEXT, description_kind TEXT, payload TEXT NOT NULL,
     PRIMARY KEY (transaction_external_id, account_external_id));`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -65,12 +65,18 @@ func seedWebAccount(t *testing.T, r *webReader, acct string) {
 // payload has no source marker (MT940-era shape).
 func seedWebTx(t *testing.T, r *webReader, txID, acct string, day int64, ccy string, amt float64, pdfRail bool) {
 	t.Helper()
-	payload := `{}`
-	kind := ""
+	payload, kind := `{}`, ""
 	if pdfRail {
 		payload = `{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false,"counter_account":null}`
 		kind = "E-BANKING PAYMENT ORDER"
 	}
+	seedWebTxRaw(t, r, txID, acct, day, ccy, amt, kind, payload)
+}
+
+// seedWebTxRaw inserts one cash row with the booking type and payload given
+// verbatim, for a case seedWebTx's two shapes do not cover.
+func seedWebTxRaw(t *testing.T, r *webReader, txID, acct string, day int64, ccy string, amt float64, bookingType, payload string) {
+	t.Helper()
 	var debit, credit any
 	if amt < 0 {
 		debit = -amt
@@ -82,7 +88,7 @@ func seedWebTx(t *testing.T, r *webReader, txID, acct string, day int64, ccy str
             snapshot_at, value_date, currency_iso, amount_debit, amount_credit,
             description_kind, payload)
         VALUES (?, ?, 1000, ?, ?, ?, ?, ?, ?)`,
-		txID, acct, day, ccy, debit, credit, kind, payload); err != nil {
+		txID, acct, day, ccy, debit, credit, bookingType, payload); err != nil {
 		t.Fatalf("seed tx: %v", err)
 	}
 }
@@ -122,8 +128,8 @@ func TestOffsetVetoDemotesMirroredLegs(t *testing.T) {
 	seedRailEraAnchor(t, r)
 	seedWebAccount(t, r, vetoAcctA)
 	seedWebAccount(t, r, vetoAcctB)
-	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -250000, true)  // PDF payment order out
-	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 250000, false)  // MT940-era credit in
+	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -250000, true) // PDF payment order out
+	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 250000, false) // MT940-era credit in
 
 	kinds := emittedKinds(t, r, nil)
 	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {

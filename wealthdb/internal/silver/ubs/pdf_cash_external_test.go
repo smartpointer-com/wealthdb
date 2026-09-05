@@ -3,12 +3,15 @@ package ubs
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 )
 
 // pdfPayload builds a pre-2024 Account-Statement PDF-backfill payload with only
-// the fields pdfCashIsExternal reads. All values synthetic / IBAN-spec placeholder
-// letters (CLAUDE.md §4) — no real account IDs.
-func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool) string {
+// the fields pdfCashIsExternal reads, and returns it decoded the way the reader
+// decodes a row — so the JSON tag names stay pinned. All values synthetic /
+// IBAN-spec placeholder letters (CLAUDE.md §4) — no real account IDs.
+func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool) webTxPayload {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
 		"source":            "account_statement_pdf",
@@ -19,7 +22,11 @@ func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	return string(b)
+	p, ok := decodeWebTxPayload(string(b))
+	if !ok {
+		t.Fatalf("payload does not decode: %s", b)
+	}
+	return p
 }
 
 // TestPdfCashIsExternalInternalTransferVeto is the CAPITAL-FABRICATION regression.
@@ -42,14 +49,14 @@ func TestPdfCashIsExternalInternalTransferVeto(t *testing.T) {
 	pInternal := pdfPayload(t, unknownCH, "UEBERTRAG", true)
 	if pdfCashIsExternal(pInternal, own, false, true) {
 		t.Fatalf("FABRICATION: internal_transfer=true mandate-funding move to a non-own "+
-			"absent CH IBAN classified EXTERNAL; parser flag must veto. payload=%s", pInternal)
+			"absent CH IBAN classified EXTERNAL; parser flag must veto. payload=%+v", pInternal)
 	}
 
 	// Control: the SAME row without the parser flag DOES promote to external via the
 	// IBAN path — proving the veto (not some other guard) is what flipped it.
 	pExternal := pdfPayload(t, unknownCH, "UEBERTRAG", false)
 	if !pdfCashIsExternal(pExternal, own, false, true) {
-		t.Errorf("control: non-own CH IBAN, no internal_transfer, no guard token should be EXTERNAL; payload=%s", pExternal)
+		t.Errorf("control: non-own CH IBAN, no internal_transfer, no guard token should be EXTERNAL; payload=%+v", pExternal)
 	}
 
 	// The parser flag also vetoes the outbound payment-rail promotion: a payment
@@ -58,7 +65,7 @@ func TestPdfCashIsExternalInternalTransferVeto(t *testing.T) {
 	pRailInternal := pdfPayload(t, "", "E-BANKING PAYMENT ORDER", true)
 	if pdfCashIsExternal(pRailInternal, own, true, true) {
 		t.Fatalf("FABRICATION: internal_transfer=true payment order classified EXTERNAL "+
-			"via the rail promotion; parser flag must veto. payload=%s", pRailInternal)
+			"via the rail promotion; parser flag must veto. payload=%+v", pRailInternal)
 	}
 }
 
@@ -103,6 +110,14 @@ func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 		{"inbound bare credit, no counter", "", "CREDIT", false, false, true, true},
 		{"inbound e-banking credit, no counter", "", "E-BANKING CREDIT", false, false, true, true},
 		{"inbound salary payment, no counter", "", "SALARY PAYMENT", false, false, true, true},
+		// TWINT crosses the boundary in both directions: the debits sit
+		// in the outbound set, the credit and the reversal in the
+		// inbound one, so neither side is left one-legged.
+		{"outbound TWINT payment, no counter", "", "PAYMENT UBS TWINT", false, true, true, true},
+		{"outbound TWINT debit, no counter", "", "DEBIT UBS TWINT", false, true, true, true},
+		{"inbound TWINT credit, no counter", "", "CREDIT UBS TWINT", false, false, true, true},
+		{"inbound TWINT reversal, no counter", "", "REVERSAL UBS TWINT", false, false, true, true},
+		{"deep era: inbound TWINT credit stays internal", "", "CREDIT UBS TWINT", false, false, false, false},
 		// Deep era (before any MT940 coverage): the rail promotion is off in
 		// BOTH directions — that era's inbound capital rides the onboarding
 		// step-ups, and one-sided counting would fabricate return.
@@ -134,9 +149,47 @@ func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 }
 
 // TestPdfCashIsExternalMalformedPayload keeps the conservative default: an
-// unparseable payload is never external (never fabricates capital).
+// unparseable payload decodes to nothing and is never external (never
+// fabricates capital).
 func TestPdfCashIsExternalMalformedPayload(t *testing.T) {
-	if pdfCashIsExternal("{not json", map[string]bool{}, true, true) {
+	p, ok := decodeWebTxPayload("{not json")
+	if ok {
+		t.Fatal("a malformed payload must report its decode failure")
+	}
+	if pdfCashIsExternal(p, map[string]bool{}, true, true) {
 		t.Error("malformed payload must default to INTERNAL")
+	}
+}
+
+// TestUndecodablePayloadStaysGated pins the gate a decode failure must not
+// open. The reader routes a row through pdfCashIsExternal only when its
+// payload names the PDF backfill as the source, so a payload it cannot read
+// at all — valid JSON, one field of an unexpected type — would otherwise skip
+// the classifier entirely and keep the row's withdrawal kind, which is the
+// permissive outcome on the guard against fabricating owner capital. An
+// unreadable payload is treated as a backfill row instead, and the
+// classifier's own conservative default demotes it.
+func TestUndecodablePayloadStaysGated(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, vetoAcctA)
+	seedRailEraAnchor(t, r)
+
+	const rail = `"source":"account_statement_pdf",` +
+		`"booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false`
+	// Control: a readable payment-order row promotes to EXTERNAL on the
+	// rail evidence and keeps its withdrawal kind.
+	seedWebTxRaw(t, r, "RAIL-READABLE", vetoAcctA, vetoDay1, "CHF", -40,
+		"E-BANKING PAYMENT ORDER", "{"+rail+`,"continuation":[]}`)
+	// The same row whose continuation is a string where the reader expects
+	// a list: the decode fails, so no field of it is readable.
+	seedWebTxRaw(t, r, "RAIL-UNDECODABLE", vetoAcctA, vetoDay2, "CHF", -70,
+		"E-BANKING PAYMENT ORDER", "{"+rail+`,"continuation":"not-a-list"}`)
+
+	kinds := emittedKinds(t, r, nil)
+	if got := kinds["RAIL-READABLE@"+vetoAcctA]; got != canonical.TxKindWithdrawal {
+		t.Fatalf("control = %q, want withdrawal — the promotion path must be open", got)
+	}
+	if got := kinds["RAIL-UNDECODABLE@"+vetoAcctA]; got != canonical.TxKindOther {
+		t.Errorf("undecodable row = %q, want other — it must not skip the external/internal gate", got)
 	}
 }

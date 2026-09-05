@@ -16,6 +16,25 @@ import (
 // the source sign is preserved rather than forced; summing NetAmount reproduces
 // the account's net cash flow. The kontoumsaetze row id is the stable external
 // id.
+//
+// TEXT COLUMNS. Silver promotes the purpose line (Verwendungszweck) to
+// `description` and the participant line (Transaktionsteilnehmer) to
+// `counterparty`; a card row carries neither, its merchant sitting in the
+// preserved row's card-network object and its only narrative being the
+// payment reference. The projection is therefore:
+//
+//   - counterparty: the participant line verbatim; when empty, the
+//     card-network merchant name (`payload.ethocaHaendler.name`) verbatim.
+//     Either feeds gold's merchant signature, so neither is reformatted.
+//   - provider_category: the source category slug (`category`,
+//     kategorieCode) verbatim.
+//   - description: the purpose line when present (unchanged); otherwise the
+//     short order purpose (`auftragskurzVerwendungszweck`) followed by the
+//     payment reference (`zahlungsreferenz`), "; "-joined, whichever exist.
+//     Nothing is fabricated: a row with no text stays NULL.
+//
+// The kind is still classified from the raw purpose column, never from the
+// composed description, so the text projection cannot move a row's kind.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
@@ -26,7 +45,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	}
 	const q = `
 SELECT txn_id, posted_at, account_external_id, amount,
-       COALESCE(category, ''), COALESCE(description, ''), payload
+       COALESCE(category, ''), COALESCE(description, ''),
+       COALESCE(counterparty, ''), payload
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, txn_id`
@@ -39,16 +59,17 @@ SELECT txn_id, posted_at, account_external_id, amount,
 	var out canonical.TransactionBatch
 	for rows.Next() {
 		var (
-			txnID, id, category, desc, payload string
-			posted                             int64
-			amtFloat                           float64
+			txnID, id, category, desc, cp, payload string
+			posted                                 int64
+			amtFloat                               float64
 		)
-		if err := rows.Scan(&txnID, &posted, &id, &amtFloat, &category, &desc, &payload); err != nil {
+		if err := rows.Scan(&txnID, &posted, &id, &amtFloat, &category, &desc, &cp, &payload); err != nil {
 			return nil, err
 		}
 		// The collector rounds money to cents before storing, so the
 		// float→decimal step is exact at display precision.
 		amt := canonical.NewDecimalFromFloat(amtFloat)
+		description, counterparty := textColumns(desc, cp, payload)
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			TransactionExternalID: txnID,
 			OccurredAt:            posted,
@@ -57,7 +78,9 @@ SELECT txn_id, posted_at, account_external_id, amount,
 			Currency:              currencyOf(ccy, id),
 			GrossAmount:           &amt,
 			NetAmount:             &amt,
-			Description:           silver.StrPtrIfNonEmpty(desc),
+			Description:           description,
+			Counterparty:          counterparty,
+			ProviderCategory:      silver.StrPtrIfNonEmpty(category),
 			Payload:               json.RawMessage(payload),
 		})
 	}
@@ -65,6 +88,30 @@ SELECT txn_id, posted_at, account_external_id, amount,
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil
+}
+
+// textColumns applies the text contract described on Transactions to one
+// row: the promoted `description` / `counterparty` columns win verbatim, and
+// the preserved kontoumsaetze row (`payload`) supplies the fallbacks. A
+// payload that does not decode contributes nothing.
+func textColumns(desc, cp, payload string) (description, counterparty *string) {
+	var p struct {
+		ShortPurpose string `json:"auftragskurzVerwendungszweck"`
+		PaymentRef   string `json:"zahlungsreferenz"`
+		Merchant     struct {
+			Name string `json:"name"`
+		} `json:"ethocaHaendler"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	description = silver.StrPtrIfNonEmpty(desc)
+	if description == nil {
+		description = silver.StrPtrIfNonEmpty(silver.JoinText(p.ShortPurpose, p.PaymentRef))
+	}
+	counterparty = silver.StrPtrIfNonEmpty(cp)
+	if counterparty == nil {
+		counterparty = silver.StrPtrIfNonEmpty(p.Merchant.Name)
+	}
+	return description, counterparty
 }
 
 // txKind maps a Raiffeisen deposit transaction to a canonical TxKind. Interest

@@ -68,6 +68,7 @@ type tradeConfirmationPayload struct {
 	Price                 *canonical.Decimal `json:"price"`
 	Quantity              *canonical.Decimal `json:"quantity"`
 	CashAccountExternalID string             `json:"cash_account_external_id"`
+	SecurityName          string             `json:"security_name"`
 }
 
 type cashMovementPayload struct {
@@ -76,11 +77,23 @@ type cashMovementPayload struct {
 	Narrative   string             `json:"narrative"`
 	Account     string             `json:"account"`
 	Funds       string             `json:"funds"` // currency
+	// TxnType is the MT940 :61: transaction type identification code
+	// (NTRF, NMSC, NCHG, ...): the bank's own classification of the entry.
+	TxnType string `json:"txn_type"`
+	// BankRef is the :61: account-servicing-institution reference — the
+	// bank's own number for the entry, which the account statement
+	// prints as "Transaction no.". It is what lets the era text fold
+	// (merge.go) find the export's record of the same booking. Absent
+	// where the statement carried none, in which case the collector
+	// synthesises the event id from the entry's own fields instead.
+	BankRef string `json:"bank_ref"`
 }
 
 type corporateActionPayload struct {
 	ISIN        string `json:"isin"`
 	Safekeeping string `json:"safekeeping"`
+	// CAEV is the ISO 15022 corporate-action event indicator (DVCA, ...).
+	CAEV string `json:"caev"`
 }
 
 // buildTransaction routes a silver event into a TransactionChange.
@@ -120,6 +133,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		tx.NetAmount = p.NetAmount
 		tx.Quantity = p.Quantity
 		tx.Price = p.Price
+		tx.Description = textPtr(p.SecurityName)
 
 	case "cash_movement":
 		var p cashMovementPayload
@@ -146,6 +160,14 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 			amt = &n
 		}
 		tx.NetAmount = amt
+		// Text columns (docs/adapters/ubs.md §7): the :86: narrative,
+		// flattened to one line, is the description — a bare code
+		// passes through as that code — and the :61: type code is the
+		// provider category. MT940 carries no structured payee, so no
+		// counterparty is derived from the free text. The kind above
+		// was classified from the raw narrative and is unaffected.
+		tx.Description = narrativeText(p.Narrative)
+		tx.ProviderCategory = silver.StrPtrIfNonEmpty(p.TxnType)
 
 	case "corporate_action_confirmation",
 		"corporate_action_notification",
@@ -161,6 +183,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if p.Safekeeping != "" {
 			tx.AccountExternalID = p.Safekeeping
 		}
+		tx.Description = textPtr(p.CAEV)
 
 	default:
 		tx.Kind = kindFor(silverKind, "", "")

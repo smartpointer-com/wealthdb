@@ -44,6 +44,12 @@ func TestCashMovementUnchanged(t *testing.T) {
 		// sign — genuine wires must remain external-capital kinds.
 		{"VIREMENT RECU", "C", canonical.TxKindDeposit},
 		{"PAIEMENT", "D", canonical.TxKindWithdrawal},
+		// A TWINT narrative in the MT940 era carries no prefix the map
+		// knows, so it lands by the :61: credit/debit flag — money moving,
+		// as in the web eras, whatever the case of the type.
+		{"PAYMENT UBS TWINT\nEXAMPLE CHOCOLATIER AG", "D", canonical.TxKindWithdrawal},
+		{"Credit UBS TWINT\nEXAMPLE, PERSON", "C", canonical.TxKindDeposit},
+		{"REVERSAL UBS TWINT", "C", canonical.TxKindDeposit},
 	}
 	for _, c := range cases {
 		if got := cashMovementKind(c.narrative, c.creditDebit); got != c.want {

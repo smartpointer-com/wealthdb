@@ -33,6 +33,13 @@ import (
 //     - Hard cut at PSN-start per relationship — see
 //       transactionsBeforePSNStart for why an overlap merge isn't
 //       safe here.
+//     - The PSN stream is wrapped in a text fold
+//       (psnWebTextFoldStream) that fills a narrative column the
+//       MT940 feed left as a bare code from the account-statement
+//       export's record of the same entry, matched on the bank's own
+//       transaction number. It moves no row and no number: the hard
+//       cut still decides which side emits, and amounts, dates, kinds
+//       and ids are untouched.
 
 // Status aggregates the per-subsource Status. The change number
 // is max across subsources (so the gold watermark covers
@@ -267,10 +274,72 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Transactions: %w", err)
 		}
+		if c.web != nil {
+			texts, err := c.web.transactionTextByKey(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("ubs web transaction text: %w", err)
+			}
+			if len(texts) > 0 {
+				s = &psnWebTextFoldStream{inner: s, texts: texts}
+			}
+		}
 		streams = append(streams, s)
 	}
 	return silver.NewConcatTransactionStream(streams), nil
 }
+
+// psnWebTextFoldStream fills the narrative columns the MT940 feed left
+// as a bare code from the account-statement export's record of the
+// same entry.
+//
+// Both feeds carry the same bookings across the seam, and the hard cut
+// gives the MT940 row to gold. What that row says is often the bank's
+// code and nothing more: the :86: narrative reduces to a
+// cash-withdrawal or dividend code, the :61: type code is the provider
+// category, and MT940 carries no structured payee at all. The export's
+// row for the same entry names the payee, the printed booking type and
+// the instrument. Keyed on the bank's own number for the entry — the
+// export's "Transaction no.", which the :61: line repeats as its bank
+// reference, paired with the account so the two legs of an
+// inter-account transfer stay apart — the text moves onto the row that
+// is missing it and nothing else moves: the amount, the value date,
+// the kind and the id are the MT940 row's, byte for byte.
+//
+// The payer's message does not travel with it. It is the payer's own
+// words about the entry rather than the bank's record of whom it paid,
+// and the columns this fills are the ones a narrative is read from.
+//
+// A row whose payload carries no bank reference — every feed but the
+// cash movements — is passed through untouched, as is one no export
+// row matches.
+type psnWebTextFoldStream struct {
+	inner silver.TransactionStream
+	texts map[webTxTextKey]webTxText
+}
+
+func (s *psnWebTextFoldStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	for i := range batch.Transactions {
+		t := &batch.Transactions[i]
+		var p cashMovementPayload
+		if err := json.Unmarshal(t.Payload, &p); err != nil || p.BankRef == "" {
+			continue
+		}
+		web, ok := s.texts[webTxTextKey{account: t.AccountExternalID, txnNo: p.BankRef}]
+		if !ok {
+			continue
+		}
+		t.Counterparty = richerText(t.Counterparty, web.counterparty)
+		t.Description = richerText(t.Description, web.description)
+		t.ProviderCategory = richerText(t.ProviderCategory, web.providerCategory)
+	}
+	return batch, more, nil
+}
+
+func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
 
 // psnWebFoldStream wraps a SnapshotStream and folds web's
 // per-(UTC date, key) payload into PSN's position and cash rows.

@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -86,6 +87,58 @@ SELECT snapshot_at, account_external_id, currency_iso, payload
 			return nil, err
 		}
 		out[webCashKey{utcDate: utcDay(snap), account: acct, currency: ccy}] = payload
+	}
+	return out, rows.Err()
+}
+
+// webTxTextKey identifies one booking across the era seam: the bank's
+// own number for the entry — the account statement's "Transaction
+// no.", which web silver uses as its transaction_external_id and which
+// the MT940 :61: line repeats as its bank reference — and the account
+// it was booked on.
+//
+// The number alone would not be a key: UBS stamps both legs of an
+// inter-account transfer with one number, and the two legs have
+// different payees to say. The account separates them.
+type webTxTextKey struct {
+	account string
+	txnNo   string
+}
+
+// transactionTextByKey returns the narrative columns every web
+// transaction projects (projectWebTxText), keyed by (account,
+// "Transaction no."). The PSN-side text fold (merge.go) reads it for
+// the entries the hard cut suppresses on the web side, where the
+// MT940 feed recorded the same booking as a bare code.
+//
+// The whole table, unwindowed and uncut, for the same reason
+// buildSameDayOffsetVeto reads it whole: what an entry's narrative is
+// depends only on silver's contents, never on which slice of time a
+// load happens to cover. Nothing here decides whether a row is
+// emitted; the hard cut still owns that.
+func (r *webReader) transactionTextByKey(ctx context.Context) (map[webTxTextKey]webTxText, error) {
+	if r == nil {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT transaction_external_id, account_external_id, counterparty, description_kind, payload
+  FROM transactions`)
+	if err != nil {
+		return nil, fmt.Errorf("ubs-web transactionTextByKey: %w", err)
+	}
+	defer rows.Close()
+	out := map[webTxTextKey]webTxText{}
+	for rows.Next() {
+		var (
+			txID, acct, payload   string
+			counterparty, kindStr sql.NullString
+		)
+		if err := rows.Scan(&txID, &acct, &counterparty, &kindStr, &payload); err != nil {
+			return nil, fmt.Errorf("ubs-web transactionTextByKey scan: %w", err)
+		}
+		p, decoded := decodeWebTxPayload(payload)
+		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, !decoded || isPDFCashBackfill(p))
+		out[webTxTextKey{account: acct, txnNo: txID}] = text
 	}
 	return out, rows.Err()
 }

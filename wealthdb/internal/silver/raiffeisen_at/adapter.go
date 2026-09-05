@@ -24,7 +24,13 @@
 //
 //   - TRANSACTIONS: the whole deposit ledger. The collector signs amounts the
 //     canonical way (positive = balance increase), so the source sign is
-//     preserved. The kontoumsaetze row id is the stable external id.
+//     preserved. The kontoumsaetze row id is the stable external id. The
+//     text columns — counterparty (the participant line, else the
+//     card-network merchant name), provider_category (the source category
+//     slug) and description (the purpose line, else short order purpose +
+//     payment reference) — follow the contract documented on Transactions
+//     in transactions.go; they are a projection of text only and never
+//     influence a row's kind or amount.
 package raiffeisenat
 
 import (

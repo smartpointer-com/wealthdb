@@ -53,6 +53,11 @@ func TestWebKindClassification(t *testing.T) {
 		{"mt940 order prefixed", "UCCDD00000000001; order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 capital gain", "Capital gain", N, C, canonical.TxKindDeposit},
 		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindWithdrawal},
+		// TWINT in the CSV feed's mixed case: money moving, by type.
+		{"mt940 twint payment", "Payment UBS TWINT", D, N, canonical.TxKindWithdrawal},
+		{"mt940 twint debit", "Debit UBS TWINT", D, N, canonical.TxKindWithdrawal},
+		{"mt940 twint credit", "Credit UBS TWINT", N, C, canonical.TxKindDeposit},
+		{"mt940 twint reversal", "Reversal UBS TWINT", N, C, canonical.TxKindDeposit},
 
 		// ---- PDF backfill: correct classification. ----
 		// Genuine external flows.
@@ -63,6 +68,15 @@ func TestWebKindClassification(t *testing.T) {
 		{"pdf salary", "SALARY PAYMENT", N, C, canonical.TxKindDeposit},
 		{"pdf atm", "ATM WITHDRAWAL", D, N, canonical.TxKindWithdrawal},
 		{"pdf paynet", "PAYNET ORDER", D, N, canonical.TxKindWithdrawal},
+		// TWINT: the two outflow types are withdrawals, the two inflow
+		// types deposits — by type, not by column, so a reversal printed
+		// with a trailing minus (a negative debit figure) is still the
+		// inflow it is.
+		{"pdf twint payment", "PAYMENT UBS TWINT", D, N, canonical.TxKindWithdrawal},
+		{"pdf twint debit", "DEBIT UBS TWINT", D, N, canonical.TxKindWithdrawal},
+		{"pdf twint credit", "CREDIT UBS TWINT", N, C, canonical.TxKindDeposit},
+		{"pdf twint reversal", "REVERSAL UBS TWINT", N, C, canonical.TxKindDeposit},
+		{"pdf twint reversal as negative debit", "REVERSAL UBS TWINT", D, N, canonical.TxKindDeposit},
 		// Income / cost — excluded from flows.
 		{"pdf dividend", "DIVIDEND", N, C, canonical.TxKindDividend},
 		{"pdf reversal dividend", "REVERSAL DIVIDEND", D, N, canonical.TxKindDividend},

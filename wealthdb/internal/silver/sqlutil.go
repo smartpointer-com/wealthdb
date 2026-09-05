@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver registration for all adapters.
@@ -112,6 +113,22 @@ func StrPtrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// JoinText composes one text column out of several parts: each part is
+// trimmed, empty parts are dropped, and the rest are joined with "; " —
+// the transaction-text contract's separator (docs/adapters/ubs.md §7).
+// Returns "" when every part is empty, so a row with no text yields no
+// column rather than a stray separator; callers pair it with
+// StrPtrIfNonEmpty to get nil in that case.
+func JoinText(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "; ")
 }
 
 // JSONOrNil returns nil for NULL / empty input, else the raw JSON

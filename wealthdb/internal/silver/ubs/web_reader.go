@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -317,6 +319,14 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // MT-prefixed strings (e.g. `mt515:...`). Any cross-source
 // identity match would be heuristic and risk double-counting.
 //
+// Which is a statement about ROWS. The era text fold
+// (psnWebTextFoldStream) does match one feed's entry to the other's,
+// on the bank's own transaction number, but only to fill a narrative
+// column the MT940 row left as a bare code: it emits no row, drops
+// none, and touches no amount, date, kind or id, so a false match
+// costs one wrong narrative rather than a duplicated or vanished
+// booking.
+//
 // The second return value is the PSN half of the same-day offset veto: the
 // event ids of PSN cash movements whose mirror leg pairs a web row. The
 // caller demotes those in the PSN stream — a pair must drop on BOTH sides
@@ -348,7 +358,7 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 
 	const q = `
 SELECT transaction_external_id, value_date, account_external_id,
-       currency_iso, amount_debit, amount_credit, description_kind, payload
+       currency_iso, amount_debit, amount_credit, counterparty, description_kind, payload
   FROM transactions
  WHERE value_date BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
@@ -358,14 +368,15 @@ SELECT transaction_external_id, value_date, account_external_id,
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
+	summaries := 0
 	for rows.Next() {
 		var (
 			txID, accountID, ccy, payload string
 			valueDate                     int64
 			debit, credit                 sql.NullFloat64
-			kindStr                       sql.NullString
+			counterparty, kindStr         sql.NullString
 		)
-		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &kindStr, &payload); err != nil {
+		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &counterparty, &kindStr, &payload); err != nil {
 			return nil, nil, fmt.Errorf("ubs-web Transactions scan: %w", err)
 		}
 		// Hard cut at PSN_start per relationship.
@@ -383,6 +394,31 @@ SELECT transaction_external_id, value_date, account_external_id,
 			net = net.Sub(canonical.NewDecimalFromFloat(debit.Float64))
 		}
 		netPtr := net
+
+		// A statement's period summary is not a booking. The "Turnover
+		// total" line a statement prints before its closing balance
+		// carries no date, so the collector's parser attaches it to the
+		// booking that precedes it — at a period close the zero-amount
+		// service-price or interest line — and that row reaches silver
+		// with the totals as its only narrative and an amount of zero.
+		// Dropped here and counted so the drop is visible. The same line
+		// under a real fee or interest amount is a booking and is kept;
+		// its narrative is composed without the line (bookingLines) and
+		// its counterparty left empty below (docs/adapters/ubs.md §7).
+		// A payload that does not decode is treated as a PDF backfill
+		// whatever its fields say: that routes the row through
+		// pdfCashIsExternal, which on the zero value classifies it
+		// INTERNAL, rather than letting an undecodable row skip the
+		// gate and keep its deposit/withdrawal kind. The flag's other
+		// uses stay on the same side: the summary drop needs a summary
+		// line the zero payload does not carry, and the booking type
+		// travels whole instead of being split into memo + type.
+		p, decoded := decodeWebTxPayload(payload)
+		pdfBackfill := !decoded || isPDFCashBackfill(p)
+		if pdfBackfill && net.IsZero() && isStatementSummary(p) {
+			summaries++
+			continue
+		}
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 
 		// Classify each deposit/withdrawal as EXTERNAL (boundary-crossing
@@ -402,7 +438,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			switch {
 			case offsetVeto[txID+"@"+accountID]:
 				kind = canonical.TxKindOther
-			case isPDFCashBackfill(payload) && !pdfCashIsExternal(payload, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
+			case pdfBackfill && !pdfCashIsExternal(p, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
 				kind = canonical.TxKindOther
 			}
 		}
@@ -421,14 +457,18 @@ SELECT transaction_external_id, value_date, account_external_id,
 			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 		}
 
-		// Description1 in the silver carries the instrument
-		// caption verbatim, with the ISIN appended after the
-		// last "; " separator. Pull both out: the ISIN goes on
-		// instrument_external_id so the gold-side instruments
-		// join works for dividend / coupon / fee rows tied to a
-		// security; the full caption is the row's Description
-		// fallback for the CLI's name column.
-		instrumentID, descriptionText := extractInstrumentFromDescription1(payload)
+		// The three narrative columns, the instrument id and the
+		// payer's message all fall out of one projection
+		// (projectWebTxText, which carries the per-column contract):
+		// the ISIN goes on instrument_external_id so the gold-side
+		// instruments join works for dividend / coupon / fee rows tied
+		// to a security, and the message travels as the row's memo
+		// rather than as narrative. The era text fold (merge.go) reads
+		// the same projection, so one booking's text is the same string
+		// whichever side of the seam it reaches gold from. The kind is
+		// already classified from the raw column above and no text read
+		// here can move it.
+		text, instrumentID, message := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
 
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			// Web silver's transactions PK is the compound
@@ -446,9 +486,19 @@ SELECT transaction_external_id, value_date, account_external_id,
 			Kind:                  kind,
 			Currency:              ccy,
 			NetAmount:             netAmount,
-			Description:           descriptionText,
-			Payload:               json.RawMessage(payload),
+			Description:           silver.StrPtrIfNonEmpty(text.description),
+			Memo:                  silver.StrPtrIfNonEmpty(message),
+			Counterparty:          silver.StrPtrIfNonEmpty(text.counterparty),
+			// The bank's own booking type, verbatim (a `;Reversal`
+			// suffix included) — the closest thing a bank statement has
+			// to a provider category, and what the spending provider
+			// tier translates. The payer's message never enters it.
+			ProviderCategory: silver.StrPtrIfNonEmpty(text.providerCategory),
+			Payload:          json.RawMessage(payload),
 		})
+	}
+	if summaries > 0 {
+		log.Printf("ubs adapter: dropped %d statement summary row(s) — a zero-amount period-close line carrying nothing but the turnover totals", summaries)
 	}
 	return silver.NewTransactionStream(out), psnVeto, rows.Err()
 }
@@ -1029,6 +1079,22 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"SUBSCRIPTION RIGHT",
 		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE":
 		return securitiesSide(hasDebit, hasCredit)
+	// ---- Mobile payments: money moving across the relationship
+	// boundary, like a card payment or a payment order. The statement
+	// era books the outflows as PAYMENT / DEBIT UBS TWINT and the
+	// inflows — a payment received, an outbound payment reversed — as
+	// CREDIT / REVERSAL UBS TWINT; the CSV feed spells the same types
+	// in mixed case, which the fold above covers. Named here rather
+	// than left to the direction fallback so the kind follows the
+	// booking type: the silver row carries an unsigned figure in a
+	// debit or a credit column (a trailing-minus figure on the
+	// statement stays negative), and ApplyCanonicalSign orients the
+	// net amount by the kind, so a reversal keeps its inflow whichever
+	// column printed it.
+	case "PAYMENT UBS TWINT", "DEBIT UBS TWINT":
+		return canonical.TxKindWithdrawal
+	case "CREDIT UBS TWINT", "REVERSAL UBS TWINT":
+		return canonical.TxKindDeposit
 	}
 	// No description_kind hint → use direction. Credit-only
 	// without instrument context = deposit; debit-only =
@@ -1070,18 +1136,44 @@ SELECT MIN(value_date) FROM transactions
 	return start.Int64, nil
 }
 
+// webTxPayload is every field the per-row helpers read out of a web
+// transaction's silver payload. The row is decoded once and the decoded
+// value handed to each helper, rather than each helper decoding the
+// same JSON into a struct of its own.
+type webTxPayload struct {
+	Source           string   `json:"source"`
+	BookingType      string   `json:"booking_type"`
+	InternalTransfer bool     `json:"internal_transfer"`
+	CounterAccount   string   `json:"counter_account"`
+	Continuation     []string `json:"continuation"`
+	Description1     string   `json:"Description1"`
+	Description3     string   `json:"Description3"`
+}
+
+// decodeWebTxPayload decodes a silver payload, discarding a partial
+// fill on any error and reporting the failure rather than returning a
+// value indistinguishable from a payload whose fields are absent. The
+// distinction is load-bearing on the external/internal gate: an absent
+// source means "not a PDF backfill", which SKIPS that gate, so a
+// decode failure read as an absent field would take the permissive
+// branch on the classifier that keeps owner capital from being
+// fabricated. Callers treat ok=false as the conservative case; the
+// zero value itself is conservative only for the fields the caller
+// reaches after that (never external, no caption, no narrative lines).
+func decodeWebTxPayload(payload string) (webTxPayload, bool) {
+	var p webTxPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return webTxPayload{}, false
+	}
+	return p, true
+}
+
 // isPDFCashBackfill reports whether a transaction came from the
 // Account-Statement PDF backfill (source="account_statement_pdf"). Gates the per-row external/internal
 // classifier (pdfCashIsExternal); the MT940 feed carries no such
 // marker and needs no per-row classifier beyond the same-day
 // offset veto.
-func isPDFCashBackfill(payload string) bool {
-	var p struct {
-		Source string `json:"source"`
-	}
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return false
-	}
+func isPDFCashBackfill(p webTxPayload) bool {
 	return p.Source == "account_statement_pdf"
 }
 
@@ -1125,17 +1217,20 @@ var outboundPaymentRailBookings = map[string]bool{
 
 // inboundArrivalBookings are the booking types of payments ARRIVING through
 // the interbank rails: the generic credit-transfer booking (an incoming
-// SIC/SWIFT wire), its e-banking flavour, and salary. The mirror of the
-// outbound set — the MT940 feed counts the identical arrivals as deposits via
-// the direction fallback, so demoting the PDF era's copies would understate
-// inflows against counted outflows and fabricate return. Own-product cash
-// parkings (CALL DEPOSIT / FIXED TERM DEPOSIT increases, decreases,
-// repayments) deliberately stay OUT of the set: they settle an own product
-// inside the relationship.
+// SIC/SWIFT wire), its e-banking flavour, salary, and the two TWINT inflows
+// — a mobile payment received, an outbound one reversed — which mirror the
+// TWINT debits in the outbound set. The mirror of the outbound set — the
+// MT940 feed counts the identical arrivals as deposits, so demoting the PDF
+// era's copies would understate inflows against counted outflows and
+// fabricate return. Own-product cash parkings (CALL DEPOSIT / FIXED TERM
+// DEPOSIT increases, decreases, repayments) deliberately stay OUT of the
+// set: they settle an own product inside the relationship.
 var inboundArrivalBookings = map[string]bool{
-	"CREDIT":           true,
-	"E-BANKING CREDIT": true,
-	"SALARY PAYMENT":   true,
+	"CREDIT":             true,
+	"E-BANKING CREDIT":   true,
+	"SALARY PAYMENT":     true,
+	"CREDIT UBS TWINT":   true,
+	"REVERSAL UBS TWINT": true,
 }
 
 // pdfCashIsExternal decides whether a PDF-backfill cash movement is a genuine
@@ -1179,15 +1274,7 @@ var inboundArrivalBookings = map[string]bool{
 // funding a debut books days later. Swallowing both directions keeps the two
 // errors offsetting instead of fabricating one-sided return; the honest fix
 // for that era is transaction-complete counterparty data, not a looser rule.
-func pdfCashIsExternal(payload string, own map[string]bool, outbound, railEra bool) bool {
-	var p struct {
-		CounterAccount   string `json:"counter_account"`
-		BookingType      string `json:"booking_type"`
-		InternalTransfer bool   `json:"internal_transfer"`
-	}
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return false
-	}
+func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bool) bool {
 	// The collector's own name-free markers (UEBERTRAG/UMBUCHUNG/MANDAT/MANAGE/
 	// PORTFOLIO/REDUK on the continuation lines) already identified this row as an
 	// intra-relationship mandate-funding / book-transfer move. That is authoritative
@@ -1241,15 +1328,11 @@ func pdfCashIsExternal(payload string, own map[string]bool, outbound, railEra bo
 // (everything before the final separator, trimmed) is returned
 // even when no ISIN matches — it's still useful as a name
 // fallback.
-func extractInstrumentFromDescription1(payload string) (instrumentID, description *string) {
-	d1 := json.RawMessage(payload)
-	var fields struct {
-		Description1 string `json:"Description1"`
-	}
-	if err := json.Unmarshal(d1, &fields); err != nil || fields.Description1 == "" {
+func extractInstrumentFromDescription1(p webTxPayload) (instrumentID, description *string) {
+	if p.Description1 == "" {
 		return nil, nil
 	}
-	caption := strings.TrimSpace(fields.Description1)
+	caption := strings.TrimSpace(p.Description1)
 	// Try to split on the last "; ". Anything 12 chars long
 	// with the ISIN shape (2 alpha + 10 alnum) is treated as
 	// an ISIN; otherwise the caption stays whole.
@@ -1263,6 +1346,85 @@ func extractInstrumentFromDescription1(payload string) (instrumentID, descriptio
 		}
 	}
 	return nil, silver.StrPtrIfNonEmpty(caption)
+}
+
+// webDescription returns the row's narrative — the gold description
+// less the payer's message, which travels apart as the change's Memo.
+// The Description1 caption (as extractInstrumentFromDescription1
+// returns it, ISIN tail stripped) wins whenever the row has one —
+// unchanged, because gold's name lookups key on it. Otherwise the
+// narrative is composed from what the row does carry, in a fixed
+// order: the booking type first, then the narrative lines — the PDF
+// backfill's statement continuation lines less the statement's
+// turnover-total line (bookingLines), or the CSV feed's Description3
+// — joined with "; " (silver.JoinText). A row with a bare booking
+// code and nothing else therefore reaches gold as that code; a row
+// with no text at all stays NULL. Nothing is inferred or paraphrased.
+// A payload that does not decode contributes only the booking type.
+func webDescription(captionDesc *string, bookingType string, p webTxPayload) *string {
+	if captionDesc != nil {
+		return captionDesc
+	}
+	own, _ := bookingLines(p.Continuation)
+	parts := make([]string, 0, 2+len(own))
+	parts = append(parts, bookingType)
+	parts = append(parts, own...)
+	parts = append(parts, p.Description3)
+	return silver.StrPtrIfNonEmpty(silver.JoinText(parts...))
+}
+
+// turnoverTotalPrefix is the upper-cased head of the line an Account
+// Statement prints before its closing balance: "Turnover total <debits>
+// <credits>", the period's two totals.
+const turnoverTotalPrefix = "TURNOVER TOTAL"
+
+// isTurnoverTotalLine reports whether a statement continuation line is the
+// period's turnover-total line: the two words, any case, followed by figures
+// and nothing else — no letter after the prefix, so a line that merely
+// begins with the words is not it. The line carries no date, so the
+// collector's parser attaches it to whichever booking precedes it; it names
+// the period's totals, never the booking's own text.
+func isTurnoverTotalLine(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	if !strings.HasPrefix(upper, turnoverTotalPrefix) {
+		return false
+	}
+	rest := upper[len(turnoverTotalPrefix):]
+	if rest != "" && rest[0] != ' ' {
+		return false
+	}
+	for _, r := range rest {
+		if unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// bookingLines splits a PDF-backfill row's continuation lines into the
+// booking's own text — every non-blank line that is not a turnover-total
+// line, in order — and whether a turnover-total line was among them.
+func bookingLines(continuation []string) (own []string, turnover bool) {
+	for _, line := range continuation {
+		switch {
+		case strings.TrimSpace(line) == "":
+		case isTurnoverTotalLine(line):
+			turnover = true
+		default:
+			own = append(own, line)
+		}
+	}
+	return own, turnover
+}
+
+// isStatementSummary reports whether a PDF-backfill row's narrative is
+// nothing but the statement's turnover-total line — the shape of the
+// period summary the parser emits as a booking at each period close. The
+// caller pairs it with a zero amount: the same narrative under a real fee
+// or interest amount is a booking, and stays.
+func isStatementSummary(p webTxPayload) bool {
+	own, turnover := bookingLines(p.Continuation)
+	return turnover && len(own) == 0
 }
 
 // tickerFromDescription pulls the trailing `(TICKER)` segment
