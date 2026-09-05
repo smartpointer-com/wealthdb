@@ -76,6 +76,7 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb holdings <view>` | Point-in-time portfolio views: `positions`, `accounts`, `portfolios`, `sources`, `global` — each with currency conversion and `-d`/`-f`/`-x`/`-p` (and `-C` columns on all but `global`). |
 | `wealthdb returns <view>` | Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by `accounts`, `portfolios`, `sources`, `global` over a window. `--method`, `--period {monthly\|quarterly\|annual\|total}`, `--annualize`, `--netting`, `--inception`; historic FX, after fees & taxes. Account-grain is exact; coarse grains are best-effort — read the `quality` column. |
 | `wealthdb transactions` | Print transactions over a date range, oldest first (`-r` reverses to newest first). |
+| `wealthdb spending <view>` | What the cash and card accounts spent, over a window defaulting to the trailing twelve months: `summary`, `categories`, `transactions`. `--period {daily\|weekly\|monthly\|quarterly\|annual\|total}`, `--level {primary\|detailed}`, plus `-f`/`-C`/`-x`/`-p`; historic FX, own-account moves excluded. |
 | `wealthdb status [<id>] [-v]` | Report gold state vs each silver source. |
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |

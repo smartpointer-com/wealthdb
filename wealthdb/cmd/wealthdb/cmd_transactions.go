@@ -67,8 +67,9 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	fs.StringVar(currency, "currency", "", "output currency (default: config.default_currency)")
 	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
 	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
-	privacy := fs.Bool("p", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
-	fs.BoolVar(privacy, "privacy", false, "redact account / tx IDs, quantities, prices, and monetary amounts in the output")
+	privacyHelp := "redact account / tx IDs, statement narratives, quantities, prices, and monetary amounts in the output"
+	privacy := fs.Bool("p", false, privacyHelp)
+	fs.BoolVar(privacy, "privacy", false, privacyHelp)
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, transactionsUsage())
@@ -163,11 +164,46 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 					return *r.Name
 				}
 				return strOrEmpty(r.Description)
+			},
+			// The class follows which of the two the cell holds. A
+			// joined instrument name is a public security name and
+			// stays legible; the description fallback is a statement
+			// narrative and takes the free-text class, exactly as the
+			// `description` column below does.
+			PrivacyFunc: func(r gold.TransactionRow) PrivacyClass {
+				if r.Name != nil && *r.Name != "" {
+					return PrivacyNone
+				}
+				return PrivacyFreeText
 			}},
 		{Name: "instrument_id", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.InstrumentExternalID) }},
-		{Name: "description", Align: output.AlignLeft,
+		// The statement narrative, verbatim: a bank line carries a
+		// counterparty's name, address and reference text, and gold
+		// appends the payer's memo behind the separator. Free-text
+		// class, matching the same column on the spending view — the
+		// cell masks whole, because there is no safe slice of a
+		// narrative to expose.
+		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }},
+		// The spending overlay's verdict on the row (migration 0042).
+		// Empty for everything the enrichment pass does not reach:
+		// investment rows, and anything outside the spending account
+		// scope. The merchant is empty on a delta row besides — an
+		// own-account move, capital deployed, a gift — whatever the
+		// store holds for its signature (migration 0048). Free-text
+		// class, as on the spending view: the transfer fence gates
+		// what may acquire a name, but the store is append-only across
+		// signature revisions and across widenings of the fence, so a
+		// name bought under a narrower fence outlives it and the
+		// column carries no guarantee about what is in it. The spend_*
+		// categories and asset_class stay legible as taxonomy.
+		{Name: "merchant", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.MerchantName) }},
+		{Name: "spend_primary", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.SpendPrimary) }},
+		{Name: "spend_detailed", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.SpendDetailed) }},
 		{Name: "asset_class", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AssetClass) }},
 		{Name: "currency", Align: output.AlignLeft,
@@ -232,7 +268,9 @@ Flags:
                            a +ADD,...-REMOVE,... delta against the default set
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
-  -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts
+  -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts;
+                           statement narratives (description, and the name column where it
+                           falls back to one) redact as free text — the cell masks whole
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 
 Available columns:

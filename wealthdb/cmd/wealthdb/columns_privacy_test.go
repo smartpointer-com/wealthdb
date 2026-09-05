@@ -11,19 +11,28 @@ import (
 // always-redact rule keys on the source's silver_kind, not on the
 // free-form config id — a source named "ct" must still redact, and
 // a source that merely NAMED itself "cointracking" but loads
-// through another adapter must not.
+// through another adapter must not. The orphan-account sentinel
+// row carries no name at all and stays legible for every source.
 func TestPortfolioNamePrivacyMatchesKind(t *testing.T) {
 	kinds := map[string]string{"ct": "cointracking", "cointracking": "ubs"}
 	f := portfolioNamePrivacy(func(id string) string { return kinds[id] })
 
-	if got := f(gold.PortfolioRow{SilverSourceID: "ct"}); got != PrivacyCustomerLabel {
-		t.Errorf("kind=cointracking: privacy = %v, want PrivacyCustomerLabel", got)
+	row := func(source, extID string) gold.PortfolioRow {
+		return gold.PortfolioRow{SilverSourceID: source, PortfolioExternalID: extID}
 	}
-	if got := f(gold.PortfolioRow{SilverSourceID: "cointracking"}); got != PrivacyAccountID {
+	if got := f(row("ct", "cu_000001")); got != PrivacyFreeText {
+		t.Errorf("kind=cointracking: privacy = %v, want PrivacyFreeText", got)
+	}
+	if got := f(row("cointracking", "0000001")); got != PrivacyAccountID {
 		t.Errorf("id-only match: privacy = %v, want PrivacyAccountID", got)
 	}
-	if got := f(gold.PortfolioRow{SilverSourceID: "unknown"}); got != PrivacyAccountID {
+	if got := f(row("unknown", "0000001")); got != PrivacyAccountID {
 		t.Errorf("unknown source: privacy = %v, want PrivacyAccountID", got)
+	}
+	// Sentinel row ("(no portfolio)"): legible everywhere,
+	// including under the cointracking rule.
+	if got := f(row("ct", "")); got != PrivacyNone {
+		t.Errorf("sentinel row: privacy = %v, want PrivacyNone", got)
 	}
 }
 
@@ -33,9 +42,10 @@ func TestRedactAccountID(t *testing.T) {
 	}{
 		// IBAN-shape: two-letter country prefix kept, full length
 		// preserved (so the redacted form looks like an IBAN).
-		// Synthetic example IBANs only — never real account numbers.
-		{"CH9300762011623852957", "CH***************2957"},
-		{"DE89370400440532013000", "DE****************3000"},
+		// Zero-filled placeholder IBANs (CLAUDE.md §4), mod-97 invalid
+		// by construction — never real account numbers.
+		{"CH0000000000000002957", "CH***************2957"},
+		{"DE00000000000000003000", "DE****************3000"},
 		// Long alphanumeric (Schwab hashValue, 64 hex chars) is
 		// not IBAN-shape (length > 34); full length preserved with
 		// the trailing 4 chars visible. Synthetic hex pattern.
@@ -60,6 +70,12 @@ func TestRedactAccountID(t *testing.T) {
 		{"Portfolio overlay", "Portfolio overlay"},
 		{"(no portfolio)", "(no portfolio)"},
 		{"Brokerage (other)", "Brokerage (other)"},
+		// Multi-word free text is NOT an account id and must keep
+		// passing through here — the account-id contract is what
+		// keeps display strings legible. Values shaped like this
+		// belong to PrivacyFreeText instead (see
+		// TestFreeTextRedactsEveryShape).
+		{"SAMPLE PAYEE 0001", "SAMPLE PAYEE 0001"},
 		// Purely-alphabetic tokens (taxonomy labels) → pass through
 		// under the default PrivacyAccountID heuristic.
 		{"Savings", "Savings"},
@@ -68,43 +84,79 @@ func TestRedactAccountID(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		got := redactAccountID(c.in, false)
+		got := redactAccountID(c.in)
 		if got != c.want {
-			t.Errorf("redactAccountID(%q, false) = %q, want %q", c.in, got, c.want)
+			t.Errorf("redactAccountID(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
 
-// TestRedactAccountIDForceAlpha covers the PrivacyCustomerLabel
-// path — where purely-alphabetic strings ARE customer-identifying
-// (cointracking portfolio names) and must redact too. Same length-
-// sliding suffix rules; the only behavioural change vs the default
-// path is that the "has digit" exemption is dropped.
-func TestRedactAccountIDForceAlpha(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		// Purely-alphabetic CT-portfolio-shaped tokens. Synthetic.
-		{"abc", "***"},
-		{"abcd", "**cd"},
-		{"abcde", "***de"},
-		{"abcdef", "***def"},
-		{"abcdefg", "****efg"},
-		{"abcdefgh", "****efgh"},
-		{"abcdefghij", "******ghij"},
-		// Mixed-case + digit, same length-sliding redaction.
-		{"Abc2", "**c2"},
-		// Non-alphanumeric still passes through (cash sentinels,
-		// "(no portfolio)" etc., even under PrivacyCustomerLabel).
-		{"(no portfolio)", "(no portfolio)"},
-		// Empty input passes through unchanged.
-		{"", ""},
+// TestFreeTextRedactsEveryShape is the regression pin for the hole
+// PrivacyFreeText exists to close: a bank narrative carrying a
+// person's name is multi-word, and every identifier-shaped rule
+// waves multi-word values through. This class asks no shape
+// question, so single tokens and whole sentences mask alike — in
+// every output format, since a narrative is not row identity that
+// a csv/json consumer needs back.
+func TestFreeTextRedactsEveryShape(t *testing.T) {
+	// Synthetic narratives in the shapes a statement actually
+	// produces: a P2P payee, a cheque, a wire — plus the single
+	// alphanumeric tokens a shape rule does mask, and the
+	// two-character one it lets through for being too short.
+	values := []string{
+		"SAMPLE PAYEE ZZ",
+		"ZELLE PAYMENT TO SAMPLE PAYEE ZZ",
+		"CHECK #0001 SAMPLE PAYEE ZZ",
+		"Sample Payee",
+		"SAMPLEPAYEEZZ",
+		"SAMPLEPAYEE0001",
+		"ab",
 	}
-	for _, c := range cases {
-		got := redactAccountID(c.in, true)
-		if got != c.want {
-			t.Errorf("redactAccountID(%q, true) = %q, want %q", c.in, got, c.want)
+	formats := []output.Format{
+		output.FormatTable, output.FormatCSV,
+		output.FormatCSVPlain, output.FormatJSON,
+	}
+	for _, v := range values {
+		for _, f := range formats {
+			if got := applyPrivacy(v, PrivacyFreeText, f); got != "***" {
+				t.Errorf("applyPrivacy(%q, PrivacyFreeText, %v) = %q, want %q", v, f, got, "***")
+			}
 		}
+	}
+	// Empty cells stay empty rather than growing a placeholder.
+	if got := applyPrivacy("", PrivacyFreeText, output.FormatTable); got != "" {
+		t.Errorf("applyPrivacy(\"\", PrivacyFreeText) = %q, want empty", got)
+	}
+	// The same values under the account-id class keep their
+	// existing behaviour: multi-word passes through, an
+	// identifier-shaped token redacts. Moving a column onto the
+	// free-text class must not have moved this contract.
+	if got := applyPrivacy("SAMPLE PAYEE ZZ", PrivacyAccountID, output.FormatTable); got != "SAMPLE PAYEE ZZ" {
+		t.Errorf("account-id class, multi-word = %q, want it unchanged", got)
+	}
+	if got := applyPrivacy("PAYEE0001", PrivacyAccountID, output.FormatTable); got != "*****0001" {
+		t.Errorf("account-id class, single token = %q, want the masked id", got)
+	}
+}
+
+// TestFreeTextColumnRedactsInTable drives the class through the
+// rendering path a `-p` run actually takes, so the pin covers the
+// column wiring and not just the dispatcher.
+func TestFreeTextColumnRedactsInTable(t *testing.T) {
+	type row struct{ narrative string }
+	cols := []columnSpec[row]{
+		{Name: "description", Privacy: PrivacyFreeText,
+			Extract: func(r row) string { return r.narrative }},
+	}
+	rows := []row{{narrative: "WIRE FROM SAMPLE PAYEE ZZ"}}
+
+	off := rowsToTable(rows, cols, false, output.FormatTable)
+	if off.Rows[0][0] != "WIRE FROM SAMPLE PAYEE ZZ" {
+		t.Errorf("privacy off = %q, want it legible", off.Rows[0][0])
+	}
+	on := rowsToTable(rows, cols, true, output.FormatTable)
+	if on.Rows[0][0] != "***" {
+		t.Errorf("privacy on = %q, want the free-text placeholder", on.Rows[0][0])
 	}
 }
 

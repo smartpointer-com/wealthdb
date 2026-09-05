@@ -17,10 +17,15 @@ import (
 // portfolio column's display value, which mixes different
 // conventions across sources:
 //
+//   - the sentinel row for a source's orphan accounts renders the
+//     literal "(no portfolio)". It is a structural marker with no
+//     row content behind it, so it stays legible for every source.
 //   - the cointracking adapter emits the free-form CT account name
-//     as display_name. These are globally-unique customer-identifying
-//     strings on cointracking.info, so they always redact
-//     regardless of character class.
+//     as display_name. These are user-chosen and can be anything —
+//     one word or several — so they take the free-text class and
+//     mask whole. The name is the row label, so the redacted rows
+//     of one source look alike; `-C +portfolio_id` puts a
+//     distinguishable (account-id-redacted) key back on the row.
 //   - UBS / other Swiss-source adapters emit bank-assigned
 //     portfolio category labels (Savings / Brokerage / …).
 //     These pass through under the PrivacyAccountID heuristic
@@ -32,8 +37,11 @@ import (
 // the literal adapter name.
 func portfolioNamePrivacy(kindOf func(string) string) func(gold.PortfolioRow) PrivacyClass {
 	return func(r gold.PortfolioRow) PrivacyClass {
+		if r.PortfolioExternalID == "" {
+			return PrivacyNone
+		}
 		if kindOf(r.SilverSourceID) == "cointracking" {
-			return PrivacyCustomerLabel
+			return PrivacyFreeText
 		}
 		return PrivacyAccountID
 	}

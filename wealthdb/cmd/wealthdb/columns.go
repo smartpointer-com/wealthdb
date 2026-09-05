@@ -28,7 +28,7 @@ type columnSpec[T any] struct {
 	// labels ("Savings") are bank-assigned categories and stay
 	// legible, while cointracking portfolio names are free-form,
 	// customer-identifying account names and must be redacted
-	// regardless of their character class.
+	// whatever shape the value happens to take.
 	PrivacyFunc func(T) PrivacyClass
 }
 
@@ -50,12 +50,19 @@ const (
 	// at this layer they're typically bank-assigned taxonomic
 	// labels (UBS "Savings" / "Brokerage").
 	PrivacyAccountID
-	// PrivacyCustomerLabel: free-form, customer-identifying
-	// strings — cointracking portfolio names, for example.
-	// Redacted by the same shape as PrivacyAccountID but WITHOUT
-	// the purely-alphabetic exemption: every alphanumeric string
-	// of length ≥ 3 is treated as an identifier.
-	PrivacyCustomerLabel
+	// PrivacyFreeText: free-form strings that can carry a person's
+	// name — a statement narrative and its folds (a wire, a P2P
+	// transfer, a cheque payee), and customer-chosen labels such
+	// as cointracking portfolio names. Rendered as "***" verbatim,
+	// in every output format.
+	//
+	// Unlike PrivacyAccountID this class is shape-blind: it never
+	// asks whether the value looks like an identifier, because a
+	// narrative never does. Any shape-based rule would pass
+	// exactly the values that matter here — a payee narrative is
+	// multi-word, so an identifier heuristic lets it straight
+	// through.
+	PrivacyFreeText
 	// PrivacyQuantity: share counts. Rendered as "***" verbatim.
 	PrivacyQuantity
 	// PrivacyMoney: any monetary amount (prices, balances,
@@ -210,16 +217,19 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 //     returning "" is the safe fallback).
 //
 // AccountID is always the visible placeholder — every format
-// needs row-identity to remain scannable.
+// needs row-identity to remain scannable. FreeText is likewise
+// format-independent, but it masks the whole value: there is no
+// safe slice of a narrative to expose, since the identifying part
+// can sit anywhere in it.
 func applyPrivacy(value string, class PrivacyClass, format output.Format) string {
 	if value == "" {
 		return value
 	}
 	switch class {
 	case PrivacyAccountID:
-		return redactAccountID(value, false)
-	case PrivacyCustomerLabel:
-		return redactAccountID(value, true)
+		return redactAccountID(value)
+	case PrivacyFreeText:
+		return freeTextPlaceholder
 	case PrivacyQuantity:
 		if format == output.FormatCSV || format == output.FormatCSVPlain {
 			return ""
@@ -233,6 +243,11 @@ func applyPrivacy(value string, class PrivacyClass, format output.Format) string
 	}
 	return value
 }
+
+// freeTextPlaceholder is what a PrivacyFreeText cell renders as —
+// the same fixed star form PrivacyQuantity uses, so privacy mode
+// keeps one visual vocabulary instead of a per-class one.
+const freeTextPlaceholder = "***"
 
 // redactAccountID masks the middle of an identifier-shaped
 // string, exposing only a length-appropriate trailing slice
@@ -264,15 +279,15 @@ func applyPrivacy(value string, class PrivacyClass, format output.Format) string
 //     the real IBAN length range and excludes long alphanumeric
 //     tokens (Schwab hashValues happen to be 64 hex chars and
 //     can start with letters; those don't qualify as IBANs).
-func redactAccountID(s string, forceAlpha bool) string {
+func redactAccountID(s string) string {
 	// Synthetic-suffix IDs (currently only the UBS-adapter
 	// "<portfolio_id>:overlay" form): redact the ID portion,
 	// preserve the suffix verbatim — it's a structural marker,
 	// not an identifier component.
 	if i := strings.IndexByte(s, ':'); i > 0 {
-		return redactAccountID(s[:i], forceAlpha) + s[i:]
+		return redactAccountID(s[:i]) + s[i:]
 	}
-	if !isLikelyAccountID(s, forceAlpha) {
+	if !isLikelyAccountID(s) {
 		return s
 	}
 	n := len(s)
@@ -294,17 +309,19 @@ func redactAccountID(s string, forceAlpha bool) string {
 }
 
 // isLikelyAccountID matches the redactor's contract: at least 3
-// chars, alphanumeric-only. With `forceAlpha=false` (the default
-// PrivacyAccountID behaviour), additionally requires at least one
-// digit — purely-alphabetic strings are bank-assigned taxonomic
-// labels at this layer (UBS "Education" / "Authorized") and pass
-// through. With `forceAlpha=true` (PrivacyCustomerLabel) the
-// digit requirement is dropped — every alphanumeric token is
-// treated as an identifier. Strings with any non-alphanumeric
-// character (spaces, parens, slashes) pass through unchanged in
-// both modes; synthetic display strings like "Portfolio overlay"
-// / "(no portfolio)" stay legible.
-func isLikelyAccountID(s string, forceAlpha bool) bool {
+// chars, alphanumeric-only, and containing at least one digit —
+// purely-alphabetic strings are bank-assigned taxonomic labels at
+// this layer (UBS "Savings" / "Brokerage") and pass through.
+// Strings with any non-alphanumeric character (spaces, parens,
+// slashes) pass through unchanged; synthetic display strings like
+// "Portfolio overlay" / "(no portfolio)" stay legible.
+//
+// The shape test is deliberately narrow, and stays that way: it
+// decides account-id redaction for every command. A value that
+// needs masking whatever its shape — a statement narrative, a
+// customer-chosen label — belongs to PrivacyFreeText, which asks
+// no shape question at all, rather than to a widened test here.
+func isLikelyAccountID(s string) bool {
 	if len(s) < 3 {
 		return false
 	}
@@ -320,7 +337,7 @@ func isLikelyAccountID(s string, forceAlpha bool) bool {
 			return false
 		}
 	}
-	return forceAlpha || hasDigit
+	return hasDigit
 }
 
 func isASCIILetter(c byte) bool {

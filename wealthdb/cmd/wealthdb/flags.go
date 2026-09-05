@@ -74,6 +74,7 @@ subcommands:
   holdings <view>       point-in-time portfolio views: positions, accounts, portfolios, sources, global
   returns <view>        TWR / MWR returns: accounts, portfolios, sources, global ('wealthdb returns <view> -h')
   transactions [flags]  print transactions over a date range (default past 30 days, oldest first)
+  spending <view>       spending reports: summary, categories, transactions ('wealthdb spending <view> -h')
   status [<id>] [-v]    report gold state vs each silver source
   snapshots <id> | -a   list snapshots gold has loaded for a silver
   web <verb>            manage the optional Metabase BI server ('wealthdb web help'; host-side, see web/README.md)

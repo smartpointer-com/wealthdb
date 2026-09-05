@@ -114,10 +114,10 @@ func parseAsOf(s string, now time.Time) (int64, error) {
 	return t.Unix(), nil
 }
 
-// parseDateRange interprets the positional args used by
-// `wealthdb transactions` (and reusable by future range-style
-// subcommands). Returns [fromEpoch, toEpoch] Unix seconds
-// inclusive.
+// parseDateRange interprets the positional args used by the
+// range-style subcommands — `transactions`, and `returns` / `spending`
+// through their own bare-invocation defaults. Returns
+// [fromEpoch, toEpoch] Unix seconds inclusive.
 //
 //	0 args            → past 30 days
 //	1 arg             → the parsed period's bounds: "2025" →
