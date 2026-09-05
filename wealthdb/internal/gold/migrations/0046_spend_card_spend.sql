@@ -1,0 +1,51 @@
+-- The fifth delta, `card_spend`: a credit-card bill paid to an issuer
+-- whose card is not itemised in wealthdb. Unlike `internal_transfer`
+-- and `investment` it stays IN the spending base.
+--
+-- A household pays its card bills from its cash accounts. When the
+-- card is collected, the bill pairs with the card's own `card_payment`
+-- leg through the matcher and nets out as `internal_transfer` — the
+-- purchases are itemised on the card, so the bill is an own-account
+-- move. When the card is NOT collected — and no user collects every
+-- card — the bill is the only trace of that spending. Until this
+-- migration the built-in card-payment rule sent every such bill to
+-- `internal_transfer` regardless, on the reasoning that the card's leg
+-- merely had not arrived; that deleted real consumption from every
+-- total, silently, at whatever size the bill was. The same happens in
+-- the deep era, where a card payment is dated before the card's own
+-- ledger begins.
+--
+-- The policy the value encodes: an UNPAIRED card payment is generic
+-- card spend. The rule tier now places `card_spend`; the matcher
+-- outranks it, so a bill whose card IS in gold still nets out, and
+-- collecting a card replaces its bills with its purchases on the next
+-- pass. It is a placeholder primary, so every category report shows
+-- it as its own line — visible, never hidden.
+--
+-- One statement, and nothing else changes:
+--
+--   * spend_categories gains the row, seeded from
+--     internal/canonical/spendtaxonomy.go exactly as migrations 0040
+--     and 0045 seed theirs; TestSpendCategoriesMatchGoTable pins the
+--     dimension to the Go table.
+--   * spending_lines_base is NOT re-issued. Its exclusion list names
+--     `internal_transfer` and `investment` one by one (migration 0045)
+--     rather than "every delta", so a row resolving to `card_spend`
+--     passes it by construction. The schema and report tests pin that
+--     a seeded `card_spend` row reaches the base, the summary and the
+--     categories macros at both levels, and that `internal_transfer`
+--     still does not.
+--
+-- It is a delta, so the model tier may never emit it: the gauntlet
+-- validates against canonical.VendoredSpendDetailed, which is derived
+-- from the vendored rows alone, and refuses the new value with no
+-- change to the command. The built-in card-payment rule, config rules
+-- (`spending.rules`) and pins (`spending.pins`) are what place it.
+--
+-- INSERT OR REPLACE keeps this replayable for the DDL-rerun test (see
+-- gold.Migrate's REPLAY note).
+INSERT OR REPLACE INTO spend_categories (spend_primary, spend_detailed, description) VALUES
+    ('card_spend', 'card_spend', 'Credit-card bill for a card not itemised in wealthdb — generic card spend; replaced by the card''s own purchases once the card is collected');
+
+INSERT INTO schema_meta (gold_schema_version, applied_at)
+    VALUES (46, CAST(epoch(now()) AS BIGINT));

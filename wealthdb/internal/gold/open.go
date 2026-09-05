@@ -50,6 +50,26 @@ const (
 // The returned *sql.DB is the standard database/sql handle; close
 // it with db.Close() when done.
 func Open(path string, mode Mode) (*sql.DB, error) {
+	return open(path, mode, true)
+}
+
+// ReopenReadWrite opens an already-open-once gold file read-write
+// WITHOUT stamping binary_versions.
+//
+// The commands that round-trip a model release the handle between
+// calls so readers are not locked out for the length of a run, and
+// re-take it only to flush what the model answered. Those re-opens
+// are the same process continuing the same command, so recording each
+// one would append a row per batch to the staleness ledger and drown
+// the signal it exists for: which binary last wrote this database.
+// The first open of the command records that.
+func ReopenReadWrite(path string) (*sql.DB, error) {
+	return open(path, ModeReadWrite, false)
+}
+
+// open is Open's body; audit says whether an RW open stamps
+// binary_versions.
+func open(path string, mode Mode, audit bool) (*sql.DB, error) {
 	dsn := path
 	if path == "" {
 		dsn = ":memory:"
@@ -97,7 +117,7 @@ func Open(path string, mode Mode) (*sql.DB, error) {
 	// RW opens record themselves on the way in, so the next RW or
 	// RO Open knows what the most-recent writer was. Best-effort:
 	// a failure to log shouldn't block the load itself.
-	if mode == ModeReadWrite {
+	if mode == ModeReadWrite && audit {
 		_ = recordBinaryOpen(context.Background(), db)
 	}
 	return db, nil
@@ -156,7 +176,14 @@ it doesn't know about. Rebuild from source:
 // recordBinaryOpen appends a row to binary_versions stamping the
 // current binary's identity. No-op when the binary has no VCS
 // info (CommitAt == 0) — we'd just be polluting the audit log.
-func recordBinaryOpen(ctx context.Context, db *sql.DB) error {
+//
+// It is a variable so a test can observe that Open reaches it and
+// ReopenReadWrite does not. Counting the rows it writes cannot answer
+// that: a test binary carries no VCS stamp, so the write is a no-op
+// and both paths leave the same row count behind whichever one ran.
+var recordBinaryOpen = recordBinaryOpenImpl
+
+func recordBinaryOpenImpl(ctx context.Context, db *sql.DB) error {
 	bi := version.Build()
 	if bi.CommitAt == 0 {
 		return nil

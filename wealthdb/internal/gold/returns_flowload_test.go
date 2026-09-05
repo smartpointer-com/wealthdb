@@ -38,7 +38,7 @@ func TestLoadFlowTransactionsMatchesTransactionsBetween(t *testing.T) {
 	}
 
 	for _, outCcy := range []string{"USD", "CHF"} {
-		wide, err := TransactionsBetween(ctx, db, 0, maxEpoch, outCcy, SortAscending)
+		wide, err := TransactionsBetween(ctx, db, 0, MaxEpoch, outCcy, SortAscending)
 		if err != nil {
 			t.Fatalf("%s: TransactionsBetween: %v", outCcy, err)
 		}

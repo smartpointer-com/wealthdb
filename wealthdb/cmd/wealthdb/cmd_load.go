@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/loader"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/spending"
 )
 
 func init() {
@@ -78,11 +80,12 @@ load semantics.`)
 	}
 
 	// load mutates the live gold file: gate for write, then open RW.
-	db, err := openGoldForWrite(g, cfg, "load",
+	db, lock, err := openGoldForWrite(g, cfg, "load",
 		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
 	if err != nil {
 		return err
 	}
+	defer lock.unlock()
 	defer db.Close()
 
 	ld := loader.New(db)
@@ -104,7 +107,88 @@ load semantics.`)
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "load: warning: could not stamp FX priorities: %s\n", err.Error())
 	}
+	if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+		fmt.Fprintf(stderr, "load: %s\n", err.Error())
+		firstErr = errors.Join(firstErr, err)
+	}
 	return firstErr
+}
+
+// runSpendingPass re-asserts every deterministic spend verdict in gold
+// — the pins ledger included, re-read from config on every call — and
+// reports what it did.
+//
+// It runs after the per-source loop rather than per source, because
+// the verdicts it reaches are not per-source facts: the withdrawal
+// that funds a card payment and the card payment itself routinely
+// arrive from two different sources, and neither leg can be recognised
+// as an own-account move until both are in gold. One pass over the
+// whole file after every source has landed is the only ordering in
+// which that is always true.
+//
+// UNLIKE the FX-priority stamp beside it, a failure here is an error
+// rather than a warning. A missing FX rank degrades a conversion; a
+// missing enrichment pass leaves own-account moves counted as
+// spending, which is not a degraded answer but a wrong one.
+func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout io.Writer) error {
+	include, exclude := cfg.SpendAccountScope()
+	m := cfg.SpendMatching()
+	pins, err := spending.ParsePinLedger(cfg.SpendPins())
+	if err != nil {
+		return err
+	}
+	res, err := spending.RunDeterministicPass(ctx, db, spending.Options{
+		Include:           include,
+		Exclude:           exclude,
+		MatchWindowDays:   m.Window(),
+		MatchTolerancePct: m.Tolerance(),
+		Rules:             spendRules(cfg),
+		Pins:              pins,
+	})
+	if err != nil {
+		return fmt.Errorf("spending enrichment: %w", err)
+	}
+	fmt.Fprintf(stdout, "spending: %d row(s) enriched — %d matcher, %d rule, %d provider, %d pinned, %d unplaced\n",
+		res.Enriched, res.MatcherRows, res.RuleRows, res.ProviderRows, res.PinRows, res.SignatureOnlyRows)
+	if res.UnmatchedPins > 0 {
+		fmt.Fprintf(stdout, "spending: %d pin(s) matched no transaction — not loaded yet, or the ledger row describes none\n",
+			res.UnmatchedPins)
+	}
+	if res.UnresolvedScopeAccounts > 0 {
+		fmt.Fprintf(stdout, "spending: %d account scope id(s) matched no account — "+
+			"`spending.accounts` keys on the account id, and such an entry scopes nothing\n",
+			res.UnresolvedScopeAccounts)
+	}
+	if res.UnmappedProviderCategories > 0 {
+		fmt.Fprintf(stdout, "spending: %d row(s) carried a provider category this build does not map\n",
+			res.UnmappedProviderCategories)
+	}
+	if res.RekeyedMerchants > 0 {
+		fmt.Fprintf(stdout, "spending: %d merchant verdict(s) carried forward to signature version %d\n",
+			res.RekeyedMerchants, spending.SignatureVersion)
+	}
+	if res.SplitMerchants > 0 {
+		fmt.Fprintf(stdout, "spending: %d merchant verdict(s) left behind by the signature version %d re-key — "+
+			"their rows split across several new signatures, so those merchants are re-asked on the next 'categorize'\n",
+			res.SplitMerchants, spending.SignatureVersion)
+	}
+	return nil
+}
+
+// spendRules translates the config's compiled `spending.rules` to the
+// enrichment pass's type, the way buildSourceSpec translates the
+// account overrides: config carries the JSON shape and the validation,
+// spending stays config-free.
+func spendRules(cfg *config.Config) []spending.Rule {
+	compiled := cfg.SpendRules()
+	if len(compiled) == 0 {
+		return nil
+	}
+	rules := make([]spending.Rule, 0, len(compiled))
+	for _, r := range compiled {
+		rules = append(rules, spending.Rule{Match: r.Match, Category: r.Category})
+	}
+	return rules
 }
 
 // buildSourceSpec assembles a loader.SourceSpec for one configured

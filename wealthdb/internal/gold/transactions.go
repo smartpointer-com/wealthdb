@@ -36,6 +36,18 @@ type TransactionRow struct {
 	Quantity              *string
 	Price                 *string
 	Description           *string // transactions.description; free-text label
+	// MerchantName, SpendPrimary and SpendDetailed come from the
+	// spending overlay (migration 0042's spend_txn_categories): the
+	// merchant the row's signature resolved to and the category the
+	// enrichment tiers settled on. Nil for every row the enrichment
+	// pass does not reach — investment transactions, and anything
+	// outside the spending account scope. MerchantName is nil on a
+	// delta row as well — an own-account move, capital deployed, a
+	// gift — whatever the store holds for its signature (migration
+	// 0048).
+	MerchantName  *string
+	SpendPrimary  *string
+	SpendDetailed *string
 	// ValueOutCcy is NetAmount converted to the requested output
 	// currency at occurred_at by the report_transactions macro (flat
 	// nearest-rate FX in SQL). Nil when no FX path resolves.
@@ -58,8 +70,9 @@ const (
 // desc per `order`), then (silver_source_id,
 // transaction_external_id) as a stable tiebreaker. The query and FX
 // are the report_transactions table macro (migration 0021, re-issued
-// with account_kind in 0039); the macro emits ascending, so the
-// descending case re-sorts here.
+// with account_kind in 0039 and with the merchant / spend-category
+// columns in 0042); the macro emits ascending, so the descending case
+// re-sorts here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
 // must be added to TransactionRow and to the scan list below in the
@@ -85,6 +98,7 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			instr, symbol, name, assetClass        sql.NullString
 			grossStr, netStr, qtyStr, priceStr     sql.NullString
 			description, valueOut                  sql.NullString
+			merchant, spendPrimary, spendDetailed  sql.NullString
 		)
 		if err := rows.Scan(
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
@@ -93,11 +107,14 @@ func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int
 			&instr, &symbol, &name, &assetClass,
 			&r.Kind, &r.Currency,
 			&grossStr, &netStr, &qtyStr, &priceStr,
-			&description, &valueOut,
+			&description, &merchant, &spendPrimary, &spendDetailed, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("TransactionsBetween scan: %w", err)
 		}
 		r.Description = nullStringToPtr(description)
+		r.MerchantName = nullStringToPtr(merchant)
+		r.SpendPrimary = nullStringToPtr(spendPrimary)
+		r.SpendDetailed = nullStringToPtr(spendDetailed)
 		r.AccountKind = nullStringToPtr(acctKind)
 		r.DisplayName = nullStringToPtr(displayName)
 		r.RelationshipID = nullStringToPtr(relID)

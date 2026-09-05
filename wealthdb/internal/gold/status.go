@@ -36,6 +36,47 @@ type SourceStatus struct {
 	// MissingVehicleCount is positions with a NULL vehicle — an
 	// adapter that emitted an exposure but no wrapper. Should be 0.
 	MissingVehicleCount int
+	// UncategorizedSpendCount is spending lines this source
+	// contributes that no tier could place — the model tier's
+	// backlog, and the number that says how much of a spending report
+	// is still "uncategorised" rather than wrong.
+	UncategorizedSpendCount int
+	// ExcludedUnmappedCount is transactions on this source's IN-SCOPE
+	// spending accounts carrying either CATCH-ALL kind — `other` or
+	// `journal` — and which therefore never reach the spending base at
+	// all.
+	//
+	// The exclusion is deliberate — a source may demote an internal
+	// conduit leg to `other`, `journal` is a bookkeeping entry, and
+	// neither kind carries a reliable sign, so admitting them would
+	// import noise nothing can orient — but it is the one exclusion
+	// that can hide real money. An adapter that starts bucketing a
+	// whole category of card rows under a catch-all would otherwise
+	// shrink a spending report silently. Counting it makes that loud.
+	ExcludedUnmappedCount int
+	// PerKindActivity is the per-account-kind freshness breakdown,
+	// populated only for sources holding more than one account kind
+	// (see AccountKindActivity). Empty otherwise, and empty when the
+	// caller did not ask for verbose status.
+	PerKindActivity []AccountKindActivity
+}
+
+// AccountKindActivity is one account kind's freshness within a source.
+//
+// A source's single latest-snapshot line is an aggregate, and an
+// aggregate hides the case that matters: a login carrying both deposit
+// accounts and cards, whose card population quietly stops updating
+// while the deposit population keeps refreshing every night. The
+// source looks perfectly current, and the spending report silently
+// stops at the last card row. Splitting the extrema by account kind is
+// what makes that visible.
+//
+// Timestamps are -1 when the kind has no rows of that grain.
+type AccountKindActivity struct {
+	AccountKind         string
+	Accounts            int
+	LatestSnapshotAt    int64
+	LatestTransactionAt int64
 }
 
 // StatusForSource queries one silver_sources row + aggregates
@@ -125,9 +166,95 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 		).Scan(&s.MissingVehicleCount); err != nil {
 			return nil, err
 		}
+		if err := spendDrift(ctx, db, s); err != nil {
+			return nil, err
+		}
+		if err := perKindActivity(ctx, db, s); err != nil {
+			return nil, err
+		}
 	}
 
 	return s, nil
+}
+
+// spendDrift fills the two spending counters. Both read the layered
+// spend macros rather than restating their predicates, so a change to
+// what counts as a spending account or a spending kind moves the
+// status numbers with it.
+//
+// The second counter watches the two CATCH-ALL kinds — `other` and
+// `journal` — on in-scope accounts. Those are where an adapter files a
+// row it could not classify, so money landing there is money that
+// silently left the spending base. The deliberate exclusions (buy,
+// sell, fx, dividend, card_payment, positive interest) are not
+// counted: they occur in bulk on every cash and card account, and a
+// number that is permanently large says nothing.
+func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM spending_lines_base(?, ?)
+         WHERE silver_source_id = ? AND spend_detailed IS NULL`,
+		int64(0), MaxEpoch, s.SilverSourceID,
+	).Scan(&s.UncategorizedSpendCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) uncategorised spend: %w", s.SilverSourceID, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*)
+          FROM transactions t
+          JOIN spend_scoped_accounts() sa
+                 ON sa.silver_source_id    = t.silver_source_id
+                AND sa.account_external_id = t.account_external_id
+         WHERE t.silver_source_id = ? AND t.kind IN ('other', 'journal')`,
+		s.SilverSourceID,
+	).Scan(&s.ExcludedUnmappedCount); err != nil {
+		return fmt.Errorf("StatusForSource(%s) excluded-unmapped spend: %w", s.SilverSourceID, err)
+	}
+	return nil
+}
+
+// perKindActivity fills PerKindActivity for a source holding more than
+// one account kind. A single-kind source's breakdown would just repeat
+// the numbers already printed above it, so it is left empty.
+func perKindActivity(ctx context.Context, db *sql.DB, s *SourceStatus) error {
+	rows, err := db.QueryContext(ctx, `
+        WITH activity AS (
+            SELECT account_external_id, snapshot_at, NULL::BIGINT AS occurred_at
+              FROM positions      WHERE silver_source_id = ?
+            UNION ALL
+            SELECT account_external_id, snapshot_at, NULL::BIGINT
+              FROM cash_balances  WHERE silver_source_id = ?
+            UNION ALL
+            SELECT account_external_id, NULL::BIGINT, occurred_at
+              FROM transactions   WHERE silver_source_id = ?)
+        SELECT a.account_kind,
+               COUNT(DISTINCT a.account_external_id),
+               COALESCE(MAX(x.snapshot_at), -1),
+               COALESCE(MAX(x.occurred_at), -1)
+          FROM accounts a
+          LEFT JOIN activity x ON x.account_external_id = a.account_external_id
+         WHERE a.silver_source_id = ?
+         GROUP BY a.account_kind
+         ORDER BY a.account_kind`,
+		s.SilverSourceID, s.SilverSourceID, s.SilverSourceID, s.SilverSourceID)
+	if err != nil {
+		return fmt.Errorf("StatusForSource(%s) per-kind activity: %w", s.SilverSourceID, err)
+	}
+	defer rows.Close()
+	var out []AccountKindActivity
+	for rows.Next() {
+		var a AccountKindActivity
+		if err := rows.Scan(&a.AccountKind, &a.Accounts,
+			&a.LatestSnapshotAt, &a.LatestTransactionAt); err != nil {
+			return fmt.Errorf("StatusForSource(%s) scan per-kind activity: %w", s.SilverSourceID, err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(out) > 1 {
+		s.PerKindActivity = out
+	}
+	return nil
 }
 
 // LoadAuditRow is one row from gold's load_audit history.

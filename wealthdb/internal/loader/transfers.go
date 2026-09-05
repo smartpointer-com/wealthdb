@@ -231,7 +231,8 @@ func (e TransferEntry) payload() json.RawMessage {
 // applyTransferLedger replaces the source's ledger transfers in gold: it deletes
 // any previously-injected ledger rows for the source (so edits are picked up on
 // re-load) and inserts the current set, resolving each entry's account by
-// account_external_id or nickname. Runs inside the load transaction.
+// account_external_id or nickname (gold.NewAccountResolver, the one resolution
+// every account-keyed ledger shares). Runs inside the load transaction.
 func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entries []TransferEntry) (int, error) {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM transactions WHERE silver_source_id = ? AND transaction_external_id LIKE ?`,
@@ -241,7 +242,7 @@ func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entri
 	if len(entries) == 0 {
 		return 0, nil
 	}
-	resolve, err := buildAccountResolver(ctx, tx, sourceID)
+	resolve, err := gold.NewAccountResolver(ctx, tx, sourceID)
 	if err != nil {
 		return 0, fmt.Errorf("apply equity_transfers: %w", err)
 	}
@@ -259,49 +260,4 @@ func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entri
 		return 0, fmt.Errorf("apply equity_transfers: insert: %w", err)
 	}
 	return len(batch), nil
-}
-
-// buildAccountResolver returns a closure mapping a ledger `account` field — a
-// gold account_external_id or an account nickname — to the account_external_id,
-// for the given source. Unknown or ambiguous (nickname matching >1 account)
-// inputs error with a clear message.
-func buildAccountResolver(ctx context.Context, tx *sql.Tx, sourceID string) (func(string) (string, error), error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT DISTINCT account_external_id, COALESCE(nickname, '') FROM accounts WHERE silver_source_id = ?`,
-		sourceID)
-	if err != nil {
-		return nil, fmt.Errorf("scan accounts: %w", err)
-	}
-	defer rows.Close()
-	byID := map[string]bool{}
-	byNick := map[string]string{}
-	nickDup := map[string]bool{}
-	for rows.Next() {
-		var id, nick string
-		if err := rows.Scan(&id, &nick); err != nil {
-			return nil, err
-		}
-		byID[id] = true
-		if nick != "" {
-			if _, seen := byNick[nick]; seen {
-				nickDup[nick] = true
-			}
-			byNick[nick] = id
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return func(account string) (string, error) {
-		if byID[account] {
-			return account, nil
-		}
-		if nickDup[account] {
-			return "", fmt.Errorf("account %q (source %s) is an ambiguous nickname; use the account_external_id", account, sourceID)
-		}
-		if id, ok := byNick[account]; ok {
-			return id, nil
-		}
-		return "", fmt.Errorf("account %q not found for source %s (use its account_external_id or nickname)", account, sourceID)
-	}, nil
 }

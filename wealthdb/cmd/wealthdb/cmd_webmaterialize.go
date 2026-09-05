@@ -34,11 +34,12 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 
 	// Materialization mutates the live gold file: gate for write, then
 	// open RW (mirrors cmd_load).
-	db, err := openGoldForWrite(g, cfg, "web-materialize",
+	db, lock, err := openGoldForWrite(g, cfg, "web-materialize",
 		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
 	if err != nil {
 		return err
 	}
+	defer lock.unlock()
 	defer db.Close()
 
 	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)

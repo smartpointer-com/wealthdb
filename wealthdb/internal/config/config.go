@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 
@@ -117,6 +118,13 @@ type Config struct {
 	// returns are byte-identical to the per-source heuristics alone. See
 	// docs/DESIGN.md §5.8.
 	ReturnsTransferMatching *ReturnsTransferMatching `json:"returns_transfer_matching,omitempty"`
+	// Spending groups the per-deployment knobs of the spending
+	// feature: which accounts spending counts, and how hard the
+	// internal-transfer matcher tries to pair the two legs of an
+	// own-account move. Absent block ⇒ every cash and card account
+	// counts and the matcher runs on its defaults. See
+	// internal/spending.
+	Spending *SpendingConfig `json:"spending,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
 	// user-authored override list. Both fields inside are optional;
@@ -190,16 +198,24 @@ type SymbolOverride struct {
 }
 
 // ModelConfig is the `symbol_resolution.model` block of
-// wealthdb.cfg. The only API shape supported today is the
-// OpenAI-compatible Chat Completions endpoint
-// (`api: "openai-completions"`); ThinkingFormat lets the
-// resolve-symbols pipeline strip R1-style `<think>` blocks from
-// the response before parsing.
+// wealthdb.cfg, and the identically shaped
+// `spending.categorization.model` block. The only API shape
+// supported today is the OpenAI-compatible Chat Completions
+// endpoint (`api: "openai-completions"`). Stripping R1-style
+// `<think>` blocks off a response is unconditional hygiene in
+// both pipelines, not something a field turns on.
 type ModelConfig struct {
-	BaseURL        string `json:"baseUrl"`
-	API            string `json:"api"`
-	APIKey         string `json:"apiKey,omitempty"`
-	Name           string `json:"name"`
+	BaseURL string `json:"baseUrl"`
+	API     string `json:"api"`
+	APIKey  string `json:"apiKey,omitempty"`
+	Name    string `json:"name"`
+	// ThinkingFormat is accepted and ignored: nothing reads it,
+	// and `<think>` stripping runs for every model regardless.
+	// It stays declared because Load decodes with
+	// DisallowUnknownFields, so dropping the field turns any
+	// config that still sets `thinkingFormat` into a hard parse
+	// failure on every subcommand — remove it only together with
+	// the key in the deployment's config file.
 	ThinkingFormat string `json:"thinkingFormat,omitempty"`
 }
 
@@ -468,6 +484,255 @@ func (m *ReturnsTransferMatching) Tolerance() float64 {
 	return *m.TolerancePct
 }
 
+// SpendingConfig is the `spending` block of wealthdb.cfg.
+//
+// The model endpoint that prices a category per merchant signature
+// lives here too, beside the knobs that decide which rows ever reach
+// it, the way `symbol_resolution` groups its own model with its own
+// overrides.
+type SpendingConfig struct {
+	// Accounts overrides the account-kind default of the spending
+	// scope. Absent ⇒ cash and card accounts count, nothing else does.
+	Accounts *SpendingAccounts `json:"accounts,omitempty"`
+	// InternalTransferMatching tunes the matcher that pairs the two
+	// legs of an own-account move so neither counts as spending.
+	// Absent ⇒ the defaults below.
+	InternalTransferMatching *SpendingTransferMatching `json:"internal_transfer_matching,omitempty"`
+	// Rules are the deployment's own entries in the rule tier: a
+	// case-insensitive pattern over a row's narrative (counterparty
+	// and description) and the category a match places. Nothing
+	// here can be an engine constant, because what identifies these
+	// rows is personal text: the account holder's own name on a wire
+	// to their account at an untracked bank, an own account number,
+	// the legal entity of an exchange the holder also tracks, a fund
+	// the holder subscribes to, a lawyer or a tax office paid by
+	// wire. The category may be any valid spend_detailed value,
+	// vendored or delta (canonical.ValidSpendDetailed): a rule is the
+	// holder's own local input and the model never sees it, so the
+	// model tier's vendored-only restriction is not this one. Absent
+	// ⇒ nothing is marked. Compiled by Validate; read through
+	// Config.SpendRules.
+	Rules []SpendingRule `json:"rules,omitempty"`
+	// Pins is an optional path to the CSV ledger of per-transaction
+	// category pins — the top of the precedence lattice, for the row
+	// nothing else can classify. Expanded like EquityTransfers; a
+	// missing file is a no-op. See docs/DESIGN.md §13.11 and
+	// internal/spending/pins.go.
+	Pins string `json:"pins,omitempty"`
+	// Categorization configures the model tier driven by `wealthdb
+	// categorize`. Absent ⇒ the command refuses, the way
+	// resolve-symbols refuses without `symbol_resolution.model`; the
+	// deterministic tiers are unaffected and keep running on load.
+	Categorization *SpendingCategorization `json:"categorization,omitempty"`
+
+	// rules is Rules compiled, filled by Validate so a bad rule fails
+	// the load and the pass never compiles anything itself.
+	rules []CompiledSpendRule
+}
+
+// SpendingRule is one entry of `spending.rules` as written in the
+// file: `match`, a regular expression, and `category`, the
+// spend_detailed value a match places.
+type SpendingRule struct {
+	Match    string `json:"match"`
+	Category string `json:"category"`
+}
+
+// CompiledSpendRule is a SpendingRule after Validate: the pattern
+// compiled case-insensitively, the category checked. What the
+// enrichment pass consumes.
+type CompiledSpendRule struct {
+	Match    *regexp.Regexp
+	Category string
+}
+
+// SpendingAccounts lists the account-scope overrides, keyed by
+// silver_source_id, in the same shape as returns_exclude. `include`
+// pulls an account of a non-spending kind into the population (a
+// wallet whose outflows really are spending); `exclude` fences a cash
+// or card account out (a card belonging to someone else on a shared
+// login). An account may not appear in both.
+type SpendingAccounts struct {
+	Include map[string][]string `json:"include,omitempty"` // source_id -> [account_external_id...]
+	Exclude map[string][]string `json:"exclude,omitempty"` // source_id -> [account_external_id...]
+}
+
+// SpendingTransferMatching are the internal-transfer matcher's knobs.
+// Pointer fields distinguish "not set" (use the default) from an
+// explicit value.
+type SpendingTransferMatching struct {
+	// WindowDays is the max day distance between the two legs of a
+	// pair. Defaults to the same 5 days the returns matcher uses: the
+	// two share one matching core, and a spending pass that banded
+	// differently would call the same movement internal in one report
+	// and external in the other.
+	WindowDays *int `json:"window_days,omitempty"`
+	// TolerancePct is the relative amount tolerance in percent of the
+	// larger leg (an absolute floor of 0.01 always applies, so 0 means
+	// exact-to-a-cent). Covers a transfer fee deducted in transit.
+	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
+}
+
+// Defaults for the spending matcher's knobs, deliberately equal to
+// DefaultTransferMatchWindowDays / DefaultTransferMatchTolerancePct.
+const (
+	DefaultSpendMatchWindowDays   = DefaultTransferMatchWindowDays
+	DefaultSpendMatchTolerancePct = DefaultTransferMatchTolerancePct
+)
+
+// SpendingCategorization is the `spending.categorization` block: the
+// model tier's endpoint and the one knob that decides how much of a
+// transaction leaves the machine.
+type SpendingCategorization struct {
+	// Model is the LLM endpoint asked for a category per merchant
+	// signature. Same shape and same API support as
+	// `symbol_resolution.model`; `wealthdb categorize` refuses without
+	// it.
+	Model *ModelConfig `json:"model,omitempty"`
+	// Context selects how much of a transaction reaches the prompt:
+	// SpendContextMerchant, SpendContextDescriptor or
+	// SpendContextTransaction. Empty ⇒ the default.
+	Context string `json:"context,omitempty"`
+	// DescriptorSamples caps the raw narratives sent per merchant at
+	// the two context levels that send any. It is deliberately
+	// range-checked even at the default level, where nothing reads it:
+	// a mis-typed value that only fails once the context is widened
+	// fails at the least convenient moment.
+	DescriptorSamples *int `json:"descriptor_samples,omitempty"`
+}
+
+// The context levels, in increasing order of what leaves the machine.
+//
+//   - merchant:    the merchant signature alone — a folded, truncated,
+//     reference-number-free string. No amounts, no dates, no accounts.
+//   - descriptor:  plus the raw narratives the signature was folded
+//     from, which carry the spelling, the branch, the city.
+//   - transaction: plus date, amount, account kind, and the signatures
+//     of what was bought around it.
+//
+// The DEFAULT IS THE MOST PRIVATE LEVEL, and that is a decision rather
+// than a starting point. Every level above it improves the model's
+// accuracy on ambiguous merchants and widens what a third-party
+// endpoint learns about a household in exchange. A deployment that
+// wants the trade is free to make it explicitly; nothing makes it
+// silently. The transfer fence (spending.TransferShaped) is
+// independent of this knob and gates CANDIDACY, so a wire or P2P
+// narrative bearing a person's name is never sent at any level.
+const (
+	SpendContextMerchant    = "merchant"
+	SpendContextDescriptor  = "descriptor"
+	SpendContextTransaction = "transaction"
+)
+
+// DefaultSpendContext is the context level an absent or empty
+// `spending.categorization.context` resolves to.
+const DefaultSpendContext = SpendContextMerchant
+
+// DefaultSpendDescriptorSamples is the per-merchant narrative cap when
+// `descriptor_samples` is omitted. Three is enough to show a merchant's
+// spelling variants without turning one prompt into a transaction log.
+const DefaultSpendDescriptorSamples = 3
+
+// ValidSpendContext reports whether s names a context level. The empty
+// string is accepted: an omitted field means the default.
+func ValidSpendContext(s string) bool {
+	switch s {
+	case "", SpendContextMerchant, SpendContextDescriptor, SpendContextTransaction:
+		return true
+	}
+	return false
+}
+
+// SpendCategorization returns the categorization block, which may be
+// nil — its accessors handle that.
+func (c *Config) SpendCategorization() *SpendingCategorization {
+	if c.Spending == nil {
+		return nil
+	}
+	return c.Spending.Categorization
+}
+
+// ContextLevel returns the effective context level. Only call after
+// Validate has vetted the name (Load does); a nil receiver or an empty
+// field reports the default.
+func (s *SpendingCategorization) ContextLevel() string {
+	if s == nil || s.Context == "" {
+		return DefaultSpendContext
+	}
+	return s.Context
+}
+
+// Samples returns the effective per-merchant narrative cap
+// (`descriptor_samples`).
+func (s *SpendingCategorization) Samples() int {
+	if s == nil || s.DescriptorSamples == nil {
+		return DefaultSpendDescriptorSamples
+	}
+	return *s.DescriptorSamples
+}
+
+// CategorizationModel returns the configured model endpoint, or nil
+// when no categorization block (or no model inside one) is set.
+func (s *SpendingCategorization) CategorizationModel() *ModelConfig {
+	if s == nil {
+		return nil
+	}
+	return s.Model
+}
+
+// SpendAccountScope returns the include and exclude maps the
+// enrichment pass stamps into gold. A nil block scopes nothing beyond
+// the account-kind default.
+func (c *Config) SpendAccountScope() (include, exclude map[string][]string) {
+	if c.Spending == nil || c.Spending.Accounts == nil {
+		return nil, nil
+	}
+	return c.Spending.Accounts.Include, c.Spending.Accounts.Exclude
+}
+
+// SpendRules returns the compiled `spending.rules`, or nil when none
+// are set. Only call after Validate has compiled them (Load does).
+func (c *Config) SpendRules() []CompiledSpendRule {
+	if c.Spending == nil {
+		return nil
+	}
+	return c.Spending.rules
+}
+
+// SpendPins returns the expanded `spending.pins` path, or "" when the
+// ledger is not configured.
+func (c *Config) SpendPins() string {
+	if c.Spending == nil {
+		return ""
+	}
+	return c.Spending.Pins
+}
+
+// SpendMatching returns the spending matcher block, which may be nil —
+// its Window and Tolerance accessors handle that.
+func (c *Config) SpendMatching() *SpendingTransferMatching {
+	if c.Spending == nil {
+		return nil
+	}
+	return c.Spending.InternalTransferMatching
+}
+
+// Window returns the effective day window.
+func (m *SpendingTransferMatching) Window() int {
+	if m == nil || m.WindowDays == nil {
+		return DefaultSpendMatchWindowDays
+	}
+	return *m.WindowDays
+}
+
+// Tolerance returns the effective relative tolerance in percent.
+func (m *SpendingTransferMatching) Tolerance() float64 {
+	if m == nil || m.TolerancePct == nil {
+		return DefaultSpendMatchTolerancePct
+	}
+	return *m.TolerancePct
+}
+
 // Regime returns the parsed FlowRegime and whether one is set. Only call
 // after Validate has vetted the name (Load does); an unvetted name reports
 // unset. A nil receiver reports unset.
@@ -531,6 +796,13 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config: equity_transfers: %w", err)
 		}
 		c.EquityTransfers = expanded
+	}
+	if c.Spending != nil && c.Spending.Pins != "" {
+		expanded, err := expandPath(c.Spending.Pins, configDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: spending.pins: %w", err)
+		}
+		c.Spending.Pins = expanded
 	}
 	for i := range c.SilverSources {
 		if c.SilverSources[i].Path != "" {

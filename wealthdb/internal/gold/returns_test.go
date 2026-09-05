@@ -188,3 +188,22 @@ func TestRunReturnsGlobalExcludesLiabilities(t *testing.T) {
 		t.Errorf("global should not be nonpositive once the mortgage is excluded: %v", g.Quality)
 	}
 }
+
+// TestEpochDayFloors pins the floor. Truncating instead would band a
+// pre-1970 timestamp with the day after the one it belongs to, and the
+// helper is what every day-banded window in the tree computes from.
+func TestEpochDayFloors(t *testing.T) {
+	cases := map[int64]int64{
+		0:      0,
+		86399:  0,
+		86400:  1,
+		-1:     -1,
+		-86400: -1,
+		-86401: -2,
+	}
+	for sec, want := range cases {
+		if got := EpochDay(sec); got != want {
+			t.Errorf("EpochDay(%d) = %d, want %d", sec, got, want)
+		}
+	}
+}

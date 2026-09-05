@@ -29,17 +29,27 @@ func (l *Loader) Reset(ctx context.Context, sourceID string) error {
 	// references instrument_external_id / transaction.description
 	// in the source; clear it alongside so the next load+resolve
 	// cycle starts from a clean slate.
+	//
+	// spend_txn_enrichment goes the same way: it is derived from the
+	// transactions being deleted and is recomputed by the next
+	// enrichment pass. Two spending tables deliberately survive a
+	// reset. spend_merchant_categories is global knowledge keyed by
+	// merchant signature rather than by source — the same merchant
+	// reappears under every card, and its verdicts were paid for.
+	// spend_account_scope is configuration stamped into gold (the
+	// fx_priority precedent), not source data.
 	for _, stmt := range []string{
-		`DELETE FROM symbol_resolutions WHERE silver_source_id = ?`,
-		`DELETE FROM transactions   WHERE silver_source_id = ?`,
-		`DELETE FROM fx_rates       WHERE silver_source_id = ?`,
-		`DELETE FROM cash_balances  WHERE silver_source_id = ?`,
-		`DELETE FROM positions      WHERE silver_source_id = ?`,
-		`DELETE FROM instruments    WHERE silver_source_id = ?`,
-		`DELETE FROM accounts       WHERE silver_source_id = ?`,
-		`DELETE FROM portfolios     WHERE silver_source_id = ?`,
-		`DELETE FROM load_audit     WHERE silver_source_id = ?`,
-		`DELETE FROM silver_sources WHERE silver_source_id = ?`,
+		`DELETE FROM symbol_resolutions   WHERE silver_source_id = ?`,
+		`DELETE FROM spend_txn_enrichment WHERE silver_source_id = ?`,
+		`DELETE FROM transactions         WHERE silver_source_id = ?`,
+		`DELETE FROM fx_rates             WHERE silver_source_id = ?`,
+		`DELETE FROM cash_balances        WHERE silver_source_id = ?`,
+		`DELETE FROM positions            WHERE silver_source_id = ?`,
+		`DELETE FROM instruments          WHERE silver_source_id = ?`,
+		`DELETE FROM accounts             WHERE silver_source_id = ?`,
+		`DELETE FROM portfolios           WHERE silver_source_id = ?`,
+		`DELETE FROM load_audit           WHERE silver_source_id = ?`,
+		`DELETE FROM silver_sources       WHERE silver_source_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, sourceID); err != nil {
 			return fmt.Errorf("Reset(%s): %w", sourceID, err)

@@ -349,7 +349,7 @@ func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, erro
 		        CAST(value_usd AS VARCHAR), CAST(value_chf AS VARCHAR), CAST(value_eur AS VARCHAR),
 		        CAST(net_amount AS VARCHAR)
 		   FROM report_transactions_multi(?, ?)
-		  ORDER BY occurred_at, silver_source_id, transaction_external_id`, int64(0), maxEpoch)
+		  ORDER BY occurred_at, silver_source_id, transaction_external_id`, int64(0), MaxEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("MaterializeReturns transactions: %w", err)
 	}

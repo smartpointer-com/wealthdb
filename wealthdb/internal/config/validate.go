@@ -254,16 +254,84 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// returns_transfer_matching: bound the knobs whether or not the block is
-	// enabled — a mis-typed disabled block should fail loudly, not lie in
-	// wait. The window cap keeps a fat-fingered value from pairing unrelated
-	// month-apart flows; the tolerance cap likewise.
 	if m := c.ReturnsTransferMatching; m != nil {
-		if m.WindowDays != nil && (*m.WindowDays < 0 || *m.WindowDays > 30) {
-			return fmt.Errorf("config: returns_transfer_matching.window_days %d out of range [0, 30]", *m.WindowDays)
+		if err := validateMatchKnobs("returns_transfer_matching", m.WindowDays, m.TolerancePct); err != nil {
+			return err
 		}
-		if m.TolerancePct != nil && (*m.TolerancePct < 0 || *m.TolerancePct > 5) {
-			return fmt.Errorf("config: returns_transfer_matching.tolerance_pct %g out of range [0, 5]", *m.TolerancePct)
+	}
+
+	// spending: the account-scope overrides get the same treatment as
+	// returns_exclude — declared source, non-empty ids — plus the one
+	// check that shape cannot express: an account listed on both sides
+	// has no defensible answer, and gold's spend_account_scope is
+	// keyed so it could hold only one of them. Reject it here rather
+	// than let a primary-key violation surface mid-load.
+	if sp := c.Spending; sp != nil {
+		if a := sp.Accounts; a != nil {
+			if err := validateIDListNested("spending.accounts", "include", a.Include, seenIDs); err != nil {
+				return err
+			}
+			if err := validateIDListNested("spending.accounts", "exclude", a.Exclude, seenIDs); err != nil {
+				return err
+			}
+			for sourceID, ids := range a.Include {
+				excluded := make(map[string]bool, len(a.Exclude[sourceID]))
+				for _, id := range a.Exclude[sourceID] {
+					excluded[id] = true
+				}
+				for _, id := range ids {
+					if excluded[id] {
+						return fmt.Errorf("config: spending.accounts[%q]: %q is listed in both include and exclude", sourceID, id)
+					}
+				}
+			}
+			// A duplicate WITHIN one list is the same class of problem
+			// as the overlap above: syncAccountScope inserts one row
+			// per listed id into a table keyed (source, account), so a
+			// repeat raises a primary-key violation mid-load, after
+			// every source has already been written. The shared
+			// id-list check cannot make it — returns_exclude and
+			// returns_hide fold their lists into sets, where a repeat
+			// is harmless.
+			for _, grain := range []struct {
+				name string
+				m    map[string][]string
+			}{{"include", a.Include}, {"exclude", a.Exclude}} {
+				for sourceID, ids := range grain.m {
+					seen := make(map[string]bool, len(ids))
+					for _, id := range ids {
+						if seen[id] {
+							return fmt.Errorf("config: spending.accounts.%s[%q]: %q is listed twice",
+								grain.name, sourceID, id)
+						}
+						seen[id] = true
+					}
+				}
+			}
+		}
+		if m := sp.InternalTransferMatching; m != nil {
+			if err := validateMatchKnobs("spending.internal_transfer_matching", m.WindowDays, m.TolerancePct); err != nil {
+				return err
+			}
+		}
+		rules, err := compileSpendRules(sp.Rules)
+		if err != nil {
+			return err
+		}
+		sp.rules = rules
+		// The context level decides how much of a transaction leaves the
+		// machine, so a typo must not fall back to a default — silently
+		// resolving "descriptors" to `merchant` would under-deliver, and
+		// resolving an unknown name to anything wider would over-share.
+		// The sample cap is bounded whether or not the level reads it.
+		if cz := sp.Categorization; cz != nil {
+			if !ValidSpendContext(cz.Context) {
+				return fmt.Errorf("config: spending.categorization.context %q is not one of %q, %q, %q",
+					cz.Context, SpendContextMerchant, SpendContextDescriptor, SpendContextTransaction)
+			}
+			if cz.DescriptorSamples != nil && (*cz.DescriptorSamples < 0 || *cz.DescriptorSamples > 20) {
+				return fmt.Errorf("config: spending.categorization.descriptor_samples %d out of range [0, 20]", *cz.DescriptorSamples)
+			}
 		}
 	}
 
@@ -297,9 +365,62 @@ func validateInceptionNested(grain string, m map[string]map[string]string, seenI
 	return nil
 }
 
-// validateIDListNested checks one grain map of an id-list block
-// (returns_exclude / returns_hide, portfolios or accounts): every source id
-// must be declared, every listed id non-empty.
+// compileSpendRules compiles spending.rules, naming the offending entry
+// by index and text on failure. The pattern is compiled
+// case-insensitively; one that matches the empty string — "", ".*",
+// "^" — is refused, since it would fire on every row and re-label the
+// whole spending population. The category may be any value the
+// taxonomy knows (canonical.ValidSpendDetailed), vendored or delta, in
+// its own case-sensitive spelling. A consumption category is allowed
+// on purpose: the transfer fence keeps person- and IBAN-shaped
+// narratives away from the model, and a household that pays a lawyer,
+// a contractor or a tax office by wire has every such row fenced —
+// a rule is the only instrument short of a per-transaction pin that
+// can place a recurring counterparty. The vendored-only restriction
+// belongs to the model tier, which guards what the model may say; a
+// rule is the holder's own local input, and the model never sees it.
+func compileSpendRules(rules []SpendingRule) ([]CompiledSpendRule, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	out := make([]CompiledSpendRule, 0, len(rules))
+	for i, r := range rules {
+		re, err := regexp.Compile("(?i)" + r.Match)
+		if err != nil {
+			return nil, fmt.Errorf("config: spending.rules[%d].match %q: %w", i, r.Match, err)
+		}
+		if re.MatchString("") {
+			return nil, fmt.Errorf("config: spending.rules[%d].match %q matches the empty string and would mark every row", i, r.Match)
+		}
+		if !canonical.ValidSpendDetailed(r.Category) {
+			return nil, fmt.Errorf("config: spending.rules[%d].category %q is not a spend_detailed value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value or one of the deltas, docs/SPENDING.md §2)",
+				i, r.Category)
+		}
+		out = append(out, CompiledSpendRule{Match: re, Category: r.Category})
+	}
+	return out, nil
+}
+
+// validateMatchKnobs bounds one transfer matcher's knobs. Both matchers
+// (returns_transfer_matching, spending.internal_transfer_matching) run on
+// the same core and are checked whether or not their block is enabled or
+// even reachable, so a mis-typed value fails at load rather than lying in
+// wait: the window cap keeps it from pairing unrelated month-apart flows,
+// the tolerance cap from pairing unrelated amounts.
+func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
+	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
+		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)
+	}
+	if tolerancePct != nil && (*tolerancePct < 0 || *tolerancePct > 5) {
+		return fmt.Errorf("config: %s.tolerance_pct %g out of range [0, 5]", block, *tolerancePct)
+	}
+	return nil
+}
+
+// validateIDListNested checks one grain map of an id-list block — the
+// returns_exclude / returns_hide grains, and spending.accounts' include /
+// exclude sides: every source id must be declared, every listed id
+// non-empty.
 func validateIDListNested(block, grain string, m map[string][]string, seenIDs map[string]bool) error {
 	for sourceID, ids := range m {
 		if !seenIDs[sourceID] {

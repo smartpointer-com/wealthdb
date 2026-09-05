@@ -120,6 +120,39 @@ func TestLoadReturnsExclude(t *testing.T) {
 	}
 }
 
+// TestValidateSpendingAccountScope pins the two rejections the
+// spending account scope needs that the shared id-list check cannot
+// make. Both would otherwise surface as a spend_account_scope
+// primary-key violation mid-load — after every source has been
+// written — with no message naming the offending entry.
+//
+// The narrowing is deliberate: a repeated id in returns_exclude is
+// harmless (those lists fold into sets) and must keep loading.
+func TestValidateSpendingAccountScope(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"bank","kind":"chase","path":"/tmp/b.db"}],`
+	for name, block := range map[string]string{
+		"duplicate in include": `"spending":{"accounts":{"include":{"bank":["ACCT0001","ACCT0001"]}}}}`,
+		"duplicate in exclude": `"spending":{"accounts":{"exclude":{"bank":["ACCT0002","ACCT0002"]}}}}`,
+		"both sides":           `"spending":{"accounts":{"include":{"bank":["ACCT0003"]},"exclude":{"bank":["ACCT0003"]}}}}`,
+	} {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+
+	// A unique list on both sides loads.
+	ok := `"spending":{"accounts":{"include":{"bank":["ACCT0001","ACCT0002"]},"exclude":{"bank":["ACCT0003"]}}}}`
+	if _, err := Load(writeConfig(t, base+ok)); err != nil {
+		t.Errorf("a unique account scope must load: %v", err)
+	}
+
+	// The same repeat in returns_exclude stays legal.
+	dup := `"returns_exclude":{"accounts":{"bank":["ACCT0001","ACCT0001"]}}}`
+	if _, err := Load(writeConfig(t, base+dup)); err != nil {
+		t.Errorf("returns_exclude folds its list into a set; a repeat must still load: %v", err)
+	}
+}
+
 func TestLoadInceptionOverridesRejects(t *testing.T) {
 	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"cointracking","kind":"cointracking","path":"/tmp/ct.db"}],`
 	cases := map[string]string{
@@ -517,7 +550,7 @@ func TestLoadReturnsPolicyOverridesRejects(t *testing.T) {
 	cases := map[string]string{
 		"unknown source": `"returns_policy_overrides":{"nope":{"flow_regime":"nav_only"}}}`,
 		"bad regime":     `"returns_policy_overrides":{"carta":{"flow_regime":"freeform"}}}`,
-		"bad grain mode":  `"returns_policy_overrides":{"carta":{"accounts_grain":"invisible"}}}`,
+		"bad grain mode": `"returns_policy_overrides":{"carta":{"accounts_grain":"invisible"}}}`,
 	}
 	for name, block := range cases {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {
@@ -603,5 +636,253 @@ func TestLoadReturnsTransferMatching(t *testing.T) {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {
 			t.Errorf("%s: Load should have failed", name)
 		}
+	}
+}
+
+func TestLoadSpending(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	c, err := Load(writeConfig(t, base+`"spending":{
+        "accounts":{"include":{"sq":["W-1"]},"exclude":{"sq":["C-9"]}},
+        "internal_transfer_matching":{"window_days":3,"tolerance_pct":1.5}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	include, exclude := c.SpendAccountScope()
+	if len(include["sq"]) != 1 || include["sq"][0] != "W-1" {
+		t.Errorf("include = %v", include)
+	}
+	if len(exclude["sq"]) != 1 || exclude["sq"][0] != "C-9" {
+		t.Errorf("exclude = %v", exclude)
+	}
+	if m := c.SpendMatching(); m.Window() != 3 || m.Tolerance() != 1.5 {
+		t.Errorf("knobs = (window %d, tol %g)", m.Window(), m.Tolerance())
+	}
+
+	// Omitted knobs take the defaults, which are deliberately the same
+	// as the returns matcher's — one matching core, one banding.
+	c2, err := Load(writeConfig(t, base+`"spending":{}}`))
+	if err != nil {
+		t.Fatalf("Load empty block: %v", err)
+	}
+	if m := c2.SpendMatching(); m.Window() != DefaultTransferMatchWindowDays ||
+		m.Tolerance() != DefaultTransferMatchTolerancePct {
+		t.Errorf("defaults = (window %d, tol %g)", m.Window(), m.Tolerance())
+	}
+
+	// An absent block is safe on every accessor.
+	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
+	if err != nil {
+		t.Fatalf("Load absent: %v", err)
+	}
+	if c3.Spending != nil {
+		t.Error("absent block must stay nil")
+	}
+	if include, exclude := c3.SpendAccountScope(); include != nil || exclude != nil {
+		t.Error("absent block must scope nothing")
+	}
+	if m := c3.SpendMatching(); m.Window() != DefaultSpendMatchWindowDays {
+		t.Errorf("absent block window = %d", m.Window())
+	}
+
+	cases := map[string]string{
+		"unknown source":     `"spending":{"accounts":{"include":{"nope":["A"]}}}}`,
+		"empty account id":   `"spending":{"accounts":{"exclude":{"sq":[""]}}}}`,
+		"both sides at once": `"spending":{"accounts":{"include":{"sq":["A"]},"exclude":{"sq":["A"]}}}}`,
+		"window too wide":    `"spending":{"internal_transfer_matching":{"window_days":31}}}`,
+		"window negative":    `"spending":{"internal_transfer_matching":{"window_days":-1}}}`,
+		"tolerance too big":  `"spending":{"internal_transfer_matching":{"tolerance_pct":6}}}`,
+		"tolerance negative": `"spending":{"internal_transfer_matching":{"tolerance_pct":-0.1}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}
+
+func TestLoadSpendingCategorization(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	c, err := Load(writeConfig(t, base+`"spending":{"categorization":{
+        "model":{"baseUrl":"http://127.0.0.1:1234/v1","api":"openai-completions","name":"a-model"},
+        "context":"descriptor",
+        "descriptor_samples":5}}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cz := c.SpendCategorization()
+	if cz == nil {
+		t.Fatal("categorization block must parse")
+	}
+	if m := cz.CategorizationModel(); m == nil || m.Name != "a-model" {
+		t.Errorf("model = %+v", m)
+	}
+	if cz.ContextLevel() != SpendContextDescriptor {
+		t.Errorf("context = %q", cz.ContextLevel())
+	}
+	if cz.Samples() != 5 {
+		t.Errorf("descriptor_samples = %d", cz.Samples())
+	}
+
+	// The default is the most private level, and an empty block must
+	// resolve to it rather than to anything wider.
+	c2, err := Load(writeConfig(t, base+`"spending":{"categorization":{}}}`))
+	if err != nil {
+		t.Fatalf("Load empty categorization: %v", err)
+	}
+	cz2 := c2.SpendCategorization()
+	if cz2.ContextLevel() != SpendContextMerchant {
+		t.Errorf("empty block context = %q, want %q", cz2.ContextLevel(), SpendContextMerchant)
+	}
+	if cz2.Samples() != DefaultSpendDescriptorSamples {
+		t.Errorf("empty block samples = %d", cz2.Samples())
+	}
+	if cz2.CategorizationModel() != nil {
+		t.Error("empty block must carry no model")
+	}
+
+	// Every accessor is nil-safe, and a config with no spending block
+	// at all must still report the private default.
+	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
+	if err != nil {
+		t.Fatalf("Load absent: %v", err)
+	}
+	if c3.SpendCategorization() != nil {
+		t.Error("absent block must stay nil")
+	}
+	if c3.SpendCategorization().ContextLevel() != SpendContextMerchant {
+		t.Error("nil receiver must report the default context")
+	}
+	if c3.SpendCategorization().CategorizationModel() != nil {
+		t.Error("nil receiver must report no model")
+	}
+
+	cases := map[string]string{
+		"unknown context":      `"spending":{"categorization":{"context":"everything"}}}`,
+		"near-miss context":    `"spending":{"categorization":{"context":"descriptors"}}}`,
+		"samples negative":     `"spending":{"categorization":{"descriptor_samples":-1}}}`,
+		"samples out of range": `"spending":{"categorization":{"descriptor_samples":21}}}`,
+	}
+	for name, block := range cases {
+		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+
+	// The sample cap is range-checked at the default context too, where
+	// nothing reads it — a bad value must not lie in wait for the day
+	// the context is widened.
+	if _, err := Load(writeConfig(t, base+`"spending":{"categorization":{
+        "context":"merchant","descriptor_samples":99}}}`)); err == nil {
+		t.Error("out-of-range samples must fail even at the merchant context")
+	}
+}
+
+// TestLoadSpendingRules pins the one deployment-specific input to the
+// rule tier: rules compile case-insensitively at load, an empty list is
+// the default and marks nothing, and a bad rule fails the load with a
+// message that names it by index and text. The category may be any
+// value the taxonomy knows — a delta or a vendored consumption
+// category, since a rule is the local route for the wires the fence
+// keeps from the model — but an unknown string, a known value in the
+// wrong case included, is refused. Every pattern here is invented.
+func TestLoadSpendingRules(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	c, err := Load(writeConfig(t, base+`"spending":{"rules":[
+		{"match":"SAMPLE HOLDER","category":"internal_transfer"},
+		{"match":"EXAMPLE VENTURES FUND","category":"investment"},
+		{"match":"CASH DESK","category":"cash_withdrawal"},
+		{"match":"EXAMPLE LAW OFFICE","category":"GENERAL_SERVICES_CONSULTING_AND_LEGAL"}]}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rules := c.SpendRules()
+	if len(rules) != 4 {
+		t.Fatalf("compiled %d rules, want 4", len(rules))
+	}
+	if !rules[0].Match.MatchString("wire to sample holder") || rules[0].Category != "internal_transfer" {
+		t.Errorf("rule 0 = %+v, want a case-insensitive internal_transfer rule", rules[0])
+	}
+	if !rules[1].Match.MatchString("Subscription Example Ventures Fund II") || rules[1].Category != "investment" {
+		t.Errorf("rule 1 = %+v, want a case-insensitive investment rule", rules[1])
+	}
+	// A vendored consumption category is accepted: a wire to a lawyer
+	// is fenced from the model, and a rule is its local route.
+	if !rules[3].Match.MatchString("SEPA transfer Example Law Office") || rules[3].Category != "GENERAL_SERVICES_CONSULTING_AND_LEGAL" {
+		t.Errorf("rule 3 = %+v, want a case-insensitive consumption-category rule", rules[3])
+	}
+	if rules[0].Match.MatchString("Corner Market") {
+		t.Error("a rule must not fire on an unrelated narrative")
+	}
+
+	// An empty list, and an absent block, compile to nothing.
+	c2, err := Load(writeConfig(t, base+`"spending":{"rules":[]}}`))
+	if err != nil {
+		t.Fatalf("Load empty list: %v", err)
+	}
+	if c2.SpendRules() != nil {
+		t.Error("an empty list must compile to nil")
+	}
+	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
+	if err != nil {
+		t.Fatalf("Load absent: %v", err)
+	}
+	if c3.SpendRules() != nil {
+		t.Error("an absent block must yield nil rules")
+	}
+
+	// A bad rule fails the load and the error names it, by index and
+	// text, so the user can find it in a list of several.
+	cases := map[string]struct{ block, want string }{
+		"unbalanced paren":  {`"spending":{"rules":[{"match":"SAMPLE (HOLDER","category":"internal_transfer"}]}}`, `rules[0].match "SAMPLE (HOLDER"`},
+		"second is bad":     {`"spending":{"rules":[{"match":"SAMPLE HOLDER","category":"internal_transfer"},{"match":"[","category":"investment"}]}}`, `rules[1].match "["`},
+		"empty pattern":     {`"spending":{"rules":[{"match":"","category":"internal_transfer"}]}}`, `matches the empty string`},
+		"match-all pattern": {`"spending":{"rules":[{"match":".*","category":"internal_transfer"}]}}`, `rules[0].match ".*" matches the empty string`},
+		"missing category":  {`"spending":{"rules":[{"match":"SAMPLE HOLDER"}]}}`, `rules[0].category ""`},
+		"unknown category":  {`"spending":{"rules":[{"match":"CORNER MARKET","category":"NOT_A_CATEGORY"}]}}`, `rules[0].category "NOT_A_CATEGORY" is not a spend_detailed value`},
+		"wrong case":        {`"spending":{"rules":[{"match":"SAMPLE HOLDER","category":"INVESTMENT"}]}}`, `rules[0].category "INVESTMENT" is not a spend_detailed value: case-sensitive`},
+	}
+	for name, tc := range cases {
+		_, err := Load(writeConfig(t, base+tc.block))
+		if err == nil {
+			t.Errorf("%s: Load should have failed", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not name the rule (want substring %q)", name, err, tc.want)
+		}
+	}
+}
+
+// TestLoadSpendingPins pins the ledger path's handling: expanded like
+// equity_transfers — a relative path resolves against the config file's
+// directory — and "" when absent, which the parser reads as "no pins".
+func TestLoadSpendingPins(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
+
+	path := writeConfig(t, base+`"spending":{"pins":"pins.csv"}}`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(path), "pins.csv"); c.SpendPins() != want {
+		t.Errorf("spending.pins = %q, want %q (resolved against the config directory)", c.SpendPins(), want)
+	}
+
+	c2, err := Load(writeConfig(t, base+`"spending":{}}`))
+	if err != nil {
+		t.Fatalf("Load without pins: %v", err)
+	}
+	if c2.SpendPins() != "" {
+		t.Errorf("absent pins = %q, want empty", c2.SpendPins())
+	}
+	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
+	if err != nil {
+		t.Fatalf("Load absent block: %v", err)
+	}
+	if c3.SpendPins() != "" {
+		t.Errorf("absent spending block pins = %q, want empty", c3.SpendPins())
 	}
 }

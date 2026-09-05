@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
@@ -95,11 +97,17 @@ or below the high watermark. Reload forces a full re-projection.`)
 	}
 
 	// Reload is RW (combines reset + load). Gate here; the fresh-swap
-	// and in-place paths each open the DB themselves.
-	if err := gateGoldForWrite(g, cfg, "reload",
-		"gold database %q does not exist. Run 'wealthdb init' first (requires write access)."); err != nil {
+	// and in-place paths each open the DB themselves. The write mutex
+	// is held for the whole command, including the fresh-file rebuild:
+	// nothing keeps the live file open between the merchant-store
+	// carry-across and the swap, so a verdict written in that window
+	// would land in the inode the rename unlinks.
+	lock, err := gateGoldForWrite(g, cfg, "reload",
+		"gold database %q does not exist. Run 'wealthdb init' first (requires write access).")
+	if err != nil {
 		return err
 	}
+	defer lock.unlock()
 
 	// Default '-a': build a fresh file from scratch and swap it in.
 	if *all && !*inPlace {
@@ -155,6 +163,32 @@ func reloadFreshAndSwap(
 		if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 			fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
 		}
+		// Carry the global merchant store over from the outgoing file.
+		// A hard error: those verdicts were paid for and have no config
+		// backup to re-stamp them from.
+		present, carried, err := carryMerchantCategories(ctx, db, cfg.GoldDB)
+		if err != nil {
+			_ = db.Close()
+			return err
+		}
+		switch {
+		case carried > 0:
+			fmt.Fprintf(stdout, "reload: carried %d merchant verdict(s) across the rebuild\n", carried)
+		case present:
+			fmt.Fprintln(stdout, "reload: outgoing gold's merchant store is empty; nothing to carry")
+		default:
+			fmt.Fprintln(stdout, "reload: outgoing gold has no merchant store; nothing to carry")
+		}
+		// Re-assert the deterministic spend verdicts, AFTER the merchant
+		// store has been carried across: the signature-version re-key
+		// reads that store, and a pass that ran before the carry would
+		// see it empty and carry nothing forward. Before the CHECKPOINT,
+		// so the swapped-in file is enriched rather than needing a
+		// follow-up load to become correct.
+		if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+			fmt.Fprintf(stderr, "reload: %s\n", err.Error())
+			firstErr = errors.Join(firstErr, err)
+		}
 		// Checkpoint then close so the temp file is complete and clean
 		// (no leftover WAL) before it is verified and swapped.
 		if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
@@ -183,8 +217,188 @@ func reloadFreshAndSwap(
 	return nil
 }
 
+// carryMerchantCategories copies the global merchant store out of the
+// outgoing gold file into the freshly built one, and reports whether
+// the outgoing file had the table at all and how many rows it carried.
+//
+// 'reload -a' builds an empty temp file and swaps it over the live
+// path, and the merchant store is the one thing in gold that a rebuild
+// cannot regenerate: FX priorities and the account/instrument
+// overrides are re-stamped from config, every fact table is re-derived
+// from silver, but an LLM verdict on a merchant signature exists only
+// in that table and was paid for. Without this carry-across, routine
+// compaction-by-reload would silently wipe it.
+//
+// The copied column list is derived — the intersection of the two
+// files' columns, read from duckdb_columns() — rather than named in
+// Go, so neither drift direction needs a Go-side edit: a column a
+// later migration adds is carried as soon as both files have it, and
+// a column only the outgoing file has is left behind instead of
+// raising a binder error.
+//
+// The intersection alone does not make the live-behind direction
+// SAFE, only silent: a column the rebuilt schema requires and the
+// outgoing file does not have yet is dropped from the SELECT and then
+// fails the target table's NOT NULL on INSERT. Every column of this
+// table is NOT NULL, so that is the normal shape of the next additive
+// migration met by a live file no load has touched since. Such
+// columns are therefore named in an error before the INSERT runs,
+// rather than surfacing as a constraint violation with nothing
+// actionable in it.
+//
+// ATTACH is per-connection, so the sequence runs on one pinned conn.
+// A live file written before migration 0041 has no such table, which
+// carries nothing rather than erroring.
+func carryMerchantCategories(ctx context.Context, db *sql.DB, livePath string) (bool, int, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, 0, fmt.Errorf("pin connection for merchant-store carry-across: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx,
+		"ATTACH "+sqlLiteral(livePath)+" AS live_gold (READ_ONLY)"); err != nil {
+		return false, 0, fmt.Errorf("attach live gold for merchant-store carry-across: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, "DETACH live_gold") }()
+
+	var tables int
+	if err := conn.QueryRowContext(ctx, `
+        SELECT count(*) FROM duckdb_tables()
+         WHERE database_name = 'live_gold'
+           AND table_name = 'spend_merchant_categories'`).Scan(&tables); err != nil {
+		return false, 0, fmt.Errorf("probe live gold for the merchant store: %w", err)
+	}
+	if tables == 0 {
+		return false, 0, nil
+	}
+
+	// An outgoing store with no rows carries nothing, so it also
+	// cannot lose anything — it takes the column check with it, and a
+	// routine rebuild is not blocked over rows that do not exist.
+	var live int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT count(*) FROM live_gold.spend_merchant_categories`).Scan(&live); err != nil {
+		return true, 0, fmt.Errorf("count the outgoing merchant store: %w", err)
+	}
+	if live == 0 {
+		return true, 0, nil
+	}
+
+	if err := checkMerchantColumnsSatisfiable(ctx, conn); err != nil {
+		return true, 0, err
+	}
+	columns, err := carriedMerchantColumns(ctx, conn)
+	if err != nil {
+		return true, 0, err
+	}
+
+	res, err := conn.ExecContext(ctx,
+		"INSERT INTO spend_merchant_categories ("+columns+") "+
+			"SELECT "+columns+" FROM live_gold.spend_merchant_categories")
+	if err != nil {
+		return true, 0, fmt.Errorf("carry the merchant store across the rebuild: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return true, 0, fmt.Errorf("count the carried merchant store: %w", err)
+	}
+	return true, int(n), nil
+}
+
+// checkMerchantColumnsSatisfiable refuses the carry-across when the
+// rebuilt merchant store requires a column the outgoing one cannot
+// supply: NOT NULL, no default, and absent from the outgoing table.
+// The intersection drops such a column from both sides of the INSERT,
+// which leaves the target table to reject the row — a constraint
+// error naming nothing actionable, in the middle of a rebuild. Named
+// here instead, together with the command that fixes it: a read-write
+// open migrates the live file, and 'reload -a' never opens it that
+// way.
+func checkMerchantColumnsSatisfiable(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `
+        SELECT f.column_name
+          FROM duckdb_columns() f
+         WHERE f.database_name  = current_database()
+           AND f.table_name     = 'spend_merchant_categories'
+           AND NOT f.is_nullable
+           AND f.column_default IS NULL
+           AND f.column_name NOT IN (
+                 SELECT l.column_name
+                   FROM duckdb_columns() l
+                  WHERE l.database_name = 'live_gold'
+                    AND l.table_name    = 'spend_merchant_categories')
+         ORDER BY f.column_index`)
+	if err != nil {
+		return fmt.Errorf("compare the merchant store's required columns: %w", err)
+	}
+	defer rows.Close()
+
+	var missing []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan the merchant store's required columns: %w", err)
+		}
+		missing = append(missing, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the outgoing gold's merchant store has no %s column(s), which the rebuilt schema "+
+		"requires (NOT NULL, no default); run 'wealthdb load <silver_source_id>' first — it opens the live "+
+		"file read-write and migrates it — then re-run 'reload -a'", strings.Join(missing, ", "))
+}
+
+// carriedMerchantColumns returns the quoted, comma-joined column list
+// the two spend_merchant_categories tables have in common — the
+// freshly built one (current_database(), which resolves to the rebuild
+// temp file even with live_gold attached) intersected with the
+// outgoing one, in the new table's own column order.
+func carriedMerchantColumns(ctx context.Context, conn *sql.Conn) (string, error) {
+	rows, err := conn.QueryContext(ctx, `
+        SELECT f.column_name
+          FROM duckdb_columns() f
+          JOIN duckdb_columns() l
+            ON l.database_name = 'live_gold'
+           AND l.table_name    = 'spend_merchant_categories'
+           AND l.column_name   = f.column_name
+         WHERE f.database_name = current_database()
+           AND f.table_name    = 'spend_merchant_categories'
+         ORDER BY f.column_index`)
+	if err != nil {
+		return "", fmt.Errorf("read the merchant store's columns: %w", err)
+	}
+	defer rows.Close()
+
+	var quoted []string
+	keyed := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return "", fmt.Errorf("scan the merchant store's columns: %w", err)
+		}
+		if name == "merchant_signature" {
+			keyed = true
+		}
+		quoted = append(quoted, `"`+strings.ReplaceAll(name, `"`, `""`)+`"`)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if !keyed {
+		return "", fmt.Errorf("the outgoing merchant store shares no key column with the rebuilt one; refusing to carry it")
+	}
+	return strings.Join(quoted, ", "), nil
+}
+
 // reloadInPlace is the original reset-then-load-on-the-live-DB path,
-// used for single-source reloads and for 'reload -a --in-place'.
+// used for single-source reloads and for 'reload -a --in-place'. The
+// merchant store needs no carry-across here: the live file is never
+// replaced, and Reset leaves the store alone.
 func reloadInPlace(
 	ctx context.Context,
 	cfg *config.Config,
@@ -239,6 +453,10 @@ func reloadInPlace(
 	}
 	if err := gold.SetFxPriorities(ctx, db, cfg.FxSourceOrder()); err != nil {
 		fmt.Fprintf(stderr, "reload: warning: could not stamp FX priorities: %s\n", err.Error())
+	}
+	if err := runSpendingPass(ctx, db, cfg, stdout); err != nil {
+		fmt.Fprintf(stderr, "reload: %s\n", err.Error())
+		firstErr = errors.Join(firstErr, err)
 	}
 	return firstErr
 }

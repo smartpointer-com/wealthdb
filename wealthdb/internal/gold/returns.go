@@ -792,7 +792,7 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 		        transaction_external_id, value_outccy, net_amount
 		   FROM report_transactions(?, ?, ?)
 		  ORDER BY occurred_at, silver_source_id, transaction_external_id`,
-		int64(0), maxEpoch, outCcy)
+		int64(0), MaxEpoch, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("attachFlows transactions: %w", err)
 	}
@@ -800,7 +800,7 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 	var out []flowTxnRow
 	for rows.Next() {
 		var (
-			r               flowTxnRow
+			r                flowTxnRow
 			valueOut, netAmt sql.NullString
 		)
 		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID, &valueOut, &netAmt); err != nil {
@@ -894,15 +894,19 @@ func appendCrossCandidate(cands []crossCandidate, src, acct, txID, ccy string, o
 // matchCrossTransfers links opposite-sign external legs across DIFFERENT
 // sources — same native currency, equal amount within the tolerance, within
 // the day window — writing symmetric crossLink entries onto both owning
-// accounts. Same-source pairs are out of scope: within a source the silver
-// classifier and the transferLike netter own internality. Matching is 1:1
-// greedy in deterministic order (candidates sorted by day, source, account,
-// id; each debit takes the eligible credit with the smallest amount gap, then
-// the nearest day, earliest on ties), so
-// repeated runs produce identical links, and the currency partitions derive
-// identical pairs whenever their attached-flow universes coincide (a leg
-// whose FX is unresolved in some partition is a candidate only where it
-// attached and can shift greedy pairings there).
+// accounts. The pairing itself is MatchTransferLegs (see transfermatch.go for
+// the ranking and determinism guarantees); this is the returns binding of it,
+// and it owns two side effects the engine depends on: the crossLink
+// bookkeeping, and the transferLikeIDs index that crossMatchedDrops reads.
+//
+// Same-source pairs are out of scope (CrossGroupOnly): within a source the
+// silver classifier and the transferLike netter own internality. Every
+// attached flow is eligible, so no kind filter is passed — appendCrossCandidate
+// has already shaped the pool. Candidates carry NATIVE amounts, so the currency
+// partitions derive identical pairs whenever their attached-flow universes
+// coincide (a leg whose FX is unresolved in some partition is a candidate only
+// where it attached and can shift greedy pairings there).
+//
 // The links are only POTENTIAL internality: entityFlows nets a pair strictly
 // when both legs are live members of the same entity window, so finer grains
 // keep counting each leg as the boundary flow it is for them.
@@ -910,93 +914,40 @@ func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map
 	if tm == nil || len(cands) < 2 {
 		return
 	}
-	sort.Slice(cands, func(i, j int) bool {
-		a, b := cands[i], cands[j]
-		if a.day != b.day {
-			return a.day < b.day
-		}
-		if a.src != b.src {
-			return a.src < b.src
-		}
-		if a.acct != b.acct {
-			return a.acct < b.acct
-		}
-		return a.txID < b.txID
-	})
-	var debits, credits []crossCandidate
-	for _, c := range cands {
-		if c.amt < 0 {
-			debits = append(debits, c)
-		} else {
-			credits = append(credits, c)
-		}
+	legs := make([]TransferLeg, len(cands))
+	for i, c := range cands {
+		legs[i] = TransferLeg{Group: c.src, Owner: c.acct, ID: c.txID, Day: c.day, Ccy: c.ccy, Amt: c.amt}
 	}
-	used := make([]bool, len(credits))
-	link := func(a, b crossCandidate) {
-		if acc := byKey[acctKey(a.src, a.acct)]; acc != nil {
-			if acc.crossLinks == nil {
-				acc.crossLinks = map[string]crossLink{}
-			}
-			acc.crossLinks[a.txID] = crossLink{src: b.src, acct: b.acct, txID: b.txID, day: b.day}
+	// link records `to` as the counterparty of `from`'s leg. Accounts the
+	// returns engine never loaded (a card, an excluded kind) are silently
+	// skipped — a leg can be a candidate without its account being present.
+	link := func(from, to TransferLeg) {
+		acc := byKey[acctKey(from.Group, from.Owner)]
+		if acc == nil {
+			return
 		}
+		if acc.crossLinks == nil {
+			acc.crossLinks = map[string]crossLink{}
+		}
+		acc.crossLinks[from.ID] = crossLink{src: to.Group, acct: to.Owner, txID: to.ID, day: to.Day}
 	}
-	// Per-currency credit index, preserving the global sorted order, so each
-	// debit scans only its currency's day band instead of every credit.
-	type ccyPart struct {
-		idx  []int   // indices into credits, day-ascending
-		days []int64 // credits[idx[k]].day, for the band search
+	for _, m := range MatchTransferLegs(legs, TransferMatchOpts{
+		WindowDays:     tm.WindowDays,
+		TolerancePct:   tm.TolerancePct,
+		CrossGroupOnly: true,
+	}) {
+		link(m.Debit, m.Credit)
+		link(m.Credit, m.Debit)
 	}
-	parts := map[string]*ccyPart{}
-	for i, c := range credits {
-		cp := parts[c.ccy]
-		if cp == nil {
-			cp = &ccyPart{}
-			parts[c.ccy] = cp
-		}
-		cp.idx = append(cp.idx, i)
-		cp.days = append(cp.days, c.day)
-	}
-	for _, d := range debits {
-		cp := parts[d.ccy]
-		if cp == nil {
-			continue
-		}
-		lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.day-int64(tm.WindowDays) })
-		best, bestGap, bestDist := -1, 0.0, int64(0)
-		for k := lo; k < len(cp.idx) && cp.days[k] <= d.day+int64(tm.WindowDays); k++ {
-			i := cp.idx[k]
-			c := credits[i]
-			if used[i] || c.src == d.src {
-				continue
-			}
-			dist := c.day - d.day
-			if dist < 0 {
-				dist = -dist
-			}
-			eps := 0.01
-			if r := tm.TolerancePct / 100 * math.Max(math.Abs(d.amt), c.amt); r > eps {
-				eps = r
-			}
-			gap := math.Abs(d.amt + c.amt)
-			if gap > eps {
-				continue
-			}
-			// Rank by (amount gap, day distance): an exact-amount partner
-			// beats a nearer-day coincidence within the tolerance, which is
-			// the main false-pair pressure at loose tolerances.
-			if best < 0 || gap < bestGap || (gap == bestGap && dist < bestDist) {
-				best, bestGap, bestDist = i, gap, dist
-			}
-		}
-		if best < 0 {
-			continue
-		}
-		used[best] = true
-		link(d, credits[best])
-		link(credits[best], d)
-	}
-	// Index the transferLike slices of linked accounts so per-window liveness
-	// checks (crossMatchedDrops) resolve a leg's slice without scanning.
+	indexLinkedTransferLike(byKey)
+}
+
+// indexLinkedTransferLike indexes the transferLike slice of every account that
+// carries cross-source links, so the per-window liveness check in
+// crossMatchedDrops can tell which slice a partner's leg lives in without
+// scanning it. Accounts without links stay unindexed (the map is sparse), and
+// an existing index is left alone.
+func indexLinkedTransferLike(byKey map[string]*accountData) {
 	for _, acc := range byKey {
 		if len(acc.crossLinks) == 0 || acc.transferLikeIDs != nil {
 			continue
@@ -1008,7 +959,26 @@ func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map
 	}
 }
 
-const maxEpoch = int64(1) << 62
+// MaxEpoch is the open upper bound for a query over the whole history.
+// Gold's windowed macros and helpers take a CLOSED [from, to] window,
+// so "everything" is expressed as a bound no timestamp can reach rather
+// than as a special case in each caller.
+const MaxEpoch = int64(1) << 62
+
+// SecondsPerDay converts gold's Unix-seconds timestamps to epoch days.
+// The day grain is a property of that timestamp convention, so it lives
+// beside MaxEpoch rather than being spelled out per caller.
+const SecondsPerDay = 86400
+
+// EpochDay floors a Unix-seconds timestamp to its epoch day. Floor
+// rather than truncate so a pre-1970 timestamp bands with the day it
+// belongs to instead of the one after.
+func EpochDay(sec int64) int64 {
+	if sec < 0 {
+		return -((-sec + SecondsPerDay - 1) / SecondsPerDay)
+	}
+	return sec / SecondsPerDay
+}
 
 // ---- grouping ------------------------------------------------------------
 

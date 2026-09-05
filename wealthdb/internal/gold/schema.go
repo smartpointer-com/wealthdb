@@ -22,6 +22,22 @@ var migrationsFS embed.FS
 // transaction; a failure mid-file rolls back. The last statement
 // of every migration must be an INSERT INTO schema_meta(...) so
 // that "what's the current version" stays accurate.
+//
+// REPLAY. Nothing at runtime replays a migration: the go-duckdb
+// driver executes each statement of a multi-statement Exec exactly
+// once (verified against duckdb/duckdb-go/v2 v2.10505.0), a version
+// at-or-below schema_meta is skipped above, and a file that fails
+// rolls back whole. Additive migrations are nevertheless written
+// replay-safe — IF NOT EXISTS on DDL, OR REPLACE on a seed or a macro
+// — so the TestMigrationNNNNDDLIsRerunnable tests can re-execute a
+// migration's pre-stamp body against an already-migrated database and
+// pin that it is safe to.
+//
+// The CHECK-widening rename-swap migrations (0007-0018, 0033-0037)
+// are exempt and deliberately carry no rerun test: replaying one
+// rebuilds its table from that migration's own column list, which
+// would drop columns later migrations added, so a rerun test there
+// would commit a truncated table.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	current, err := currentSchemaVersion(ctx, db)
 	if err != nil {

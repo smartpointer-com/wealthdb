@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/config"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/errs"
@@ -28,6 +29,12 @@ registered silver source with -a). The silver SQLite file itself
 is untouched. A follow-up 'wealthdb load <id>' starts from an
 empty watermark.
 
+A single-source reset clears only that source's spend enrichment.
+The matcher writes its internal_transfer verdict onto BOTH legs of
+a cross-source pair, so the surviving leg on another source keeps a
+verdict whose partner is gone and stays out of every spending
+report until the next load re-asserts the pass.
+
 Use case: a silver was rebuilt from bronze (re-parse, new
 migration, data correction) and you want gold to re-sync from
 scratch for that source.`)
@@ -45,18 +52,22 @@ scratch for that source.`)
 	}
 
 	// Reset mutates the live gold file: gate for write, then open RW.
-	db, err := openGoldForWrite(g, cfg, "reset",
+	db, lock, err := openGoldForWrite(g, cfg, "reset",
 		"gold database %q does not exist. Nothing to reset.")
 	if err != nil {
 		return err
 	}
+	defer lock.unlock()
 	defer db.Close()
 
 	ld := loader.New(db)
 
 	// Build the target list. Order: explicit id wins; then -a;
 	// then complain.
-	var ids []string
+	// registered is what gold knows about; it decides whether the
+	// cross-source caveat below applies. Only the single-id path needs
+	// it — '-a' resets exactly the registered set and prints no caveat.
+	var ids, registered []string
 	switch {
 	case *all && fs.NArg() > 0:
 		fs.Usage()
@@ -72,6 +83,10 @@ scratch for that source.`)
 		}
 	case fs.NArg() == 1:
 		ids = []string{fs.Arg(0)}
+		registered, err = ld.ListSourceIDs(ctx)
+		if err != nil {
+			return err
+		}
 	default:
 		fs.Usage()
 		return errs.Newf(2, "reset: expected one silver_source_id or -a")
@@ -87,6 +102,20 @@ scratch for that source.`)
 			continue
 		}
 		fmt.Fprintf(stdout, "reset: %s: cleared\n", id)
+	}
+	// Reset purges spend_txn_enrichment for the named source only, but
+	// a matcher verdict is written onto both legs of a cross-source
+	// pair. After a partial reset the surviving leg still reads
+	// internal_transfer and stays out of every spending report, so the
+	// caveat is printed where it can be acted on.
+	//
+	// Three states make it untrue rather than useful, and each is
+	// silent instead: after -a there is no surviving leg; after a
+	// failed purge nothing was cleared to go stale; and an id gold
+	// never registered had no rows to pair against in the first place.
+	if !*all && firstErr == nil && slices.Contains(registered, ids[0]) {
+		fmt.Fprintf(stdout, "reset: spend verdicts on other sources that paired against %s are now stale — "+
+			"run 'wealthdb load -a' to re-assert them\n", ids[0])
 	}
 	return firstErr
 }

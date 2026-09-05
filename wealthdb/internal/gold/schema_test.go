@@ -2,11 +2,32 @@ package gold
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
 )
+
+// rerunMigrationDDL re-executes everything in a migration ahead of its
+// schema_meta stamp — that INSERT would collide on the version primary
+// key, and schema.go's Migrate contract puts it last. It pins that an
+// additive migration's DDL can be replayed against an already-migrated
+// database.
+func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file string) {
+	t.Helper()
+	body, err := fs.ReadFile(migrationsFS, "migrations/"+file)
+	if err != nil {
+		t.Fatalf("read embedded migration %s: %v", file, err)
+	}
+	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
+	if !found {
+		t.Fatalf("migration %s has no schema_meta stamp", file)
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Errorf("re-applying %s DDL: %v", file, err)
+	}
+}
 
 // latestSchemaVersion returns the version number of the highest
 // embedded migration. Used by tests to assert post-Migrate state
@@ -182,48 +203,22 @@ func TestTransactionEnrichmentColumns(t *testing.T) {
 }
 
 // TestMigration0038DDLIsRerunnable proves the IF NOT EXISTS on 0038's
-// ALTERs is load-bearing rather than decorative: the go-duckdb driver
-// processes a multi-statement Exec twice (prepare + execute), so a bare
-// ADD COLUMN would raise "column already exists" on the second pass.
+// ALTERs is load-bearing rather than decorative: a bare ADD COLUMN
+// would raise "column already exists" when the body is replayed.
 // Re-executing the migration's DDL against an already-migrated DB must
 // stay clean.
 func TestMigration0038DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
-
-	body, err := fs.ReadFile(migrationsFS, "migrations/0038_transactions_enrichment_columns.sql")
-	if err != nil {
-		t.Fatalf("read embedded migration: %v", err)
-	}
-	// Every migration ends with its schema_meta stamp (schema.go's
-	// Migrate contract); that INSERT would collide on the version PK,
-	// so re-run only the DDL ahead of it.
-	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
-	if !found {
-		t.Fatal("migration 0038 has no schema_meta stamp")
-	}
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		t.Errorf("re-applying 0038 DDL: %v", err)
-	}
+	rerunMigrationDDL(t, db, ctx, "0038_transactions_enrichment_columns.sql")
 }
 
 // TestMigration0039DDLIsRerunnable holds 0039 to the same bar: it drops and
 // re-creates web_transactions around the macro swap, so the DROP must be
-// IF EXISTS and the CREATEs OR REPLACE for the driver's double pass over a
-// multi-statement Exec to be harmless.
+// IF EXISTS and the CREATEs OR REPLACE for a replay to be harmless.
 func TestMigration0039DDLIsRerunnable(t *testing.T) {
 	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0039_report_transactions_account_kind.sql")
 
-	body, err := fs.ReadFile(migrationsFS, "migrations/0039_report_transactions_account_kind.sql")
-	if err != nil {
-		t.Fatalf("read embedded migration: %v", err)
-	}
-	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
-	if !found {
-		t.Fatal("migration 0039 has no schema_meta stamp")
-	}
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		t.Errorf("re-applying 0039 DDL: %v", err)
-	}
 	// The view must still be there and still expose account_kind.
 	var n int
 	if err := db.QueryRowContext(ctx,

@@ -68,11 +68,16 @@ then discards it without touching the live DB.`)
 
 	// Compact rewrites the gold file in place (via swap); it needs the
 	// same RW + existence gating as reset / reload, but opens nothing
-	// here — the rewrite ATTACHes the live DB read-only.
-	if err := gateGoldForWrite(g, cfg, "compact",
-		"gold database %q does not exist. Nothing to compact."); err != nil {
+	// here — the rewrite ATTACHes the live DB read-only. The write
+	// mutex is held across the whole rebuild-and-swap for that reason:
+	// the build detaches the live file long before the rename, and a
+	// concurrent writer's rows would land in the inode it unlinks.
+	lock, err := gateGoldForWrite(g, cfg, "compact",
+		"gold database %q does not exist. Nothing to compact.")
+	if err != nil {
 		return err
 	}
+	defer lock.unlock()
 
 	build := compactBuild(ctx, cfg.GoldDB)
 

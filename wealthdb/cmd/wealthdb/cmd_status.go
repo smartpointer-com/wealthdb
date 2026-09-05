@@ -22,7 +22,7 @@ func init() {
 func cmdStatus(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift counts ('other' buckets + unmigrated vehicle pairs)")
+	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift, spending and per-account-kind counts")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb status [<silver_source_id>] [-v]
 
@@ -37,7 +37,11 @@ recent load_audit rows.
 -v additionally counts 'other'-bucketed rows per source (asset_
 class='other' positions, kind='other' transactions) and positions
 with no 2-D vehicle pair yet, so taxonomy drift in the adapters is
-visible.`)
+visible. It also reports the spending backlog, the transactions a
+spending report cannot see because their kind is 'other', and —
+for a source holding more than one account kind — how fresh each
+kind's data is, so a card population that stops updating behind a
+current deposit population is visible.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -117,6 +121,18 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 		fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
 		fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
 		fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
+		fmt.Fprintln(stdout, "  spending:")
+		fmt.Fprintf(stdout, "    uncategorised:           %d spending lines\n", st.UncategorizedSpendCount)
+		fmt.Fprintf(stdout, "    excluded_unmapped:       %d transactions (catch-all kind on in-scope accounts)\n",
+			st.ExcludedUnmappedCount)
+		if len(st.PerKindActivity) > 0 {
+			fmt.Fprintln(stdout, "  per account kind (latest snapshot / latest transaction):")
+			for _, a := range st.PerKindActivity {
+				fmt.Fprintf(stdout, "    %-12s %3d acct  snap=%s  tx=%s\n",
+					a.AccountKind, a.Accounts,
+					formatOptionalDate(a.LatestSnapshotAt), formatOptionalDate(a.LatestTransactionAt))
+			}
+		}
 	}
 
 	if silverErr != nil {
@@ -177,6 +193,10 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 	if verbose && st.MissingVehicleCount > 0 {
 		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.MissingVehicleCount)
 	}
+	if verbose && (st.UncategorizedSpendCount > 0 || st.ExcludedUnmappedCount > 0) {
+		driftHint += fmt.Sprintf("  spend: %d uncategorised, %d excluded_unmapped",
+			st.UncategorizedSpendCount, st.ExcludedUnmappedCount)
+	}
 
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, watermark=%s%s%s\n",
 		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatWatermark(st.HighWatermark),
@@ -234,6 +254,15 @@ func formatRange(oldest, latest int64) string {
 		return "(none)"
 	}
 	return formatDate(oldest) + ".." + formatDate(latest)
+}
+
+// formatOptionalDate renders a single timestamp that carries the -1
+// "no rows of this grain" sentinel.
+func formatOptionalDate(epoch int64) string {
+	if epoch < 0 {
+		return "(none)"
+	}
+	return formatDate(epoch)
 }
 
 // formatDateTime is the human-readable form for second-grain

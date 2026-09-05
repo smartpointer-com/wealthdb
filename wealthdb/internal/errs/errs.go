@@ -31,6 +31,12 @@ const (
 
 	// ExitSilverIO — a silver DB referenced by the config could
 	// not be read.
+	//
+	// ALLOCATED BUT NOT RETURNED: nothing wraps an error with it
+	// today, so a silver open failure reaches the dispatcher as a
+	// plain error and exits 1 (docs/DESIGN.md §4.10, row 6). The
+	// code is kept reserved so a later wiring does not have to
+	// renumber the ones below it.
 	ExitSilverIO = 6
 )
 
