@@ -15,10 +15,14 @@ wealthdb web start | stop | status | restart | refresh | logs
 ## Why a snapshot
 
 DuckDB is single-writer across processes: a long-lived Metabase
-connection would hold a lock that blocks `wealthdb load`. So Metabase
-never reads the live gold file — `wealthdb web start` serves it a
-read-only **snapshot copy**, and `wealthdb web refresh` re-copies it.
-Loads are never blocked; the dashboards show data as of the last
+connection would hold a lock that makes every `wealthdb load` fail at
+open — a load does not queue behind the server. (Between two engine
+commands the exclusion is the engine's own write mutex, a
+`<gold_db>.wealthdb.lock` sidecar beside the database — an expected
+file, safe for a copy to skip.) So Metabase never reads
+the live gold file — `wealthdb web start` serves it a read-only
+**snapshot copy**, and `wealthdb web refresh` re-copies it. Loads never
+contend with the server; the dashboards show data as of the last
 refresh. See [DESIGN.md](DESIGN.md).
 
 ## Enable it
@@ -77,7 +81,8 @@ web/
 ├── web            # host lifecycle script (start/stop/status/refresh/logs/build)
 ├── provision.py   # idempotent Metabase setup: admin + gold DB + report models (stdlib)
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
-├── test_web.sh    # unit tests for the lifecycle script (make test-web)
+├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
+├── test_provision.py  # unit tests for provision.py's definitions (no Metabase)
 ├── README.md      # this file
 ├── DESIGN.md      # rationale: snapshot, glibc base, version pin, provisioning
 ├── CLAUDE.md      # ground rules for agents

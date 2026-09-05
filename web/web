@@ -7,10 +7,9 @@
 # host. See README.md / DESIGN.md.
 #
 # Metabase reads a read-only SNAPSHOT of the gold DB (never the live
-# file), so it never contends for DuckDB's single-writer lock and
-# never blocks `wealthdb load`. It is published on loopback only
-# (127.0.0.1 + [::1]); reach it over an SSH port-forward + Metabase's
-# own login.
+# file), so it never contends with `wealthdb load` for the engine's
+# write mutex. It is published on loopback only (127.0.0.1 + [::1]);
+# reach it over an SSH port-forward + Metabase's own login.
 #
 # Functions are defined at top level; web_main runs only when this
 # file is executed (not sourced), so test_web.sh can source it and
@@ -243,9 +242,10 @@ _gen_password() {
 # _materialize_returns refreshes the report_returns table in LIVE
 # gold via the engine's hidden web-materialize subcommand, so the
 # snapshot taken next carries returns as fresh as the holdings. An
-# engine-owned write, serialized with `wealthdb load` by DuckDB's
-# single-writer lock; it runs BEFORE _snapshot, so a failure aborts
-# under web_main's `set -e` and the previous snapshot keeps serving.
+# engine-owned write, mutually exclusive with `wealthdb load` under the
+# engine's write mutex (a concurrent load makes it fail, not wait); it
+# runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
+# and the previous snapshot keeps serving.
 _materialize_returns() {
     echo "web: materializing returns (TWR/MWR) into gold …" >&2
     local rc=0
@@ -255,7 +255,7 @@ _materialize_returns() {
         "$WEALTHDB" web-materialize || rc=$?
     fi
     if [ "$rc" != 0 ]; then
-        echo "web: returns materialization failed — gold busy (a 'wealthdb load' holds the writer lock?) or not writable." >&2
+        echo "web: returns materialization failed — gold busy (a 'wealthdb load' holds the write mutex?) or not writable." >&2
         echo "     Run 'wealthdb web refresh' once gold is idle; the previous snapshot keeps serving meanwhile." >&2
         return "$rc"
     fi
@@ -338,7 +338,7 @@ subcommands:
   help       this message
 
 Metabase reads a read-only SNAPSHOT of gold (never the live file), so
-it never blocks 'wealthdb load'. Published on 127.0.0.1 + [::1] only;
+it never contends with 'wealthdb load'. Published on 127.0.0.1 + [::1] only;
 reach it via SSH port-forward + Metabase's own login. Enable it with a
 "web" block in wealthdb.cfg:
 

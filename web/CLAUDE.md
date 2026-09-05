@@ -10,7 +10,8 @@ The Metabase server must only ever read a **read-only snapshot** of the
 gold DB, never the live file. The snapshot is mounted `:ro`. Never:
 
 - mount the live `gold_db` into the container (it would contend for
-  DuckDB's single-writer lock and block `wealthdb load`);
+  DuckDB's single-writer lock, and a lock conflict makes `wealthdb
+  load` fail at open rather than wait);
 - open gold read-write from here, or add any write path to gold;
 - weaken the `.wal` guard in `_snapshot` (it prevents copying a
   torn / mid-write database).
@@ -19,10 +20,14 @@ The one narrow carve-out: before snapshotting, `web refresh` (and the
 initial snapshot in `web start`) invokes the **engine's** hidden
 `web-materialize` subcommand, which rewrites the `report_returns` table
 in live gold (DESIGN.md §8). That is an engine-owned write — the same
-class as `wealthdb load`, serialized with it by DuckDB's single-writer
-lock — not a web write path: the container and `provision.py` still
-only ever see the `:ro` snapshot. Keep it that way: materialization
-happens in the engine, before `_snapshot`, never from the container.
+class as `wealthdb load` and mutually exclusive with it under the
+engine's write mutex (an advisory flock on a `<gold_db>.wealthdb.lock`
+sidecar, with DuckDB's own single-writer file lock behind it), a
+concurrent load making it fail rather than wait so refresh aborts
+*before* the snapshot is touched — not a web write path: the container
+and `provision.py` still only ever see the `:ro` snapshot.
+Keep it that way: materialization happens in the engine, before
+`_snapshot`, never from the container.
 
 ## 2. Loopback only
 
@@ -47,7 +52,12 @@ port-forward; auth is Metabase's own login.
     `_<ccy>` column equals the CLI's output for that currency by
     construction). Those macros emit one value-column set per currency
     (USD/CHF/EUR) as DECIMAL, so the wrapper only casts epoch columns to
-    TIMESTAMP.
+    TIMESTAMP. The two taxonomy models
+    (`report_{asset_classes,vehicles}_history`) instead read the `web_*`
+    views of migration 0032, which do the TIMESTAMP rendering themselves
+    and fold each source's cash balance in as a class / vehicle of its
+    own, so their rows sum exactly to net worth. The models the privacy
+    surface reads additionally carry a `_pct` variant (below).
   - the returns models over the **materialized** `report_returns`
     table (migration 0026, rewritten by the engine's `web-materialize`
     on every refresh — see §1's carve-out and DESIGN.md §8):
@@ -57,9 +67,17 @@ port-forward; auth is Metabase's own login.
     twin's basis, below). The definitions are content-free; the
     table's data lives in gold and reaches Metabase only via the
     snapshot.
+  - the spending models `report_spending` / `report_spending_pct` over
+    the `web_spending` serving view (migration 0043). Both unpivot the
+    view's value trio to one row per (spending line, reporting
+    currency): a dashboard picker selects rows, so it can land on a
+    `currency` dimension but can never choose which value *column* a
+    card sums. The `_pct` sibling additionally drops `merchant_name`,
+    so a privacy card's drill-through cannot surface a counterparty.
   - pre-defined metrics and questions over those models (net worth
     current and over time, income and fees by month, allocation
-    breakdowns, TWR/MWR returns, source freshness), and four dashboards
+    breakdowns, TWR/MWR returns, spending trend / categories /
+    merchants / card balances, source freshness), and five dashboards
     composing them: **Wealth Overview** and **Allocation** (global
     filters: a time range resp. a required as-of day, plus a source
     picker), **Returns** (a required currency picker plus a start-year
@@ -67,8 +85,14 @@ port-forward; auth is Metabase's own login.
     — `window_from_year` — so the frequently-null since-inception TWR
     becomes a real number; its per-period and cumulative-growth charts
     are native SQL, split by source with the global grain unioned in as
-    a toggleable `(all sources)` line) and **Data Freshness**
-    (deliberately unfiltered, so stale sources stay visible).
+    a toggleable `(all sources)` line), **Spending** (the time-range +
+    source pair, plus a required currency picker defaulting to USD, an
+    account picker and a category multi-select; the account picker
+    binds `display_name`, not `account_external_id` — there is no
+    field-remapping machinery here, so binding the id would list opaque
+    identifiers, and same-named accounts select together) and **Data
+    Freshness** (deliberately unfiltered, so stale sources stay
+    visible).
   - a **privacy twin** of each dashboard (same layout and filters,
     switch links between the two views), whose cards show shares (%)
     instead of money. The twins' charts are native SQL over the gold
@@ -87,7 +111,28 @@ port-forward; auth is Metabase's own login.
     The Returns twin redacts instead of normalizing (returns are
     already scale-free ratios): its cards run over
     `report_returns_redacted`, which drops the absolute money
-    columns and keeps only the sources and global grains.
+    columns and keeps only the sources and global grains. The
+    **Spending** twin does both: shares of the window's own net spend
+    or of its biggest month, AND redaction — no card renders a
+    merchant or account label (the merchant list ranks unnamed rows,
+    the account breakdown regroups onto source × account kind), the
+    same posture `wealthdb spending -p` takes on the CLI. On both
+    views the merchant list ranks merchants only: a line with no
+    merchant (a gift, a bill on a card not itemised, cash out of an
+    ATM, a line nothing has resolved — migration 0048) is not a
+    merchant and is left out of the ranking; the transaction lists
+    keep such lines. It also
+    carries **no account picker and no account field filter**: a picker
+    is a dropdown of its column's values, and every column that
+    identifies an account is a label, so the filter is dropped rather
+    than rebound.
+  - Provisioning refuses to run against a snapshot missing any serving
+    view the cards read: it probes the driver for them **by name**
+    (counting `web_*` views would let unrelated views pad the total)
+    and aborts with a "run `wealthdb web refresh`" message rather than
+    converging every card to a degraded shape. Keep new views in
+    `FILTER_FIELD_COLUMNS` — it is the single registry both the field-id
+    resolution and that probe read.
   Provisioning is idempotent (updates in place, archives retired names)
   and **converges the pre-defined collection to spec on every start** —
   dashboards get their tile layout replaced wholesale. User content

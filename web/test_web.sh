@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# Unit tests for web/web's pure helpers — no Docker required. Run via
-# `make test-web` or directly. Sources web/web (which only runs
-# web_main when executed, not sourced) and exercises the arg-building
-# and snapshot logic. bash 3.2 compatible (macOS).
+# Unit tests for the web component — no Docker and no Metabase
+# required. Run via `make test-web` or directly. Sources web/web (which
+# only runs web_main when executed, not sourced) and exercises the
+# arg-building and snapshot logic, then hands off to
+# web/test_provision.py for provision.py's definition helpers. bash 3.2
+# compatible (macOS).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -128,6 +130,24 @@ hout="$(web_help)"
 check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
 check "help mentions returns"  "materialize returns" "$hout"
+
+# provision.py's definitions (models, cards, filters, dashboards) are
+# pure functions of module constants, so they assert statically. The
+# python script prints the same ok/FAIL lines and exits non-zero on
+# failure; its own summary line is dropped in favour of this file's.
+echo
+if command -v python3 >/dev/null 2>&1; then
+    prov_out="$(python3 "$HERE/test_provision.py" 2>&1)"
+    prov_rc=$?
+    printf '%s\n' "$prov_out" | grep -v '^provision tests: '
+    if [ "$prov_rc" -ne 0 ]; then
+        n="$(printf '%s\n' "$prov_out" | grep -c '^  FAIL ')"
+        [ "$n" -gt 0 ] || n=1
+        fails=$((fails + n))
+    fi
+else
+    fail "python3 present (web/test_provision.py needs it, as does web/web)"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "web tests: all passed"; exit 0

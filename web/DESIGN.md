@@ -22,16 +22,17 @@ dependency, no bash JSON parsing.
 
 DuckDB is single-writer across processes: one read-write handle OR
 multiple read-only handles, never both. Metabase's JDBC pool holds a
-read-only connection open continuously, which would block every
-`wealthdb load` (read-write) for as long as the server is up.
+read-only connection open continuously, which would make every
+`wealthdb load` (read-write) fail at open for as long as the server is
+up — a load does not queue behind the connection.
 
 So Metabase never touches the live file. `web start` copies the gold
 DB to `…/web/snapshot/wealthdb.db` and mounts *that* read-only;
-`web refresh` re-copies and restarts Metabase to pick it up. Loads are
-never blocked; dashboards show data as of the last refresh (run
-`web refresh` after `wealthdb load`). The copy is atomic (temp + `mv`)
-and refuses to run if a `.wal` sidecar is present (gold mid-write / not
-checkpointed), so we never capture a torn copy.
+`web refresh` re-copies and restarts Metabase to pick it up. Loads
+never contend with the server; dashboards show data as of the last
+refresh (run `web refresh` after `wealthdb load`). The copy is atomic
+(temp + `mv`) and refuses to run if a `.wal` sidecar is present (gold
+mid-write / not checkpointed), so we never capture a torn copy.
 
 ## 3. The driver: glibc base, version pin, readable JAR (load-bearing)
 
@@ -86,22 +87,27 @@ shims over the gold **multi-currency** report macros — `SELECT * FROM
 report_x_multi(…)` (migration 0024), which build on the same line bases the
 CLI's single-currency macros use and emit one value-column set per currency
 (USD/CHF/EUR), so the models track command output by construction and bake in
-no data. Two families, in a `wealthdb (pre-defined)` collection: the `_latest`
-snapshot reports (+ all-time `report_transactions`), and the daily `_history`
-reports (migration 0022) for time-series charts, plus cast-only shims over the
-materialized `report_returns` table (§8). On top of the models, provisioning
-creates pre-defined metrics, questions and four dashboards — **Wealth
+no data. In a `wealthdb (pre-defined)` collection: the `_latest` snapshot
+reports (+ all-time `report_transactions`), the daily `_history` reports
+(migration 0022) for time-series charts, the two taxonomy models over the
+`web_*` breakdown views (migration 0032), cast-only shims over the materialized
+`report_returns` table (§8), the spending models over `web_spending`
+(migration 0043) — and `_pct` privacy variants of the models the privacy
+surface reads. On top of the models, provisioning creates pre-defined
+metrics, questions and five dashboards — **Wealth
 Overview** and **Allocation** carry dashboard-level filters (a time range
 resp. a required as-of day, plus a source picker), **Returns** carries a
 required currency picker (returns are stored one row set per currency),
+**Spending** carries the time range and source picker plus a required
+currency picker, an account picker and a category multi-select,
 **Data Freshness** is deliberately unfiltered — all of them
 MBQL/definition-only, no data baked in.
 Each dashboard also gets a **privacy twin** (linked from the dashboard's top
 row): same layout and filters, but every card shows shares (%) instead of
 money. The twins' charts are native SQL over the gold `web_*` serving views
-(migration 0032 — TIMESTAMP-cast reductions of the report macros to the
-grain each card reads, some folding cash in as a class of its own; Metabase
-syncs views like tables and assigns their columns field ids), with the
+(migrations 0032 and 0043 — TIMESTAMP-cast reductions of the report macros to
+the grain each card reads, some folding cash in as a class of its own;
+Metabase syncs views like tables and assigns their columns field ids), with the
 dashboard pickers landing on the cards as field filters. Each card computes
 its normalization denominator in-query with those same filters applied:
 holdings divide by the *selected* sources' total at the selected window's
@@ -111,6 +117,28 @@ the income/fee flows by their own peak month within the selected window
 worth reads a constant 100, positions + cash split it — over `_pct` models
 that pre-scale values to % of the latest global net worth, so a scalar's
 drill-through never exposes absolute amounts.
+The **Spending** twin adds redaction to normalization, the way the Returns
+twin redacts money columns: its shares are of the window's own net spend
+(the breakdowns, merchant and account lists) or of its biggest month (the
+trend and the monthly bars), and no card renders a merchant or account
+label — the merchant list ranks unnamed rows, the account breakdown regroups
+onto source × account kind, and `report_spending_pct` drops the merchant
+column so a scalar's drill-through cannot surface a counterparty either.
+On both views the merchant list ranks merchants only: a line with no merchant
+— a gift, a bill on a card not itemised, cash out of an ATM, a line nothing
+has resolved (migration 0048 blanks the column on a delta line) — is not a
+merchant and is left out of the ranking.
+The transaction lists keep such lines, since a line is a line, and the twin's
+shares stay relative to the window's whole net spend.
+It also carries **no account picker**, where the money view does: a picker
+renders as a dropdown of the values its column takes, and every column that
+identifies an account is a label (a card's display name falls back to its
+masked last four digits), so the filter is dropped rather than rebound onto
+a column that would mean something else.
+A pre-0043 snapshot is caught before any of this is written: provisioning
+probes the driver for the serving views **by name** and aborts with a "run
+`wealthdb web refresh`" message rather than converging the cards to a
+degraded shape.
 Idempotent — re-running updates cards and dashboards in place and archives
 retired names. The admin password comes from
 `WEALTHDB_WEB_ADMIN_PASSWORD` (e.g. `~/.secrets/wealthdb-web.env`) or is
@@ -227,13 +255,18 @@ annual granularity (a finer curve would need per-month windows).
 The refresh hook: `web refresh` (and `web start`'s initial snapshot)
 runs the engine's hidden `web-materialize` subcommand *before*
 `_snapshot`, so returns are exactly as fresh as the holdings and
-`wealthdb load && wealthdb web refresh` remains the whole update
-flow. It is an
-engine-owned write to live gold — the same class as `load`, serialized
-with it by DuckDB's single-writer lock: a concurrent load makes the
-open fail and refresh abort *before* the snapshot is touched, while the
-previous snapshot keeps serving. The web container itself still never
-sees anything but the `:ro` snapshot (CLAUDE.md §1).
+`wealthdb load && wealthdb web refresh` remains the whole update flow.
+It is an engine-owned write to live gold — the same class as `load` and
+mutually exclusive with it under the engine's write mutex, an advisory
+flock on a `<gold_db>.wealthdb.lock` sidecar taken before gold is
+opened at all (wealthdb/docs/DESIGN.md §4.10), with DuckDB's own
+single-writer file lock behind it. Either way a concurrent load makes
+`web-materialize` fail rather than wait — exit 5, which means retry —
+and refresh aborts *before* the snapshot is touched, while the previous
+snapshot keeps serving. The sidecar is an expected artefact beside the
+gold DB: the kernel drops the lock when the process ends, the empty
+file stays, and a copy or a backup may ignore it. The web container
+itself still never sees anything but the `:ro` snapshot (CLAUDE.md §1).
 
 ## Testing
 
@@ -242,7 +275,17 @@ helpers with no Docker: the dual-stack `-p` flag construction, the
 read-only snapshot mount in the `docker run` args, the `.wal` guard,
 the generated-password complexity, and — against a stubbed engine —
 the `_materialize_returns` invocation plus `web_refresh`'s
-materialize-then-snapshot ordering. The Go side (`web` config block,
+materialize-then-snapshot ordering. It then runs
+[`test_provision.py`](test_provision.py), which asserts everything
+`provision.py` builds *before* it talks to the API — the definitions are
+pure functions of module constants, so the filter registry, the model
+SQL, the card and dashboard defs, the parameter ids and the picker →
+template-tag wiring all check statically. Two behaviours worth naming:
+the privacy twin is asserted to render no merchant or account label in
+any card it defines, and a snapshot missing a serving view is asserted
+to abort the run (against a stubbed API) instead of half-provisioning.
+Whether Metabase *accepts* a payload needs a live instance and is not
+covered. The Go side (`web` config block,
 validation, the `web-config` emitter, `MaterializeReturns` and the
 `web-materialize` command) is covered by `go test ./...`
 (`make test-wealthdb`). End-to-end (build → start → provision → query
