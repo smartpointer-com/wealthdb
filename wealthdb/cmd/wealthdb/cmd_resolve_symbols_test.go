@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
+
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
 func TestStripThinkingBlocks(t *testing.T) {
@@ -223,7 +228,7 @@ func TestStratifiedSample(t *testing.T) {
 		{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "U1"},
 		{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "U2"},
 	}
-	out := stratifiedSample(items, 4)
+	out := stratifiedSample(items, 4, candidateGroup)
 	if len(out) != 4 {
 		t.Fatalf("got %d, want 4", len(out))
 	}
@@ -231,7 +236,7 @@ func TestStratifiedSample(t *testing.T) {
 	// groups, not all from the same group.
 	groups := map[string]bool{}
 	for _, c := range out {
-		groups[c.SilverSourceID+"/"+c.LookupKind] = true
+		groups[candidateGroup(c)] = true
 	}
 	if len(groups) < 2 {
 		t.Errorf("stratifiedSample should span groups; got only %v", groups)
@@ -243,7 +248,7 @@ func TestStratifiedSampleSmallerThanMax(t *testing.T) {
 		{SilverSourceID: "schwab", LookupKind: "name", LookupValue: "S1"},
 		{SilverSourceID: "ubs", LookupKind: "name", LookupValue: "U1"},
 	}
-	out := stratifiedSample(items, 10)
+	out := stratifiedSample(items, 10, candidateGroup)
 	if len(out) != 2 {
 		t.Errorf("got %d, want 2 (full input returned)", len(out))
 	}
@@ -266,5 +271,60 @@ func TestUnresolvedCandidates(t *testing.T) {
 		if c.LookupValue == "FOO" {
 			t.Errorf("FOO was resolved, should not be in unresolved set")
 		}
+	}
+}
+
+// TestStoreResolutionsSurvivesAReaderHoldingGold pins what a command
+// that has already paid a model owes its answers.
+//
+// The handle is released across the model pass so readers get in, and
+// DuckDB will not attach a file read-write while any other handle is
+// open on it — so a single concurrent read command can make the
+// re-open that stores the answers fail. Either outcome is acceptable;
+// losing the answers silently is not. The resolutions must end up in
+// gold, or, when the reader outlasts the whole backoff, on stdout in
+// the plan format that can be re-applied.
+func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
+	cfg := setupCLITest(t)
+	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatal("init failed")
+	}
+	goldPath := goldPathFromCfg(cfg)
+
+	reader, err := gold.Open(goldPath, gold.ModeReadOnly)
+	if err != nil {
+		t.Fatalf("open gold read-only: %v", err)
+	}
+
+	rows := []resolution{{
+		SilverSourceID: "schwab-test",
+		LookupKind:     "name",
+		LookupValue:    "EXAMPLE GLOBAL FUND",
+		Symbol:         "EXGF",
+	}}
+	var out bytes.Buffer
+	storeErr := storeResolutions(context.Background(), goldPath, rows, "test-model", &out)
+	reader.Close()
+
+	if storeErr != nil {
+		if !strings.Contains(out.String(), "EXAMPLE GLOBAL FUND → EXGF") {
+			t.Errorf("the persist failed and the paid-for resolutions were not printed either:\n%s", out.String())
+		}
+		return
+	}
+
+	// The re-open won the race, so the rows are in gold.
+	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
+	if err != nil {
+		t.Fatalf("re-open gold read-only: %v", err)
+	}
+	defer db.Close()
+	var symbol string
+	if err := db.QueryRow(`SELECT symbol FROM symbol_resolutions
+                            WHERE lookup_value = 'EXAMPLE GLOBAL FUND'`).Scan(&symbol); err != nil {
+		t.Fatalf("read back the stored resolution: %v", err)
+	}
+	if symbol != "EXGF" {
+		t.Errorf("stored symbol = %q, want EXGF", symbol)
 	}
 }

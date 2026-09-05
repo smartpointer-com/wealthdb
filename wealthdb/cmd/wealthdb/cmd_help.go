@@ -36,6 +36,8 @@ var helpText = map[string]string{
 	"snapshots":       "List snapshots gold has loaded for a silver source (-a for all, --latest for newest only).",
 	"resolve-symbols": "Back-fill missing instrument ticker symbols via the LLM in config.symbol_resolution.model.",
 	"resolutions":     "Dump the symbol_resolutions table (LLM-derived + manual-override tickers).",
+	"categorize":      "Categorise the merchants the deterministic spending tiers left unplaced, via the LLM in config.spending.categorization.model.",
+	"categorizations": "Dump the spend_merchant_categories table (model-derived merchant verdicts); --forget SIG removes one.",
 	"version":         "Print the wealthdb version.",
 	"help":            "Show this help, or detailed help for a subcommand.",
 }

@@ -67,8 +67,9 @@ strictly relational, and the surface that future analytics
 - **Read-only sharing.** A single gold DB file can be served
   read-only over a network share (NFS, SMB, S3-FUSE) or shipped
   via `scp`. Multiple consumers can run `wealthdb holdings positions` /
-  `wealthdb status` against it concurrently while exactly one
-  upstream owner runs `wealthdb load`. See §4.10.
+  `wealthdb status` against it concurrently, in read-only mode and
+  outside the window in which the single upstream owner's
+  `wealthdb load` holds the write lock. See §4.10.
 - **Dockerised everything.** Build, dev, and prod all run inside a
   single container image. The host OS stays clean.
 
@@ -114,10 +115,13 @@ wealthdb compact                      (RW)    Rewrite the gold DB into a fresh f
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
 wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global.
 wealthdb transactions [flags]         (RO)    Print transactions over a date range.
+wealthdb spending <view> [flags]      (RO)    Spending reports: summary, categories, transactions.
 wealthdb status  [<id>]               (RO)    Report gold state vs each silver source.
 wealthdb snapshots <id> | -a          (RO)    List snapshots gold has loaded (one silver, or all).
 wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticker symbols via the configured LLM.
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
+wealthdb categorize                   (RW)    Categorise unplaced spending merchants via the configured LLM.
+wealthdb categorizations              (RO)    Dump the spend_merchant_categories table (model-derived merchant verdicts); --forget SIG removes one (RW).
 wealthdb help [<subcommand>]
 ```
 
@@ -161,8 +165,9 @@ bounded delta since the last load. See §8 for the full algorithm.
 ### 4.5 `wealthdb reset <id> | -a`
 
 Deletes all rows owned by the given `silver_source_id` from every
-gold table, including `silver_sources` and `load_audit`. The
-silver database itself is untouched.
+source-owned gold table, including `silver_sources` and `load_audit`;
+the spending overlay's merchant store and account-scope stamp are not
+source data (§9). The silver database itself is untouched.
 
 Use case: a silver was rebuilt from bronze (re-parse, new migration,
 data correction) and gold needs to be re-synced from scratch.
@@ -177,6 +182,25 @@ Prints the consolidated portfolio as of a date.
 | `-f`, `--format` | `table` | One of `table`, `csv`, `csv_plain`, `json`. |
 | `-x`, `--currency` | value of `default_currency` in the config file | ISO 4217 output currency for value columns (e.g. `USD`, `CHF`). The short form `-x` is mnemonic for "(currency) exchange"; `-c` is deliberately not used here so it stays reserved for the top-level `--config` flag (§4.2). |
 | `--with-cash` | off | Also emit one synthetic row per account+currency with non-zero cash (`asset_class = 'cash'`). |
+| `-p`, `--privacy` | off | Redact identifying and monetary columns (see below). |
+
+**Privacy classes.** `-p` is per-column, and every read-only view
+that offers the flag draws from the same four classes (everything
+else is left alone):
+
+| Class | Renders as | Carries |
+| --- | --- | --- |
+| account-id | `****1234` — length preserved, a short tail and an IBAN country code left legible so rows stay distinguishable | account / portfolio / relationship / transaction ids. Applied only to identifier-shaped values: alphanumeric with a digit. A purely-alphabetic label (a bank-assigned `Education` / `Authorized`) and any value with a space or a paren are taxonomy or display text and pass through. |
+| free-text | `***` — the whole cell, in every format | values that can carry a person's name and never look like an identifier: statement narratives and their folds (`counterparty`, `description`, `merchant_signature` in §4.12), and customer-chosen labels such as a cointracking portfolio name. Shape-blind by design — the narratives worth hiding are multi-word, so a shape test would pass exactly them. The `(no portfolio)` sentinel is a structural marker, not a name, and stays legible. |
+| quantity | `***` (table) / empty (csv) / key dropped (json) | share counts. |
+| money | `*****.**` (table) / empty (csv) / key dropped (json) | every monetary amount. |
+
+Ratios and dates stay legible throughout — a return or a spending
+share is not an amount. Independently of the per-column pass, every
+cell also runs through a content scrub that masks structured bank
+identifiers wherever they appear, including inside columns that are
+not redacted at all (a mortgage account number surfacing as an
+instrument key).
 
 Formats:
 - `table` — Postgres-style aligned ASCII (one column header line,
@@ -261,7 +285,7 @@ when the gold DB already exists, for consistency) and does not
 overwrite. To re-run the wizard, delete or move the existing file
 first; to add a silver to an existing config, edit the JSON
 directly. (A future `wealthdb config add-silver` subcommand could
-soften this — see §4.11.)
+soften this — see §4.13.)
 
 #### Non-interactive fallback
 
@@ -276,7 +300,11 @@ to silently consuming stdin and producing an empty config.
 
 - **Read-write** — `init`, `load`, `reset` plus all read commands.
 - **Read-only** — only the read commands: `holdings <view>`, `returns`,
-  `transactions`, `snapshots`, `status`, `resolutions`, `help`.
+  `transactions`, `spending <view>`, `snapshots`, `status`,
+  `resolutions`, `categorizations` (the dump; `--forget` writes, and
+  `--forget --dry-run` does not), `help`, plus `categorize --dry-run`
+  (which plans against the enrichment as of the last load and writes
+  nothing).
   Suitable when the gold DB lives on a read-only share, has been
   `chmod`'d 0444 for safekeeping, or sits on a consumer
   host that should never write.
@@ -310,14 +338,60 @@ The detected mode drives subcommand gating.
 
 In read-only mode, `wealthdb` opens the gold DB with DuckDB's
 `access_mode='read_only'` option. This is a hard guarantee at the
-driver level — even a buggy subcommand cannot write. It also
-allows multiple concurrent readers without contending on DuckDB's
-single-writer lock.
+driver level — even a buggy subcommand cannot write. Read-only
+opens are also the only concurrent ones: several of them attach
+the same file at once. They are not what a read subcommand gets
+by default, though — `openGoldForRead` picks read-write whenever
+the filesystem permits, so that concurrency needs `-r` /
+`--read-only` or a path this process cannot write.
 
 In read-write mode, `wealthdb` opens with the default access mode.
-DuckDB takes an exclusive lock; a second writer waiting on the
-same file blocks. (Readers in the meantime hold no lock and are
-unaffected.)
+DuckDB takes an exclusive lock on the file for as long as the
+handle is open, and refuses to attach a file that any other handle
+— read-write or read-only — already holds. A single live reader is
+therefore enough to fail a read-write open.
+
+A second open of the same file, read-write *or* read-only, fails
+immediately with DuckDB's conflicting-lock IO error rather than
+blocking or queueing: `gold.Open` surfaces it from `db.Ping()` and
+the dispatcher exits 5 (`ExitOpenFailed`). One read-write handle OR
+several read-only handles, never both — which is why `wealthdb web`
+serves Metabase a snapshot copy instead of the live file
+(web/DESIGN.md §2).
+
+#### The gold write mutex
+
+DuckDB's lock covers only the window a handle is open, and two
+write commands hold no handle across their work: `compact` and
+`reload -a` read the outgoing file, build a replacement, and
+rename it over the live path. A verdict or a load written into the
+outgoing file inside that window lands in the inode the rename
+unlinks, and both commands report success.
+
+So every write command — `load`, `reset`, `reload`, `compact`,
+`categorize`, `resolve-symbols`, `web-materialize` — takes an
+advisory `flock` for the whole command on a sidecar file,
+`<gold_db>.wealthdb.lock`. The sidecar is created on first use and
+left in place afterwards: it is an expected artefact beside the
+gold DB, it carries no state, and a backup or a copy can ignore
+it. The lock is advisory rather than an `O_EXCL` lockfile so that
+the kernel releases it when a process dies; a lockfile would
+survive a `SIGKILL` and block every later write with no recovery
+path. It is taken non-blocking: a write command that finds it held
+exits immediately with `ExitOpenFailed` (5) naming the sidecar,
+rather than queueing behind a model run that may take an hour.
+
+Read-only opens never take the mutex. Concurrent readers are what
+the read-only share contract exists for, and a reader cannot lose
+a write.
+
+`categorize` and `resolve-symbols` hold the mutex end to end but
+release the DuckDB handle across their model calls, so readers are
+not shut out for the length of a run. Re-taking the handle to
+store what the model answered can lose the race against a reader
+that got in meanwhile, so that store is retried on a short bounded
+backoff, and a final failure prints the unstored answers in the
+`--dry-run` plan format rather than discarding what was paid for.
 
 #### Subcommand gating
 
@@ -335,19 +409,27 @@ crash.
 | RW subcommand with `-r` / `--read-only` flag set | 2 | `wealthdb: '<cmd>' requires write access, but -r/--read-only was specified. Drop the flag or run a different subcommand.` |
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
-| DuckDB open fails mid-run | 5 | `wealthdb: failed to open gold database '<path>': <specific cause>. <hint based on cause>.` |
-| Silver DB unreadable during load | 6 | `wealthdb: cannot read silver database '<path>' for source '<id>': <cause>. Check that the path in the config exists and is readable by this process.` |
+| DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
+| Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / categorize / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
+| Silver DB unreadable during load | 6 (reserved) | not emitted today — a silver open failure returns a plain error and exits 1 |
 
 `<reason>` in row 1 is one of: `parent directory not writeable`,
-`file mode lacks owner write bit`, `mounted read-only`, etc.
-`<hint>` in row 5 covers the common cases: `another wealthdb process
-is writing` (lock conflict — try again or wait), `WAL file is
-stale, may indicate a crashed prior writer`, `file is corrupt or
-not a DuckDB file`.
+`file mode lacks owner write bit`, `mounted read-only`, etc. The
+DuckDB-open row synthesises nothing — no cause of its own and no hint:
+the driver's message is the whole diagnosis, and the case worth
+branching on is the lock conflict
+(`IO Error: Could not set lock on file "<path>": Conflicting lock
+is held in …`), which means another `wealthdb` process holds the
+file and the run is a retry once that one finishes (§13.6).
+Corruption and a stale WAL surface the same way, each as its own
+driver error.
 
 Exit codes 2–6 are distinct so callers (shell scripts, CI) can
-discriminate. Exit code 1 is reserved for unexpected runtime
-errors (panics, etc.).
+discriminate; 6 is allocated but unused — nothing returns it, and a
+silver open failure exits 1 with the plain error (`errs.ExitSilverIO`
+carries the same note). Exit code 1 is reserved
+for unexpected runtime errors (panics, etc.) — and for the
+failures no row above claims.
 
 #### Write-suppression in shared helpers
 
@@ -373,7 +455,139 @@ The reader hosts can ship the same image as the writer host with
 no configuration difference — `--read-only` is auto-detected from
 the mount mode. The writer host runs without the flag.
 
-### 4.11 Future subcommands (sketch only)
+### 4.11 `wealthdb categorize` / `wealthdb categorizations`
+
+`categorize` is the spending feature's model tier. The deterministic
+tiers run on every `load`; what they leave behind is a set of merchant
+signatures whose category follows from nothing but the merchant's
+name, and this is what asks a model about them. Work is priced PER
+MERCHANT SIGNATURE and the verdicts land in the global
+`spend_merchant_categories` table, so a merchant met by several cards
+is asked about once and answered once.
+
+A normal run re-asserts every deterministic verdict first — the same
+pass `load` runs — and then asks about what is left. `--dry-run` opens
+gold read-only and therefore *cannot* run that pass, so its plan is
+computed against the enrichment as of the last load and says so.
+
+The backlog goes to the model in **batches** of `--batch` signatures
+(default 40: what a local model answers well inside the transport's
+five-minute call ceiling; a backlog sent whole in one call times out).
+Every batch carries the taxonomy and the anchor block, retries on its
+own feedback up to `--max-attempts`, and has its accepted verdicts
+**stored as it completes**: a run that dies at batch 30 of 50 has kept
+29 batches' worth of paid answers, and a re-run asks only about what is
+still unanswered, because the backlog excludes whatever the store now
+covers. Each batch's accepted verdicts become the newest anchors for the
+batch after it, capped by `--max-anchors`. The batch plan — count,
+sizes, anchors, the first prompt's size in characters and estimated
+tokens, the best- and worst-case call count — prints before the first
+call, and one progress line prints per batch. A dry run asks the model
+exactly as a real run does, batch by batch (the precedent's shape: it is
+the only way to see verdicts without writing them), so the plan is its
+cost signal.
+
+Two independent gates decide what leaves the machine, and neither can
+be relaxed by the other: `spending.categorization.context` decides how
+much of a candidate is described, and the transfer fence decides which
+signatures are candidates at all. See docs/SPENDING.md §5.
+
+Every run ends with the categorisation rate per source, the
+provider-map misses (a card issuer's categorical vocabulary moving; a
+bank's untranslated booking types are rails, not misses — SPENDING.md
+§3), the matched internal-transfer pairs (both legs —
+the audit surface for what the matcher removed from spending), the
+largest unmatched legs including the cross-currency shapes the matcher
+structurally cannot pair, and a stratified sample of what is still
+uncategorised.
+
+`categorizations` dumps `spend_merchant_categories` — the
+`resolutions` counterpart for the spending overlay. It takes no source
+filter: the table is keyed by merchant signature alone, with no silver
+source, because a merchant is the same merchant whichever card met it.
+
+`categorizations --forget SIGNATURE` (repeatable) is the store's one
+undo: the model is sometimes wrong at merchant scope, and nothing else
+can remove a stored verdict short of editing gold by hand. It deletes
+the rows with exactly those signatures in one transaction, prints each
+removal (signature, name, category) and each signature it did not
+find, and exits non-zero only on an error — a miss is a report, not a
+failure. It follows the write gate of `categorize` and
+`resolve-symbols`: write access is required, the read-only refusal
+names `--dry-run`, and the dry run opens gold read-only and prints what
+would be removed. The next `categorize` re-asks a forgotten merchant,
+because the backlog excludes stored signatures. It also interacts with
+the signature-version re-key (docs/SPENDING.md §4): the enrichment
+pass carries a verdict onto a new key only when every row that carried
+the old key moved to the same new one, and leaves a verdict whose rows
+split behind, reported on the `spending:` summary; forgetting an
+artefact's key *before* a bump is the clean way to stop it carrying
+anywhere.
+
+### 4.12 `wealthdb spending <view>`
+
+The read surface over the spending population (docs/SPENDING.md, and
+§10.10 for the macros underneath). The grain is the positional
+`<view>` — `summary`, `categories`, or `transactions` — exactly as the
+returns family puts its grain in a positional and everything else in a
+flag.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `[FROM [TO]]` | trailing twelve months | Positional window, same grammar as `transactions` (`YYYY` / `YYYY-MM` / `YYYY-MM-DD`, an explicit pair, `-` for an open bound). May appear before or after flags. |
+| `--period` | `monthly` | `daily` \| `weekly` \| `monthly` \| `quarterly` \| `annual` \| `total`. Maps onto the `date_trunc` part `report_spending_*` buckets by; `total` collapses the window into one bucket. |
+| `--level` | `primary` | `primary` \| `detailed` — the category vocabulary `categories` groups by. The other views ignore it. |
+| `-f`, `--format` | `table` | `table` \| `csv` \| `csv_plain` \| `json`. |
+| `-C`, `--columns` | `default` | Per-view column set: names, `default`, `all`, or a `+ADD,-REMOVE` delta. |
+| `-x`, `--currency` | `default_currency` | ISO 4217 output currency; historic FX at each line's `occurred_at`. |
+| `-p`, `--privacy` | off | Redact account IDs, counterparties, and amounts. |
+
+**The window default is trailing-twelve-months, not since-inception.**
+The returns window defaults to inception because a return is a
+cumulative fact about the whole history; a spending report is read
+against recent habit, and a window reaching back past the day a
+source's card ledger begins covers a cash-only population — a `total`
+over it would silently answer a different question.
+
+**No row-filter flags**, deliberately, matching `holdings positions`
+and `transactions`: filtering by merchant, category or account belongs
+to `-f json` plus a downstream filter, to SQL, or to the dashboard. A
+filter flag on a report whose numbers are shares of a bucket would also
+have to decide whether the denominator moves with the filter, and every
+answer to that is wrong for some reader.
+
+**Privacy classes** (§4.6) are the substantive per-column decision here:
+
+- `merchant` takes the **free-text class**, like the narrative it was
+  named from. The transfer fence gates candidacy for the merchant store
+  at every context level (docs/SPENDING.md §5), so a wire, ACH or P2P
+  narrative cannot acquire a name today — but the store is append-only
+  across signature revisions and across widenings of the fence itself,
+  and a stored verdict is applied by signature for as long as it is
+  there, so a name bought while the fence was narrower outlives the
+  fence that would now refuse it. The column is empty on every delta
+  line besides (migration 0048, docs/SPENDING.md §7): a card bill or a
+  gift the holder's own rule or pin placed shows no name, whatever the
+  store holds for its signature.
+- `counterparty`, `description` and `merchant_signature` take the same
+  class, and reach it more directly: they are the raw narrative and its
+  fold, published for every row the fence let through *and* every row
+  it stopped. The class masks the cell whole (`***`) without asking
+  what the value looks like. A shape test is the wrong
+  instrument here: the narratives that carry a person's name are
+  multi-word, so any identifier heuristic passes precisely them.
+- The account's external id and display name take the account-id class,
+  so a card whose display name is its masked number redacts like any
+  account id.
+- Amount columns take the money class; category, provenance and the
+  `share` percentage stay legible, like the returns percentages.
+
+Exit codes follow §4.10's table: `2` for a usage error (unknown view,
+invalid `--period` / `--level` / `-x`, unknown column), `3` when the
+gold DB does not exist. `spending` is `(RO)` and never needs write
+access.
+
+### 4.13 Future subcommands (sketch only)
 
 These are reserved namespaces; their final shape will be designed
 when implemented. The schema must not preclude them.
@@ -496,8 +710,17 @@ Example config file:
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
+| `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every cash and card account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
+| `spending.accounts` | object | Optional. Account-scope overrides of the account-kind default, keyed by `silver_source_id` in the `returns_exclude` shape. `include` pulls an account of a non-spending kind into the population; `exclude` fences a cash or card account out. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. |
+| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. |
+| `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed> }`. `match` is compiled case-insensitively at load and tested against `counterparty` and the full `description` (memo included), each on its own; among config rules the first written wins. `category` may be **any** valid `spend_detailed` value, vendored or delta, in the taxonomy's case-sensitive spelling. An invalid pattern, one matching the empty string, or an unknown category fails the load naming `spending.rules[i]` and the text. Consulted after the three built-in rules and below the matcher and the pins, with provenance `rule`. Deployment-specific: lives in the user's config, never in the repository. See docs/SPENDING.md §3, *Config-supplied rules*. |
+| `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, note`; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.11. |
+| `spending.categorization` | object | Optional. Configures `wealthdb categorize`: the model endpoint (`model`), how much of a transaction reaches it (`context`), and the per-merchant narrative cap (`descriptor_samples`). Absent ⇒ the subcommand refuses; the deterministic tiers are unaffected and keep running on load. |
+| `spending.categorization.model` | object | Optional. LLM endpoint asked for a category per merchant signature. Same shape and same API support as `symbol_resolution.model` (`baseUrl`, `api`, `apiKey`, `name`). |
+| `spending.categorization.context` | string | Optional. `"merchant"` (default) sends merchant signatures only; `"descriptor"` adds the raw statement narratives; `"transaction"` adds date, amount, account kind and nearby-transaction signatures. The default is the most private level by decision, not by accident. Independent of the transfer fence, which gates candidacy at every level. |
+| `spending.categorization.descriptor_samples` | integer | Optional, 0–20, default 3. Caps the raw narratives sent per merchant at the two context levels that send any. Range-checked even at the `merchant` level, where nothing reads it. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` wasn't passed. |
-| `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`, `thinkingFormat`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
+| `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
 
 ### 5.2 `kind: "auto"`
@@ -956,6 +1179,7 @@ to keep this document focused on gold-side architecture:
 - [adapters/swissquote.md](adapters/swissquote.md)
 - [adapters/carta.md](adapters/carta.md)
 - [adapters/cointracking.md](adapters/cointracking.md)
+- [adapters/chase.md](adapters/chase.md)
 
 (Adapters without a dedicated doc here are described inline
 where they diverge from the gold-side contract above.)
@@ -1066,8 +1290,24 @@ applied migration, always add a new file.
 
 ### 7.2 Schema sketch
 
-The SQL below is the design-time sketch. The actual `migrations/
-0001_initial.sql` will track this but may differ in minor details.
+The SQL below is the design-time sketch of the **load-path** tables —
+the dimensions and facts `wealthdb load` writes and `wealthdb reset`
+clears, together with the bookkeeping and index DDL around them
+(`schema_meta` is written by the migrations themselves; an index is
+neither written nor cleared). The applied migrations under
+`internal/gold/migrations/` are authoritative for the current column
+set; the sketch tracks them but may lag in detail.
+
+Auxiliary tables that later migrations add are not sketched here; each
+is documented where it is used:
+
+- `symbol_resolutions` (migration `0006`) — §4.1, `resolutions`.
+- `binary_versions` (migration `0012`).
+- `report_returns` (migration `0026`) — §10.9.
+- The spending overlay: `spend_categories` (migration `0040`;
+  docs/SPENDING.md §2), and `spend_txn_enrichment`,
+  `spend_merchant_categories` and `spend_account_scope` (migration
+  `0041`; keys and lifecycle in docs/SPENDING.md §8, macros in §10.10).
 
 ```sql
 -- ============================================================
@@ -1086,13 +1326,23 @@ CREATE TABLE schema_meta (
 -- `high_watermark` is the plugin's logical change number as of the
 -- last successful load. Opaque to gold (see §6.4); gold only
 -- compares it to fresh values returned by Status() / ChangeWindow().
+--
+-- Each new adapter widens the silver_kind CHECK in its own migration
+-- (DuckDB cannot alter a constraint in place, so the migration renames
+-- and recreates the table).
 CREATE TABLE silver_sources (
     silver_source_id    TEXT    PRIMARY KEY,
-    silver_kind         TEXT    NOT NULL CHECK (silver_kind IN ('schwab', 'ubs', 'swissquote')),
+    silver_kind         TEXT    NOT NULL CHECK (silver_kind IN (
+        'schwab', 'ubs', 'swissquote', 'fidelity',
+        'relevate', 'viac', 'cointracking', 'carta', 'angellist',
+        'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
+        'raiffeisen_at'
+    )),
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
     first_loaded_at     BIGINT  NOT NULL,
-    last_loaded_at      BIGINT  NOT NULL
+    last_loaded_at      BIGINT  NOT NULL,
+    fx_priority         INTEGER                      -- config's FX precedence, stamped on load; §10.6 / §13.2
 );
 
 -- Audit log of `wealthdb load` invocations that observed changes. One
@@ -1140,6 +1390,13 @@ CREATE TABLE load_audit (
 --                     the distinction at source.
 --   'mortgage'      — real-property-backed liability; outstanding
 --                     principal sits as a negative-value position
+--   'card'          — revolving-credit liability; unlike a mortgage it
+--                     carries no position, its outstanding balance
+--                     being negative cash on the account
+--   'donor_advised_fund'
+--                   — irrevocably donated charitable assets; its own
+--                     kind so DAF balances can be included in or
+--                     excluded from net worth by kind
 --   'other'         — unclassifiable, fall back to payload
 --
 -- portfolio_external_id (nullable) names the parent portfolio in
@@ -1354,7 +1611,15 @@ CREATE INDEX ix_fx_rates_pair_time
 -- `counterparty` is not merely informational: it is the input to the
 -- merchant signature that groups spend, so how an adapter formats it
 -- is a stated contract (drift re-keys merchants). `provider_category`
--- is the provider's own spend category, stored verbatim.
+-- is the provider's own filing of the row — a card issuer's spend
+-- category, a bank's booking type — stored verbatim; the spending
+-- provider tier translates it per silver kind, and may place a delta
+-- where the filing names the movement (SPENDING.md §3).
+-- `description` may end with a memo — the payer's own message, which
+-- an adapter emits apart as `TransactionChange.Memo` and the writer
+-- stores behind `canonical.DescriptionMemoSeparator`, folding any
+-- separator the narrative itself carried — which neither the merchant
+-- signature nor the built-in rules read (SPENDING.md §4).
 CREATE TABLE transactions (
     silver_source_id        TEXT    NOT NULL,
     transaction_external_id TEXT    NOT NULL,
@@ -1367,8 +1632,9 @@ CREATE TABLE transactions (
     net_amount              DECIMAL(28, 4),
     quantity                DECIMAL(28, 8),          -- for trades; NULL otherwise
     price                   DECIMAL(28, 8),          -- per-unit, for trades
+    description             TEXT,                    -- free-text row label, may end with a memo; see above
     counterparty            TEXT,                    -- merchant/payee; see above
-    provider_category       TEXT,                    -- provider's own spend category
+    provider_category       TEXT,                    -- provider's own filing: spend category or booking type
     payload                 JSON,
     PRIMARY KEY (silver_source_id, transaction_external_id),
     FOREIGN KEY (silver_source_id, account_external_id)
@@ -1478,6 +1744,18 @@ and don't need transactional scope.
 `wealthdb load -a` runs the same sequence per silver source, each
 in its own transaction. A failure in one source does not roll
 back already-completed sources.
+
+Two whole-file steps then run **after** the per-source loop, outside
+its transactions, because neither is a per-source fact: the
+config-driven FX source precedence is stamped into `silver_sources`
+(§13.2), and the deterministic spending pass re-asserts every spend
+verdict in gold (§10.10, docs/SPENDING.md §3 — an own-account move's
+two legs routinely arrive from two different sources, so neither is
+recognisable until both have landed). A failed FX stamp is a warning:
+it degrades a conversion. A failed spending pass is an error: it
+leaves own-account moves counted as spending, which is a wrong answer
+rather than a degraded one. `reload` runs both the same way, on both
+its in-place and fresh-file paths.
 
 ### 8.2 Why a windowed delete (not a full-replace)
 
@@ -1595,14 +1873,17 @@ out of scope for v1.
 
 ```sql
 BEGIN TRANSACTION;
-DELETE FROM transactions   WHERE silver_source_id = ?;
-DELETE FROM fx_rates       WHERE silver_source_id = ?;
-DELETE FROM cash_balances  WHERE silver_source_id = ?;
-DELETE FROM positions      WHERE silver_source_id = ?;
-DELETE FROM instruments    WHERE silver_source_id = ?;
-DELETE FROM accounts       WHERE silver_source_id = ?;
-DELETE FROM load_audit     WHERE silver_source_id = ?;
-DELETE FROM silver_sources WHERE silver_source_id = ?;
+DELETE FROM symbol_resolutions   WHERE silver_source_id = ?;
+DELETE FROM spend_txn_enrichment WHERE silver_source_id = ?;
+DELETE FROM transactions         WHERE silver_source_id = ?;
+DELETE FROM fx_rates             WHERE silver_source_id = ?;
+DELETE FROM cash_balances        WHERE silver_source_id = ?;
+DELETE FROM positions            WHERE silver_source_id = ?;
+DELETE FROM instruments          WHERE silver_source_id = ?;
+DELETE FROM accounts             WHERE silver_source_id = ?;
+DELETE FROM portfolios           WHERE silver_source_id = ?;
+DELETE FROM load_audit           WHERE silver_source_id = ?;
+DELETE FROM silver_sources       WHERE silver_source_id = ?;
 COMMIT;
 ```
 
@@ -1611,9 +1892,30 @@ itself is untouched. The watermark is removed with the
 `silver_sources` row, so a follow-up `wealthdb load <id>` starts
 fresh (treating `high_watermark` as -1).
 
-`wealthdb reset -a` runs the same per silver source. There is no
-"truncate everything" path — to fully rebuild, `rm` the gold DB and
-re-run `wealthdb init`.
+`symbol_resolutions` and `spend_txn_enrichment` go with the rest because
+both are per-source derived data — resolved tickers keyed to the
+source's instruments, enrichment derived from the transactions being
+deleted — and the next resolve or enrichment pass regenerates them. Two
+spending tables deliberately survive: `spend_merchant_categories` is
+global knowledge keyed by merchant signature, with no source column and
+verdicts that were paid for, and `spend_account_scope` is configuration
+stamped into gold and re-stamped whole by every enrichment pass — the
+`fx_priority` precedent rather than source data. Lifecycle table:
+docs/SPENDING.md §8. The invariant is pinned by
+`TestResetClearsEnrichmentKeepsMerchantStore`.
+
+`wealthdb reset -a` runs the same per silver source. A full rebuild is
+`wealthdb reload -a`: every source-derived table is rebuilt into a fresh
+compact file, which is swapped over the live path with the merchant
+store carried across (`carryMerchantCategories`). Two tables do not
+survive that swap — `symbol_resolutions`, which
+`wealthdb resolve-symbols` writes and no load does, and
+`report_returns`, which `web-materialize` writes (§10.9) — so the
+rebuilt file carries neither until a resolve and a materialization
+follow it. `reload -a --in-place` keeps the live file instead, forgoing
+the compaction and leaving `report_returns` alone; the per-source reset
+still clears `symbol_resolutions` there. Removing the gold DB and
+re-running `wealthdb init` is the manual fallback.
 
 ## 10. Query patterns
 
@@ -1845,10 +2147,23 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   income and fee charts exclude `card`, whose finance charges and annual fees
   are `interest` / `fee` transactions that would otherwise read as investment
   income and portfolio costs. NULL when the transaction's account is absent
-  from `accounts` (a LEFT JOIN), so a fence must keep NULLs. **Lockstep:**
-  `gold.TransactionsBetween` runs `SELECT *` with a positional scan, so every
-  column added to these macros must land in `gold.TransactionRow` and the scan
-  list in the same change.
+  from `accounts` (a LEFT JOIN), so a fence must keep NULLs.
+- **Merchant and spend category on the transaction macros.** The same two
+  macros also carry `merchant_name`, `spend_primary` and `spend_detailed`
+  (migration 0042), resolved by `spend_txn_categories()` (re-issued by 0050,
+  which resolves the model tier's provenance) — the overlay's precedence
+  lattice, extracted so `spending_lines_base` and the transaction reports
+  share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
+  every row the enrichment pass does not reach. Unlike the spending reports,
+  these keep a row the matcher called an own-account move and show what it was
+  categorised as: `wealthdb transactions` is the whole ledger. `merchant_name`
+  is NULL on a row whose resolved category is a delta (migration 0048,
+  docs/SPENDING.md §7), and the store's name for the signature otherwise.
+- **Lockstep on the transaction macros.** `gold.TransactionsBetween` runs
+  `SELECT *` with a positional scan, so every column added to these macros must
+  land in `gold.TransactionRow` and the scan list in the same change (0039 and
+  0042 each made that edit). The returns flow loaders are safe by construction:
+  they project named columns.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
@@ -1974,6 +2289,86 @@ plumbing` is a **value** identity (verified by reconciliation test; hidden
 conduit rows, §5.7, are in global but emit no accounts row), and **returns
 are not additive across grains**.
 
+### 10.10 Spending reports
+
+The spending family (docs/SPENDING.md) charts the population
+`spending_lines_base(from, to)` defines — cash and card accounts, spend-side
+kinds, category resolved, own-account moves and capital deployed
+(`internal_transfer`, `investment`) removed. A card bill on a card wealthdb
+does not itemise stays in as `card_spend` (migration `0046`), its own
+primary: an unpaired card payment is generic card spend, not an own-account
+move, and only the matcher — which has seen the card's own leg — may net it
+out. A cash gift or family support stays in as `gift` (migration `0047`),
+likewise its own primary: spending with no merchant behind it, placed by a
+config rule or a pin. Migration `0042` adds
+three reports over it, each with the `_multi` sibling §10.8 describes
+(single-currency VARCHAR money for the CLI, DECIMAL USD/CHF/EUR for the web):
+
+| macro | grain |
+|---|---|
+| `report_spending_summary(f, t, ccy, period)` | one row per period bucket |
+| `report_spending_categories(f, t, ccy, period, level)` | one row per (bucket, category), plus its share |
+| `report_spending_transactions(f, t, ccy)` | one row per spending line |
+
+`wealthdb spending <view>` (§4.12) is one view per macro and adds
+nothing to them: the `--period` name maps to the `date_trunc` part,
+`--level` passes through, and the Go side is a positional scan plus a
+column registry.
+
+- **Sign-split magnitudes.** `net_amount` is canonically signed, so a plain SUM
+  is neither a period's spending nor its returns. `spend` and `refunds` are both
+  **positive** magnitudes and `net_spend = spend − refunds`.
+- **Period bucketing.** `spend_period_bucket(period, at)` emits the bucket's
+  UTC-midnight epoch second via `date_trunc` (`day` | `week` | `month` |
+  `quarter` | `year`), or NULL for the single `total` bucket. The part is a
+  macro parameter, which DuckDB accepts — but `total` is not a `date_trunc`
+  part and the engine binds the call even on a CASE branch it discards, so the
+  substitution happens **inside** the call. The timestamp comes from `epoch_ms`,
+  not `to_timestamp`, which is TIMESTAMPTZ and would truncate in the session's
+  zone rather than UTC.
+- **Shares over magnitudes.** A category's share is `|net_spend|` over the
+  bucket's `Σ|net_spend|`, so a net-positive category cannot shrink the
+  denominator and push the others past 100%; a bucket's shares sum to 1.
+- **`(uncategorized)` is a label.** The backlog is materialised **before** the
+  GROUP BY at both levels, so it groups like any other category instead of
+  rendering as a blank row. At transaction grain the category stays NULL —
+  `web_spending` labels it at the view.
+- **No merchant on a delta line.** `merchant_name` is the store's name for the
+  line's signature only where the resolved category is vendored; a delta line
+  carries NULL (migration `0048`, docs/SPENDING.md §7), and `web_spending`
+  inherits it; the dashboard's merchant ranking keeps only lines that carry a
+  merchant — a line with no merchant is not a merchant and is left out of the
+  ranking.
+- **Reconciliation.** Σ categories == the summary bucket, for every period and
+  level. The identity is structural (one base, one sign split) and therefore
+  cannot catch a wrong population: an over-eager internal-transfer match removes
+  a row from both sides at once and the month is silently cheaper. The layered
+  populations are what surfaces that — `spend_enrichment_population` is
+  deliberately the layer **before** the exclusion, so a removed row is still
+  there carrying the tier that removed it (docs/SPENDING.md §6, the matched-pair
+  canary).
+
+Migration `0043` adds the two serving views, in the 0032 shape (an `epoch_ms`
+TIMESTAMP reduction Metabase syncs like a table; re-issued in that form by
+migration `0049`):
+
+- **`web_spending`** — transaction grain over
+  `report_spending_transactions_multi`, with the account's identity for the
+  picker and both category levels for the breakdowns, NULL rendered as
+  `(uncategorized)` here.
+- **`web_card_balances_history`** — a card account's owed balance per UTC day,
+  carried forward, in the three reporting currencies
+  (`report_card_balances_history_multi()`). It does **not** come from the
+  account-history macros: those gate each day on one active snapshot per
+  **source** (`hist_active_cash`), which is right for a source that dumps every
+  account together and wrong for one where a card's balances arrive on the
+  statement clock while the deposit accounts are re-dumped constantly — the card
+  vanishes behind a deposit-move day, and the deposits vanish behind a statement
+  closing. Each (source, account, currency) is ASOF-joined onto the day spine
+  independently instead. Zero balances are kept, unlike `cash_chosen`: a paid-off
+  card really is at zero, and dropping the row would leave the series owing money
+  forever.
+
 ## 11. Repository layout
 
 ```
@@ -1985,8 +2380,8 @@ wealthdb/
 ├── wealthdb-test                   — thin alias: `wealthdb-go test ...` (§12.5)
 ├── go.mod / go.sum
 ├── docs/
-│   ├── DESIGN.md · RETURNS-NOTES.md · TAXONOMY.md
-│   └── adapters/                   — per-bank adapter design (carta, cointracking, schwab, swissquote, ubs)
+│   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · TAXONOMY.md
+│   └── adapters/                   — per-bank adapter design (carta, chase, cointracking, schwab, swissquote, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
 ├── internal/
@@ -1999,6 +2394,7 @@ wealthdb/
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go
 │   ├── returns/                    — source-agnostic TWR/MWR math + pluggable per-source policy
+│   ├── spending/                   — the deterministic spend-enrichment pass (§10.10, docs/SPENDING.md)
 │   ├── loader/                     — the §8 silver→gold load orchestration (the only silver↔gold bridge)
 │   └── config/ · pathmode/ · wizard/ · output/ · errs/ · version/
 └── (Dockerfile, wrappers per above)
@@ -2298,13 +2694,26 @@ before relying on `auto` in production configs.
 
 ### 13.6 Concurrent loads
 
-Gold is single-writer today. If two `wealthdb load` invocations
-race, DuckDB will serialise them (file lock); the second will see
-the first's updated `high_watermark` after that transaction
-commits and will simply observe a smaller (or empty) change
-window. Concurrent readers (in read-only mode, see §4.10) take no
-lock and are unaffected. No explicit coordination needed at this
-stage.
+Gold is single-writer, and the write mutex of §4.10 is what makes
+that true rather than an assumption. DuckDB's own file lock does
+not cover it: the lock lasts only as long as a handle is open, and
+`compact` and `reload -a` hold no handle across their
+rebuild-and-swap, so two writers could each report success while
+one of them wrote into the inode the other's rename unlinked.
+
+The contract is therefore: a write command takes an advisory
+`flock` on `<gold_db>.wealthdb.lock` for its whole duration, and a
+second write command that finds it held exits 5 immediately rather
+than racing or queueing. Concurrent readers (read-only mode,
+§4.10) take no mutex and are unaffected — though a read-only handle
+open on the file does fail a read-write open for as long as it
+lives, which is why the model commands retry their store.
+
+What remains open is queueing rather than refusing: a blocking
+take would suit a cron that would rather wait than fail. Refusing
+is the current contract because the holder may be an hour-long
+model run, and a silent hour of blocking is worse than an exit
+code.
 
 ### 13.7 Deferred silver tables
 
@@ -2541,3 +2950,55 @@ staggered-inception onboarding flow* (§10.9) — it is not
 double-counted — while a mid-life transfer is booked in full. The
 ledger is source-agnostic; any source's transfers are just rows
 with that `silver_source_id`.
+
+### 13.11 Spending pins ledger
+
+Some rows on a cash account cannot be classified from anything gold
+holds. An FX roll settling as a bare withdrawal carries no descriptor
+for a rule to match and no counter-leg for the matcher to pair; a
+subscription booked as a plain debit looks exactly like a large
+purchase. Every deterministic tier reads either the narrative or the
+account graph, and such a row offers neither — the only thing that
+identifies it is *which* row it is.
+
+The optional `spending.pins` CSV ledger (config §5) records those
+corrections one transaction at a time. Columns: `silver_source_id,
+account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed,
+note`. `account` accepts either the gold `account_external_id` or an
+account nickname, resolved by the same `gold.NewAccountResolver` the
+equity-transfer ledger uses. `amount` is the amount as gold stores it
+— canonical sign, so a debit is negative — and matches within a cent,
+the same absolute floor the transfer matcher applies, so a figure
+copied from a two-decimal statement describes a four-decimal row.
+`spend_detailed` may be any valid value, vendored or delta, in the
+taxonomy's own spelling — the same set a config rule may place. The
+difference between the two is scope, not vocabulary: a pin names one
+transaction key, a rule fires on every narrative its pattern matches.
+`note` is free text — why the row is pinned, for whoever reads the
+ledger next — and is the one column the parser accepts and ignores:
+nothing carries it into gold.
+
+A pin applies to **every** gold transaction matching (source, account,
+day, amount, currency). The key is deliberately not unique: two
+identical rows on one day — the two legs of the same roll — are
+indistinguishable by design, and gold's `transaction_external_id` is
+opaque, adapter-specific and not something a person can read off a
+statement, so the ledger never keys on it. Two ledger rows describing
+the same transactions must agree (a contradiction fails the parse,
+naming both lines); rows that agree collapse to one.
+
+Mechanics (`internal/spending/pins.go`): the deterministic pass
+resolves the ledger against the whole of `transactions` and writes
+each match with provenance `manual`, after every other tier — a pin
+beats the matcher, the rules and the provider. Because the ledger is
+config-sourced, the pass owns `manual` rows exactly as it owns the
+derived ones: it clears the whole overlay and re-stamps, so a pin
+removed from the ledger is gone on the next pass, `reload` and a
+fresh-file rebuild need no carry-across, and `reset <source>` costs
+nothing the next load does not restore. A pin that describes nothing
+is *counted* — in the pass result and on the `spending:` summary that
+`load`, `reload` and `categorize` print — never an error, because the
+row it names may simply not have loaded yet; an account the resolver
+does not know counts the same way, since an unloaded source has no
+accounts at all. An ambiguous nickname is an error, as it is for the
+equity ledger.

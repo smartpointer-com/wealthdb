@@ -5,12 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -65,13 +63,6 @@ type resolution struct {
 	Symbol         string
 }
 
-// invalidRow is a row the model emitted that failed validation.
-// Carried into the next retry's prompt as targeted feedback.
-type invalidRow struct {
-	Raw    []string // the model's emitted CSV cells
-	Reason string
-}
-
 // tickerShapeRe is the strict ticker-shape pattern: 1-12 chars of
 // uppercase ASCII letters, digits, dots, or hyphens. Captures the
 // surface forms brokers emit (BRK.B,
@@ -86,11 +77,6 @@ var tickerShapeRe = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
 // itself as the ticker (e.g. US0000000030 → US0000000030). Real
 // tickers don't look like this.
 var isinShapeRe = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{9}[0-9]$`)
-
-// thinkBlockRe matches deepseek-style <think>...</think> reasoning
-// blocks. (?s) lets . span newlines and .*? stays non-greedy so
-// stacked / interleaved blocks each strip individually.
-var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // cmdResolveSymbols collects rows from gold that the silver
 // adapters couldn't ticker-resolve, calls the configured LLM
@@ -129,15 +115,17 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	// LLM config is only needed when we'll actually call the LLM.
 	// --overrides-only is a fast cfg→DB sync path with no model
 	// dependency.
+	const modelKey = "symbol_resolution.model"
 	var modelCfg *config.ModelConfig
 	if cfg.SymbolResolution != nil {
 		modelCfg = cfg.SymbolResolution.Model
 	}
 	if !*overridesOnly {
 		if modelCfg == nil {
-			return errs.Newf(2, "resolve-symbols: symbol_resolution.model is not set; add a `symbol_resolution.model` block to %s (or use --overrides-only)", g.ConfigPath)
+			return errs.Newf(2, "resolve-symbols: %s is not set; add a `%s` block to %s (or use --overrides-only)",
+				modelKey, modelKey, g.ConfigPath)
 		}
-		if err := validateModelConfig(modelCfg); err != nil {
+		if err := validateModelConfig(modelKey, modelCfg); err != nil {
 			return errs.Newf(2, "resolve-symbols: %s", err.Error())
 		}
 	}
@@ -163,11 +151,29 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if *dryRun && !*overridesOnly {
 		openMode = gold.ModeReadOnly
 	}
+	if openMode == gold.ModeReadWrite {
+		// Every write path takes the gold write mutex for the whole
+		// command, so a rebuild-and-swap cannot land between the
+		// override sync and the resolutions this run persists.
+		lock, err := lockGoldForWrite(cfg.GoldDB, "resolve-symbols")
+		if err != nil {
+			return err
+		}
+		defer lock.unlock()
+	}
 	db, err := gold.Open(cfg.GoldDB, openMode)
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
-	defer db.Close()
+	// Released before the model round-trips (see below) and re-taken
+	// to persist. dbOpen keeps the deferred close correct on the
+	// paths that return early.
+	dbOpen := true
+	defer func() {
+		if dbOpen {
+			_ = db.Close()
+		}
+	}()
 
 	configuredSources := make(map[string]bool, len(cfg.SilverSources))
 	for _, s := range cfg.SilverSources {
@@ -219,6 +225,16 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		stats.Total, formatPerSource(stats.PerSource),
 		formatPerKind(stats.PerKind), len(anchors), modelCfg.Name)
 
+	// Everything the run reads is read; release the handle before the
+	// model round-trips. DuckDB is one read-write handle OR many
+	// read-only ones, so holding it across the whole LLM pass would
+	// lock every reader out of gold for its duration. The write mutex
+	// above still excludes other writers.
+	if err := db.Close(); err != nil {
+		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("resolve-symbols: close gold before the model pass: %w", err))
+	}
+	dbOpen = false
+
 	valid, attempts, totalInvalid, err := resolveWithLLM(ctx, modelCfg, candidates, anchors,
 		candKey, configuredSources, *maxAttempts, *noCurrency, *showPrompt, stdout, stderr)
 	if err != nil {
@@ -240,10 +256,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	printSummary(stdout, stats, valid, unresolved, attempts, totalInvalid)
 
 	if *dryRun {
-		fmt.Fprintln(stdout, "--- dry-run plan (no rows written) ---")
-		for _, r := range valid {
-			fmt.Fprintf(stdout, "  %s [%s] %s → %s\n", r.SilverSourceID, r.LookupKind, r.LookupValue, r.Symbol)
-		}
+		printResolutionPlan(stdout, "--- dry-run plan (no rows written) ---", valid)
 		return nil
 	}
 
@@ -252,10 +265,49 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 		return nil
 	}
 
-	now := time.Now().Unix()
-	perSource, total, err := persistResolutions(ctx, db, valid, now, modelCfg.Name)
+	return storeResolutions(ctx, cfg.GoldDB, valid, modelCfg.Name, stdout)
+}
+
+// storeResolutions re-takes the gold handle and upserts what the model
+// answered, then reports what landed.
+//
+// The re-open is retried on the bounded backoff, because it can lose a
+// race it did not have to run before the handle was released for the
+// length of the model pass: DuckDB refuses a read-write attach while
+// any other handle is open on the file, and a single concurrent read
+// command is enough. These rows have already been paid for.
+//
+// When even the retries fail, the rows are printed in the plan format
+// before the error is returned: text on stdout is the last place a
+// paid-for answer can survive a persist that cannot happen, and it is
+// the same shape --dry-run prints, so it can be re-applied.
+//
+// The re-open does not stamp binary_versions: this is the same command
+// continuing, and its first open already recorded which binary wrote
+// the file.
+func storeResolutions(ctx context.Context, goldPath string, valid []resolution, modelName string, stdout io.Writer) error {
+	var perSource map[string]int
+	var total int
+	err := retryFlush(ctx, func() error {
+		wdb, err := gold.ReopenReadWrite(goldPath)
+		if err != nil {
+			return err
+		}
+		defer wdb.Close()
+		ps, n, err := persistResolutions(ctx, wdb, valid, time.Now().Unix(), modelName)
+		if err != nil {
+			return err
+		}
+		perSource, total = ps, n
+		return nil
+	})
 	if err != nil {
-		return err
+		printResolutionPlan(stdout,
+			fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(valid)),
+			valid)
+		return errs.Wrap(errs.ExitOpenFailed,
+			fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
+				"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err))
 	}
 	fmt.Fprintln(stdout, "resolve-symbols: persisted to gold:")
 	for _, s := range sortedKeys(perSource) {
@@ -265,20 +317,15 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	return nil
 }
 
-// validateModelConfig checks the required model fields are set.
-// We don't enforce a specific shape on baseUrl (let net/http
-// surface the URL error if it's malformed) but every required
-// piece needs to be non-empty.
-func validateModelConfig(m *config.ModelConfig) error {
-	switch {
-	case m.BaseURL == "":
-		return fmt.Errorf("model.baseUrl is required")
-	case m.Name == "":
-		return fmt.Errorf("model.name is required")
-	case m.API != "" && m.API != "openai-completions":
-		return fmt.Errorf("model.api %q not supported; only 'openai-completions' is wired today", m.API)
+// printResolutionPlan renders resolutions one per line under a
+// heading. One renderer for both the dry-run plan and the
+// could-not-store fallback, so what a failed persist leaves on stdout
+// is exactly what a plan looks like.
+func printResolutionPlan(w io.Writer, heading string, rows []resolution) {
+	fmt.Fprintln(w, heading)
+	for _, r := range rows {
+		fmt.Fprintf(w, "  %s [%s] %s → %s\n", r.SilverSourceID, r.LookupKind, r.LookupValue, r.Symbol)
 	}
-	return nil
 }
 
 // collectCandidates emits two disjoint streams of unresolved rows:
@@ -545,18 +592,34 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 	// (source, kind) groups so the sample shows the full mix,
 	// not just the head of the list.
 	if len(unresolved) > 0 {
-		sample := stratifiedSample(unresolved, 10)
-		fmt.Fprintf(w, "  sample of unresolved candidates (%d of %d, mixed across source × kind):\n", len(sample), len(unresolved))
-		for _, c := range sample {
+		key := func(c candidate) string {
+			return c.SilverSourceID + "\x00" + c.LookupKind + "\x00" + c.LookupValue
+		}
+		line := func(c candidate) string {
 			label := c.LookupValue
 			if c.LookupKind == "instrument_external_id" && c.HintName != "" {
 				label = fmt.Sprintf("%s (%s)", c.LookupValue, c.HintName)
 			}
-			fmt.Fprintf(w, "    %s [%s] %s\n", c.SilverSourceID, c.LookupKind, label)
+			return fmt.Sprintf("    %s [%s] %s", c.SilverSourceID, c.LookupKind, label)
 		}
+		sample := stratifiedSample(unresolved, 10, candidateGroup)
+		fmt.Fprintf(w, "  sample of unresolved candidates (%d of %d, mixed across source × kind):\n", len(sample), len(unresolved))
+		inSample := make(map[string]bool, len(sample))
+		for _, c := range sample {
+			inSample[key(c)] = true
+			fmt.Fprintln(w, line(c))
+		}
+		// The tail is in memory, so it is printed rather than pointed
+		// at: the dry-run plan walks what the model RESOLVED, and
+		// symbol_resolutions holds the resolved rows — neither is this
+		// list.
 		if len(unresolved) > len(sample) {
-			fmt.Fprintf(w, "    ... and %d more. Re-run with --dry-run to print the full plan, or query symbol_resolutions in DuckDB.\n",
-				len(unresolved)-len(sample))
+			fmt.Fprintf(w, "    ... and %d more:\n", len(unresolved)-len(sample))
+			for _, c := range unresolved {
+				if !inSample[key(c)] {
+					fmt.Fprintln(w, line(c))
+				}
+			}
 		}
 		fmt.Fprintln(w, "  notes:")
 		fmt.Fprintln(w, "    - Some unresolved rows are expected: cash-interest descriptions, currency/FX placeholders,")
@@ -566,27 +629,33 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 	}
 }
 
-// stratifiedSample picks up to maxN candidates from items by
-// round-robin'ing across (silver_source_id, lookup_kind) groups.
-// Keeps the head-of-list bias out of the sample so it shows
-// representation from every source × kind combination present in
-// the input.
-func stratifiedSample(items []candidate, maxN int) []candidate {
+// candidateGroup is the stratification key for the unresolved sample:
+// source × lookup kind, the two dimensions with different failure
+// modes.
+func candidateGroup(c candidate) string { return c.SilverSourceID + "/" + c.LookupKind }
+
+// stratifiedSample picks up to maxN items by round-robin'ing across
+// the groups `group` assigns, keeping the head-of-list bias out so the
+// sample shows every group present in the input rather than the front
+// of the biggest one. Both LLM commands' run reports sample this way —
+// resolve-symbols by source × lookup kind, categorize by a merchant's
+// dominant source.
+func stratifiedSample[T any](items []T, maxN int, group func(T) string) []T {
 	if maxN >= len(items) {
 		return items
 	}
-	byKey := map[string][]candidate{}
-	keys := []string{}
-	for _, c := range items {
-		k := c.SilverSourceID + "/" + c.LookupKind
+	byKey := map[string][]T{}
+	var keys []string
+	for _, it := range items {
+		k := group(it)
 		if _, ok := byKey[k]; !ok {
 			keys = append(keys, k)
 		}
-		byKey[k] = append(byKey[k], c)
+		byKey[k] = append(byKey[k], it)
 	}
 	sort.Strings(keys)
 
-	out := make([]candidate, 0, maxN)
+	out := make([]T, 0, maxN)
 	for len(out) < maxN {
 		progressed := false
 		for _, k := range keys {
@@ -631,32 +700,7 @@ func sortedKeys(m map[string]int) []string {
 	return keys
 }
 
-// ---- LLM client + retry loop ----------------------------------------------
-
-// openAIRequest mirrors the chat-completions JSON body. Only the
-// fields we actually set; the server tolerates extras.
-type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	Temperature float64         `json:"temperature"`
-}
-
-type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type,omitempty"`
-	} `json:"error,omitempty"`
-}
+// ---- retry loop -----------------------------------------------------------
 
 // resolveWithLLM runs the candidate set through the model. On each
 // attempt, it parses the response, partitions into valid + invalid,
@@ -725,76 +769,6 @@ func resolveWithLLM(
 		lastInvalid = invalid
 	}
 	return validUnion, attempts, totalInvalid, nil
-}
-
-// callLLM POSTs to {baseUrl}/chat/completions and returns the
-// first choice's message content. Bearer-auth with apiKey when set.
-// Surfaces non-2xx status as an error including the body for
-// debugging.
-func callLLM(ctx context.Context, cfg *config.ModelConfig, system, user string) (string, error) {
-	body, err := json.Marshal(openAIRequest{
-		Model: cfg.Name,
-		Messages: []openAIMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
-		Temperature: 0,
-	})
-	if err != nil {
-		return "", err
-	}
-	url := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	}
-	// MLX local serves tend to be slow on long prompts — give it
-	// a generous per-call ceiling. It can be interrupted (ctrl-C) if it
-	// wedges. (No background goroutines to clean up; this is a
-	// straight blocking call.)
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("POST %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, url, truncate(string(respBody), 500))
-	}
-	var parsed openAIResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("decode response: %w (body: %s)", err, truncate(string(respBody), 500))
-	}
-	if parsed.Error != nil {
-		return "", fmt.Errorf("API error: %s", parsed.Error.Message)
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("API returned no choices")
-	}
-	return parsed.Choices[0].Message.Content, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
-// stripThinkingBlocks removes deepseek-style <think>...</think>
-// reasoning blocks from the response. Models with
-// thinkingFormat=deepseek emit them inline; the CSV body follows.
-// We strip non-greedily to handle stacked / interleaved blocks.
-func stripThinkingBlocks(s string) string {
-	return strings.TrimSpace(thinkBlockRe.ReplaceAllString(s, ""))
 }
 
 // ---- prompt assembly -------------------------------------------------------
@@ -980,25 +954,6 @@ func parseAndValidate(body string, candKeyset map[string]bool, configuredSources
 	return valid, invalid
 }
 
-// stripCodeFences removes ```csv ... ``` and ``` ... ``` wrappers
-// that chat models love to add even when told to emit raw CSV.
-func stripCodeFences(s string) string {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "```") {
-		return s
-	}
-	// Drop the opening fence (including an optional language tag).
-	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
-		s = s[nl+1:]
-	} else {
-		return ""
-	}
-	if i := strings.LastIndex(s, "```"); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
-}
-
 // ---- persistence -----------------------------------------------------------
 
 // manualOverrideModelName is the model_name string written into
@@ -1168,6 +1123,11 @@ cfg.symbol_resolution.overrides are synced to symbol_resolutions
 on every invocation (whether or not the LLM runs). Use
 --overrides-only to apply cfg overrides without making an LLM call
 — useful for fast correction of bad LLM resolutions.
+
+The run report ends by listing every candidate still unresolved, one
+per line, and a candidate's lookup value can be a free-text
+transaction description. The listing has no -p to mask it: treat the
+report as narrative data, not as a summary safe to paste.
 
 Flags:
   -n, --dry-run         print the resolution plan, don't write

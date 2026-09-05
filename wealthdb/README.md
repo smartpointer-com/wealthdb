@@ -81,6 +81,8 @@ All planned v1 functionality is in. The CLI ships with:
 | `wealthdb snapshots <id>\|-a` | List snapshots gold has loaded for a silver. |
 | `wealthdb resolve-symbols` | Back-fill missing instrument tickers via a local LLM (configured under `symbol_resolution.model`); applies any `symbol_resolution.overrides` first. `--overrides-only` skips the LLM round-trip. |
 | `wealthdb resolutions` | Dump the `symbol_resolutions` lookup table for inspection. |
+| `wealthdb categorize` | Categorise the merchants the deterministic spending tiers left unplaced, via the LLM in `spending.categorization.model`. `-n` plans without writing; `--all` re-asks every signature. |
+| `wealthdb categorizations` | Dump the `spend_merchant_categories` lookup table for inspection; `--forget SIG` retires a wrong merchant verdict so the next run re-asks it. |
 | `wealthdb version` | Print the wealthdb version. |
 | `wealthdb help [<subcommand>]` | Help. |
 
