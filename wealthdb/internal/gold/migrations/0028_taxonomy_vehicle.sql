@@ -5,18 +5,19 @@
 -- control), and two nullable columns are added alongside it —
 -- `asset_class_new` (the V2 exposure) and `vehicle` (the wrapper).
 -- Adapters populate them source-by-source (NULL where not yet
--- migrated). At cutover a later migration drops the legacy column and
--- renames asset_class_new -> asset_class.
+-- migrated). Cutover landed in migration 0031: `asset_class` itself
+-- now carries the V2 exposure and `asset_class_new` is left in place,
+-- dead and unprojected — DuckDB refuses to drop a column the report
+-- macros depend on.
 --
 -- Nullable (no NOT NULL, no default): a NULL pair means "this row's
 -- source hasn't been migrated yet", distinct from a real ('other',
 -- 'other') classification.
 
--- IF NOT EXISTS: the go-duckdb driver processes DDL twice when several
--- statements share one multi-statement Exec (prepare + execute), so a
--- bare ADD COLUMN would raise "column already exists" on the second
--- pass. Idempotent ADD sidesteps that and makes the migration
--- re-runnable.
+-- IF NOT EXISTS keeps this replayable for the DDL-rerun test (see
+-- gold.Migrate's REPLAY note): a bare ADD COLUMN would raise "column
+-- already exists" when the body is re-executed against an
+-- already-migrated database.
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS asset_class_new TEXT;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS vehicle         TEXT;
 

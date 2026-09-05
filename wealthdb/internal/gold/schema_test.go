@@ -3,6 +3,8 @@ package gold
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +123,85 @@ func TestMigrateCreatesAllTables(t *testing.T) {
 		if n != 0 && table != "schema_meta" {
 			t.Errorf("expected table %q to be empty, got %d rows", table, n)
 		}
+	}
+}
+
+// TestAccountKindCheckAdmitsCard exercises migration 0037's widened
+// CHECK at the DDL level, below Writer's Go-side validation: 'card'
+// is admitted alongside the kinds 0036 already allowed, and an
+// unrecognised kind is still refused by the constraint.
+func TestAccountKindCheckAdmitsCard(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	insert := func(id, kind string) error {
+		_, err := db.ExecContext(ctx, `
+            INSERT INTO accounts (
+                silver_source_id, account_external_id, account_kind,
+                first_seen_at, last_seen_at
+            ) VALUES ('test-src', ?, ?, 1, 1)`, id, kind)
+		return err
+	}
+
+	for _, kind := range []string{"card", "cash", "mortgage", "donor_advised_fund"} {
+		if err := insert("ACC-"+kind, kind); err != nil {
+			t.Errorf("account_kind %q rejected by CHECK: %v", kind, err)
+		}
+	}
+	for _, kind := range []string{"credit_card", "garbage", ""} {
+		if err := insert("REJ-"+kind, kind); err == nil {
+			t.Errorf("account_kind %q accepted, want CHECK violation", kind)
+		}
+	}
+}
+
+// TestTransactionEnrichmentColumns pins migration 0038: `counterparty`
+// and `provider_category` exist on transactions as nullable TEXT.
+// Nullable matters — every pre-existing row and every non-card source
+// leaves them unset.
+func TestTransactionEnrichmentColumns(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	for _, col := range []string{"counterparty", "provider_category"} {
+		var dataType, nullable string
+		err := db.QueryRowContext(ctx, `
+            SELECT data_type, is_nullable
+              FROM information_schema.columns
+             WHERE table_name = 'transactions' AND column_name = ?`, col).
+			Scan(&dataType, &nullable)
+		if err != nil {
+			t.Errorf("transactions.%s: %v", col, err)
+			continue
+		}
+		if dataType != "VARCHAR" {
+			t.Errorf("transactions.%s data_type = %q, want VARCHAR", col, dataType)
+		}
+		if nullable != "YES" {
+			t.Errorf("transactions.%s is_nullable = %q, want YES", col, nullable)
+		}
+	}
+}
+
+// TestMigration0038DDLIsRerunnable proves the IF NOT EXISTS on 0038's
+// ALTERs is load-bearing rather than decorative: the go-duckdb driver
+// processes a multi-statement Exec twice (prepare + execute), so a bare
+// ADD COLUMN would raise "column already exists" on the second pass.
+// Re-executing the migration's DDL against an already-migrated DB must
+// stay clean.
+func TestMigration0038DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	body, err := fs.ReadFile(migrationsFS, "migrations/0038_transactions_enrichment_columns.sql")
+	if err != nil {
+		t.Fatalf("read embedded migration: %v", err)
+	}
+	// Every migration ends with its schema_meta stamp (schema.go's
+	// Migrate contract); that INSERT would collide on the version PK,
+	// so re-run only the DDL ahead of it.
+	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
+	if !found {
+		t.Fatal("migration 0038 has no schema_meta stamp")
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Errorf("re-applying 0038 DDL: %v", err)
 	}
 }

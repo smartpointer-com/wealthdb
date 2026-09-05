@@ -168,9 +168,34 @@ type TransactionChange struct {
 	// join misses (typical for Schwab dividends where the
 	// payload only has a cash leg plus a top-level description
 	// like "VANGUARD TOTAL STOCK MKT ETF"). See gold migration
-	// 0005 and docs/adapters/*.md.
+	// 0005 and docs/adapters/*.md. It is the narrative alone — what
+	// the bank wrote; the payer's own message goes in Memo.
 	Description *string
-	Payload     json.RawMessage
+	// Memo is the payer's own free text about the row, where the
+	// source carries one (the message typed on a UBS e-banking
+	// order); nil everywhere else. The gold writer stores it at the
+	// END of the description, after DescriptionMemoSeparator
+	// (memo.go), so the narrative keeps leading: the memo never
+	// enters the merchant signature and never fires a built-in rule.
+	// Adapters never compose the join themselves — the writer folds a
+	// separator the narrative happens to carry before joining, which
+	// is what keeps the separator unambiguous in gold.
+	Memo *string
+	// Counterparty is the merchant / payee the event settled with.
+	// Card adapters populate it; other sources leave it nil. It is
+	// not merely informational — it is the input to the merchant
+	// signature that groups spend, so the formatting an adapter
+	// emits is a stated contract: drift re-keys merchants. Gold
+	// migration 0038.
+	Counterparty *string
+	// ProviderCategory is the provider's own filing of the row,
+	// verbatim: a card issuer's spend category ("Groceries",
+	// "Travel", …) or a bank's booking type ("ATM WITHDRAWAL",
+	// "NTRF", …). Supplementary metadata; never normalised on the
+	// way in. The spending provider tier translates it per silver
+	// kind (internal/spending/providermap.go).
+	ProviderCategory *string
+	Payload          json.RawMessage
 }
 
 // Status is the return value of silver.Connection.Status(). See

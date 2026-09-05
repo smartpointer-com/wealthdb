@@ -144,6 +144,15 @@ const (
 	// principal payments flow in as transactions debited from a
 	// regular cash account with counterparty "Maturity".
 	AccountKindMortgage AccountKind = "mortgage"
+	// AccountKindCard is a revolving-credit liability — a credit-card
+	// account. Unlike AccountKindMortgage it carries no position: the
+	// outstanding balance is negative cash (the margin-debit
+	// precedent), with the adapter negating the provider's
+	// owed-positive figure. Spend, refunds, payments and rewards land
+	// as transactions (TxKindPurchase / TxKindRefund /
+	// TxKindCardPayment / TxKindReward). A card is not a conduit and
+	// gets no conduit-returns treatment.
+	AccountKindCard AccountKind = "card"
 	// AccountKindDonorAdvisedFund is a charitable giving account
 	// (e.g. a Fidelity Charitable Giving Account): assets are
 	// irrevocably donated into the fund, invested in sponsor pools,
@@ -162,6 +171,7 @@ var accountKindValues = map[AccountKind]struct{}{
 	AccountKindCrypto:         {},
 	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
 	AccountKindMortgage:         {},
+	AccountKindCard:             {},
 	AccountKindDonorAdvisedFund: {},
 	AccountKindOther:            {},
 }
@@ -314,11 +324,22 @@ const (
 	// gain. Positive (cash in) by canonical convention. The pair
 	// contribution/distribution is the private-market analogue of buy/sell
 	// and is reused across AngelList / EquityZen / Carta.
-	TxKindDistribution    TxKind = "distribution"
-	TxKindFee             TxKind = "fee"
-	TxKindTax             TxKind = "tax"
-	TxKindDeposit         TxKind = "deposit"
-	TxKindWithdrawal      TxKind = "withdrawal"
+	TxKindDistribution TxKind = "distribution"
+	TxKindFee          TxKind = "fee"
+	TxKindTax          TxKind = "tax"
+	TxKindDeposit      TxKind = "deposit"
+	TxKindWithdrawal   TxKind = "withdrawal"
+	// Card kinds, all seen from the card account's own perspective
+	// (its balance is negative cash — see AccountKindCard).
+	// TxKindPurchase is card spend, TxKindRefund a merchant credit
+	// back. TxKindCardPayment is the payment that pays the card down;
+	// its counter-leg is a TxKindWithdrawal on the funding cash
+	// account. TxKindReward is a rewards credit — a taxonomy value
+	// only, emitted by no source today.
+	TxKindPurchase        TxKind = "purchase"
+	TxKindRefund          TxKind = "refund"
+	TxKindCardPayment     TxKind = "card_payment"
+	TxKindReward          TxKind = "reward"
 	TxKindFx              TxKind = "fx"
 	TxKindFxForward       TxKind = "fx_forward"
 	TxKindFxSwap          TxKind = "fx_swap"
@@ -333,8 +354,10 @@ var txKindValues = map[TxKind]struct{}{
 	TxKindBuy: {}, TxKindSell: {}, TxKindDividend: {}, TxKindCoupon: {},
 	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindStaking: {},
 	TxKindContribution: {}, TxKindDistribution: {}, TxKindFee: {}, TxKindTax: {},
-	TxKindDeposit: {}, TxKindWithdrawal: {}, TxKindFx: {},
-	TxKindFxForward: {}, TxKindFxSwap: {}, TxKindCorporateAction: {}, TxKindTransferIn: {},
+	TxKindDeposit: {}, TxKindWithdrawal: {},
+	TxKindPurchase: {}, TxKindRefund: {}, TxKindCardPayment: {}, TxKindReward: {},
+	TxKindFx: {}, TxKindFxForward: {}, TxKindFxSwap: {},
+	TxKindCorporateAction: {}, TxKindTransferIn: {},
 	TxKindTransferOut: {}, TxKindJournal: {}, TxKindOther: {},
 }
 

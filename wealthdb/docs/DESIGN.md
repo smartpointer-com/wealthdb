@@ -1336,6 +1336,10 @@ CREATE INDEX ix_fx_rates_pair_time
 --   'tax'                 — withholding tax, stamp duty
 --   'deposit'             — incoming wire/cash
 --   'withdrawal'          — outgoing wire/cash
+--   'purchase'            — card spend
+--   'refund'              — card merchant credit back
+--   'card_payment'        — payment down of a card balance
+--   'reward'              — card rewards credit
 --   'fx'                  — FX conversion settlement
 --   'fx_forward'          — FX-forward settlement
 --   'fx_swap'             — FX-swap settlement
@@ -1344,6 +1348,13 @@ CREATE INDEX ix_fx_rates_pair_time
 --   'transfer_out'        — securities transfer out
 --   'journal'             — internal account-to-account journal
 --   'other'               — unmapped; bank's own type lives in payload
+--
+-- `counterparty` and `provider_category` were added by gold migration
+-- 0038, both nullable — a non-card source leaves them unset.
+-- `counterparty` is not merely informational: it is the input to the
+-- merchant signature that groups spend, so how an adapter formats it
+-- is a stated contract (drift re-keys merchants). `provider_category`
+-- is the provider's own spend category, stored verbatim.
 CREATE TABLE transactions (
     silver_source_id        TEXT    NOT NULL,
     transaction_external_id TEXT    NOT NULL,
@@ -1356,6 +1367,8 @@ CREATE TABLE transactions (
     net_amount              DECIMAL(28, 4),
     quantity                DECIMAL(28, 8),          -- for trades; NULL otherwise
     price                   DECIMAL(28, 8),          -- per-unit, for trades
+    counterparty            TEXT,                    -- merchant/payee; see above
+    provider_category       TEXT,                    -- provider's own spend category
     payload                 JSON,
     PRIMARY KEY (silver_source_id, transaction_external_id),
     FOREIGN KEY (silver_source_id, account_external_id)
@@ -2365,12 +2378,15 @@ structured-enum columns):
 
 - **`account_kind`** — the technical container the bank exposes:
   `brokerage`, `cash`, `safekeeping`, `custody`, `overlay`,
-  `crypto`, `mortgage`, `donor_advised_fund`, `other` (with
+  `crypto`, `mortgage`, `card`, `donor_advised_fund`, `other` (with
   `crypto_exchange` / `crypto_self_custody` reserved for a future
   adapter that distinguishes them). Required; every adapter
   stamps this. A `donor_advised_fund` holds irrevocably donated
   charitable assets — its own kind so deployments can include or
-  exclude DAF balances from net-worth calculations.
+  exclude DAF balances from net-worth calculations. A `card` is a
+  revolving-credit liability (migration 0037): unlike a `mortgage`
+  it carries no position, its outstanding balance being negative
+  cash on the account.
 - **`tax_wrapper`** — the tax / regulatory registration.
   Nullable; defaults to `taxable_personal` at render time.
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,

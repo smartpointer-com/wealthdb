@@ -6,7 +6,10 @@ package canonical
 // Some TxKind values have a fixed canonical sign by definition:
 // a Withdrawal is always money leaving the account, a Sell is
 // always money arriving from selling shares, and so on. The
-// canonicalSign table below pins those.
+// canonicalSign table below pins those. The card kinds are pinned
+// from the card account's own perspective — its balance is carried
+// as negative cash, so a Purchase drives it further negative (−1)
+// while a Refund, CardPayment or Reward pays it back up (+1).
 //
 // Other kinds depend on context: Interest can be received
 // (positive, cash sweep / coupon-like) or paid (negative,
@@ -23,9 +26,11 @@ package canonical
 // sign should be preserved.
 func canonicalSign(k TxKind) int {
 	switch k {
-	case TxKindBuy, TxKindWithdrawal, TxKindFee, TxKindTax, TxKindTransferOut, TxKindContribution:
+	case TxKindBuy, TxKindWithdrawal, TxKindFee, TxKindTax, TxKindTransferOut,
+		TxKindContribution, TxKindPurchase:
 		return -1
-	case TxKindSell, TxKindDeposit, TxKindDividend, TxKindCoupon, TxKindTransferIn, TxKindDistribution:
+	case TxKindSell, TxKindDeposit, TxKindDividend, TxKindCoupon, TxKindTransferIn,
+		TxKindDistribution, TxKindRefund, TxKindCardPayment, TxKindReward:
 		return +1
 	}
 	// TxKindInterest, TxKindStaking, TxKindCapitalGain,

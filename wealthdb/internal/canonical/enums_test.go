@@ -56,9 +56,13 @@ func TestAccountKindValid(t *testing.T) {
 		{AccountKindBrokerage, true},
 		{AccountKindSafekeeping, true},
 		{AccountKindOverlay, true},
+		{AccountKindMortgage, true},
+		{AccountKindCard, true},
+		{AccountKindDonorAdvisedFund, true},
 		{"", false},
 		{"BROKERAGE", false},
-		{"portfolio", false}, // removed in migration 0004
+		{"credit_card", false}, // the value is 'card'
+		{"portfolio", false},   // removed in migration 0004
 	}
 	for _, c := range cases {
 		if got := c.v.Valid(); got != c.want {
@@ -76,9 +80,15 @@ func TestTxKindValid(t *testing.T) {
 		{TxKindCorporateAction, true},
 		{TxKindContribution, true},
 		{TxKindDistribution, true},
+		{TxKindPurchase, true},
+		{TxKindRefund, true},
+		{TxKindCardPayment, true},
+		{TxKindReward, true},
 		{TxKindOther, true},
 		{"", false},
 		{"buy_or_sell", false},
+		{"payment", false}, // the card-payment value is 'card_payment'
+		{"rewards", false}, // singular
 	}
 	for _, c := range cases {
 		if got := c.v.Valid(); got != c.want {

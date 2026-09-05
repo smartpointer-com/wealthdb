@@ -26,26 +26,35 @@ type Writer struct {
 	tx *sql.Tx
 }
 
-// insertChunkRows is the row count per multi-row VALUES statement.
+// InsertChunkRows is the row count per multi-row VALUES statement.
 // Large enough that per-statement setup is amortised into noise,
 // small enough that the bind-parameter count (rows × columns) stays
-// modest.
-const insertChunkRows = 500
+// modest. Exported with InsertChunked so a caller's test can seed a
+// batch that straddles a chunk boundary, which is where a bind list
+// off by a column hides.
+const InsertChunkRows = 500
 
-// insertChunked executes head + an n-row VALUES list in chunks of
-// insertChunkRows, collecting each row's bind args via appendRow
+// InsertChunked executes head + an n-row VALUES list in chunks of
+// InsertChunkRows, collecting each row's bind args via appendRow
 // (which must append exactly one tuple's worth per call). op labels
-// errors.
-func (w *Writer) insertChunked(ctx context.Context, op, head, tuple string, n int, appendRow func(i int, args []any) []any) error {
+// errors, which name a ROW RANGE rather than a row: the statement that
+// failed carried a chunk of them.
+//
+// Exported because the bulk writers outside this package want the same
+// shape — DuckDB's per-statement cost dwarfs its per-row cost, so a
+// statement per row is the slowest way to feed it — and a second copy
+// of the loop would drift from this one on the next tuning of the
+// chunk size or the error wording.
+func InsertChunked(ctx context.Context, tx *sql.Tx, op, head, tuple string, n int, appendRow func(i int, args []any) []any) error {
 	argsPerRow := strings.Count(tuple, "?")
-	for off := 0; off < n; off += insertChunkRows {
-		end := min(off+insertChunkRows, n)
+	for off := 0; off < n; off += InsertChunkRows {
+		end := min(off+InsertChunkRows, n)
 		args := make([]any, 0, (end-off)*argsPerRow)
 		for i := off; i < end; i++ {
 			args = appendRow(i, args)
 		}
 		q := head + tuple + strings.Repeat(","+tuple, end-off-1)
-		if _, err := w.tx.ExecContext(ctx, q, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("%s rows %d..%d: %w", op, off, end-1, err)
 		}
 	}
@@ -311,7 +320,7 @@ INSERT INTO positions (
     quantity, market_value, book_value, accrued_interest,
     acquisition_date, payload
 ) VALUES `
-	return w.insertChunked(ctx, "InsertPositions", head,
+	return InsertChunked(ctx, w.tx, "InsertPositions", head,
 		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
@@ -339,7 +348,7 @@ INSERT INTO cash_balances (
     silver_source_id, snapshot_at, account_external_id,
     currency, balance_kind, amount, payload
 ) VALUES `
-	return w.insertChunked(ctx, "InsertCashBalances", head,
+	return InsertChunked(ctx, w.tx, "InsertCashBalances", head,
 		`(?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
@@ -360,7 +369,7 @@ INSERT INTO fx_rates (
     base_currency, quote_currency,
     mid_rate, bid_rate, ask_rate, payload
 ) VALUES `
-	return w.insertChunked(ctx, "InsertFxRates", head,
+	return InsertChunked(ctx, w.tx, "InsertFxRates", head,
 		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
@@ -374,6 +383,11 @@ INSERT INTO fx_rates (
 
 // InsertTransactions inserts `transactions` rows. Like positions,
 // caller has already wiped the overlapping occurred_at window.
+//
+// The stored `description` is composed here, from the change's
+// Description and Memo (storedDescription): this is the one path
+// every adapter's rows take into gold, so it is where the memo
+// separator gets its single meaning.
 func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.TransactionChange) error {
 	if len(batch) == 0 {
 		return nil
@@ -387,10 +401,11 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 INSERT INTO transactions (
     silver_source_id, transaction_external_id, occurred_at,
     account_external_id, instrument_external_id, kind, currency,
-    gross_amount, net_amount, quantity, price, description, payload
+    gross_amount, net_amount, quantity, price, description,
+    counterparty, provider_category, payload
 ) VALUES `
-	return w.insertChunked(ctx, "InsertTransactions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+	return InsertChunked(ctx, w.tx, "InsertTransactions", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -399,9 +414,30 @@ INSERT INTO transactions (
 				string(r.Kind), r.Currency,
 				nullableDecimal(r.GrossAmount), nullableDecimal(r.NetAmount),
 				nullableDecimal(r.Quantity), nullableDecimal(r.Price),
-				nullableString(r.Description),
+				storedDescription(r),
+				nullableString(r.Counterparty), nullableString(r.ProviderCategory),
 				nullableJSON(r.Payload))
 		})
+}
+
+// storedDescription composes the `description` column from a change's
+// narrative and memo (canonical.JoinDescriptionMemo): the narrative
+// with any memo separator it carried folded, then the memo, if any,
+// behind the separator. A change with neither is NULL; one with a
+// narrative and no memo stores the narrative byte for byte unless it
+// carried the separator, which no memo-free narrative may.
+func storedDescription(r *canonical.TransactionChange) any {
+	var narrative, memo string
+	if r.Description != nil {
+		narrative = *r.Description
+	}
+	if r.Memo != nil {
+		memo = *r.Memo
+	}
+	if r.Description == nil && strings.TrimSpace(memo) == "" {
+		return nil
+	}
+	return canonical.JoinDescriptionMemo(narrative, memo)
 }
 
 // ---- nullable conversion helpers ------------------------------------------

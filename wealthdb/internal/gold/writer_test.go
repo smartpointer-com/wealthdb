@@ -343,6 +343,47 @@ func TestInsertCashBalancesAndFxRatesAndTransactions(t *testing.T) {
 	}
 }
 
+// TestInsertTransactionsEnrichment covers the 0038 columns through
+// the writer: a set pair round-trips verbatim (counterparty feeds the
+// merchant signature, so byte-for-byte fidelity is the contract), and
+// the nil pair — every non-card source — lands as SQL NULL.
+func TestInsertTransactionsEnrichment(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{{
+			SilverSourceID: "test-src", TransactionExternalID: "TX-CARD",
+			OccurredAt: 1500, AccountExternalID: "CARD",
+			Kind: canonical.TxKindPurchase, Currency: "USD",
+			Counterparty:     ptr("EXAMPLE COFFEE BAR #0042"),
+			ProviderCategory: ptr("Food & Drink"),
+		}, {
+			SilverSourceID: "test-src", TransactionExternalID: "TX-PLAIN",
+			OccurredAt: 1500, AccountExternalID: "ACC",
+			Kind: canonical.TxKindDividend, Currency: "USD",
+		}})
+	})
+
+	var cp, pc sql.NullString
+	if err := db.QueryRowContext(ctx, `
+        SELECT counterparty, provider_category FROM transactions
+         WHERE transaction_external_id = 'TX-CARD'`).Scan(&cp, &pc); err != nil {
+		t.Fatalf("read back card row: %v", err)
+	}
+	if cp.String != "EXAMPLE COFFEE BAR #0042" || pc.String != "Food & Drink" {
+		t.Errorf("got counterparty=%q provider_category=%q", cp.String, pc.String)
+	}
+
+	if err := db.QueryRowContext(ctx, `
+        SELECT counterparty, provider_category FROM transactions
+         WHERE transaction_external_id = 'TX-PLAIN'`).Scan(&cp, &pc); err != nil {
+		t.Fatalf("read back plain row: %v", err)
+	}
+	if cp.Valid || pc.Valid {
+		t.Errorf("unset pair = (%v,%v), want both NULL", cp, pc)
+	}
+}
+
 func TestInvalidEnumRejected(t *testing.T) {
 	db, ctx := openMigrated(t)
 
@@ -440,7 +481,7 @@ func insertOne(ctx context.Context, db *sql.DB, p canonical.PositionChange) erro
 func TestInsertPositionsChunkBoundaries(t *testing.T) {
 	db, ctx := openMigrated(t)
 
-	for _, n := range []int{1, insertChunkRows - 1, insertChunkRows, insertChunkRows + 1, 2*insertChunkRows + 3} {
+	for _, n := range []int{1, InsertChunkRows - 1, InsertChunkRows, InsertChunkRows + 1, 2*InsertChunkRows + 3} {
 		batch := make([]canonical.PositionChange, n)
 		for i := range batch {
 			qty := canonical.NewDecimalFromInt(int64(i))
@@ -485,7 +526,7 @@ func TestInsertPositionsChunkBoundaries(t *testing.T) {
 func TestInsertTransactionsChunked(t *testing.T) {
 	db, ctx := openMigrated(t)
 
-	n := insertChunkRows + 7
+	n := InsertChunkRows + 7
 	batch := make([]canonical.TransactionChange, n)
 	for i := range batch {
 		amt := canonical.NewDecimalFromInt(int64(i))
@@ -515,5 +556,77 @@ func TestInsertTransactionsChunked(t *testing.T) {
 	}
 	if want := fmt.Sprintf("%d.0000", n-1); lastGross != want {
 		t.Errorf("max gross_amount = %s, want %s", lastGross, want)
+	}
+}
+
+// TestInsertTransactionsComposesDescription pins where the memo
+// separator gets its one meaning. Every adapter's rows enter gold
+// through InsertTransactions, which stores the narrative with any
+// separator it carried folded and the memo, if any, behind the
+// separator — so a description read back splits into exactly the
+// narrative and memo the change carried, and a narrative copied
+// verbatim from a source that prints a spaced em dash can never be
+// read as a memo. Every value is synthetic.
+func TestInsertTransactionsComposesDescription(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at)
+             VALUES ('test-src', 'ACC', 'cash', 'Everyday', 1, 1)`); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	cases := []struct {
+		id                      string
+		description, memo       *string
+		want                    string
+		wantNarrative, wantMemo string
+	}{
+		{"T-PLAIN", ptr("EXAMPLE PAYEE; EXAMPLE STREET 1"), nil,
+			"EXAMPLE PAYEE; EXAMPLE STREET 1", "EXAMPLE PAYEE; EXAMPLE STREET 1", ""},
+		{"T-MEMO", ptr("EXAMPLE PAYEE; EXAMPLE STREET 1"), ptr("THANKS"),
+			"EXAMPLE PAYEE; EXAMPLE STREET 1 — THANKS", "EXAMPLE PAYEE; EXAMPLE STREET 1", "THANKS"},
+		{"T-STRAY", ptr("EXAMPLE PAYEE — EXAMPLE BRANCH"), nil,
+			"EXAMPLE PAYEE - EXAMPLE BRANCH", "EXAMPLE PAYEE - EXAMPLE BRANCH", ""},
+		{"T-STRAY-MEMO", ptr("EXAMPLE PAYEE — EXAMPLE BRANCH"), ptr("THANKS"),
+			"EXAMPLE PAYEE - EXAMPLE BRANCH — THANKS", "EXAMPLE PAYEE - EXAMPLE BRANCH", "THANKS"},
+		{"T-MEMO-ONLY", nil, ptr("THANKS"), "— THANKS", "", "THANKS"},
+		{"T-BLANK-MEMO", ptr("credit"), ptr("  "), "credit", "credit", ""},
+	}
+	batch := make([]canonical.TransactionChange, 0, len(cases)+1)
+	for _, tc := range cases {
+		batch = append(batch, canonical.TransactionChange{
+			SilverSourceID: "test-src", TransactionExternalID: tc.id,
+			OccurredAt: 1500, AccountExternalID: "ACC",
+			Kind: canonical.TxKindWithdrawal, Currency: "USD",
+			Description: tc.description, Memo: tc.memo,
+		})
+	}
+	batch = append(batch, canonical.TransactionChange{
+		SilverSourceID: "test-src", TransactionExternalID: "T-NONE",
+		OccurredAt: 1500, AccountExternalID: "ACC",
+		Kind: canonical.TxKindWithdrawal, Currency: "USD",
+	})
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertTransactions(ctx, batch) })
+
+	for _, tc := range cases {
+		var got string
+		if err := db.QueryRowContext(ctx,
+			`SELECT description FROM transactions WHERE transaction_external_id = ?`, tc.id).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", tc.id, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s description = %q, want %q", tc.id, got, tc.want)
+		}
+		if narrative, memo := canonical.SplitDescriptionMemo(got); narrative != tc.wantNarrative || memo != tc.wantMemo {
+			t.Errorf("%s splits to (%q, %q), want (%q, %q)", tc.id, narrative, memo, tc.wantNarrative, tc.wantMemo)
+		}
+	}
+	var none sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT description FROM transactions WHERE transaction_external_id = 'T-NONE'`).Scan(&none); err != nil {
+		t.Fatalf("read T-NONE: %v", err)
+	}
+	if none.Valid {
+		t.Errorf("a change with neither narrative nor memo stored %q, want NULL", none.String)
 	}
 }
