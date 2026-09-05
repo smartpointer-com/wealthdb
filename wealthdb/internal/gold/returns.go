@@ -598,12 +598,49 @@ func newAccountData(kinds, pfNames map[string]string, ov map[string]ReturnsPolic
 	return a
 }
 
+// returnsInvisibleKind reports whether an account_kind contributes nothing to
+// any return series, at any grain. Only `card` is: a revolving-credit liability
+// is a spending instrument, not an investment — its balance swings are purchases
+// and payments, and running them through TWR/MWR would report shopping as
+// performance. Excluding it at the loader (rather than zeroing it later) is what
+// makes the exclusion total:
+//
+//   - the account never enters the accounts map, so no grain — accounts,
+//     portfolios, sources, global — can enumerate it;
+//   - attachOneFlow's nil-account gate then drops every card flow, so purchases,
+//     refunds, card payments and rewards are not external flows anywhere;
+//   - transfer-matching candidacy requires attachment, so a card leg can never
+//     net against a real transfer and silently erase it;
+//   - loadSnapshotDays and matchCrossTransfers already skip unknown accounts,
+//     and groupAccounts / the materializer only ever walk the map.
+//
+// Deliberately NOT a ReturnsPolicy knob: policies are keyed by adapter kind and
+// default to a no-op, so a card arriving from a source with no registered policy
+// would leak into the aggregates. The rule belongs to the engine and keys on the
+// account kind itself.
+//
+// Consequence of record: with cards loaded, the returns global no longer equals
+// `report_global` — the returns value spine deliberately omits them. Same
+// precedent as mortgages and other liabilities, which the rollups already drop
+// (splitLiabilities); unlike a mortgage, a card is not even reported on the
+// liability line, because it produces no row at all.
+func returnsInvisibleKind(kind string) bool {
+	return kind == string(canonical.AccountKindCard)
+}
+
 // appendSeries adds one account-day value to byKey, creating the account record
 // on first sight. An unpriceable day (NULL total — no FX path) is omitted from
 // the series, matching the single- and multi-currency loaders. Rows must arrive
 // in ascending day order per account (the loaders' ORDER BY guarantees it), so
 // each series is ascending for valueAt's binary search.
+//
+// This is also the single seam where credit cards leave the returns engine (see
+// returnsInvisibleKind): the account is never created, so nothing downstream can
+// see it.
 func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
+	if returnsInvisibleKind(kind) {
+		return
+	}
 	v, ok := parseFloat(tot)
 	if !ok {
 		return

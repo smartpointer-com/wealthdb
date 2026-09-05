@@ -1,7 +1,7 @@
-# Headed-browser (Camoufox) discovery harness for the Chase retail web UI
-# (chase.com: checking + savings). Builds on the shared base-camoufox
-# image, which provides Firefox/Xvfb/x11vnc OS deps, camoufox + the
-# matching Playwright pin, the pre-fetched Firefox bundle at
+# Headed-browser (Camoufox) collector image for the Chase retail web UI
+# (chase.com: checking + savings, plus credit-card reads). Builds on the
+# shared base-camoufox image, which provides Firefox/Xvfb/x11vnc OS deps,
+# camoufox + the matching Playwright pin, the pre-fetched Firefox bundle at
 # /opt/camoufox-cache, and the collectorkit shared package.
 #
 # Camoufox from the start, not vanilla Playwright: both US siblings
@@ -31,6 +31,7 @@ RUN pip install -r requirements.txt
 #   login.py       one-shot login + scrape driver (backs `download`)
 #   download.py    the walk() scrape + bronze layout
 #   auth_dialog.py the 2FA challenge contract as a tested CLI dialog
+#   mdsui.py       frame-aware helpers for Chase's MDS controls
 #   statement_parser.py  Chase statement-PDF → transactions + balances
 #   load.py        bronze → SQLite silver
 #   prune.py       bronze reclaim

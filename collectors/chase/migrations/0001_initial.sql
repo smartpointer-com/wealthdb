@@ -25,13 +25,13 @@
 --     string. NOT the real account number — that is PII and never stored;
 --     the human-facing mask (last 4) lives in accounts.mask.
 --   fitid (transactions)
---     The OFX `<FITID>` from the QFX export — Chase's stable per-transaction
---     id, which the CSV export lacks. This is why download captures QFX
---     alongside CSV: QFX supplies the stable key + a clean type/name/memo
---     split, CSV supplies the per-row running balance (DESIGN.md §E). Rows
---     that appear only in CSV (e.g. pending items QFX omits) get a synthetic
---     id — the hex SHA-256 prefix of
---     "<account_external_id>|<date>|<amount>|<description>|<check_number>".
+--     The row's stable silver id. Historically the OFX `<FITID>` from the QFX
+--     export, which is where the column name comes from; migration 0002
+--     replaced that with a content-derived, occurrence-indexed id for both
+--     products (see its identifier-convention note). The FITID itself is
+--     carried in `payload.fitid` for traceability. Both exports are still
+--     captured, for what each one alone carries: QFX the clean
+--     type/name/memo split, CSV the per-row running balance (DESIGN.md §E).
 --   doc_sha256 (documents)
 --     Content hash of the statement PDF. Lets gold trace a silver row back
 --     to its original Chase file.

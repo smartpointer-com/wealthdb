@@ -205,3 +205,33 @@ func TestMigration0038DDLIsRerunnable(t *testing.T) {
 		t.Errorf("re-applying 0038 DDL: %v", err)
 	}
 }
+
+// TestMigration0039DDLIsRerunnable holds 0039 to the same bar: it drops and
+// re-creates web_transactions around the macro swap, so the DROP must be
+// IF EXISTS and the CREATEs OR REPLACE for the driver's double pass over a
+// multi-statement Exec to be harmless.
+func TestMigration0039DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	body, err := fs.ReadFile(migrationsFS, "migrations/0039_report_transactions_account_kind.sql")
+	if err != nil {
+		t.Fatalf("read embedded migration: %v", err)
+	}
+	ddl, _, found := strings.Cut(string(body), "INSERT INTO schema_meta")
+	if !found {
+		t.Fatal("migration 0039 has no schema_meta stamp")
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Errorf("re-applying 0039 DDL: %v", err)
+	}
+	// The view must still be there and still expose account_kind.
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.columns
+		  WHERE table_name = 'web_transactions' AND column_name = 'account_kind'`).Scan(&n); err != nil {
+		t.Fatalf("web_transactions.account_kind: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
+	}
+}

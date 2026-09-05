@@ -359,6 +359,17 @@ def report_models():
 INCOME_KINDS = ["coupon", "distribution", "dividend", "interest", "staking"]
 COST_KINDS = ["fee", "tax"]
 
+# Account kinds fenced out of the investment flow charts. A credit card
+# books `interest` (a finance charge) and `fee` (an annual fee) of its own
+# — the same transaction kinds the charts select on — so without this
+# fence a card would report spending costs as investment income and
+# portfolio costs. Card flows are spending; they belong to the spending
+# surface, not to the income / fees charts. Fenced on the account_kind
+# column the transaction report macros carry (migration 0039), which is
+# NULL for a transaction whose account is absent from `accounts`; NULL
+# must be KEPT, so the fence is written as "not card, or unknown".
+FLOW_CHART_EXCLUDED_ACCOUNT_KINDS = ["card"]
+
 # Metric names retired when the pre-defined cards switched from
 # identifier-style to prose names (dashboards and widgets read better as
 # prose); archived on provision so a re-run cleans them up.
@@ -662,6 +673,17 @@ def question_defs(db_id, mid):
     def kind_in(kinds):
         return ["=", _f("kind", "type/Text")] + kinds
 
+    def flow_kinds(kinds):
+        """Transaction-kind filter for the monthly flow charts, fenced to
+        investment accounts: `!=` alone would silently drop the rows whose
+        account_kind is NULL (a transaction with no matching accounts row),
+        so the null branch is spelled out rather than left to Metabase's
+        null handling."""
+        ak = _f("account_kind", "type/Text")
+        return ["and", kind_in(kinds),
+                ["or", ["is-null", ak],
+                 ["!=", ak] + FLOW_CHART_EXCLUDED_ACCOUNT_KINDS]]
+
     def part(grain, granularity):
         """Filter to one (grain, granularity) partition of report_returns
         (the returns scalars/table use the summary 'total' partition; the
@@ -702,17 +724,21 @@ def question_defs(db_id, mid):
             {"stackable.stack_type": "stacked"}),
         "Income by month (USD)": ("bar",
             "Investment income (dividends, interest, distributions, "
-            "coupons, staking) per month in USD, stacked by kind.",
+            "coupons, staking) per month in USD, stacked by kind. Credit-"
+            "card accounts are excluded — a card's interest is a finance "
+            "charge on spending, not investment income.",
             _mbql(db_id, mid["report_transactions"],
-                  {"filter": kind_in(INCOME_KINDS),
+                  {"filter": flow_kinds(INCOME_KINDS),
                    "aggregation": [["sum", _dec("value_usd")]],
                    "breakout": [month, _f("kind", "type/Text")]}),
             {"stackable.stack_type": "stacked"}),
         "Fees & taxes by month (USD)": ("bar",
             "Fees and withheld taxes per month in USD, stacked by kind; "
-            "debits are negated so costs read as positive bars.",
+            "debits are negated so costs read as positive bars. Credit-"
+            "card accounts are excluded — card fees are spending costs, "
+            "not portfolio costs.",
             _mbql(db_id, mid["report_transactions"],
-                  {"filter": kind_in(COST_KINDS),
+                  {"filter": flow_kinds(COST_KINDS),
                    "expressions": {"cost_usd": ["*", _dec("value_usd"), -1]},
                    "aggregation": [["sum", ["expression", "cost_usd"]]],
                    "breakout": [month, _f("kind", "type/Text")]}),
@@ -1187,13 +1213,18 @@ def privacy_card_defs(db_id, model_ids):
 
     def flow_sql(kinds, sign=""):
         ks = ", ".join(f"'{k}'" for k in kinds)
+        # Same account-kind fence as the money twins (flow_kinds), in SQL:
+        # the explicit IS NULL branch keeps the unknown-account rows that a
+        # bare NOT IN would drop.
+        aks = ", ".join(f"'{k}'" for k in FLOW_CHART_EXCLUDED_ACCOUNT_KINDS)
         return (
             "WITH m AS (\n"
             "  SELECT CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
             " AS month,\n"
             f"         kind, {sign}sum(value_usd)::DOUBLE AS v\n"
             "    FROM web_transactions\n"
-            f"   WHERE kind IN ({ks})"
+            f"   WHERE kind IN ({ks})\n"
+            f"     AND (account_kind IS NULL OR account_kind NOT IN ({aks}))"
             + _cl(tx_tags, "time_range") + _cl(tx_tags, "source") + "\n"
             "   GROUP BY 1, 2),\n"
             "p AS (SELECT max(t) AS peak FROM"

@@ -1,5 +1,7 @@
 -- Minimal chase silver schema for adapter tests — mirrors the columns the
--- adapter reads in collectors/chase/migrations/0001_initial.sql.
+-- adapter reads at silver schema 3 (collectors/chase/migrations/
+-- 0001_initial.sql + 0002_cards.sql + 0003_statement_coverage.sql), with the
+-- migrations' additions folded into the table definitions.
 
 CREATE TABLE schema_meta (
     silver_schema_version INTEGER NOT NULL PRIMARY KEY,
@@ -21,6 +23,8 @@ CREATE TABLE accounts (
     currency            TEXT,
     balance             REAL,
     payload             TEXT    NOT NULL,
+    product             TEXT    NOT NULL DEFAULT 'dda',   -- 'dda' | 'card'
+    pending_charges     REAL,
     PRIMARY KEY (snapshot_at, account_external_id)
 );
 
@@ -34,7 +38,11 @@ CREATE TABLE transactions (
     check_number        TEXT,
     balance             REAL,
     source              TEXT    NOT NULL,
-    payload             TEXT    NOT NULL
+    payload             TEXT    NOT NULL,
+    txn_date            INTEGER,
+    merchant            TEXT,
+    category            TEXT,
+    currency            TEXT
 );
 
 CREATE TABLE documents (
@@ -47,4 +55,15 @@ CREATE TABLE documents (
     filename            TEXT    NOT NULL,
     size_bytes          INTEGER NOT NULL,
     payload             TEXT    NOT NULL
+);
+
+CREATE TABLE statement_balances (
+    account_external_id  TEXT    NOT NULL,
+    period_start         INTEGER NOT NULL,
+    period_end           INTEGER NOT NULL,
+    opening              REAL,
+    closing              REAL,
+    snapshot_at          INTEGER NOT NULL,
+    transactions_covered INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_external_id, period_end)
 );

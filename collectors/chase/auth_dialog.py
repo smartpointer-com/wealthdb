@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Interactive 2FA dialog for the Chase step-up challenge — the CLI core
-the Phase 2 `login.py` will wrap.
+`login.py` drives.
 
 Chase's sign-in fires a step-up challenge (`challenge-options` → invoke →
 verify/poll). This module is the **browserless, side-effect-free** part of
 driving it: parse the `challenge-options` body, let a human pick a factor
-and a destination (which phone for SMS, which device for push), show the
-anti-phishing prefix, read the one-time code, and build the exact request
-payloads. It touches no network and no browser, so it is unit-tested on
-its own and driven from a `--demo` that replays the dialog against
-synthetic data.
+and a destination (which phone for SMS, which device for push), read the
+one-time code, and build the exact request payloads. It touches no network
+and no browser, so it is unit-tested on its own and driven from a `--demo`
+that replays the dialog against synthetic data.
 
 The wire contract is what the 2026-08-11 explore captures showed
 (DESIGN.md "Observed" §A):
@@ -25,10 +24,10 @@ The wire contract is what the 2026-08-11 explore captures showed
     contactReferenceIdentifier}` — differing only in the method code and
     which list the contact id comes from: **push** is `"I"` + a device id,
     **SMS** is `"S"` + a phone id.
-  - **SMS** then returns a 3-char `oneTimePasswordPrefixText` (the SMS
-    carries the same prefix, so showing it lets the human confirm the
-    message is genuine), and the typed 8-digit code goes to
-    `challenge-verifications`.
+  - **SMS** then returns a 3-char `oneTimePasswordPrefixText` — echoed
+    back on the verification, but absent from the message the code
+    arrives in, so it is never shown (`read_otp`) — and the typed 8-digit
+    code goes to `challenge-verifications`.
   - **Push** instead completes by polling `challenge-statuses` — no code to
     type — so it needs only its "approve on your device, then continue"
     prompt here.
@@ -263,8 +262,8 @@ def build_invocation(menu: ChallengeMenu, factor: str, target: Target) -> dict:
     Both push and SMS share the shape `{challengeTokenIdentifier,
     communicationMethodTypeCode, contactReferenceIdentifier}`; the method
     code and which list the target came from are the only difference.
-    Raises ChallengeError if the factor has no confirmed method code (e.g.
-    voice, still unmapped)."""
+    Raises ChallengeError for a factor with no confirmed method code —
+    `CALL_US` (a human phone call), or one Chase adds later."""
     method = METHOD_CODE.get(factor)
     if method is None:
         raise ChallengeError(
@@ -311,11 +310,15 @@ _DEMO_BODY = {
     ],
 }
 
+# Stands in for the `oneTimePasswordPrefixText` a real invocation response
+# carries — the demo sends nothing, so there is no response to read it from.
+DEMO_OTP_PREFIX = "ABC"
+
 
 def _demo() -> int:
     """Replay the dialog against synthetic data — no network, no browser.
-    Shows the factor menu, the phone picker (the two-number case), and the
-    prefixed OTP prompt exactly as a real login would present them."""
+    Shows the factor menu, the phone picker (the multi-destination case),
+    and the OTP prompt exactly as a real login would present them."""
     menu = parse_challenge_options(_DEMO_BODY)
     print("── Chase 2FA dialog (demo; synthetic data, nothing is sent) ──")
     try:
@@ -331,10 +334,12 @@ def _demo() -> int:
         phone = choose_phone(menu)
         print("→ would POST challenge-invocations:",
               build_invocation(menu, factor, phone))
-        # A real run reads the prefix from the invocation response; the demo
-        # uses a fixed placeholder.
-        code = read_otp("ABC")
-        payload = build_verification(menu, factor, phone, "ABC", code)
+        # The prompt never shows the prefix (it is absent from the message
+        # the code arrives in), so `read_otp` does not take one. A real run
+        # reads it off the invocation response to echo back on the
+        # verification; the demo uses a fixed placeholder.
+        code = read_otp()
+        payload = build_verification(menu, factor, phone, DEMO_OTP_PREFIX, code)
         # Redact the code in the echo — it is never printed back.
         shown = {**payload, "otp": {**payload["otp"],
                                     "oneTimeUserPasswordText": "<redacted>"}}

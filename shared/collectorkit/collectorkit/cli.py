@@ -139,8 +139,9 @@ def _add_lookback_arg(parser: argparse.ArgumentParser) -> None:
         help=("How far back to fetch: a named preset "
               f"({', '.join(LOOKBACK_CHOICES)}) or an ISO date "
               "(YYYY-MM-DD). The window runs from there to today and "
-              "covers everything the source offers in it — transactions, "
-              "documents, snapshots alike. 'all' reaches back 30 years. "
+              "covers as much of it as the source can bound — a source "
+              "whose export has no date filter returns more. 'all' "
+              "reaches back 30 years. "
               f"Default: the last {DEFAULT_LOOKBACK_DAYS} days."),
     )
 

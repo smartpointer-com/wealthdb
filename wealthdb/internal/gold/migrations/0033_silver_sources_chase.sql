@@ -2,7 +2,8 @@
 -- a silver source. chase is the JPMorgan Chase retail deposit collector: cash
 -- (checking / savings) accounts — it emits a cash balance per statement plus
 -- the current balance, and the deposit transaction ledger. See collectors/chase/
--- and internal/silver/chase/.
+-- and internal/silver/chase/. (Credit cards joined the same source later, on
+-- the 'card' account kind of migration 0037.)
 --
 -- DuckDB can't widen a CHECK constraint in place — same rename-recreate
 -- workaround as migrations 0007–0018.

@@ -4,8 +4,8 @@
 #
 # Chase invalidates the session when Firefox closes and challenges 2FA at
 # every sign-in (DESIGN.md §F), so — like schwab-web — `download` is a
-# one-shot: login + scrape in one Firefox lifetime, driven by hand over VNC
-# (the human answers whatever factor Chase presents). `login` has nothing
+# one-shot: login + scrape in one Firefox lifetime, with the challenge driven
+# from the terminal (`vnc-login` is the by-hand fallback). `login` has nothing
 # durable to persist, so it folds into `download` (except `login --check`, a
 # read-only session probe). `load` / `prune` are pure Python, no browser.
 #
@@ -88,13 +88,14 @@ Usage:
 Subcommands:
   explore     Discovery harness: Camoufox over VNC + HAR/trace/click log
               under /debug. See DESIGN.md "Observed".
-  download    One-shot login + scrape (deposit accounts), 2FA driven from
-              the TERMINAL — no VNC. Pre-fills + submits the sign-in form,
+  download    One-shot login + scrape (deposit accounts + credit cards), 2FA
+              driven from the TERMINAL — no VNC. Pre-fills + submits the form,
               prompts for the code on stdin (push / SMS / voice), then
               exports each account's activity (CSV + QFX) and statement
               PDFs into a UTC-stamped bronze run dir under /data.
-              --lookback bounds the window; --no-documents skips statements;
-              --dry-run walks without exporting.
+              --lookback bounds the statement pass (the activity export
+              always fetches Chase's full ~24 months); --no-documents
+              skips statements; --dry-run walks without exporting.
   vnc-login   Fallback for download when the CLI 2FA can't drive a challenge
               control: exposes VNC and lets Sign In + 2FA be done by hand.
   login       Folds into download (nothing to persist). 'login --check'

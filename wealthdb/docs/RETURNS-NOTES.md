@@ -22,6 +22,7 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
 - **Mortgage / net-negative entities** are excluded from return rollups;
   per-entity twr/mwr = n/a + `nonpositive_base`, reported on a separate
   liability line.
+- **Credit cards are returns-invisible** — see below.
 - **The NAV-only source** (manual) reports value-growth TWR tagged
   `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows`.
   A blended aggregate MWR is still computed and tagged
@@ -29,6 +30,52 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
   the real boundary flows of their double-entry ledgers (see "Pluggable
   per-source policy"); a window of theirs with no observed flow keeps
   `nav_only_capital_call_risk` via the `CapitalCallRisk` knob.
+
+## Credit cards are returns-invisible
+
+An account of kind `card` (migration 0037 — a revolving-credit liability
+whose outstanding balance is carried as negative cash) contributes
+**nothing to any return series at any grain**: no value, no flow, no row.
+A card is not an investment; its balance swings are spending, and running
+them through TWR/MWR would report shopping as performance.
+
+**The seam is `appendSeries`** (`internal/gold/returns.go`), the one place
+both the single- and multi-currency loaders create an account record. A
+card returns early there, so it never enters the accounts map, and every
+downstream stage follows from that absence:
+
+- `attachOneFlow`'s nil-account gate drops every card flow — purchases,
+  refunds, card payments, interest charges, rewards;
+- cross-source transfer-match candidacy requires a flow to have attached,
+  so a card leg can never pair with a real transfer and net it away;
+- snapshot-day loading, grouping and the materializer need no change of
+  their own: they only ever walk the map, and `loadSnapshotDays` /
+  `matchCrossTransfers` already skip accounts they don't find.
+
+**Deliberately not a `ReturnsPolicy` knob.** Policies are keyed by adapter
+kind and default to a strict no-op, so a card arriving from a source with
+no registered policy would leak straight into the aggregates. The rule is
+engine-level and keys on the account kind itself.
+
+**Contract of record:** with cards loaded, the returns global **no longer
+equals `report_global`** — the gap is exactly the card balances. Same
+precedent as mortgages and other liabilities, which the rollups already
+drop; unlike a mortgage, a card is not even reported on the liability
+line, because it produces no row at all. The holdings surfaces
+(`report_global`, `wealthdb holdings`) still carry cards: net worth
+includes the debt, returns do not measure it.
+
+**The checking-side leg of a card payment stays a real external
+withdrawal.** The money left the returns-visible system — it went to a
+liability the returns engine cannot see — so it is capital out, not an
+internal transfer. Nothing on the card side exists to net it against, and
+that is the correct answer rather than an accident of the exclusion.
+
+Guards: `TestReturnsCardEmitsNoRowsAndLeavesAggregatesIdentical` (zero
+rows at every grain, aggregates byte-identical to a no-card baseline),
+`TestMaterializeReturnsCardInvisible` (the same through the
+multi-currency loader), `TestReturnsCardExcludedFromValueSpine` (the
+`report_global` gap and the surviving payment leg).
 
 ## The math (`internal/returns`)
 

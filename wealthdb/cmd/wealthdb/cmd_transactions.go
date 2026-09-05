@@ -190,6 +190,8 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Nickname) }},
 		{Name: "account_category", Align: output.AlignLeft,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AccountCategory) }},
+		{Name: "account_kind", Align: output.AlignLeft,
+			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.AccountKind) }},
 	}
 }
 

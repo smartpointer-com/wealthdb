@@ -45,12 +45,16 @@ tax advice.
 
 A read-only collector for [chase.com](https://www.chase.com), the JPMorgan
 Chase retail banking portal: **deposit accounts** (checking, and savings
-if present), their statement PDFs, and their transaction history /
-exports. Credit-card products the same login may expose are out of scope
-(see [DESIGN.md](DESIGN.md) §4). Like the other portal-only sources, it replays
-the browser flow (2FA login, SPA) via Camoufox — Chase fronts its retail
-UI with the same Akamai-class bot defense that blocked vanilla browsers
-outright at the two US siblings ([`fidelity-web`](../fidelity-web/),
+if present) and **credit-card accounts**, their statement PDFs, and their
+transaction history / exports. Card **management** — payments, autopay,
+limits, disputes, lock/unlock — is out of scope, as is any investment
+surface the same login may expose (see [DESIGN.md](DESIGN.md) §4). Both
+products run the whole way through: the gold adapter projects a deposit
+account as cash and a card as a revolving-credit liability. Like the other
+portal-only sources, it replays the browser flow (2FA login, SPA) via
+Camoufox — Chase fronts
+its retail UI with the same Akamai-class bot defense that blocked vanilla
+browsers outright at the two US siblings ([`fidelity-web`](../fidelity-web/),
 [`schwab-web`](../schwab-web/)), so the harness builds on the shared
 Camoufox base image from the start.
 
@@ -61,32 +65,38 @@ conventions.
 
 ## Status
 
-**Pipeline implemented through silver.** The discovery harness mapped the
+**Pipeline complete, bronze through gold.** The discovery harness mapped the
 whole surface — the login/2FA flow (in-app-push, SMS, voice), the
 hash-routed SPA's `/svc/` JSON API, and the statement / transaction /
 export surfaces — and confirmed the session is **not persistent** (every
 login needs a fresh 2FA). `login` / `download` / `load` / `prune` match the
 sibling collectors and are driven by `wealthdb-collect chase …` /
-`wealthdb-refresh chase`. Scope is **deposit accounts only** (checking, and
-savings if present); credit-card products the login may expose are out of
-scope (DESIGN.md §4).
+`wealthdb-refresh chase`. **Credit-card read surfaces** — roster, detail,
+transaction export, statements — are in scope as of the 2026-09-04
+amendment (DESIGN.md §4): `download` captures them into bronze, the silver
+load ingests them (roster, exports, statements — inventory, parsed period
+balances and the pre-export transaction tail), and the gold adapter
+projects them as revolving-credit liabilities alongside the deposit
+accounts' cash. Card **management** is permanently out of scope.
 
 | Verb | Status | Notes |
 | --- | --- | --- |
 | `explore`  | implemented | Camoufox + VNC discovery harness (HAR + crash-safe network log + click log + saved downloads + opt-in Playwright trace). |
-| `download` | implemented | One-shot login + scrape, **2FA from the terminal** (no VNC): pre-fill → submit → stdin code → export each deposit account's activity (CSV + QFX) + statement PDFs → bronze. Backed by `login.py`; the scrape is `download.py`'s `walk()`. |
+| `download` | implemented | One-shot login + scrape, **2FA from the terminal** (no VNC): pre-fill → submit → stdin code → export each account's activity (CSV + QFX) + statement PDFs → bronze. Backed by `login.py`; the scrape is `download.py`'s `walk()`. |
 | `vnc-login` | implemented | Fallback for `download` when the CLI 2FA can't drive a challenge control: exposes VNC for a by-hand sign-in. |
 | `login`    | implemented | Folds into `download` (the session dies with Firefox — §F). `login --check` probes a session read-only. |
-| `load`     | implemented | Bronze → SQLite silver (accounts, transactions, statements); joins the CSV running balance onto the QFX `FITID` rows. Idempotent; `--force` rebuilds. |
+| `load`     | implemented | Bronze → SQLite silver (accounts, transactions, statements), both products. Deposit: joins the CSV running balance onto the QFX rows. Card: joins the CSV date/category/type onto the QFX descriptor. Both ledgers identify a row by **content plus an occurrence index**, never by the provider's `FITID` (kept in `payload.fitid`): each export format is fetched separately and can fail on its own, so a key only the QFX carries would give the same rows a second identity in a CSV-only run and double the ledger — and a card's FITIDs are not unique either. Card statements are parsed by their own pass: period balances for every era (each flagged with whether that period's transactions reached silver), and transactions below the export seam. The card export carries no running-balance column, so the export era's is reconstructed between those period balances; a balance the loader computed rather than read off a provider file is marked `payload.balance_basis`. Idempotent; `--force` rebuilds. |
 | `prune`    | implemented | Thin wrapper over the shared prune engine; runs host-side. |
 
 **Validated live end-to-end** (2026-08-12): push and SMS 2FA, deposit-account
-roster discovery, CSV + QFX export, and statement PDFs. The silver loader is
-also fully unit-tested against synthetic exports.
+roster discovery, CSV + QFX export, and statement PDFs. The card path is
+built from the exploration capture and unit-tested, but has not yet been run
+against the live UI. The silver loader is fully unit-tested against synthetic
+exports.
 
-The 2FA challenge contract is also encoded as a standalone, tested CLI
-dialog in [`auth_dialog.py`](auth_dialog.py) — the building block for a
-future non-interactive 2FA (`python3 auth_dialog.py --demo` previews it).
+The 2FA challenge contract is encoded as a standalone, tested CLI dialog in
+[`auth_dialog.py`](auth_dialog.py) — the browserless half of what `download`
+drives from the terminal (`python3 auth_dialog.py --demo` previews it).
 The top-level `Makefile` auto-discovers this collector (`make build-chase`
 / `make test-chase`).
 
@@ -105,11 +115,13 @@ The top-level `Makefile` auto-discovers this collector (`make build-chase`
 
 # 3. Download: one-shot login + scrape. Pre-fills + submits the sign-in
 #    form, then drives 2FA from the TERMINAL (no VNC) — it prompts on
-#    stdin for the code (or to approve a push). Exports each deposit
-#    account's activity (CSV + QFX) and statement PDFs to a UTC-stamped
-#    bronze run dir.
+#    stdin for the code (or to approve a push). Exports each account's
+#    activity (CSV + QFX) and statement PDFs to a UTC-stamped bronze run
+#    dir.
 ./chase download                 # or: wealthdb-collect chase download
-./chase download --lookback 1y   # widen the window (default ≈ 90 days)
+./chase download --lookback 1y   # widen the statement window (default ≈ 90
+                                 # days) — the activity export always fetches
+                                 # Chase's full ≈ 24 months
 ./chase download --no-documents  # skip the statement-PDF pass
 
 # 4. Load that bronze into the SQLite silver.
@@ -168,9 +180,11 @@ commit anything derived from it without stripping identifiers.
 ## Read-only
 
 See [CLAUDE.md](CLAUDE.md). The Chase retail UI puts money movement
-(transfers, Zelle, wires, bill pay), card management, and account
-settings one or two clicks from the account overview — all permanently
-out of scope. This toolkit only ever navigates, filters, and exports:
-accounts overview, statements / documents, transaction history. Account
-and routing numbers, balances, and payees are PII and never enter the
+(transfers, Zelle, wires, bill pay), card management (payments, autopay,
+limits, disputes, lock/unlock), and account settings one or two clicks
+from the account overview — all permanently out of scope. *Reading* a
+card is not card management and is in scope; mutating one never is. This
+toolkit only ever navigates, filters, and exports: accounts overview,
+statements / documents, transaction history. Account and routing
+numbers, card numbers, balances, and payees are PII and never enter the
 repo.

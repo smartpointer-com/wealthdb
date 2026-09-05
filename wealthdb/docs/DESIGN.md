@@ -1839,6 +1839,16 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
   the `CHF→{USD,EUR}` / `USD→{CHF,EUR}` crosses) rather than N independent
   blocks. The reporting set is USD/CHF/EUR, fixed in the macros; change it in a
   new migration.
+- **`account_kind` on the transaction macros.** `report_transactions` and
+  `report_transactions_multi` carry the owning account's `account_kind`
+  (migration 0039), so a consumer can fence a kind out of a chart — the web's
+  income and fee charts exclude `card`, whose finance charges and annual fees
+  are `interest` / `fee` transactions that would otherwise read as investment
+  income and portfolio costs. NULL when the transaction's account is absent
+  from `accounts` (a LEFT JOIN), so a fence must keep NULLs. **Lockstep:**
+  `gold.TransactionsBetween` runs `SELECT *` with a positional scan, so every
+  column added to these macros must land in `gold.TransactionRow` and the scan
+  list in the same change.
 - **Account display defaults.** `report_accounts_multi` and
   `report_accounts_history_multi` apply the conventional
   `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
@@ -1901,6 +1911,16 @@ the per-adapter flow classification):
   of fees and taxes paid** (after-tax) — costs stay inside the value series.
 - **Mortgage / net-negative entities** are excluded from coarse rollups and shown
   as a separate `nonpositive_base` liability line.
+- **Credit cards (`account_kind='card'`) are returns-invisible**: no value, no
+  flow, no row, at any grain. A card is a spending instrument, not an
+  investment. The exclusion is engine-level and kind-keyed (the loader seam
+  `appendSeries`), never a `ReturnsPolicy` knob — policies default to a no-op,
+  so a card from an unregistered source would otherwise leak. Consequence: with
+  cards loaded the returns global no longer equals `report_global`; the gap is
+  exactly the card balances, which net worth still counts. The checking-side leg
+  of a card payment stays a real external withdrawal — the money left the
+  returns-visible system. See `docs/RETURNS-NOTES.md`, "Credit cards are
+  returns-invisible".
 - **Account-grain is exact**; coarse grains are best-effort (heuristic transfer
   netting, synthetic onboarding for staggered inception). **Returns are NOT
   additive across grains** — `global == Σ accounts + hidden plumbing` is a

@@ -6,6 +6,7 @@ phone strings only (never a real id or phone fragment).
 """
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
@@ -250,3 +251,54 @@ def test_build_verification_shape():
         "otp": {"oneTimeUserPasswordText": "12345678",
                 "oneTimePasswordPrefixText": "ABC"},
     }
+
+
+# ============================================================
+# the CLI entry point and its --demo replay
+# ============================================================
+#
+# `--demo` is advertised in README.md and DESIGN.md, so it is covered
+# here: it is the one path that calls the dialog helpers through their
+# DEFAULTS rather than through scripted stand-ins, which is exactly
+# where a signature change (a keyword-only argument, a renamed helper)
+# goes unnoticed until a human runs it.
+
+def _scripted_input(monkeypatch, *answers):
+    """Answer `_demo`'s prompts in order. The dialog helpers bind the
+    builtin `input` as a default argument, so the script has to arrive
+    through stdin rather than by patching the name."""
+    monkeypatch.setattr(sys, "stdin",
+                        io.StringIO("".join(a + "\n" for a in answers)))
+
+
+def test_demo_sms_branch_runs_end_to_end(monkeypatch, capsys):
+    # Factor 2 (text me a code), first destination, then the code.
+    _scripted_input(monkeypatch, "2", "1", "12345678")
+    assert ad.main(["--demo"]) == 0
+    out = capsys.readouterr().out
+    assert "challenge-invocations" in out and "challenge-verifications" in out
+    # The prefix is echoed back on the verification; the code never is.
+    assert ad.DEMO_OTP_PREFIX in out
+    assert "12345678" not in out
+
+
+def test_demo_push_branch_runs_end_to_end(monkeypatch, capsys):
+    # Factor 1 (approve in the app): one device, then the "press Enter"
+    # acknowledgement — no code is read on this branch.
+    _scripted_input(monkeypatch, "1", "")
+    assert ad.main(["--demo"]) == 0
+    out = capsys.readouterr().out
+    assert "challenge-statuses" in out
+
+
+def test_demo_reports_a_dialog_that_ends(monkeypatch, capsys):
+    # Junk at the factor menu exhausts the retries; the demo reports it
+    # and exits non-zero rather than raising.
+    _scripted_input(monkeypatch, "9", "9", "9")
+    assert ad.main(["--demo"]) == 1
+    assert "dialog ended" in capsys.readouterr().err
+
+
+def test_no_args_prints_help(capsys):
+    assert ad.main([]) == 0
+    assert "--demo" in capsys.readouterr().out

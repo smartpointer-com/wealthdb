@@ -67,8 +67,8 @@ format offered.
 This is read-only observation. Per CLAUDE.md, never click a Pay /
 Transfer / Zelle / Send / Deposit / confirm control, stay out of card
 management, settings, and the secure message center, and keep to the
-retail checking + savings surfaces — never any investment console the
-login may also expose.
+retail deposit and credit-card *read* surfaces — never any investment
+console the login may also expose.
 
 Recording stops when the last browser window is closed (Camoufox's
 persistent context fires `close`) or after `--max-duration` (default 1h) as
@@ -115,11 +115,11 @@ EVENT_PREFIX = "__CHASE_EVENT__ "
 # leak into an embedded third-party frame.
 HOST_RE = re.compile(r"(^|\.)chase\.com$", re.I)
 
-# Locators tried in order. Deliberately broad — no real captures exist yet
-# (this harness produces them), so they anchor on standard HTML
-# conventions rather than any one observed id. The Chase sign-in is
-# username-keyed (not an email), hence the name/id substring hooks lead
-# and the email conventions trail as defence.
+# Locators tried in order. Deliberately broad: this harness has to find a
+# form it may never have seen, so they anchor on standard HTML conventions
+# rather than the ids DESIGN.md §A pins — and login.py reuses this fill for
+# the same reason. The Chase sign-in is username-keyed (not an email), hence
+# the name/id substring hooks lead and the email conventions trail as defence.
 USER_SELECTOR = (
     "input[autocomplete='username'], "
     "input[name*='user' i], "
@@ -140,11 +140,10 @@ PWD_SELECTOR = "input[type='password']"
 #      form (SPA: may be after the initial DOM), signal Python via a
 #      console.log() sentinel so the Python side can fill it. Host-gated so
 #      neither detector can fire on a third-party frame; there is no path
-#      gate because no captures exist yet to name the logon routes — the
-#      Python side only fills when username + password fields co-exist in
-#      one frame, which is what keeps credentials out of lone fields. Init
-#      scripts run in every frame, so the homepage's sign-in iframe is
-#      covered too.
+#      gate — the Python side only fills when username + password fields
+#      co-exist in one frame, which is what keeps credentials out of a lone
+#      field like the 2FA code entry. Init scripts run in every frame, so
+#      the homepage's sign-in iframe is covered too.
 CLICK_RECORDER_JS = r"""
 (() => {
   const xpathOf = (el) => {
@@ -202,9 +201,8 @@ CLICK_RECORDER_JS = r"""
       }));
     }
     // OTP / one-time-code field detector — emits the field's STATIC
-    // descriptor (never its value) once it mounts, so the 2FA surface
-    // (SMS / email code expected — observed, not assumed) is recorded
-    // even when no click lands on the field itself.
+    // descriptor (never its value) once it mounts, so the 2FA surface is
+    // recorded even when no click lands on the field itself.
     const otp = document.querySelector(
       "input[autocomplete='one-time-code'], input[inputmode='numeric'], " +
       "input[name*='otp' i], input[name*='code' i], input[id*='otp' i], " +
@@ -286,10 +284,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--no-prefill", action="store_true",
         help=("Skip pre-filling the Chase login form. Use when you want to "
               "verify the form selectors by typing the credentials "
-              "yourself (recommended for the very first run, before the "
-              "selectors have been validated against a real capture), or "
-              "when $CHASE_USERNAME / $CHASE_PASSWORD are intentionally "
-              "unset."),
+              "yourself, or when $CHASE_USERNAME / $CHASE_PASSWORD are "
+              "intentionally unset."),
     )
     p.add_argument(
         "--fresh", action="store_true",
@@ -383,7 +379,8 @@ def _maybe_prefill_login(page, username: str, password: str,
     correct value; the field is marked done regardless of the outcome so
     later DOM mutations never trigger a re-fill that fights a hand-typed
     value. A field that already has content is marked done untouched.
-    Never submits — Sign in + 2FA are driven manually in the VNC session.
+    Never submits: explore leaves Sign in + 2FA to the VNC session, and
+    login.py, which reuses this fill, submits separately.
     Returns True iff at least one field was newly filled and verified."""
     did = False
     for frame in page.frames:
