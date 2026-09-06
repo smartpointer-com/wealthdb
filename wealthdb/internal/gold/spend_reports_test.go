@@ -528,6 +528,14 @@ func TestSpendingInBaseDeltasAreLines(t *testing.T) {
 // very signature a pinned gift shares with them: the rule is per row,
 // not per signature, and the resolution underneath it does not move.
 //
+// And the one exception (migration 0052): a card bill the built-in
+// rule labelled with the issuer it was paid to shows that ISSUER,
+// which comes off the enrichment row rather than the store. Two card
+// bills share one signature here, one labelled and one not, so the
+// column is proved to follow the label rather than the key: the
+// labelled bill names its issuer, the unlabelled one names nothing,
+// and neither shows the store's name for the signature they share.
+//
 // Four surfaces are read in one test because inheritance is the
 // property: the macro that defines the column, the spending
 // transaction report, the web view over it and the whole-ledger
@@ -556,12 +564,17 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		id, acct, kind, descr string
 		sig, detailed, prov   string
 		net                   int
+		label                 string // the card rule's issuer label, if any
 	}{
-		{"T-CARDBILL-JAN", "CASH1", "withdrawal", "CARD BILL", "sig-issuer", "card_spend", "rule", -250},
-		{"T-GIFT-JAN", "CASH1", "withdrawal", "FAMILY SUPPORT", "sig-person", "gift", "manual", -180},
+		{"T-CARDBILL-JAN", "CASH1", "withdrawal", "CARD BILL", "sig-issuer", "card_spend", "rule", -250, ""},
+		// The same signature, labelled: the bill's narrative named the
+		// issuer it was paid to.
+		{"T-CARDBILL-NAMED", "CASH1", "withdrawal", "CARD BILL", "sig-issuer", "card_spend", "rule", -260,
+			"Example Card Issuer"},
+		{"T-GIFT-JAN", "CASH1", "withdrawal", "FAMILY SUPPORT", "sig-person", "gift", "manual", -180, ""},
 		// A pin on the grocery signature: the store names it and files
 		// it as groceries, and this one row is a gift.
-		{"T-GIFT-PINNED", "CARD1", "purchase", "CORNER MARKET", "sig-market", "gift", "manual", -25},
+		{"T-GIFT-PINNED", "CARD1", "purchase", "CORNER MARKET", "sig-market", "gift", "manual", -25, ""},
 	}
 	for _, l := range lines {
 		if _, err := db.ExecContext(ctx, `
@@ -574,9 +587,9 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                                           merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at)
-        VALUES ('test-src', ?, ?, 1, ?, ?, 100)`,
-			l.id, l.sig, l.detailed, l.prov); err != nil {
+                                          spend_detailed, provenance, merchant_label, assigned_at)
+        VALUES ('test-src', ?, ?, 1, ?, ?, ?, 100)`,
+			l.id, l.sig, l.detailed, l.prov, sql.NullString{String: l.label, Valid: l.label != ""}); err != nil {
 			t.Fatalf("seed %s enrichment: %v", l.id, err)
 		}
 	}
@@ -594,8 +607,9 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		"T-GIFT-PINNED":  "gift",
 	}
 	named := map[string]string{
-		"T-GROC-JAN":    "Corner Market",
-		"T-GROC-REFUND": "Corner Market",
+		"T-GROC-JAN":       "Corner Market",
+		"T-GROC-REFUND":    "Corner Market",
+		"T-CARDBILL-NAMED": "Example Card Issuer",
 	}
 	type verdict struct{ merchant, detailed sql.NullString }
 	check := func(surface string, got map[string]verdict, ids ...string) {
@@ -639,7 +653,8 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		}
 		return out
 	}
-	inBase := []string{"T-ATM-JAN", "T-CARDBILL-JAN", "T-GIFT-JAN", "T-GIFT-PINNED", "T-GROC-JAN", "T-GROC-REFUND"}
+	inBase := []string{"T-ATM-JAN", "T-CARDBILL-JAN", "T-CARDBILL-NAMED", "T-GIFT-JAN",
+		"T-GIFT-PINNED", "T-GROC-JAN", "T-GROC-REFUND"}
 	ledger := append([]string{"T-CARDPAY-JAN", "T-SUBSCR-JAN"}, inBase...)
 
 	check("spend_txn_categories", read(`
@@ -676,7 +691,7 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		t.Fatalf("web_spending: %v", err)
 	}
 	defer rows.Close()
-	gifts := 0
+	gifts, issuers := 0, 0
 	for rows.Next() {
 		var detailed string
 		var merchant sql.NullString
@@ -685,8 +700,14 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 		}
 		switch detailed {
 		case "cash_withdrawal", "card_spend", "gift":
-			if merchant.Valid {
+			// A card bill is the one delta line that may name
+			// something: the issuer it was paid to, and never the
+			// store's name for its signature.
+			if merchant.Valid && !(detailed == "card_spend" && merchant.String == "Example Card Issuer") {
 				t.Errorf("web_spending: a %s line shows merchant %q, want none", detailed, merchant.String)
+			}
+			if merchant.Valid {
+				issuers++
 			}
 			if detailed == "gift" {
 				gifts++
@@ -702,6 +723,9 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 	}
 	if gifts != 2 {
 		t.Errorf("web_spending lists %d gift lines, want 2 (the pinned row on the grocery signature among them)", gifts)
+	}
+	if issuers != 1 {
+		t.Errorf("web_spending lists %d issuer-named delta lines, want 1 (the labelled card bill)", issuers)
 	}
 
 	// The store is untouched: the names stay where `wealthdb

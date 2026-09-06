@@ -89,7 +89,8 @@ func enrichmentSnapshot(t *testing.T, db *sql.DB, ctx context.Context) []string 
 	rows, err := db.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
                COALESCE(merchant_signature, '(null)'), signature_version,
-               COALESCE(spend_detailed, '(null)'), provenance
+               COALESCE(spend_detailed, '(null)'), provenance,
+               COALESCE(merchant_label, '(null)')
           FROM spend_txn_enrichment
          ORDER BY silver_source_id, transaction_external_id`)
 	if err != nil {
@@ -98,13 +99,13 @@ func enrichmentSnapshot(t *testing.T, db *sql.DB, ctx context.Context) []string 
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var src, id, sig, detailed, prov string
+		var src, id, sig, detailed, prov, label string
 		var version int
-		if err := rows.Scan(&src, &id, &sig, &version, &detailed, &prov); err != nil {
+		if err := rows.Scan(&src, &id, &sig, &version, &detailed, &prov, &label); err != nil {
 			t.Fatalf("scan enrichment overlay: %v", err)
 		}
-		out = append(out, fmt.Sprintf("%s/%s sig=%q v%d cat=%s via=%s",
-			src, id, sig, version, detailed, prov))
+		out = append(out, fmt.Sprintf("%s/%s sig=%q v%d cat=%s via=%s label=%s",
+			src, id, sig, version, detailed, prov, label))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate enrichment overlay: %v", err)
@@ -264,6 +265,128 @@ func TestPassUnpairedCardPaymentIsCardSpend(t *testing.T) {
 	}
 	if _, ok := spendingBaseIDs(t, db, ctx)["T-BILL-UNPAIRED"]; ok {
 		t.Error("the bill is still in the spending base after its card was collected")
+	}
+}
+
+// TestPassCardBillCarriesItsIssuer pins the one exception to a delta
+// line having no merchant: a card bill names the ISSUER it was paid
+// to, because that is the only handle there is on which card the money
+// went to. The bill's own signature names the payer's bank or the
+// holder and is not a merchant, so the label comes from the built-in
+// card rule's issuer table rather than from the merchant store.
+//
+// Every other line in the fixture is the boundary. A bill recognised
+// only by a masked card number names no issuer. A gift and an
+// own-account move are deltas and carry no merchant at all, whatever
+// the store holds for their signatures — the own-account move here is
+// the same Chase-shaped bill, paired, so a label that outlived the
+// verdict that produced it would show up as an issuer on an internal
+// transfer. A vendored line still shows the store's name. And the
+// provider tier and a config rule label nothing: the exception is the
+// card rule's alone.
+//
+// Every value is synthetic.
+func TestPassCardBillCarriesItsIssuer(t *testing.T) {
+	db, ctx := openGold(t)
+	const chaseBill = "PAYMENT TO CHASE CARD ENDING IN ####"
+	const maskedBill = "0000XXXXXXXX0000 03.09.26"
+	seedTxns(t, db, ctx,
+		// A bill whose narrative names its issuer, and one recognised
+		// only by the masked card number it was topped up with.
+		txn{"bank", "T-BILL-NAMED", "CASH1", "withdrawal", day(40), -950, "", chaseBill, ""},
+		txn{"bank", "T-BILL-MASKED", "CASH1", "withdrawal", day(41), -120, maskedBill, "", ""},
+		// The same named bill, paired with the card's own leg: the
+		// matcher outranks the rule, and the verdict it replaces takes
+		// the label with it.
+		txn{"bank", "T-BILL-PAIRED", "CASH1", "withdrawal", day(20), -400, "", chaseBill, ""},
+		txn{"bank", "T-CARD-LEG", "CARD1", "card_payment", day(20), 400, "", "", ""},
+		// A gift, pinned, on a signature the store has named.
+		txn{"bank", "T-GIFT", "CASH1", "withdrawal", day(42), -300, "Example Relative", "", ""},
+		// A vendored line the store named: the merchant column is
+		// unmoved for everything that is not a delta.
+		txn{"bank", "T-GROCERY", "CARD1", "purchase", day(43), -60, "Corner Market", "", ""},
+		// A config rule places a card bill from the narrative.
+		txn{"bank", "T-CONFIG-BILL", "CASH1", "withdrawal", day(45), -260,
+			"Example Card Services Ltd", "", ""},
+	)
+	// The provider tier places a card bill of its own, from a booking
+	// type that names one — which only a bank's vocabulary carries, so
+	// it needs a source of that kind.
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('swiss-bank', 'ubs', '/tmp/ubs.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at)
+             VALUES ('swiss-bank', 'CASH3', 'cash', 'Swiss cash', 1, 1)`); err != nil {
+		t.Fatalf("seed the bank source: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		txn{"swiss-bank", "T-PROVIDER-BILL", "CASH3", "withdrawal", day(44), -220,
+			"", "Statement settlement", "Payment To Card"},
+	)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
+                                               signature_version, assigned_at, model_name) VALUES
+            ('EXAMPLE RELATIVE', 'Example Relative', 'GENERAL_SERVICES_OTHER_GENERAL_SERVICES',
+             ?, 100, 'test-model'),
+            ('CORNER MARKET', 'Corner Market', 'FOOD_AND_DRINK_GROCERIES', ?, 100, 'test-model')`,
+		SignatureVersion, SignatureVersion); err != nil {
+		t.Fatalf("seed the merchant store: %v", err)
+	}
+
+	runPass(t, db, ctx, Options{
+		Rules: []Rule{{regexp.MustCompile(`(?i)EXAMPLE CARD SERVICES`), canonical.SpendDetailedCardSpend}},
+		Pins: []Pin{{Source: "bank", Account: "CASH1", Day: day(42), Amount: -300,
+			Currency: "USD", Detailed: canonical.SpendDetailedGift}},
+	})
+
+	for _, tc := range []struct{ source, id, detailed, provenance, merchant string }{
+		{"bank", "T-BILL-NAMED", canonical.SpendDetailedCardSpend, ProvenanceRule, "Chase"},
+		{"bank", "T-BILL-MASKED", canonical.SpendDetailedCardSpend, ProvenanceRule, ""},
+		{"bank", "T-BILL-PAIRED", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher, ""},
+		{"bank", "T-GIFT", canonical.SpendDetailedGift, ProvenanceManual, ""},
+		{"bank", "T-GROCERY", "FOOD_AND_DRINK_GROCERIES", "model", "Corner Market"},
+		{"swiss-bank", "T-PROVIDER-BILL", canonical.SpendDetailedCardSpend, ProvenanceProvider, ""},
+		{"bank", "T-CONFIG-BILL", canonical.SpendDetailedCardSpend, ProvenanceRule, ""},
+	} {
+		var merchant, detailed sql.NullString
+		var provenance string
+		if err := db.QueryRowContext(ctx, `
+        SELECT merchant_name, spend_detailed, provenance FROM spend_txn_categories()
+         WHERE silver_source_id = ? AND transaction_external_id = ?`, tc.source, tc.id).
+			Scan(&merchant, &detailed, &provenance); err != nil {
+			t.Fatalf("read %s: %v", tc.id, err)
+		}
+		if merchant.String != tc.merchant || detailed.String != tc.detailed || provenance != tc.provenance {
+			t.Errorf("%s = (merchant %q, %q, %q), want (%q, %q, %q)", tc.id,
+				merchant.String, detailed.String, provenance, tc.merchant, tc.detailed, tc.provenance)
+		}
+	}
+
+	// The label is stored on the card rule's row and nowhere else, so
+	// a tier that never sets one cannot inherit it from the row it
+	// overruled.
+	rows, err := db.QueryContext(ctx, `
+        SELECT transaction_external_id FROM spend_txn_enrichment
+         WHERE merchant_label IS NOT NULL ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("read the labelled rows: %v", err)
+	}
+	defer rows.Close()
+	var labelled []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan the labelled rows: %v", err)
+		}
+		labelled = append(labelled, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the labelled rows: %v", err)
+	}
+	if strings.Join(labelled, ",") != "T-BILL-NAMED" {
+		t.Errorf("labelled rows = %v, want only T-BILL-NAMED", labelled)
 	}
 }
 

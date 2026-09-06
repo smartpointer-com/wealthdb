@@ -395,8 +395,9 @@ def report_models():
         "report_spending": (
             spending(),
             "Every spending line over all time — merchant (blank on a line "
-            "with none: a cash withdrawal, a bill on a card not itemised, a "
-            "gift, or a line nothing has resolved), resolved category (both "
+            "with none: a cash withdrawal, a gift, or a line nothing has "
+            "resolved; a bill on a card not itemised names the issuer it "
+            "was paid to), resolved category (both "
             "levels, '(uncategorized)' when unknown) and account — with its "
             "net amount in USD, CHF and EUR carried as "
             "one row per currency (pick one with a `currency` filter). "
@@ -1001,22 +1002,32 @@ def question_defs(db_id, mid):
                    "limit": 25}),
             {}),
         # Ranks merchants only. A line resolved to a delta — a gift, a
-        # bill on a card not itemised, cash out of an ATM — carries no
-        # merchant (migration 0048), and a line with no merchant is not
-        # a merchant; so the ranking filters them out, and only the
-        # ranking: the transaction list below keeps them, since a line
-        # is a line.
+        # bill on a card not itemised, cash out of an ATM — is not a
+        # merchant transaction, and one kind of delta line now carries
+        # a name: a card bill labelled with the issuer it was paid to
+        # (migration 0052). A blank merchant was the proxy for "not a
+        # delta" (migration 0048) and no longer is, so the ranking
+        # excludes the delta CATEGORIES outright — a delta is
+        # primary-level, so `spend_primary <> spend_detailed` reads the
+        # dimension's own marker rather than restating a list of values
+        # — and still needs a name to rank by. Only the ranking
+        # filters: the transaction list below keeps every line, since a
+        # line is a line.
         "Top 50 merchants": ("table",
             "The fifty merchants with the most net spend over the window. A "
             "merchant is the normalized counterparty the enrichment pass "
             "resolved to a merchant category, so the ranking is of "
-            "merchants only: lines with no merchant — a gift, a bill on a "
-            "card not itemised, cash out of an ATM, or a line nothing has "
-            "resolved — are outside the ranking, though inside every total "
-            "and the transaction list." + spend_note,
+            "merchants only: delta lines — a gift, a bill on a card not "
+            "itemised (which names its issuer, not a merchant), cash out of "
+            "an ATM — and lines nothing has resolved are outside the "
+            "ranking, though inside every total and the transaction "
+            "list." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
-                   "filter": ["not-null", _f("merchant_name", "type/Text")],
+                   "filter": ["and",
+                              ["not-null", _f("merchant_name", "type/Text")],
+                              ["!=", _f("spend_primary", "type/Text"),
+                                     _f("spend_detailed", "type/Text")]],
                    "breakout": [_f("merchant_name", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 50}),
@@ -1845,22 +1856,24 @@ def spending_privacy_defs(db_id, model_ids):
     # a WHERE predicate only, so the counterparty decides the rows
     # without ever reaching a column. The list still answers the
     # question the money tile answers — how concentrated the spending
-    # is. As on the money tile, a line with no merchant is not a
-    # merchant and is outside the ranking, but not outside the
-    # denominator: the shares are of the
-    # window's whole net spend, the anchor the twin's scalar reads as
-    # 100, so the total is summed apart from the ranked rows.
+    # is. As on the money tile, a delta line is not a merchant
+    # transaction and is outside the ranking — including a card bill,
+    # which names the issuer it was paid to rather than a merchant
+    # (migration 0052) — but not outside the denominator: the shares
+    # are of the window's whole net spend, the anchor the twin's scalar
+    # reads as 100, so the total is summed apart from the ranked rows.
     spend_card("Top 50 merchants (privacy)", "table",
         "The fifty merchants with the most net spend, each as % of the "
         "window's net spend — ranked, and unnamed: merchant names are "
-        "redacted. Lines with no merchant (a gift, a bill on a card not "
-        "itemised, cash out of an ATM, a line nothing has resolved) are "
-        "outside the ranking, though inside the total the shares are "
-        "of. Rank 1's share is how concentrated the window is.",
+        "redacted. Delta lines (a gift, a bill on a card not itemised, "
+        "which names its issuer, cash out of an ATM) and lines nothing has "
+        "resolved are outside the ranking, though inside the total the "
+        "shares are of. Rank 1's share is how concentrated the window is.",
         "WITH r AS (\n"
         f"  SELECT {val} AS v\n"
         "    FROM web_spending" + where + "\n"
         "     AND merchant_name IS NOT NULL\n"
+        "     AND spend_primary <> spend_detailed\n"
         "   GROUP BY merchant_name),\n"
         "t AS (\n"
         f"  SELECT CASE WHEN {val} <> 0 THEN {val} END AS total\n"

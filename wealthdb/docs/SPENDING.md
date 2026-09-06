@@ -13,11 +13,11 @@ different vocabulary with a different purpose and lives in
 Related design: DESIGN.md §4.11 (the `categorize` and
 `categorizations` subcommands), §4.12 (the `spending` read command),
 §5.1 (the `spending` config block), §13.11 (the pins ledger), and
-migrations 0040 / 0041 / 0045 / 0046 / 0047 / 0048 / 0049 / 0050
-(the `spend_categories` dimension, the enrichment overlay, the
+migrations 0040 / 0041 / 0045 / 0046 / 0047 / 0048 / 0049 / 0050 /
+0052 (the `spend_categories` dimension, the enrichment overlay, the
 `investment`, `card_spend` and `gift` deltas, the blank merchant on a
-delta line, the serving views' zone-free timestamps, and the model
-tier's resolved provenance).
+delta line, the serving views' zone-free timestamps, the model tier's
+resolved provenance, and the issuer a card bill names).
 
 ---
 
@@ -232,9 +232,10 @@ scope)`: a per-transaction verdict beats the merchant-wide one. Both
 the lattice has exactly one definition. The merchant store is reached
 *through* the enrichment row's signature, which is why the pass records
 a signature even for rows it cannot categorise. The same macro
-publishes the merchant column, and publishes it only on a row whose
-resolved category is vendored: a delta line carries no `merchant_name`,
-whatever the store holds for its signature (§7).
+publishes the merchant column, and publishes the STORE's name only on
+a row whose resolved category is vendored: a delta line carries no
+`merchant_name`, whatever the store holds for its signature — except a
+card bill, which names the issuer it was paid to (§7).
 
 **Within the transaction scope** the order is pin > matcher > rule >
 provider, and it reads weakest-first:
@@ -375,7 +376,7 @@ accounts rather than from anyone's preference.
 
 | rule | verdict | why |
 |---|---|---|
-| `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer-descriptor table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number. |
+| `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
 | `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. |
 | `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. |
 
@@ -416,9 +417,9 @@ provenance and, for `internal_transfer`, by deleting the row from the
 base: the failure that is invisible in a report. **Built-in rules read
 the narrative only; config rules read narrative and memo** (below).
 
-The card-payment rule's issuer table lists the phrases a
-deposit-account export puts on a credit-card bill, one per statement
-format, digits masked — `PAYMENT TO CHASE CARD ENDING IN
+The card-payment rule's issuer table is a list of ISSUERS, each with
+the phrases a deposit-account export can put on a bill paid to it, one
+per statement format, digits masked — `PAYMENT TO CHASE CARD ENDING IN
 ####`, `CHASE CREDIT CRD AUTOPAY`, `AMERICAN EXPRESS ACH PMT`,
 `AMERICAN EXPRESS CREDIT CARD`, `CITI CARD ONLINE PAYMENT ####`, `CITI
 AUTOPAY PAYMENT ####`, `CITI CREDIT CARD PAYMENT`, `UBS SWITZERLAND
@@ -428,7 +429,10 @@ card number as the whole counterparty, which is a card top-up, in
 either of two masking conventions: the spaced `XXXX XXXX XXXX ####`,
 and the one-token `####XXXXXXXX####` — first four and last
 four digits kept, the middle eight masked, often followed by a date
-fragment. Each descriptor is a whole-word phrase matched *anywhere* in
+fragment. The two masked forms are the entries that name no issuer:
+they say a row is a card bill and nothing about whose card it is, so
+they place the verdict and label nothing.
+Each descriptor is a whole-word phrase matched *anywhere* in
 the signature or in either narrative field, so the mandate notice a
 direct debit puts before the creditor (`DIRECT DEBIT; <CODE> OBJECTION TO <BANK>; WITHIN 30 DAYS;`,
 §4) makes no difference whether or not the normaliser stripped it. The
@@ -441,7 +445,15 @@ The table holds **issuers only**: a store card that names its merchant
 belongs in that merchant's category, which the model or a config rule
 places; adding a retailer to the table would re-file its purchases as
 generic card spend, which is precisely the information the
-placeholder exists to stop losing. Phrases in every built-in rule
+placeholder exists to stop losing — and would put a retailer's name in
+the merchant column of a line that is not its purchases.
+The name in each entry is what a bill matched by it is **labelled**
+with, and the label is the merchant column of the `card_spend` line
+(§7). It is the rule's own output, carried out of the tier beside the
+category and stored on the enrichment row: no other tier writes one,
+and a tier that overrules the card rule clears it with the verdict it
+replaces, so the label never outlives the bill it describes.
+Phrases in every built-in rule
 match whole tokens, never substrings, so `SCORECARD PAYMENTS` does not
 carry the phrase `CARD PAYMENT`.
 
@@ -1080,7 +1092,7 @@ everything else in a flag — the returns family's shape:
 |---|---|
 | `summary` | a period bucket: `txn_count`, `spend`, `refunds`, `net_spend` |
 | `categories` | a (bucket, category) pair, plus its `share` of the bucket |
-| `transactions` | a spending line: merchant (none on a delta line), category, provenance, amount |
+| `transactions` | a spending line: merchant (none on a delta line, the issuer on a card bill), category, provenance, amount |
 
 The window is positional and defaults to the **trailing twelve
 months**, where the returns window defaults to inception. A return is a
@@ -1131,29 +1143,52 @@ value an unplaced row carries. `signature-only` is the backlog
 `merchant` is the store's name for the line's signature, and only on a
 line whose resolved category is vendored. A line resolving to a delta
 carries none (migration 0048), whatever the store holds for its
-signature, because a delta line is not a merchant transaction: a bill
-for a card not itemised names the issuer or the holder, a gift names
-the recipient, cash out of an ATM names a bank and a place, and none
-of those is who the money was spent with. The rule is per line, not
-per signature: a pin that places `gift` on one row of a signature the
-store has named blanks that row alone, and its siblings keep the name
-and the category the store gave them. Nothing else moves. The store
-keeps the verdict — `wealthdb categorizations` still lists it — and
-the resolution underneath is the lattice of §3, unchanged: the delta
-placed at transaction scope outranks the store's verdict, and the
-merchant column follows whichever value won.
+signature, because a delta line is not a merchant transaction: a gift
+names the recipient, an own-account move the holder's own bank, cash
+out of an ATM a bank and a place, and none of those is who the money
+was spent with. The rule is per line, not per signature: a pin that
+places `gift` on one row of a signature the store has named blanks
+that row alone, and its siblings keep the name and the category the
+store gave them. Nothing else moves. The store keeps the verdict —
+`wealthdb categorizations` still lists it — and the resolution
+underneath is the lattice of §3, unchanged: the delta placed at
+transaction scope outranks the store's verdict, and the merchant
+column follows whichever value won.
+
+**A card bill is the one exception, and it names its ISSUER**
+(migration 0052). A `card_spend` line is a bill for a card wealthdb
+does not itemise, so there are no purchases to name — that absence is
+the whole reason the placeholder exists — and the issuer the bill was
+paid to is the only handle there is on which card the money went to.
+Without it the line is one undifferentiated bucket per period. The
+name does not come from the store, which holds whatever a model made
+of a narrative naming the payer's own bank: it comes from the
+card-payment rule's issuer table (§3), carried out of the tier as a
+label and stored on the enrichment row (`merchant_label`), and the
+macro reads it exactly where the store's name is refused. It is the
+card rule's alone — a bill recognised by a generic card-payment phrase
+or by a masked card number names no issuer and stays blank, and the
+model tier, the provider tier, a config rule, a pin and the matcher
+never write one — so an issuer appears in the column only on a line
+this rule filed as a bill to that issuer.
+
+The label is a merchant column, not a merchant: a report that ranks
+merchants excludes the delta categories rather than reading a blank
+merchant as "not a delta", or an issuer ranks among shops. The
+dashboard's two rankings do exactly that (web/DESIGN.md).
 
 Delta-ness is read off the `spend_categories` dimension rather than
 restated as a list: a delta is primary-level (`spend_primary =
 spend_detailed`, §2), so a delta added to `canonical` and seeded is
-blank in the merchant column with no change to the macro. Everything
+blank in the merchant column with no change to the macro — and, being
+unlabelled, blank whatever the enrichment row holds. Everything
 downstream inherits the column from `spend_txn_categories()` by name —
 `spending_lines_base`, the three spending reports,
 `report_transactions` (so `wealthdb transactions` shows no merchant on
 an own-account move or a subscription either), `web_spending` and the
-dashboard's merchant ranking, which ranks only lines that carry a
-merchant — a line with no merchant is not a merchant and is left out
-of the ranking.
+dashboard's merchant ranking, which ranks the vendored lines that
+carry a merchant: a delta line is not a merchant transaction, and an
+issuer is not a merchant, so both are left out of the ranking.
 
 ### What `-p` redacts
 
@@ -1161,8 +1196,9 @@ of the ranking.
 from. The fence (§5) gates candidacy for the merchant store at every
 context level, so a wire, an ACH, a P2P narrative — the shapes that
 carry a counterparty's NAME where a merchant would be — cannot acquire
-a name *today*; and a line placed as a gift or a card bill carries none
-whatever the store holds (above). Neither makes the column safe to
+a name *today*; and a line placed as a gift carries none whatever the
+store holds, while a card bill carries an institution's name rather
+than a narrative's (above). None of that makes the column safe to
 print. The store is append-only across signature revisions and across
 widenings of the fence itself, and the enrichment lookup applies a
 stored verdict by signature for as long as it is there: a name bought
@@ -1247,7 +1283,8 @@ tidies the store — by then the rows have moved on.
   bill whose card *is* collected nets out exactly as before, and
   collecting a card replaces its bills with its purchases on the next
   pass. The rule's issuer table names issuers only — a store card that
-  names its merchant is that merchant's spend.
+  names its merchant is that merchant's spend — and the issuer it
+  matched is what the line carries as its merchant (§7).
 - **A cash gift is spending, visible as what it is** (`gift`, §2).
   The vendored vocabulary means a shop by gifts-and-novelties and a
   non-profit by donations, and left to itself the model files cash gifts
@@ -1266,6 +1303,16 @@ tidies the store — by then the rows have moved on.
   Decided per line from the resolved value, and read off the
   dimension's own marker (a delta is primary-level) rather than a
   second list, so a new delta is covered by being seeded.
+- **…except a card bill, which names its issuer** (migration 0052, §7).
+  A card bill has no purchases to name, and the issuer it was paid to
+  is the only handle on which card the money went to; without it the
+  `card_spend` line is one undifferentiated bucket. The name comes from
+  the card-payment rule's issuer table rather than from the merchant
+  store — the store holds whatever a model made of a narrative naming
+  the payer's own bank — and is written by that rule alone, cleared by
+  any tier that overrules it. It is a handle, not a merchant: a report
+  that ranks merchants excludes the delta categories rather than
+  reading a blank merchant as "not a delta".
 - **Merchant-keyed categorisation**, stored globally. A merchant is
   the same merchant whichever card met it.
 - **The description outranks a counterparty that names no merchant**

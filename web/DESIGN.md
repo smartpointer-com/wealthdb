@@ -124,10 +124,16 @@ trend and the monthly bars), and no card renders a merchant or account
 label — the merchant list ranks unnamed rows, the account breakdown regroups
 onto source × account kind, and `report_spending_pct` drops the merchant
 column so a scalar's drill-through cannot surface a counterparty either.
-On both views the merchant list ranks merchants only: a line with no merchant
-— a gift, a bill on a card not itemised, cash out of an ATM, a line nothing
-has resolved (migration 0048 blanks the column on a delta line) — is not a
-merchant and is left out of the ranking.
+On both views the merchant list ranks merchants only: a line whose resolved
+category is a delta — a gift, a bill on a card not itemised, cash out of an
+ATM — is not a merchant transaction, and neither is a line nothing has
+resolved, so both are left out of the ranking. The predicate is the delta
+categories themselves (a delta is primary-level, so the two category columns
+are equal on one) plus a merchant to rank by. A blank merchant used to stand
+in for the first half, and stopped: migration 0048 blanks the column on a
+delta line, but migration 0052 gives a card bill the ISSUER it was paid to,
+which is a handle on which card the money went to and not a merchant to rank
+among shops.
 The transaction lists keep such lines, since a line is a line, and the twin's
 shares stay relative to the window's whole net spend.
 It also carries **no account picker**, where the money view does: a picker

@@ -53,6 +53,10 @@ type spendRule struct {
 	tokens   []string
 	phrases  []string
 	shapes   []*regexp.Regexp
+	// issuers is the descriptor table a match is LABELLED from, and
+	// only the card-payment rule has one. A rule without it never
+	// labels; see spendRule.label and cardIssuers.
+	issuers []cardIssuer
 	// refusedBy vetoes the rule for a row any of its fields match. It
 	// is how one rule declines a shape a later rule owns, where the
 	// two patterns genuinely overlap on the same row and rule order
@@ -60,15 +64,34 @@ type spendRule struct {
 	refusedBy *spendRule
 }
 
-// cardIssuerDescriptors are the phrases a deposit-account export puts
-// on a credit-card bill, one entry per known statement format. The
-// digits are masked in the comments and never reach a signature
+// cardIssuer is one row of the card-payment rule's issuer table
+// (cardIssuers): an issuer's display name, and the descriptor phrases
+// that identify a bill paid to it.
+type cardIssuer struct {
+	name    string
+	phrases []string
+}
+
+// cardIssuers is the card-payment rule's descriptor table. Each entry is
+// an issuer, and the phrases a deposit-account export prints on a bill
+// paid to it — one phrase per known statement format.
+//
+// The name is what the bill is LABELLED with. A `card_spend` line
+// carries it as its merchant (migration 0052), because the issuer is
+// the only handle on which card the money went to; the bill's
+// signature names the payer's own bank or the holder, and is not a
+// merchant. An entry with an EMPTY name is a descriptor that says a
+// row is a card bill without saying whose card it is: it places the
+// verdict exactly as a named one does and labels nothing.
+//
+// The digits are masked in the comments and never reach a signature
 // anyway — a trailing card number is a reference number to Normalize —
 // and an issuer's name is not personal data, so the names stay.
 //
-// Each is matched as a whole-word phrase ANYWHERE in the signature or
-// in either raw narrative field, which is what makes the rule
-// indifferent to what precedes the issuer. A Swiss direct debit leads with the mandate notice —
+// Each phrase is matched as a whole-word phrase ANYWHERE in the
+// signature or in either raw narrative field, which is what makes the
+// rule indifferent to what precedes the issuer. A Swiss direct debit
+// leads with the mandate notice —
 // `DIRECT DEBIT; <CODE> OBJECTION TO <BANK>; WITHIN 30 DAYS;` — which
 // Normalize strips (SignatureVersion 2); the rule matches with or
 // without that strip, because it never anchors to the head.
@@ -79,27 +102,52 @@ type spendRule struct {
 // merchant's category, which the model or a config rule places. A
 // retailer in this table would re-file its purchases as generic card
 // spend, which is precisely the information the placeholder exists to
-// stop losing.
-var cardIssuerDescriptors = []string{
-	// PAYMENT TO CHASE CARD ENDING IN ####
-	// CHASE CREDIT CRD AUTOPAY
-	"PAYMENT TO CHASE CARD", "CHASE CREDIT CRD",
-	// AMERICAN EXPRESS ACH PMT    M### / A###
-	// AMERICAN EXPRESS CREDIT CARD
-	"AMERICAN EXPRESS ACH PMT", "AMERICAN EXPRESS CREDIT CARD",
-	// CITI CARD ONLINE PAYMENT    ####
-	// CITI AUTOPAY     PAYMENT    ####
-	// CITI CREDIT CARD PAYMENT
-	"CITI CARD ONLINE PAYMENT", "CITI AUTOPAY", "CITI CREDIT CARD PAYMENT",
-	// UBS SWITZERLAND AG;C/O UBS CARD CENTER
-	// UBS AG;C/O UBS CARD CENTER AG …
-	// …; UBS CARD CENTER; CREDIT CARD STATEMENT …   (direct debit)
-	// …; UBS CARD CENTER; CARD PAYMENT …            (direct debit)
-	"UBS CARD CENTER",
-	// XXXX XXXX XXXX ####: a masked card number as the whole
-	// counterparty is a card top-up. The masking that keeps some of
-	// the digits is a shape, not a phrase — see cardIssuerShapes.
-	"XXXX XXXX XXXX",
+// stop losing — and would put a retailer's name in the merchant column
+// of a line that is not its purchases.
+var cardIssuers = []cardIssuer{
+	{"Chase", []string{
+		// PAYMENT TO CHASE CARD ENDING IN ####
+		// CHASE CREDIT CRD AUTOPAY
+		"PAYMENT TO CHASE CARD", "CHASE CREDIT CRD",
+	}},
+	{"American Express", []string{
+		// AMERICAN EXPRESS ACH PMT    M### / A###
+		// AMERICAN EXPRESS CREDIT CARD
+		"AMERICAN EXPRESS ACH PMT", "AMERICAN EXPRESS CREDIT CARD",
+	}},
+	{"Citi", []string{
+		// CITI CARD ONLINE PAYMENT    ####
+		// CITI AUTOPAY     PAYMENT    ####
+		// CITI CREDIT CARD PAYMENT
+		"CITI CARD ONLINE PAYMENT", "CITI AUTOPAY", "CITI CREDIT CARD PAYMENT",
+	}},
+	{"UBS Card Center", []string{
+		// UBS SWITZERLAND AG;C/O UBS CARD CENTER
+		// UBS AG;C/O UBS CARD CENTER AG …
+		// …; UBS CARD CENTER; CREDIT CARD STATEMENT …   (direct debit)
+		// …; UBS CARD CENTER; CARD PAYMENT …            (direct debit)
+		"UBS CARD CENTER",
+	}},
+	{"", []string{
+		// XXXX XXXX XXXX ####: a masked card number as the whole
+		// counterparty is a card top-up. It says the row is a card
+		// bill and nothing about who issued the card, so it names no
+		// issuer and the line it places carries no label. The masking
+		// that keeps some of the digits is a shape, not a phrase —
+		// see cardIssuerShapes.
+		"XXXX XXXX XXXX",
+	}},
+}
+
+// cardIssuerPhrases flattens the table into the card rule's phrase
+// list. What a bill LOOKS like is spelled once, in the table, which
+// stays the only place an issuer is named.
+func cardIssuerPhrases() []string {
+	out := make([]string, 0, len(cardIssuers))
+	for _, iss := range cardIssuers {
+		out = append(out, iss.phrases...)
+	}
+	return out
 }
 
 // cardIssuerShapes are the masked card numbers a phrase cannot spell:
@@ -107,7 +155,9 @@ var cardIssuerDescriptors = []string{
 // string and only the SHAPE is shared. Each is matched against a
 // single whole token, anywhere in the signature, and places the card
 // rule's verdict exactly as a descriptor phrase does. The same
-// issuers-only boundary applies.
+// issuers-only boundary applies. A shape names no issuer — a masked
+// number says which card, never whose — so a bill it places carries
+// no label, exactly as the bare masked-card descriptor does.
 var cardIssuerShapes = []*regexp.Regexp{
 	// ####XXXXXXXX####, often followed by a date fragment: the first
 	// four and last four digits kept, the middle eight masked, as one
@@ -145,14 +195,15 @@ var cashWithdrawalRule = spendRule{
 // are the most specific; a row matching two rules is a row whose
 // narrative already named the more specific thing.
 //
-// Each rule must keep a DISTINCT detailed value. RuleCategory returns
-// the category alone, so the tests identify which rule fired by the
-// value it assigns; two rules sharing one would quietly weaken those
-// tests to a category assertion. If a second rule ever has to assign
-// an existing value, give the tests an unexported matchRule over the
-// same inputs, returning (spendRule, bool), that RuleCategory wraps —
-// rather than putting the rule's name back on the exported signature:
-// provenance in gold is the tier, not the rule.
+// Each rule must keep a DISTINCT detailed value. RuleCategory names no
+// rule — it returns the category and the issuer label a card bill
+// carries — so the tests identify which rule fired by the value it
+// assigns; two rules sharing one would quietly weaken those tests to a
+// category assertion. If a second rule ever has to assign an existing
+// value, give the tests an unexported matchRule over the same inputs,
+// returning (spendRule, bool), that RuleCategory wraps — rather than
+// putting the rule's name back on the exported signature: provenance
+// in gold is the tier, not the rule.
 var builtinRules = []spendRule{
 	{
 		// A card payment leaving a cash account is one of two things,
@@ -175,10 +226,19 @@ var builtinRules = []spendRule{
 		// verdict on the next pass, since the leg then pairs.
 		//
 		// Three pattern sets: the generic phrases that name the ACT of
-		// paying a card, cardIssuerDescriptors, the issuer formats seen
-		// on real exports, and cardIssuerShapes, the masked card numbers
-		// a phrase cannot spell. None names a retailer — see the table's
-		// comment for why a store card is left alone.
+		// paying a card, the descriptor phrases of cardIssuers, the issuer
+		// formats a deposit-account export prints, and cardIssuerShapes,
+		// the masked
+		// card numbers a phrase cannot spell. None names a retailer — see
+		// the table's comment for why a store card is left alone.
+		//
+		// The issuer table also LABELS the bill: a match on a named
+		// issuer's descriptor carries that issuer's name out of
+		// RuleCategory, and the enrichment pass stores it as the line's
+		// merchant label, which is what lets a report group card spend by
+		// the card it went to. A match on a generic phrase, on the bare
+		// masked-card descriptor or on a shape names no issuer and labels
+		// nothing.
 		//
 		// A row the cash-withdrawal rule matches is not one of these,
 		// whatever else it carries. Cash taken at a machine is booked
@@ -199,8 +259,9 @@ var builtinRules = []spendRule{
 			"ONLINE PAYMENT", "ELECTRONIC PAYMENT", "CARD PAYMENT",
 			"CREDIT CARD PAYMENT", "CREDIT CRD", "PAYMENT TO CARD",
 			"CARD PMT", "CC PAYMENT",
-		}, cardIssuerDescriptors...),
-		shapes: cardIssuerShapes,
+		}, cardIssuerPhrases()...),
+		shapes:  cardIssuerShapes,
+		issuers: cardIssuers,
 	},
 	cashWithdrawalRule,
 	{
@@ -226,12 +287,20 @@ var builtinRules = []spendRule{
 // RuleCategory applies the built-in rule tier to a row: its merchant
 // signature and the two raw narrative fields it was built from, each
 // tested on its own — the description up to its memo separator, never
-// the memo behind it. It returns the detailed category and whether any
-// rule fired; which rule fired is not carried, because provenance in
-// gold is the tier rather than the individual rule. Rule order
-// outranks field order — a row whose signature fits a later rule and
-// whose description fits an earlier one gets the earlier verdict — and
-// a row with no text anywhere never fires.
+// the memo behind it. It returns the detailed category, the label the
+// match carries, and whether any rule fired; which rule fired is not
+// carried, because provenance in gold is the tier rather than the
+// individual rule. Rule order outranks field order — a row whose
+// signature fits a later rule and whose description fits an earlier
+// one gets the earlier verdict — and a row with no text anywhere never
+// fires.
+//
+// The label is the ISSUER a card bill was paid to, and it is empty for
+// everything else: every other built-in has no issuer table, and
+// inside the card rule a generic card-payment phrase, the bare
+// masked-card descriptor and the masked-card shapes name no issuer.
+// The pass stores it as the line's merchant label, which is the whole
+// of the exception to a delta line carrying no merchant.
 //
 // The provider's own filing of the row is read for REFUSALS only
 // (spendRule.refusedBy), never to place a verdict. A booking type is
@@ -240,7 +309,7 @@ var builtinRules = []spendRule{
 // provider tier wearing the rule tier's provenance and outranking it.
 // Reading it to decline a row is the opposite move: it lets the tier
 // below, which owns that filing, have the row.
-func RuleCategory(signature, counterparty, description, providerCategory string) (detailed string, ok bool) {
+func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	fields := make([]narrativeField, 0, 3)
 	for _, s := range []string{signature, counterparty, description} {
@@ -257,10 +326,10 @@ func RuleCategory(signature, counterparty, description, providerCategory string)
 			continue
 		}
 		if r.matchesAny(fields) {
-			return r.detailed, true
+			return r.detailed, r.label(fields), true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // narrativeField is one text the rules are tested against, folded
@@ -344,32 +413,62 @@ func ConfigRuleCategory(rules []Rule, counterparty, description string) (string,
 // of them.
 func (r spendRule) matchesAny(fields []narrativeField) bool {
 	for _, f := range fields {
-		if r.matches(f.tokens, f.joined) {
+		if r.matches(f) {
 			return true
 		}
 	}
 	return false
 }
 
-func (r spendRule) matches(tokens map[string]bool, joined string) bool {
+// label is the display name of the first NAMED issuer in the rule's
+// table whose descriptor matches one of the fields, and "" when none
+// does. A rule with no table — every built-in but the card rule —
+// never labels, and neither do the card rule's own unnamed
+// descriptors: what they identify is a card bill, not whose card.
+//
+// The table's order decides a row naming two issuers, the way rule
+// order decides a row matching two rules; the fields are equal, since
+// a creditor named in the description alone is as much the creditor as
+// one named in the key.
+func (r spendRule) label(fields []narrativeField) string {
+	for _, iss := range r.issuers {
+		if iss.name == "" {
+			continue
+		}
+		for _, f := range fields {
+			for _, phrase := range iss.phrases {
+				if f.hasPhrase(phrase) {
+					return iss.name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// hasPhrase reports whether the field carries the phrase as a run of
+// WHOLE tokens: the joined form is padded so a phrase can neither
+// start nor end inside a token — SCORECARD PAYMENTS does not carry the
+// phrase CARD PAYMENT.
+func (f narrativeField) hasPhrase(phrase string) bool {
+	return strings.Contains(" "+f.joined+" ", " "+phrase+" ")
+}
+
+func (r spendRule) matches(f narrativeField) bool {
 	for _, tok := range r.tokens {
-		if tokens[tok] {
+		if f.tokens[tok] {
 			return true
 		}
 	}
-	// A phrase is a run of WHOLE tokens: the joined form is padded so
-	// a phrase can neither start nor end inside a token — SCORECARD
-	// PAYMENTS does not carry the phrase CARD PAYMENT.
-	padded := " " + joined + " "
 	for _, phrase := range r.phrases {
-		if strings.Contains(padded, " "+phrase+" ") {
+		if f.hasPhrase(phrase) {
 			return true
 		}
 	}
 	// A shape is one whole token by pattern: the set already holds
 	// the tokens split, so no boundary padding is needed.
 	for _, shape := range r.shapes {
-		for tok := range tokens {
+		for tok := range f.tokens {
 			if shape.MatchString(tok) {
 				return true
 			}

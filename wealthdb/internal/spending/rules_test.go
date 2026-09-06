@@ -64,7 +64,7 @@ func TestRuleCategory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.signature, func(t *testing.T) {
-			detailed, ok := RuleCategory(tc.signature, "", "", "")
+			detailed, _, ok := RuleCategory(tc.signature, "", "", "")
 			if !ok {
 				t.Fatalf("RuleCategory(%q) did not fire, want %q", tc.signature, tc.detailed)
 			}
@@ -75,57 +75,106 @@ func TestRuleCategory(t *testing.T) {
 	}
 }
 
-// TestRuleCategoryCardIssuers pins the issuer-descriptor table
-// against the real export formats it was built from, digits masked,
-// and takes each one THROUGH Normalize first: the rule runs on the
-// signature, so the punctuation (`AG;C/O`), the trailing card or
-// reference numbers and the leading direct-debit notice all have to
-// survive — or fall away — the way they do on a real row. Every
-// descriptor in the table must also fire on its own, so a phrase
-// added to the table without a format behind it is caught here.
+// TestRuleCategoryCardIssuers pins the issuer table against the real
+// export formats it was built from, digits masked, and takes each one
+// THROUGH Normalize first: the rule runs on the signature, so the
+// punctuation (`AG;C/O`), the trailing card or reference numbers and
+// the leading direct-debit notice all have to survive — or fall away —
+// the way they do on a real row. Every descriptor in the table must
+// also fire on its own, so a phrase added to the table without a
+// format behind it is caught here.
+//
+// The label is pinned with the verdict, because a table entry is now
+// two claims: that the format IS a card bill, and whose card it is.
+// The bare masked-card descriptor is the entry that names no issuer —
+// it says a card was topped up and nothing about who issued it — so a
+// bill it places is labelled with nothing.
 func TestRuleCategoryCardIssuers(t *testing.T) {
-	for _, raw := range []string{
-		"PAYMENT TO CHASE CARD ENDING IN ####",
-		"CHASE CREDIT CRD AUTOPAY",
-		"AMERICAN EXPRESS ACH PMT    M### / A###",
-		"AMERICAN EXPRESS CREDIT CARD",
-		"CITI CARD ONLINE PAYMENT    ####",
-		"CITI AUTOPAY     PAYMENT    ####",
-		"CITI CREDIT CARD PAYMENT",
-		"UBS SWITZERLAND AG;C/O UBS CARD CENTER",
-		"UBS AG;C/O UBS CARD CENTER AG",
+	for _, tc := range []struct{ raw, label string }{
+		{"PAYMENT TO CHASE CARD ENDING IN ####", "Chase"},
+		{"CHASE CREDIT CRD AUTOPAY", "Chase"},
+		{"AMERICAN EXPRESS ACH PMT    M### / A###", "American Express"},
+		{"AMERICAN EXPRESS CREDIT CARD", "American Express"},
+		{"CITI CARD ONLINE PAYMENT    ####", "Citi"},
+		{"CITI AUTOPAY     PAYMENT    ####", "Citi"},
+		{"CITI CREDIT CARD PAYMENT", "Citi"},
+		{"UBS SWITZERLAND AG;C/O UBS CARD CENTER", "UBS Card Center"},
+		{"UBS AG;C/O UBS CARD CENTER AG", "UBS Card Center"},
 		// The Swiss direct-debit shape: mandate notice first, then the
 		// creditor. Normalize strips the notice (SignatureVersion 2);
 		// TestRuleCategory covers the un-stripped form.
-		"DIRECT DEBIT; CRD1W OBJECTION TO UBS; WITHIN 30 DAYS; UBS CARD CENTER; CREDIT CARD STATEMENT ##/####",
+		{"DIRECT DEBIT; CRD1W OBJECTION TO UBS; WITHIN 30 DAYS; UBS CARD CENTER; CREDIT CARD STATEMENT ##/####",
+			"UBS Card Center"},
 		// The web adapter carries DIRECT DEBIT as a booking type, so
 		// the free text can begin at the notice.
-		"CRD1W OBJECTION TO UBS; WITHIN 30 DAYS; UBS CARD CENTER; CARD PAYMENT",
-		// A masked card number as the whole counterparty: a top-up.
-		"XXXX XXXX XXXX ####",
+		{"CRD1W OBJECTION TO UBS; WITHIN 30 DAYS; UBS CARD CENTER; CARD PAYMENT",
+			"UBS Card Center"},
+		// A masked card number as the whole counterparty: a top-up,
+		// and no issuer named anywhere in it.
+		{"XXXX XXXX XXXX ####", ""},
 	} {
-		t.Run(raw, func(t *testing.T) {
-			sig := Normalize(raw, "")
-			detailed, ok := RuleCategory(sig, "", "", "")
+		t.Run(tc.raw, func(t *testing.T) {
+			sig := Normalize(tc.raw, "")
+			detailed, label, ok := RuleCategory(sig, "", "", "")
 			if !ok {
-				t.Fatalf("RuleCategory(%q) [from %q] did not fire", sig, raw)
+				t.Fatalf("RuleCategory(%q) [from %q] did not fire", sig, tc.raw)
 			}
 			if detailed != canonical.SpendDetailedCardSpend {
 				t.Errorf("RuleCategory(%q) = %q, want %q", sig, detailed, canonical.SpendDetailedCardSpend)
 			}
+			if label != tc.label {
+				t.Errorf("RuleCategory(%q) label = %q, want %q", sig, label, tc.label)
+			}
 		})
 	}
-	for _, d := range cardIssuerDescriptors {
-		if detailed, ok := RuleCategory(d, "", "", ""); !ok || detailed != canonical.SpendDetailedCardSpend {
-			t.Errorf("descriptor %q alone = (%q, %v), want the card rule", d, detailed, ok)
+	for _, iss := range cardIssuers {
+		for _, d := range iss.phrases {
+			if detailed, label, ok := RuleCategory(d, "", "", ""); !ok ||
+				detailed != canonical.SpendDetailedCardSpend || label != iss.name {
+				t.Errorf("descriptor %q alone = (%q, %q, %v), want the card rule labelled %q",
+					d, detailed, label, ok, iss.name)
+			}
+			// The same descriptor named only in the description, behind
+			// a signature and a counterparty that are nothing but the
+			// mandate code: the rule reads the narrative, not just the
+			// key, and it labels from whichever field carried the
+			// issuer.
+			if detailed, label, ok := RuleCategory("CRD1W", "CRD1W OBJECTION TO UBS", d, ""); !ok ||
+				detailed != canonical.SpendDetailedCardSpend || label != iss.name {
+				t.Errorf("descriptor %q in the description alone = (%q, %q, %v), want the card rule labelled %q",
+					d, detailed, label, ok, iss.name)
+			}
 		}
-		// The same descriptor named only in the description, behind a
-		// signature and a counterparty that are nothing but the mandate
-		// code: the rule reads the narrative, not just the key.
-		if detailed, ok := RuleCategory("CRD1W", "CRD1W OBJECTION TO UBS", d, ""); !ok ||
-			detailed != canonical.SpendDetailedCardSpend {
-			t.Errorf("descriptor %q in the description alone = (%q, %v), want the card rule", d, detailed, ok)
+	}
+}
+
+// TestRuleLabelIsTheCardRuleAlone pins the label's boundary: it is the
+// issuer a card bill was paid to, and nothing else in the tier
+// produces one. A bill recognised by a generic card-payment phrase or
+// by a masked-card shape is a bill whose issuer the narrative does not
+// name; an ATM withdrawal and a mortgage payment are not bills at all.
+// A label leaking onto any of those would put a name in the merchant
+// column of a line that has no merchant.
+func TestRuleLabelIsTheCardRuleAlone(t *testing.T) {
+	for _, sig := range []string{
+		// Card bills whose narrative names no issuer.
+		"AUTOPAY SCHEDULED PAYMENT", "PAYMENT THANK YOU MOBILE",
+		"CARD PMT WEB", "1234XXXXXXXX5678 03.09.26",
+		// The other two built-ins, which have no issuer table at all.
+		"ATM WITHDRAWAL MAIN STREET", "BARGELDBEZUG BAHNHOFPLATZ",
+		"MORTGAGE PAYMENT", "HYPOTHEKARZINS QUARTAL",
+	} {
+		detailed, label, ok := RuleCategory(sig, "", "", "")
+		if !ok {
+			t.Fatalf("RuleCategory(%q) did not fire", sig)
 		}
+		if label != "" {
+			t.Errorf("RuleCategory(%q) = %q labelled %q, want no label", sig, detailed, label)
+		}
+	}
+	// A row nothing places carries no label either.
+	if _, label, ok := RuleCategory("CORNER MARKET", "", "", ""); ok || label != "" {
+		t.Errorf("RuleCategory on a merchant = (%q, %v), want no match and no label", label, ok)
 	}
 }
 
@@ -145,7 +194,7 @@ func TestRuleCategoryCardIssuers(t *testing.T) {
 func TestBuiltinRulePatternsAreReachable(t *testing.T) {
 	for i, r := range builtinRules {
 		for _, pattern := range append(append([]string(nil), r.tokens...), r.phrases...) {
-			detailed, ok := RuleCategory(pattern, "", "", "")
+			detailed, _, ok := RuleCategory(pattern, "", "", "")
 			if !ok {
 				t.Errorf("rule %d: pattern %q fires nothing; tokenize cannot produce it as written", i, pattern)
 				continue
@@ -198,7 +247,7 @@ func TestRuleCategoryReadsNarrative(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			detailed, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, "")
+			detailed, _, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, "")
 			if !ok {
 				t.Fatalf("RuleCategory(%q, %q, %q) did not fire, want %q",
 					tc.signature, tc.counterparty, tc.description, tc.detailed)
@@ -218,7 +267,7 @@ func TestRuleCategoryReadsNarrative(t *testing.T) {
 		{"", "EXAMPLE CREDIT", "CRD SERVICES"},
 		{"EXAMPLE CREDIT", "", "CRD SERVICES"},
 	} {
-		if detailed, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, ""); ok {
+		if detailed, _, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, ""); ok {
 			t.Errorf("RuleCategory(%q, %q, %q) placed %q, want no match",
 				tc.signature, tc.counterparty, tc.description, detailed)
 		}
@@ -250,7 +299,7 @@ func TestRuleCategoryMaskedCard(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.raw, func(t *testing.T) {
 			for _, sig := range []string{tc.raw, Normalize(tc.raw, "")} {
-				detailed, ok := RuleCategory(sig, "", "", "")
+				detailed, _, ok := RuleCategory(sig, "", "", "")
 				if ok != tc.fires {
 					t.Fatalf("RuleCategory(%q) fired=%v (→ %q), want fired=%v",
 						sig, ok, detailed, tc.fires)
@@ -309,7 +358,7 @@ func TestRuleCategoryLeavesMerchantsAlone(t *testing.T) {
 			{"", "", s},
 			{"CRD1W", "CRD1W OBJECTION TO UBS", "WITHIN 30 DAYS; " + s},
 		} {
-			if detailed, ok := RuleCategory(in[0], in[1], in[2], ""); ok {
+			if detailed, _, ok := RuleCategory(in[0], in[1], in[2], ""); ok {
 				t.Errorf("RuleCategory(%q, %q, %q) placed %q, want no match",
 					in[0], in[1], in[2], detailed)
 			}
@@ -408,7 +457,7 @@ func TestCardRuleRefusesACashWithdrawal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			detailed, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, tc.providerCategory)
+			detailed, _, ok := RuleCategory(tc.signature, tc.counterparty, tc.description, tc.providerCategory)
 			if ok != tc.fires {
 				t.Fatalf("RuleCategory(…, %q) fired=%v (→ %q), want fired=%v",
 					tc.providerCategory, ok, detailed, tc.fires)
@@ -427,7 +476,7 @@ func TestCardRuleRefusesACashWithdrawal(t *testing.T) {
 // So a row whose ONLY cash-withdrawal marker is the booking type gets
 // no rule verdict at all — the provider tier below places it.
 func TestRuleRefusalReadsTheFilingOnlyToDecline(t *testing.T) {
-	if detailed, ok := RuleCategory("EXAMPLE SHOP", "EXAMPLE SHOP", "", "ATM Withdrawal"); ok {
+	if detailed, _, ok := RuleCategory("EXAMPLE SHOP", "EXAMPLE SHOP", "", "ATM Withdrawal"); ok {
 		t.Errorf("the booking type placed %q; a built-in must never fire on the provider's filing", detailed)
 	}
 }

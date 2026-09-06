@@ -173,10 +173,13 @@ check("the money cards render account labels",
           for c in ("Spend by account", "Largest transactions")))
 
 # The merchant rankings rank merchants. A line resolved to a delta — a
-# gift, a card bill, cash out of an ATM — carries no merchant (migration
-# 0048), and a line with no merchant is not a merchant; so both
-# rankings filter them out, and only the rankings: a transaction list
-# shows every line.
+# gift, a card bill, cash out of an ATM — is not a merchant
+# transaction, and a card bill now carries the issuer it was paid to as
+# its merchant (migration 0052), so a blank merchant no longer stands
+# for "not a delta". Both rankings exclude the delta CATEGORIES — a
+# delta is primary-level, so the two category columns are equal on one
+# — and still require a name to rank by. Only the rankings filter: a
+# transaction list shows every line.
 MERCHANT_RANKINGS = {"Top 50 merchants", "Top 50 merchants (privacy)"}
 
 
@@ -189,9 +192,12 @@ def filters_on_merchant(query):
     return "merchant_name" in json.dumps(query["query"].get("filter", []))
 
 
-check("the money merchant ranking keeps only lines with a merchant",
+check("the money merchant ranking keeps only named, non-delta lines",
       CARDS["Top 50 merchants"][2]["query"].get("filter")
-      == ["not-null", ["field", "merchant_name", {"base-type": "type/Text"}]])
+      == ["and",
+          ["not-null", ["field", "merchant_name", {"base-type": "type/Text"}]],
+          ["!=", ["field", "spend_primary", {"base-type": "type/Text"}],
+                 ["field", "spend_detailed", {"base-type": "type/Text"}]]])
 # Split on the CTE boundary with partition, which returns empties rather
 # than raising when the shape moved: a regression must read as one FAIL
 # line, not as a traceback that takes the rest of the file with it.
@@ -200,15 +206,18 @@ R_BODY, CTE_BOUNDARY, REST = RANK_SQL.partition("),\nt AS (\n")
 T_BODY = REST.partition("\nSELECT row_number")[0]
 check("the privacy merchant ranking is r (ranked rows) then t (the total)",
       bool(CTE_BOUNDARY) and "FROM web_spending" in T_BODY)
-check("the privacy merchant ranking keeps only lines with a merchant",
+check("the privacy merchant ranking keeps only named, non-delta lines",
       "AND merchant_name IS NOT NULL" in R_BODY and
+      "AND spend_primary <> spend_detailed" in R_BODY and
       "GROUP BY merchant_name" in R_BODY)
 check("...and its shares stay of the window's whole net spend: the total "
-      "is summed apart from the ranked rows, without the merchant filter",
+      "is summed apart from the ranked rows, without either filter",
       RANK_SQL.count("FROM web_spending") == 2 and
-      "merchant_name" not in T_BODY)
-check("both rankings say lines without a merchant are outside them",
-      all("outside the ranking" in CARDS[c][1] for c in MERCHANT_RANKINGS))
+      "merchant_name" not in T_BODY and
+      "spend_primary <> spend_detailed" not in T_BODY)
+check("both rankings say delta lines are outside them",
+      all("outside the ranking" in CARDS[c][1] and
+          "issuer" in CARDS[c][1] for c in MERCHANT_RANKINGS))
 check("exactly the two rankings filter on the merchant column",
       {c for d in ("Spending", "Spending (privacy)")
        for c, *_ in DEFS[d][3] if filters_on_merchant(CARDS[c][2])}

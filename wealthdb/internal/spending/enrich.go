@@ -514,6 +514,13 @@ type enrichmentRow struct {
 	signature  string
 	detailed   string // empty when nothing could place the row
 	provenance string
+	// merchantLabel is the issuer a card bill was paid to, and is
+	// empty everywhere else. The built-in card rule is its only
+	// source: no other tier writes it, and a tier that overrules the
+	// rule clears it, because the label describes the verdict the card
+	// rule placed rather than the row. spend_txn_categories() reads it
+	// as the merchant of a delta line (migration 0052).
+	merchantLabel string
 }
 
 // assignCategories applies the deterministic tiers to every reachable
@@ -582,19 +589,28 @@ func assignCategories(
 			} else if drift {
 				res.UnmappedProviderCategories++
 			}
-			if detailed, ok := RuleCategory(row.signature, r.counterparty, r.description, r.providerCategory); ok {
+			if detailed, label, ok := RuleCategory(row.signature, r.counterparty, r.description, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
+				row.merchantLabel = label
 			} else if detailed, ok := ConfigRuleCategory(rules, r.counterparty, r.description); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 			}
 		}
+		// A tier above the rule clears the label with the verdict it
+		// replaces. The label says which issuer a card bill was paid
+		// to, which is only true of a row this pass filed as a card
+		// bill: on a bill whose card the matcher paired, or on a row
+		// the holder pinned as something else, it would name an issuer
+		// on a line that is no longer a card bill at all.
 		if matched[r.key] {
 			row.detailed = canonical.SpendDetailedInternalTransfer
 			row.provenance = ProvenanceMatcher
+			row.merchantLabel = ""
 		}
 		if p, ok := pinned[r.key]; ok {
 			row.detailed = p.detailed
 			row.provenance = ProvenanceManual
+			row.merchantLabel = ""
 		}
 		out = append(out, row)
 
@@ -645,14 +661,16 @@ func assignCategories(
 func insertEnrichment(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, now int64) error {
 	const head = `INSERT INTO spend_txn_enrichment (
             silver_source_id, transaction_external_id, merchant_signature,
-            signature_version, spend_detailed, provenance, assigned_at
+            signature_version, spend_detailed, provenance, merchant_label,
+            assigned_at
         ) VALUES `
 	return gold.InsertChunked(ctx, tx, "spending: write enrichment", head,
-		`(?, ?, ?, ?, ?, ?, ?)`, len(rows),
+		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
 		func(i int, args []any) []any {
 			r := &rows[i]
 			return append(args, r.key.source, r.key.txID, nullableString(r.signature),
-				SignatureVersion, nullableString(r.detailed), r.provenance, now)
+				SignatureVersion, nullableString(r.detailed), r.provenance,
+				nullableString(r.merchantLabel), now)
 		})
 }
 

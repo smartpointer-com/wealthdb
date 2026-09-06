@@ -118,7 +118,7 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 				t.Fatalf("Normalize(%q, %q) = %q, want %q",
 					tc.counterparty, tc.description, got, tc.want)
 			}
-			detailed, ok := RuleCategory(got, "", "", "")
+			detailed, _, ok := RuleCategory(got, "", "", "")
 			if ok != tc.cardRule || (ok && detailed != canonical.SpendDetailedCardSpend) {
 				t.Errorf("RuleCategory(%q) on the signature alone = (%q, %v), want card rule = %v",
 					got, detailed, ok, tc.cardRule)
@@ -175,11 +175,11 @@ func TestNormalizeIgnoresMemo(t *testing.T) {
 	// A built-in never fires on the memo: the words are the payer's,
 	// and a delta placed from them would carry the rule's provenance.
 	for _, memo := range []string{"card payment", "Bancomat", "Hypothekarzins Q3"} {
-		if detailed, ok := RuleCategory("", "", canonical.JoinDescriptionMemo(caption, memo), ""); ok {
+		if detailed, _, ok := RuleCategory("", "", canonical.JoinDescriptionMemo(caption, memo), ""); ok {
 			t.Errorf("RuleCategory on memo %q placed %q, want no built-in to fire", memo, detailed)
 		}
 	}
-	if detailed, ok := RuleCategory("", "", canonical.JoinDescriptionMemo("Bancomat Main Street", "THANKS"), ""); !ok ||
+	if detailed, _, ok := RuleCategory("", "", canonical.JoinDescriptionMemo("Bancomat Main Street", "THANKS"), ""); !ok ||
 		detailed != canonical.SpendDetailedCashWithdrawal {
 		t.Errorf("RuleCategory on a narrative that names the machine = (%q, %v), want the atm rule", detailed, ok)
 	}

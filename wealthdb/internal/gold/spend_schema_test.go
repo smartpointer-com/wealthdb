@@ -234,6 +234,9 @@ func TestMigration0048DDLIsRerunnable(t *testing.T) {
 		"T-GIFT":        {"", "gift"},
 		"T-XFER-MERCH":  {"", "internal_transfer"},
 		"T-BY-MERCHANT": {"Corner Market", "FOOD_AND_DRINK_GROCERIES"},
+		// Under 0048's own issue every delta line is blank, the card
+		// bill included: its label is what migration 0052 publishes.
+		"T-CARD-BILL": {"", "card_spend"},
 	}
 	for id, w := range want {
 		var merchant, detailed sql.NullString
@@ -287,6 +290,50 @@ func TestMigration0050DDLIsRerunnable(t *testing.T) {
 		}
 		if provenance != w {
 			t.Errorf("%s provenance = %q, want %q", id, provenance, w)
+		}
+	}
+}
+
+// TestMigration0052DDLIsRerunnable holds the issuer re-issue to the
+// same bar — the ADD COLUMN must survive a replay, and the macro must
+// still answer — and pins what it publishes: a card bill shows the
+// issuer the rule labelled it with, while every other delta line still
+// shows nothing and a vendored line still shows the store's name.
+func TestMigration0052DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	rerunMigrationDDL(t, db, ctx, "0052_spend_card_bill_issuer.sql")
+
+	seedSpendingFixture(t, db, ctx)
+	// A store name for the card bill's signature and the gift's: on a
+	// delta line neither is published, whatever the store holds.
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
+                                               signature_version, assigned_at, model_name) VALUES
+            ('sig-issuer', 'Example Holder',   'GENERAL_SERVICES_OTHER_GENERAL_SERVICES', 1, 100, 'test-model'),
+            ('sig-person', 'Example Relative', 'GENERAL_SERVICES_OTHER_GENERAL_SERVICES', 1, 100, 'test-model')`); err != nil {
+		t.Fatalf("name the delta signatures: %v", err)
+	}
+	want := map[string]struct{ merchant, detailed string }{
+		// The exception: the label, not the store's name for the key.
+		"T-CARD-BILL": {"Example Card Issuer", "card_spend"},
+		// The rule, unchanged: a delta line carries no merchant.
+		"T-GIFT":       {"", "gift"},
+		"T-XFER-TXN":   {"", "internal_transfer"},
+		"T-INVEST-TXN": {"", "investment"},
+		"T-XFER-MERCH": {"", "internal_transfer"},
+		// A vendored line still reads the store.
+		"T-BY-MERCHANT": {"Corner Market", "FOOD_AND_DRINK_GROCERIES"},
+	}
+	for id, w := range want {
+		var merchant, detailed sql.NullString
+		if err := db.QueryRowContext(ctx, `
+        SELECT merchant_name, spend_detailed FROM spend_txn_categories()
+         WHERE transaction_external_id = ?`, id).Scan(&merchant, &detailed); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if merchant.String != w.merchant || detailed.String != w.detailed {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", id, merchant.String, detailed.String, w.merchant, w.detailed)
 		}
 	}
 }
@@ -402,16 +449,19 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- outside every test window that ends before it.
             ('test-src', 'T-LATE',       9000, 'CARD1', 'purchase',   'USD', -120);
 
+        -- merchant_label is the card rule's alone: the card bill carries
+        -- the issuer it was paid to, every other row NULL.
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                                           merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at) VALUES
-            ('test-src', 'T-XFER-TXN',    'sig-bank',   1, 'internal_transfer', 'rule',           100),
-            ('test-src', 'T-INVEST-TXN',  'sig-sub',    1, 'investment',        'manual',         100),
-            ('test-src', 'T-CARD-BILL',   'sig-issuer', 1, 'card_spend',        'rule',           100),
-            ('test-src', 'T-GIFT',        'sig-person', 1, 'gift',              'manual',         100),
-            ('test-src', 'T-XFER-MERCH',  'sig-xfer',   1, NULL,                'signature-only', 100),
-            ('test-src', 'T-BY-MERCHANT', 'sig-market', 1, NULL,                'signature-only', 100),
-            ('test-src', 'T-BY-TXN',      'sig-market', 1, 'TRAVEL_FLIGHTS',    'rule',           100);
+                                          spend_detailed, provenance, merchant_label,
+                                          assigned_at) VALUES
+            ('test-src', 'T-XFER-TXN',    'sig-bank',   1, 'internal_transfer', 'rule',           NULL,                  100),
+            ('test-src', 'T-INVEST-TXN',  'sig-sub',    1, 'investment',        'manual',         NULL,                  100),
+            ('test-src', 'T-CARD-BILL',   'sig-issuer', 1, 'card_spend',        'rule',           'Example Card Issuer', 100),
+            ('test-src', 'T-GIFT',        'sig-person', 1, 'gift',              'manual',         NULL,                  100),
+            ('test-src', 'T-XFER-MERCH',  'sig-xfer',   1, NULL,                'signature-only', NULL,                  100),
+            ('test-src', 'T-BY-MERCHANT', 'sig-market', 1, NULL,                'signature-only', NULL,                  100),
+            ('test-src', 'T-BY-TXN',      'sig-market', 1, 'TRAVEL_FLIGHTS',    'rule',           NULL,                  100);
 
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
                                                signature_version, assigned_at, model_name) VALUES

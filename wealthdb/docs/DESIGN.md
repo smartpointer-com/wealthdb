@@ -568,9 +568,11 @@ answer to that is wrong for some reader.
   and a stored verdict is applied by signature for as long as it is
   there, so a name bought while the fence was narrower outlives the
   fence that would now refuse it. The column is empty on every delta
-  line besides (migration 0048, docs/SPENDING.md §7): a card bill or a
-  gift the holder's own rule or pin placed shows no name, whatever the
-  store holds for its signature.
+  line besides (migration 0048, docs/SPENDING.md §7): a gift or an
+  own-account move the holder's own rule or pin placed shows no name,
+  whatever the store holds for its signature. A card bill shows the
+  issuer it was paid to (migration 0052) — an institution rather than a
+  narrative, and redacted with the column all the same.
 - `counterparty`, `description` and `merchant_signature` take the same
   class, and reach it more directly: they are the raw narrative and its
   fold, published for every row the fence let through *and* every row
@@ -2224,14 +2226,15 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
 - **Merchant and spend category on the transaction macros.** The same two
   macros also carry `merchant_name`, `spend_primary` and `spend_detailed`
   (migration 0042), resolved by `spend_txn_categories()` (re-issued by 0050,
-  which resolves the model tier's provenance) — the overlay's precedence
-  lattice, extracted so `spending_lines_base` and the transaction reports
-  share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
+  which resolves the model tier's provenance, and by 0052) — the overlay's
+  precedence lattice, extracted so `spending_lines_base` and the transaction
+  reports share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
   every row the enrichment pass does not reach. Unlike the spending reports,
   these keep a row the matcher called an own-account move and show what it was
   categorised as: `wealthdb transactions` is the whole ledger. `merchant_name`
-  is NULL on a row whose resolved category is a delta (migration 0048,
-  docs/SPENDING.md §7), and the store's name for the signature otherwise.
+  is the store's name for the signature on a row whose resolved category is
+  vendored, and NULL on a delta row (migration 0048, docs/SPENDING.md §7) —
+  except a card bill, which names the issuer it was paid to (migration 0052).
 - **Lockstep on the transaction macros.** `gold.TransactionsBetween` runs
   `SELECT *` with a positional scan, so every column added to these macros must
   land in `gold.TransactionRow` and the scan list in the same change (0039 and
@@ -2410,12 +2413,16 @@ column registry.
   GROUP BY at both levels, so it groups like any other category instead of
   rendering as a blank row. At transaction grain the category stays NULL —
   `web_spending` labels it at the view.
-- **No merchant on a delta line.** `merchant_name` is the store's name for the
-  line's signature only where the resolved category is vendored; a delta line
-  carries NULL (migration `0048`, docs/SPENDING.md §7), and `web_spending`
-  inherits it; the dashboard's merchant ranking keeps only lines that carry a
-  merchant — a line with no merchant is not a merchant and is left out of the
-  ranking.
+- **No merchant on a delta line, except a card bill.** `merchant_name` is the
+  store's name for the line's signature only where the resolved category is
+  vendored; a delta line carries NULL (migration `0048`, docs/SPENDING.md §7).
+  The one exception is a card bill, which names the ISSUER it was paid to
+  (migration `0052`): the bill's own narrative names the payer's bank or the
+  holder, so the issuer the built-in card rule matched is the only handle on
+  which card the money went to, and it is stored on the enrichment row rather
+  than read from the merchant store. `web_spending` inherits the column; the
+  dashboard's merchant ranking excludes the delta categories, so an issuer
+  never ranks as a merchant.
 - **Reconciliation.** Σ categories == the summary bucket, for every period and
   level. The identity is structural (one base, one sign split) and therefore
   cannot catch a wrong population: an over-eager internal-transfer match removes
