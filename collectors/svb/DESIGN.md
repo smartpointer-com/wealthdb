@@ -16,12 +16,16 @@ PDFs, not scraped on a schedule.
 
 ## Why a separate gold source (`svb`), not a fold-in
 
-The gold history macros (`report_*_history`, migration 0022) and the point-in-time
-`report_accounts` (0021) carry positions forward **per silver source**: a source
-contributes only the accounts present at its single latest snapshot ≤ the as-of
-day. Folding these staggered-date statements into `fidelity-web` would let an
-unrelated fidelity snapshot (a later statement or scrape) supersede and drop
-them. So the build emits a separate `svb.db` and the config registers it as
+The point-in-time gold reports (`report_accounts` / `report_positions`, migration
+0021) carry positions forward **per silver source**: a source contributes only
+the accounts present at its single latest snapshot ≤ the as-of day. (The daily
+history macros resolve their active snapshot per *account* since gold migration
+0051, but a later run that re-covers the accounts a statement was loaded
+alongside still ends them, so a feed whose statements straddle another's runs
+needs its own id there too.) Folding these staggered-date
+statements into `fidelity-web` would let an unrelated fidelity snapshot (a later
+statement or scrape) supersede and drop them. So the build emits a separate
+`svb.db` and the config registers it as
 
 ```jsonc
 { "id": "svb", "kind": "fidelity", "path": "$XDG_DATA_HOME/wealthdb/svb/svb.db" }

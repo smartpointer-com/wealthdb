@@ -60,8 +60,10 @@ versioned with its own migrations.
   row(s) it derived from. Nothing is irreversibly transformed.
 - **Snapshot-time semantics.** Position queries are as-of a date;
   each source independently contributes its latest snapshot ≤ that
-  date. FX is converted at query time (nearest historic rate),
-  never baked in.
+  date (the daily history series resolves that per account instead,
+  so a partial collector run carries the accounts it did not touch).
+  FX is converted at query time (nearest historic rate), never baked
+  in.
 
 ## Canonical model (gold)
 

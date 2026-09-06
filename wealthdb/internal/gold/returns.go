@@ -266,9 +266,12 @@ func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBou
 // loaded series, not on grain/period, so they are computed once per dataset.
 func (ds *returnsDataset) finalize() {
 	// The spine's latest emitted day across all accounts (≈ today). An account
-	// whose own series ends before this dropped out of a later same-source
-	// snapshot (closed / feed-dropped) — its value is 0 thereafter (matching the
-	// macro), and we flag it if it dropped while still holding value.
+	// whose own series ends before this was ended there by the spine: a later
+	// run of its source re-covered its company without it, or the source kept
+	// snapshotting past it beyond the carry horizon (closed / feed-dropped; a
+	// run that merely did not cover it carries it forward instead). Its value
+	// is 0 thereafter (matching the macro), and we flag it if it dropped while
+	// still holding value.
 	var globalMax int64
 	for _, a := range ds.accts {
 		if d := a.lastDay(); d > globalMax {
@@ -428,7 +431,7 @@ type accountData struct {
 	journalPresent bool
 	cryptoExcluded bool
 	hasClampedFlow bool // a flow was valued at the migration-0023 day-0 clamped FX rate
-	droppedNonzero bool // dropped out of a later same-source snapshot while still holding value
+	droppedNonzero bool // left the spine (superseded, or past its carry horizon) while still holding value
 
 	// crossLinks maps a flow's transaction id to its cross-source counterparty
 	// leg, filled by matchCrossTransfers when transfer matching is enabled
@@ -489,9 +492,11 @@ func (a *accountData) lastVal() float64 {
 // valueAt returns the value on `day` and whether the account was present then.
 // Before its first emitted row it is NULL ("not yet alive"); AFTER its
 // last emitted row it is gone — the macro stops emitting the account once a
-// later same-source snapshot supersedes it without it, so carrying forward past
-// the last row would diverge from report_*_history and break global == Σ accounts.
-// Within [first,last] the daily spine has a row for every day.
+// later run of its source re-covered everything it was last seen with without
+// it, or once its source has snapshotted past it for longer than the carry
+// horizon, so carrying forward past the last row would diverge from
+// report_*_history and break global == Σ accounts. Within [first,last] the
+// daily spine has a row for every day.
 func (a *accountData) valueAt(day int64) (float64, bool) {
 	if len(a.series) == 0 || day < a.series[0].day || day > a.series[len(a.series)-1].day {
 		return 0, false

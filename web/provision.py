@@ -270,8 +270,14 @@ def report_models():
             "transaction date. Mirrors `wealthdb transactions` (filter the date range in "
             "Metabase)."),
         # History reports: one row per entity per UTC day, from the first snapshot to
-        # today, value carried forward between snapshots. For time-series charts; filter
-        # / aggregate by as_of_day. history@today equals the matching _latest report.
+        # today, value carried forward between snapshots — per ACCOUNT (per account and
+        # currency for cash), so a run that covered only part of a source carries the
+        # rest rather than dropping it (gold migration 0051). For time-series charts;
+        # filter / aggregate by as_of_day. history@today reconciles with the matching
+        # _latest report on totals for a source that writes every account in one run;
+        # where runs are partial the history carries every account while _latest values
+        # only the last run's. In report_positions_history, snapshot_at is the ACCOUNT's
+        # active snapshot, so several values can share one source-day.
         "report_global_history": (
             wrap("report_global_history_multi()", ["as_of_day"]),
             "Whole-portfolio value for every day from the first snapshot to today "

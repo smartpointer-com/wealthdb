@@ -58,7 +58,10 @@ no registered policy would leak straight into the aggregates. The rule is
 engine-level and keys on the account kind itself.
 
 **Contract of record:** with cards loaded, the returns global **no longer
-equals `report_global`** — the gap is exactly the card balances. Same
+equals `report_global`** — the gap is the card balances, plus, for a source
+whose runs are partial, every account the per-account value spine carries
+that the per-source point-in-time `report_global` leaves out of its latest
+snapshot (gold DESIGN §10.7). Same
 precedent as mortgages and other liabilities, which the rollups already
 drop; unlike a mortgage, a card is not even reported on the liability
 line, because it produces no row at all. The holdings surfaces
@@ -125,15 +128,32 @@ returns migration:
   boundary before an account's first snapshot reads NULL ("not yet alive",
   not 0). Every grain is driven off the per-account spine (aggregated in
   Go), which is what synthetic onboarding needs.
-  - A vanished account reads **0 after its last emitted row**, not its last
-    carried value — post-disappearance absence ≠ pre-inception NULL.
-    `valueAt` returns 0 past the last row and flags `dropped_while_nonzero`,
-    so `global == Σ accounts` reconciles.
-  - **Mid-series** disappearance (an account vanishes for a snapshot or
-    two, then reappears) is carried across the gap in Go, whereas the
-    macros read 0 inside the gap. Left as-is: it is in the
-    economically-sensible direction, and the headline / terminal still
-    reconcile.
+  - The macro resolves the active snapshot **per account** (gold migration
+    0051), so an account a partial run did not cover keeps its own last
+    observation instead of dropping out of the spine for that day. The spine
+    therefore has no holes where a source writes different accounts under
+    different snapshots — which is the common case now that a deposit run, a
+    card run and a statement backfill each carry their own `snapshot_at`. An
+    account that vanishes for a snapshot or two and then reappears is carried
+    across the gap too, so the macro and the Go carry no longer disagree there.
+  - A **dropped** account — one a later run of its source re-covered
+    everything it was last seen with without mentioning it, or one its source
+    kept snapshotting past for longer than the carry horizon — ends its series
+    there, and reads **0 after its last emitted row**, not its last carried
+    value: post-disappearance absence ≠ pre-inception NULL. `valueAt` returns
+    0 past the last row and flags `dropped_while_nonzero`, so
+    `global == Σ accounts` reconciles again past the ending.
+  - A **closure** is an explicit zeroing row (`silver.ClosureMarkerBatch`),
+    which the spine carries as a zero immediately — the supported way to end
+    an account's value on the day it really ended. A cash account written down
+    to 0 is one: the history keeps zero rows, so the series continues at 0
+    rather than ending at the last non-zero balance, and the engine reads a
+    closure instead of a feed drop.
+  - An account whose FIRST observation is a zero starts its series on that
+    day rather than at its first non-zero balance, which moves its inception
+    day earlier, and an account observed only at zero enters the spine with an
+    all-zero series instead of being absent from it. That is the intended
+    reading: the account existed, and was empty.
 - **Flows:** `report_transactions(from, to, p_ccy)` converts `net_amount`
   to the output currency at `occurred_at`; adapter kind and portfolio come
   from `silver_sources` + the history rows.

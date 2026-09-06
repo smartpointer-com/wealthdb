@@ -132,32 +132,30 @@ func accountsOnDay(t *testing.T, db *sql.DB, ctx context.Context, day int64) []s
 	return out
 }
 
-// TestAccountHistoryDropsCardStatementDays is the reason
-// web_card_balances_history exists, pinned rather than asserted in a
-// comment. The account-history macros pick ONE active snapshot per
-// SOURCE per day (`hist_active_cash`) and join it by equality, which is
-// right for a source that dumps every account together. A card's
-// balances arrive on the statement clock while a source's deposit
-// accounts are re-dumped constantly, so each day reports whichever
-// account happened to snapshot last — and the other simply disappears
-// from the series.
-func TestAccountHistoryDropsCardStatementDays(t *testing.T) {
+// TestAccountHistoryKeepsBothClocks pins the account-history macros
+// against the fixture that used to defeat them (gold migration 0051).
+// A card's balances arrive on the statement clock while the same
+// source's deposit accounts are re-dumped constantly. Resolving the
+// active snapshot per (source, ACCOUNT, day) reports both accounts on
+// every day; one active snapshot per source reported only whichever of
+// them happened to snapshot last.
+func TestAccountHistoryKeepsBothClocks(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
 
 	day := func(d int) int64 { return bucketAt(2026, time.January, d) }
 
-	// Day 11's newest snapshot is the deposit re-dump, so the card's
-	// day-10 closing is not "active" and the card is gone.
-	if got := accountsOnDay(t, db, ctx, day(11)); len(got) != 1 || got[0] != "CASH1" {
-		t.Errorf("accounts on the deposit-move day = %v, want only CASH1 "+
-			"(if this now includes CARD1, the history macros learned per-account "+
-			"carry-forward and web_card_balances_history can be reconsidered)", got)
+	// Day 11's newest snapshot is the deposit re-dump; the card's day-10
+	// closing is still its own latest, so it is carried alongside.
+	if got := accountsOnDay(t, db, ctx, day(11)); len(got) != 2 ||
+		got[0] != "CARD1" || got[1] != "CASH1" {
+		t.Errorf("accounts on the deposit-move day = %v, want both CARD1 and CASH1", got)
 	}
-	// Day 12's newest snapshot is the card closing, so the deposit
-	// balance disappears instead — the same flaw, mirrored.
-	if got := accountsOnDay(t, db, ctx, day(12)); len(got) != 1 || got[0] != "CARD1" {
-		t.Errorf("accounts on the statement-closing day = %v, want only CARD1", got)
+	// Day 12's newest snapshot is the card closing, and the deposit
+	// balance is carried across it — the mirror of the same rule.
+	if got := accountsOnDay(t, db, ctx, day(12)); len(got) != 2 ||
+		got[0] != "CARD1" || got[1] != "CASH1" {
+		t.Errorf("accounts on the statement-closing day = %v, want both CARD1 and CASH1", got)
 	}
 }
 
@@ -208,7 +206,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 		want float64
 	}{
 		{10, -500}, // the closing itself
-		{11, -500}, // carried across the deposit re-dump the history macros lose it behind
+		{11, -500}, // carried across the deposit re-dump, no closing of its own
 		{12, -600},
 		{13, -600}, // carried, no snapshot of its own
 		{14, 0},    // paid off, and the zero survives

@@ -56,7 +56,9 @@ strictly relational, and the surface that future analytics
   it derives from. Nothing is irreversibly transformed.
 - **Snapshot-time semantics.** Positions queries are as-of a date.
   Each silver source contributes its latest snapshot ≤ that date,
-  independently.
+  independently. The daily history macros go one grain finer, resolving
+  the active snapshot per (source, account) so a run that covered part of
+  a source carries the rest (§10.7).
 - **Multi-currency output at query time.** Position and net-worth
   reports can be rendered in any ISO currency; the choice is made
   per-invocation, not baked into the database. FX conversion uses
@@ -2097,11 +2099,82 @@ recent snapshot's value is repeated. Positions and cash are carried
 independently (a source's two series can diverge), and the active snapshot is
 chosen by `snapshot_at` so multiple same-day dumps resolve to the latest. Each
 line is valued **once** at its own snapshot's FX day, then expanded onto a daily
-spine via an at-or-before ASOF join — so `history@today` equals the matching
-`report_*(MAX)` "latest" report and per-day compute stays cheap. Empty
-entity-days are omitted (they would be 0). `report_global_history` is
+spine via an at-or-before ASOF join — so per-day compute stays cheap. A day an
+entity has no line on at all is omitted (a day it is observed at zero on is
+not: that emits an explicit 0 row). `report_global_history` is
 `Σ report_accounts_history`. The Metabase models wrap the **multi-currency**
 variants of these (§10.8), not the single-currency macros directly.
+
+The active snapshot is resolved **per key per day** — migration `0051`,
+`hist_active_pos()` / `hist_active_cash()`. Each key is ASOF-joined onto the day
+spine on its own snapshot series, so it contributes its own most recent
+observation at or before the day and the day's total is the sum across keys. The
+key is `(source, account)` for positions and `(source, account, currency)` for
+cash, where every balance row is its own observation. One active snapshot per
+*source* (the 0022 rule) is only right for a source that writes every account in
+one run; where a deposit run, a card run and a statement backfill each land under
+their own `snapshot_at`, it reported whichever run was last and dropped every
+account the others carried — a card-only day read as that card's negative balance
+alone. Four rules complete the picture:
+
+- **Zero is an observation.** The cash line bases keep `amount = 0` rows (they
+  used to be filtered as noise), so an account paid down to zero carries the
+  zero, not the balance before it, and a zero line converts to 0 in every
+  reporting currency instead of following the FX chain — no rate exists for a
+  currency nobody quotes, and a NULL there would blank the whole entity-day's
+  sum rather than just that line. Positions need no filter of their own: the
+  carry unit is the account's whole snapshot, so a holding absent from that
+  account's next snapshot is sold rather than carried, and an explicit $0
+  position row (`silver.ClosureMarkerBatch`) reads as zero. The per-position
+  series (`report_positions_history`) keeps the plain FX chain, as its
+  point-in-time twin does — a display row has no sum for a NULL to poison.
+- **A later run that re-covers the key's company ends it.** Absence is evidence
+  of closure exactly when the run that produced it was in a position to report
+  the key: a key leaves the series at the first later snapshot of its source
+  that covers every OTHER key observed alongside it in its own last snapshot
+  *and still reported at that snapshot*. Company that left in the same run is
+  not company the source could re-cover, so it is not required — otherwise two
+  accounts closing in one nightly dump would each hold the other's ending open.
+  A nightly full dump therefore ends a closed account on the next dump, as the
+  per-source rule did, whether one account closed or several; a card-only or
+  deposit-only run covers none of another run's keys and ends nothing. A key
+  observed alone has no company to re-cover.
+- **The source's clock bounds the rest.** A key nothing ever re-covers stops
+  contributing once its source has produced a snapshot more than
+  `hist_carry_days()` (365) days after that key's last observation. The evidence
+  is always the source's own activity, never the calendar — a source that stops
+  running supersedes nothing, so its accounts keep their last values to the end
+  of the spine. The price is that a key a partial-run source stops reporting
+  without a zeroing row lingers for up to a year; an explicit zero row ends it
+  immediately, which is what the adapters emit on closure.
+- **Both endings apply to a key's LAST observation only**, so neither can open a
+  hole in the middle of a series: a card reporting per statement cycle, a
+  holding marked less often than yearly and a deposit re-dumped nightly sit in
+  one source without expiring each other for as long as their runs carry their
+  own `snapshot_at`. A slow key whose last observation *did* share a run with a
+  faster sibling is ended by that sibling's next run, which covers the whole
+  peer set — indistinguishable from closure at this grain, and what the
+  per-source rule this replaces did with that shape too.
+
+What follows for readers of these macros:
+
+- **`history@today` reconciles with `report_*(MAX)` on totals**, not on rows,
+  for a source that writes every account in one run. The point-in-time reports
+  (§10.1, migration 0021) carry a row for every account in the dimension — 0
+  when the source's latest snapshot gave it no lines — while the history emits
+  rows only for entity-days that have lines.
+- **Where runs are partial the two differ by design**: the history carries every
+  account, while the point-in-time reports read one latest snapshot per source
+  and so value only the accounts of the source's last run. `wealthdb global` and
+  `wealthdb positions` read the point-in-time macros, so for such a source the
+  CLI headline sits below a chart built on the history. Pulling the CLI onto the
+  same per-account resolution is a known follow-up; nothing in gold depends on
+  the two disagreeing.
+- **`report_positions_history.snapshot_at`** is the account's own active
+  snapshot, so it varies per account within a source-day where it used to hold
+  one value per (source, day).
+- **Cost:** the day spine is crossed with keys rather than with sources, so its
+  cardinality grows by the accounts-per-source factor.
 
 ### 10.8 Multi-currency reports (Metabase)
 
@@ -2187,7 +2260,9 @@ the dashboards — as a hybrid:
 - **SQL assembles**, reusing existing macros — no new migration. The per-account
   carry-forward value series comes from `report_accounts_history(p_ccy)` (§10.7;
   its ASOF-inner join already omits pre-inception days, so a boundary before an
-  account's first snapshot reads as NULL — "not yet alive", not 0). External
+  account's first snapshot reads as NULL — "not yet alive", not 0, and its
+  per-account carry means a run that covered only part of a source no longer
+  punches holes in the spine). External
   flows come from `report_transactions(from,to,p_ccy)` (`net_amount` converted at
   `occurred_at`). The source's adapter kind (`silver_sources.silver_kind`) and a
   `DISTINCT snapshot-day per account` query complete the inputs.
@@ -2232,7 +2307,9 @@ the per-adapter flow classification):
   `appendSeries`), never a `ReturnsPolicy` knob — policies default to a no-op,
   so a card from an unregistered source would otherwise leak. Consequence: with
   cards loaded the returns global no longer equals `report_global`; the gap is
-  exactly the card balances, which net worth still counts. The checking-side leg
+  the card balances, which net worth still counts, plus — for a source whose
+  runs are partial — the accounts the per-account value spine carries and the
+  per-source `report_global` omits (§10.7). The checking-side leg
   of a card payment stays a real external withdrawal — the money left the
   returns-visible system. See `docs/RETURNS-NOTES.md`, "Credit cards are
   returns-invisible".
@@ -2358,16 +2435,20 @@ migration `0049`):
   `(uncategorized)` here.
 - **`web_card_balances_history`** — a card account's owed balance per UTC day,
   carried forward, in the three reporting currencies
-  (`report_card_balances_history_multi()`). It does **not** come from the
-  account-history macros: those gate each day on one active snapshot per
-  **source** (`hist_active_cash`), which is right for a source that dumps every
-  account together and wrong for one where a card's balances arrive on the
-  statement clock while the deposit accounts are re-dumped constantly — the card
-  vanishes behind a deposit-move day, and the deposits vanish behind a statement
-  closing. Each (source, account, currency) is ASOF-joined onto the day spine
-  independently instead. Zero balances are kept, unlike `cash_chosen`: a paid-off
-  card really is at zero, and dropping the row would leave the series owing money
-  forever.
+  (`report_card_balances_history_multi()`). Its grain is finer than the
+  account-history macros': one row per (source, account, **currency**), carrying
+  the native balance alongside the converted trio, which is what the card cards
+  chart. It was also the first macro to ASOF-join each (source, account,
+  currency) onto the day spine independently — migration `0043`, because the
+  account-history macros then gated each day on one active snapshot per source
+  and lost a card behind a deposit-move day (and the deposits behind a statement
+  closing). Migration `0051` made that resolution the rule everywhere and
+  matched this view's cash grain, so the two now resolve a day the same way;
+  this view keeps the card-grain series. They still differ at the end of one:
+  0043 bounds nothing, so a card its source stops reporting keeps its last owed
+  balance to the end of this view's spine, where the account-history macros end
+  it (§10.7). Zero balances are kept in both: a paid-off card really is at zero,
+  and dropping the row would leave the series owing money forever.
 
 ## 11. Repository layout
 

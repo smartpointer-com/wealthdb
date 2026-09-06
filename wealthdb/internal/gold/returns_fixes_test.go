@@ -1,6 +1,8 @@
 package gold
 
 import (
+	"context"
+	"database/sql"
 	"math"
 	"strings"
 	"testing"
@@ -54,6 +56,115 @@ func TestRunReturnsDisappearingAccountReconciles(t *testing.T) {
 	b, ok := summaryFor(rows, "B")
 	if !ok || !qualityHas(b, "dropped_while_nonzero") {
 		t.Errorf("B should carry dropped_while_nonzero; got %+v", b)
+	}
+}
+
+// TestRunReturnsUncoveredAccountCarries: the value spine
+// (report_accounts_history) resolves the active snapshot per account, so an
+// account whose source ran again WITHOUT being in a position to report it —
+// a run covering a different account entirely — keeps its last value instead
+// of reading 0. Partial runs are routine, and must not zero what they never
+// looked at. The engine's terminal value therefore equals the spine's, which
+// is above the point-in-time GlobalAsOf for such a source (gold DESIGN §10.7).
+func TestRunReturnsUncoveredAccountCarries(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "src-partial", "ubs")
+	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
+	// Each account is written by its own run: B's snapshot is its alone, so
+	// the July run that covers only A says nothing about B.
+	seedAcct(t, db, ctx, "src-partial", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 1000}, {t1, 1100}}, nil)
+	seedAcct(t, db, ctx, "src-partial", "B", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0 + 3600, 1700}}, nil)
+
+	end := eod(2024, time.July, 2)
+	g, err := RunReturns(ctx, db, params("global", 0, end))
+	if err != nil {
+		t.Fatalf("global: %v", err)
+	}
+	if len(g) != 1 {
+		t.Fatalf("global rows = %d, want 1", len(g))
+	}
+	var spine float64
+	if err := db.QueryRowContext(ctx,
+		`SELECT CAST(total_value_outccy AS DOUBLE) FROM report_global_history('USD')
+		  WHERE as_of_day = ?`, (end/86400)*86400).Scan(&spine); err != nil {
+		t.Fatalf("report_global_history: %v", err)
+	}
+	got, gok := parseFloatPtr(g[0].EndValue)
+	if !gok || math.Abs(got-spine) > 1e-6 {
+		t.Errorf("returns end=%v, spine total=%v (both 2800: B is carried, not zeroed)",
+			g[0].EndValue, spine)
+	}
+
+	// B was merely uncovered, so it is not flagged as having dropped out.
+	rows, err := RunReturns(ctx, db, params("accounts", 0, end))
+	if err != nil {
+		t.Fatalf("accounts: %v", err)
+	}
+	b, ok := summaryFor(rows, "B")
+	if !ok || qualityHas(b, "dropped_while_nonzero") {
+		t.Errorf("B is uncovered, not dropped; got %+v", b)
+	}
+}
+
+// seedCashAcct upserts a cash account and one USD balance per snapshot.
+func seedCashAcct(t *testing.T, db *sql.DB, ctx context.Context, src, acct string, snaps []snap) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, base_currency, first_seen_at, last_seen_at)
+        VALUES (?, ?, 'cash', ?, 'USD', ?, ?)`,
+		src, acct, "Deposit EXAMPLE", snaps[0].at, snaps[len(snaps)-1].at); err != nil {
+		t.Fatalf("seed cash account %s/%s: %v", src, acct, err)
+	}
+	for _, s := range snaps {
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id,
+                                       currency, balance_kind, amount)
+            VALUES (?, ?, ?, 'USD', 'current', CAST(? AS DECIMAL(28,4)))`,
+			src, s.at, acct, s.val); err != nil {
+			t.Fatalf("seed balance %s/%s: %v", src, acct, err)
+		}
+	}
+}
+
+// TestRunReturnsCashZeroingIsAClosure: an account whose collector writes an
+// explicit 0 balance ends on that day and stays at 0 — the history keeps zero
+// rows (gold migration 0051), so the spine carries the zero instead of ending
+// the series at the last non-zero balance. The engine reads that as a closure,
+// not as a feed drop.
+func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "src-closed", "ubs")
+	t0, t1 := dy(2024, time.January, 2), dy(2024, time.July, 2)
+	// A keeps the source snapshotting; CASH is drained to zero at t1.
+	seedAcct(t, db, ctx, "src-closed", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 1000}, {t1, 1000}}, nil)
+	seedCashAcct(t, db, ctx, "src-closed", "CASH", []snap{{t0, 500}, {t1, 0}})
+
+	accts, err := loadAccountData(ctx, db, "USD", nil)
+	if err != nil {
+		t.Fatalf("loadAccountData: %v", err)
+	}
+	ds := &returnsDataset{accts: accts}
+	ds.finalize()
+	a, ok := accts[acctKey("src-closed", "CASH")]
+	if !ok {
+		t.Fatalf("CASH missing from the spine")
+	}
+	if a.closureDay() == 0 {
+		t.Errorf("CASH closureDay = 0, want the zero tail's end (an explicit 0 is a closure)")
+	}
+	if a.droppedNonzero {
+		t.Errorf("CASH flagged dropped_while_nonzero; it was zeroed, not dropped")
+	}
+	if v := a.lastVal(); math.Abs(v) > 1e-6 {
+		t.Errorf("CASH terminal value = %v, want 0", v)
+	}
+	if a.lastDay() != ds.globalMax {
+		t.Errorf("CASH series ends at %d, want the spine's end %d (the zero is carried)",
+			a.lastDay(), ds.globalMax)
 	}
 }
 
