@@ -168,12 +168,14 @@ SELECT p.silver_source_id,
 // makes the distinction).
 func collectProviderMisses(ctx context.Context, db *sql.DB) ([]providerMiss, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT p.silver_source_id, s.silver_kind, p.provider_category, COUNT(*) AS n
+SELECT p.silver_source_id, s.silver_kind, COALESCE(p.account_kind, ''),
+       p.provider_category, COUNT(*) AS n
   FROM spend_enrichment_population(?, ?) p
   JOIN silver_sources s ON s.silver_source_id = p.silver_source_id
  WHERE p.provider_category IS NOT NULL
    AND p.provider_category <> ''
- GROUP BY p.silver_source_id, s.silver_kind, p.provider_category
+ GROUP BY p.silver_source_id, s.silver_kind, p.account_kind,
+          p.provider_category
  ORDER BY n DESC, p.silver_source_id, p.provider_category`, int64(0), gold.MaxEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: read provider categories: %w", err)
@@ -182,13 +184,16 @@ SELECT p.silver_source_id, s.silver_kind, p.provider_category, COUNT(*) AS n
 	var out []providerMiss
 	for rows.Next() {
 		var (
-			source, kind, category string
-			n                      int
+			source, kind, accountKind, category string
+			n                                   int
 		)
-		if err := rows.Scan(&source, &kind, &category, &n); err != nil {
+		if err := rows.Scan(&source, &kind, &accountKind, &category, &n); err != nil {
 			return nil, fmt.Errorf("categorize: scan provider category: %w", err)
 		}
-		if _, _, drift := spending.ProviderCategory(kind, category); drift {
+		// The vocabulary is per product, so the account kind decides
+		// which of a source's vocabularies this value is measured
+		// against — a bank's rails are not drift, a card's are.
+		if _, _, drift := spending.ProviderCategory(kind, accountKind, category); drift {
 			out = append(out, providerMiss{Source: source, Category: category, Count: n})
 		}
 	}

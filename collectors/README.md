@@ -466,8 +466,10 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
 - A **Docker** collector has a `Dockerfile` + `entrypoint.sh`. The
   Dockerfile `FROM`s a shared base
   ([`shared/images/`](../shared/images/)): `wealthdb/base-python`
-  (REST/no-browser, ships `collectorkit`), `wealthdb/base-playwright`,
-  or `wealthdb/base-camoufox` (headed browser + Xvfb/VNC).
+  (REST/no-browser, ships `collectorkit`), `wealthdb/base-playwright`
+  (Chromium, plus Xvfb/x11vnc and the shared entrypoint bootstrap so a
+  browser can be run headed and driven over VNC), or
+  `wealthdb/base-camoufox` (that, plus a stealth-patched Firefox).
   `requirements.txt` is copied and `pip install`ed first (a cache
   layer), then the scripts + `migrations` + `entrypoint.sh` are copied
   **by name** so stray host artefacts never enter the image;

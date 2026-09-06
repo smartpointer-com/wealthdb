@@ -109,8 +109,11 @@ names and roles are the same:
 | Script | Purpose |
 | --- | --- |
 | [`login.py`](login.py) | Drive headless Chromium through the UBS Nevis login dialog and the Access App QR challenge: fill the contract number, advance through the optional "Login starten" interstitial, fetch the QR PNG from the rendered `<img>` data URL, render it both to the terminal (Unicode half-blocks; Access App scans this directly) and as an upscaled PNG (6×; for SFTP-then-scan on truly headless hosts), watch for QR rotations, poll for the post-auth URL transition (`/workbench/?login` → `/app/OQJ/<N>/ebanking/spa.html`), then persist `storageState.json` at `--state-path` (default `/secrets/ubs-web-state.json`, chmod 0600; an older `ubs_web_state.json` is read if the canonical file is absent). `--check` validates an existing state file without a new QR push. |
-| [`download.py`](download.py) | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Writes a `run.json` manifest. Credit-card transactions are intentionally skipped — this is a wealth-management toolkit. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
-| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
+| [`download.py`](download.py) | Reuse the persisted session to enumerate **cash** accounts from the homepage, then for each: export the transactions list as CSV (one file per account per window) and SWIFT MT940 enriched (one or more files per account; bisected on the 1000-trx export cap). Export `positions.csv` per portfolio (enumerated from the homepage; one CSV per `portfolioUid`). Walk the documents archive in adaptive windows (bisected on UBS's 999-row display cap) fetching each PDF via the `/api/v1/digital-banking/files/` endpoint. Then capture the card surface via [`cards.py`](cards.py). Writes a `run.json` manifest. Read-only — see [CLAUDE.md](CLAUDE.md) §1. |
+| [`explore.py`](explore.py) | Discovery harness. Launches headed Chromium on the container's Xvfb display and serves it over VNC, so a session can be driven by hand while everything it produces is recorded: the network (requests, responses and bodies, line-flushed so a crash keeps the log), the clicks, one DOM snapshot plus screenshot per structurally distinct screen, and every file downloaded. Artefacts land under `--debug-dir`, never bronze. The harness itself never navigates and never clicks — it opens the login page and records from there, so the read-only surface in [CLAUDE.md](CLAUDE.md) §1 binds whoever drives. An existing session is reused and saved back on exit, so a sign-in here is not paid for twice. |
+| [`cards.py`](cards.py) | The credit-card surface, read from the SPA's own REST API rather than scraped (see [DESIGN.md §5](DESIGN.md)): the roster, each card account's paged ledger, its billing periods with their reconciling totals, and each period's statement PDF. Read-only and enforced — an allow-list of read endpoints gates every request, including the paging cursor the ledger hands back, so a link the API advertises is never followed for being advertised. Driven by `download.py`; not a verb of its own. |
+| [`card_parsers.py`](card_parsers.py) | Bronze → silver for the card surface: pure functions from the captured JSON to the rows `load.py` writes, with no database handle, so each is testable against a synthetic payload. Holds the three readings that are easy to get wrong — the row key is the API's opaque `_id` and never `transactionNr`, a `RESERVED` row is unposted activity rather than a transaction, and `merchantName` is the category while `details` is the merchant. |
+| [`load.py`](load.py) | Parse bronze artefacts into a queryable SQLite silver database using the schemas in [migrations/](migrations/). Applies pending migrations on startup; each dump loads atomically (compound-key UPSERT on transactions, content-hash dedup for documents, skip on `dump_runs` for idempotency). Parses the card surface via [`card_parsers.py`](card_parsers.py). Also walks the documents archive and reconstructs historical position + cash snapshots from "Statement of assets" and "Account Statement" PDFs via [`pdf_parsers.py`](pdf_parsers.py) (uses `pdfplumber`, bundled in the image). |
 
 ### Why both CSV and MT940?
 
@@ -129,8 +132,39 @@ They overlap but neither is a strict superset:
 - MT940 truncates the `:86:` narrative and uses a Latin-1-ish
   encoding (mojibake on non-ASCII names).
 
-Card accounts only render the CSV button (SWIFT MT940 isn't
-defined for card transactions), so no MT940 there.
+Both are a **cash-account** concern: SWIFT MT940 is not defined for
+card transactions, and the card surface is not fetched as an export at
+all (below).
+
+### Why the card surface is fetched as JSON, not as an export
+
+The card toolbar offers the same CSV and PDF exports the cash surface
+does, and `download.py` fetches **neither**. The SPA reads its card area
+from a REST API, and that JSON is strictly richer than what the export
+renders from it: it carries a stable per-row
+identity (`_id`), which the CSV has no column for at all, plus the
+purchase and booking dates, the posted and original amounts with their
+currencies, the row's billing state, and the merchant category. Fetching
+the export too would cost a request per account for a lossy copy of what
+is already on disk.
+
+Statement PDFs are the exception, and are fetched: the eDocuments
+archive carries no card category, so a card statement exists nowhere
+else. `--no-card-statements` keeps the periods and their figures while
+skipping the rendered documents; `--no-cards` skips the surface
+entirely.
+
+The window is driven by `--lookback` like every other surface, with one
+source-specific choice: the API filters on either the purchase date or
+the booking date, and the collector asks for **booking date** — the date
+the balance moved and the date a billing period is drawn on, so a
+window's edges line up with the invoices captured beside it. Each row
+carries both dates regardless, so nothing is lost to the choice.
+
+The ledger pages at 300 rows behind a cursor, which the collector
+follows to exhaustion. Both the ledger and the invoice archive reach
+back about two years and no further — there is no deeper channel and no
+statement backfill (DESIGN.md §5.5).
 
 ### The two UBS export caps
 
@@ -154,8 +188,16 @@ below `WINDOW_MIN_DAYS = 1`.
     ├── transactions/
     │   ├── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.csv         one per account per window
     │   └── cash_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.mt940       one or more per cash account
-    └── documents/
-        └── <sha256>.pdf                                           content-addressed by the PDF bytes
+    ├── documents/
+    │   └── <sha256>.pdf                                           content-addressed by the PDF bytes
+    └── cards/
+        ├── accounts.json                                          the card roster, whole
+        ├── transactions_<sha256-prefix>_<yyyymmdd>_<yyyymmdd>.json  every ledger page for one card account
+        ├── invoices_<sha256-prefix>.json                          that account's billing periods
+        ├── invoice-details_<sha256-prefix>.json                   each period's reconciling totals
+        ├── statements_<sha256-prefix>.json                        which statement file came from which period
+        └── statements/
+            └── <sha256>.pdf                                       content-addressed by the PDF bytes
 ```
 
 The `<sha256-prefix>` collapses the opaque UBS account-id token to
@@ -205,6 +247,16 @@ companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
 - [`0006_single_window.sql`](migrations/0006_single_window.sql) —
   `dump_runs` rebuild collapsing the per-facet window columns into
   one `window_*` pair (one `--lookback` window per run).
+- [`0007_cards.sql`](migrations/0007_cards.sql) — the credit-card
+  surface: `card_accounts` (a snapshot series, carrying the balance,
+  the limit and the magnitude of unposted activity), `card_transactions`
+  (booked rows keyed on the API's own opaque row id), `card_invoices`
+  (billing periods with their opening balance, turnover and settlement
+  date, plus whether the four figures reconcile) and `card_statements`
+  (the statement PDFs, indexed). Separate tables rather than columns on
+  `accounts` / `transactions`, because a card is keyed by an opaque
+  token where a cash account is keyed by IBAN and carries the columns
+  that join it to the PSN feed.
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the
@@ -249,7 +301,7 @@ traces / ad-hoc QR PNGs:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
-| `/debug` | `~/.cache/wealthdb/debug/ubs-web` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs |
+| `/debug` | `~/.cache/wealthdb/debug/ubs-web` | opt-in screenshots / Playwright traces / ad-hoc QR PNGs, and the whole `explore` recording |
 
 Pass any debug-flag value as `/debug/...` so debug artefacts stay
 out of the bronze/silver tree.
@@ -260,12 +312,53 @@ out of the bronze/silver tree.
 ./ubs-web download --dry-run --screenshot-dir /debug/download
 ./ubs-web download --lookback 1y        # explicit wider window (default = 90 days)
 ./ubs-web load                          # defaults under the /data mount
+./ubs-web explore                       # VNC-driven capture into /debug
 ./ubs-web prune --dry-run               # print the deletion plan, delete nothing
 ./ubs-web prune                         # reclaim non-complete dumps
 ```
 
 Override any of the host paths via env vars:
 `UBS_WEB_SECRETS_DIR`, `UBS_WEB_DATA_DIR`, `UBS_WEB_DEBUG_DIR`.
+
+#### Driving an `explore` session
+
+`explore` is the one verb that runs the browser **headed**. It starts
+Chromium on a virtual X11 display inside the container and serves that
+display over VNC; the wrapper forwards a free host port (5900–6000) and
+the container prints the port and a single-use password at startup:
+
+```
+explore: VNC ready on 127.0.0.1:5901
+explore: password (single-use):  <generated per run>
+```
+
+Connect a VNC client to that address (macOS: `open vnc://localhost:5901`;
+from a remote host, tunnel first with
+`ssh -L 5901:127.0.0.1:5901 <host>`), then sign in and navigate. Nothing
+in the session is scripted — the harness records what is driven, and the
+read-only surface in [CLAUDE.md](CLAUDE.md) §1 applies to the person
+driving it.
+
+**Stop with Ctrl-C** rather than by closing the browser window. Both end
+the recording and flush the artefacts, but only Ctrl-C leaves the session
+readable long enough to save it back to the state file — which is what
+lets `download` reuse a sign-in made here instead of challenging again.
+
+The recording lands in a UTC-stamped subdir of the `/debug` mount:
+
+| Artefact | What it is for |
+| --- | --- |
+| `network.jsonl` | every request and response with headers and text bodies, written line by line so a crash keeps what was seen. The endpoint shapes behind each screen are read off this. |
+| `network.har` | the same traffic for a HAR viewer; flushed only on a clean exit. |
+| `clicks.jsonl` | one record per click with the attributes a selector is built from, plus navigation, download and lifecycle events. |
+| `dom/<NNN>/` | each structurally distinct screen's DOM (one file per UBS frame) plus a screenshot and the page URLs. |
+| `downloads/` | every file fetched during the session, sequence-prefixed so a reused filename cannot overwrite an earlier one. |
+| `trace.zip`, `trace-chunks/` | opt-in with `--trace`. |
+
+These artefacts hold real account data and unredacted identifiers. They
+live outside bronze and outside the repo, and nothing derived from them
+belongs in a tracked file (root [CLAUDE.md](../../CLAUDE.md) §4). `prune`
+reclaims them by age along with the rest of the debug dir.
 
 #### Reclaiming disk
 

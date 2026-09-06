@@ -42,7 +42,7 @@ func TestProviderCategoryTranslates(t *testing.T) {
 		"  groceries ": "FOOD_AND_DRINK_GROCERIES",
 	}
 	for category, want := range cases {
-		detailed, ok, drift := ProviderCategory("chase", category)
+		detailed, ok, drift := ProviderCategory("chase", "", category)
 		if !ok || drift || detailed != want {
 			t.Errorf("ProviderCategory(chase, %q) = (%q, %v, %v), want (%q, true, false)",
 				category, detailed, ok, drift, want)
@@ -56,7 +56,7 @@ func TestProviderCategoryTranslates(t *testing.T) {
 // tier and be COUNTED — never be guessed into a plausible neighbour,
 // which would be invisible in every report that consumed it.
 func TestProviderCategoryUnmappedFallsThrough(t *testing.T) {
-	detailed, ok, drift := ProviderCategory("chase", "Automotive & Transit")
+	detailed, ok, drift := ProviderCategory("chase", "", "Automotive & Transit")
 	if ok || detailed != "" {
 		t.Errorf("ProviderCategory(chase, unseen) = (%q, %v), want no guess", detailed, ok)
 	}
@@ -76,7 +76,7 @@ func TestProviderCategoryUnmappedSource(t *testing.T) {
 		{"chase", "   "},
 		{"ubs", ""},
 	} {
-		if detailed, ok, drift := ProviderCategory(tc.kind, tc.category); ok || drift {
+		if detailed, ok, drift := ProviderCategory(tc.kind, "", tc.category); ok || drift {
 			t.Errorf("ProviderCategory(%q, %q) = (%q, %v, %v), want ('', false, false)",
 				tc.kind, tc.category, detailed, ok, drift)
 		}
@@ -120,7 +120,7 @@ func TestProviderCategoryUBSBookingTypes(t *testing.T) {
 		"Payment to card": canonical.SpendDetailedCardSpend,
 	}
 	for value, want := range cases {
-		detailed, ok, drift := ProviderCategory("ubs", value)
+		detailed, ok, drift := ProviderCategory("ubs", "", value)
 		if !ok || drift || detailed != want {
 			t.Errorf("ProviderCategory(ubs, %q) = (%q, %v, %v), want (%q, true, false)",
 				value, detailed, ok, drift, want)
@@ -141,9 +141,84 @@ func TestProviderCategoryRailIsNotDrift(t *testing.T) {
 		"DIRECT DEBIT", "credit", "SALARY PAYMENT", "NTRF", "NMSC", "NSTO",
 		"order", "ATM Withdrawal;Reversal",
 	} {
-		if detailed, ok, drift := ProviderCategory("ubs", value); ok || drift || detailed != "" {
+		if detailed, ok, drift := ProviderCategory("ubs", "", value); ok || drift || detailed != "" {
 			t.Errorf("ProviderCategory(ubs, %q) = (%q, %v, %v), want ('', false, false)",
 				value, detailed, ok, drift)
+		}
+	}
+}
+
+// TestUBSVocabularyIsPerProduct pins the reason the registry is keyed by
+// product rather than by source: the same source publishes a booking
+// type on a bank account and a merchant category on a card, and the two
+// shapes disagree about what an unmapped value MEANS.
+func TestUBSVocabularyIsPerProduct(t *testing.T) {
+	// A card's MCC description is translated only under the card key.
+	if got, ok, _ := ProviderCategory("ubs", "card", "Grocery stores"); !ok ||
+		got != "FOOD_AND_DRINK_GROCERIES" {
+		t.Errorf("ProviderCategory(ubs, card, Grocery stores) = (%q, %v), "+
+			"want the groceries value", got, ok)
+	}
+	// The same value read as a bank booking type is not one, and a
+	// booking-type miss is a rail rather than drift.
+	if got, ok, drift := ProviderCategory("ubs", "cash", "Grocery stores"); ok || drift {
+		t.Errorf("ProviderCategory(ubs, cash, Grocery stores) = (%q, %v, %v), "+
+			"want no verdict and no drift", got, ok, drift)
+	}
+	// And a bank booking type still translates on the cash side.
+	if got, ok, _ := ProviderCategory("ubs", "cash", "ATM WITHDRAWAL"); !ok ||
+		got != canonical.SpendDetailedCashWithdrawal {
+		t.Errorf("ProviderCategory(ubs, cash, ATM WITHDRAWAL) = (%q, %v), "+
+			"want cash_withdrawal", got, ok)
+	}
+}
+
+// TestUBSCardVocabularyIsCategorical: every card row carries a category,
+// so a value the map lacks is one this build has not reviewed — the
+// drift canary, exactly as for a card issuer.
+func TestUBSCardVocabularyIsCategorical(t *testing.T) {
+	detailed, ok, drift := ProviderCategory("ubs", "card", "Llama grooming")
+	if ok || detailed != "" {
+		t.Errorf("an unreviewed MCC description must not be guessed, got %q", detailed)
+	}
+	if !drift {
+		t.Error("an unmapped card category must count as drift")
+	}
+}
+
+// TestUBSCardMoneyMovementIsLeftUnmapped: the bank's catch-all for a
+// card row that moved money rather than bought something names no line
+// of business, so placing it would file transfers as shopping.
+func TestUBSCardMoneyMovementIsLeftUnmapped(t *testing.T) {
+	if detailed, ok, _ := ProviderCategory(
+		"ubs", "card", "Banks - merchandise and services"); ok {
+		t.Errorf("got %q, want no verdict for the bank's own catch-all", detailed)
+	}
+}
+
+// TestUnknownAccountKindFallsBackToTheSourceVocabulary keeps a source
+// with one vocabulary working without an entry per account kind.
+func TestUnknownAccountKindFallsBackToTheSourceVocabulary(t *testing.T) {
+	if got, ok, _ := ProviderCategory("chase", "card", "Groceries"); !ok ||
+		got != "FOOD_AND_DRINK_GROCERIES" {
+		t.Errorf("ProviderCategory(chase, card, Groceries) = (%q, %v), "+
+			"want the source-wide chase map", got, ok)
+	}
+	if got, ok, _ := ProviderCategory("ubs", "safekeeping", "ATM WITHDRAWAL"); !ok ||
+		got != canonical.SpendDetailedCashWithdrawal {
+		t.Errorf("an account kind with no vocabulary of its own must inherit "+
+			"the source's, got (%q, %v)", got, ok)
+	}
+}
+
+// TestUBSCardValuesAreVendored: the provider tier may place a delta, but
+// every value in this map names a line of business, so all of them must
+// be real vendored taxonomy values.
+func TestUBSCardValuesAreVendored(t *testing.T) {
+	for category, detailed := range ubsCardCategories {
+		if !canonical.VendoredSpendDetailed(detailed) {
+			t.Errorf("%q -> %q is not a vendored taxonomy value",
+				category, detailed)
 		}
 	}
 }

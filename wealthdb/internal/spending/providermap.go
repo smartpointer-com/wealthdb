@@ -156,14 +156,160 @@ var ubsBookingTypes = map[string]string{
 	"PAYMENT TO CARD": canonical.SpendDetailedCardSpend,
 }
 
-// providerVocabularies is the registry, keyed by silver kind — the
-// same string `silver_sources.silver_kind` holds. A source whose kind
-// has no entry contributes no provider verdicts at all, which is the
-// correct default: a source that publishes no categories, or whose
-// vocabulary has never been reviewed, must not be read as if it had.
+// ubsCardCategories translates the merchant categories a UBS card
+// ledger carries. They are ISO 18245 MCC descriptions in UBS's own
+// spelling — including its typos and its habit of naming an airline or
+// hotel chain where the standard names a line of business — so entries
+// are written exactly as observed rather than corrected.
+//
+// The vocabulary is CATEGORICAL: every card row is filed under one, so a
+// value the map lacks is one this build has not reviewed, and is counted
+// as drift. That is the opposite reading from the same source's booking
+// types (ubsBookingTypes), which are payment rails where a miss is the
+// normal case — which is why the two are separate vocabularies keyed by
+// the product rather than one map keyed by the source.
+//
+// Where UBS's bucket is coarser than the taxonomy's, the translation
+// targets that primary's OTHER_* value rather than its most common
+// member; where it is precise, the specific value is used. A brand name
+// is translated by what the brand sells.
+var ubsCardCategories = map[string]string{
+	// Food and drink.
+	"Restaurants":           "FOOD_AND_DRINK_RESTAURANT",
+	"Fast-Food Restaurants": "FOOD_AND_DRINK_FAST_FOOD",
+	"Fast Food Restaurant":  "FOOD_AND_DRINK_FAST_FOOD",
+	"Grocery stores":        "FOOD_AND_DRINK_GROCERIES",
+	"Bakeries":              "FOOD_AND_DRINK_GROCERIES",
+	"Dairy products stores": "FOOD_AND_DRINK_GROCERIES",
+	"Candy and nut stores":  "FOOD_AND_DRINK_GROCERIES",
+	// Transport.
+	"Commuter transportation":   "TRANSPORTATION_PUBLIC_TRANSIT",
+	"Passenger railways":        "TRANSPORTATION_PUBLIC_TRANSIT",
+	"Bus lines, Tour buses":     "TRANSPORTATION_PUBLIC_TRANSIT",
+	"Taxicabs":                  "TRANSPORTATION_TAXIS_AND_RIDE_SHARES",
+	"Parking & Garages":         "TRANSPORTATION_PARKING",
+	"Gasoline service stations": "TRANSPORTATION_GAS",
+	"Toll and bridge fees":      "TRANSPORTATION_TOLLS",
+	"Delivery services - local": "TRANSPORTATION_OTHER_TRANSPORTATION",
+	// Travel.
+	"Hotels":          "TRAVEL_LODGING",
+	"Aparments":       "TRAVEL_LODGING",
+	"Travel agencies": "TRAVEL_OTHER_TRAVEL",
+	"Rent-a-car":      "TRAVEL_RENTAL_CARS",
+	"Cruise lines":    "TRAVEL_OTHER_TRAVEL",
+	"Duty free shop":  "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	// ISO 18245 assigns brand-specific codes to airlines (3000-3350)
+	// and hotel chains (3501-3999), so a card ledger's category can be
+	// a company name where the rest of the vocabulary is a line of
+	// business. The two families translate wholesale — an airline code
+	// is a flight and a hotel code is lodging, whichever carrier or
+	// chain it names — so the entries below cover the common members
+	// rather than the ones any one ledger happens to contain. An entry
+	// that never appears costs nothing; a family member that is missing
+	// reads as drift, which is the signal to add it.
+	"Air Canada":                    "TRAVEL_FLIGHTS",
+	"Air France":                    "TRAVEL_FLIGHTS",
+	"Alitalia":                      "TRAVEL_FLIGHTS",
+	"American Airlines":             "TRAVEL_FLIGHTS",
+	"Austrian":                      "TRAVEL_FLIGHTS",
+	"British Airways":               "TRAVEL_FLIGHTS",
+	"Delta":                         "TRAVEL_FLIGHTS",
+	"easyJet":                       "TRAVEL_FLIGHTS",
+	"Emirates":                      "TRAVEL_FLIGHTS",
+	"Iberia":                        "TRAVEL_FLIGHTS",
+	"KLM":                           "TRAVEL_FLIGHTS",
+	"Lufthansa":                     "TRAVEL_FLIGHTS",
+	"Qantas":                        "TRAVEL_FLIGHTS",
+	"Ryanair":                       "TRAVEL_FLIGHTS",
+	"SAS":                           "TRAVEL_FLIGHTS",
+	"Singapore Airlines":            "TRAVEL_FLIGHTS",
+	"Swiss International Air Lines": "TRAVEL_FLIGHTS",
+	"Turkish Airlines":              "TRAVEL_FLIGHTS",
+	"United Airlines":               "TRAVEL_FLIGHTS",
+	"Accor":                         "TRAVEL_LODGING",
+	"Best Western":                  "TRAVEL_LODGING",
+	"Hilton":                        "TRAVEL_LODGING",
+	"Holiday Inn":                   "TRAVEL_LODGING",
+	"Hyatt":                         "TRAVEL_LODGING",
+	"Ibis":                          "TRAVEL_LODGING",
+	"Marriott":                      "TRAVEL_LODGING",
+	"Novotel":                       "TRAVEL_LODGING",
+	"Radisson":                      "TRAVEL_LODGING",
+	"Sheraton":                      "TRAVEL_LODGING",
+	// Retail.
+	"Department stores":                        "GENERAL_MERCHANDISE_DEPARTMENT_STORES",
+	"Retail business":                          "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Clothing store":                           "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"Clothing - sports":                        "GENERAL_MERCHANDISE_SPORTING_GOODS",
+	"Shoe stores":                              "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"Book stores":                              "GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
+	"Books & newspapers (B2B)":                 "GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
+	"Games and hobby stores":                   "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	"Music stores":                             "ENTERTAINMENT_MUSIC_AND_AUDIO",
+	"Electronics Stores":                       "GENERAL_MERCHANDISE_ELECTRONICS",
+	"Computer":                                 "GENERAL_MERCHANDISE_ELECTRONICS",
+	"Camera and photographic supply stores":    "GENERAL_MERCHANDISE_ELECTRONICS",
+	"Household appliance stores":               "HOME_IMPROVEMENT_FURNITURE",
+	"Furniture":                                "HOME_IMPROVEMENT_FURNITURE",
+	"Hardware stores":                          "HOME_IMPROVEMENT_HARDWARE",
+	"Office supply stores":                     "GENERAL_MERCHANDISE_OFFICE_SUPPLIES",
+	"Card or gift or novelty or souvenir shop": "GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES",
+	"Antique shops":                            "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Numismatic or philatelic supplies":        "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Bicycle shops - sales and service":        "GENERAL_MERCHANDISE_SPORTING_GOODS",
+	"Cosmetic stores":                          "PERSONAL_CARE_OTHER_PERSONAL_CARE",
+	"Other direct Marketers":                   "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+	"Non-durable Goods (B2B)":                  "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	// Health.
+	"Pharmacies": "MEDICAL_PHARMACIES_AND_SUPPLEMENTS",
+	"Optician":   "MEDICAL_EYE_CARE",
+	// Entertainment and recreation.
+	"Amusement park":                        "ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS",
+	"Tourist Attractions and Exhibits":      "ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS",
+	"Recreation Services":                   "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	"Cinema":                                "ENTERTAINMENT_TV_AND_MOVIES",
+	"Theather Production / Ticket Agencies": "ENTERTAINMENT_TV_AND_MOVIES",
+	"Swimming pool":                         "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	// Services and utilities.
+	"Computer network/Information services":            "RENT_AND_UTILITIES_INTERNET_AND_CABLE",
+	"Telecomminication service":                        "RENT_AND_UTILITIES_TELEPHONE",
+	"Telegraph services":                               "RENT_AND_UTILITIES_TELEPHONE",
+	"Digital goods":                                    "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	"Computer software stores":                         "GENERAL_MERCHANDISE_ELECTRONICS",
+	"Schools and Educational Services":                 "GENERAL_SERVICES_EDUCATION",
+	"Government Services":                              "GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT",
+	"Advertising services":                             "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Misc. publishing and printing services":           "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Equipment rental and leasing services":            "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Professional Services - Not Elsewhere Classified": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	// The bank's own catch-all for a card row that is a money movement
+	// rather than a purchase — a mobile-payment transfer, a card
+	// top-up. It names no line of business, so it is deliberately
+	// LEFT UNMAPPED: a guess here would file person-to-person
+	// transfers as shopping. Listed so the omission reads as a
+	// decision rather than an oversight.
+	//   "Banks - merchandise and services"
+}
+
+// providerVocabularies is the registry. A source with no entry
+// contributes no provider verdicts at all, which is the correct
+// default: a source that publishes no categories, or whose vocabulary
+// has never been reviewed, must not be read as if it had.
+// The key is the silver kind, optionally narrowed to one account kind
+// with a "/" — `"ubs/card"` before `"ubs"`. A source whose products
+// publish different vocabularies needs the narrower key: UBS files a
+// bank account's rows by booking type, which is a payment rail, and a
+// card's by merchant category, which is an MCC description. One map
+// per source would have to call both the same shape, and the shape is
+// what decides whether an unmapped value is drift.
+//
+// Lookup falls back from the narrow key to the broad one, so a source
+// with one vocabulary needs only the broad entry, and an account kind
+// with no entry of its own inherits it.
 var providerVocabularies = map[string]providerVocabulary{
-	"chase": {translations: chaseCardCategories, categorical: true},
-	"ubs":   {translations: ubsBookingTypes, categorical: false},
+	"chase":    {translations: chaseCardCategories, categorical: true},
+	"ubs":      {translations: ubsBookingTypes, categorical: false},
+	"ubs/card": {translations: ubsCardCategories, categorical: true},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the
@@ -207,8 +353,8 @@ func providerCategoryKey(s string) string {
 // every payment order at a bank, would inflate a number that is
 // supposed to mean "the issuer said something this build does not
 // understand".
-func ProviderCategory(silverKind, providerCategory string) (detailed string, ok, drift bool) {
-	v, mapped := foldedProviderVocabularies[silverKind]
+func ProviderCategory(silverKind, accountKind, providerCategory string) (detailed string, ok, drift bool) {
+	v, mapped := vocabularyFor(silverKind, accountKind)
 	if !mapped {
 		return "", false, false
 	}
@@ -219,4 +365,16 @@ func ProviderCategory(silverKind, providerCategory string) (detailed string, ok,
 	}
 	detailed, ok = v.translations[key]
 	return detailed, ok, !ok && v.categorical
+}
+
+// vocabularyFor resolves the product-scoped vocabulary, falling back to
+// the source-wide one.
+func vocabularyFor(silverKind, accountKind string) (providerVocabulary, bool) {
+	if accountKind != "" {
+		if v, ok := foldedProviderVocabularies[silverKind+"/"+accountKind]; ok {
+			return v, true
+		}
+	}
+	v, ok := foldedProviderVocabularies[silverKind]
+	return v, ok
 }

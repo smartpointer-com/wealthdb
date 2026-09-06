@@ -9,9 +9,12 @@ prune engine) with ubs-web's configuration. Two things are reclaimed:
   screenshot captures ``download --debug`` writes. ``load`` never reads
   them, so reclaiming them cannot change silver. (The rest of ubs-web's
   troubleshooting output — per-landmark screenshots, the Playwright
-  trace bundle, the login QR PNG — stays outside bronze, in the
-  external ``--screenshot-dir`` / ``--trace`` / ``--qr-png`` outputs
-  under the ``/debug`` mount, where prune never sees it.)
+  trace bundle, the login QR PNG, and the whole ``explore`` capture —
+  stays outside bronze, in the external ``--screenshot-dir`` /
+  ``--trace`` / ``--qr-png`` / ``--debug-dir`` outputs under the
+  ``/debug`` mount. ``prune`` reclaims that dir separately, via the
+  shared engine's own ``--debug-dir``, which ages out each entry
+  directly under it — an ``explore`` capture is one such entry.)
 * whole run dirs that are not complete dumps — a ``--dry-run`` shell
   (``status: "dry-run"``, only a manifest and no exports), or a walk
   that crashed before finalising (``status: "in-progress"``, or no

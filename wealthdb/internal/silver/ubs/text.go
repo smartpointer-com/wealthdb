@@ -1,6 +1,7 @@
 package ubs
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -29,21 +30,44 @@ func textPtr(s string) *string {
 	return silver.StrPtrIfNonEmpty(strings.TrimSpace(s))
 }
 
+// cardReferenceRe matches the reference UBS prefixes to a card-booked
+// entry's type — the card's number and its expiry, as in
+// "<number>-<check> MM/YY; ATM Withdrawal". Anchored whole, so it
+// describes the entire leading part or nothing.
+//
+// It is deliberately narrow. The leading slot is where a payer's typed
+// message goes, and a message that merely opened with digits must not be
+// mistaken for the bank's reference; requiring the check-digit suffix and
+// the expiry together is what keeps them apart.
+var cardReferenceRe = regexp.MustCompile(`^\d{4,}-\d\s+\d{1,2}/\d{2}$`)
+
 // splitBookingType splits a CSV-feed Description2 into the payer's
 // message and the bank's booking type. The column holds the booking type
-// alone ("e-banking payment order") unless a message was typed on the
-// order, when it holds "<message>; <booking type>" — the message first,
-// the type last — so the split is at the LAST "; ": the type is what
-// follows it, the message what precedes it. A column without the
-// separator is all booking type and is returned untouched, so a row
-// without a message projects byte for byte as before; the `;Reversal`
+// alone ("e-banking payment order") unless something precedes it, when it
+// holds "<lead>; <booking type>" — the lead first, the type last — so the
+// split is at the LAST "; ": the type is what follows it. A column
+// without the separator is all booking type and is returned untouched, so
+// a row without a lead projects byte for byte as before; the `;Reversal`
 // suffix has no space and stays on the type.
+//
+// The lead is the payer's message and becomes the row's memo — EXCEPT
+// where it is the bank's own card reference, which a card-booked entry
+// carries there. That is not the payer's words, and the memo is defined
+// as exactly the payer's words: it is shown as such, and a config rule
+// may key on it (docs/SPENDING.md §3). So a card reference yields no
+// memo. Nothing is lost by dropping it — the raw column survives whole
+// in the row's payload — and nothing else moves: the booking type is
+// still what follows the separator, so the row categorises as it did.
 func splitBookingType(descKind string) (message, bookingType string) {
 	i := strings.LastIndex(descKind, "; ")
 	if i < 0 {
 		return "", descKind
 	}
-	return strings.TrimSpace(descKind[:i]), strings.TrimSpace(descKind[i+2:])
+	lead, bookingType := strings.TrimSpace(descKind[:i]), strings.TrimSpace(descKind[i+2:])
+	if cardReferenceRe.MatchString(lead) {
+		return "", bookingType
+	}
+	return lead, bookingType
 }
 
 // webTxText is a web transaction row's three narrative columns as they

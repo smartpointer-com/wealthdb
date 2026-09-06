@@ -65,13 +65,23 @@ type txn struct {
 
 func seedTxns(t *testing.T, db *sql.DB, ctx context.Context, txns ...txn) {
 	t.Helper()
+	seedTxnsIn(t, db, ctx, "USD", txns...)
+}
+
+// seedTxnsIn seeds in a named currency. Only the tests that need two of
+// them use it: the matcher partitions candidates by native currency, so
+// a cross-currency movement is a distinct case from a same-currency one
+// and cannot be expressed in the single-currency fixture.
+func seedTxnsIn(t *testing.T, db *sql.DB, ctx context.Context,
+	currency string, txns ...txn) {
+	t.Helper()
 	for _, x := range txns {
 		if _, err := db.ExecContext(ctx, `
             INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                       account_external_id, kind, currency, net_amount,
                                       counterparty, description, provider_category)
-                 VALUES (?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?)`,
-			x.source, x.id, x.occurredAt, x.account, x.kind, x.amount,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			x.source, x.id, x.occurredAt, x.account, x.kind, currency, x.amount,
 			nullableString(x.counterparty), nullableString(x.description),
 			nullableString(x.providerCategory)); err != nil {
 			t.Fatalf("seed transaction %s: %v", x.id, err)

@@ -1,10 +1,10 @@
 # Shared base for the camoufox-using collectors (the private-market
 # scrapers, schwab-web / schwab-api, fidelity-web, cointracking).
-# Layers Xvfb/x11vnc,
-# camoufox-pinned Playwright, and a pre-fetched Firefox bundle onto
-# base-playwright, and bakes the shared entrypoint bootstrap
-# (/opt/entrypoint-lib.sh) that each collector's entrypoint.sh sources.
-# Collectors FROM this skip their own xvfb/camoufox setup; their
+# Layers camoufox-pinned Playwright and a pre-fetched Firefox bundle
+# onto base-playwright, which already carries Xvfb/x11vnc and the shared
+# entrypoint bootstrap (/opt/entrypoint-lib.sh) that each collector's
+# entrypoint.sh sources.
+# Collectors FROM this skip their own camoufox setup; their
 # requirements.txt only needs to add per-collector extras (pdfplumber,
 # pypdfium2, pytest).
 #
@@ -13,21 +13,9 @@
 #   docker build -f images/base-camoufox.Dockerfile -t wealthdb/base-camoufox:latest .
 FROM wealthdb/base-playwright:latest
 
-# Xvfb gives Firefox a virtual X11 display so it can run headed
-# inside the container with no real GPU/monitor. x11vnc serves
-# that display over VNC so the browser can be driven interactively
-# (vnc-login subcommand) from a host-side VNC client.
-#
-# Pre-create /tmp/.X11-unix world-writable + sticky. Xvfb tries
-# to mkdir it on startup; when the container runs as a non-root
-# host user (we always do for volume-ownership reasons), that
-# mkdir fails (_XSERVTransmkdir: ERROR: euid != 0) and Xvfb wedges.
-# Provisioning the dir at image-build time sidesteps the race.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends xvfb x11vnc && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /tmp/.X11-unix && \
-    chmod 1777 /tmp/.X11-unix
+# Xvfb, x11vnc and the shared entrypoint bootstrap come from
+# base-playwright — running a browser headed in a container is not a
+# camoufox-specific need, so it lives one layer down.
 
 # The browser build, camoufox-py, and Playwright are a matched set: the
 # browser's juggler patches target a specific Playwright protocol, and
@@ -54,6 +42,3 @@ RUN python3 /tmp/fetch-camoufox.py "$CAMOUFOX_BUILD" && \
     cp -a /root/.cache/camoufox /opt/camoufox-cache && \
     chmod -R go+rX /opt/camoufox-cache
 
-# Shared Xvfb / x11vnc / camoufox-cache bootstrap, sourced by every
-# collector's entrypoint.sh so the ~50-line setup lives in one place.
-COPY images/entrypoint-lib.sh /opt/entrypoint-lib.sh

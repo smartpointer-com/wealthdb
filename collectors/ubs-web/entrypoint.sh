@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+# Shared Xvfb / x11vnc bootstrap (start_xvfb, start_x11vnc), baked into
+# base-playwright. Only `explore` uses it: login and download drive
+# Chromium headless, and the QR challenge is rendered to the terminal.
+# shellcheck source=/dev/null
+source /opt/entrypoint-lib.sh
+
 case "${1:-help}" in
     login)
         shift
@@ -16,6 +22,16 @@ case "${1:-help}" in
     load)
         shift
         exec python3 /app/load.py "$@"
+        ;;
+    explore)
+        # Discovery harness: headed Chromium on a virtual display, served
+        # over VNC so the session is driven by hand. The harness only
+        # records — every navigation and click is the operator's. Artefacts
+        # land in the /debug mount, never bronze.
+        start_xvfb
+        start_x11vnc explore
+        shift
+        exec python3 /app/explore.py "$@"
         ;;
     prune)
         # Delete non-complete dumps (crashed walks, --dry-run shells)
@@ -39,6 +55,7 @@ Subcommands:
   login     Mint or refresh the Playwright session state.
   download  Export bronze artefacts from the netbanking UI.
   load      Parse bronze into the silver SQLite database.
+  explore   Record a hand-driven session over VNC into /debug.
   prune     Delete non-complete dumps from the bronze tree.
             --dry-run prints the plan first.
   sh|bash   Open an interactive shell inside the container.

@@ -13,8 +13,9 @@ RUN pip install -r requirements.txt
 # traces) never make it into the image even if .dockerignore is
 # incomplete. login.py mints the session; download.py exports bronze;
 # load.py is the silver loader; prune.py is the bronze
-# non-complete-dump cleaner (also reachable host-side via the wrapper).
-COPY login.py download.py load.py prune.py landmarks.py pdf_parsers.py /app/
+# non-complete-dump cleaner (also reachable host-side via the wrapper);
+# explore.py is the discovery harness; cards.py is the card-API client and card_parsers.py its bronze reader.
+COPY login.py download.py load.py prune.py explore.py cards.py card_parsers.py landmarks.py pdf_parsers.py /app/
 COPY migrations /app/migrations
 COPY tests /app/tests
 COPY entrypoint.sh /app/

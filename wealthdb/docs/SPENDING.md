@@ -366,6 +366,17 @@ another stays one-legged and is left to the rule tier. `wealthdb
 categorize` surfaces these as *cross-currency near-pairs* rather than
 pretending to fix them.
 
+That limitation has a sharp edge once a card IS collected. A card billed
+in one currency and settled from an account in another leaves both legs
+one-legged, so its purchases are itemised *and* its bill stays in the
+base as `card_spend` — the same spending, counted twice. The card rule is
+not narrowed to prevent it: the alternative, suppressing `card_spend`
+wherever the source holds any card account, would delete a genuine bill
+for a card that is not collected, and an over-count is visible in a
+report where an under-count is not. The near-pair canary is what makes
+the shape findable; a pin or a config rule is what fixes a deployment's
+own.
+
 ### The rule tier
 
 Three built-in rules, evaluated in order, first match wins. They are
@@ -540,9 +551,17 @@ rows, and a deployment rule is the right place to act on it.
 Providers already file the rows they publish, and the filing is carried
 into gold verbatim as `transactions.provider_category`: a card issuer's
 spend category, a bank's booking type. The translation maps are per
-silver **kind** rather than per source, because the vocabulary belongs
-to the provider's product, and lookups fold case and surrounding space
-so one entry covers every era's spelling of a value.
+**product** rather than per source, because the vocabulary belongs to
+the provider's product — a source's key is its silver kind, optionally
+narrowed to one account kind (`ubs/card` before `ubs`), and a kind with
+no entry of its own inherits the source's. Lookups fold case and
+surrounding space so one entry covers every era's spelling of a value.
+
+One source needs that narrowing today. UBS files a bank account's rows
+by booking type and a card's by merchant category, and the two shapes
+disagree about what an unmapped value *means* — so they are two
+vocabularies, one categorical and one not, rather than one map that
+would have to call both the same thing.
 
 Two shapes of vocabulary, and the shape decides what a value the map
 does not hold *means*:
@@ -572,6 +591,15 @@ does not hold *means*:
   and nothing is counted. The shape is a flag on the map
   (`categorical`), so a bank's payment orders can never drown the
   canary a card issuer's drift is meant to trip.
+
+The UBS **card** vocabulary is the categorical one: ISO 18245 merchant
+category descriptions in UBS's own spelling, typos and airline names
+included, written as observed rather than corrected. One value is
+deliberately left untranslated — the bank's own catch-all for a card row
+that moved money rather than bought something (a mobile-payment
+transfer, a card top-up). It names no line of business, so a translation
+would file person-to-person transfers as shopping; leaving it unmapped
+sends the row to the model, which sees the descriptor.
 
 The map carries every UBS FX spelling for vocabulary completeness, but
 only the MT940 `NFEX` shape — a withdrawal whose narrative is a bare

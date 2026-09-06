@@ -83,6 +83,21 @@ def run_status(run_json_path: Path) -> str | None:
     return meta.get("status") if isinstance(meta, dict) else None
 
 
+def short_token(value: str, length: int = 16) -> str:
+    """A filename-safe short id for an opaque source token.
+
+    The first `length` hex chars of its SHA-256. A hash rather than a
+    slice because source tokens routinely share a long prefix — every
+    account id under one login can begin with the same customer and
+    depot segments — so slicing collides silently, giving two accounts
+    one filename and losing one of them.
+
+    Stable across runs, so a re-download of the same entity lands on the
+    same name.
+    """
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write `data` to `path` via a sibling .tmp file + rename."""
     path = Path(path)

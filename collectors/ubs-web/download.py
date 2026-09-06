@@ -6,6 +6,9 @@ Reuses the Playwright session minted by login.py to export:
   - per-account transactions CSV   — `button-csvExport`
   - per-account transactions MT940 — `button-swiftMt940Export`
   - bank-document PDFs             — `/api/v1/digital-banking/files/…`
+  - the credit-card surface        — the SPA's own card API (cards.py):
+    the roster, each card account's ledger, its billing periods and
+    their statement PDFs
 
 Files land in <bronze-dir>/<UTC-timestamp>/<artefact>. Read-only — see
 CLAUDE.md §1. Per CLAUDE.md §2, non-dry-run invocations must be
@@ -30,6 +33,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from collectorkit import bronze, cli, debugcap, launch, session
 
+import cards  # local module
 import landmarks as ubs  # local module
 
 log = logging.getLogger("ubs-web.download")
@@ -72,6 +76,11 @@ WINDOW_MIN_DAYS = 1
 # net against infinite recursion if the cap detection logic is wrong.
 WINDOW_MAX_DEPTH = 20
 
+# Emit a heartbeat every N document rows inside a window. Without it a
+# window of several hundred PDFs logs nothing between its start and its
+# end, and a walk that is merely slow reads as a hung one.
+PROGRESS_EVERY = 25
+
 # UBS's hard cap on MT940 export. The variant-chooser dialog shows
 # this number explicitly in its info banner. Exceeding it triggers
 # the "max 1000 transactions" info-only dialog (no Export button).
@@ -99,6 +108,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     # an ISO start date (e.g. --lookback 2015-01-01) or
     # --lookback all (~30y).
     cli.add_standard_args(p, verb="download")
+    # Heavy passes are on by default and opted OUT of, per the fleet's
+    # CLI contract: a bare `download` pulls everything there is.
+    p.add_argument("--no-cards", action="store_true",
+                   help="Skip the credit-card surface (roster, ledgers, "
+                        "invoices and statement PDFs). Cards are fetched "
+                        "by default.")
+    p.add_argument("--no-card-statements", action="store_true",
+                   help="Fetch the card invoices' figures but not their "
+                        "statement PDFs. Narrower than --no-cards: the "
+                        "periods and their balances still land, only the "
+                        "rendered documents are skipped.")
     p.add_argument("--dry-run", action="store_true",
                    help="Validate session and selectors; do not export "
                         "anything. Use to confirm the UI hasn't shifted "
@@ -211,9 +231,9 @@ def enumerate_accounts(page, screenshot_dir: Path | None) -> list[dict]:
         )
     maybe_screenshot(page, screenshot_dir, "home-rendered")
 
-    # Cash accounts only. Card accounts (credit-card transactions) are
-    # intentionally skipped — this is a wealth-management toolkit, not
-    # a personal-finance one. Card data is not modelled in silver.
+    # Cash accounts only: the card area is a separate family of surfaces
+    # and silver models no card yet. `explore.py` is where that surface
+    # is being mapped.
     accounts: dict[str, dict] = {}
     for selector, kind in (
         (ubs.HOME_CASH_ACCOUNT_LINK_SELECTOR, "cash"),
@@ -795,9 +815,13 @@ def _save_download(download, account: dict, out_dir: Path,
 
 
 def _account_short_id(account_id: str) -> str:
-    """First 16 hex chars of sha256(account_id). Stable + collision-
-    safe across UBS's "all-accounts-share-a-prefix" tokenisation."""
-    return hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
+    """The bronze-filename reduction of a UBS account token.
+
+    UBS tokens share a ~12-char per-customer prefix plus a ~22-char
+    per-depot one, so a slice collides silently; `bronze.short_token`
+    hashes for exactly that reason and is the one implementation.
+    """
+    return bronze.short_token(account_id)
 
 
 def _suggest_extension(suggested: str | None, fmt: str) -> str:
@@ -914,7 +938,14 @@ def _walk_window(page, context, since: date, until: date,
     )
     page_origin = _origin(page.url)
     new_in_window = 0
-    for row in rows:
+    total_rows = len(rows)
+    for n, row in enumerate(rows, start=1):
+        # A window can hold hundreds of PDFs, each one its own request.
+        # Logging only at the window boundary leaves the walk silent for
+        # minutes at a stretch, which is indistinguishable from a hang.
+        if total_rows >= PROGRESS_EVERY and n % PROGRESS_EVERY == 0:
+            log.info("docs window [%s..%s]: %d/%d rows examined",
+                     since, until, n, total_rows)
         href = row["href"] or ""
         m = ubs.DOC_FILES_API_URL_RE.match(href)
         if not m:
@@ -983,7 +1014,10 @@ def _fetch_document(context, href: str, token: str,
     try:
         resp = context.request.get(href, timeout=DOWNLOAD_TIMEOUT_MS)
     except Exception as e:
-        log.warning("doc fetch failed for token %s…: %s", token[:12], e)
+        # The href carries an apikey in its query and a request error
+        # reproduces the whole call log; neither belongs in a log line.
+        log.warning("doc fetch failed for token %s…: %s",
+                    token[:12], debugcap.safe_error(e))
         return None
     if not resp.ok:
         log.warning("doc fetch HTTP %d for token %s…", resp.status, token[:12])
@@ -1024,12 +1058,43 @@ def _strip_apikey(href: str) -> str:
 
 
 # ============================================================
+# Card surface
+# ============================================================
+
+def _capture_cards(context, page, apikey_holder: dict, run_dir: Path,
+                   since: date, until: date, *, statements: bool) -> dict | None:
+    """Capture the card roster, ledgers, invoices and statements.
+
+    Returns the manifest block, or None when the surface could not be
+    reached. A card failure never ends the run: the cash exports and the
+    document archive are already on disk by this point, and a dump that
+    is short one facet and says so beats a dump that does not exist.
+    """
+    apikey = cards.pick_apikey(apikey_holder)
+    if not apikey:
+        log.warning("no apikey observed on the SPA's own API calls; "
+                    "skipping the card surface. (It is a request header, "
+                    "harvested from live traffic — a session that served "
+                    "no API call cannot yield one.)")
+        return None
+    api = cards.CardApi(context, _origin(page.url), apikey)
+    try:
+        return cards.capture(api, run_dir, since, until, statements=statements)
+    except Exception as e:  # noqa: BLE001 — one facet, not the run
+        # Not log.exception: a request client's traceback re-renders its
+        # call log, which carries the api key and the session cookie.
+        log.warning("card capture failed: %s", debugcap.safe_error(e))
+        return {"error": debugcap.safe_error(e)}
+
+
+# ============================================================
 # run.json writing
 # ============================================================
 
 def write_run_json(run_dir: Path, since: date, until: date,
                    accounts: list[dict], documents: list[dict],
-                   positions: list[dict]) -> None:
+                   positions: list[dict],
+                   cards_meta: dict | None = None) -> None:
     payload = {
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
@@ -1061,6 +1126,10 @@ def write_run_json(run_dir: Path, since: date, until: date,
             "count": len(positions),
             "items": positions,
         },
+        # None when --no-cards was passed or the surface was unreachable;
+        # a reader tells "not fetched" from "fetched and empty" by the
+        # key being absent rather than by an empty account list.
+        **({"cards": cards_meta} if cards_meta is not None else {}),
     }
     bronze.atomic_write_json(run_dir / "run.json", payload)
 
@@ -1290,6 +1359,10 @@ def main(argv: list[str]) -> int:
                 args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
             if args.trace:
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            # The card API authenticates with a header the SPA attaches to
+            # its own calls; recording starts before any navigation so the
+            # session-verify and homepage loads below supply it.
+            apikey_holder = cards.sniff_apikey(context)
             page = context.new_page()
             page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
             try:
@@ -1304,6 +1377,7 @@ def main(argv: list[str]) -> int:
                 txn_results: list[dict] = []
                 doc_results: list[dict] = []
                 positions_meta: list[dict] = []
+                cards_meta: dict | None = None
                 if args.dry_run:
                     # Read-only walk: session verified and accounts
                     # enumerated above. Log the plan (what a real run
@@ -1311,8 +1385,14 @@ def main(argv: list[str]) -> int:
                     # so there is no bronze dump and load never sees one.
                     log.info("--dry-run set; skipping exports")
                     log.info("dry-run plan: would export positions + "
-                             "transactions + documents for %d account(s) "
-                             "in [%s..%s]", len(accounts), since, until)
+                             "transactions + documents for %d cash "
+                             "account(s) in [%s..%s]%s",
+                             len(accounts), since, until,
+                             "" if args.no_cards else
+                             ", plus the card roster, each card's ledger "
+                             "and its invoices" +
+                             ("" if args.no_card_statements
+                              else " and statement PDFs"))
                     txn_results = accounts  # echo discovery only
                 else:
                     positions_meta = export_positions(
@@ -1344,9 +1424,15 @@ def main(argv: list[str]) -> int:
                         page, since, until, run_dir,
                         context, args.screenshot_dir, debug=args.debug,
                     )
+                    if not args.no_cards:
+                        cards_meta = _capture_cards(
+                            context, page, apikey_holder, run_dir,
+                            since, until,
+                            statements=not args.no_card_statements,
+                        )
                     write_run_json(run_dir, since, until,
                                    txn_results, doc_results,
-                                   positions_meta)
+                                   positions_meta, cards_meta)
             finally:
                 if args.trace:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)

@@ -217,7 +217,7 @@ column depends on the era a row comes from:
 
 | Era (silver rows) | `counterparty` | `provider_category` | `description` |
 | --- | --- | --- | --- |
-| Web CSV feed — `ubs-web.transactions` rows without a `payload.source` marker (`Description1/2/3` in the payload) | the `counterparty` column verbatim: the first `;`-segment of `Description1` — the payee, or the security caption on a securities row | the booking type: `description_kind` (`Description2`, the bank's booking-kind label — `Dividend`, `e-banking payment order`, …; a `;Reversal` suffix stays) less the payer's message. The export puts a message typed on the order *ahead* of the type (`THANKS; e-banking payment order`), so the column is split at its last `; ` and the trailing part is the type; a column without the separator is the type verbatim | the `Description1` caption with its ISIN tail stripped — unchanged, gold's name lookups key on it. Only when there is no caption: the booking type, then `Description3`. The payer's message, when there is one, is emitted apart as the change's memo, which gold stores last, behind the memo separator |
+| Web CSV feed — `ubs-web.transactions` rows without a `payload.source` marker (`Description1/2/3` in the payload) | the `counterparty` column verbatim: the first `;`-segment of `Description1` — the payee, or the security caption on a securities row | the booking type: `description_kind` (`Description2`, the bank's booking-kind label — `Dividend`, `e-banking payment order`, …; a `;Reversal` suffix stays) less the payer's message. The export puts a message typed on the order *ahead* of the type (`THANKS; e-banking payment order`), so the column is split at its last `; ` and the trailing part is the type; a column without the separator is the type verbatim. A **card-booked** entry puts the card's number and expiry in that leading slot instead (`<number>-<check> MM/YY; ATM Withdrawal`), which is the bank's reference rather than the payer's words — recognised whole and dropped, so it becomes no memo (§10.7) | the `Description1` caption with its ISIN tail stripped — unchanged, gold's name lookups key on it. Only when there is no caption: the booking type, then `Description3`. The payer's message, when there is one, is emitted apart as the change's memo, which gold stores last, behind the memo separator |
 | Web PDF backfill — `payload.source = "account_statement_pdf"` | the `counterparty` column verbatim: the first statement continuation line — none when that line is the statement's turnover-total line (below) | `description_kind` verbatim: the printed booking type (`E-BANKING PAYMENT ORDER`, `FEES`, …) | the booking type, then every `payload.continuation` line in order, less the turnover-total line |
 | PSN MT940 — `ubs-psn.events` of kind `cash_movement` | never: the `:86:` narrative carries no structured payee and none is parsed out of the free text | `payload.txn_type` verbatim: the `:61:` transaction type code (`NTRF`, `NMSC`, …) | the `:86:` narrative (`payload.narrative`), line by line |
 | PSN MT515 — `trade_confirmation` | — | — | `payload.security_name` |
@@ -419,7 +419,194 @@ re-inserted, so a reload never collides on the gold PK. The
 content has arrived, the load is a no-op even with historical
 present in silver.
 
-## 10. Open questions
+## 10. Credit cards (ubs-web migration 0007)
+
+Cards reach gold from the `ubs-web` silver's `card_*` tables. They are
+**web-only and cutoff-free**: the PSN cut exists to stop the web feed
+restating what PSN says better, and PSN says nothing about cards at all.
+Same treatment as mortgages, for the same reason.
+
+| Silver table | Gold target |
+| --- | --- |
+| `card_accounts` | `accounts` (kind=`card`) + a CURRENT `cash_balances` row |
+| `card_invoices` (reconciling ones) | `cash_balances` (CLOSING) at `period_end` |
+| `card_transactions` | `transactions` |
+| `card_statements` | — (the document index; no figure is parsed from a PDF) |
+
+### 10.1 The sign is NOT flipped here
+
+This is the one place a reader of the chase adapter will guess wrong.
+
+Chase's silver stores a card provider-verbatim as a **positive amount
+owed**, and `signedBalance` negates it. UBS reports the opposite already:
+a purchase is negative, a payment positive, and a balance is negative
+while the card carries debt. That is `AccountKindCard`'s own convention —
+a revolving-credit liability held as negative cash — so the figures pass
+through unnegated. Gold migration 0037's note about "the adapter negating
+the provider's owed-positive figure" describes chase's silver, not this
+one.
+
+Amounts still pass through `canonical.ApplyCanonicalSign`, because the
+card kinds have a fixed direction: a `purchase` comes out negative and a
+`refund` / `card_payment` positive whatever the row said.
+
+### 10.2 `transactions.kind`
+
+A card ledger has no booking-type column — the cash surface's
+`description_kind` has no card equivalent — so the kind comes from the
+sign, plus the settlement descriptors for the one distinction the sign
+cannot make.
+
+| Silver row | Gold `kind` |
+| --- | --- |
+| amount < 0 | `purchase` |
+| amount > 0, descriptor is `DIRECT DEBIT` / `DIRECT DEBIT (SWIFT)` / `TRANSFER FROM ACCOUNT` | `card_payment` |
+| amount > 0, anything else | `refund` |
+| amount == 0 | `other` |
+
+On a card, direction *is* the classification: money off the card is
+spend, and money onto it is either the bill being settled or a merchant
+giving some back. Only the descriptor tells those two apart, and it is
+matched **whole** — a merchant whose name merely contains the words is
+still a refund.
+
+`reward` has no producer: UBS books a rewards credit as an ordinary
+credit with no descriptor that distinguishes it, so the kind is left
+unproduced rather than guessed at.
+
+### 10.3 Balances
+
+Two sources, disjoint by construction:
+
+| Source | Kind | Stamped at | `payload.basis` |
+| --- | --- | --- | --- |
+| the roster's live figure, as reported | `current` | the dump time | `roster` |
+| a billing period's closing figure | `closing` | `period_end` | `statement_closing` |
+
+The roster figure is emitted unchanged. It **already includes** the
+account's authorised-but-unposted spend: an account's balance equals the
+sum of its cards' `balanceIncludingReserved`, not of their `balance`. So
+`card_accounts.reserved_amount` records how much of the balance has not
+yet booked — a part of it, never an addition to it, and adding it back
+would count that spend twice.
+
+The statement series is the **only** history. Neither the ledger nor the
+roster carries a running balance, so without it a card would have exactly
+one balance in gold — today's. Only periods whose own figures reconcile
+(`card_invoices.reconciles = 1`) are emitted: a wrong balance is worse
+than a missing one, because gold's carry-forward rule fills a gap from
+the neighbouring observation but nothing corrects a figure that is
+present and wrong.
+
+A period end is a billing date and need not fall on any dump time, so
+`ChangeWindow` is widened by `cardRange` to cover both the ledger's dates
+and the period ends. That is a correctness requirement, not tidiness:
+gold deletes the window before re-inserting it, so a record emitted
+outside it would be inserted again each load without its predecessor
+being removed.
+
+### 10.4 Returns and allocation
+
+A card is returns-invisible **engine-wide**, keyed on the account kind
+itself rather than on any per-source policy
+(`returnsInvisibleKind`, `internal/gold/returns.go`; RETURNS-NOTES.md,
+"Credit cards are returns-invisible"). The UBS adapter needs no policy
+change to get this — it needs only to emit `AccountKindCard`, which
+§10.1's table does. A card emits no positions either, so nothing reaches
+the instrument-taxonomy rollups; its balance surfaces through
+`report_cash` exactly as chase's does, which is what keeps it in net
+worth.
+
+### 10.5 Text columns
+
+Extending §7's table, for card rows:
+
+| `counterparty` | `provider_category` | `description` |
+| --- | --- | --- |
+| the terminal descriptor (silver `merchant`), verbatim — the input to gold's merchant signature | the MCC description (silver `merchant_category`), verbatim | the same descriptor |
+
+**The API's field names are the wrong way round**, and the collector's
+promotion is where that is corrected: UBS's `merchantName` holds an ISO
+18245 category description (`Grocery stores`, `Taxicabs`) while `details`
+holds the actual merchant. Reading them as named would key every merchant
+signature on a category and hand the provider tier a payee.
+
+The card vocabulary is **categorical** — every row carries one — whereas
+this source's booking types are payment rails where a miss is the normal
+case. Both belong to the same `ubs` silver kind, so the spending
+provider map is keyed by **product**: `ubs/card` for the MCC
+descriptions, `ubs` for the booking types
+(`internal/spending/providermap.go`, SPENDING.md §3). One entry is
+deliberately left untranslated — the bank's own catch-all for a card row
+that moved money rather than bought something names no line of business,
+and placing it would file person-to-person transfers as shopping.
+
+### 10.6 The card bill, and where it still double-counts
+
+Gold files a card bill paid from a cash account as `card_spend` — a
+placeholder meaning "real consumption on a card this deployment does not
+itemise" — and the internal-transfer matcher replaces that verdict once
+the card's own settlement leg is in gold. Collecting UBS cards is what
+makes the second half happen here, and it needs no new rule: the matcher
+outranks the rule tier, so the verdict flips on the next pass from
+correct projection alone. The bill leaves the spending base and the
+card's own purchases carry the spending instead, categorised for free by
+the provider tier from their MCC descriptions.
+
+Both bill shapes pair: the payment order, whose counterparty is the
+bank's own name with `C/O UBS CARD CENTER` behind it in the description,
+and the LSV direct debit, whose counterparty is the mandate notice. The
+built-in rule reads the raw narrative fields as well as the signature,
+which is what finds the creditor in either.
+
+**It does not pair across currencies, and there it double-counts.** The
+matcher partitions candidates by native currency and cannot pair across
+two — converting them would make the same movement pair differently per
+report currency. A relationship can hold cards in several currencies, so
+a card billed in one and settled from an account in another leaves both
+legs one-legged: the card's purchases are itemised *and* its bill stays
+in the base as `card_spend`, counting the same spending twice.
+
+The issuer entry is deliberately **not** narrowed to avoid this. The
+rule tier reads narratives, not the account graph, and the alternative —
+suppressing `card_spend` whenever the source holds any card account —
+would delete a genuine bill for a card that is not collected, which is
+the failure mode `card_spend` exists to prevent and the one that is
+invisible in a report. Over-counting is visible; under-counting is not.
+
+The shape is surfaced rather than left to be discovered: `wealthdb
+categorize` lists unmatched opposite-sign legs that differ only in
+currency as cross-currency near-pairs. The correction is a pin or a
+config rule (SPENDING.md §3) on the bills of a card whose currency
+differs from the account settling it.
+
+### 10.7 The card reference on a cash-account row
+
+A card transaction booked on the *cash* account — a cash-machine
+withdrawal, a debit-card purchase — carries the card's number and expiry
+ahead of its booking type in the same slot a payer's typed message uses:
+
+    <number>-<check> MM/YY; ATM Withdrawal
+
+The split at the last `; ` reads the type correctly either way, so these
+rows have always categorised right. What was wrong is where the leading
+part went: it became the row's **memo**, which is defined as the payer's
+own words — it is shown as such, and a config rule may key on it
+(SPENDING.md §3). `cardReferenceRe` recognises the reference whole and
+yields no memo for it.
+
+The match is deliberately narrow — the check-digit suffix *and* the
+expiry together — so a typed message that merely opens with digits is
+still a message. Nothing else moves: the booking type is unchanged, so
+the provider tier places the row exactly as before, and the merchant
+signature is unchanged too, because a signature reads the description
+only up to the memo separator and the part before it is untouched. No
+`SignatureVersion` bump.
+
+The raw column survives whole in the row's payload, so the reference is
+dropped from a projection, not from the record.
+
+## 11. Open questions
 
 - **MT568 vs MT566 collapsing.** Both carry corporate-action info;
   MT568 is narrative supplementing MT566. The adapter currently

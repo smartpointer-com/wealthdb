@@ -164,6 +164,19 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 				w.End = histHi
 			}
 		}
+		// Cards emit at their own dates — a billing period ends on a
+		// date no dump run need share — so the window has to reach them
+		// or gold's delete-then-reinsert would leave duplicates behind.
+		cardLo, cardHi, err := r.cardRange(ctx)
+		if err != nil {
+			return canonical.Window{}, err
+		}
+		if cardLo >= 0 && cardLo < w.Start {
+			w.Start = cardLo
+		}
+		if cardHi > w.End {
+			w.End = cardHi
+		}
 	}
 	return w, nil
 }
@@ -226,11 +239,32 @@ func (r *webReader) snapshotsForOverlap(
 		return nil, err
 	}
 
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
+	// Cards: web-only for the same reason as mortgages — PSN carries
+	// none — so they too flow through regardless of the PSN cutoff. The
+	// roster gives the current balance; the invoices give the history,
+	// at the billing dates the bank drew them on rather than at the
+	// dates a run happened to fetch them, so appendCardStatementBalances
+	// may add batch times of its own.
+	if err := r.appendWebCards(ctx, w, byTime); err != nil {
+		return nil, err
+	}
+	if err := r.appendCardStatementBalances(ctx, w, byTime); err != nil {
+		return nil, err
+	}
+
+	// Re-read the batch times: the statement balances above can add a
+	// period end that was not a dump time.
+	allTimes := make([]int64, 0, len(byTime))
+	for t := range byTime {
+		allTimes = append(allTimes, t)
+	}
+	sort.Slice(allTimes, func(i, j int) bool { return allTimes[i] < allTimes[j] })
+
+	batches := make([]canonical.SnapshotBatch, 0, len(allTimes))
+	for _, t := range allTimes {
 		b := byTime[t]
 		if len(b.Portfolios)+len(b.Accounts)+len(b.Instruments)+
-			len(b.Positions) == 0 {
+			len(b.Positions)+len(b.CashBalances) == 0 {
 			continue
 		}
 		batches = append(batches, *b)

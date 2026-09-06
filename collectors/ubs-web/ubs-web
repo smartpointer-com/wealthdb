@@ -11,6 +11,8 @@ NAME=ubs-web
 ENV_PREFIX=UBS_WEB
 ENV_VARS=(UBS_CONTRACT_NUMBER)
 HAS_DEBUG=1
+HAS_VNC=1                    # forward a free 5900-6000 port
+VNC_SUBCOMMANDS=(explore)    # the only browser-over-VNC verb
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -30,6 +32,10 @@ Subcommands:
   login [args...]     Mint or refresh the session state file.
   download [args...]  Export bronze artefacts from netbanking.
   load [args...]      Parse bronze into the silver SQLite DB.
+  explore [args...]   Discovery harness: headed Chromium over VNC. The
+                      session is driven by hand; the harness records the
+                      network, clicks, DOM and downloads into the /debug
+                      mount. Writes no bronze.
   prune [args...]     Delete non-complete dumps (crashed walks,
                       --dry-run shells) from the bronze tree.
                       --dry-run prints the plan first.

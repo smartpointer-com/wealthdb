@@ -68,6 +68,13 @@ _SAFE_RESPONSE_HEADERS = (
 
 REDACTED = "<redacted>"
 
+# Header names whose VALUE is a credential. The query-parameter set covers
+# most of them (`apikey`, `authorization`, `token`, …); cookies are
+# header-only and are the ones that carry a live session.
+_SECRET_HEADERS = frozenset(_SECRET_PARAMS | {
+    "cookie", "set-cookie", "x-api-key", "x-auth-token", "proxy-authorization",
+})
+
 
 def redact_url(url: str) -> str:
     """Return `url` with credential-bearing query parameters masked.
@@ -88,6 +95,50 @@ def redact_url(url: str) -> str:
               for k, v in pairs]
     return urllib.parse.urlunsplit(
         parts._replace(query=urllib.parse.urlencode(masked)))
+
+
+def safe_error(exc: BaseException) -> str:
+    """An exception rendered safely enough to persist.
+
+    A transport client's exception is not a one-line message. Playwright's
+    request errors append a ``Call log:`` block reproducing every request
+    header — which for an authenticated session means the API key and the
+    whole cookie jar. Anything that writes ``str(exc)`` into a manifest, a
+    log file, or a captured artefact therefore writes a live credential
+    to disk.
+
+    This keeps what diagnoses (the exception class and its first line,
+    which carries the failure and the timeout) and drops what leaks
+    (everything from the call log on), then masks credential-bearing query
+    parameters in whatever URL survives.
+    """
+    first = str(exc).split("\n", 1)[0].strip()
+    marker = first.find("Call log:")
+    if marker >= 0:
+        first = first[:marker].strip()
+    # A URL in the message can carry its own secret in the query string.
+    first = re.sub(r"https?://\S+", lambda m: redact_url(m.group(0)), first)
+    return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
+
+
+def redact_headers(headers) -> dict:
+    """Header mapping with credential-bearing values masked by NAME.
+
+    The complement of :func:`redact_url`: that masks a secret whose value
+    is known from the query parameter it sits in, this masks one whose
+    value is only knowable from the header it arrived in — an ``apikey``
+    a site issues at runtime, a ``cookie`` a session sets. Keeping the
+    name and dropping the value preserves the diagnostic (that the
+    request carried a key) without the key.
+    """
+    if not headers:
+        return {}
+    try:
+        items = headers.items()
+    except AttributeError:
+        return {}
+    return {k: (REDACTED if k.lower() in _SECRET_HEADERS else v)
+            for k, v in items}
 
 
 def capture_dir(run_dir: Path) -> Path:

@@ -479,6 +479,18 @@ as hard rules rather than advice.
   running balance — capture both and join in silver). Where the SPA
   signs its requests, drive the real UI and read the SPA's own
   responses instead of replaying endpoints.
+- **A tiled overview is not an enumeration.** Where a source offers both
+  a rendered overview and a roster endpoint, take the roster: an
+  overview tiles what its layout chose to show, which can be a strict
+  subset of what the login holds, and a collector keyed on those anchors
+  under-collects **silently** — no error, no gap, just fewer accounts
+  than exist. One build discovered this only because a hand-driven
+  capture recorded the roster response beside the page that had listed
+  a fraction of it.
+- **Cap captured response bodies generously.** A body truncated at a
+  round number loses its tail, and the tail of a ledger response is
+  exactly what says how far the history reaches — the one measurement
+  that decides whether a backfill phase exists.
 - **Key on the most stable identifier the source offers** (immutable
   id, legal name) — display names churn over a multi-year horizon and
   mutable-label keys have caused double-counts. Never derive ids from

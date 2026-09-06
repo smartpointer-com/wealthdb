@@ -13,6 +13,7 @@ to hold them.
 """
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -60,6 +61,15 @@ class _FakePage:
 
 
 class _FakeContext:
+    def __init__(self):
+        # download.py registers a request listener to harvest the card
+        # API's apikey header; the fake records the registration so the
+        # control flow under test is the real one.
+        self.listeners = {}
+
+    def on(self, event, handler):
+        self.listeners.setdefault(event, []).append(handler)
+
     def new_page(self):
         return _FakePage()
 
@@ -253,3 +263,44 @@ def test_fetch_document_non_pdf_returns_none(tmp_path):
         "https://u?apikey=K", "tok", "L", docs)
     assert meta is None
     assert list(docs.glob("*.pdf")) == []
+
+
+# --------------------------------------------------------------------
+# The card pass is gated by its flags, and by the apikey being there
+# --------------------------------------------------------------------
+
+def _card_run(tmp_path, monkeypatch, *flags, capture=None):
+    """A real run with the card pass stubbed, returning its run.json and
+    the record of whether the pass was invoked."""
+    calls = []
+
+    def _stub(*_a, **_kw):
+        calls.append("cards")
+        return {"accounts": []} if capture is None else capture()
+
+    monkeypatch.setattr(download, "_capture_cards", _stub)
+    rc, dest = _real_run(tmp_path, monkeypatch, *flags)
+    assert rc == 0
+    return json.loads(next(dest.glob("*/run.json")).read_text()), calls
+
+
+def test_cards_are_captured_by_default(tmp_path, monkeypatch):
+    manifest, calls = _card_run(tmp_path, monkeypatch)
+    assert calls == ["cards"]
+    assert "cards" in manifest
+
+
+def test_no_cards_skips_the_pass_entirely(tmp_path, monkeypatch):
+    manifest, calls = _card_run(tmp_path, monkeypatch, "--no-cards")
+    assert calls == []
+    # Absent, not empty: a reader must tell "not fetched" from "none found".
+    assert "cards" not in manifest
+
+
+def test_an_unreachable_card_surface_leaves_the_rest_of_the_dump(tmp_path,
+                                                                 monkeypatch):
+    # No apikey observed is the realistic failure; the run still completes
+    # and still finalises as a complete dump.
+    manifest, _ = _card_run(tmp_path, monkeypatch, capture=lambda: None)
+    assert manifest["status"] == "complete"
+    assert "cards" not in manifest

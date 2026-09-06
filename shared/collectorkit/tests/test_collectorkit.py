@@ -94,6 +94,19 @@ class BronzeTest(unittest.TestCase):
         self.assertRegex(slug, r"^\d{8}T\d{6}Z$")
         self.assertTrue(bronze.RUN_DIR_RE.match(slug))
 
+    def test_short_token_is_stable_and_bounded(self):
+        self.assertEqual(bronze.short_token("abc"), bronze.short_token("abc"))
+        self.assertRegex(bronze.short_token("abc"), r"^[0-9a-f]{16}$")
+        self.assertEqual(len(bronze.short_token("abc", 8)), 8)
+
+    def test_short_token_separates_a_shared_prefix(self):
+        # The reason it hashes rather than slices: source tokens routinely
+        # share a long prefix, and a slice would give two entities one
+        # bronze filename and silently lose one of them.
+        prefix = "SharedCustomerPrefix" * 3
+        self.assertNotEqual(bronze.short_token(prefix + "AAAA"),
+                            bronze.short_token(prefix + "AAAB"))
+
     def test_atomic_write_json_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "sub" / "a.json"

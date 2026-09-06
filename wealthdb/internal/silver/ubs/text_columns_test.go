@@ -452,3 +452,73 @@ func TestEraTextFoldKeepsASingleEraRowUnchanged(t *testing.T) {
 		"Y1@" + textAcct:                 {"EXAMPLE PAYEE; ATM Withdrawal", "EXAMPLE PAYEE", "ATM Withdrawal"},
 	})
 }
+
+// TestCardReferenceIsNotAMemo pins the one lead that is the bank's own
+// reference rather than the payer's words.
+//
+// A card-booked entry prefixes its type with the card's number and
+// expiry. The memo is defined as what the payer typed — it is shown as
+// such and a config rule may key on it — so the reference must not land
+// there. Everything else about the row is unchanged: the booking type is
+// still what follows the separator, so it categorises as before.
+//
+// Every value here is invented.
+func TestCardReferenceIsNotAMemo(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, wantMemo, wantType string
+	}{
+		{"card reference before an ATM booking",
+			"11112222-0 10/27; ATM Withdrawal", "", "ATM Withdrawal"},
+		{"card reference before a debit purchase",
+			"11112222-0 10/27; Debit card payment", "", "Debit card payment"},
+		{"card reference before a bancomat booking",
+			"33334444-9 01/30; UBS Bancomat Withdrawal", "",
+			"UBS Bancomat Withdrawal"},
+
+		// A payer's message still travels, including one that opens
+		// with digits — the reference is recognised by its whole
+		// shape, not by starting with a number.
+		{"a typed message", "THANKS; e-banking payment order",
+			"THANKS", "e-banking payment order"},
+		{"a message that is only digits", "12345678; e-banking payment order",
+			"12345678", "e-banking payment order"},
+		{"a message that opens like a reference",
+			"11112222-0 SUBSCRIPTION; e-banking payment order",
+			"11112222-0 SUBSCRIPTION", "e-banking payment order"},
+		{"a date-shaped message", "10/27; e-banking payment order",
+			"10/27", "e-banking payment order"},
+
+		// No separator at all: the column is the booking type whole.
+		{"no lead", "ATM WITHDRAWAL", "", "ATM WITHDRAWAL"},
+		{"reversal suffix has no space", "CREDIT;Reversal", "", "CREDIT;Reversal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memo, bookingType := splitBookingType(tc.in)
+			if memo != tc.wantMemo || bookingType != tc.wantType {
+				t.Errorf("splitBookingType(%q) = (%q, %q), want (%q, %q)",
+					tc.in, memo, bookingType, tc.wantMemo, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestCardReferenceDropDoesNotMoveTheProviderCategory: the categorisation
+// of these rows must be untouched by the memo change — the booking type
+// is what the provider tier reads, and it still is.
+func TestCardReferenceDropDoesNotMoveTheProviderCategory(t *testing.T) {
+	text, _, memo := projectWebTxText(
+		"", "11112222-0 10/27; ATM Withdrawal", webTxPayload{}, false)
+	if memo != "" {
+		t.Errorf("memo = %q, want none", memo)
+	}
+	if text.providerCategory != "ATM Withdrawal" {
+		t.Errorf("provider category = %q, want the booking type",
+			text.providerCategory)
+	}
+	// And the description still leads with the booking type, so the
+	// merchant signature this row reduces to is unchanged.
+	if text.description != "ATM Withdrawal" {
+		t.Errorf("description = %q, want the booking type",
+			text.description)
+	}
+}

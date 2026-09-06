@@ -268,6 +268,18 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 		psnVeto = veto
 		streams = append(streams, s)
+		// Cards are web-only and the PSN cut does not touch them: there
+		// is no PSN row for the seam to arbitrate against. They ride as
+		// their own stream so the cash path's cutoff, offset veto and
+		// text fold — all of which are about reconciling two feeds —
+		// stay off rows only one feed has.
+		cards, err := c.web.cardTransactions(ctx, w)
+		if err != nil {
+			return nil, fmt.Errorf("ubs web card Transactions: %w", err)
+		}
+		if len(cards.Transactions) > 0 {
+			streams = append(streams, silver.NewTransactionStream(cards))
+		}
 	}
 	if c.psn != nil {
 		s, err := c.psn.Transactions(ctx, w, psnVeto)

@@ -409,7 +409,241 @@ wins per date) is owned by the wealthdb UBS adapter — see
   is `manifest present AND not dry_run`, not the bare manifest-presence
   fidelity-web uses.
 
-## 5. Feed-coverage gaps the adapter must reckon with
+## 5. Cards — observed
+
+Recorded from hand-driven `explore` sessions, 2026-09-06. The card
+surface is a **REST API the SPA reads**, not a page to scrape: every
+figure below comes from JSON the netbanking front end fetches for
+itself, and the toolbar's CSV/PDF exports are a lossy rendering of it.
+
+### 5.1 The endpoints
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/v2/credit-card-accounts?valuationCurrency=<CCY>[&limitedData=true]` | the roster: every card account, the cards under each, balances, limits, and the link relations below |
+| `GET /api/v1/credit-card-transactions?creditCardAccountIds=<id>[&creditCardIds=<id>][&timePeriodFrom=<date>&timePeriodTo=<date>]&transactionDateType=BOOKING\|PURCHASE[&transactionStatus=BOOKED]` | the ledger |
+| `GET /api/v1/credit-card-transactions/extract?<same params>` | the toolbar's CSV / PDF export of that ledger |
+| `GET /api/v1/credit-card-invoices?creditCardAccountIds=<id>[&latestInvoice=true]` | the billing periods |
+| `GET /api/v1/credit-card-invoices/<id>` | one period's totals |
+| `GET /api/v1/credit-card-invoices/<id>/extract` | that period's statement PDF / CSV |
+
+The roster advertises the rest as HATEOAS links (`transactions`,
+`invoices`, `invoiceConfiguration`, `interestStatements`,
+`paymentToCard`, `self`), so a walk starts at the roster and follows
+links rather than composing URLs.
+
+**`transactionDateType` is a required choice, not a default.** The
+window filters on either the purchase date or the booking date. The two
+disagree for any row transacted near a period boundary, so the value a
+fetch uses is part of what its window means.
+
+### 5.2 The roster is the only authoritative enumeration
+
+The homepage tiles an anchor per card account under
+`#/cards?target=card-account-transactions&accountId=<token>`, the same
+shape the cash anchors use. **It is not a complete enumeration** — the
+tiled set is a subset of what the roster returns, and a collector keyed
+on those anchors under-collects with no error to show for it. Enumerate
+from `/api/v2/credit-card-accounts`.
+
+A card *account* (`accountType=CREDIT_CARD_ACCOUNT`) holds one or more
+*cards* (`cardNumber`, `productName`, `cardType`, `cardStatus`), and the
+accounts nest (`structureType=COMPLEX_TLA`, with `topLevelAccount` /
+`relatedCardAccounts` links). The ledger is addressed per account, and
+optionally narrowed to one card with `creditCardIds`.
+
+### 5.3 The ledger row
+
+| Field | What it is |
+| --- | --- |
+| `_id` | **the row identity.** An opaque ~65-char token, unique per row and stable across fetches: where overlapping windows returned the same row twice, every repeat agreed field for field. Ids share no prefix, so unlike the account tokens they need no hashing to be told apart |
+| `transactionNr` | **not an id** — a one- to three-digit sequence number that repeats heavily across rows. It reads as a position within a statement, not a key. Keying on it would collapse most of the ledger into a hundred rows |
+| `transactionDate` / `valueDate` | purchase timestamp / booking date |
+| `postingAmount` / `originalAmount` | `{amount, currency}` each — equal on a domestic row, different on a foreign-currency one |
+| `details` | **the merchant descriptor** — the terminal string, the input a merchant signature is built from |
+| `merchantName` | **the merchant CATEGORY in words**, an MCC description (`Grocery stores`, `Parking & Garages`) — *not* a merchant name |
+| `merchantGroupCode` | a coarser UBS grouping, many MCC descriptions to one code, with a catch-all bucket |
+| `cardNr` | which card under the account booked the row |
+| `bookedAccountId` | **the CARD, not the account**, on any account holding more than one. See below |
+| `transactionStatus` | `BOOKED` or `RESERVED` |
+| `settledInInvoice` | whether the row has been billed |
+| `exchangeRate`, `effectiveExchangeRate`, `exchangeRateDate`, `markup` | present only on a row converted from another currency |
+| `parentTransactionNr` / `parentTransactionDate` / `parentTransactionDescription` | present on a reversal, naming the row it reverses |
+
+**`bookedAccountId` names a card, not an account.** Every other card
+table is keyed by the account id the roster enumerates, so a row stored
+under this field verbatim joins to nothing — no account, no invoice, and
+outside gold's spending scope, which selects from the accounts table. The
+roster states the relation itself: each card node carries
+`liableAccountId`, and the loader resolves through that map before
+storing. On a single-card account the two ids coincide, which is why the
+defect is invisible until an account holds a second card.
+
+**`invoiceStatus` is an envelope**, `{"statusCode": …}`, not a string —
+one of several single-valued fields UBS wraps. Bound straight into a TEXT
+column it raises and takes the whole dump's load down with it.
+
+**A `RESERVED` row is not yet a transaction.** The ledger returns
+pending authorisations beside booked ones, and they carry none of
+`_id`, `transactionNr`, `valueDate`, `postingAmount` or
+`settledInInvoice` — nothing that could key them, and nothing that
+would let a re-fetch recognise the same authorisation twice. They are
+unposted activity that changes shape when it posts, so they belong in a
+balance rather than in a ledger, which is the same place the chase
+adapter puts a card's pending charges.
+
+**The naming is a trap worth restating:** `merchantName` is the
+category and `details` is the merchant. Reading them the other way round
+would key every signature on a category and hand gold an MCC where it
+expects a payee. The CSV export spells the same two columns `Sector`
+and `Booking text`.
+
+The CSV export is CP1252, not UTF-8, and carries no row id.
+
+### 5.4 Invoices are the statement channel, and they reconcile in JSON
+
+`credit-card-invoices` returns one row per billing period with
+`periodFrom` / `periodTo`, `invoicingDate`, **`debitingDate`** (when the
+cash account is debited for the bill), `dueOn`, `dueAmount`,
+`minimalDueAmount`, `paymentMethod` (`LSV` — Swiss direct debit — or
+`SWI`), `statementType` (`INVOICE` for a closed period, `STATEMENT` for
+the open one, which has no `debitingDate` yet), and `_links` to the
+period's `pdf`, `csv` and `transactions`.
+
+The per-invoice detail adds the reconciliation identity: **`balanceForward`**
+(the period's opening balance), `totalDebit`, `totalCredit`,
+`transactionSubtotal`, `transactionCount`, and a
+`transactionsPerCardSummary` breaking the period down per card.
+
+This is the chase `statement_balances` shape delivered as structured
+data. Chase needed a statement-PDF parser gated on a
+`beginning + Σ == ending` reconciliation; here the same figures are
+fields, so the gate can be arithmetic on JSON rather than a parse.
+
+### 5.5 There is no deeper channel — no statement backfill
+
+Both the ledger and the invoice archive reach back **about 24 months**,
+matching the transactions UI's own "current month and last 24 months"
+cap. They are the same window, not two eras.
+
+The eDocuments archive is **not** a third channel: its categories are
+account reporting, letters, mortgages, payment services, securities,
+statements of assets and stock-exchange documents — **no card
+category**, and no card statement type.
+
+So the chase precedent does not transfer. There is no export seam and
+no era below it, and **no statement-backfill phase** for cards: what the
+API serves is the whole of what the source offers. Invoices still earn
+their place in silver — as balance anchors and for `debitingDate` — but
+never as a way to reach further back.
+
+### 5.6 What the bill has to pair with
+
+The settlement appears on the card's own ledger under the booking texts
+`DIRECT DEBIT` (the `LSV` rail) and `TRANSFER FROM ACCOUNT`, and
+`debitingDate` on the invoice is the day the cash account is debited.
+Those two are what gold's internal-transfer matcher has to pair.
+
+**A card's native currency need not be that of the account that settles
+it.** The matcher partitions candidates by native currency and cannot
+pair across two — a documented limitation of the shared core, not a
+setting — so where a card is billed in one currency and settled from an
+account in another, both legs stay unpaired however well the projection
+works, and the built-in card-payment rule keeps placing `card_spend`
+over a card that *is* collected. The gold work has to answer that case
+rather than assume the matcher will.
+
+### 5.7 The per-transaction detail view
+
+A ledger row's title is an accordion
+(`span[role="button"][aria-expanded]` inside
+`div[data-name="transaction-title"]`), so the detail expands in place
+rather than opening a page. Nothing in the card surface carried an
+"order origination" field in any capture.
+
+That field belongs to the **cash** ledger, where a debit-card
+point-of-sale payment is what has an origination to state. The cash
+API (`/api/v1/cash-transactions`) carries
+`bankTransactionCode.proprietary.dealType` plus per-row links
+`description` and `pdfExportTrxDetail`, and a running balance the CSV
+and MT940 exports do not expose. Enriching the cash ledger from it is
+adjacent to the card work rather than part of it, and is not in scope
+here.
+
+### 5.8 What the card UI looks like
+
+**Nothing in the collector reads any of this** — the card surface is
+fetched from the API (§5.1), and no card selector is pinned in
+[landmarks.py](landmarks.py) because no code has needed one. It is
+recorded because a capture is expensive: it dates what the UI looked
+like, so a later diagnosis of drift, or a need the API cannot serve,
+starts from a written record rather than from another live session.
+
+- transactions toolbar: `button[data-testid="download-csv-button"]`,
+  `button[data-testid="download-pdf-button"]` (cards render **both**;
+  the `title="CSV"` handle the cash surface uses is not the one to key
+  on here), and comboboxes labelled `Filter by period`, `Filter by
+  amount`, `Filter by category`, `Filter by transaction status`.
+- ledger rows: `article[data-name="panel-reserved"]` and the sibling
+  `div[data-name="splitter-reserved"]` / `splitter-booked` /
+  `splitter-settled` section markers; within a row,
+  `[data-name="transaction-title"]`, `transaction-subtitle` (the MCC
+  description), `transaction-badge`, `transaction-balance`.
+- the card page renders **no** `[data-name="number-of-trx"]` counter —
+  the cash surface's readiness signal does not exist here.
+- the invoice archive: nav item `data-name="AccountsAndCardsCreditCardInvoices"`.
+
+### 5.9 What silver keeps
+
+Three tables plus a document index, added by
+[migrations/0007_cards.sql](migrations/0007_cards.sql), kept apart from
+the cash tables for the reason §3.8 gives for the historical ones — the
+identity model differs. A cash account is keyed by IBAN and carries the
+columns that join it to PSN; a card is keyed by an opaque token and has
+no PSN twin at all.
+
+| Table | Grain | Carries |
+| --- | --- | --- |
+| `card_accounts` | (snapshot, account) | balance, available, limit, and the magnitude of unposted activity |
+| `card_transactions` | one booked row | both dates, both amounts, the merchant and the MCC description |
+| `card_invoices` | (account, period end) | opening balance, turnover, the settlement date, and whether the figures reconcile |
+| `card_statements` | one PDF | the statement, indexed against its period |
+
+Four decisions of record:
+
+- **The key is the API's `_id`.** Not `transactionNr` (§5.3), and not a
+  synthesised content hash either: the chase collector derives ids
+  because its source offers none that survives both export formats,
+  while here the provider hands over one that is unique per row and
+  stable across fetches. A re-download therefore UPSERTs, and no
+  occurrence index is needed.
+- **`RESERVED` rows are counted, not stored and not summed.** They carry
+  nothing that could key them, so the ledger keeps only what has posted.
+  Their magnitude comes from the roster — each card's
+  `balanceIncludingReserved` less its `balance`, in the card's own
+  currency — because a reserved row's only figure is the *merchant's*
+  currency, and summing those mixes units. The count is currency-free
+  and does come from the ledger.
+- **An account's roster balance already includes its reserved spend.**
+  It equals the sum of its cards' `balanceIncludingReserved`, not of
+  their `balance`, so `reserved_amount` records a part of the balance
+  and must never be added to it.
+- **The reconciliation gate is arithmetic, not a parse.** Each period's
+  `balance_forward + total_debit + total_credit` is checked against
+  `due_amount` and the outcome stored per period. A period that fails is
+  kept and marked rather than dropped: it is still the only evidence
+  that period exists, and a consumer needing an anchor can ask for the
+  ones that add up.
+- **A partial run never zeroes what it did not cover.** Every write is
+  an UPSERT keyed on an id the source owns; nothing is deleted and no
+  window is cleared. `transactions_covered` is the one derived column,
+  and it is recomputed across the whole table on every load rather than
+  accumulated — coverage grows as more ledger lands, so a kept answer
+  goes stale in the direction of claiming more than is there. A period
+  counts as covered only when the account's loaded ledger reaches past
+  *both* of its edges.
+
+## 6. Feed-coverage gaps the adapter must reckon with
 
 These are source-specific limits of what the silvers carry. How the
 wealthdb UBS adapter resolves them is owned by

@@ -316,7 +316,12 @@ func loadAccountIDs(ctx context.Context, tx querier) (map[string]map[string]stru
 // provider category, rows read from the matcher pool leave it empty
 // because nothing but the matcher may categorise them.
 type candidate struct {
-	key              txKey
+	key         txKey
+	accountKind string
+	// The provider's vocabulary is per PRODUCT, not per source: a bank
+	// files an account's rows by booking type and a card's by merchant
+	// category, and only the account kind tells the provider tier which
+	// of the two it is reading.
 	counterparty     string
 	description      string
 	providerCategory string
@@ -325,6 +330,7 @@ type candidate struct {
 func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id,
+               COALESCE(account_kind, ''),
                COALESCE(counterparty, ''), COALESCE(description, ''),
                COALESCE(provider_category, '')
           FROM spend_enrichment_population(?, ?)
@@ -336,7 +342,7 @@ func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
 	var out []candidate
 	for rows.Next() {
 		var r candidate
-		if err := rows.Scan(&r.key.source, &r.key.txID,
+		if err := rows.Scan(&r.key.source, &r.key.txID, &r.accountKind,
 			&r.counterparty, &r.description, &r.providerCategory); err != nil {
 			return nil, fmt.Errorf("spending: scan enrichment population: %w", err)
 		}
@@ -584,7 +590,7 @@ func assignCategories(
 			provenance: ProvenanceSignatureOnly,
 		}
 		if inPopulation {
-			if detailed, ok, drift := ProviderCategory(kinds[r.key.source], r.providerCategory); ok {
+			if detailed, ok, drift := ProviderCategory(kinds[r.key.source], r.accountKind, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceProvider
 			} else if drift {
 				res.UnmappedProviderCategories++

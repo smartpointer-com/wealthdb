@@ -189,29 +189,31 @@ HOME_PORTFOLIO_LINK_SELECTOR = (
 # the docs micro-frontend requires the navitemid query to bootstrap.
 ROUTE_DOCUMENTS = "#/documents/bank-documents?navitemid=MailboxEdocumentsPg"
 
-# Anchor selector on the homepage. Every cash account has an
-# anchor whose href contains the route + an opaque `accountId=`
-# token (the only stable identifier we get — IBANs are partially
-# redacted in the rendered display).
+# Anchor selector on the homepage. Every cash account has an anchor
+# whose href contains the route + an opaque `accountId=` token (the only
+# stable identifier we get — IBANs are partially redacted in the
+# rendered display).
 #
-# Card / credit-card-transaction anchors are intentionally not
-# scraped: this is a wealth-management toolkit, not personal
-# finance. The `#/cards?target=card-account-transactions` route
-# exists but we ignore it.
+# The card area uses the same anchor shape under a different `target=`
+# sub-surface, but no card selector is pinned here: nothing consumes one
+# yet, and a landmark is added when the code that reads it is, from a
+# capture rather than from a guess.
 HOME_CASH_ACCOUNT_LINK_SELECTOR = (
     'a[href*="cash-account-transactions"][href*="accountId="]'
 )
 
 
 # ============================================================
-# Account transactions page (#/accounts? or #/cards?)
+# Cash-account transactions page (#/accounts?)
 # ============================================================
 
-# Server-side export buttons in the transactions toolbar. Cash
-# accounts expose CSV, PDF, and MT940; card accounts only render the
-# CSV button — and on cards the button carries `title="CSV"` but no
-# `data-name`, so we identify by title (which is stable for both
-# surfaces).
+# Server-side export buttons in the transactions toolbar: CSV, PDF and
+# MT940. Identified by title rather than `data-name` because the title
+# is the stable handle here.
+#
+# These are the CASH surface's. The card area's toolbar is a different
+# markup (its buttons carry `data-testid`), and nothing below is used
+# there — the card ledger is read from the API instead (DESIGN.md §5).
 TXN_BUTTON_CSV_SELECTOR = 'button[title="CSV"]'
 TXN_BUTTON_MT940_SELECTOR = 'button[data-name="button-swiftMt940Export"]'
 

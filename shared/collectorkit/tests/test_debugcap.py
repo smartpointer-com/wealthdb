@@ -293,3 +293,55 @@ class BodyCaptureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SafeErrorTest(unittest.TestCase):
+    """A transport client's exception carries the whole request in its
+    text. Anything that persists it persists a credential."""
+
+    def test_keeps_the_diagnostic_and_drops_the_call_log(self):
+        exc = RuntimeError(
+            "APIRequestContext.get: Timeout 60000ms exceeded.\n"
+            "Call log:\n"
+            "  - -> GET https://bank.test/api/x\n"
+            "    - apikey: SECRETKEY\n"
+            "    - cookie: session=SECRETSESSION")
+        out = debugcap.safe_error(exc)
+        self.assertIn("Timeout 60000ms exceeded", out)
+        self.assertIn("RuntimeError", out)
+        self.assertNotIn("SECRETKEY", out)
+        self.assertNotIn("SECRETSESSION", out)
+        self.assertNotIn("Call log", out)
+
+    def test_masks_a_secret_carried_in_a_url(self):
+        out = debugcap.safe_error(
+            ValueError("failed: https://bank.test/f?apikey=SECRETKEY&x=1"))
+        self.assertNotIn("SECRETKEY", out)
+        self.assertIn("x=1", out)
+
+    def test_a_call_log_on_the_first_line_is_still_cut(self):
+        out = debugcap.safe_error(
+            RuntimeError("boom Call log: - apikey: SECRETKEY"))
+        self.assertNotIn("SECRETKEY", out)
+
+    def test_an_empty_message_still_names_the_class(self):
+        self.assertEqual(debugcap.safe_error(TimeoutError()), "TimeoutError")
+
+
+class RedactHeadersTest(unittest.TestCase):
+    """The complement of redact_url: a credential whose value is only
+    knowable from the header it arrived in."""
+
+    def test_masks_by_name_keeping_the_name(self):
+        out = debugcap.redact_headers({
+            "apikey": "SECRET", "Cookie": "session=SECRET",
+            "authorization": "Bearer SECRET", "accept": "application/json"})
+        self.assertEqual(out["apikey"], debugcap.REDACTED)
+        self.assertEqual(out["Cookie"], debugcap.REDACTED)
+        self.assertEqual(out["authorization"], debugcap.REDACTED)
+        self.assertEqual(out["accept"], "application/json")
+
+    def test_empty_and_unmappable_inputs_are_safe(self):
+        self.assertEqual(debugcap.redact_headers(None), {})
+        self.assertEqual(debugcap.redact_headers({}), {})
+        self.assertEqual(debugcap.redact_headers("not a mapping"), {})
