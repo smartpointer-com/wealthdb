@@ -361,33 +361,50 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // costs one wrong narrative rather than a duplicated or vanished
 // booking.
 //
-// The second return value is the PSN half of the same-day offset veto: the
-// event ids of PSN cash movements whose mirror leg pairs a web row. The
-// caller demotes those in the PSN stream — a pair must drop on BOTH sides
-// or the surviving side books a one-sided phantom external flow.
-func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, map[string]bool, error) {
+// The era fold (buildEraFold) is the one place a row IS dropped for
+// being a second record of a booking, and only inside the web silver's
+// own two eras against the machine-readable records: a statement
+// reconstruction whose account, value day, signed amount and currency
+// match an export or MT940 row is not emitted, because the row that
+// matched it already carries the booking. That is an exact signature on
+// the booking's own facts rather than a heuristic on ids, and it never
+// folds two rows of one era.
+//
+// The second return value is what this pass decided about rows the PSN
+// stream will emit (psnHints): the event ids of PSN cash movements whose
+// mirror leg pairs a web row, which the caller demotes — a pair must drop
+// on BOTH sides or the surviving side books a one-sided phantom external
+// flow — and the narrative of any statement row the era fold dropped in
+// favour of a PSN event, for the caller to carry onto it.
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, psnHints, error) {
 	if !w.HasChanges {
-		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), psnHints{}, nil
 	}
 	cutoff, err := buildPSNStartByWebRel(ctx, psn, rels)
 	if err != nil {
-		return nil, nil, err
+		return nil, psnHints{}, err
 	}
 	accountToRel, err := r.buildAccountToRelMap(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, psnHints{}, err
 	}
 	ownIBANs, err := r.buildOwnIBANSet(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, psnHints{}, err
 	}
 	mt940Start, err := r.mt940FeedStart(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, psnHints{}, err
 	}
-	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel)
+	// The era fold runs first: a statement row it folds away is not in the
+	// ledger, so it must not consume an offset-veto match either.
+	fold, err := r.buildEraFold(ctx, psn, cutoff, accountToRel)
 	if err != nil {
-		return nil, nil, err
+		return nil, psnHints{}, err
+	}
+	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel, fold.drop)
+	if err != nil {
+		return nil, psnHints{}, err
 	}
 
 	const q = `
@@ -397,12 +414,12 @@ SELECT transaction_external_id, value_date, account_external_id,
  WHERE value_date BETWEEN ? AND ?`
 	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ubs-web Transactions: %w", err)
+		return nil, psnHints{}, fmt.Errorf("ubs-web Transactions: %w", err)
 	}
 	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
-	summaries := 0
+	summaries, folded := 0, 0
 	for rows.Next() {
 		var (
 			txID, accountID, ccy, payload string
@@ -411,7 +428,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			counterparty, kindStr         sql.NullString
 		)
 		if err := rows.Scan(&txID, &valueDate, &accountID, &ccy, &debit, &credit, &counterparty, &kindStr, &payload); err != nil {
-			return nil, nil, fmt.Errorf("ubs-web Transactions scan: %w", err)
+			return nil, psnHints{}, fmt.Errorf("ubs-web Transactions scan: %w", err)
 		}
 		// Hard cut at PSN_start per relationship.
 		if rel, ok := accountToRel[accountID]; ok {
@@ -419,14 +436,17 @@ SELECT transaction_external_id, value_date, account_external_id,
 				continue
 			}
 		}
+		emittedKey := txID + "@" + accountID
+		// The era fold (buildEraFold): this statement reconstruction
+		// describes a booking the export or the MT940 feed also records, and
+		// the machine-readable record keeps it. Counted so the drop is
+		// visible on the load summary.
+		if fold.drop[emittedKey] {
+			folded++
+			continue
+		}
 
-		var net canonical.Decimal
-		if credit.Valid {
-			net = net.Add(canonical.NewDecimalFromFloat(credit.Float64))
-		}
-		if debit.Valid {
-			net = net.Sub(canonical.NewDecimalFromFloat(debit.Float64))
-		}
+		kind, net, netAmount := webProjectedNet(kindStr.String, debit, credit)
 		netPtr := net
 
 		// A statement's period summary is not a booking. The "Turnover
@@ -453,8 +473,6 @@ SELECT transaction_external_id, value_date, account_external_id,
 			summaries++
 			continue
 		}
-		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
-
 		// Classify each deposit/withdrawal as EXTERNAL (boundary-crossing
 		// owner capital) or INTERNAL (conduit churn); INTERNAL rows are
 		// demoted to a non-flow kind (TxKindOther) so they stay queryable
@@ -477,17 +495,13 @@ SELECT transaction_external_id, value_date, account_external_id,
 			}
 		}
 
-		// Reversal rows (description_kind tagged `<base>;Reversal`)
-		// already carry the bank's correction sign in credit/
-		// debit, so the canonical-sign helper would mask the
-		// correction by forcing it back to the kind's normal
-		// direction. Bypass the helper for those rows; the kind
-		// itself still maps to the underlying canonical kind (so
-		// reversals net against the originals when summed by
-		// kind), only the sign-normalisation step is skipped.
-		_, isReversal := stripReversalSuffix(kindStr.String)
-		netAmount := &netPtr
-		if !isReversal {
+		// The demotion above is a flow classification, but the canonical
+		// sign is read off the kind, so it is re-applied against the kind
+		// the row ENDS with. `other` pins no direction, so a demoted row
+		// reaches gold with whatever sign its silver columns carried;
+		// webProjectedNet's undemoted reading is what the era fold keys
+		// on, and the two agree wherever no demotion happened.
+		if _, isReversal := stripReversalSuffix(kindStr.String); !isReversal {
 			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 		}
 
@@ -503,6 +517,19 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// already classified from the raw column above and no text read
 		// here can move it.
 		text, instrumentID, message := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
+		description := silver.StrPtrIfNonEmpty(text.description)
+		payee := silver.StrPtrIfNonEmpty(text.counterparty)
+		category := silver.StrPtrIfNonEmpty(text.providerCategory)
+		// This export row kept a booking whose statement copy the era fold
+		// dropped. Per column and only downward (richerText), the statement's
+		// reading fills what this row left empty or as a bare code, so the
+		// fold loses nothing the printed record said. Nothing else moves:
+		// the amount, the value date, the kind and the id are this row's.
+		if alt, ok := fold.web[emittedKey]; ok {
+			description = richerText(description, alt.description)
+			payee = richerText(payee, alt.counterparty)
+			category = richerText(category, alt.providerCategory)
+		}
 
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			// Web silver's transactions PK is the compound
@@ -513,28 +540,31 @@ SELECT transaction_external_id, value_date, account_external_id,
 			// synthesize a per-leg ID here. The natural
 			// "Transaction no." remains in the payload for
 			// downstream queries that want to reassemble the trade.
-			TransactionExternalID: txID + "@" + accountID,
+			TransactionExternalID: emittedKey,
 			OccurredAt:            valueDate,
 			AccountExternalID:     accountID,
 			InstrumentExternalID:  instrumentID,
 			Kind:                  kind,
 			Currency:              ccy,
 			NetAmount:             netAmount,
-			Description:           silver.StrPtrIfNonEmpty(text.description),
+			Description:           description,
 			Memo:                  silver.StrPtrIfNonEmpty(message),
-			Counterparty:          silver.StrPtrIfNonEmpty(text.counterparty),
+			Counterparty:          payee,
 			// The bank's own booking type, verbatim (a `;Reversal`
 			// suffix included) — the closest thing a bank statement has
 			// to a provider category, and what the spending provider
 			// tier translates. The payer's message never enters it.
-			ProviderCategory: silver.StrPtrIfNonEmpty(text.providerCategory),
+			ProviderCategory: category,
 			Payload:          json.RawMessage(payload),
 		})
 	}
 	if summaries > 0 {
 		log.Printf("ubs adapter: dropped %d statement summary row(s) — a zero-amount period-close line carrying nothing but the turnover totals", summaries)
 	}
-	return silver.NewTransactionStream(out), psnVeto, rows.Err()
+	if folded > 0 {
+		log.Printf("ubs adapter: folded %d statement row(s) into the export or feed record of the same booking — one booking, one row", folded)
+	}
+	return silver.NewTransactionStream(out), psnHints{veto: psnVeto, carry: fold.psn}, rows.Err()
 }
 
 // dumpRunTimesInWindow returns the chronologically-sorted set of
@@ -755,7 +785,10 @@ type offsetLeg struct {
 // duplicate and must not consume a match) plus PSN cash movements, over the
 // FULL silver rather than the load window — a row's classification depends
 // only on silver contents, never on load slicing; a mirror leg that lands in
-// a later dump is picked up on the next `reload`.
+// a later dump is picked up on the next `reload`. `folded` names the statement
+// rows the era fold (buildEraFold) removed from that universe for the same
+// reason the cut removes rows: their booking is already represented by the
+// export or feed row that kept it.
 //
 // Matching is 1:1 greedy and deterministic, in two global phases: first every
 // bank-linked twin (shared Transaction no. — UBS stamps both sides of an
@@ -763,7 +796,7 @@ type offsetLeg struct {
 // currency, so they never pair here), then loose same-day offsets among the
 // remaining legs. The twin phase is global so a twin-less leg that merely
 // sorts earlier can never steal another leg's bank-linked twin.
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string) (webVeto, psnVeto map[string]bool, err error) {
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string, folded map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
 	type groupKey struct {
 		day int64
 		ccy string
@@ -794,6 +827,13 @@ SELECT transaction_external_id, value_date, account_external_id,
 			if cut := cutoff[rel]; cut > 0 && valueDate >= cut {
 				continue
 			}
+		}
+		// A statement row the era fold folded away is likewise not in the
+		// ledger: its booking is represented by the export or feed row that
+		// kept it, and letting the folded copy stand here would let one
+		// booking consume two mirrors.
+		if folded[txID+"@"+acct] {
+			continue
 		}
 		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
 		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
@@ -1033,6 +1073,48 @@ func populateCutoffMap(
 		}
 	}
 	return rows.Err()
+}
+
+// webProjectedNet is the signed amount a `ubs-web` cash row projects into
+// gold, plus the kind and the raw column net it was derived from. It is the
+// single definition of that derivation: the transaction loop emits what it
+// returns and the era fold (buildEraFold) keys on it, so one booking's
+// amount is the same number whichever era recorded it.
+//
+// It has to be a shared definition because the two web eras do not agree on
+// the sign convention of the silver amount columns. The statement
+// reconstruction writes the figure a statement PRINTS, and a statement
+// prints a debit as a positive figure in its debit column; the export
+// carries the sheet's own cell, which already states the direction in its
+// sign. The raw column net therefore comes out with opposite signs for one
+// booking, and a key built on it would never pair the two.
+//
+// What both eras do agree on is WHICH column carries the figure, and that is
+// what webKind reads for direction. So the direction comes from the kind and
+// the magnitude from the figure (canonical.ApplyCanonicalSign) — never from
+// abs(), which would erase the difference between a payment and its
+// reversal. A kind with no pinned direction (interest, fx, `other`) keeps
+// the source's sign, so there the two eras can still disagree and such a
+// pair simply does not fold: the fold never guesses.
+//
+// Reversal rows (`<base>;Reversal`) bypass the sign helper, which would
+// otherwise mask the bank's correction by forcing the amount back to the
+// base kind's normal direction. Their kind still maps to the underlying
+// canonical kind so they net against the originals when summed.
+func webProjectedNet(descKind string, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
+	var net canonical.Decimal
+	if credit.Valid {
+		net = net.Add(canonical.NewDecimalFromFloat(credit.Float64))
+	}
+	if debit.Valid {
+		net = net.Sub(canonical.NewDecimalFromFloat(debit.Float64))
+	}
+	kind := webKind(descKind, debit.Valid, credit.Valid)
+	signed := net
+	if _, isReversal := stripReversalSuffix(descKind); isReversal {
+		return kind, net, &signed
+	}
+	return kind, net, canonical.ApplyCanonicalSign(kind, &signed)
 }
 
 // webKind maps the web silver's `description_kind` string plus

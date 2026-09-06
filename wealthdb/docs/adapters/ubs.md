@@ -302,6 +302,102 @@ Because the fold changes what `Normalize` is handed, the rows it
 reaches are re-keyed, which is what `SignatureVersion` 7 records
 (SPENDING.md §4).
 
+### The era fold
+
+Three eras record the cash ledger — the statement reconstructions
+(`ubs-web` migration 0002, ids prefixed `stmt:`), the account-statement
+export (ids are UBS's own "Transaction no.") and the MT940 feed (ids
+prefixed `mt940:`). Their coverage overlaps in time and their id spaces
+are disjoint, so an entry the archive printed and the export or the feed
+also carried reaches gold **twice** unless something matches the two
+copies on the booking itself. Nothing in silver does: the statement
+loader dedups only within the archive, and the hard cut above arbitrates
+web against PSN, not one web era against the other.
+
+The era fold (`buildEraFold`, web side; the carry onto a surviving MT940
+row in `psnStatementCarryStream`) is that match. Its key is the booking's
+own facts, four components and nothing else — each taken from **the
+adapter's own projection of the row**, never re-read from the silver
+columns:
+
+| Key component | Web eras (`webProjectedNet`) | Feed era (`buildTransaction`) |
+| --- | --- | --- |
+| Account | `transactions.account_external_id` | `payload.account`, else `events.account_external_id` |
+| Value day | `value_date`, floored to UTC midnight | `events.timestamp`, floored to UTC midnight |
+| Signed amount | the projected `net_amount`, rounded to the minor unit | the projected `net_amount`, rounded the same way |
+| Currency | `currency_iso`, trimmed and upper-cased | `payload.funds`, else `events.currency_iso`, with the same `XXX` fallback the builder stamps |
+
+Reading the amount off the projection rather than off the columns is
+load-bearing, because **the two web eras do not write those columns to
+the same convention.** A statement reconstruction carries the figure a
+statement *prints*, and a statement prints a debit as a positive figure in
+its debit column; the export carries the sheet's own cell, which already
+states the direction in its sign. `amount_credit − amount_debit` therefore
+comes out with opposite signs for one booking, and a key built on it pairs
+only the rows where the conventions happen to agree.
+
+What both eras do agree on is *which column* carries the figure, and that
+is what `webKind` reads for direction. So the projection takes the
+direction from the kind and the magnitude from the figure
+(`canonical.ApplyCanonicalSign`), and the two eras land on the same signed
+number. The magnitude alone would not do: a booking and the bank's
+correction of it are equal and opposite on one day, and folding those
+would delete a real entry — the signed key is what keeps them apart, and
+a reversal row (`<base>;Reversal`) keeps its own record's sign for the
+same reason. A kind with no pinned direction (interest, fx, `other`)
+passes the source's sign through, so there the two eras can still disagree
+and such a pair simply does not fold: the fold never guesses.
+
+Nothing about the narrative enters the key — the same entry is worded
+differently in each era by construction — and a zero amount is excluded,
+because it names no sum and a day can carry several unrelated
+zero-amount period-close lines. The value day survives the same scrutiny:
+all three eras store a UTC-midnight value date, so the flooring is a
+safety net rather than a correction.
+
+**The statement copy is the one dropped, always.** The export and the
+feed are the bank's own machine-readable record of the entry; the
+statement row is reconstructed from a printed document, one parse
+further from the bank, and it is the era whose amounts, dates and
+columns were recovered by a layout parser rather than read from a
+field. Which copy survives is therefore an era-level rule, not a
+per-row judgement, and the surviving row's id, account, amount, value
+date and kind are untouched — the fold removes a row, it never edits
+one.
+
+**Two rows of the same era are never folded.** Two identical payments on
+one day are an ordinary thing for a ledger to hold, and within one era
+they carry distinct ids because they are distinct bookings; only the
+cross-era signature says "recorded twice". Pairing is 1:1 and
+deterministic (ids sorted, export rows offered before feed rows), so a
+day holding two statement copies and one export row folds exactly one of
+them and leaves the other standing.
+
+What the dropped copy said is not lost. Per column and only downward, by
+the same `richerText` rule as the text fold above, the statement's
+reading of the entry fills a column the survivor left empty or as a bare
+code; a column that already says something keeps it. Where the survivor
+is an export row the carry happens as it is emitted; where it is an MT940
+row it rides `psnStatementCarryStream`, applied outside
+`psnWebTextFoldStream` so the export's own record of the entry fills a
+bare column first.
+
+Two things downstream of the fold follow from it. A folded row is out of
+the ledger, so it is also out of the same-day offset veto's universe
+(`buildSameDayOffsetVeto`) — otherwise one booking could consume two
+mirrors. And returns move where a folded row was itself carrying an
+external deposit or withdrawal: that flow was counted twice and is now
+counted once, which is the correction, not a side effect. The fold
+adds no flow and changes no amount, so nothing else in the returns path
+is touched.
+
+Because the fold changes both which rows `Normalize` is handed and what
+some of them say, the survivors it gives a payee to are re-keyed, which
+is what `SignatureVersion` 8 records (SPENDING.md §4).
+
+The adapter logs the number of statement rows it folded on each load,
+alongside the dropped statement summary rows (§7).
+
 The counterparty is silver's promoted column rather than a fresh
 read of the payload because it is the collector's stated extraction
 (`Description1`'s first segment; the first continuation line),

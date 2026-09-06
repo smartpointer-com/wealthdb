@@ -33,6 +33,11 @@ import (
 //     - Hard cut at PSN-start per relationship — see
 //       transactionsBeforePSNStart for why an overlap merge isn't
 //       safe here.
+//     - An era fold (buildEraFold) collapses a booking that two eras
+//       both recorded: a statement reconstruction whose account,
+//       value day, signed amount and currency match an export or
+//       MT940 row is dropped, and its narrative is carried onto the
+//       row that kept the booking. One booking, one row.
 //     - The PSN stream is wrapped in a text fold
 //       (psnWebTextFoldStream) that fills a narrative column the
 //       MT940 feed left as a bare code from the account-statement
@@ -260,13 +265,13 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	streams := make([]silver.TransactionStream, 0, 2)
 	// The web side builds the same-day offset veto over both feeds and hands
 	// back the PSN half, so a vetoed pair drops on both sides of the seam.
-	var psnVeto map[string]bool
+	var hints psnHints
 	if c.web != nil {
-		s, veto, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
+		s, h, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Transactions: %w", err)
 		}
-		psnVeto = veto
+		hints = h
 		streams = append(streams, s)
 		// Cards are web-only and the PSN cut does not touch them: there
 		// is no PSN row for the seam to arbitrate against. They ride as
@@ -282,7 +287,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		}
 	}
 	if c.psn != nil {
-		s, err := c.psn.Transactions(ctx, w, psnVeto)
+		s, err := c.psn.Transactions(ctx, w, hints.veto)
 		if err != nil {
 			return nil, fmt.Errorf("ubs psn Transactions: %w", err)
 		}
@@ -294,6 +299,12 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			if len(texts) > 0 {
 				s = &psnWebTextFoldStream{inner: s, texts: texts}
 			}
+		}
+		// Outermost, so the export's own record of the entry — found by the
+		// bank's number for it — fills a bare column first, and the dropped
+		// statement copy only fills what is still bare after that.
+		if len(hints.carry) > 0 {
+			s = &psnStatementCarryStream{inner: s, texts: hints.carry}
 		}
 		streams = append(streams, s)
 	}
@@ -352,6 +363,48 @@ func (s *psnWebTextFoldStream) Next(ctx context.Context) (canonical.TransactionB
 }
 
 func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
+
+// psnStatementCarryStream is the PSN half of the era fold: it carries the
+// narrative of a statement reconstruction the web side dropped onto the
+// MT940 row that kept the booking.
+//
+// The three eras of the cash ledger overlap in time and share no id, so an
+// entry printed on a statement and also carried by the feed reaches gold
+// twice unless something matches them on the booking itself — account,
+// value day, signed amount, currency (buildEraFold). The machine-readable
+// record survives; this is what stops the fold from also losing what the
+// printed one said. Per column and only downward (richerText), exactly as
+// the export-side fold above: a column that is empty or a bare code takes
+// the statement's value, a column that already says something keeps it.
+//
+// Keyed on the surviving row's event id, decided on the web side where
+// both eras are in hand, so nothing is re-matched here. No row is added or
+// dropped by this stream, and the amount, the value date, the kind and the
+// id are the MT940 row's, byte for byte.
+type psnStatementCarryStream struct {
+	inner silver.TransactionStream
+	texts map[string]webTxText
+}
+
+func (s *psnStatementCarryStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	for i := range batch.Transactions {
+		t := &batch.Transactions[i]
+		alt, ok := s.texts[t.TransactionExternalID]
+		if !ok {
+			continue
+		}
+		t.Counterparty = richerText(t.Counterparty, alt.counterparty)
+		t.Description = richerText(t.Description, alt.description)
+		t.ProviderCategory = richerText(t.ProviderCategory, alt.providerCategory)
+	}
+	return batch, more, nil
+}
+
+func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 
 // psnWebFoldStream wraps a SnapshotStream and folds web's
 // per-(UTC date, key) payload into PSN's position and cash rows.

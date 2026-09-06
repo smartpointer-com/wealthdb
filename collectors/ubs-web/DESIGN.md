@@ -230,6 +230,37 @@ row: Trade date, Trade time, Booking date, Value date. PSN MT940
 exposes booking + value date. Both silvers promote **Value date**
 as the splice key for consistency.
 
+**Three eras, not two.** The web silver's `transactions` table holds
+two of them. Rows from the live CSV export carry UBS's "Transaction
+no." as their `transaction_external_id`; rows reconstructed from the
+Account-Statement PDF archive (migration 0002, §3.8) carry a
+collector-minted content hash prefixed `stmt:`. The MT940 feed is the
+third, in the PSN silver, with ids prefixed `mt940:`. The three id
+spaces are disjoint by construction, so the prefix — or its absence —
+is the era a row belongs to, readable without decoding a payload.
+
+The two web eras also write the amount columns to different conventions,
+because each records what its own source states. `amount_debit` /
+`amount_credit` on an export row are the CSV's "Debit" / "Credit" cells
+verbatim, already signed by the sheet; on a statement row they are the
+figures the statement *prints*, and a statement prints a debit as a
+positive figure in its debit column (a printed trailing minus is the only
+thing that makes a stored figure negative). What the two eras do state
+identically is *which* column carries the figure. A consumer that needs a
+signed amount must therefore take the direction from the column, not from
+the stored sign — which is what the adapter's projection does.
+
+The PDF archive reaches further back than the export window and the
+feed, and its coverage runs forward into both. Silver keeps each era's
+rows as it finds them: the statement loader dedups only *within* the
+archive (the same booking printed on a monthly and an annual statement
+hashes identically, so the upsert collapses it) and stops each account
+at its MT940 floor, but nothing in silver reconciles a statement row
+against the export's or the feed's record of the same booking — the
+ids do not meet, and silver does not decide merge policy. The wealthdb
+UBS adapter owns that reconciliation: see the era fold in
+[the adapter doc](../../wealthdb/docs/adapters/ubs.md).
+
 ### 3.7 Documents (PDFs)
 
 Web-only — PSN has no document concept. The silver `documents`

@@ -129,7 +129,20 @@ import (
 //     code key stays where it is and the rows that moved are back in
 //     the backlog under a key that names someone. Every other
 //     narrative is keyed exactly as version 6 keys it.
-const SignatureVersion = 7
+//   - 8: Normalize is again unchanged; again what moves is what the
+//     UBS adapter gives it. Three eras record that cash ledger over
+//     overlapping periods with disjoint id schemes, so a booking the
+//     statement archive printed and the export or the MT940 feed also
+//     carried reached gold as TWO rows keyed independently. The
+//     adapter now folds them to one, keeping the machine-readable
+//     record and carrying the statement's narrative onto whatever
+//     column the survivor left empty or as a bare code
+//     (internal/silver/ubs/web_overlay.go). A survivor that gains a
+//     payee that way is keyed on it instead of on the code it had.
+//     Rows that shared one code key may move onto keys of their own,
+//     which is the split case (docs/SPENDING.md §4). Every other
+//     narrative is keyed exactly as version 7 keys it.
+const SignatureVersion = 8
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
 // Narratives run long — a full address, a terminal id, a
