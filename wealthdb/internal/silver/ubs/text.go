@@ -115,6 +115,17 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 	if pdfBackfill && isTurnoverTotalLine(payee) {
 		payee = ""
 	}
+	// Nor is the bank's own booking type a payee. A row the bank filed
+	// without one — a fee, a charge — leads its narrative with the
+	// booking type, which the promotion above then reads as the payee
+	// and gold's merchant signature prefers over the description. That
+	// files every such row under one merchant named after the booking,
+	// and buries a payee the description DOES carry: the MT940 feed
+	// writes one for the same booking that the export feed left out.
+	// Refused here, the description is what the signature reads.
+	if isBookingType(payee) {
+		payee = ""
+	}
 	return webTxText{
 		counterparty:     payee,
 		description:      derefText(webDescription(captionDesc, bookingType, p)),

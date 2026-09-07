@@ -47,6 +47,24 @@ type TransferLeg struct {
 	// credit. Zero amounts pair with nothing useful and are best filtered by
 	// the caller; they are treated as credits here.
 	Amt float64
+
+	// Rail names the payment rail the leg's own narrative announces, in
+	// whatever vocabulary the caller uses; empty when the narrative announces
+	// none, which is the common case. RailPartner is the rail this leg
+	// DEMANDS of whatever it pairs with, and is what actually constrains the
+	// matching (railsCompatible). A caller that fills neither — the returns
+	// engine — matches exactly as it did before these existed.
+	//
+	// The two are separate because the demand is not symmetric. A card's
+	// record of being paid is unmistakably a card receipt and can insist its
+	// partner be a payment to a card; the bank-side record of paying that card
+	// often carries only the issuer's name, or the cardholder's, and can
+	// insist on nothing. Amount and date alone let a receipt pair with any
+	// unrelated debit of the right size — a utility bill, a payment to a
+	// person — which silently deletes real spending, and this is the signal
+	// that refuses it.
+	Rail        string
+	RailPartner string
 }
 
 // TransferMatchOpts are the matcher's knobs. The zero value pairs only
@@ -61,11 +79,24 @@ type TransferMatchOpts struct {
 	// exact-to-a-cent, and the returns default of 0.5 covers a wire fee
 	// deducted in transit.
 	TolerancePct float64
+	// ToleranceMaxAbs caps the tolerance in absolute currency units, whatever
+	// TolerancePct works out to; zero leaves it uncapped. The percentage
+	// exists to absorb a fee deducted in transit, and such a fee is FLAT — a
+	// fixed charge per wire, not a share of the sum. Uncapped, the percentage
+	// therefore grows into exactly the band where coincidences live: on a
+	// large transfer half a percent is more than any fee, and a debit will
+	// happily pair with a credit tens of units away that has nothing to do
+	// with it.
+	ToleranceMaxAbs float64
 	// CrossGroupOnly forbids pairing two legs of the same group. The returns
 	// engine sets it (a same-source pair is the silver classifier's business,
 	// not the matcher's); a spending caller pairing own-account moves inside
 	// one bank leaves it false.
 	CrossGroupOnly bool
+	// Overrides are the holder's manual decisions about particular legs and
+	// particular pairs, applied ahead of and around the greedy pass
+	// (transferoverride.go). The zero value overrides nothing.
+	Overrides TransferOverrides
 	// AllowSameOwner permits pairing two legs of the SAME account: a
 	// withdrawal and a deposit that undo each other — a transfer bounced
 	// back, a reversal booked as its own line — net to zero, and a caller
@@ -89,6 +120,19 @@ type TransferMatchPair struct {
 // currency units: a cent of rounding slack, so TolerancePct=0 still matches
 // legs that agree to the cent.
 const transferMatchMinEps = 0.01
+
+// DefaultTransferFeeCap bounds the amount tolerance in absolute currency
+// units (TransferMatchOpts.ToleranceMaxAbs). It is sized to the largest
+// per-transfer fee a bank plausibly deducts in transit — an international
+// wire fee reaches the low tens, never hundreds — and is stated in
+// major-currency units, which is what the matcher partitions on in practice.
+//
+// The number is calibrated against what a transit fee IS, not guessed: a
+// rail deducts a FLAT charge in the low tens — a correspondent or domestic
+// wire fee, an exchange's withdrawal fee — and never a share of the amount.
+// The coincidences the cap exists to refuse scale with the transfer instead,
+// so a proportional tolerance admits them as soon as the amount is large.
+const DefaultTransferFeeCap = 40.0
 
 // MatchTransferLegs pairs debit legs with the credit legs they funded.
 //
@@ -164,6 +208,42 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 
 	used := make([]bool, len(credits))
 	var out []TransferMatchPair
+	// Forced pairs are asserted first and their legs withdrawn from the pool,
+	// so a manually stated movement cannot lose either half to a nearer
+	// coincidence — which is the whole reason to state it. A forced pair whose
+	// legs are not both in the pool is silently absent: the pool is the
+	// caller's business, and a leg it never offered is not this file's to
+	// complain about.
+	if len(opts.Overrides.forced) > 0 {
+		debitAt := make(map[string]int, len(debits))
+		for i, d := range debits {
+			debitAt[LegRef{d.Group, d.Owner, d.ID}.key()] = i
+		}
+		creditAt := make(map[string]int, len(credits))
+		for i, c := range credits {
+			creditAt[LegRef{c.Group, c.Owner, c.ID}.key()] = i
+		}
+		forcedDebit := make([]bool, len(debits))
+		for _, p := range opts.Overrides.forced {
+			di, dok := debitAt[p.Debit.key()]
+			ci, cok := creditAt[p.Credit.key()]
+			if !dok || !cok || used[ci] || forcedDebit[di] {
+				continue
+			}
+			used[ci] = true
+			forcedDebit[di] = true
+			out = append(out, TransferMatchPair{Debit: debits[di], Credit: credits[ci]})
+		}
+		if len(out) > 0 {
+			kept := debits[:0]
+			for i, d := range debits {
+				if !forcedDebit[i] {
+					kept = append(kept, d)
+				}
+			}
+			debits = kept
+		}
+	}
 	window := int64(opts.WindowDays)
 	for _, d := range debits {
 		cp := parts[d.Ccy]
@@ -187,6 +267,9 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 			if r := opts.TolerancePct / 100 * math.Max(math.Abs(d.Amt), c.Amt); r > eps {
 				eps = r
 			}
+			if opts.ToleranceMaxAbs > 0 && eps > opts.ToleranceMaxAbs {
+				eps = opts.ToleranceMaxAbs
+			}
 			gap := math.Abs(d.Amt + c.Amt)
 			if gap > eps {
 				continue
@@ -206,9 +289,16 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 }
 
 // pairableLegs reports whether two legs may pair at all, before amount and day
-// are considered: under CrossGroupOnly never two legs of the same group, and
-// two legs of the same account only under AllowSameOwner.
+// are considered: the rail each leg demands of its partner, then under
+// CrossGroupOnly never two legs of the same group, and two legs of the same
+// account only under AllowSameOwner.
 func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
+	if opts.Overrides.blocks(d, c) {
+		return false
+	}
+	if !railsCompatible(d, c) {
+		return false
+	}
 	if c.Group != d.Group {
 		return true
 	}
@@ -216,4 +306,26 @@ func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
 		return false
 	}
 	return opts.AllowSameOwner || c.Owner != d.Owner
+}
+
+// railsCompatible enforces the partner rail a leg demands, in both
+// directions. A leg that demands nothing (RailPartner empty) constrains
+// nothing, so a caller that classifies no leg — the returns engine — pairs
+// exactly as it did before this existed.
+//
+// The asymmetry is the point. A rail is often written on ONE side of a
+// movement only: a card's record of being paid says "payment thank you", while
+// the bank's record of paying it may say the issuer, or the cardholder's own
+// name, or nothing at all. So the side that names the rail declares what its
+// partner must be, and the silent side stays free to pair. Requiring BOTH
+// sides to name the rail would refuse the true pair whose other half is a bare
+// name — the common shape, not the exception.
+func railsCompatible(d, c TransferLeg) bool {
+	if d.RailPartner != "" && d.RailPartner != c.Rail {
+		return false
+	}
+	if c.RailPartner != "" && c.RailPartner != d.Rail {
+		return false
+	}
+	return true
 }

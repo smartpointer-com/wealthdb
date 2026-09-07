@@ -347,6 +347,61 @@ the day a transfer of the same size leaves — the far side wins the tie,
 so the own-account coincidence cannot steal the partner that is really
 on the other end.
 
+Two further bounds close what those leave open, because amount and day
+proximity alone are only ever a coincidence of size, never evidence
+about what either row IS.
+
+**A leg may demand a rail of its partner.** A card's record of being
+paid — "payment thank you", "payment received thank you" — is
+unmistakable: nothing but a payment TO that card produces the line. So
+it demands that its partner be a card payment, and any other debit of
+about the right size is refused. The demand is one-directional: the
+bank-side half of the same movement often carries only the issuer's
+name, the holder's own, or nothing, so a card payment demands nothing
+of its partner and a leg that names no rail constrains nothing at all.
+Without this the receipt pairs with whatever is nearest in amount — a
+utility bill, a cheque, a payment to a person — and because a pair
+removes BOTH legs, that debit is real spending that silently
+disappears, in the one direction a chart cannot show.
+
+**The tolerance is capped in absolute terms.** The percentage exists to
+absorb a fee deducted in transit, and such a fee is FLAT: a fixed
+charge per wire, not a share of the sum. Uncapped, half a percent of a
+large transfer is tens of units — more than any real fee, and wide
+enough to reach an unrelated credit. `DefaultTransferFeeCap` bounds it
+so a genuine wire fee still pairs and a coincidence at that distance
+does not. The returns caller applies the same cap; the rail demands it
+never sets, so its matching is unchanged.
+
+### Manual overrides on the matcher
+
+`spending.transfer_overrides` names a CSV ledger of decisions the data
+cannot settle, in the same idiom and for the same reason as the pins
+ledger: a leg is named by what a person reads off a statement —
+source, account, day, amount, currency — never by gold's opaque
+transaction id.
+
+| verb | legs given | meaning |
+|---|---|---|
+| `unmatch` | both | those two may not pair with **each other**; each stays free to find its real partner |
+| `unmatch` | first only | that leg is not half of a movement at all, whatever sits near it |
+| `match` | both | assert the pair, ahead of the day window, the tolerance and the rail rules |
+
+`match` exists for the movement whose halves no window can reach: a
+bank posting its side of an ACH days after the other side credited.
+Forced pairs are asserted before the greedy pass and withdrawn from
+it, so a stated pair cannot lose either half to a nearer coincidence.
+
+A rule that names no leg is **reported, not dropped** — the pass counts
+it exactly as it counts an unmatched pin. An override is something a
+person wrote down about a row they believe exists, so one that quietly
+does nothing is the worst outcome available.
+
+The ledger is read once and handed to BOTH matchers. The core is
+shared, so a pair the holder has settled must be settled the same way
+in spending and in returns; a movement called internal in one report
+and external in the other is worse than either answer alone.
+
 The kind set — `deposit`, `withdrawal`, `card_payment`, `transfer_in`,
 `transfer_out` — is the one narrowing that stays. Those are the kinds
 that mean "cash moved into or out of an account" *and* carry a pinned
@@ -655,6 +710,23 @@ once the year is gone, three house numbers, and, deliberately, a
 number written as five pairs), and cap at 64 characters on a
 whole-token boundary.
 
+A narrative is also read for its **head**: the segment that names the
+payee. A statement narrative is written in segments — the payee, the
+street, the country and town, then what the payment was for — and an
+MT940 `:86:` narrative leads with the structured-field tag the payee
+was written into (`Z44?`: a letter, two digits, a question mark). The
+head is the narrative less that tag and less everything from the first
+`;`. Neither half is the merchant. The tag names the field slot and
+differs across bookings of one merchant; the address behind it is
+spelled differently across bookings too — a town in full or
+abbreviated, a postcode before the name or after it — so left in, one
+merchant gets a separate signature per spelling, and an address
+trailing a name reads to a model as part of it. Only the KEY is
+trimmed: the fence that decides whether a signature may be sent
+anywhere reads the whole narrative (`RowTransferShaped`), so no rail
+written in a later segment slips through because the key stopped
+showing it.
+
 Both fields are reduced, and which one becomes the signature is
 decided on the reduced forms, in this order. When the counterparty
 is, whole, an e-bill rail marker — `EBILL-RECHNUNG`, `EBILL INVOICE`
@@ -666,10 +738,16 @@ words in it, so no later step would refuse it. When the description
 reduces to nothing, the counterparty, whatever it holds — a bare code
 is kept over an empty signature, which would drop the row out of every
 store. When the counterparty reduces to nothing, or to no word at all
-(`Uninformative`), the description. When the description begins with
-the counterparty's tokens and carries more, the description: the
-counterparty is then a truncation of it, and the tail is what tells
-one creditor from another — unless what follows the counterparty's
+(`Uninformative`), the head if the narrative was structured — a field
+tag led it — and the head carries a word, else the description whole.
+The tag is what says the first segment is the payee: an untagged
+narrative leads with the booking type as often as with a payee
+(`Direct debit; <merchant>; <what for>`), and trimming that to its
+first segment would file every direct debit under one key and lose
+the merchant behind it. When the head begins with
+the counterparty's tokens and carries more, the head: the
+counterparty is then a truncation of it, and the rest of the segment
+is what tells one creditor from another — unless what follows the counterparty's
 tokens, the counterparty read with its own runs gone, is a
 phone-shaped run, when the counterparty stands whatever else follows:
 a name with its number behind it is the whole name, not a truncation
@@ -687,9 +765,12 @@ counterparty — it is the merchant field proper, and adapters are
 contractually bound not to reformat it. The first two exceptions exist
 because an adapter's counterparty can be silver's promotion of the
 narrative's first segment, and that segment can be nothing but the
-bank's own notice (`CRD1W OBJECTION TO UBS`) or the bank's own name
-(`UBS SWITZERLAND AG`, cut from `UBS SWITZERLAND AG;C/O UBS CARD
-CENTER`), while the creditor sits in the description.
+bank's own notice (`CRD1W OBJECTION TO UBS`) while the creditor sits
+in the description. What the head trim leaves behind is not lost with
+it: a care-of line or an address past the separator is the bank's
+filing of where to send the post, and the rule tier reads the raw
+narrative, so a card bill written `UBS SWITZERLAND AG;C/O UBS CARD
+CENTER` keys on the payee and is still placed by the card rule.
 
 The description is read only up to its **memo separator**
 (`canonical.DescriptionMemoSeparator`, a spaced em dash). Where a
@@ -1449,6 +1530,30 @@ tidies the store — by then the rows have moved on.
   description; the signature is built from the description past the
   marker, less the payment order's own lines, so a utility and an
   insurer are two merchants rather than one.
+- **An address is not part of the merchant's name**
+  (`SignatureVersion` 9, §4). A statement narrative writes the payee
+  first and its address behind, and an MT940 `:86:` narrative leads
+  with the structured-field tag the payee went into. Both are the
+  bank's filing, and both vary across bookings of one merchant — a
+  town in full or abbreviated, a postcode before the name or after it,
+  a different field tag — so left in the key one merchant gets a
+  signature per spelling and a model reads the town as part of the
+  name. The key is trimmed to the narrative's head; the transfer fence
+  still reads the whole narrative, so nothing a later segment says can
+  slip through on the trim.
+- **Only a STRUCTURED narrative is trimmed to its head** (§4). The
+  field tag is what says the first segment is the payee. The export
+  feed composes its description the other way round — the booking type
+  leads and the merchant follows — so trimming an untagged narrative
+  would file every direct debit under one key and lose the merchant
+  behind it.
+- **The bank's booking type is not a payee** (§4). A row the bank
+  filed without one leads its narrative with the booking type, which
+  the ubs adapter's promotion then reads as the counterparty and the
+  signature prefers over the description. Refused at the promotion,
+  the description names the merchant instead — and for the bookings
+  the MT940 feed also carries, that description is the one narrative
+  with a payee in it.
 - **The model may never emit a delta.** Enforced by a stricter
   predicate in `canonical`, not by a hardcoded list in the command.
 - **The provider tier may place a delta.** The vendored-only

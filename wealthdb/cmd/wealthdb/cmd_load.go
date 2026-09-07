@@ -137,12 +137,17 @@ func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout
 	if err != nil {
 		return err
 	}
+	overrides, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
+	if err != nil {
+		return err
+	}
 	res, err := spending.RunDeterministicPass(ctx, db, spending.Options{
 		Include:           include,
 		Exclude:           exclude,
 		MatchWindowDays:   m.Window(),
 		MatchTolerancePct: m.Tolerance(),
 		Rules:             spendRules(cfg),
+		TransferOverrides: overrides,
 		Pins:              pins,
 	})
 	if err != nil {
@@ -150,6 +155,11 @@ func runSpendingPass(ctx context.Context, db *sql.DB, cfg *config.Config, stdout
 	}
 	fmt.Fprintf(stdout, "spending: %d row(s) enriched — %d matcher, %d rule, %d provider, %d pinned, %d unplaced\n",
 		res.Enriched, res.MatcherRows, res.RuleRows, res.ProviderRows, res.PinRows, res.SignatureOnlyRows)
+	if res.UnmatchedTransferOverrides > 0 {
+		fmt.Fprintf(stdout, "spending: %d transfer override(s) matched no leg — "+
+			"not loaded yet, or the ledger row describes none\n",
+			res.UnmatchedTransferOverrides)
+	}
 	if res.UnmatchedPins > 0 {
 		fmt.Fprintf(stdout, "spending: %d pin(s) matched no transaction — not loaded yet, or the ledger row describes none\n",
 			res.UnmatchedPins)

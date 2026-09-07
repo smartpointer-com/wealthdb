@@ -18,7 +18,7 @@ func TestMatchedPairsListsBothLegs(t *testing.T) {
 		txn{"bank", "T-LONE", "CASH1", "withdrawal", day(30), -9000, "Wire Out", "", ""},
 	)
 
-	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5)
+	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5, nil)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMatchedPairsSortsUnmatchedByMagnitude(t *testing.T) {
 		txn{"bank", "T-MID", "CASH1", "deposit", day(40), 300, "", "Inbound", ""},
 	)
 
-	_, unmatched, err := MatchedPairs(ctx, db, 5, 0.5)
+	_, unmatched, err := MatchedPairs(ctx, db, 5, 0.5, nil)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestMatchedPairsCannotPairCrossCurrency(t *testing.T) {
 		t.Fatalf("seed cross-currency legs: %v", err)
 	}
 
-	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5)
+	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5, nil)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestMatchedPairsFlagsPopulationLegs(t *testing.T) {
 		txn{"bank", "T-LONE", "CASH1", "withdrawal", day(60), -9000, "Wire Out", "", ""},
 	)
 
-	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5)
+	pairs, unmatched, err := MatchedPairs(ctx, db, 5, 0.5, nil)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}

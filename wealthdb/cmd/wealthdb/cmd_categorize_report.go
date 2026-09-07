@@ -101,7 +101,11 @@ func collectSpendCanaries(ctx context.Context, db *sql.DB, cfg *config.Config) (
 		return nil, err
 	}
 	m := cfg.SpendMatching()
-	pairs, unmatched, err := spending.MatchedPairs(ctx, db, m.Window(), m.Tolerance())
+	overrideRules, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
+	if err != nil {
+		return nil, err
+	}
+	pairs, unmatched, err := spending.MatchedPairs(ctx, db, m.Window(), m.Tolerance(), overrideRules)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: matcher audit: %w", err)
 	}

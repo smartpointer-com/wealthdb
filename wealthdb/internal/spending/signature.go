@@ -142,7 +142,22 @@ import (
 //     Rows that shared one code key may move onto keys of their own,
 //     which is the split case (docs/SPENDING.md §4). Every other
 //     narrative is keyed exactly as version 7 keys it.
-const SignatureVersion = 8
+//   - 9: the bank's filing stops entering the key, on two counts.
+//     Normalize reads a narrative down to its head — the structured
+//     field tag off the front, the address and the payment's reason
+//     off the end — so one merchant is one key however its town is
+//     spelled and whichever field slot the payee was written into,
+//     and a model stops reading an address as part of a name. And the
+//     UBS adapter no longer promotes a booking type into the
+//     counterparty column (internal/silver/ubs/text.go): a row the
+//     bank filed without a payee was keyed on how it was booked, which
+//     filed every such row under one merchant and buried the payee the
+//     MT940 feed carries for the same booking. Those rows move onto
+//     the payee, and the key they leave is shared by whatever rows had
+//     no payee anywhere — the split case (docs/SPENDING.md §4). A
+//     narrative with no field tag, no segment separator and a payee in
+//     its counterparty is keyed exactly as version 8 keys it.
+const SignatureVersion = 9
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
 // Narratives run long — a full address, a terminal id, a
@@ -237,24 +252,94 @@ func Normalize(counterparty, description string) string {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	cp := dropPhoneRuns(reduce(counterparty))
 	desc := reduce(description)
+	headText, structured := narrativeHead(description)
+	head := reduce(headText)
 	// Whether the description is the counterparty followed by a phone
 	// number (rule 4), read before the description's runs are dropped
 	// and after the counterparty's are: a counterparty that carries
 	// the number itself is still the name in front of it.
 	contactLine := startsWith(desc, 0, cp...) && phoneRunEnd(desc, len(cp)) > len(cp)
 	desc = dropPhoneRuns(desc)
+	head = dropPhoneRuns(head)
 	switch {
 	case isEbillMarker(cp):
 		return joinCapped(ebillCreditor(description))
 	case len(desc) == 0:
 		return joinCapped(cp)
 	case !hasWord(cp):
+		// The narrative is all there is, and only a STRUCTURED one is
+		// read down to its first segment: the field tag is what says
+		// the bank wrote the payee there and the address behind it.
+		// An unstructured narrative leads with the booking type as
+		// often as with a payee — `Direct debit; <merchant>; <what
+		// for>` — so trimming it to the first segment would file every
+		// direct debit under one key and lose the merchant that
+		// follows. It keeps the whole line, where the name at least
+		// survives.
+		if structured && hasWord(head) {
+			return joinCapped(head)
+		}
 		return joinCapped(desc)
-	case len(desc) > len(cp) && startsWith(desc, 0, cp...) && !contactLine:
-		return joinCapped(desc)
+	case len(head) > len(cp) && startsWith(head, 0, cp...) && !contactLine:
+		return joinCapped(head)
 	default:
 		return joinCapped(cp)
 	}
+}
+
+// narrativeHead reduces a statement narrative to the segment that
+// names the payee: the bank's structured-field tag dropped from the
+// front, everything from the first segment separator dropped from the
+// end. It also reports whether the narrative was STRUCTURED — whether
+// a field tag led it — because that is what says the first segment is
+// the payee rather than the booking type.
+//
+// Both halves are the bank's filing rather than the merchant's
+// identity. A UBS MT940 :86: narrative is written `Z44?<payee>` and
+// its segments are the payee, the street, the country and town, then
+// what the payment was for; the export feed writes the same shape
+// without the tag. The tag names the structured slot the payee went
+// into and differs across bookings of one merchant, and the address
+// behind it is spelled differently across bookings too — a town in
+// full or abbreviated, a postcode before the name or after it. Left
+// in, each spelling is a separate signature for one merchant, and an
+// address trailing a name reads to a model as part of it.
+//
+// This trims the KEY only. The fence that decides whether a signature
+// may be sent anywhere reads the whole narrative independently
+// (RowTransferShaped), so no rail written in a later segment can slip
+// through because the key no longer shows it.
+func narrativeHead(s string) (head string, structured bool) {
+	s, structured = stripFieldTag(s)
+	if i := strings.IndexByte(s, narrativeSegmentSep); i >= 0 {
+		s = s[:i]
+	}
+	return s, structured
+}
+
+// narrativeSegmentSep separates the segments of a statement narrative:
+// the payee from the address, the address from the payment's reason.
+const narrativeSegmentSep = ';'
+
+// fieldTagLen is the length of an MT940 :86: structured-field tag —
+// a letter, two digits and a '?' ("Z44?").
+const fieldTagLen = 4
+
+// stripFieldTag removes a leading MT940 :86: structured-field tag,
+// reporting whether one was there. A narrative that is nothing but the
+// tag reduces to the empty string, which carries no word and is
+// refused at candidacy like any other wordless key.
+func stripFieldTag(s string) (string, bool) {
+	if len(s) < fieldTagLen || s[fieldTagLen-1] != '?' {
+		return s, false
+	}
+	if s[0] < 'A' || s[0] > 'Z' {
+		return s, false
+	}
+	if s[1] < '0' || s[1] > '9' || s[2] < '0' || s[2] > '9' {
+		return s, false
+	}
+	return s[fieldTagLen:], true
 }
 
 // reduce applies every per-field step of Normalize's reduction short

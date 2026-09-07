@@ -89,6 +89,12 @@ type ReturnParams struct {
 type TransferMatching struct {
 	WindowDays   int     // max |day distance| between the two legs
 	TolerancePct float64 // relative amount tolerance, percent of the larger leg
+	// Rules are the holder's manual match / unmatch decisions, read from
+	// the same ledger the spending pass reads. The matcher is shared, so a
+	// pair the holder has settled must be settled the same way in both
+	// reports; a movement called internal in one and external in the other
+	// is worse than either answer alone.
+	Rules []TransferOverrideRule
 }
 
 // ReturnsHide holds the source-keyed membership sets of accounts and
@@ -936,10 +942,18 @@ func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map
 		}
 		acc.crossLinks[from.ID] = crossLink{src: to.Group, acct: to.Owner, txID: to.ID, day: to.Day}
 	}
+	overrides, _, err := ResolveTransferOverrides(tm.Rules, legs)
+	if err != nil {
+		// A malformed ledger is the caller's to report; here it simply
+		// overrides nothing rather than taking down a returns run.
+		overrides = TransferOverrides{}
+	}
 	for _, m := range MatchTransferLegs(legs, TransferMatchOpts{
-		WindowDays:     tm.WindowDays,
-		TolerancePct:   tm.TolerancePct,
-		CrossGroupOnly: true,
+		WindowDays:      tm.WindowDays,
+		TolerancePct:    tm.TolerancePct,
+		ToleranceMaxAbs: DefaultTransferFeeCap,
+		CrossGroupOnly:  true,
+		Overrides:       overrides,
 	}) {
 		link(m.Debit, m.Credit)
 		link(m.Credit, m.Debit)

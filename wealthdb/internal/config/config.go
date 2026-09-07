@@ -519,6 +519,12 @@ type SpendingConfig struct {
 	// missing file is a no-op. See docs/DESIGN.md §13.11 and
 	// internal/spending/pins.go.
 	Pins string `json:"pins,omitempty"`
+	// TransferOverrides is an optional path to the CSV ledger of manual
+	// match / unmatch decisions for the internal-transfer matcher — the
+	// surface for a pair the data cannot settle, in either direction.
+	// Expanded like Pins; a missing file is a no-op. See
+	// internal/gold/transferoverridefile.go.
+	TransferOverrides string `json:"transfer_overrides,omitempty"`
 	// Categorization configures the model tier driven by `wealthdb
 	// categorize`. Absent ⇒ the command refuses, the way
 	// resolve-symbols refuses without `symbol_resolution.model`; the
@@ -708,6 +714,17 @@ func (c *Config) SpendPins() string {
 	return c.Spending.Pins
 }
 
+// SpendTransferOverrides returns the expanded
+// `spending.transfer_overrides` path, or "" when the ledger is not
+// configured. The matcher it steers is shared with returns, so the
+// ledger is read once and handed to both.
+func (c *Config) SpendTransferOverrides() string {
+	if c.Spending == nil {
+		return ""
+	}
+	return c.Spending.TransferOverrides
+}
+
 // SpendMatching returns the spending matcher block, which may be nil —
 // its Window and Tolerance accessors handle that.
 func (c *Config) SpendMatching() *SpendingTransferMatching {
@@ -803,6 +820,13 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config: spending.pins: %w", err)
 		}
 		c.Spending.Pins = expanded
+	}
+	if c.Spending != nil && c.Spending.TransferOverrides != "" {
+		expanded, err := expandPath(c.Spending.TransferOverrides, configDir)
+		if err != nil {
+			return nil, fmt.Errorf("config: spending.transfer_overrides: %w", err)
+		}
+		c.Spending.TransferOverrides = expanded
 	}
 	for i := range c.SilverSources {
 		if c.SilverSources[i].Path != "" {

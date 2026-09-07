@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/spending"
 )
 
 // The text-column contract (description / counterparty / provider_category)
@@ -520,5 +521,48 @@ func TestCardReferenceDropDoesNotMoveTheProviderCategory(t *testing.T) {
 	if text.description != "ATM Withdrawal" {
 		t.Errorf("description = %q, want the booking type",
 			text.description)
+	}
+}
+
+// A booking type promoted into the counterparty column is not a payee.
+// The export feed writes it into Description1 on a row the bank filed
+// without one, and gold's merchant signature prefers the counterparty
+// over the description — so left standing it files every such row
+// under one merchant named after the booking, and hides the payee the
+// MT940 feed carries for the same booking in its narrative.
+func TestBookingTypeIsNotPromotedAsThePayee(t *testing.T) {
+	cases := []struct {
+		name         string
+		counterparty string
+		wantPayee    string
+	}{
+		{"a fee booking names no payee", "Third-Party Charges", ""},
+		{"nor does any other booking type", "Dividend", ""},
+		{"a booking type spelled as the statement prints it", "DIVIDEND", ""},
+		{"a real payee is still promoted", "Blue Harbour Cafe", "Blue Harbour Cafe"},
+		{"a payee whose name merely contains one is still a payee",
+			"Dividend Coffee Roasters", "Dividend Coffee Roasters"},
+		{"an absent counterparty stays absent", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, _, _ := projectWebTxText(tc.counterparty, "", webTxPayload{}, false)
+			if text.counterparty != tc.wantPayee {
+				t.Errorf("counterparty = %q, want %q",
+					text.counterparty, tc.wantPayee)
+			}
+		})
+	}
+}
+
+// The two changes meet here: with the booking type refused as a payee,
+// the MT940 narrative is what the signature reads, and its first
+// segment is the payee rather than the bank's filing.
+func TestRefusedBookingTypeLetsTheNarrativeNameTheMerchant(t *testing.T) {
+	text, _, _ := projectWebTxText("Third-Party Charges", "", webTxPayload{}, false)
+	got := spending.Normalize(text.counterparty,
+		"Z44?Blue Harbour Cafe;Hafenstrasse 1;CH 8000 Zurich;INVOICE 4471")
+	if got != "BLUE HARBOUR CAFE" {
+		t.Errorf("signature = %q, want the payee from the narrative", got)
 	}
 }

@@ -254,9 +254,18 @@ var builtinRules = []spendRule{
 		refusedBy: &cashWithdrawalRule,
 		detailed:  canonical.SpendDetailedCardSpend,
 		tokens:    []string{"AUTOPAY", "AUTOPMT", "EPAY", "CARDMEMBER"},
+		// "ONLINE PAYMENT" is deliberately NOT here. A bank's bill-pay
+		// descriptor is "Online Payment <ref> To <payee>" — a payment to
+		// whoever the holder addressed it to, a landlord as readily as a
+		// card — so the bare phrase says the payment was made online and
+		// nothing about what it paid. Read as a card bill it files real
+		// spending under a card the holder may not even have, and the
+		// payee sitting right there in the narrative is ignored. The
+		// issuers that DO announce themselves this way keep their own
+		// phrase ("CITI CARD ONLINE PAYMENT"), which still matches.
 		phrases: append([]string{
 			"AUTO PAY", "AUTOMATIC PAYMENT", "PAYMENT THANK YOU",
-			"ONLINE PAYMENT", "ELECTRONIC PAYMENT", "CARD PAYMENT",
+			"ELECTRONIC PAYMENT", "CARD PAYMENT",
 			"CREDIT CARD PAYMENT", "CREDIT CRD", "PAYMENT TO CARD",
 			"CARD PMT", "CC PAYMENT",
 		}, cardIssuerPhrases()...),

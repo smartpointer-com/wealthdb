@@ -183,7 +183,14 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 	}
 	var matching *gold.TransferMatching
 	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
-		matching = &gold.TransferMatching{WindowDays: m.Window(), TolerancePct: m.Tolerance()}
+		// A malformed ledger overrides nothing here rather than taking down
+		// a returns run: `load` and `categorize` both read the same file and
+		// both fail loudly on it, so the error is reported where it can be
+		// acted on, and this read cannot be the first to see it in practice.
+		overrideRules, _ := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
+		matching = &gold.TransferMatching{
+			WindowDays: m.Window(), TolerancePct: m.Tolerance(), Rules: overrideRules,
+		}
 	}
 	return inceptionOv, exclude, hide, policyOv, matching
 }

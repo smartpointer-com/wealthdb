@@ -1,6 +1,8 @@
 package spending
 
 import (
+	"regexp"
+
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
 )
 
@@ -78,19 +80,21 @@ type txKey struct {
 // The result is deterministic — MatchTransferLegs sorts its input and
 // resolves ties by amount gap then day distance — so two runs over the
 // same gold produce the same set.
-func matchInternalTransfers(legs []gold.TransferLeg, windowDays int, tolerancePct float64) map[txKey]bool {
-	return matchedLegSet(matchTransferPairs(legs, windowDays, tolerancePct))
+func matchInternalTransfers(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) map[txKey]bool {
+	return matchedLegSet(matchTransferPairs(legs, windowDays, tolerancePct, overrides))
 }
 
 // matchTransferPairs is the call into the shared core, in one place so
 // the pass (which wants the flattened leg set) and the audit surface
 // (which wants the pairs themselves) cannot drift on the options.
-func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct float64) []gold.TransferMatchPair {
+func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct float64, overrides gold.TransferOverrides) []gold.TransferMatchPair {
 	return gold.MatchTransferLegs(legs, gold.TransferMatchOpts{
-		WindowDays:     windowDays,
-		TolerancePct:   tolerancePct,
-		CrossGroupOnly: false,
-		AllowSameOwner: true,
+		WindowDays:      windowDays,
+		TolerancePct:    tolerancePct,
+		ToleranceMaxAbs: gold.DefaultTransferFeeCap,
+		CrossGroupOnly:  false,
+		AllowSameOwner:  true,
+		Overrides:       overrides,
 	})
 }
 
@@ -105,4 +109,54 @@ func matchedLegSet(pairs []gold.TransferMatchPair) map[txKey]bool {
 		out[txKey{p.Credit.Group, p.Credit.ID}] = true
 	}
 	return out
+}
+
+// The card-bill rail.
+//
+// A card statement records being paid as a receipt — "payment thank you",
+// "payment received thank you" — and that line is unmistakable: nothing but a
+// payment TO that card produces it. The bank-side half of the same movement is
+// not unmistakable at all. It may name the issuer ("american express ach pmt",
+// "chase credit crd epay"), but it may equally carry only the cardholder's own
+// name, or nothing.
+//
+// So the receipt is the side that constrains: it demands a card payment
+// opposite it, and the paying side demands nothing. Without that demand the
+// receipt pairs on amount and date alone, and any debit of about the right
+// size within the window will do — a utility bill, a cheque, a payment to a
+// person. The pair then removes BOTH legs from spending, so the false half is
+// real spending that silently disappears.
+const (
+	railCardPayment = "card_payment"
+	railCardReceipt = "card_receipt"
+)
+
+// cardReceiptRe matches a card's own record of being paid. Anchored on "thank
+// you", which the issuers' receipt lines share and which no bank-side debit
+// carries.
+var cardReceiptRe = regexp.MustCompile(`(?i)payment\s+(received\s+)?thank\s+you`)
+
+// cardPaymentRe matches a bank-side payment to a card, by the issuer wording
+// that names one. It is deliberately not exhaustive: a payment this misses is
+// simply unclassified, and an unclassified leg constrains nothing and pairs as
+// it always did. Only the receipt side must be right.
+var cardPaymentRe = regexp.MustCompile(`(?i)\b(` +
+	`payment\s+to\s+\w+\s+card\b` +
+	`|credit\s+crd\s+(autopay|epay)` +
+	`|card\s+online\s+payment` +
+	`|american\s+express\s+ach\s+pmt` +
+	`)`)
+
+// legRail classifies a matcher leg's narrative as a payment rail and says what
+// rail, if any, its partner must carry. Both are empty for the vast majority
+// of legs, which therefore pair exactly as they did before.
+func legRail(counterparty, description string) (rail, partner string) {
+	both := counterparty + " " + description
+	if cardReceiptRe.MatchString(both) {
+		return railCardReceipt, railCardPayment
+	}
+	if cardPaymentRe.MatchString(both) {
+		return railCardPayment, ""
+	}
+	return "", ""
 }

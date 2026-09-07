@@ -524,7 +524,7 @@ func TestPassRuleTierReadsNarrative(t *testing.T) {
 
 	for _, tc := range []struct{ id, signature string }{
 		{"T-DD", "UBS CARD CENTER CREDIT CARD STATEMENT 03"},
-		{"T-XFER", "UBS SWITZERLAND AG C O UBS CARD CENTER"},
+		{"T-XFER", "UBS SWITZERLAND AG"},
 		{"T-PDF", "UBS SWITZERLAND AG"},
 	} {
 		detailed, provenance := verdictOf(t, db, ctx, "bank", tc.id)

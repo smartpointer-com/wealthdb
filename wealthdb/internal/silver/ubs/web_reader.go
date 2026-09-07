@@ -1489,6 +1489,22 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 	return silver.StrPtrIfNonEmpty(silver.JoinText(parts...))
 }
 
+// isBookingType reports whether a string is nothing but the bank's own
+// classification of the entry — "Third-Party Charges", "Dividend",
+// "e-banking payment order".
+//
+// webKind already carries that vocabulary, and reading it there keeps
+// one list rather than two that drift: with neither direction set, a
+// booking type it names resolves to a kind, while anything else falls
+// past the switch to the direction fallback and, with no direction, to
+// TxKindOther. So "resolves to something" is exactly "is a booking
+// type", and a type added to the classifier is recognised here for
+// free.
+func isBookingType(s string) bool {
+	return strings.TrimSpace(s) != "" &&
+		webKind(s, false, false) != canonical.TxKindOther
+}
+
 // turnoverTotalPrefix is the upper-cased head of the line an Account
 // Statement prints before its closing balance: "Turnover total <debits>
 // <credits>", the period's two totals.

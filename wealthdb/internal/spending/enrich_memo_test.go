@@ -19,7 +19,7 @@ import (
 // reads the memo too, because it is the holder's own local input, and
 // places what the holder says. Every value is synthetic.
 func TestPassMemoNeverFiresABuiltInRule(t *testing.T) {
-	const caption = "EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN"
+	const caption = "EXAMPLE PAYEE EXAMPLE STREET 1 9999 EXAMPLETOWN"
 	db, ctx := openGold(t)
 	seedSwissBank(t, db, ctx)
 	seedTxns(t, db, ctx,

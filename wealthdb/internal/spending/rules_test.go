@@ -480,3 +480,30 @@ func TestRuleRefusalReadsTheFilingOnlyToDecline(t *testing.T) {
 		t.Errorf("the booking type placed %q; a built-in must never fire on the provider's filing", detailed)
 	}
 }
+
+// A bank's bill-pay line is "Online Payment <ref> To <payee>", and the payee
+// is whoever the holder addressed it to. Read as a card bill it files real
+// spending under a card, ignoring the payee written in the narrative. The
+// issuers that announce themselves that way keep their own phrase.
+func TestOnlinePaymentAloneIsNotACardBill(t *testing.T) {
+	cases := []struct {
+		name       string
+		narrative  string
+		wantCard   bool
+	}{
+		{"bill-pay to a landlord", "01/02 Online Payment 9000000001 To Example Person", false},
+		{"bill-pay to a firm", "01/03 Online Payment 90000000002 To Example Appliance Co", false},
+		{"an issuer that names itself still matches", "CITI CARD ONLINE PAYMENT 1234", true},
+		{"as do the other card wordings", "AUTOMATIC PAYMENT THANK YOU", true},
+		{"and paying a named card", "01 31 PAYMENT TO CHASE CARD ENDING IN", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sig := Normalize("", tc.narrative)
+			_, _, ok := RuleCategory(sig, "", tc.narrative, "")
+			if ok != tc.wantCard {
+				t.Errorf("RuleCategory(%q) fired = %v, want %v", sig, ok, tc.wantCard)
+			}
+		})
+	}
+}

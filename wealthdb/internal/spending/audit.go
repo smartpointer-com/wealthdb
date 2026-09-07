@@ -82,7 +82,7 @@ func (p Pair) RemovedFromSpending() bool {
 // MatchedPairs re-runs the internal-transfer matcher over gold's
 // matcher pool and returns the pairs it found together with every leg
 // it left unpaired. Both results are sorted for stable output.
-func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64) ([]Pair, []Leg, error) {
+func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64, rules []gold.TransferOverrideRule) ([]Pair, []Leg, error) {
 	legs, narratives, err := loadMatcherPool(ctx, db)
 	if err != nil {
 		return nil, nil, err
@@ -95,7 +95,11 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	for _, c := range population {
 		inPopulation[c.key] = true
 	}
-	raw := matchTransferPairs(legs, windowDays, tolerancePct)
+	overrides, _, err := gold.ResolveTransferOverrides(rules, legs)
+	if err != nil {
+		return nil, nil, err
+	}
+	raw := matchTransferPairs(legs, windowDays, tolerancePct, overrides)
 	matched := matchedLegSet(raw)
 
 	byKey := make(map[txKey]Leg, len(legs))

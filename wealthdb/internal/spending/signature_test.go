@@ -93,13 +93,21 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 		{"a counterparty that is only a reference number",
 			"01234567", "Corner Market", "CORNER MARKET", false},
 
-		// The counterparty is a truncation of the description.
-		{"the bank's name cut from the card-centre qualifier",
+		// The counterparty is a truncation of the description — of its
+		// FIRST SEGMENT, since that is as far as the key reads (§4).
+		// A care-of line and an address sit past the separator and are
+		// the bank's filing of where to send the post, so the two rows
+		// below key on the payee; what the description holds past it
+		// still reaches the rule tier, which reads the raw fields.
+		{"the bank's name, its card-centre qualifier a care-of line",
 			"UBS SWITZERLAND AG", "UBS SWITZERLAND AG;C/O UBS CARD CENTER",
-			"UBS SWITZERLAND AG C O UBS CARD CENTER", true},
-		{"a creditor cut from its address, reference numbers dropped",
+			"UBS SWITZERLAND AG", false},
+		{"a creditor cut from its address",
 			"Example Telecom AG", "Example Telecom AG; 9999 Musterstadt; Account: 0123456789",
-			"EXAMPLE TELECOM AG MUSTERSTADT ACCOUNT", false},
+			"EXAMPLE TELECOM AG", false},
+		{"a description richer within the segment still wins",
+			"Example Telecom", "Example Telecom AG; 9999 Musterstadt",
+			"EXAMPLE TELECOM AG", false},
 
 		// The counterparty stands.
 		{"an informative counterparty that is not a prefix",
@@ -130,11 +138,11 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 // TestSignatureVersion pins the stamp: a change that moves keys
 // without bumping it would carry nothing and orphan everything. A
 // change to Normalize is the usual cause; an adapter that changes what
-// it hands Normalize moves keys just as surely (versions 4, 7 and 8),
-// so the stamp is not a version number for this file alone.
+// it hands Normalize moves keys just as surely (versions 4, 7, 8 and
+// 9), so the stamp is not a version number for this file alone.
 func TestSignatureVersion(t *testing.T) {
-	if SignatureVersion != 8 {
-		t.Errorf("SignatureVersion = %d, want 8", SignatureVersion)
+	if SignatureVersion != 9 {
+		t.Errorf("SignatureVersion = %d, want 9", SignatureVersion)
 	}
 }
 
@@ -151,7 +159,7 @@ func TestSignatureVersion(t *testing.T) {
 func TestNormalizeIgnoresMemo(t *testing.T) {
 	const (
 		cp      = "EXAMPLE PAYEE"
-		caption = "EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN"
+		caption = "EXAMPLE PAYEE EXAMPLE STREET 1 9999 EXAMPLETOWN"
 	)
 	want := Normalize(cp, caption)
 	if want != "EXAMPLE PAYEE EXAMPLE STREET 1 EXAMPLETOWN" {
@@ -494,24 +502,30 @@ func TestNormalizeDropsPhoneNumbers(t *testing.T) {
 			"EXAMPLE SHOP AG", "EXAMPLE SHOP AG; 000 000 00 00; EXAMPLE STREET 12; 9999 EXAMPLETOWN",
 			"EXAMPLE SHOP AG"},
 		{"a merchant's number behind its address: the number goes",
-			"EXAMPLE SHOP AG", "EXAMPLE SHOP AG; EXAMPLE STREET 12; 9999 EXAMPLETOWN; 000 000 00 00",
+			"EXAMPLE SHOP AG", "EXAMPLE SHOP AG EXAMPLE STREET 12 9999 EXAMPLETOWN 000 000 00 00",
 			"EXAMPLE SHOP AG EXAMPLE STREET 12 EXAMPLETOWN"},
 
 		// The boundary: a digit group is a name, a short run is not a
 		// number and nor is a run of pairs, an unbroken number is a
 		// reference number.
+		//
+		// These narratives run on without segment separators. The
+		// separator is a different question, settled before this one
+		// — the key stops at the first `;` on a structured narrative
+		// (§4) — and a case written with one would be decided there
+		// and never reach the run tests these pin.
 		{"a house number",
 			"EXAMPLE STREET 12", "", "EXAMPLE STREET 12"},
 		{"a house number in an address behind the payee",
-			"EXAMPLE PAYEE", "EXAMPLE PAYEE; EXAMPLE STREET 12; 9999 EXAMPLETOWN",
+			"EXAMPLE PAYEE", "EXAMPLE PAYEE EXAMPLE STREET 12 9999 EXAMPLETOWN",
 			"EXAMPLE PAYEE EXAMPLE STREET 12 EXAMPLETOWN"},
 		{"a house number in front of a postcode",
-			"EXAMPLE PAYEE", "EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN",
+			"EXAMPLE PAYEE", "EXAMPLE PAYEE EXAMPLE STREET 1 9999 EXAMPLETOWN",
 			"EXAMPLE PAYEE EXAMPLE STREET 1 EXAMPLETOWN"},
 		{"two house numbers",
 			"", "EXAMPLE STREET 12 14 EXAMPLETOWN", "EXAMPLE STREET 12 14 EXAMPLETOWN"},
 		{"a month in front of a year",
-			"EXAMPLE PAYEE", "EXAMPLE PAYEE; CREDIT CARD STATEMENT 03/2026",
+			"EXAMPLE PAYEE", "EXAMPLE PAYEE CREDIT CARD STATEMENT 03/2026",
 			"EXAMPLE PAYEE CREDIT CARD STATEMENT 03"},
 		{"a day and month once the year is gone",
 			"EXAMPLE SHOP 12.03.2026", "", "EXAMPLE SHOP 12 03"},
@@ -538,13 +552,13 @@ func TestNormalizeDropsPhoneNumbers(t *testing.T) {
 		{"the longest pair short of a number",
 			"EXAMPLE SHOP 000 00", "", "EXAMPLE SHOP 000 00"},
 		{"a short pair behind the counterparty is no contact line",
-			"UBS SWITZERLAND AG", "UBS SWITZERLAND AG; 00 00; C/O UBS CARD CENTER",
+			"UBS SWITZERLAND AG", "UBS SWITZERLAND AG 00 00 C/O UBS CARD CENTER",
 			"UBS SWITZERLAND AG 00 00 C O UBS CARD CENTER"},
 		{"a date behind the counterparty is no contact line",
 			"EXAMPLE SHOP", "EXAMPLE SHOP 03.09.26 EXAMPLETOWN",
 			"EXAMPLE SHOP 03 09 26 EXAMPLETOWN"},
 		{"a number printed unbroken is a reference number",
-			"EXAMPLE, PERSON", "EXAMPLE, PERSON; 0000000000; TWINT-EXAMPLE",
+			"EXAMPLE, PERSON", "EXAMPLE, PERSON 0000000000 TWINT-EXAMPLE",
 			"EXAMPLE PERSON TWINT EXAMPLE"},
 	}
 	for _, tc := range cases {
@@ -697,17 +711,23 @@ func TestP2PRowCandidacy(t *testing.T) {
 // A row with a creditor word in it must be a candidate: not fenced,
 // not uninformative, on the signature AND on the raw narrative the
 // wider context levels send. A row that is the code alone is
-// correctly refused by Uninformative, and by nothing else. With the
-// IBAN match unanchored — `[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}` searched
-// anywhere in the narrative with its spaces removed — a two-digit
-// house number before the country code reads as an account number
-// on the signature itself (`...SE12CHEXAMPLE...`), which is the
-// candidacy gap, and a postal code before more text reads as one on
-// the raw narrative (`...LE9999ORDENTLICHE...`); the single-digit
-// rows pass either way and pin the code prefix and the QR marker as
-// harmless. So the test is not vacuous. The last group is the
-// boundary the narrowing must not cross: the same address shape
-// carrying an IBAN, spaced or not, stays fenced.
+// correctly refused by Uninformative, and by nothing else.
+//
+// The signature is the creditor and nothing else — the type code and
+// the address are the bank's filing and are trimmed off it (§4) — so
+// the two bills that differ only in a house number key alike, which
+// is the point of the trim. That also closes on the signature side an
+// old gap in the unanchored IBAN match
+// (`[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}`, searched anywhere with the
+// spaces removed): a two-digit house number in front of the country
+// code used to read as an account number on the key itself
+// (`...SE12CHEXAMPLE...`), and no address reaches the key now. The
+// raw narrative still carries every one of those shapes, and the
+// fence reads it whole, which is where the test still bites: a
+// postal code in front of more text reads as an account number there
+// (`...LE9999ORDENTLICHE...`). The last group is the boundary the
+// narrowing must not cross: the same address shape carrying an IBAN,
+// spaced or not, stays fenced.
 func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -717,16 +737,16 @@ func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 	}{
 		{"a tax bill paid to a municipality",
 			"Z44?GEMEINDE EXAMPLE; HAUPTSTRASSE 1; CH EXAMPLE 9999; ORDENTLICHE STEUERN 2026",
-			"Z44 GEMEINDE EXAMPLE HAUPTSTRASSE 1 CH EXAMPLE ORDENTLICHE", false},
+			"GEMEINDE EXAMPLE", false},
 		{"the same bill at a two-digit house number",
 			"Z44?GEMEINDE EXAMPLE; HAUPTSTRASSE 12; CH EXAMPLE 9999; ORDENTLICHE STEUERN 2026",
-			"Z44 GEMEINDE EXAMPLE HAUPTSTRASSE 12 CH EXAMPLE ORDENTLICHE", false},
+			"GEMEINDE EXAMPLE", false},
 		{"a dentist's invoice",
 			"Z44?ZAHNARZTPRAXIS EXAMPLE AG; MUSTERSTRASSE 7; CH EXAMPLE 9999",
-			"Z44 ZAHNARZTPRAXIS EXAMPLE AG MUSTERSTRASSE 7 CH EXAMPLE", false},
+			"ZAHNARZTPRAXIS EXAMPLE AG", false},
 		{"a utility paid by QR-bill",
 			"Z59?EXAMPLE WERKE AG; INDUSTRIESTRASSE 3; CH EXAMPLE 9999; QRR",
-			"Z59 EXAMPLE WERKE AG INDUSTRIESTRASSE 3 CH EXAMPLE QRR", false},
+			"EXAMPLE WERKE AG", false},
 		{"a code and nothing else", "N21?", "N21", true},
 		{"another code and nothing else", "D37?", "D37", true},
 	}
@@ -789,6 +809,60 @@ func TestUninformative(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Uninformative(tc.in); got != tc.want {
 				t.Errorf("Uninformative(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// A statement narrative is written in segments — the payee, then the
+// street, then the country and town, then what the payment was for —
+// and an MT940 :86: narrative leads with the structured-field tag the
+// payee was written into. Neither the tag nor the address is the
+// merchant: left in the key, one merchant gets a separate signature
+// per address spelling, and a model reads the town as part of the name.
+func TestNormalizeDropsTheAddressBehindThePayee(t *testing.T) {
+	cases := []struct {
+		name         string
+		counterparty string
+		description  string
+		want         string
+	}{
+		{"the address behind the payee is not part of the name",
+			"Blue Harbour Cafe", "Blue Harbour Cafe;CH 8000 Zurich",
+			"BLUE HARBOUR CAFE"},
+		{"the same payee at a differently-spelled address folds together",
+			"Blue Harbour Cafe", "Blue Harbour Cafe;CH Zurich 8000",
+			"BLUE HARBOUR CAFE"},
+		{"a structured narrative reduces to its payee segment",
+			"", "Z44?Blue Harbour Cafe;Hafenstrasse 1;CH 8000 Zurich;INVOICE 4471",
+			"BLUE HARBOUR CAFE"},
+		{"the field tag varies across bookings and is never the merchant",
+			"", "Z59?Blue Harbour Cafe;Hafenstrasse 1;CH 8000 Zurich",
+			"BLUE HARBOUR CAFE"},
+		{"a description richer than the counterparty still wins, less its address",
+			"Blue Harbour", "Blue Harbour Cafe;CH 8000 Zurich",
+			"BLUE HARBOUR CAFE"},
+		// The tag survives as the key when it is all there was, and
+		// carries no word, so candidacy refuses it like any other
+		// wordless narrative.
+		{"a narrative that is nothing but a field tag names no merchant",
+			"", "Z21?", "Z21"},
+		// The guard on the rule above. Only a tagged narrative is
+		// known to lead with the payee; the export feed composes its
+		// description the other way round, and trimming that to the
+		// first segment would file every direct debit under one key.
+		{"an untagged narrative keeps the merchant behind the booking type",
+			"", "Direct debit;Blue Harbour Cafe;bill of 03.2026",
+			"DIRECT DEBIT BLUE HARBOUR CAFE BILL OF 03"},
+		{"an untagged narrative is not trimmed even when it leads with a payee",
+			"", "Blue Harbour Cafe;CH 8000 Zurich",
+			"BLUE HARBOUR CAFE CH ZURICH"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Normalize(tc.counterparty, tc.description); got != tc.want {
+				t.Errorf("Normalize(%q, %q) = %q, want %q",
+					tc.counterparty, tc.description, got, tc.want)
 			}
 		})
 	}

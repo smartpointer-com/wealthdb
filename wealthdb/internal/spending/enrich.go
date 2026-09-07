@@ -74,6 +74,14 @@ type Options struct {
 	// nothing.
 	Rules []Rule
 
+	// TransferOverrides are the rows of the
+	// `spending.transfer_overrides` ledger: the holder's manual match /
+	// unmatch decisions for the internal-transfer matcher. Resolved
+	// against the matcher pool at pass time, so a row the pool does not
+	// hold is reported rather than silently ignored. Nil overrides
+	// nothing.
+	TransferOverrides []gold.TransferOverrideRule
+
 	// Pins are the rows of the `spending.pins` ledger. Each is stamped
 	// onto every transaction it describes, with provenance `manual`,
 	// after every other tier. Nil pins nothing.
@@ -108,6 +116,13 @@ type Result struct {
 	// transaction in gold. Reported, never an error: the row may
 	// simply not have loaded yet.
 	UnmatchedPins int
+	// UnmatchedTransferOverrides is the number of transfer-override
+	// rules that named no leg in the matcher pool. Reported for the
+	// same reason as UnmatchedPins, and with the same force: an
+	// override is something a person wrote down about a row they
+	// believe exists, so one that quietly does nothing is worse than
+	// one that says so.
+	UnmatchedTransferOverrides int
 	// UnresolvedScopeAccounts is the number of configured
 	// `spending.accounts` entries naming an account gold does not
 	// hold. Such an entry fences nothing — the scope table joins to
@@ -186,7 +201,12 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err != nil {
 		return nil, err
 	}
-	matched := matchInternalTransfers(legs, opts.MatchWindowDays, opts.MatchTolerancePct)
+	overrides, unresolvedOverrides, err := gold.ResolveTransferOverrides(opts.TransferOverrides, legs)
+	if err != nil {
+		return nil, fmt.Errorf("spending: transfer overrides: %w", err)
+	}
+	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
+	matched := matchInternalTransfers(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides)
 
 	pinned, unmatched, err := resolvePins(ctx, tx, opts.Pins)
 	if err != nil {
@@ -397,6 +417,7 @@ func loadMatcherPool(ctx context.Context, tx querier) ([]gold.TransferLeg, map[t
 		}
 		leg.Day = gold.EpochDay(occurredAt)
 		leg.Amt = amount.Float64
+		leg.Rail, leg.RailPartner = legRail(row.counterparty, row.description)
 		legs = append(legs, leg)
 		row.key = txKey{leg.Group, leg.ID}
 		narratives[row.key] = row
