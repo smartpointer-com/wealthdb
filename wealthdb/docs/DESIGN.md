@@ -193,7 +193,7 @@ else is left alone):
 | Class | Renders as | Carries |
 | --- | --- | --- |
 | account-id | `****1234` — length preserved, a short tail and an IBAN country code left legible so rows stay distinguishable | account / portfolio / relationship / transaction ids. Applied only to identifier-shaped values: alphanumeric with a digit. A purely-alphabetic label (a bank-assigned `Education` / `Authorized`) and any value with a space or a paren are taxonomy or display text and pass through. |
-| free-text | `***` — the whole cell, in every format | values that can carry a person's name and never look like an identifier: statement narratives and their folds (`counterparty`, `description`, `merchant_signature` in §4.12), and customer-chosen labels such as a cointracking portfolio name. Shape-blind by design — the narratives worth hiding are multi-word, so a shape test would pass exactly them. The `(no portfolio)` sentinel is a structural marker, not a name, and stays legible. |
+| free-text | `***` — the whole cell, in every format | values that can carry a person's name and never look like an identifier: statement narratives and their folds (`counterparty`, `description`, `merchant_signature` and the `merchant` built from it in §4.12), and customer-chosen labels such as a cointracking portfolio name. Shape-blind by design — the narratives worth hiding are multi-word, so a shape test would pass exactly them. The `(no portfolio)` sentinel is a structural marker, not a name, and stays legible. |
 | quantity | `***` (table) / empty (csv) / key dropped (json) | share counts. |
 | money | `*****.**` (table) / empty (csv) / key dropped (json) | every monetary amount. |
 
@@ -561,17 +561,20 @@ answer to that is wrong for some reader.
 **Privacy classes** (§4.6) are the substantive per-column decision here:
 
 - `merchant` takes the **free-text class**, like the narrative it was
-  named from. The transfer fence gates candidacy for the merchant store
-  at every context level (docs/SPENDING.md §5), so a wire, ACH or P2P
-  narrative cannot acquire a name today — but the store is append-only
-  across signature revisions and across widenings of the fence itself,
-  and a stored verdict is applied by signature for as long as it is
-  there, so a name bought while the fence was narrower outlives the
-  fence that would now refuse it. The column is empty on every delta
-  line besides (migration 0048, docs/SPENDING.md §7): a gift or an
-  own-account move the holder's own rule or pin placed shows no name,
-  whatever the store holds for its signature. A card bill shows the
-  issuer it was paid to (migration 0052) — an institution rather than a
+  named from. The transfer fence gates candidacy for the merchant STORE
+  (docs/SPENDING.md §5), not the column: a wire, ACH or P2P narrative
+  is refused a verdict, has no store name, and falls back to the
+  signature folded from that narrative (migration 0054), so a payment
+  to a person surfaces its payee here on the non-private view. The
+  store's own names carry the same exposure by a slower route — it is
+  append-only across signature revisions and across widenings of the
+  fence itself, and a stored verdict is applied by signature for as
+  long as it is there, so a name bought while the fence was narrower
+  outlives the fence that would now refuse it. The column is empty on a
+  delta line besides (migration 0048, docs/SPENDING.md §7): a gift or
+  an own-account move a rule or a pin placed shows no name, whatever
+  the store holds for its signature. A card bill shows the issuer it
+  was paid to (migration 0052) — an institution rather than a
   narrative, and redacted with the column all the same.
 - `counterparty`, `description` and `merchant_signature` take the same
   class, and reach it more directly: they are the raw narrative and its
@@ -2227,15 +2230,16 @@ cash dedup, and **base-currency** conversion are currency-agnostic. Migration
 - **Merchant and spend category on the transaction macros.** The same two
   macros also carry `merchant_name`, `spend_primary` and `spend_detailed`
   (migration 0042), resolved by `spend_txn_categories()` (re-issued by 0050,
-  which resolves the model tier's provenance, and by 0052) — the overlay's
-  precedence lattice, extracted so `spending_lines_base` and the transaction
-  reports share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
+  which resolves the model tier's provenance, and by 0052 and 0054) — the
+  overlay's precedence lattice, extracted so `spending_lines_base` and the
+  transaction reports share one definition of it (§10.10, docs/SPENDING.md §3). NULL for
   every row the enrichment pass does not reach. Unlike the spending reports,
   these keep a row the matcher called an own-account move and show what it was
   categorised as: `wealthdb transactions` is the whole ledger. `merchant_name`
-  is the store's name for the signature on a row whose resolved category is
-  vendored, and NULL on a delta row (migration 0048, docs/SPENDING.md §7) —
-  except a card bill, which names the issuer it was paid to (migration 0052).
+  resolves in three steps (docs/SPENDING.md §7): a delta row shows its issuer
+  label or nothing (migrations 0048 and 0052), otherwise the store's name for
+  the signature, otherwise the row's own `merchant_signature` verbatim
+  (migration 0054).
 - **Lockstep on the transaction macros.** `gold.TransactionsBetween` runs
   `SELECT *` with a positional scan, so every column added to these macros must
   land in `gold.TransactionRow` and the scan list in the same change (0039 and
@@ -2414,16 +2418,34 @@ column registry.
   GROUP BY at both levels, so it groups like any other category instead of
   rendering as a blank row. At transaction grain the category stays NULL —
   `web_spending` labels it at the view.
-- **No merchant on a delta line, except a card bill.** `merchant_name` is the
-  store's name for the line's signature only where the resolved category is
-  vendored; a delta line carries NULL (migration `0048`, docs/SPENDING.md §7).
+- **No merchant on a delta line, except a card bill.** `merchant_name` is
+  refused on a line whose resolved category is a delta (migration `0048`,
+  docs/SPENDING.md §7), whatever the merchant store holds for its signature.
   The one exception is a card bill, which names the ISSUER it was paid to
   (migration `0052`): the bill's own narrative names the payer's bank or the
   holder, so the issuer the built-in card rule matched is the only handle on
   which card the money went to, and it is stored on the enrichment row rather
   than read from the merchant store. `web_spending` inherits the column; the
-  dashboard's merchant ranking excludes the delta categories, so an issuer
+  dashboard's merchant rankings exclude the delta categories, so an issuer
   never ranks as a merchant.
+- **Every other line names its merchant, store row or not.** The store is the
+  model tier's alone and the model tier is the weakest scope, so a line a
+  provider, a rule, the matcher or a pin placed is never a model candidate and
+  never acquires a store row — and a line nothing placed has none by
+  construction. `merchant_name` therefore falls back to the line's own
+  `merchant_signature` (migration `0054`, docs/SPENDING.md §7), VERBATIM: the
+  cell is then the value of the `merchant_signature` column beside it, the
+  fold's upper case distinguishes a derived name from a model-written one, and
+  identity is the only rendering stable by construction, so a report groups one
+  signature as one merchant. (`initcap` does not exist in this DuckDB.) An
+  empty or blank signature still renders nothing. The candidacy gates that keep
+  a bare booking code or the provider's own filing away from the model fence
+  the STORE and not this column, so such a fold surfaces, and ranks, under
+  itself; the merchant rankings widen from the lines the store named to every
+  non-delta line carrying a signature. Every consumer inherits the column by
+  name — the three spending reports and their `_multi` siblings,
+  `report_transactions`, `web_spending`, both CLI views — and none was
+  re-issued.
 - **Reconciliation.** Σ categories == the summary bucket, for every period and
   level. The identity is structural (one base, one sign split) and therefore
   cannot catch a wrong population: an over-eager internal-transfer match removes

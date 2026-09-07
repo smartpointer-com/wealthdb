@@ -54,12 +54,14 @@ type SpendCategoryRow struct {
 // category row is made of, with the merchant, the resolved category
 // and the tier that decided it.
 //
-// MerchantName comes from the merchant store, which only unfenced
-// signatures ever reach, and is nil on a delta line whatever the store
-// holds for its signature (migration 0048); MerchantSignature and
-// Description are the narrative fold and the narrative itself, and can
-// carry a person. The CLI's privacy classes turn on exactly that
-// distinction.
+// MerchantName is the merchant store's name for the line's signature
+// where the store holds one, and the signature itself where it does
+// not (migration 0054) — nil only on a delta line, which carries its
+// issuer label or nothing at all (migrations 0048 and 0052). It is
+// therefore a narrative fold as often as a written name, like
+// MerchantSignature and Description beside it, and all three can carry
+// a person. The CLI gives every one of them the free-text privacy
+// class for that reason.
 type SpendTransactionRow struct {
 	SilverSourceID        string
 	TransactionExternalID string

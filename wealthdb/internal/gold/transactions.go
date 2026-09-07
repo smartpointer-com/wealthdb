@@ -41,10 +41,11 @@ type TransactionRow struct {
 	// merchant the row's signature resolved to and the category the
 	// enrichment tiers settled on. Nil for every row the enrichment
 	// pass does not reach — investment transactions, and anything
-	// outside the spending account scope. MerchantName is nil on a
-	// delta row as well — an own-account move, capital deployed, a
-	// gift — whatever the store holds for its signature (migration
-	// 0048).
+	// outside the spending account scope. MerchantName is the store's
+	// name where the store holds one and the row's own signature where
+	// it does not (migration 0054); it is nil on a delta row — an
+	// own-account move, capital deployed, a gift — which carries its
+	// issuer label or nothing (migrations 0048 and 0052).
 	MerchantName  *string
 	SpendPrimary  *string
 	SpendDetailed *string

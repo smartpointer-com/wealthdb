@@ -117,11 +117,12 @@ port-forward; auth is Metabase's own login.
     merchant or account label (the merchant list ranks unnamed rows,
     the account breakdown regroups onto source × account kind), the
     same posture `wealthdb spending -p` takes on the CLI. On both
-    views the merchant list ranks merchants only: a line with no
-    merchant (a gift, a bill on a card not itemised, cash out of an
-    ATM, a line nothing has resolved — migration 0048) is not a
-    merchant and is left out of the ranking; the transaction lists
-    keep such lines. It also
+    views the merchant list ranks merchants only: a delta line (a
+    gift, a bill on a card not itemised, cash out of an ATM) and a
+    line nothing has resolved are excluded by CATEGORY, not by a
+    blank merchant — every other line names a merchant, the store's
+    or its own signature (migrations 0048 / 0052 / 0054); the
+    transaction lists keep such lines. It also
     carries **no account picker and no account field filter**: a picker
     is a dropdown of its column's values, and every column that
     identifies an account is a label, so the filter is dropped rather

@@ -129,11 +129,23 @@ category is a delta — a gift, a bill on a card not itemised, cash out of an
 ATM — is not a merchant transaction, and neither is a line nothing has
 resolved, so both are left out of the ranking. The predicate is the delta
 categories themselves (a delta is primary-level, so the two category columns
-are equal on one) plus a merchant to rank by. A blank merchant used to stand
-in for the first half, and stopped: migration 0048 blanks the column on a
-delta line, but migration 0052 gives a card bill the ISSUER it was paid to,
-which is a handle on which card the money went to and not a merchant to rank
-among shops.
+are equal on one, and equal at `(uncategorized)` on a line nothing resolved)
+plus a merchant to rank by. A blank merchant used to stand in for the first
+half, and stopped: migration 0048 blanks the column on a delta line, but
+migration 0052 gives a card bill the ISSUER it was paid to, which is a handle
+on which card the money went to and not a merchant to rank among shops. That
+predicate is what carries the lists through migration 0054, which gives every
+line the merchant store never named — the store is the model tier's alone and
+the model tier is the weakest scope, so a line a provider, a rule, a pin or
+the matcher placed is never a model candidate — its own merchant signature in
+that column. They rank now, which is the intent. What may rank is unchanged:
+every line whose category is not a delta. What ranks widens from the lines the
+store named to every one of them that carries a signature, at whatever grain
+the fold gives it — a chain appears once per branch signature — so the ranks,
+and rank 1's share the twin is read for, move with the population. The gates
+that keep a bare booking code or the bank's own filing away from the model
+fence the merchant store rather than this column, so a fold that is only a
+bank's tag ranks under that tag.
 The transaction lists keep such lines, since a line is a line, and the twin's
 shares stay relative to the window's whole net spend.
 It also carries **no account picker**, where the money view does: a picker

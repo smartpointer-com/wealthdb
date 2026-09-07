@@ -338,6 +338,60 @@ func TestMigration0052DDLIsRerunnable(t *testing.T) {
 	}
 }
 
+// TestMigration0054DDLIsRerunnable holds the signature-fallback
+// re-issue to the same bar and pins what it publishes: a line no store
+// row covers falls back to its own signature, a line the store named
+// still reads the store, a delta still reads its label or nothing, and
+// an empty signature renders as nothing rather than as an empty name.
+func TestMigration0054DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	rerunMigrationDDL(t, db, ctx, "0054_spend_merchant_signature_fallback.sql")
+
+	seedSpendingFixture(t, db, ctx)
+	// A provider-placed line, which the model tier never sees, and a
+	// line whose signature came out empty.
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount) VALUES
+            ('test-src', 'T-BY-PROVIDER', 1000, 'CARD1', 'purchase', 'USD', -130),
+            ('test-src', 'T-NO-SIG',      1000, 'CARD1', 'purchase', 'USD', -140);
+
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                                          merchant_signature, signature_version,
+                                          spend_detailed, provenance, assigned_at) VALUES
+            ('test-src', 'T-BY-PROVIDER', 'EXAMPLE TRANSIT AUTHORITY', 1,
+             'TRANSPORTATION_PUBLIC_TRANSIT', 'provider', 100),
+            ('test-src', 'T-NO-SIG',      '',                          1,
+             'TRAVEL_LODGING',                'provider', 100)`); err != nil {
+		t.Fatalf("seed the unstored lines: %v", err)
+	}
+	want := map[string]struct{ merchant, detailed string }{
+		// The fallback: the line's own signature, verbatim.
+		"T-BY-PROVIDER": {"EXAMPLE TRANSIT AUTHORITY", "TRANSPORTATION_PUBLIC_TRANSIT"},
+		// Nothing to fall back to.
+		"T-NO-SIG": {"", "TRAVEL_LODGING"},
+		// The store outranks the fold, whichever tier placed the line.
+		"T-BY-MERCHANT": {"Corner Market", "FOOD_AND_DRINK_GROCERIES"},
+		"T-BY-TXN":      {"Corner Market", "TRAVEL_FLIGHTS"},
+		// A delta reads its label, or nothing — never the fold.
+		"T-CARD-BILL": {"Example Card Issuer", "card_spend"},
+		"T-GIFT":      {"", "gift"},
+		"T-XFER-TXN":  {"", "internal_transfer"},
+	}
+	for id, w := range want {
+		var merchant, detailed sql.NullString
+		if err := db.QueryRowContext(ctx, `
+        SELECT merchant_name, spend_detailed FROM spend_txn_categories()
+         WHERE transaction_external_id = ?`, id).Scan(&merchant, &detailed); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if merchant.String != w.merchant || detailed.String != w.detailed {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", id, merchant.String, detailed.String, w.merchant, w.detailed)
+		}
+	}
+}
+
 // TestSpendOverlayCheckConstraints exercises the two CHECKs at the DDL
 // level. 'manual' is the provenance the pins ledger writes, and is
 // admitted like the four the enrichment pass derives. 'model' is not

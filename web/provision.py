@@ -394,9 +394,10 @@ def report_models():
         # month's outflow reads as a positive bar.
         "report_spending": (
             spending(),
-            "Every spending line over all time — merchant (blank on a line "
-            "with none: a cash withdrawal, a gift, or a line nothing has "
-            "resolved; a bill on a card not itemised names the issuer it "
+            "Every spending line over all time — merchant (the merchant "
+            "store's name where it holds one, otherwise the line's own "
+            "normalized counterparty; blank on a cash withdrawal or a gift, "
+            "and a bill on a card not itemised names the issuer it "
             "was paid to), resolved category (both "
             "levels, '(uncategorized)' when unknown) and account — with its "
             "net amount in USD, CHF and EUR carried as "
@@ -1003,25 +1004,41 @@ def question_defs(db_id, mid):
             {}),
         # Ranks merchants only. A line resolved to a delta — a gift, a
         # bill on a card not itemised, cash out of an ATM — is not a
-        # merchant transaction, and one kind of delta line now carries
-        # a name: a card bill labelled with the issuer it was paid to
+        # merchant transaction, and one kind of delta line carries a
+        # name: a card bill labelled with the issuer it was paid to
         # (migration 0052). A blank merchant was the proxy for "not a
         # delta" (migration 0048) and no longer is, so the ranking
         # excludes the delta CATEGORIES outright — a delta is
         # primary-level, so `spend_primary <> spend_detailed` reads the
         # dimension's own marker rather than restating a list of values
-        # — and still needs a name to rank by. Only the ranking
+        # — and still needs a name to rank by. That predicate is what
+        # carries this card through migration 0054: a line the merchant
+        # store never named now shows its own signature, and a line
+        # nothing resolved is kept out by its two category columns
+        # being equal at '(uncategorized)' rather than by a blank. What
+        # may rank does not move; what ranks widens from the lines the
+        # store named to every non-delta line carrying a signature, so
+        # ranks move with it, and the rows are at the signature's grain
+        # — a chain appears once per branch signature, and a fold that
+        # is only the bank's own booking tag ranks under that tag,
+        # since the gates that keep such a fold from the model fence
+        # the merchant store and not this column. Only the ranking
         # filters: the transaction list below keeps every line, since a
         # line is a line.
         "Top 50 merchants": ("table",
             "The fifty merchants with the most net spend over the window. A "
-            "merchant is the normalized counterparty the enrichment pass "
-            "resolved to a merchant category, so the ranking is of "
-            "merchants only: delta lines — a gift, a bill on a card not "
-            "itemised (which names its issuer, not a merchant), cash out of "
-            "an ATM — and lines nothing has resolved are outside the "
-            "ranking, though inside every total and the transaction "
-            "list." + spend_note,
+            "merchant is the merchant store's name for the line's normalized "
+            "counterparty, or that counterparty itself where the store holds "
+            "no name — so a merchant here is an identity the enrichment pass "
+            "computed, not a verdict a model wrote, and it is at the grain "
+            "that counterparty folds to: a chain whose statement text names "
+            "the branch ranks once per branch, and a line whose text was "
+            "nothing but the bank's own booking code ranks under that code. "
+            "The ranking is of merchants only: delta lines — a gift, a bill "
+            "on a card not itemised (which names its issuer, not a "
+            "merchant), cash out of an ATM — and lines nothing has resolved "
+            "are outside the ranking, though inside every total and the "
+            "transaction list." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
                    "filter": ["and",
@@ -1054,7 +1071,8 @@ def question_defs(db_id, mid):
             _series_viz("as_of_day", "display_name", "balance")),
         "Largest transactions": ("table",
             "The fifty largest single spending lines of the window, with "
-            "merchant (blank on a line with none), account and both category "
+            "merchant (blank only where the line has none to show), account "
+            "and both category "
             "levels. A refund sorts to "
             "the bottom (its net spend is negative)." + spend_note,
             _mbql(db_id, mid["report_spending"],
@@ -1862,11 +1880,19 @@ def spending_privacy_defs(db_id, model_ids):
     # (migration 0052) — but not outside the denominator: the shares
     # are of the window's whole net spend, the anchor the twin's scalar
     # reads as 100, so the total is summed apart from the ranked rows.
+    # Migration 0054 gives a line the merchant store never named its own
+    # signature, so the ranking covers every non-delta line carrying a
+    # signature rather than only the lines the store named: more rows,
+    # at the signature's grain, and the distribution this card is read
+    # for — rank 1's share included — moves with them. The card itself
+    # needs no change: it never printed a name, and the delta predicate
+    # already decides what may rank.
     spend_card("Top 50 merchants (privacy)", "table",
         "The fifty merchants with the most net spend, each as % of the "
-        "window's net spend — ranked, and unnamed: merchant names are "
-        "redacted. Delta lines (a gift, a bill on a card not itemised, "
-        "which names its issuer, cash out of an ATM) and lines nothing has "
+        "window's net spend — ranked, and unnamed: merchant labels are "
+        "redacted, so only the shape of the distribution is shown. Delta "
+        "lines (a gift, a bill on a card not itemised, which names its "
+        "issuer, cash out of an ATM) and lines nothing has "
         "resolved are outside the ranking, though inside the total the "
         "shares are of. Rank 1's share is how concentrated the window is.",
         "WITH r AS (\n"

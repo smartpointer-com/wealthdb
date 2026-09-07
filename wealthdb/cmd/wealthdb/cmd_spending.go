@@ -305,16 +305,19 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 			Extract: func(r gold.SpendTransactionRow) string { return r.Kind }},
 		// merchant_name redacts as free text, like the narrative it
 		// was named from. The fence (spending.RowTransferShaped) gates
-		// candidacy for the merchant store at every context level, so
-		// a wire, an ACH, a P2P narrative cannot acquire a name TODAY
-		// — but the store is append-only across signature revisions
-		// and across widenings of the fence itself, and the enrichment
-		// lookup applies a stored verdict by signature forever. A name
-		// bought while the fence was narrower therefore outlives the
-		// fence that would now refuse it, and the model wrote that
-		// name from the narrative it was shown. So the column carries
-		// no guarantee about what is in it, and -p treats it as what
-		// it is: a name taken off a statement line.
+		// candidacy for the merchant STORE, not this column: a wire,
+		// an ACH, a P2P narrative is refused a verdict, has no store
+		// name, and falls back to the signature folded from that very
+		// narrative (migration 0054) — so a payment to a person prints
+		// its payee here. A store name carries the same exposure by a
+		// slower route: the store is append-only across signature
+		// revisions and across widenings of the fence itself, and the
+		// enrichment lookup applies a stored verdict by signature
+		// forever, so a name bought while the fence was narrower
+		// outlives the fence that would now refuse it, and the model
+		// wrote it from the narrative it was shown. Either way the
+		// column carries no guarantee about what is in it, and -p
+		// treats it as what it is: a name taken off a statement line.
 		{Name: "merchant", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantName) }},
 		// The signature is the opposite case: it is computed for
@@ -398,8 +401,9 @@ Flags:
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -x, --currency    output currency (default: config.default_currency)
-  -p, --privacy     redact account IDs, counterparties, and amounts
-                    (categories and merchant names stay visible)
+  -p, --privacy     redact account IDs, amounts, and every name taken off
+                    a statement line — merchant, signature, counterparty
+                    (categories, provenance and shares stay visible)
 
 There are no row-filter flags. To slice by merchant, category or
 account, take -f json and filter downstream.

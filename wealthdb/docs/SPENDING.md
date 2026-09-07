@@ -14,10 +14,11 @@ Related design: DESIGN.md §4.11 (the `categorize` and
 `categorizations` subcommands), §4.12 (the `spending` read command),
 §5.1 (the `spending` config block), §13.11 (the pins ledger), and
 migrations 0040 / 0041 / 0045 / 0046 / 0047 / 0048 / 0049 / 0050 /
-0052 (the `spend_categories` dimension, the enrichment overlay, the
-`investment`, `card_spend` and `gift` deltas, the blank merchant on a
-delta line, the serving views' zone-free timestamps, the model tier's
-resolved provenance, and the issuer a card bill names).
+0052 / 0054 (the `spend_categories` dimension, the enrichment overlay,
+the `investment`, `card_spend` and `gift` deltas, the blank merchant on
+a delta line, the serving views' zone-free timestamps, the model tier's
+resolved provenance, the issuer a card bill names, and the signature a
+line with no store row falls back to).
 
 ---
 
@@ -225,17 +226,18 @@ inside `wealthdb load`; the fifth costs money and runs only when
 ```
 
 **Across scopes**, `spend_txn_categories()` (migration 0042, re-issued
-by 0048 for the merchant column and by 0050, which resolves the model
-tier's provenance) resolves with `COALESCE(transaction scope, merchant
-scope)`: a per-transaction verdict beats the merchant-wide one. Both
-`spending_lines_base` and the transaction reports read that macro, so
-the lattice has exactly one definition. The merchant store is reached
-*through* the enrichment row's signature, which is why the pass records
-a signature even for rows it cannot categorise. The same macro
-publishes the merchant column, and publishes the STORE's name only on
-a row whose resolved category is vendored: a delta line carries no
-`merchant_name`, whatever the store holds for its signature — except a
-card bill, which names the issuer it was paid to (§7).
+by 0048, 0050, 0052 and 0054 for the merchant column and the model
+tier's resolved provenance) resolves with `COALESCE(transaction scope,
+merchant scope)`: a per-transaction verdict beats the merchant-wide
+one. Both `spending_lines_base` and the transaction reports read that
+macro, so the lattice has exactly one definition. The merchant store is
+reached *through* the enrichment row's signature, which is why the pass
+records a signature even for rows it cannot categorise. The same macro
+publishes the merchant column, in three steps (§7): a delta line shows
+its issuer label or nothing at all, whatever the store holds for its
+signature; otherwise the store's name; otherwise the line's own
+signature, which is what every line this lattice places above the model
+tier — and every line it places nowhere — has instead of a store row.
 
 **Within the transaction scope** the order is pin > matcher > rule >
 provider, and it reads weakest-first:
@@ -1128,7 +1130,7 @@ everything else in a flag — the returns family's shape:
 |---|---|
 | `summary` | a period bucket: `txn_count`, `spend`, `refunds`, `net_spend` |
 | `categories` | a (bucket, category) pair, plus its `share` of the bucket |
-| `transactions` | a spending line: merchant (none on a delta line, the issuer on a card bill), category, provenance, amount |
+| `transactions` | a spending line: merchant (the store's name, else the line's own signature; none on a delta line, the issuer on a card bill), category, provenance, amount |
 
 The window is positional and defaults to the **trailing twelve
 months**, where the returns window defaults to inception. A return is a
@@ -1176,13 +1178,66 @@ value an unplaced row carries. `signature-only` is the backlog
 
 ### The merchant column
 
-`merchant` is the store's name for the line's signature, and only on a
-line whose resolved category is vendored. A line resolving to a delta
-carries none (migration 0048), whatever the store holds for its
-signature, because a delta line is not a merchant transaction: a gift
-names the recipient, an own-account move the holder's own bank, cash
-out of an ATM a bank and a place, and none of those is who the money
-was spent with. The rule is per line, not per signature: a pin that
+`merchant` resolves in three steps, and the first that answers wins:
+
+1. On a line whose resolved category is a **delta**, the enrichment
+   row's `merchant_label` — the issuer on a card bill, and nothing on
+   every other delta (migrations 0048 and 0052, below).
+2. Otherwise the **merchant store's name** for the line's signature:
+   the prose a model wrote for that merchant.
+3. Otherwise the **line's own `merchant_signature`**, verbatim
+   (migration 0054). A line whose signature is absent, empty or blank
+   shows nothing.
+
+Step 3 is there because step 2 can only ever answer for a line the
+model tier saw. The store is written by the model tier alone, and the
+model tier is the weakest scope in the lattice (§3): a line a stronger
+tier placed is never a model candidate and so never acquires a store
+row — a card row the provider filed under its own merchant category, a
+row a rule or a pin named. A line nothing placed has no store row by
+construction, a store row being exactly what would have resolved it.
+All of them carry a signature the pass computed, which is the very key
+a store row would have hung on, and that signature is a merchant
+identity: the fold of the statement narrative the merchant printed.
+Falling back to it publishes what the line already knows instead of a
+blank.
+
+The fallback is deliberately **not** restricted to a resolved
+category. The backlog names its merchants too — which is most of what
+makes a backlog readable at all.
+
+It is not restricted by **candidacy** either, and that is the one
+widening to know about. `Uninformative` and `FilingOnly` (§6) refuse
+the model a signature that is nothing but a booking code, or nothing
+but the provider's own filing of the row: one such key covers every
+row the bank filed that way, so a verdict bought at it would be
+bought for all of them. Those gates fence the STORE, not this column,
+and the normaliser keeps such a fold rather than storing an empty
+signature — so a line whose whole narrative was the bank's own tag
+shows that tag here, and ranks under it in a report that ranks
+merchants. The alternative is a blank, which says less and hides a
+line a reader could recognise.
+
+**Verbatim, not cased for display.** A store name is prose and a
+signature is upper-cased tokens (§4), and the column keeps both as
+they are. The cell is then the fold itself: the exact value of the
+`merchant_signature` column beside it, where casing would print a
+string that exists nowhere else in gold. The fold also labels itself —
+upper case tells a reader the name was derived rather than written,
+without consulting `provenance`. And identity is a stable rendering by
+construction, so one signature always renders one way and a report
+groups its lines as one merchant; a display caser could fold two distinct signatures, or a
+signature and a store name, onto one label and merge rows the
+resolution holds apart. `initcap` does not exist in this DuckDB
+besides, so casing would mean a hand-rolled `list_transform` caser
+inside a macro every report reads, for a worse answer on acronyms and
+brand casing.
+
+**A delta line carries no store name** (migration 0048), whatever the
+store holds for its signature, and no fallback either, because a delta
+line is not a merchant transaction: a gift names the recipient, an
+own-account move the holder's own bank, cash out of an ATM a bank and
+a place, and none of those is who the money was spent with. The rule is per line, not per signature: a pin that
 places `gift` on one row of a signature the store has named blanks
 that row alone, and its siblings keep the name and the category the
 store gave them. Nothing else moves. The store keeps the verdict —
@@ -1211,7 +1266,11 @@ this rule filed as a bill to that issuer.
 The label is a merchant column, not a merchant: a report that ranks
 merchants excludes the delta categories rather than reading a blank
 merchant as "not a delta", or an issuer ranks among shops. The
-dashboard's two rankings do exactly that (web/DESIGN.md).
+dashboard's two rankings do exactly that (web/DESIGN.md), which is
+also why the fallback needed no change there — the lines it names rank
+as the merchants they are. What ranks widens with it: every non-delta
+line carrying a signature, at the grain the fold gives it, so ranks
+and rank 1's share move with the population.
 
 Delta-ness is read off the `spend_categories` dimension rather than
 restated as a list: a delta is primary-level (`spend_primary =
@@ -1219,29 +1278,35 @@ spend_detailed`, §2), so a delta added to `canonical` and seeded is
 blank in the merchant column with no change to the macro — and, being
 unlabelled, blank whatever the enrichment row holds. Everything
 downstream inherits the column from `spend_txn_categories()` by name —
-`spending_lines_base`, the three spending reports,
-`report_transactions` (so `wealthdb transactions` shows no merchant on
-an own-account move or a subscription either), `web_spending` and the
-dashboard's merchant ranking, which ranks the vendored lines that
-carry a merchant: a delta line is not a merchant transaction, and an
-issuer is not a merchant, so both are left out of the ranking.
+`spending_lines_base`, the three spending reports and their `_multi`
+siblings, `report_transactions` (so `wealthdb transactions` shows no
+merchant on an own-account move or a subscription either, and shows
+the fold on a provider-placed purchase), `web_spending` and the
+dashboard's merchant rankings. None of them re-derives the column, and
+none was re-issued for any of the three steps.
 
 ### What `-p` redacts
 
 `merchant` redacts as **free text**, like the narrative it was named
-from. The fence (§5) gates candidacy for the merchant store at every
-context level, so a wire, an ACH, a P2P narrative — the shapes that
-carry a counterparty's NAME where a merchant would be — cannot acquire
-a name *today*; and a line placed as a gift carries none whatever the
-store holds, while a card bill carries an institution's name rather
-than a narrative's (above). None of that makes the column safe to
-print. The store is append-only across signature revisions and across
-widenings of the fence itself, and the enrichment lookup applies a
-stored verdict by signature for as long as it is there: a name bought
-while the fence was narrower outlives the fence that would now refuse
-it, and the name is what a model wrote from the narrative it was shown.
-The guarantee is about what may reach the store, not about what is in
-it.
+from, and the fallback is the plainest reason why. The fence (§5)
+gates candidacy for the merchant STORE, not the column: a wire, an
+ACH, a P2P narrative — the shapes that carry a counterparty's NAME
+where a merchant would be — is refused a verdict and therefore has no
+store name, and lands on step 3 with a signature folded from that
+narrative. So a payment to a person now surfaces its payee here, on
+the non-private view, exactly as `merchant_signature` and
+`counterparty` beside it already do. The column is free text rather
+than a name because that is what it holds.
+
+Step 2 carries the same exposure by a slower route, and carried it
+before the fallback existed. The store is append-only across signature
+revisions and across widenings of the fence itself, and the enrichment
+lookup applies a stored verdict by signature for as long as it is
+there: a name bought while the fence was narrower outlives the fence
+that would now refuse it, and the name is what a model wrote from the
+narrative it was shown. The guarantee is about what may reach the
+store, not about what is in it — and never about what the column
+prints.
 
 `counterparty`, `description` and `merchant_signature` reach the same
 class more directly: they are the raw narrative and its fold, present
@@ -1349,6 +1414,17 @@ tidies the store — by then the rows have moved on.
   any tier that overrules it. It is a handle, not a merchant: a report
   that ranks merchants excludes the delta categories rather than
   reading a blank merchant as "not a delta".
+- **A line with no store row falls back to its own signature**
+  (migration 0054, §7). The store is the model tier's, and the model
+  tier is the weakest scope: every line a stronger tier placed, and
+  every line nothing placed, is outside it and was blank. The
+  signature is the key that store row would have hung on and is a
+  merchant identity already, so the column publishes it — verbatim,
+  because the cell is then the value of the `merchant_signature`
+  column beside it, the fold's upper case tells a derived name from a
+  written one, and identity is the only rendering that is stable by
+  construction. The candidacy gates gate the store and not the
+  column, so a fold that is only a booking tag surfaces under it.
 - **Merchant-keyed categorisation**, stored globally. A merchant is
   the same merchant whichever card met it.
 - **The description outranks a counterparty that names no merchant**

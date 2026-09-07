@@ -189,15 +189,16 @@ func buildTransactionColumnRegistry(outCcy string) []columnSpec[gold.Transaction
 		// The spending overlay's verdict on the row (migration 0042).
 		// Empty for everything the enrichment pass does not reach:
 		// investment rows, and anything outside the spending account
-		// scope. The merchant is empty on a delta row besides — an
-		// own-account move, capital deployed, a gift — whatever the
-		// store holds for its signature (migration 0048). Free-text
-		// class, as on the spending view: the transfer fence gates
-		// what may acquire a name, but the store is append-only across
-		// signature revisions and across widenings of the fence, so a
-		// name bought under a narrower fence outlives it and the
-		// column carries no guarantee about what is in it. The spend_*
-		// categories and asset_class stay legible as taxonomy.
+		// scope. The merchant is the store's name for the row's
+		// signature, or that signature itself where the store holds
+		// none (migration 0054), and is empty on a delta row — an
+		// own-account move, capital deployed, a gift — which carries
+		// its issuer label or nothing (migrations 0048 and 0052).
+		// Free-text class, as on the spending view: the transfer fence
+		// gates what may acquire a STORE name, not what this column
+		// prints, so a narrative the fence refused surfaces here as
+		// its own fold. The spend_* categories and asset_class stay
+		// legible as taxonomy.
 		{Name: "merchant", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.MerchantName) }},
 		{Name: "spend_primary", Align: output.AlignLeft,
@@ -269,7 +270,8 @@ Flags:
                            (e.g. -C+description-account)
   -x, --currency CCY       output currency for the value column (default: config.default_currency)
   -p, --privacy            redact account / tx IDs, quantities, prices, and monetary amounts;
-                           statement narratives (description, and the name column where it
+                           statement narratives (description, merchant — the store's name
+                           or the line's own signature — and the name column where it
                            falls back to one) redact as free text — the cell masks whole
                            (table: visible placeholders; csv: empty cells; json: keys omitted)
 

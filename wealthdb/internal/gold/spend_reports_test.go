@@ -739,6 +739,206 @@ func TestSpendingDeltaLinesCarryNoMerchant(t *testing.T) {
 	}
 }
 
+// TestSpendingLinesFallBackToTheirSignature pins the merchant column's
+// third step (migration 0054). The merchant store is written by the
+// model tier alone, and the model tier is the weakest scope: a line a
+// stronger tier placed — the provider filing a card row under its
+// merchant category, a rule, a pin — is never a model candidate and
+// never acquires a store row, and a line nothing placed has none by
+// construction. All of them carry a signature the pass computed, which
+// is the very key a store row would have hung on, so the column falls
+// back to it.
+//
+// The three steps are read together, because the fallback is the LAST
+// of them: a delta line still shows its issuer label or nothing at all,
+// a line the store named still shows the store's name rather than the
+// fold underneath it, and only what neither answers falls through. A
+// line whose signature is absent, empty, or nothing but space still
+// shows nothing.
+//
+// The rendering is the fold VERBATIM, so one signature always renders
+// one way and a report groups its lines as a single merchant — asserted
+// here by grouping two lines that share a signature.
+func TestSpendingLinesFallBackToTheirSignature(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingReportFixture(t, db, ctx)
+	from, to := spendWindow()
+
+	const branch = "EXAMPLE GROCERS BRANCH 12"
+	branchSig, sigMarket, sigIssuer, empty := branch, "sig-market", "sig-issuer", ""
+	blank := "   "
+	lines := []struct {
+		id, acct, kind, detailed, prov string
+		sig                            *string
+		label                          string
+		at                             int64
+		net                            int
+	}{
+		// The provider filed both under a merchant category, so neither
+		// is ever a model candidate and the store never sees the key.
+		{"T-PROV-JAN", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "provider",
+			&branchSig, "", spendAt(2026, time.January, 26), -40},
+		{"T-PROV-FEB", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "provider",
+			&branchSig, "", spendAt(2026, time.February, 6), -35},
+		// A rule placed this one and the store happens to hold a name
+		// for its signature: the name outranks the fold.
+		{"T-RULE-NAMED", "CARD1", "purchase", "FOOD_AND_DRINK_GROCERIES", "rule",
+			&sigMarket, "", spendAt(2026, time.February, 7), -15},
+		// A delta with a label: the issuer, never the fold.
+		{"T-CARDBILL", "CASH1", "withdrawal", "card_spend", "rule",
+			&sigIssuer, "Example Card Issuer", spendAt(2026, time.February, 8), -250},
+		// Nothing to fall back to.
+		{"T-EMPTYSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
+			&empty, "", spendAt(2026, time.February, 9), -22},
+		{"T-NOSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
+			nil, "", spendAt(2026, time.February, 10), -18},
+		// Normalize joins tokens and cannot emit one, but the column
+		// carries no CHECK: a blank fold is guarded like an empty one
+		// rather than ranking as a merchant made of spaces.
+		{"T-BLANKSIG", "CARD1", "purchase", "TRAVEL_LODGING", "provider",
+			&blank, "", spendAt(2026, time.February, 11), -12},
+	}
+	for _, l := range lines {
+		if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount, description)
+        VALUES ('test-src', ?, ?, ?, ?, 'USD', ?, 'SEEDED LINE')`,
+			l.id, l.at, l.acct, l.kind, l.net); err != nil {
+			t.Fatalf("seed %s: %v", l.id, err)
+		}
+		var sig any
+		if l.sig != nil {
+			sig = *l.sig
+		}
+		if _, err := db.ExecContext(ctx, `
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                                          merchant_signature, signature_version,
+                                          spend_detailed, provenance, merchant_label, assigned_at)
+        VALUES ('test-src', ?, ?, 1, ?, ?, ?, 100)`,
+			l.id, sig, l.detailed, l.prov,
+			sql.NullString{String: l.label, Valid: l.label != ""}); err != nil {
+			t.Fatalf("seed %s enrichment: %v", l.id, err)
+		}
+	}
+
+	// "" means the column must be empty on that line.
+	want := map[string]string{
+		"T-PROV-JAN":   branch,
+		"T-PROV-FEB":   branch,
+		"T-RULE-NAMED": "Corner Market",
+		"T-CARDBILL":   "Example Card Issuer",
+		"T-EMPTYSIG":   "",
+		"T-NOSIG":      "",
+		"T-BLANKSIG":   "",
+		// The fixture's own lines: the store's name where it holds one,
+		// the fold where it does not — including on the line nothing
+		// resolved, which is the backlog — and nothing on a delta.
+		"T-GROC-JAN":    "Corner Market",
+		"T-FLIGHT-JAN":  "sig-air",
+		"T-BACKLOG-JAN": "sig-unknown",
+		"T-ATM-JAN":     "",
+	}
+	check := func(surface string, got map[string]sql.NullString) {
+		t.Helper()
+		for id, w := range want {
+			v, ok := got[id]
+			if !ok {
+				t.Errorf("%s: %s is not listed", surface, id)
+				continue
+			}
+			if w == "" && v.Valid {
+				t.Errorf("%s: %s shows merchant %q, want none", surface, id, v.String)
+			}
+			if w != "" && v.String != w {
+				t.Errorf("%s: %s merchant = %q, want %q", surface, id, v.String, w)
+			}
+		}
+	}
+	read := func(query string, args ...any) map[string]sql.NullString {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		defer rows.Close()
+		out := map[string]sql.NullString{}
+		for rows.Next() {
+			var id string
+			var merchant sql.NullString
+			if err := rows.Scan(&id, &merchant); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out[id] = merchant
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate: %v", err)
+		}
+		return out
+	}
+
+	// The macro that defines the column, the single-currency spending
+	// report the CLI reads, and the whole-ledger macro `wealthdb
+	// transactions` reads: none of them re-derives the column.
+	check("spend_txn_categories", read(`
+        SELECT transaction_external_id, merchant_name FROM spend_txn_categories()`))
+	check("report_spending_transactions", read(`
+        SELECT transaction_external_id, merchant_name
+          FROM report_spending_transactions(?, ?, 'USD')`, from, to))
+	check("report_spending_transactions_multi", read(`
+        SELECT transaction_external_id, merchant_name
+          FROM report_spending_transactions_multi(?, ?)`, from, to))
+
+	txns, err := TransactionsBetween(ctx, db, from, to, "USD", SortAscending)
+	if err != nil {
+		t.Fatalf("TransactionsBetween: %v", err)
+	}
+	whole := map[string]sql.NullString{}
+	for _, r := range txns {
+		var merchant sql.NullString
+		if r.MerchantName != nil {
+			merchant = sql.NullString{String: *r.MerchantName, Valid: true}
+		}
+		whole[r.TransactionExternalID] = merchant
+	}
+	check("report_transactions", whole)
+
+	// One signature, two lines, one merchant: the rendering is stable,
+	// so a report groups them rather than splitting the merchant in
+	// two. web_spending carries no transaction id, so it is counted the
+	// way the dashboard groups it.
+	grouped := func(surface, query string, args ...any) {
+		t.Helper()
+		var groups, members int
+		if err := db.QueryRowContext(ctx, query, args...).Scan(&groups, &members); err != nil {
+			t.Fatalf("%s group: %v", surface, err)
+		}
+		if groups != 1 || members != 2 {
+			t.Errorf("%s: the shared signature groups into %d merchant(s) over %d line(s), want 1 over 2",
+				surface, groups, members)
+		}
+	}
+	grouped("report_spending_transactions", `
+        SELECT COUNT(*), COALESCE(SUM(n), 0) FROM (
+            SELECT merchant_name, COUNT(*) AS n
+              FROM report_spending_transactions(?, ?, 'USD')
+             WHERE merchant_name = ? GROUP BY merchant_name)`, from, to, branch)
+	grouped("web_spending", `
+        SELECT COUNT(*), COALESCE(SUM(n), 0) FROM (
+            SELECT merchant_name, COUNT(*) AS n
+              FROM web_spending WHERE merchant_name = ? GROUP BY merchant_name)`, branch)
+
+	// The store is untouched: the fallback is a rendering of the line's
+	// own key, not a verdict written anywhere.
+	var stored int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM spend_merchant_categories`).Scan(&stored); err != nil {
+		t.Fatalf("count the store: %v", err)
+	}
+	if stored != 1 {
+		t.Errorf("spend_merchant_categories = %d rows, want 1 (the fixture's own)", stored)
+	}
+}
+
 // TestSpendingTransactionsMacro pins the drill-down grain: exactly the
 // lines the aggregates are made of, with the merchant, the resolved
 // category and the tier that decided it, and the category left NULL
