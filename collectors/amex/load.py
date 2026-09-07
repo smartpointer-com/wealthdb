@@ -33,10 +33,10 @@ Bronze run-dir layout consumed:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import logging
 import re
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -339,8 +339,12 @@ def activity_reach(conn, account_external_id: str) -> int | None:
     """The newest row the ACTIVITY channel reaches for this account.
 
     The seam's upper twin. A period lying between the two is one the activity
-    covers end to end; one that runs past this is not, however new it looks —
-    a run with an explicit `--until` in the past leaves exactly that gap."""
+    covers end to end; one that runs past this is not, however new it looks.
+    The bound is the DATA, not a narrower request: no verb exposes an upper
+    end for the window (collectorkit.cli.resolve_lookback always ends today),
+    so what leaves the gap is a card that simply posted nothing after the
+    period closed — or a caller passing walk() an explicit `until`, which
+    only the tests do."""
     row = conn.execute(
         "SELECT MAX(posted_at) FROM transactions WHERE account_external_id=? "
         "AND source=?", (account_external_id, SOURCE_ACTIVITY)).fetchone()
@@ -437,11 +441,20 @@ def _replace_pending(conn, account_external_id: str, rows: list[dict]) -> int:
 
 def _insert_statement_balance(conn, snapshot_at: int,
                               account_external_id: str, row: dict,
-                              source: str) -> None:
+                              source: str, *, replace: bool = True) -> None:
     """Record a period's balances, keyed on (account, period_end) so
-    re-reading the same period converges on the newest copy."""
+    re-reading the same period converges on the newest copy.
+
+    The two channels share that key, so a statement closing on the same day
+    a run's own activity window ended displaces that run's row — the printed
+    figures are the better statement of the period, and the statement
+    channel wins a shared day. `replace=False` is how the rebuild
+    puts the displaced activity row back before re-importing the statements
+    over it, so an incremental load and a `--force` rebuild agree and a
+    period whose statement copies are all refused keeps a mark."""
+    verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
     conn.execute(
-        "INSERT OR REPLACE INTO statement_balances (account_external_id, "
+        f"{verb} INTO statement_balances (account_external_id, "
         "period_start, period_end, opening, closing, new_charges, "
         "payments_and_credits, fees, interest, transactions_covered, source, "
         "snapshot_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -539,33 +552,222 @@ def _pending_total(payload: dict) -> float | None:
     return _money2(parse_money(charges.get("amount")))
 
 
-def _parse_statements(pdfs) -> dict:
-    """Parse the given statement PDFs, keeping only the ones that reconcile.
+def _parse_statements(copies_by_name: dict) -> tuple[dict, int]:
+    """Parse one usable copy of each period, newest run first.
 
-    Returns {period_end_epoch: ParsedCardStatement}. A statement whose own
-    summary does not add up, or whose sections do not sum to the figures
-    printed for them, was mis-read: nothing from it is kept — not its rows,
-    not even its balances. (The accessible-PDF rendering is one such: it
-    carries no summary this parser reads.)"""
+    Returns ({period_end_epoch: (run_ts, ParsedCardStatement)}, parse_errors).
+
+    Every run re-fetches the same statements, so a tree with N runs holds N
+    copies of each period, and parsing costs a `pdftotext` subprocess apiece.
+    The newest copy is tried first and the walk stops at the first that
+    passes the gates — one parse per period whenever the newest render is
+    good, which is the ordinary case. Older copies get a turn only when it is
+    refused, which is what keeps one bad re-render from erasing a period an
+    earlier run had read cleanly; a copy whose bytes match one already
+    refused for that period is skipped without parsing, a hash being far
+    cheaper than the subprocess.
+
+    A statement whose own summary does not add up, or whose sections do not
+    sum to the figures printed for them, was mis-read: nothing from it is
+    kept — not its rows, not even its balances. (The accessible-PDF rendering
+    is one such: it carries no summary this parser reads.) `parse_errors`
+    counts documents that RAISED, which is the tooling-fault signal the
+    rebuild gates on; a refusal by the gates is not one.
+    """
     out: dict = {}
-    for pdf in pdfs:
+    errors = 0
+    for name, chain in sorted(copies_by_name.items()):
+        refused: set[str] = set()
+        for index, (run_ts, slug, pdf) in enumerate(chain):
+            digest = None
+            if index:
+                digest, _ = bronze.sha256_file(pdf)
+                if digest in refused:
+                    continue
+            try:
+                parsed = statement_parser.parse_card_statement_pdf(pdf)
+            except Exception as exc:        # noqa: BLE001 — any parse failure
+                log.warning("statement %s (run %s): parse failed (%r); "
+                            "skipped", name, slug, exc)
+                errors += 1
+                continue
+            if parsed.period_end is None:
+                reason = "no closing date"
+            elif not statement_parser.rows_reconcile(parsed):
+                reason = "does not reconcile"
+            else:
+                if index:
+                    log.warning("statement %s: the newest copy (run %s) was "
+                                "refused; the copy from run %s stood in",
+                                name, chain[0][1], slug)
+                out[epoch_day(parsed.period_end)] = (run_ts, parsed)
+                break
+            log.warning("statement %s (run %s): %s; skipped",
+                        name, slug, reason)
+            if digest is None:
+                digest, _ = bronze.sha256_file(pdf)
+            refused.add(digest)
+    return out, errors
+
+
+def _statement_copies(bronze_dir: Path,
+                      stems: dict[str, str]) -> tuple[dict, dict]:
+    """One walk of bronze for both things the rebuild reads from it.
+
+    Returns (copies, runs_by_until):
+
+    * `copies[account][file name]` — every copy of that period, NEWEST RUN
+      FIRST. Deduped on the PERIOD, never on the bytes: a re-rendered PDF is
+      a new hash for the same statement, so byte-level dedup would parse it
+      again (the fleet's dedupe-on-logical-identity rule). The older copies
+      are kept because the newest is not always the readable one.
+    * `runs_by_until[period_end]` — (run_ts, run_dir) for the complete run
+      whose activity window closed on that day, which is the key an
+      activity-channel balance row is recorded under.
+    """
+    copies: dict[str, dict[str, list]] = {}
+    runs_by_until: dict[int, tuple[int, Path]] = {}
+    # iter_run_dirs yields oldest first, so inserting at the head leaves each
+    # period's chain newest first.
+    for run_dir in bronze.iter_run_dirs(bronze_dir):
+        manifest = (_read_json(run_dir / "run.json")
+                    if (run_dir / "run.json").is_file() else None)
+        manifest = manifest if isinstance(manifest, dict) else {}
+        if manifest.get("status") not in ("complete", None):
+            continue
         try:
-            parsed = statement_parser.parse_card_statement_pdf(pdf)
-        except Exception as exc:            # noqa: BLE001 — any parse failure
-            log.warning("statement %s: parse failed (%r); skipped",
-                        pdf.name, exc)
+            run_ts = bronze.parse_run_ts(run_dir.name)
+        except ValueError:
             continue
-        if parsed.period_end is None:
-            log.warning("statement %s: no closing date; skipped", pdf.name)
+        until = parse_date(manifest.get("until"))
+        if until is not None:
+            runs_by_until[until] = (run_ts, run_dir)
+        stmt_dir = run_dir / "statements"
+        if not stmt_dir.is_dir():
             continue
-        if not statement_parser.rows_reconcile(parsed):
-            log.warning("statement %s: does not reconcile; skipped", pdf.name)
-            continue
-        out[epoch_day(parsed.period_end)] = parsed
-    return out
+        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+            acct_id = stems.get(acct_dir.name, acct_dir.name)
+            for pdf in sorted(acct_dir.glob("*.pdf")):
+                # A year-end summary is a different document with no billing
+                # period; only the monthly statements are parsed.
+                if pdf.name.startswith(_YEAR_SUMMARY_PREFIX):
+                    continue
+                copies.setdefault(acct_id, {}).setdefault(
+                    pdf.name, []).insert(0, (run_ts, run_dir.name, pdf))
+    return copies, runs_by_until
 
 
-def rebuild_statements(conn, bronze_dir: Path, snapshot_at: int) -> None:
+def _statement_period_count(conn) -> int:
+    """How many statement-sourced periods silver currently holds."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM statement_balances WHERE source=?",
+        (SOURCE_STATEMENT,)).fetchone()
+    return row[0] if row else 0
+
+
+def _restore_activity_balances(conn, account_external_id: str,
+                               file_names, runs_by_until: dict) -> None:
+    """Put back the activity-channel balance row each statement displaces.
+
+    `statement_balances` is keyed (account, period_end), so a statement
+    closing on the same day a run's own activity window ended replaced that
+    run's row — and the run is never replayed, while this rebuild deletes the
+    replacement on every load. Re-deriving the row from bronze first is what
+    makes an incremental load and a `--force` rebuild converge, and what
+    leaves a mark standing when a period's statement copies are all refused.
+
+    Driven off the statement FILE NAMES, each of which is its period's
+    closing date, rather than off what parsed — a period whose every copy is
+    refused is exactly the one that would otherwise be left with no mark at
+    all. One small JSON read per statement period, not a re-read of every
+    run.
+    """
+    stem = _safe_stem(account_external_id)
+    for name in file_names:
+        period_end = document_date(name)
+        if period_end is None:
+            continue
+        found = runs_by_until.get(period_end)
+        if found is None:
+            continue
+        run_ts, run_dir = found
+        payload = _read_json(run_dir / "activity" / f"{stem}.json")
+        if not isinstance(payload, dict):
+            continue
+        row = statement_balance_row(payload)
+        if row is None or row["period_end"] != period_end:
+            continue
+        _insert_statement_balance(conn, run_ts, account_external_id, row,
+                                  SOURCE_ACTIVITY, replace=False)
+
+
+def _import_statements(conn, account_external_id: str,
+                       parsed_by_end: dict) -> None:
+    """Write one account's parsed periods: the deep-era rows below the seam,
+    and an anchor for every period either way.
+
+    The seam gate is on the whole billing PERIOD, not each row's date: a
+    statement dates rows by transaction date while the cycle bills by post
+    date, so a row-level gate would let a row transacted before the seam but
+    posted after it land from both channels. The one period straddling the
+    seam is given up rather than double-counted, and marked
+    `transactions_covered = 0`. So is any period that cannot be SHOWN to be
+    covered: the archive's oldest, which has no predecessor to chain a start
+    from, and any that runs past the newest activity row. Every other period
+    is flagged covered — below the seam its rows are imported here, inside
+    the activity's reach that channel carries them. An unflagged period looks
+    exactly like any other pair of anchors, so a consumer reconciling
+    transactions between two of them would otherwise be left with an
+    unexplainable residual.
+    """
+    starts = statement_period_starts(list(parsed_by_end))
+    # The oldest period has no predecessor to chain a start from, so its
+    # start is unknown and it can never be shown to lie above the seam.
+    oldest = min(parsed_by_end)
+    seam = export_seam(conn, account_external_id)
+    reach = activity_reach(conn, account_external_id)
+    imported = 0
+    for end, (run_ts, parsed) in sorted(parsed_by_end.items(),
+                                        key=lambda item: item[0]):
+        covered = 0
+        if seam is not None and end < seam:
+            # Wholly below the seam: this document is the only channel
+            # holding these rows, so it is what imports them.
+            for tx in statement_rows(account_external_id, parsed):
+                _insert_transaction(conn, account_external_id, tx)
+                imported += 1
+            covered = 1
+        elif (seam is not None and end != oldest
+                and starts[end] >= seam
+                and reach is not None and end <= reach):
+            # Wholly INSIDE the activity's reach: that channel already
+            # carries every row in the period, so the rows ARE in silver and
+            # the flag says so. Bounded at both ends — chase's rule is the
+            # lower half, and the upper half matters here because the
+            # activity proves coverage only up to its newest row: a period
+            # closing after the last posting stays uncovered.
+            covered = 1
+        balances = statement_balance_from_pdf(parsed, starts[end])
+        balances["transactions_covered"] = covered
+        # snapshot_at names the bronze run the SURVIVING copy came from, per
+        # the schema comment — not whichever run happened to be loaded last.
+        _insert_statement_balance(conn, run_ts, account_external_id, balances,
+                                  SOURCE_STATEMENT)
+    if seam is None:
+        # No activity for this account, so there is no seam to bound against
+        # and importing would put a statement copy of every row beside the
+        # copy the first activity fetch lands. The anchors are recorded; the
+        # rows arrive once the activity does.
+        log.warning("  %s: %d statement period(s) recorded, rows deferred "
+                    "until this account's activity is loaded",
+                    _log_id(account_external_id), len(parsed_by_end))
+    else:
+        log.info("  %s: %d statement period(s), %d deep-era row(s) below "
+                 "the seam", _log_id(account_external_id), len(parsed_by_end),
+                 imported)
+
+
+def rebuild_statements(conn, bronze_dir: Path) -> None:
     """Rebuild every statement-sourced row in silver, from all of bronze.
 
     **This is a derived table, not an incremental one, and it has to be.** The
@@ -585,96 +787,53 @@ def rebuild_statements(conn, bronze_dir: Path, snapshot_at: int) -> None:
     construction — the result depends only on what bronze holds, never on the
     order loads happened in.
 
-    The seam gate is on the whole billing PERIOD, not each row's date: a
-    statement dates rows by transaction date while the cycle bills by post
-    date, so a row-level gate would let a row transacted before the seam but
-    posted after it land from both channels. The one period straddling the
-    seam is given up rather than double-counted, and marked
-    `transactions_covered = 0`. So is any period that cannot be SHOWN to be
-    covered: the archive's oldest, which has no predecessor to chain a start
-    from, and any that runs past the newest activity row. Every other period
-    is flagged covered — below the seam its rows are imported here, inside
-    the activity's reach that channel carries them. An unflagged period looks
-    exactly like any other pair of anchors, so a consumer reconciling
-    transactions between two of them would otherwise be left with an
-    unexplainable residual.
+    Two properties keep that rule from turning a fault into data loss, since
+    the delete comes first and the deep era exists nowhere else:
+
+    * **Parse first, write second, all in one transaction.** Every document
+      is read before anything is deleted, and the delete + re-import run
+      inside an explicit BEGIN IMMEDIATE, so a failure anywhere leaves silver
+      exactly as it was rather than emptied.
+    * **A tooling fault is not a rebuild.** If every parse RAISED and silver
+      already holds statement periods, this raises instead of rebuilding —
+      that shape is a broken `pdftotext`, not bronze losing its documents. A
+      single unreadable document stays a per-document skip.
     """
-    conn.execute("DELETE FROM transactions WHERE source=?",
-                 (SOURCE_STATEMENT,))
-    conn.execute("DELETE FROM statement_balances WHERE source=?",
-                 (SOURCE_STATEMENT,))
-
-    # One PDF per (account, period), not one per copy of it. Every run
-    # re-fetches the same statements, so a tree with N runs holds N copies of
-    # each period — and parsing costs a `pdftotext` subprocess apiece. The
-    # newest run's copy wins.
-    #
-    # Deduped on the PERIOD, never on the bytes: a re-rendered PDF is a new
-    # hash for the same statement, so byte-level dedup would parse it again
-    # (the fleet's dedupe-on-logical-identity rule).
     stems = _account_stems(conn)
-    newest_pdf: dict[str, dict[str, Path]] = {}
-    for run_dir in bronze.iter_run_dirs(bronze_dir):
-        if bronze.run_status(run_dir / "run.json") not in ("complete", None):
-            continue
-        stmt_dir = run_dir / "statements"
-        if not stmt_dir.is_dir():
-            continue
-        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-            acct_id = stems.get(acct_dir.name, acct_dir.name)
-            for pdf in sorted(acct_dir.glob("*.pdf")):
-                # A year-end summary is a different document with no billing
-                # period; only the monthly statements are parsed.
-                if pdf.name.startswith(_YEAR_SUMMARY_PREFIX):
-                    continue
-                newest_pdf.setdefault(acct_id, {})[pdf.name] = pdf
+    copies, runs_by_until = _statement_copies(bronze_dir, stems)
 
-    for acct_id, by_period in newest_pdf.items():
-        parsed_by_end = _parse_statements(by_period.values())
-        if not parsed_by_end:
-            continue
-        starts = statement_period_starts(list(parsed_by_end))
-        # The oldest period has no predecessor to chain a start from, so its
-        # start is unknown and it can never be shown to lie above the seam.
-        oldest = min(parsed_by_end)
-        seam = export_seam(conn, acct_id)
-        reach = activity_reach(conn, acct_id)
-        imported = 0
-        for end, parsed in sorted(parsed_by_end.items()):
-            covered = 0
-            if seam is not None and end < seam:
-                # Wholly below the seam: this document is the only channel
-                # holding these rows, so it is what imports them.
-                for tx in statement_rows(acct_id, parsed):
-                    _insert_transaction(conn, acct_id, tx)
-                    imported += 1
-                covered = 1
-            elif (seam is not None and end != oldest
-                    and starts[end] >= seam
-                    and reach is not None and end <= reach):
-                # Wholly INSIDE the activity's reach: that channel already
-                # carries every row in the period, so the rows ARE in silver
-                # and the flag says so. Bounded at both ends — chase's rule is
-                # the lower half, and the upper half matters here because a
-                # run can stop short of today (`--until`), which leaves a
-                # period that is newer than the seam and still uncovered.
-                covered = 1
-            balances = statement_balance_from_pdf(parsed, starts[end])
-            balances["transactions_covered"] = covered
-            _insert_statement_balance(conn, snapshot_at, acct_id, balances,
-                                      SOURCE_STATEMENT)
-        if seam is None:
-            # No activity for this account, so there is no seam to bound
-            # against and importing would put a statement copy of every row
-            # beside the copy the first activity fetch lands. The anchors are
-            # recorded; the rows arrive once the activity does.
-            log.warning("  %s: %d statement period(s) recorded, rows deferred "
-                        "until this account's activity is loaded",
-                        _log_id(acct_id), len(parsed_by_end))
-        else:
-            log.info("  %s: %d statement period(s), %d deep-era row(s) below "
-                     "the seam", _log_id(acct_id), len(parsed_by_end),
-                     imported)
+    parsed_by_account: dict[str, dict] = {}
+    errors = 0
+    for acct_id, by_name in copies.items():
+        parsed_by_end, failed = _parse_statements(by_name)
+        errors += failed
+        if parsed_by_end:
+            parsed_by_account[acct_id] = parsed_by_end
+    if errors and not parsed_by_account and _statement_period_count(conn):
+        raise RuntimeError(
+            f"every statement parse failed ({errors} document(s)) while "
+            f"silver already holds statement-sourced periods. Refusing to "
+            f"rebuild: that shape is a parse-tooling fault, not bronze "
+            f"losing its documents, and rebuilding would drop the deep era. "
+            f"Check `pdftotext`, then re-run `load --force`.")
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM transactions WHERE source=?",
+                     (SOURCE_STATEMENT,))
+        conn.execute("DELETE FROM statement_balances WHERE source=?",
+                     (SOURCE_STATEMENT,))
+        for acct_id, by_name in copies.items():
+            _restore_activity_balances(conn, acct_id, by_name, runs_by_until)
+        for acct_id, parsed_by_end in parsed_by_account.items():
+            _import_statements(conn, acct_id, parsed_by_end)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass            # already unwound; the original error is the one
+        raise
 
 
 def _account_stems(conn) -> dict[str, str]:
@@ -717,6 +876,24 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
                 continue
             acct_id = stem_to_id.get(path.stem, path.stem)
             rows = activity_rows(payload)
+            # The window a manifest advertises is what was ASKED for; this is
+            # what came back. A run whose fetch stopped short is still
+            # loadable and still 'complete' (silver ingest is additive) but
+            # the shortfall has to be visible, or the seam it moves looks
+            # like the account's real reach. Covers runs already on disk,
+            # whose manifests predate the download side's coverage block.
+            #
+            # Measured on the payload, never on `rows`: the projection also
+            # drops a row the ledger cannot key (no post date, no amount, no
+            # identifier), and counting those as a shortfall would send a
+            # reader hunting a pagination bug that never happened.
+            expected = payload.get("totalTransactionCount")
+            fetched = len(payload.get("transactions") or [])
+            if isinstance(expected, int) and fetched < expected:
+                log.warning("  %s: activity holds %d of the %d rows the "
+                            "source reported for the window — that fetch "
+                            "came back short", _log_id(acct_id), fetched,
+                            expected)
             posted = [r for r in rows if not r["is_pending"]]
             pending = [r for r in rows if r["is_pending"]]
             for tx in posted:
@@ -764,6 +941,17 @@ def main(argv: list[str]) -> int:
     args = p.parse_args(argv)
     cli.configure_logging(args.verbose)
 
+    # Preflight, before anything is written or recorded: the statement
+    # rebuild DELETES the deep era and re-imports what parses, so a missing
+    # `pdftotext` would empty it rather than skip it. Failing here leaves
+    # silver untouched and the next invocation retries cleanly.
+    if shutil.which("pdftotext") is None:
+        log.error("`pdftotext` (poppler-utils) is not on PATH, so no "
+                  "statement PDF can be read. Refusing to load: the "
+                  "statement rebuild would drop the deep era rather than "
+                  "skip it. Install poppler-utils and re-run.")
+        return 1
+
     db_path = args.silver_db or (args.bronze_dir / "amex.db")
     if args.force:
         silver.reset(db_path)
@@ -771,17 +959,17 @@ def main(argv: list[str]) -> int:
     try:
         silver.apply_migrations(conn, MIGRATIONS_DIR)
         loaded = 0
-        newest = 0
         for run_dir in bronze.iter_run_dirs(args.bronze_dir):
             if load_run(conn, run_dir):
                 loaded += 1
-                with contextlib.suppress(ValueError):
-                    newest = max(newest, bronze.parse_run_ts(run_dir.name))
         if loaded:
             # Only after every run is in: the seam this depends on is the
             # MIN over all of them together.
-            rebuild_statements(conn, args.bronze_dir, newest)
-            conn.commit()
+            try:
+                rebuild_statements(conn, args.bronze_dir)
+            except RuntimeError as exc:
+                log.error("%s", exc)
+                return 1
         log.info("done: %d run(s) ingested into %s", loaded, db_path)
     finally:
         conn.close()

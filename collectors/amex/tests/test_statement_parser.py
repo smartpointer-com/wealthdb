@@ -30,6 +30,13 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
     lines, because that is what the real document does and what the blob-based
     summary reader exists for.
     """
+    def mag(raw):
+        """A printed magnitude, separators and signs stripped — the builder
+        renders totals from the same figures the summary carries, and those
+        carry a comma above $999.99."""
+        return abs(float(str(raw).replace(",", "").replace("+", "")
+                         .replace("$", "")))
+
     def rows(items):
         return "\n".join(
             f" {d}{'*' if star else ''}     {desc:<40s}"
@@ -51,7 +58,7 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
         " Available Credit $9,880.00",
         "",
         " Payments and Credits",
-        f" Payments -${abs(float(payments)):.2f}" if payment_rows else " Payments $0.00",
+        f" Payments -${mag(payments):.2f}" if payment_rows else " Payments $0.00",
         f" Total Payments and Credits {payments.replace('-', '-$')}",
         "",
         " Detail *Indicates posting date",
@@ -63,7 +70,7 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
     out += [
         "",
         " New Charges",
-        f" Total New Charges ${abs(float(charges)):.2f}",
+        f" Total New Charges ${mag(charges):.2f}",
         " Detail",
     ]
     if card_ending:
@@ -71,11 +78,11 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
     out += [rows(charge_rows)]
     if fee_rows:
         out += ["", " Fees", rows(fee_rows),
-                f" Total Fees for this Period ${abs(float(fees)):.2f}"]
+                f" Total Fees for this Period ${mag(fees):.2f}"]
     if interest_rows:
         out += ["", " Interest Charged", rows(interest_rows),
                 " Total Interest Charged for this Period "
-                f"${abs(float(interest)):.2f}"]
+                f"${mag(interest):.2f}"]
     if trailer:
         # The year-to-date block that follows the activity and must not be
         # read as part of it.
@@ -245,14 +252,51 @@ def test_a_document_with_no_summary_is_refused():
     assert not sp.rows_reconcile(sp.parse_card_statement_text("nothing here\n"))
 
 
-def test_a_missing_section_is_caught_by_the_per_section_check():
-    # Rows under an unknown heading inherit the preceding section's kind,
-    # which leaves the whole-period total untouched — so the check has to be
-    # section by section.
+def test_a_section_with_no_rows_but_a_nonzero_total_is_refused():
+    # The absent-section case the per-section check exists for: the payments
+    # reconcile, so the empty New Charges bucket against the printed +$60.00
+    # is the only check that can fail — a whole-period total would not.
+    p = sp.parse_card_statement_text(statement(payment_rows=PAY,
+                                               charge_rows=()))
+    assert sp.summary_reconciles(p)
+    assert not sp.rows_reconcile(p)
+
+
+def test_an_unknown_heading_is_caught_by_the_per_section_check():
+    # Rows under a heading this parser does not know inherit the preceding
+    # section's kind, which leaves the whole-period total untouched — so the
+    # check has to be section by section. Caught here through the
+    # NEIGHBOURING section's sum; the absent-section case is below.
     text = statement(payment_rows=PAY, charge_rows=BUY).replace(
         " New Charges\n", " Some Section This Parser Does Not Know\n", 1)
     p = sp.parse_card_statement_text(text)
     assert not sp.rows_reconcile(p)
+
+
+def test_a_bare_payments_subheading_is_a_known_section():
+    # `Payments` and `Credits` are sub-headings inside `Payments and
+    # Credits`; a render that prints only the child must map just the same,
+    # or its rows inherit whatever section preceded them.
+    text = statement(payment_rows=PAY, charge_rows=BUY).replace(
+        " Payments and Credits\n", " Payments\n", 1)
+    p = sp.parse_card_statement_text(text)
+    assert [t.kind for t in p.transactions] == ["STMT_PAYMENT",
+                                                "STMT_PURCHASE"]
+    assert sp.rows_reconcile(p)
+
+
+def test_thousands_separators_parse_in_the_summary_and_in_a_row():
+    # Every figure the layout prints above $999.99 carries a comma, in the
+    # summary column and in the activity rows alike.
+    big = [("02/20/26", False, "EXAMPLE STORE", "$1,060.00")]
+    p = sp.parse_card_statement_text(statement(
+        charges="+1,060.00", new="1,120.00", payment_rows=PAY,
+        charge_rows=big))
+    assert p.new_charges == Decimal("1060.00")
+    assert p.new_balance == Decimal("1120.00")
+    charge = next(t for t in p.transactions if t.kind == "STMT_PURCHASE")
+    assert charge.amount == Decimal("1060.00")
+    assert sp.rows_reconcile(p)
 
 
 # ============================================================

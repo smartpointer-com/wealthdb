@@ -388,7 +388,14 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
     context = cm.__enter__()
     try:
         if trace:
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            # snapshots=False while a sign-in is on screen: a trace's DOM
+            # snapshots record every input's value, a hand-typed password
+            # included, and nothing can redact a trace after the fact. The
+            # per-action screenshots still show the flow (the browser draws
+            # a password field as dots) and the network records are the
+            # redacted ones.
+            context.tracing.start(screenshots=True, snapshots=False,
+                                  sources=True)
         yield context
     finally:
         try:
@@ -534,7 +541,11 @@ def run_manual(profile_dir: Path,
     with open_camoufox_context(profile_dir, trace=False) as context:
         bodies = debugcap.BodyCapture(
             screenshot_dir if capture_bodies else None,
-            host_markers=("sws-gateway",), log=log)
+            host_markers=("sws-gateway",), log=log,
+            # An auth-host body echoes the login id back, and the file is
+            # named after the URL path. Unset credentials are skipped by
+            # the redactor, so the no-env case costs nothing.
+            redact=debugcap.secret_redactor(login_id_value, password_value))
         bodies.attach(context)
         page = open_page(context)
         page.on("pageerror", lambda exc: log.warning("browser pageerror: %s", exc))

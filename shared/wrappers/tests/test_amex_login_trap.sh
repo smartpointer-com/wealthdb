@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Behaviour test for the amex wrapper's `login` trap: a bare `login` is a
-# host-side no-op that never starts a container, while `login --check` passes
-# through. Runs the wrapper with a stubbed docker on PATH, so nothing real is
-# invoked.
+# host-side no-op that never starts a container, while `login --check` and
+# the help flags pass through. Runs the wrapper with a stubbed docker on
+# PATH, so nothing real is invoked.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WRAPPER="${1:-$HERE/../../../collectors/amex/amex}"
@@ -52,6 +52,16 @@ grep -qx "run" "$DOCKER_CALLS" \
 grep -qx "run" "$DOCKER_CALLS" \
     && ok "login --check runs the container" \
     || bad "login --check never reached docker run"
+
+# The help flags pass through too: a trapped `login --help` would print the
+# no-op notice instead of the collector's own usage.
+for flag in --help -h; do
+    : > "$DOCKER_CALLS"
+    "$WRAPPER" login "$flag" >/dev/null 2>&1
+    grep -qx "run" "$DOCKER_CALLS" \
+        && ok "login $flag passes through" \
+        || bad "login $flag was trapped"
+done
 
 echo "amex wrapper tests: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

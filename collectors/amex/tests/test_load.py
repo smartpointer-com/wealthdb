@@ -7,6 +7,8 @@ amounts are round. Nothing is derived from a real capture.
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,8 +95,9 @@ def _balances(**amounts):
 
 
 def write_run(root: Path, slug: str, *, accounts=None, activity=None,
-              statements=None, status="complete") -> Path:
-    """Materialise one bronze run dir."""
+              statements=None, status="complete", until=None) -> Path:
+    """Materialise one bronze run dir. `until` is the activity window's end,
+    which is the key the run's own balance row is recorded under."""
     run = root / slug
     (run / "activity").mkdir(parents=True, exist_ok=True)
     (run / "raw").mkdir(exist_ok=True)
@@ -107,8 +110,10 @@ def write_run(root: Path, slug: str, *, accounts=None, activity=None,
         d.mkdir(parents=True, exist_ok=True)
         for name, body in files.items():
             (d / name).write_bytes(body)
-    (run / "run.json").write_text(json.dumps({"source": "amex",
-                                              "status": status}))
+    manifest = {"source": "amex", "status": status}
+    if until is not None:
+        manifest["until"] = until
+    (run / "run.json").write_text(json.dumps(manifest))
     return run
 
 
@@ -502,7 +507,7 @@ def load_all(db, root: Path):
         if load.load_run(db, run_dir):
             loaded += 1
     if loaded:
-        load.rebuild_statements(db, root, 0)
+        load.rebuild_statements(db, root)
         db.commit()
     return loaded
 
@@ -612,9 +617,10 @@ def test_a_period_inside_the_activity_reach_is_flagged_covered(db, tmp_path,
 
 def test_a_period_past_the_activity_reach_is_not_flagged_covered(
         db, tmp_path, monkeypatch):
-    # A run that stops short of today (`--until`) leaves periods newer than
-    # any activity row. They are above the seam but nothing carries them, so
-    # claiming coverage would hide a real gap between two anchors.
+    # No activity row posts at or after the period end, so the activity
+    # cannot be shown to carry it. It is above the seam but nothing holds
+    # its rows, and claiming coverage would hide a real gap between two
+    # anchors.
     import datetime
     root = tmp_path / "bronze"
     run = write_run(root, "20260315T120000Z",
@@ -780,6 +786,8 @@ def test_a_period_is_parsed_once_however_many_runs_hold_it(db, tmp_path,
                                               []))[1])
     load_all(db, root)
     assert len(parses) == 1, f"parsed {len(parses)} copies of one period"
+    # ...and it is the newest run's copy, not whichever came first.
+    assert Path(parses[0]).parents[2].name == "20260501T000000Z"
 
 
 def test_the_rebuild_is_idempotent(db, tmp_path, monkeypatch):
@@ -795,7 +803,7 @@ def test_the_rebuild_is_idempotent(db, tmp_path, monkeypatch):
     })
     load_all(db, root)
     before = db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-    load.rebuild_statements(db, root, 0)
+    load.rebuild_statements(db, root)
     db.commit()
     assert db.execute(
         "SELECT COUNT(*) FROM transactions").fetchone()[0] == before
@@ -825,3 +833,213 @@ def test_the_loader_stem_helpers_match_the_download_side_originals():
                 ".hidden", "", "///", "0123456789ABCDEF0123456789ABCDEF"]:
         assert load._safe_stem(raw) == download.safe_stem(raw), raw
         assert load._log_id(raw) == download.log_id(raw), raw
+
+
+# ============================================================
+# One bad re-render must not erase a period an older run read cleanly
+# ============================================================
+
+def _pdf_run(root: Path, slug: str, name: str, body: bytes) -> Path:
+    """A complete run holding one statement PDF with the given bytes."""
+    run = write_run(root, slug,
+                    activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    d = run / "statements" / KEY_A
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(body)
+    return run
+
+
+def test_an_older_copy_stands_in_when_the_newest_one_is_refused(
+        db, tmp_path, monkeypatch, caplog):
+    # Every run re-fetches the same statements, and one render the gates
+    # refuse (the accessible-PDF variant carries no readable summary) would
+    # otherwise take the period's rows and its closing anchor with it.
+    import datetime
+    import statement_parser as sp
+    root = tmp_path / "bronze"
+    _pdf_run(root, "20260301T000000Z", "2025-12-12.pdf", b"%PDF good\n")
+    _pdf_run(root, "20260401T000000Z", "2025-12-12.pdf", b"%PDF unreadable\n")
+
+    good = _parsed(datetime.date(2025, 12, 12),
+                   [(datetime.date(2025, 12, 3), "30.00", "STMT_PURCHASE")])
+    refused = _parsed(datetime.date(2025, 12, 12), [])
+    monkeypatch.setattr(
+        sp, "parse_card_statement_pdf",
+        lambda path: good if b"good" in Path(path).read_bytes() else refused)
+    monkeypatch.setattr(sp, "rows_reconcile", lambda p: p is good)
+
+    with caplog.at_level(logging.WARNING, logger="amex.load"):
+        load_all(db, root)
+    assert db.execute("SELECT COUNT(*) FROM statement_balances "
+                      "WHERE source='statement'").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM transactions "
+                      "WHERE source='statement'").fetchone()[0] == 1
+    assert "stood in" in caplog.text
+
+
+def test_a_statement_anchor_is_stamped_with_the_run_that_holds_it(
+        db, tmp_path, monkeypatch):
+    # snapshot_at names the bronze run the surviving copy came from, which is
+    # not the newest run loaded — a routine 90-day run holds no deep-era PDF.
+    import datetime
+    root = tmp_path / "bronze"
+    _pdf_run(root, "20260301T000000Z", "2025-12-12.pdf",
+             b"%PDF-1.4 synthetic\n")
+    write_run(root, "20260501T000000Z",
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    _stub_statements(monkeypatch, {
+        "2025-12-12.pdf": _parsed(datetime.date(2025, 12, 12), []),
+    })
+    load_all(db, root)
+    stamped = db.execute("SELECT snapshot_at FROM statement_balances "
+                         "WHERE source='statement'").fetchone()[0]
+    assert stamped == load.bronze.parse_run_ts("20260301T000000Z")
+
+
+# ============================================================
+# A shared period_end: the statement wins the day, and gives it back
+# ============================================================
+
+def test_a_refused_reparse_restores_the_activity_row_it_shadowed(
+        db, tmp_path, monkeypatch):
+    # `statement_balances` is keyed (account, period_end), so a statement
+    # closing on the same day a run's own activity window ended replaces
+    # that run's row. The rebuild deletes the replacement on every load and
+    # the run is never replayed, so without a re-derive the day would end
+    # up with no mark at all.
+    import datetime
+    import statement_parser as sp
+    root = tmp_path / "bronze"
+    run = write_run(root, "20260212T120000Z", until="2026-02-12",
+                    activity={KEY_A: _activity(
+                        [_tx(1, post="2026-02-10")],
+                        since="2026-01-01", until="2026-02-12",
+                        balances=_balances(totalBalance="150.00"))})
+    _write_pdfs(run, KEY_A, ["2026-02-12.pdf"])
+    monkeypatch.setattr(sp, "parse_card_statement_pdf",
+                        lambda path: _parsed(datetime.date(2026, 2, 12), [],
+                                             previous="100.00", new="160.00"))
+    monkeypatch.setattr(sp, "rows_reconcile", lambda p: True)
+    load_all(db, root)
+    assert [tuple(r) for r in db.execute(
+        "SELECT source, closing FROM statement_balances")] == [
+            ("statement", 160.0)]
+
+    # A later rebuild that refuses the same period gives the day back to the
+    # channel that had it.
+    monkeypatch.setattr(sp, "rows_reconcile", lambda p: False)
+    load.rebuild_statements(db, root)
+    assert [tuple(r) for r in db.execute(
+        "SELECT period_end, closing, source FROM statement_balances")] == [
+            (day(2026, 2, 12), 150.0, "activity")]
+
+
+# ============================================================
+# A parse-tooling fault is not a rebuild
+# ============================================================
+
+def test_the_loader_refuses_to_run_without_pdftotext(tmp_path, monkeypatch):
+    # The rebuild deletes the deep era and re-imports what parses, so a
+    # missing parser would empty it rather than skip it. Nothing is written,
+    # nothing is recorded, and the next invocation retries cleanly.
+    root = tmp_path / "bronze"
+    write_run(root, "20260315T120000Z",
+              activity={KEY_A: _activity([_tx(1)])})
+    monkeypatch.setattr(load.shutil, "which", lambda name: None)
+    db_path = tmp_path / "amex.db"
+    assert load.main(["--bronze-dir", str(root),
+                      "--silver-db", str(db_path)]) == 1
+    assert not db_path.exists()
+
+
+def test_a_parser_that_fails_on_everything_leaves_the_deep_era_standing(
+        db, tmp_path, monkeypatch):
+    # pdftotext present but broken: every document raises and none parses.
+    # That shape is a tooling fault, not bronze losing its statements, and
+    # rebuilding on it would drop years of rows and anchors for nothing.
+    import datetime
+    import statement_parser as sp
+    root = tmp_path / "bronze"
+    run = write_run(root, "20260315T120000Z",
+                    activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    _write_pdfs(run, KEY_A, ["2025-12-12.pdf"])
+    _stub_statements(monkeypatch, {
+        "2025-12-12.pdf": _parsed(
+            datetime.date(2025, 12, 12),
+            [(datetime.date(2025, 12, 3), "30.00", "STMT_PURCHASE")]),
+    })
+    load_all(db, root)
+    counted = "SELECT (SELECT COUNT(*) FROM transactions WHERE source=?), " \
+              "(SELECT COUNT(*) FROM statement_balances WHERE source=?)"
+    before = tuple(db.execute(counted, ("statement", "statement")).fetchone())
+    assert before == (1, 1)
+
+    def _explode(path):
+        raise OSError("pdftotext: cannot execute")
+    monkeypatch.setattr(sp, "parse_card_statement_pdf", _explode)
+    with pytest.raises(RuntimeError):
+        load.rebuild_statements(db, root)
+    assert tuple(db.execute(counted,
+                            ("statement", "statement")).fetchone()) == before
+
+
+def test_one_unreadable_document_still_lets_the_others_land(db, tmp_path,
+                                                            monkeypatch):
+    # A single bad PDF stays a per-document skip; only a total failure is
+    # read as a tooling fault.
+    import datetime
+    import statement_parser as sp
+    root = tmp_path / "bronze"
+    run = write_run(root, "20260315T120000Z",
+                    activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    _write_pdfs(run, KEY_A, ["2025-10-12.pdf", "2025-11-12.pdf",
+                             "2025-12-12.pdf"])
+    ok = {name: _parsed(datetime.date(2025, month, 12), [])
+          for name, month in (("2025-10-12.pdf", 10), ("2025-12-12.pdf", 12))}
+
+    def _parse(path):
+        name = Path(path).name
+        if name == "2025-11-12.pdf":
+            raise subprocess.CalledProcessError(1, "pdftotext")
+        return ok[name]
+    monkeypatch.setattr(sp, "parse_card_statement_pdf", _parse)
+    monkeypatch.setattr(sp, "rows_reconcile", lambda p: True)
+    load_all(db, root)
+    assert [r[0] for r in db.execute(
+        "SELECT period_end FROM statement_balances WHERE source='statement' "
+        "ORDER BY period_end")] == [day(2025, 10, 12), day(2025, 12, 12)]
+
+
+# ============================================================
+# A window the source honoured only in part
+# ============================================================
+
+def test_a_short_activity_payload_is_flagged_at_load_time(db, tmp_path,
+                                                          caplog):
+    # Covers runs already on disk, whose manifests predate the download
+    # side's own coverage block.
+    root = tmp_path / "bronze"
+    payload = _activity([_tx(1)])
+    payload["totalTransactionCount"] = 500
+    write_run(root, "20260315T120000Z", activity={KEY_A: payload})
+    with caplog.at_level(logging.WARNING, logger="amex.load"):
+        load_all(db, root)
+    assert "came back short" in caplog.text
+    # Still ingested: what landed is real, and silver stays additive.
+    assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+
+
+def test_a_row_the_ledger_cannot_key_is_not_a_short_fetch(db, tmp_path,
+                                                          caplog):
+    # The projection also drops a row with no identifier, no amount or no
+    # post date. Counting those against the source's own total would report
+    # a pagination gap that never happened.
+    root = tmp_path / "bronze"
+    unkeyed = _tx(2)
+    unkeyed["identifier"] = unkeyed["referenceNumber"] = ""
+    write_run(root, "20260315T120000Z",
+              activity={KEY_A: _activity([_tx(1), unkeyed])})
+    with caplog.at_level(logging.WARNING, logger="amex.load"):
+        load_all(db, root)
+    assert "came back short" not in caplog.text
+    assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1

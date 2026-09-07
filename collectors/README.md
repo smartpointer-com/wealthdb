@@ -85,10 +85,15 @@ bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 `/secrets/<source>.env` and bronze/silver at `/data`.
 
 **Session discipline:** `login --check` probes the stored session
-without a new MFA push; `download --dry-run` walks with the
-existing session but exports nothing. Agents must not mint real
-sessions or run real downloads unless asked — see root
-[CLAUDE.md](../CLAUDE.md) §2.
+without a new MFA push; `download --dry-run` walks with the existing
+session but exports nothing — *where a session persists*. On the one-shot
+collectors, where `login` folds into `download` because no session survives
+the browser (schwab-web, chase, raiffeisen_at, amex), a dry-run signs in to
+do that walk. On amex that sign-in is silent on a trusted device but comes
+out of a budget small enough that a handful of them draws a captcha, so
+`download --dry-run` is **not** in the run-without-asking set there
+([amex/CLAUDE.md](amex/CLAUDE.md) §0). Agents must not mint real sessions
+or run real downloads unless asked — see root [CLAUDE.md](../CLAUDE.md) §2.
 
 ## Gold consumes silver — not the other way round
 
@@ -205,7 +210,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
-| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. | — |
+| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. The one recorded deviation is **amex** (see the exceptions below), where a sign-in is the scarce resource: its `--check` reads the device-trust cookie out of the profile's own Firefox jar on disk, opening no browser and touching no network, so exit `0` means *this device is registered*, not *the credential is alive*. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | ≥ 600 |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
@@ -280,9 +285,21 @@ structurally cannot narrow a fetch, the collector says so at runtime
 - **ubs-web** reads the bank-level `ubs.env` (contract number, shared with
   a future ubs-* sibling) as a legacy fallback behind its own
   `ubs-web.env`.
+- **amex** `login --check` reads the profile's device-trust cookie
+  instead of calling the source, and `download --dry-run` still signs in
+  (`login` folds into `download` there). Both follow from a sign-in
+  budget small enough that a handful inside twenty minutes draws a
+  captcha, which is why that collector's CLAUDE.md withdraws `--dry-run`
+  from the run-without-asking set.
 - **viac** `--no-transaction-documents` opts out of only the per-event
   receipt PDFs — a narrower concept than `--no-documents`; viac's document
   centre always downloads on its date window.
+- **amex** spends its whole verb surface out of one small sign-in budget,
+  so two fleet defaults are withdrawn: `login --check` reads the profile's
+  device-trust cookie instead of calling the source (exit `0` = device
+  registered, not credential alive), and `download --dry-run` still signs
+  in — it skips the exports, not the sign-in — which takes it out of the
+  run-without-asking set root [CLAUDE.md](../CLAUDE.md) §2 grants.
 
 ### login.py — the session
 
@@ -310,7 +327,12 @@ A `--check` mode probes the stored session without a new MFA push. It never
 merely asserts the credential is *present* — a key that exists but is
 rejected is exactly what it exists to catch — so it makes the cheapest
 authenticated call the source allows and maps the answer onto its exit code.
-The full authentication policy is in root [CLAUDE.md](../CLAUDE.md) §3.
+The exception is amex, where the cheapest authenticated call is a sign-in
+and a sign-in is the scarce resource: `--check` there reports device
+registration from the profile's own cookie instead. It cannot see a rotated
+password or a trust revocation made server-side; only a `download` sign-in
+can. The full authentication policy is in root
+[CLAUDE.md](../CLAUDE.md) §3.
 
 #### Browser launches
 
@@ -359,7 +381,8 @@ via [`collectorkit.bronze`](../shared/collectorkit/collectorkit/bronze.py)
 The shared window flag comes from
 [`collectorkit.cli`](../shared/collectorkit/collectorkit/cli.py)
 (`add_standard_args(verb="download")` + `resolve_lookback`). A `--dry-run` mode walks the
-source but exports nothing.
+source but exports nothing; where the collector keeps no session between
+runs, that walk signs in first.
 
 ### load.py — silver
 
@@ -395,6 +418,44 @@ uniform convention:
   flags — the invariant is only that nothing debug-related lands in a
   bronze run dir uninvited. `prune` reclaims that external dir too (see
   below), so opting into a trace still costs nothing permanently.
+
+- **Captures carry credentials, and one class of them cannot be
+  cleaned.** Everything a harness writes itself goes through
+  [`collectorkit.debugcap`](../shared/collectorkit/collectorkit/debugcap.py):
+  `secret_redactor(username, password)` masks every wire spelling of a
+  credential the harness knows — raw, percent-encoded (either hex case),
+  JSON-escaped, and the HTML-entity spellings a serialized DOM carries.
+  A base64 or other opaque re-encoding is the spelling it cannot
+  recognise, and it does not pretend to. `scrub_dom()` blanks password
+  inputs out of a serialized DOM before it is written, because a sign-in
+  form carries the typed password in a `value` attribute.
+  `redact_headers()` / `redact_url()` / `redact_body()` mask a session
+  cookie, a query-string token or a sign-in form's password field by
+  NAME — the only way to reach a value no caller could know — and every
+  harness routes its `network.jsonl` headers, URLs and POST bodies
+  through them. A run holding no password, only a lifted session, builds
+  its mask from the jar instead (`session_redactor()`, or `SessionMask`
+  where the jar belongs to a persistent browser profile): that session is
+  what such a run could leak, and an SPA prints it into the markup a
+  capture serialises. The collectorkit suite pins each of these on the
+  BEHAVIOUR rather than on a file name — a module that serialises a page
+  fails `make test-collectorkit` without `scrub_dom()`, a call to
+  `capture_page()` fails without a `redact=`, and a harness that records
+  a HAR fails without `redact_har()`, with no per-collector exemptions.
+  Playwright writes `network.har` for itself, and writes it whole: the
+  sign-in POST as text *and* as parsed params, every header, the cookie
+  jar. Nothing passed at record time narrows that, so the file is
+  rewritten once the context close has flushed it — every harness calls
+  `debugcap.redact_har()`, registered on the exit path so a walk that
+  raised is cleaned too. A base64 response body is the one part dropped
+  rather than masked there, because no value-based pass can see inside
+  it and leaving it would put a whole body in a file that reads as
+  redacted. A trace is the one artefact nothing rewrites:
+  `trace.zip` / `trace-chunks/` are opt-in everywhere and a zip of
+  driver-written blobs, and a trace cannot be redacted after the fact —
+  its DOM snapshots store every input's value. A path that types a
+  credential therefore records its sign-in with snapshots off, and a
+  trace is handled as holding a cleartext credential either way.
 
 - **`run.json` `status` lifecycle.** A `download` writes
   `{"status": "in-progress"}` when it creates the run dir, then
@@ -524,7 +585,7 @@ restated here.
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
 | [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated |
-| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) — full pipeline through gold, validated live |
+| [`amex`](amex/) | American Express card portal (credit + charge cards) | scraped session + one-time passcode (login folds into `download`), then REST | Docker (Camoufox sign-in + REST fetch) — full pipeline through gold, validated live; `login --check` reads the profile only, `download --dry-run` still signs in |
 | [`relevate`](relevate/) | Relevate / Pensexpert (Pillar 2) | REST + mTAN | Docker |
 | [`viac`](viac/) | VIAC (Pillar 3a / vested benefits) | REST + mTAN | Docker |
 | [`cointracking`](cointracking/) | Crypto aggregator | scraped session + 2FA | Docker (Camoufox) |

@@ -199,10 +199,14 @@ func TestUBSCardCategoryComesFromTheProviderTier(t *testing.T) {
 			"EXAMPLE PHARMACY EXAMPLETOWN CHE", "EXAMPLE PHARMACY EXAMPLETOWN CHE",
 			"Pharmacies"},
 		// The bank's own catch-all for a card row that moved money is
-		// deliberately unmapped: it names no line of business.
+		// deliberately untranslated: it names no line of business.
 		txn{"ubs", "T-2", "CARD-CHF", "purchase", day(11), -50,
 			"MOBILE PAYMENT TO A PERSON", "MOBILE PAYMENT TO A PERSON",
 			"Banks - merchandise and services"},
+		// A description the vocabulary has never seen — the drift case.
+		txn{"ubs", "T-3", "CARD-CHF", "purchase", day(12), -30,
+			"EXAMPLE GROOMERS EXAMPLETOWN CHE", "EXAMPLE GROOMERS EXAMPLETOWN CHE",
+			"Llama grooming"},
 	)
 	res := runPass(t, db, ctx, Options{})
 
@@ -216,10 +220,12 @@ func TestUBSCardCategoryComesFromTheProviderTier(t *testing.T) {
 		t.Errorf("T-2 = (%q, %q), want no provider verdict for the bank's "+
 			"own catch-all", detailed, provenance)
 	}
-	// An unmapped CARD category is drift: the vocabulary is categorical,
-	// unlike the same source's booking types.
+	// An UNREVIEWED card category is drift — the vocabulary is
+	// categorical, unlike the same source's booking types — and it is
+	// the only row counted here: the catch-all was reviewed and listed
+	// untranslatable, so it contributes nothing to the canary.
 	if res.UnmappedProviderCategories != 1 {
-		t.Errorf("unmapped provider categories = %d, want 1",
+		t.Errorf("unmapped provider categories = %d, want 1 (T-3 alone)",
 			res.UnmappedProviderCategories)
 	}
 }

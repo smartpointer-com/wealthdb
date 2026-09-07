@@ -51,6 +51,36 @@ func newFixture(t *testing.T) (string, *sql.DB) {
 	return path, db
 }
 
+// The seeds name their columns rather than relying on the fixture's order.
+// A column added, dropped or moved in the schema then fails as a named-column
+// error that says which column, instead of an arity mismatch or, worse, a row
+// written into the neighbouring column.
+const insertDumpRun = `INSERT INTO dump_runs
+    (snapshot_at, silver_schema_version, run_dir)
+    VALUES (?,?,?)`
+
+const insertAccount = `INSERT INTO accounts
+    (snapshot_at, account_external_id, account_token, display_name, mask,
+     currency, balance, pending_charges, payment_due_at, account_status,
+     line_of_business, user_type, payload)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+const insertTxn = `INSERT INTO transactions
+    (txn_id, posted_at, account_external_id, amount, kind, description, merchant,
+     category, category_code, txn_date, statement_end_at, currency, is_pending,
+     source, payload)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+const insertStmtBalance = `INSERT INTO statement_balances
+    (account_external_id, period_start, period_end, opening, closing,
+     transactions_covered, source, snapshot_at)
+    VALUES (?,?,?,?,?,?,?,?)`
+
+const insertDocument = `INSERT INTO documents
+    (sha256, snapshot_at, account_external_id, doc_date, doc_kind, file_format,
+     filename, size_bytes, payload)
+    VALUES (?,?,?,?,?,?,?,?,?)`
+
 // seed builds two cards over two loads: one with a small ledger of every kind
 // the projection can produce, two statement periods (the only historic balance
 // a card has) and a statement document, and a second whose roster row the
@@ -65,12 +95,12 @@ func seed(t *testing.T, db *sql.DB) {
 			t.Fatalf("seed %q: %v", q, err)
 		}
 	}
-	exec(`INSERT INTO dump_runs VALUES (?,1,'/run')`, loadUnix)
-	exec(`INSERT INTO dump_runs VALUES (?,1,'/run')`, laterLoadUnix)
+	exec(insertDumpRun, loadUnix, 1, "/run")
+	exec(insertDumpRun, laterLoadUnix, 1, "/run")
 
 	account := func(snap int64, id, token string, name any, mask string,
 		balance float64) {
-		exec(`INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		exec(insertAccount,
 			snap, id, token, name, mask, "USD", balance, 25.00,
 			day(2026, 4, 5), "Active", "CONSUMER", "ACCOUNT_HOLDER",
 			`{"product":"card"}`)
@@ -86,13 +116,13 @@ func seed(t *testing.T, db *sql.DB) {
 
 	tx := func(id string, d int64, amt float64, kind, category, merchant string,
 		txnDate any, pending int) {
-		exec(`INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		exec(insertTxn,
 			id, d, acct, amt, kind, merchant, merchant, category, "C1",
 			txnDate, day(2026, 3, 12), nil, pending, "activity", "{}")
 	}
 	// A purchase, a fee, a merchant refund (categorised), the monthly bill
-	// (uncategorised — the tell that separates it from a refund), and a
-	// pending purchase.
+	// (uncategorised — the tell that separates it from a refund), the
+	// reversal of the fee, and a pending purchase.
 	tx("100000000000000001", day(2026, 2, 10), -60.00, "DEBIT",
 		"Merchandise & Supplies", "EXAMPLE STORE", day(2026, 2, 9), 0)
 	tx("100000000000000002", day(2026, 2, 20), -12.00, "DEBIT",
@@ -101,13 +131,14 @@ func seed(t *testing.T, db *sql.DB) {
 		"Merchandise & Supplies", "EXAMPLE STORE", nil, 0)
 	tx("100000000000000004", day(2026, 3, 5), 400.00, "CREDIT",
 		"", "PAYMENT RECEIVED THANK YOU", nil, 0)
+	tx("100000000000000005", day(2026, 3, 6), 12.00, "CREDIT",
+		"Fees & Adjustments", "ANNUAL FEE REVERSAL", nil, 0)
 	tx("P0001ABCDEF0000000", day(2026, 3, 14), -25.00, "DEBIT",
 		"Restaurants", "EXAMPLE CAFE", nil, 1)
 
 	period := func(start, end int64, opening, closing float64) {
-		exec(`INSERT INTO statement_balances
-		      VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,1,'activity',?)`,
-			acct, start, end, opening, closing, loadUnix)
+		exec(insertStmtBalance,
+			acct, start, end, opening, closing, 1, "activity", loadUnix)
 	}
 	// The statement archive reaches back further than the ledger does (the
 	// real shape: ~7 years of statements over ~24 months of activity), so the
@@ -115,8 +146,9 @@ func seed(t *testing.T, db *sql.DB) {
 	period(day(2025, 12, 13), day(2026, 1, 12), 100.00, 160.00)
 	period(day(2026, 2, 13), day(2026, 3, 12), 160.00, 420.00)
 
-	exec(`INSERT INTO documents VALUES (?,?,?,?,'statement','pdf',?,100,'{}')`,
-		"sha-1", loadUnix, acct, day(2026, 3, 12), "2026-03-12.pdf")
+	exec(insertDocument,
+		"sha-1", loadUnix, acct, day(2026, 3, 12), "statement", "pdf",
+		"2026-03-12.pdf", 100, "{}")
 }
 
 func openConn(t *testing.T, path string) silver.Connection {
@@ -375,6 +407,11 @@ func TestTransactionKinds(t *testing.T) {
 		// the internal-transfer matcher pair it with the cash account's
 		// withdrawal and retire the `card_spend` placeholder.
 		{"100000000000000004", canonical.TxKindCardPayment, "400"},
+		// A fee REVERSAL is a categorised credit like any other, so the
+		// direction is read before the category: it nets against the fee
+		// inside the spending base, where kinding it `fee` would force
+		// the canonical sign negative and count the charge twice.
+		{"100000000000000005", canonical.TxKindRefund, "12"},
 		{"P0001ABCDEF0000000", canonical.TxKindPurchase, "-25"},
 	} {
 		tx, ok := byID[tc.id]
@@ -411,10 +448,10 @@ func TestStatementEraKindsComeFromTheSection(t *testing.T) {
 		{"stmt:a:2020-02-10:0004", "STMT_INTEREST", -3, canonical.TxKindInterest},
 	}
 	for _, r := range rows {
-		if _, err := db.Exec(`INSERT INTO transactions VALUES
-		    (?,?,?,?,?,?,?,NULL,NULL,?,NULL,NULL,0,'statement','{}')`,
+		if _, err := db.Exec(insertTxn,
 			r.id, day(2020, 2, 5), acct, r.amount, r.section, "OLD ROW",
-			"OLD ROW", day(2020, 2, 5)); err != nil {
+			"OLD ROW", nil, nil, day(2020, 2, 5), nil, nil, 0, "statement",
+			"{}"); err != nil {
 			t.Fatalf("seed %s: %v", r.id, err)
 		}
 	}
@@ -485,35 +522,60 @@ func TestPendingAndChargeDateRideInThePayload(t *testing.T) {
 	}
 }
 
+// TestAnUnknownDirectionFallsBackWithoutLosingTheRow pins BOTH signs of the
+// fallback. A direction this build does not know keeps the row, kinded from
+// the sign silver already normalised — purchase when it reduced the balance,
+// card_payment when it increased it — and never as `other`: that is the
+// deliberate departure from docs/DESIGN.md §6.8, and `other` would drop the
+// row out of both the spending base and the matcher pool. The raw value is
+// kept in the payload, which is what the drift counter reads.
 func TestAnUnknownDirectionFallsBackWithoutLosingTheRow(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
-	if _, err := db.Exec(`INSERT INTO transactions VALUES
-	    (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,0,'activity','{}')`,
-		"100000000000000009", day(2026, 3, 10), acct, -5.00, "SOMETHING NEW",
-		"ODD ROW", "ODD ROW", "Travel", "C9"); err != nil {
-		t.Fatalf("seed: %v", err)
+	odd := func(id string, amt float64) {
+		t.Helper()
+		if _, err := db.Exec(insertTxn,
+			id, day(2026, 3, 10), acct, amt, "SOMETHING NEW", "ODD ROW",
+			"ODD ROW", "Travel", "C9", nil, nil, nil, 0, "activity",
+			"{}"); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
 	}
+	odd("100000000000000009", -5.00)
+	odd("100000000000000008", 7.50)
+
 	conn := openConn(t, path)
+	byID := map[string]canonical.TransactionChange{}
 	for _, tx := range transactions(t, conn, fullWindow(t, conn)) {
-		if tx.TransactionExternalID != "100000000000000009" {
+		byID[tx.TransactionExternalID] = tx
+	}
+	for _, tc := range []struct {
+		id     string
+		kind   canonical.TxKind
+		amount string
+	}{
+		{"100000000000000009", canonical.TxKindPurchase, "-5"},
+		{"100000000000000008", canonical.TxKindCardPayment, "7.5"},
+	} {
+		tx, ok := byID[tc.id]
+		if !ok {
+			t.Errorf("%s was dropped", tc.id)
 			continue
 		}
-		// The sign silver already normalised still places it on the right
-		// side of the ledger, and the raw value is kept for review.
-		if tx.Kind != canonical.TxKindPurchase {
-			t.Errorf("kind = %q, want purchase", tx.Kind)
+		if tx.Kind != tc.kind {
+			t.Errorf("%s kind = %q, want %q", tc.id, tx.Kind, tc.kind)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.String() != tc.amount {
+			t.Errorf("%s amount = %v, want %s", tc.id, tx.NetAmount, tc.amount)
 		}
 		var m map[string]any
 		if err := json.Unmarshal(tx.Payload, &m); err != nil {
-			t.Fatalf("payload: %v", err)
+			t.Fatalf("%s payload: %v", tc.id, err)
 		}
 		if m["source_kind"] != "SOMETHING NEW" {
-			t.Errorf("source_kind = %v, want the raw value", m["source_kind"])
+			t.Errorf("%s source_kind = %v, want the raw value", tc.id, m["source_kind"])
 		}
-		return
 	}
-	t.Fatal("the odd row was dropped")
 }
 
 func TestEmptyWindowEmitsNothing(t *testing.T) {

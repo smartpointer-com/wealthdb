@@ -291,8 +291,15 @@ def _new_context(p, *, storage_state: Path | None):
 
 
 def _maybe_start_trace(context, enabled: bool):
+    """Start a sign-in trace: screenshots and sources, no DOM snapshots.
+
+    A trace's DOM snapshots record every input's value, a hand-typed
+    password included, and nothing can redact a trace after the fact. The
+    per-action screenshots still show the flow — the browser draws a
+    password field as dots — and the network records are the redacted ones.
+    """
     if enabled:
-        context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        context.tracing.start(screenshots=True, snapshots=False, sources=True)
 
 
 def _maybe_stop_trace(context, enabled: bool, trace_path: Path):

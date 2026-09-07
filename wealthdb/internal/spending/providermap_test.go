@@ -12,6 +12,11 @@ import (
 // report without any error to notice. It also pins that no two keys of
 // one map fold to the same lookup key: two spellings of one value kept
 // as two entries could drift to two verdicts.
+//
+// And it pins the two halves of a vocabulary as disjoint: ProviderCategory
+// consults untranslatable BEFORE translations, so a value listed in both
+// would silently lose its translation — no verdict, no drift, nothing to
+// notice.
 func TestProviderMapsAreInTheTaxonomy(t *testing.T) {
 	for kind, v := range providerVocabularies {
 		if len(v.translations) == 0 {
@@ -28,6 +33,16 @@ func TestProviderMapsAreInTheTaxonomy(t *testing.T) {
 				t.Errorf("%s provider map: %q and %q fold to the same key", kind, value, other)
 			}
 			folded[key] = value
+		}
+		// Compared through the same fold: an untranslatable set may be
+		// written either pre-folded or in the provider's own spelling
+		// (foldProviderVocabularies folds both halves at init), so both
+		// sides go through providerCategoryKey and never a raw lookup.
+		for value := range v.untranslatable {
+			if other, dup := folded[providerCategoryKey(value)]; dup {
+				t.Errorf("%s provider map: %q is untranslatable but %q translates it",
+					kind, value, other)
+			}
 		}
 	}
 }
@@ -186,13 +201,17 @@ func TestUBSCardVocabularyIsCategorical(t *testing.T) {
 	}
 }
 
-// TestUBSCardMoneyMovementIsLeftUnmapped: the bank's catch-all for a
+// TestUBSCardMoneyMovementIsUntranslatable: the bank's catch-all for a
 // card row that moved money rather than bought something names no line
-// of business, so placing it would file transfers as shopping.
-func TestUBSCardMoneyMovementIsLeftUnmapped(t *testing.T) {
-	if detailed, ok, _ := ProviderCategory(
-		"ubs", "card", "Banks - merchandise and services"); ok {
-		t.Errorf("got %q, want no verdict for the bank's own catch-all", detailed)
+// of business, so placing it would file transfers as shopping. It is
+// REVIEWED, so it is not drift either — both halves are pinned, because
+// a value listed in neither the translations nor the untranslatable set
+// would pass an `!ok` assertion on its own while inflating the canary.
+func TestUBSCardMoneyMovementIsUntranslatable(t *testing.T) {
+	if detailed, ok, drift := ProviderCategory(
+		"ubs", "card", "Banks - merchandise and services"); ok || drift {
+		t.Errorf("got (%q, %v, %v), want ('', false, false) for the bank's "+
+			"own reviewed catch-all", detailed, ok, drift)
 	}
 }
 

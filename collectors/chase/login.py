@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import logging
 import os
 import sys
@@ -268,14 +269,36 @@ def _wait_for(predicate, page, timeout_s: int) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _redactor():
+    """The run's credential mask, built once.
+
+    The env file is sourced before the first capture, so the credentials
+    are in the environment by the time this is first asked for, and the
+    cache keeps it one build per run. On a run that was given none — the
+    credentials are typed by hand — this is the identity, and the
+    password-input blanking in :func:`debugcap.scrub_dom` is what covers
+    the markup instead.
+    """
+    return debugcap.secret_redactor(os.environ.get(USER_ENV, ""),
+                                    os.environ.get(PASS_ENV, ""))
+
+
 def _capture(page, args, name: str) -> None:
     """DOM + screenshot to --screenshot-dir, only under --debug. Also dumps
     each chase.com **frame** DOM (`<name>-frameN.html`) — the login form and
     challenge live in an iframe, so the main-document capture alone doesn't
-    show their controls."""
+    show their controls.
+
+    Every dump goes through the run's credential mask as well as the
+    password-input blanking, so a credential the markup carries somewhere
+    other than a password input — a hidden field, a bootstrap script — is
+    masked too."""
     if not args.debug:
         return
-    debugcap.capture_page(page, args.screenshot_dir, name, log=log)
+    redact = _redactor()
+    debugcap.capture_page(page, args.screenshot_dir, name, log=log,
+                          redact=redact)
     with contextlib.suppress(Exception):
         d = debugcap.capture_dir(args.screenshot_dir)
         for i, frame in enumerate(mdsui.chase_frames(page)):
@@ -284,7 +307,8 @@ def _capture(page, args, name: str) -> None:
                 # one of these frames, so a serialized capture carries the
                 # typed password in a `value` attribute.
                 (d / f"{name}-frame{i}.html").write_text(
-                    debugcap.scrub_dom(frame.content()), encoding="utf-8")
+                    debugcap.scrub_dom(frame.content(), redact),
+                    encoding="utf-8")
 
 
 def run_check(profile_dir: Path) -> int:

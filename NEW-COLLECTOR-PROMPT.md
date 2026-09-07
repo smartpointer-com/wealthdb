@@ -166,9 +166,19 @@ entries are cheap when framed this way — correct them and move on.
 1. **Scaffold** — adapt the template sibling's harness: explore.py
    with DOM-snapshot-per-distinct-screen capture AND response-body
    capture (network + click logs alone pin no selectors and leave
-   every JSON shape a guess); Dockerfile on the matching shared base
-   image (Camoufox for unknown or hostile bot defense — it costs
-   nothing if the site turns out lenient); wrapper via
+   every JSON shape a guess) — every DOM serialisation goes through
+   `debugcap.scrub_dom(..., redact)`, which the collectorkit suite
+   enforces on any module that serialises a page, and every capture path
+   through a `debugcap.secret_redactor(username, password)` masker, which
+   that suite only enforces in `explore.py`, so a capture written from a
+   `login.py` or a `download.py` is the author's to route. Neither
+   masker reaches a file the browser writes itself, so a recorded HAR is
+   cleaned after the context close with `debugcap.redact_har()`, and the
+   collectorkit suite fails a harness that records one without it. A
+   Playwright trace cannot be rewritten at all and holds the credential
+   verbatim. Dockerfile on the matching
+   shared base image (Camoufox for unknown or hostile bot defense — it
+   costs nothing if the site turns out lenient); wrapper via
    shared/wrappers/wrapper-lib.sh; collectorkit for CLI, bronze, and
    silver plumbing. Credentials from ~/.secrets/<name>.env
    (<NAME>_USERNAME / <NAME>_PASSWORD — map onto whatever the login

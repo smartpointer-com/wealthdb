@@ -335,11 +335,18 @@ def main(argv: list[str]) -> int:
             log.warning("did not observe op(s) %s within %ds (continuing)",
                         sorted(missing), timeout)
 
+    # The run's own credential. This walk is handed no password — it is
+    # handed the lifted session in the BYO cookie file — so the jar is what
+    # a capture could leak, and a SPA that echoes its session into a meta
+    # tag or a bootstrap script puts it in the markup a capture serialises.
+    redact = debugcap.session_redactor(cookies)
+
     def capture(page, name: str) -> None:
         """Snapshot a route once it has settled. Named so the capture dir
         reads in walk order; a no-op unless --debug supplied a dir."""
         if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log)
+            debugcap.capture_page(page, debug_dir, name, log=log,
+                                  redact=redact)
 
     profile = Path(tempfile.mkdtemp(prefix="angellist-dl-"))
     launched = False

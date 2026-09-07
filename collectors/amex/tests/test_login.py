@@ -1,12 +1,16 @@
 """Unit tests for login.py's browserless surface: argument parsing, the
-logon-outcome plumbing, the challenge-screen reading, and the six-box
-passcode entry — the last driven against stub Playwright objects, so no
-browser is needed. The live flow is validated separately.
+logon-outcome plumbing, the challenge-screen reading, the six-box passcode
+entry, the terminal challenge drive and the device-trust probe — all driven
+against stub Playwright objects and a synthetic cookie jar, so no browser is
+needed. The live flow is validated separately.
 
 Synthetic values only.
 """
 from __future__ import annotations
 
+import argparse
+import logging
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -38,12 +42,21 @@ def test_a_bare_login_is_refused_by_the_script_too():
     assert login.main([]) == 2
 
 
-@pytest.mark.parametrize("flag", ["--fresh", "--cli-mfa", "--no-cli-mfa",
-                                  "--state-path", "--mfa-timeout"])
-def test_the_sign_in_flags_moved_to_download(flag):
-    # Leaving them parsing here would let a caller think login still signs in.
+@pytest.mark.parametrize("argv", [
+    ["--check", "--fresh"],
+    ["--check", "--cli-mfa"],
+    ["--check", "--no-cli-mfa"],
+    ["--check", "--vnc-mfa"],
+    ["--check", "--state-path", "x"],
+    ["--check", "--mfa-timeout", "10"],
+])
+def test_the_sign_in_flags_moved_to_download(argv):
+    # Leaving them parsing here would let a caller think login still signs
+    # in. Each argv would parse cleanly if its flag still existed here, so
+    # the only thing that can raise is the flag being unknown — a trailing
+    # junk positional would raise either way and prove nothing.
     with pytest.raises(SystemExit):
-        login.parse_args(["--check", flag, "x"])
+        login.parse_args(argv)
 
 
 def test_no_password_flag_exists():
@@ -225,6 +238,11 @@ class _Element:
     def inner_text(self):
         return self.text
 
+    def text_content(self):
+        # Playwright exposes both accessors, so a leak through either one
+        # has to be reachable from these stubs.
+        return self.text
+
     def click(self, timeout=None):
         self.clicks += 1
 
@@ -238,14 +256,28 @@ class _Element:
 
 
 class _SelectorPage:
-    """A page that resolves selectors from a dict."""
+    """A page that resolves selectors from a dict.
 
-    def __init__(self, mapping):
+    A CSS selector LIST matches the union of its alternatives, so a page
+    seeded with one shape answers the whole joined selector too — which is
+    what lets a test pin an individual alternative of `SEL_CAPTCHA` or
+    `SEL_REGISTER_DEVICE` through the real code path."""
+
+    def __init__(self, mapping, title="Example Title"):
         self.mapping = mapping
         self.url = "https://global.americanexpress.com/dashboard"
+        self._title = title
+
+    def title(self):
+        return self._title
 
     def locator(self, selector):
-        return _Locator(self.mapping.get(selector, []))
+        if selector in self.mapping:
+            return _Locator(self.mapping[selector])
+        found = []
+        for alternative in selector.split(", "):
+            found.extend(self.mapping.get(alternative, []))
+        return _Locator(found)
 
     def wait_for_timeout(self, _ms):
         pass
@@ -291,10 +323,6 @@ def test_click_challenge_target_out_of_range_is_a_clean_false():
 # Bot-defense challenge, and the self-diagnosing failure
 # ============================================================
 
-class _CaptchaElement(_Element):
-    pass
-
-
 def test_a_captcha_is_recognised():
     # It cannot be answered from a terminal, so the only useful response is
     # to stop and name the verb that can.
@@ -307,10 +335,18 @@ def test_no_captcha_on_a_plain_challenge_screen():
     assert login.looks_like_captcha(page) is False
 
 
-def test_the_captcha_selector_covers_the_common_widget_shapes():
-    sel = amexclient.SEL_CAPTCHA
-    for shape in ("recaptcha", "hcaptcha", "data-testid", "iframe"):
-        assert shape in sel
+@pytest.mark.parametrize("shape", [
+    "iframe[src*='recaptcha']",
+    "iframe[src*='hcaptcha']",
+    "[data-testid*='captcha' i]",
+    "[class*='captcha' i]",
+])
+def test_the_captcha_selector_covers_the_common_widget_shapes(shape):
+    # SEL_CAPTCHA is not pinned from a capture, so this is its only guard —
+    # driven through looks_like_captcha rather than asserted against the
+    # constant, which any string carrying the right words would satisfy.
+    page = _SelectorPage({shape: [_Element()]})
+    assert login.looks_like_captcha(page) is True
 
 
 class _DescribePage:
@@ -333,8 +369,8 @@ class _DescribePage:
 
 
 class _Control(_Element):
-    def __init__(self, ident=None, visible=True, attrs=None):
-        super().__init__(present=True)
+    def __init__(self, ident=None, visible=True, attrs=None, text=""):
+        super().__init__(text=text, present=True)
         self.visible = visible
         self.attrs = attrs or ({"data-testid": ident} if ident else {})
 
@@ -361,10 +397,12 @@ def test_describe_screen_skips_invisible_and_anonymous_controls():
 
 def test_describe_screen_carries_no_element_text():
     # A challenge screen's labels carry the masked destination, and this
-    # string is written to be pasted into a chat.
-    page = _DescribePage([_Control(attrs={"data-testid": "opt",
-                                          "text": "Text Message ***1234"})])
-    assert "1234" not in login.describe_screen(page)
+    # string is written to be pasted into a chat. The text is threaded
+    # through the stub's real accessors, so appending inner_text() to
+    # describe_screen would fail this.
+    page = _DescribePage([_Control(attrs={"data-testid": "opt"},
+                                   text="Text Message ***0000")])
+    assert "0000" not in login.describe_screen(page)
 
 
 def test_describe_screen_survives_a_page_that_raises():
@@ -458,6 +496,118 @@ def test_a_drifted_box_count_fails_cleanly():
 
 
 # ============================================================
+# authenticate(): the branches a live run cannot be relied on to reach
+# ============================================================
+# The watch is pre-loaded, so the outcome loop breaks on its first tick and
+# the 120s ceiling is never approached.
+
+def test_an_unattended_run_surfaces_a_challenge_as_needs_login():
+    # `--no-cli-mfa` / no TTY: nobody is there to answer a passcode, so the
+    # run must fail loudly rather than block on a prompt (DESIGN.md §L).
+    watch = _watch_with(200, {"statusCode": 1, "errorCode": "LGON013",
+                              "reauth": {"mfaId": "abc"}})
+    with pytest.raises(login.NeedsLogin):
+        login.authenticate(None, _SelectorPage({}), watch,
+                           two_factor=login.TWOFACTOR_NONE)
+
+
+def test_an_outright_refusal_carries_the_providers_own_words():
+    # A refusal is surfaced verbatim, never reinterpreted.
+    watch = _watch_with(200, {"statusCode": 1, "errorCode": "LGON999",
+                              "errorMessage": "example refusal"})
+    with pytest.raises(login.LogonFailed) as raised:
+        login.authenticate(None, _SelectorPage({}), watch,
+                           two_factor=login.TWOFACTOR_NONE)
+    assert "LGON999" in str(raised.value)
+    assert "example refusal" in str(raised.value)
+
+
+def test_a_verdictless_logon_response_says_so_rather_than_blaming_the_login():
+    watch = _watch_with(500, None)
+    with pytest.raises(login.LogonFailed) as raised:
+        login.authenticate(None, _SelectorPage({}), watch,
+                           two_factor=login.TWOFACTOR_NONE)
+    assert "no statusCode" in str(raised.value)
+
+
+def test_a_trusted_device_authenticates_with_no_challenge_in_any_mode():
+    watch = _watch_with(200, {"statusCode": 0, "challenge": False,
+                              "reauth": {"trust": True}})
+    assert login.authenticate(None, _SelectorPage({}), watch,
+                              two_factor=login.TWOFACTOR_NONE) is True
+
+
+# ============================================================
+# The terminal challenge drive, and the device registration it ends with
+# ============================================================
+
+def _challenge_page(*, option=None, register=None, boxes=None,
+                    continue_btn=None):
+    """A passcode challenge screen: the six code boxes and Continue, plus
+    optionally a delivery option and the device-registration control."""
+    boxes = boxes if boxes is not None else [
+        _Element() for _ in range(amexclient.OTP_DIGITS)]
+    mapping = {amexclient.SEL_OTP_INPUT.format(i=i): [b]
+               for i, b in enumerate(boxes)}
+    mapping[amexclient.SEL_CONTINUE] = [continue_btn or _Element()]
+    if option is not None:
+        mapping[amexclient.SEL_CHALLENGE_OPTION] = [option]
+    if register is not None:
+        mapping[amexclient.SEL_REGISTER_DEVICE] = [register]
+    return _SelectorPage(mapping), boxes
+
+
+def test_the_terminal_drive_picks_sends_reads_and_registers(monkeypatch):
+    option = _Element(text="Text Message  *******0000")
+    register = _Element()
+    page, boxes = _challenge_page(option=option, register=register)
+    watch = _watch_with(200, {"statusCode": 1, "reauth": {"mfaId": "abc"}})
+    order: list[str] = []
+    real_reset = watch.reset
+    monkeypatch.setattr(watch, "reset",
+                        lambda: (order.append("reset"), real_reset())[1])
+    monkeypatch.setattr(login.auth_dialog, "read_otp",
+                        lambda: (order.append("read_otp"), CODE)[1])
+
+    assert login._drive_challenge_cli(page, watch, None) is True
+    # A single destination auto-picks, and it is clicked once.
+    assert option.clicks == 1
+    # The first logon's verdict is dropped BEFORE the code is read: the
+    # challenge ends with a second logon call, and that is the one that
+    # decides.
+    assert order == ["reset", "read_otp"]
+    assert "".join(b.value for b in boxes) == CODE
+    # And the device is registered while the run is there — without it every
+    # later run pays a passcode on a source whose budget is the scarce thing.
+    assert register.clicks == 1
+
+
+def test_the_terminal_drive_aborts_on_a_captcha(monkeypatch):
+    # No terminal can answer one, so the drive must stop before it prompts.
+    monkeypatch.setattr(login.auth_dialog, "read_otp",
+                        lambda: pytest.fail("prompted on a captcha screen"))
+    monkeypatch.setattr(
+        login.auth_dialog, "choose_target",
+        lambda *a, **k: pytest.fail("picked a target on a captcha screen"))
+    page = _SelectorPage({amexclient.SEL_CAPTCHA: [_Element()]})
+    watch = _watch_with(200, {"statusCode": 1, "reauth": {"mfaId": "abc"}})
+    assert login._drive_challenge_cli(page, watch, None) is False
+
+
+def test_a_missing_registration_control_reports_what_was_on_screen(caplog):
+    # §M: the two reasons a registration can be missing — a drifted selector
+    # and a provider that did not offer it — want different responses, so the
+    # miss names the controls that WERE on screen.
+    control = _Control("continue-button")
+    page = _SelectorPage({"button, input, [data-testid]": [control]})
+    with caplog.at_level(logging.WARNING, logger="amex.login"):
+        login.register_device(page, timeout_s=0)
+    assert control.clicks == 0
+    assert "no device-registration control" in caplog.text
+    assert "continue-button" in caplog.text
+
+
+# ============================================================
 # The authenticated probe
 # ============================================================
 
@@ -496,62 +646,84 @@ def test_probe_authenticated_is_false_on_an_empty_200():
 # Device trust — what the whole verb split rests on
 # ============================================================
 
-class _StubContext:
-    """Just enough of a Playwright context to answer `cookies()`."""
-
-    def __init__(self, cookies):
-        self._cookies = cookies
-
-    def cookies(self):
-        return self._cookies
+TRUST_COOKIE_ROW = (".americanexpress.com", amexclient.DEVICE_TRUST_COOKIE,
+                    "SYNTHETIC", "/", 2000000000)
 
 
-def test_the_trust_cookie_is_found_by_name():
-    cookie = {"name": amexclient.DEVICE_TRUST_COOKIE, "value": "SYNTHETIC",
-              "expires": 2000000000}
-    assert login.device_trust_cookie(_StubContext([
-        {"name": "session", "value": "x"}, cookie])) == cookie
+def _cookie_jar(profile_dir: Path, rows) -> None:
+    """A synthetic Firefox cookie jar carrying the columns the probe reads."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(profile_dir / login.COOKIE_DB))
+    conn.execute("CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, "
+                 "host TEXT, name TEXT, value TEXT, path TEXT, "
+                 "expiry INTEGER)")
+    conn.executemany("INSERT INTO moz_cookies (host, name, value, path, "
+                     "expiry) VALUES (?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
 
 
-def test_a_valueless_trust_cookie_does_not_count_as_trust():
-    # A cookie cleared to "" is the shape a revoked/expired one takes in the
-    # jar; reading it as trust would report a device that will be challenged.
-    assert login.device_trust_cookie(_StubContext(
-        [{"name": amexclient.DEVICE_TRUST_COOKIE, "value": ""}])) is None
+def _check(profile_dir: Path) -> int:
+    return login.run_check(argparse.Namespace(profile_dir=profile_dir,
+                                              check=True))
 
 
-def test_no_trust_cookie_at_all_is_not_trust():
-    assert login.device_trust_cookie(_StubContext([])) is None
-    assert login.device_trust_cookie(_StubContext(
-        [{"name": "session", "value": "x"}])) is None
+def test_the_check_reads_the_trust_cookie_off_the_profile(tmp_path):
+    profile = tmp_path / "amex-profile"
+    _cookie_jar(profile, [("www.example.com", "session", "x", "/", 0),
+                          TRUST_COOKIE_ROW])
+    assert login.profile_trust_cookie(profile)["value"] == "SYNTHETIC"
+    assert login.profile_trust_cookie(profile)["expires"] == 2000000000
+    assert _check(profile) == 0
 
 
-def test_a_context_that_raises_reports_no_trust_rather_than_failing():
-    class _Broken:
-        def cookies(self):
-            raise RuntimeError("context closed")
-    assert login.device_trust_cookie(_Broken()) is None
+def test_a_millisecond_expiry_is_normalised_to_seconds(tmp_path):
+    # Read as seconds a millisecond column lands tens of thousands of years
+    # out, and the reported "until" date with it.
+    profile = tmp_path / "amex-profile"
+    _cookie_jar(profile, [TRUST_COOKIE_ROW[:4] + (2000000000000,)])
+    assert login.profile_trust_cookie(profile)["expires"] == 2000000000
 
 
-def test_run_check_reports_registration_without_touching_the_network(
-        monkeypatch, tmp_path):
-    # The probe's whole point: it answers from the profile, so it costs no
-    # sign-in (DESIGN.md §L). If it ever navigates, this test's stub has no
-    # page to navigate with and the call fails.
-    import argparse
-    import contextlib as _ctx
+@pytest.mark.parametrize("rows", [
+    [],
+    [(".americanexpress.com", amexclient.DEVICE_TRUST_COOKIE, "", "/", 0)],
+    [(".example.com", amexclient.DEVICE_TRUST_COOKIE, "SYNTHETIC", "/", 0)],
+    [("evil-americanexpress.com", amexclient.DEVICE_TRUST_COOKIE,
+      "SYNTHETIC", "/", 0)],
+])
+def test_an_absent_valueless_or_foreign_trust_cookie_is_not_trust(tmp_path,
+                                                                  rows):
+    # A cookie cleared to "" is the shape a revoked one takes in the jar, and
+    # a same-named cookie on another host is not this device's trust — nor is
+    # one on a lookalike host that merely ENDS in the brand's domain, which
+    # an unanchored suffix match would read as registered.
+    profile = tmp_path / "amex-profile"
+    _cookie_jar(profile, rows)
+    assert login.profile_trust_cookie(profile) is None
+    assert _check(profile) == 1
 
-    for cookies, expected in (
-            ([{"name": amexclient.DEVICE_TRUST_COOKIE, "value": "SYNTHETIC",
-               "expires": 2000000000}], 0),
-            ([], 1)):
-        @_ctx.contextmanager
-        def _camoufox(profile_dir, fresh=False, _c=cookies):
-            assert fresh is False, "the probe must never move the profile"
-            yield _StubContext(_c), None
-        monkeypatch.setattr(login, "camoufox", _camoufox)
-        args = argparse.Namespace(profile_dir=tmp_path, check=True)
-        assert login.run_check(args) == expected
+
+def test_the_check_creates_nothing_when_there_is_no_profile(tmp_path):
+    # It must not chmod, relink or create anything it did not find.
+    profile = tmp_path / "absent-profile"
+    assert _check(profile) == 1
+    assert not profile.exists()
+
+
+def test_the_check_never_opens_a_browser(tmp_path, monkeypatch):
+    # The probe's whole claim: no sign-in, and no network either. Launching
+    # the shared context resolves the egress IP over the network, so opening
+    # a browser at all would break it (DESIGN.md §L).
+    fake = type(sys)("camoufox.sync_api")
+
+    def _explode(**kwargs):
+        raise AssertionError("the device-trust probe launched a browser")
+    fake.Camoufox = _explode
+    monkeypatch.setitem(sys.modules, "camoufox.sync_api", fake)
+    profile = tmp_path / "amex-profile"
+    _cookie_jar(profile, [TRUST_COOKIE_ROW])
+    assert _check(profile) == 0
 
 
 # ============================================================

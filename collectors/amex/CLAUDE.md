@@ -41,7 +41,8 @@ folded into `download` (§L): every run now costs ONE sign-in, not two.
 Allowed without asking: reading code/config/docs, `make build-amex` /
 `make test-amex`, `--help` on any verb, reading an existing capture under
 the debug dir, unit tests, and `login --check` — which reads the profile's
-own device-trust cookie and touches no network at all (§L).
+own device-trust cookie out of the Firefox jar on disk, opening no browser
+and touching no network at all (§L).
 
 **`download --dry-run` is NOT in that set here.** Unlike the fleet's usual
 dry-run it still SIGNS IN — it only skips the exports and documents, and
@@ -202,11 +203,22 @@ and charge cards, read-only"), never what this login was seen to contain.
 The debug tree (`~/.cache/wealthdb/debug/amex/`) carries `explore`'s full
 response bodies, DOM snapshots and downloaded statements, plus the sign-in
 diagnostics `download` and `vnc-login` write under `--debug`. The harness
-masks the credentials in every wire spelling and blanks password fields
-out of DOM snapshots (`collectorkit.debugcap`), but everything else in
-there is real account data — treat the dir as sensitive and never commit
-anything derived from it without stripping identifiers first. Two leaks in
-the 2026-09-06 capture (a percent-encoded password in the network log, a
-`value` attribute in a DOM snapshot) are what those two defences exist
-for; if a capture predating them is still on disk, treat it as holding a
-cleartext credential.
+masks the credentials in every wire spelling, masks header and query
+values by NAME so a bearer or session cookie the site issued at runtime
+goes too, blanks password fields out of DOM snapshots
+(`collectorkit.debugcap`), and rewrites `network.har` through the same
+redactor once the browser context closes — Playwright records that file
+raw, so nothing before that point protects it.
+
+**The opt-in `--trace` bundle is NOT scrubbed.** Playwright writes
+`trace.zip` / `trace-chunks/` itself, in its own format, and nothing here
+rewrites them: a trace cannot be redacted after the fact, its DOM
+snapshots store every input's value, so treat a trace as holding the
+credential and delete it when the question it was captured for is
+answered.
+
+Everything else in the tree is real account data — treat the dir as
+sensitive and never commit anything derived from it without stripping
+identifiers first. The two leaks those defences close — a percent-encoded
+password in the network log, a `value` attribute in a DOM snapshot — are
+also why a capture taken before them holds a cleartext credential.

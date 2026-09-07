@@ -62,16 +62,20 @@ type providerVocabulary struct {
 	// a value and a cosmetic change on the provider's side does not
 	// silently unmap it.
 	translations map[string]string
-	// untranslatable are the provider's own "I could not place this"
-	// values — an issuer's literal "Other" bucket. They are REVIEWED,
-	// so a miss on one is not drift; and they are deliberately not
-	// translated, because a row the provider could not place is
-	// exactly the row the model tier can, and any verdict here would
-	// pre-empt it. Without this a categorical vocabulary has only two
-	// ways to treat such a value, and both are wrong: translate it and
-	// lose the row to a bucket, or omit it and inflate a counter that
-	// is supposed to mean "the issuer said something this build does
-	// not understand".
+	// untranslatable are the values a categorical vocabulary reviewed
+	// and deliberately left to the model tier: the provider's own "I
+	// could not place this" bucket — an issuer's literal "Other" — and
+	// any value naming a MOVEMENT rather than a line of business, such
+	// as a bank's catch-all for the card rows that transferred money
+	// instead of buying something. They are REVIEWED, so a miss on one
+	// is not drift; and they are not translated, because a row the
+	// provider could not place, or placed under a movement, is exactly
+	// the row the model tier can read from the descriptor, and any
+	// verdict here would pre-empt it. Without this a categorical
+	// vocabulary has only two ways to treat such a value, and both are
+	// wrong: translate it and lose the row to a bucket, or omit it and
+	// inflate a counter that is supposed to mean "the issuer said
+	// something this build does not understand".
 	untranslatable map[string]bool
 	// categorical marks a vocabulary in which every value is a spend
 	// category, so a value outside the table is drift worth counting.
@@ -328,14 +332,15 @@ var ubsCardCategories = map[string]string{
 	"Misc. publishing and printing services":           "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Equipment rental and leasing services":            "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Professional Services - Not Elsewhere Classified": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
-	// The bank's own catch-all for a card row that is a money movement
-	// rather than a purchase — a mobile-payment transfer, a card
-	// top-up. It names no line of business, so it is deliberately
-	// LEFT UNMAPPED: a guess here would file person-to-person
-	// transfers as shopping. Listed so the omission reads as a
-	// decision rather than an oversight.
-	//   "Banks - merchandise and services"
 }
+
+// ubsCardMoneyMovement is the bank's own catch-all for a card row that
+// is a money movement rather than a purchase — a mobile-payment
+// transfer, a card top-up. It names no line of business, so a guess
+// here would file person-to-person transfers as shopping. It is
+// REVIEWED, so a miss on it is not drift, and it is left for the model
+// tier, which sees the descriptor the category withholds.
+var ubsCardMoneyMovement = map[string]bool{"Banks - merchandise and services": true}
 
 // providerVocabularies is the registry. A source with no entry
 // contributes no provider verdicts at all, which is the correct
@@ -356,8 +361,9 @@ var providerVocabularies = map[string]providerVocabulary{
 	"chase": {translations: chaseCardCategories, categorical: true},
 	"amex": {translations: amexCardCategories, untranslatable: amexUncategorized,
 		categorical: true},
-	"ubs":      {translations: ubsBookingTypes, categorical: false},
-	"ubs/card": {translations: ubsCardCategories, categorical: true},
+	"ubs": {translations: ubsBookingTypes, categorical: false},
+	"ubs/card": {translations: ubsCardCategories,
+		untranslatable: ubsCardMoneyMovement, categorical: true},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the
@@ -401,9 +407,10 @@ func providerCategoryKey(s string) string {
 //	                      count it as drift and fall through
 //	("", false, false)    nothing to count — the kind publishes no
 //	                      mapped vocabulary, the row carries no value,
-//	                      the value is the issuer's own reviewed
-//	                      residual bucket, or the vocabulary is a list
-//	                      of booking types and this value names a rail
+//	                      the value is one the vocabulary reviewed and
+//	                      left untranslatable, or the vocabulary is a
+//	                      list of booking types and this value names a
+//	                      rail
 //
 // Separating the last two keeps the unmapped counter meaningful:
 // without it every uncategorised row from every non-card source, and
@@ -421,8 +428,8 @@ func ProviderCategory(silverKind, accountKind, providerCategory string) (detaile
 		return "", false, false
 	}
 	if v.untranslatable[key] {
-		// The issuer's own residual bucket: reviewed, so not drift, and
-		// left for the model tier.
+		// A value this vocabulary reviewed and left alone: not drift,
+		// and left for the model tier.
 		return "", false, false
 	}
 	detailed, ok = v.translations[key]

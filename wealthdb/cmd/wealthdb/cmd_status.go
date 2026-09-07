@@ -35,13 +35,15 @@ silver Status() extrema, the stored watermark, and the most
 recent load_audit rows.
 
 -v additionally counts 'other'-bucketed rows per source (asset_
-class='other' positions, kind='other' transactions) and positions
-with no 2-D vehicle pair yet, so taxonomy drift in the adapters is
-visible. It also reports the spending backlog, the transactions a
-spending report cannot see because their kind is 'other', and —
-for a source holding more than one account kind — how fresh each
-kind's data is, so a card population that stops updating behind a
-current deposit population is visible.`)
+class='other' positions, kind='other' transactions), the
+transactions an adapter kinded by the sign of the amount instead
+(raw value in payload.source_kind), and positions with no 2-D
+vehicle pair yet, so taxonomy drift in the adapters is visible. It
+also reports the spending backlog, the transactions a spending
+report cannot see because their kind is 'other', and — for a
+source holding more than one account kind — how fresh each kind's
+data is, so a card population that stops updating behind a current
+deposit population is visible.`)
 	}
 	if err := fs.Parse(subargs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -117,9 +119,11 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 	fmt.Fprintf(stdout, "  tx range:        %s\n", formatRange(st.OldestTransactionAt, st.LatestTransactionAt))
 
 	if verbose {
-		fmt.Fprintln(stdout, "  taxonomy drift ('other' bucket):")
+		fmt.Fprintln(stdout, "  taxonomy drift (what no adapter could map):")
 		fmt.Fprintf(stdout, "    asset_class='other':     %d positions\n", st.OtherAssetClassCount)
 		fmt.Fprintf(stdout, "    kind='other':            %d transactions\n", st.OtherTxKindCount)
+		fmt.Fprintf(stdout, "    kind guessed by sign:    %d transactions (raw value in payload.source_kind)\n",
+			st.GuessedTxKindCount)
 		fmt.Fprintf(stdout, "    vehicle missing (NULL):  %d positions\n", st.MissingVehicleCount)
 		fmt.Fprintln(stdout, "  spending:")
 		fmt.Fprintf(stdout, "    uncategorised:           %d spending lines\n", st.UncategorizedSpendCount)
@@ -186,9 +190,10 @@ func printOneLineStatus(ctx context.Context, db *sql.DB, src *config.SilverSourc
 	}
 
 	driftHint := ""
-	if verbose && (st.OtherAssetClassCount > 0 || st.OtherTxKindCount > 0) {
-		driftHint = fmt.Sprintf("  drift: %d pos/'other'+%d tx/'other'",
-			st.OtherAssetClassCount, st.OtherTxKindCount)
+	if verbose && (st.OtherAssetClassCount > 0 || st.OtherTxKindCount > 0 ||
+		st.GuessedTxKindCount > 0) {
+		driftHint = fmt.Sprintf("  drift: %d pos/'other'+%d tx/'other'+%d tx/guessed",
+			st.OtherAssetClassCount, st.OtherTxKindCount, st.GuessedTxKindCount)
 	}
 	if verbose && st.MissingVehicleCount > 0 {
 		driftHint += fmt.Sprintf("  %d pos/no-vehicle", st.MissingVehicleCount)

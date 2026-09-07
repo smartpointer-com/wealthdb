@@ -746,10 +746,19 @@ def run(args: argparse.Namespace) -> int:
                     "no captures will be written")
         debug_dir = None
 
+    # The run's own credential. This walk is handed no password — it is
+    # handed a lifted session — so the jar is what a capture could leak,
+    # and an SPA that echoes its session into a meta tag or a bootstrap
+    # script puts it in the markup a capture serialises.
+    # Read once, at the first capture, and never fatally: a mask that
+    # cannot be built must not take down the walk it exists to diagnose.
+    mask = debugcap.SessionMask()
+
     def capture(page, name: str) -> None:
         """Snapshot a landmark into the run dir; a no-op unless --debug."""
         if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log)
+            debugcap.capture_page(page, debug_dir, name, log=log,
+                                  redact=mask.for_page(page))
 
     with sync_playwright() as p:
         browser, context = _new_context(p, session.resolve_state_path(

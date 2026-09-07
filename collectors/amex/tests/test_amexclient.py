@@ -11,6 +11,8 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import amexclient  # noqa: E402
@@ -76,6 +78,21 @@ def test_an_absent_document_url_stays_absent():
 def test_absolute_url_leaves_an_absolute_one_alone():
     url = "https://global.americanexpress.com/api/servicing/v1/y"
     assert amexclient.absolute_url(url) == url
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.net/api/servicing/v1/x",                  # another site
+    "//example.net/api/servicing/v1/x",                        # protocol-rel
+    "http://global.americanexpress.com/api/servicing/v1/x",    # not https
+    "https://www.americanexpress.com/api/servicing/v1/x",      # sibling host
+    "https://global.americanexpress.com/myca/x",               # off-surface
+])
+def test_a_document_url_off_the_servicing_surface_is_refused(url):
+    # The document fetches carry the session jar, so where they may reach is
+    # decided by the contract (CLAUDE.md §1), not by the provider payload.
+    # The host is matched exactly: sibling americanexpress.com hosts receive
+    # the domain cookies too. A refusal reads as "no document".
+    assert amexclient.absolute_url(url) == ""
 
 
 def test_function_headers_carry_the_source_and_a_fresh_correlation_id():

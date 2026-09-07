@@ -65,12 +65,12 @@ One run records, under `/debug/<UTC-ts>/` (host:
 
 | Artefact | Purpose |
 | --- | --- |
-| `network.har` | The primary endpoint map — every request + response. Flushed only on a clean context close. |
+| `network.har` | The primary endpoint map — every request + response. Flushed on the context close and rewritten through the redactor on the same unwind, error included: Playwright records it raw, so it is never crash-safe and secret-free at once. |
 | `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 200 KB captured inline, OFX/QFX content types included. |
 | `clicks.jsonl` | Click log via an injected `document.addEventListener` (VNC clicks bypass the Playwright API), plus lifecycle, login-form and OTP-field events. |
 | `dom/<NNN>/` | **Every distinct screen's full DOM** (all firstcitizens.com frames) + a screenshot, deduped by DOM structure — the record selectors are pinned from. |
 | `downloads/` | Every file the session fetches (statement PDFs, exports), sequence-prefixed against reused filenames. |
-| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). |
+| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). A trace cannot be redacted after the fact: its DOM snapshots store every input's value, the typed password included. |
 
 Mechanics carried over from chase (see that harness's DESIGN.md §2 for
 the full rationale): frame-aware login pre-fill gated to
@@ -78,9 +78,13 @@ firstcitizens.com frames, both-fields-in-one-frame before either is
 touched, fill-once with read-back verification, `signon.*` prefs off so
 a profile-saved credential can never autofill on top of the
 programmatic fill, an OTP-field detector that logs the field's static
-descriptor (never its value), and username/password redaction across
-every logged header and body. Sign-in and 2FA are submitted by hand
-over VNC; the harness never clicks a button.
+descriptor (never its value), and `collectorkit.debugcap` redaction of
+the credentials across every header and body the harness itself writes,
+plus the HAR, which Playwright records raw and which is rewritten through
+the same redactor once the context close has flushed it. The opt-in trace
+is the one artefact nothing rewrites (collectors/README.md, "Captures
+carry credentials"). Sign-in and 2FA are
+submitted by hand over VNC; the harness never clicks a button.
 
 ## 3. Observed — authenticated capture (2026-08-13)
 

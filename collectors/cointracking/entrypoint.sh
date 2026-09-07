@@ -110,8 +110,9 @@ Usage:
 
 Subcommands:
   explore     Launch Camoufox in the container's Xvfb display and
-              record every action taken in the VNC session (HAR +
-              Playwright trace + click log under /debug). Use during
+              record every action taken in the VNC session (redacted
+              HAR + network/click logs under /debug; add --trace for a
+              Playwright trace, which nothing redacts). Use during
               the discovery phase. Starts x11vnc on the first free
               host port in 127.0.0.1:5900-6000 (printed at handoff).
   login       Mint a long-lived cointracking session via headless

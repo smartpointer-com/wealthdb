@@ -129,6 +129,8 @@ placeholders only — e.g. company "ACME-CO", `dealId 1234`,
 figures. Raw artefacts live only under `$XDG_DATA_HOME/wealthdb/equityzen/`,
 `~/.secrets/`, and the explore debug dir (`~/.cache/wealthdb/debug/equityzen/`),
 never in the repo. The explore harness redacts the username + password
-from `network.jsonl`, but response bodies there carry full holdings data —
-treat the debug dir as sensitive and never commit anything derived from it
-without stripping identifiers first.
+from `network.jsonl` and from the HAR, but response bodies there carry full
+holdings data — and an opt-in `--trace` is redacted nowhere, since a trace's
+DOM snapshots carry every input's value. Treat the debug dir as sensitive
+and never commit anything derived from it without stripping identifiers
+first.

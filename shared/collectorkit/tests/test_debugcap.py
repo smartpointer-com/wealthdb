@@ -12,10 +12,13 @@ fine; bronze is private and already full of it.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 import sys
 import unittest
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,6 +28,20 @@ from collectorkit import debugcap  # noqa: E402
 log = logging.getLogger("test.debugcap")
 
 COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+
+# Stated as literals, never imported from the module: a name removed from
+# debugcap._SECRET_PARAMS has to fail a test, and a test that reads the set
+# it is checking would follow the removal instead of catching it.
+KNOWN_PARAMS = (
+    "api_key", "apikey", "key", "token", "access_token", "refresh_token",
+    "id_token", "secret", "client_secret", "password", "passwd", "pwd",
+    "sig", "signature", "auth", "authorization", "session", "sessionid",
+)
+# Credential-bearing header names that are NOT also query parameters.
+HEADER_ONLY = (
+    "cookie", "set-cookie", "x-api-key", "x-auth-token",
+    "proxy-authorization", "x-csrf-token", "x-xsrf-token",
+)
 
 
 class RedactUrlTest(unittest.TestCase):
@@ -38,11 +55,15 @@ class RedactUrlTest(unittest.TestCase):
         self.assertNotIn("SECRET123", out)
 
     def test_masks_every_known_credential_spelling(self):
-        for name in ("api_key", "apikey", "token", "access_token", "secret",
-                     "client_secret", "password", "sig", "signature",
-                     "authorization", "session"):
-            out = debugcap.redact_url(f"https://x.invalid/a?{name}=LEAKME")
-            self.assertNotIn("LEAKME", out, name)
+        for name in KNOWN_PARAMS:
+            with self.subTest(name):
+                out = debugcap.redact_url(f"https://x.invalid/a?{name}=LEAKME")
+                self.assertNotIn("LEAKME", out)
+
+    def test_the_credential_parameter_set_is_the_one_stated_here(self):
+        # Pins both directions: a name dropped from the module fails the
+        # loop above, and one added without a test here fails this.
+        self.assertEqual(frozenset(KNOWN_PARAMS), debugcap._SECRET_PARAMS)
 
     def test_is_case_insensitive(self):
         out = debugcap.redact_url("https://x.invalid/a?API_KEY=LEAKME")
@@ -69,6 +90,8 @@ class SecretRedactorTest(unittest.TestCase):
 
     # Punctuation-heavy on purpose: every one of these characters changes
     # under form-urlencoding, which is what defeats a raw-string masker.
+    # The space carries two spellings of its own — `+` from a form POST,
+    # `%20` from encodeURIComponent — and both are exercised below.
     SECRET = "a$b^c%d e&f"
     USER = "example-user"
 
@@ -78,19 +101,24 @@ class SecretRedactorTest(unittest.TestCase):
 
     def test_masks_the_form_urlencoded_secret(self):
         # The regression: a login POST body percent-encodes the password.
+        # Both spellings of the space, because clients disagree: a form POST
+        # sends `+`, encodeURIComponent sends `%20`.
         redact = debugcap.secret_redactor(self.SECRET, self.USER)
-        body = ("request_type=login&UserID=example-user"
-                "&Password=a%24b%5Ec%25d+e%26f&channel=Web")
-        out = redact(body)
-        self.assertNotIn("a%24b", out)
-        self.assertNotIn("example-user", out)
-        self.assertIn("request_type=login", out)
+        for pw in ("a%24b%5Ec%25d+e%26f", "a%24b%5Ec%25d%20e%26f"):
+            with self.subTest(pw):
+                out = redact(f"request_type=login&UserID=example-user"
+                             f"&Password={pw}&channel=Web")
+                self.assertNotIn("a%24b", out)
+                self.assertNotIn("example-user", out)
+                self.assertIn("request_type=login", out)
 
     def test_masks_lower_case_percent_escapes(self):
         # Clients disagree on the case of the hex digits; both decode the
         # same, so both must be masked.
         redact = debugcap.secret_redactor(self.SECRET)
-        self.assertNotIn("a%24b", redact("Password=a%24b%5ec%25d+e%26f"))
+        for pw in ("a%24b%5ec%25d+e%26f", "a%24b%5ec%25d%20e%26f"):
+            with self.subTest(pw):
+                self.assertNotIn("a%24b", redact(f"Password={pw}"))
 
     def test_masks_the_json_escaped_secret(self):
         redact = debugcap.secret_redactor('pa"ss\\word')
@@ -102,6 +130,47 @@ class SecretRedactorTest(unittest.TestCase):
         self.assertNotIn(
             "pässwörd",
             redact(json.dumps({"p": "pässwörd"}, ensure_ascii=False)))
+
+    def test_masks_the_unescaped_json_spelling_of_a_non_ascii_secret(self):
+        # A secret with a quote AND a non-ASCII character is the case where
+        # all three JSON spellings differ, so the ensure_ascii=False one is
+        # not covered for free by the raw string.
+        secret = 'p\u00e4"ss'
+        redact = debugcap.secret_redactor(secret)
+        out = redact(json.dumps({"p": secret}, ensure_ascii=False))
+        self.assertNotIn("ss", out)
+        self.assertIn(debugcap.REDACTED, out)
+
+    def test_masks_the_percent_20_spelling(self):
+        # encodeURIComponent spells a space `%20`, not `+`.
+        redact = debugcap.secret_redactor(self.SECRET)
+        body = "pw=" + urllib.parse.quote(self.SECRET, safe="")
+        self.assertEqual(redact(body), "pw=" + debugcap.REDACTED)
+
+    def test_masks_the_html_entity_spelling(self):
+        # A serialized DOM is the artefact that always spells it this way.
+        self.assertIn(html.escape(self.SECRET, quote=False),
+                      debugcap.secret_variants(self.SECRET))
+
+    def test_the_wire_spellings_are_the_ones_stated_here(self):
+        # Literals, not a re-derivation: an encoder dropped from
+        # secret_variants has to fail here rather than change both sides.
+        self.assertEqual(set(debugcap.secret_variants(self.SECRET)), {
+            "a$b^c%d e&f",                 # raw (and both JSON spellings)
+            "a%24b%5Ec%25d+e%26f",         # form POST
+            "a%24b%5ec%25d+e%26f",         # ...lower-case hex
+            "a%24b%5Ec%25d%20e%26f",       # encodeURIComponent
+            "a%24b%5ec%25d%20e%26f",       # ...lower-case hex
+            "a$b^c%d e&amp;f",             # serialized DOM
+        })
+        self.assertEqual(set(debugcap.secret_variants('p\u00e4"s d')), {
+            'p\u00e4"s d',
+            "p%C3%A4%22s%20d", "p%c3%a4%22s%20d",
+            "p%C3%A4%22s+d", "p%c3%a4%22s+d",
+            'p\\u00e4\\"s d',              # json.dumps
+            'p\u00e4\\"s d',               # json.dumps(ensure_ascii=False)
+            'p\u00e4&quot;s d',            # DOM attribute value
+        })
 
     def test_no_secrets_is_the_identity(self):
         redact = debugcap.secret_redactor("", None)
@@ -186,6 +255,45 @@ class ScrubDomTest(unittest.TestCase):
         markup = '<input type="text" name="userid" value="keepme">'
         self.assertEqual(debugcap.scrub_dom(markup), markup)
 
+    def test_a_hyphenated_attribute_is_not_mistaken_for_the_value(self):
+        # `data-value` is a selector hook, not the credential; blanking it
+        # would cost the snapshot the very anchor it is kept for.
+        out = debugcap.scrub_dom(
+            '<input type="password" data-value="hook" value="pw">')
+        self.assertIn('data-value="hook"', out)
+        self.assertIn('value=""', out)
+        self.assertNotIn('"pw"', out)
+
+    # A serialized DOM entity-escapes what it carries, and a punctuated
+    # secret is exactly the kind that changes shape on the way in.
+    ENTITY_SECRET = 'a&b"c<d>e'
+
+    def _entity_scrub(self, markup):
+        return debugcap.scrub_dom(
+            markup, debugcap.secret_redactor(self.ENTITY_SECRET))
+
+    def test_masks_an_entity_escaped_attribute_value(self):
+        # Two spellings, because serializers disagree on whether `<`/`>` are
+        # escaped inside an attribute.
+        for value in ('a&amp;b&quot;c<d>e', 'a&amp;b&quot;c&lt;d&gt;e'):
+            with self.subTest(value):
+                out = self._entity_scrub(
+                    f'<input type="text" name="u" value="{value}">')
+                self.assertNotIn("a&amp;b", out)
+                self.assertIn(debugcap.REDACTED, out)
+
+    def test_masks_an_entity_escaped_hidden_field(self):
+        # type="hidden" is not type="password", so only the redactor covers
+        # it — and the markup spells the `&` as an entity.
+        out = self._entity_scrub(
+            '<input type="hidden" name="u" value="a&amp;b&quot;c<d>e">')
+        self.assertNotIn("a&amp;b", out)
+
+    def test_masks_an_entity_escaped_text_node(self):
+        # A text node escapes the angle brackets but never the quote.
+        out = self._entity_scrub('<div>a&amp;b"c&lt;d&gt;e</div>')
+        self.assertEqual(out, f"<div>{debugcap.REDACTED}</div>")
+
 
 @unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
 class CollectorRedactionTest(unittest.TestCase):
@@ -209,14 +317,20 @@ class CollectorRedactionTest(unittest.TestCase):
                 f"{path} inlines a credential masker — use "
                 f"collectorkit.debugcap.secret_redactor()")
 
+    # Every way the fleet turns a live page into markup. Three earlier
+    # versions of this guard keyed too narrowly and each left a real leak
+    # invisible: the first on one harness\'s private function, which skipped
+    # every login flow; the second on `login.py`/`explore.py`, which skipped
+    # the one collector whose sign-in lives in its download.py; the third on
+    # `.content()`, which a capture written with the `outerHTML` fallback —
+    # the spelling three SPA collectors already use for a page whose
+    # `content()` times out — would slip straight past.
+    DOM_SERIALISERS = (".content()", "outerHTML", "inner_html(", "innerHTML")
+
     def test_every_dom_serialising_module_scrubs(self):
         # Keyed on the BEHAVIOUR — serialising a DOM — not on a file name.
-        # Two earlier versions of this guard keyed on names and each missed
-        # a real leak: the first on one harness's private function, which
-        # skipped every login flow; the second on `login.py`/`explore.py`,
-        # which skipped the one collector whose sign-in lives in its
-        # download.py. Any module that can serialize a page can serialize a
-        # sign-in form, and that markup carries the typed password.
+        # Any module that can serialize a page can serialize a sign-in form,
+        # and that markup carries the typed password.
         #
         # File-level, so it proves a module scrubs somewhere rather than at
         # every site. It catches the failure that actually happens — a
@@ -224,15 +338,117 @@ class CollectorRedactionTest(unittest.TestCase):
         scanned = 0
         for path in self._collector_sources():
             text = path.read_text(encoding="utf-8")
-            if ".content()" not in text:
+            if not any(k in text for k in self.DOM_SERIALISERS):
                 continue
             scanned += 1
             self.assertIn(
                 "debugcap.scrub_dom(", text,
-                f"{path} serialises a DOM without "
-                f"collectorkit.debugcap.scrub_dom() — a sign-in form "
-                f"captured there carries the typed password")
+                f"{path} serialises a DOM (content() / outerHTML / "
+                f"innerHTML) without collectorkit.debugcap.scrub_dom() — a "
+                f"sign-in form captured there carries the typed password")
         self.assertTrue(scanned, "no DOM-serialising module found to scan")
+
+    def test_the_serialiser_set_reaches_past_content(self):
+        # The scan above is only as wide as this tuple, and every file it
+        # currently reaches happens to spell `.content()` somewhere too —
+        # so narrowing the tuple back to that one spelling would leave the
+        # scan green while the guard stopped covering anything. Drive the
+        # predicate over synthetic text instead, where each spelling is on
+        # its own and the narrowing is visible.
+        for spelling in ("html = page.content()",
+                         "html = page.evaluate("
+                         "'document.documentElement.outerHTML')",
+                         "html = frame.inner_html('body')",
+                         "html = await el.innerHTML"):
+            with self.subTest(spelling):
+                self.assertTrue(
+                    any(k in spelling for k in self.DOM_SERIALISERS),
+                    "a DOM serialiser this set no longer recognises")
+        self.assertFalse(
+            any(k in "page.goto(url)" for k in self.DOM_SERIALISERS),
+            "the set matches a line that serialises nothing")
+
+    def test_every_har_recording_harness_redacts_it(self):
+        # Playwright writes the HAR itself and writes it whole — the login
+        # POST body as text AND as parsed params, every header, the cookie
+        # jar. Nothing passed at record time narrows that, so a harness
+        # that records one must also clean it after the close.
+        #
+        # No exemptions: the scan is over every harness that records a
+        # HAR, and one harness's private scrubber is exactly the shape
+        # this guard exists to prevent — a fix reaches only the copy it
+        # was typed into, and the exemption that names the copy outlives
+        # the reason for it.
+        scanned = 0
+        for path in sorted(COLLECTORS.glob("*/explore.py")):
+            text = path.read_text(encoding="utf-8")
+            if "record_har_path" not in text:
+                continue
+            scanned += 1
+            self.assertIn(
+                "debugcap.redact_har(", text,
+                f"{path} records a HAR without "
+                f"collectorkit.debugcap.redact_har() — the file holds the "
+                f"login POST body and the cookie jar")
+        self.assertTrue(scanned, "no HAR-recording harness found to scan")
+
+    @staticmethod
+    def _capture_page_calls(text):
+        """Every `capture_page(...)` call in `text`, as (line, arguments).
+
+        Parens are balanced rather than matched to the first `)`, so a
+        call whose arguments contain one — a lambda, a nested call — is
+        read whole instead of being cut in half.
+        """
+        for m in re.finditer(r"capture_page\(", text):
+            depth, i = 1, m.end()
+            while i < len(text) and depth:
+                if text[i] == "(":
+                    depth += 1
+                elif text[i] == ")":
+                    depth -= 1
+                i += 1
+            yield text.count("\n", 0, m.start()) + 1, text[m.end():i - 1]
+
+    def test_every_capture_page_call_passes_a_redactor(self):
+        # capture_page() blanks password inputs on its own, which covers
+        # the credential a form is holding at the moment of capture and
+        # nothing else. A credential the page carries anywhere else — a
+        # hidden field, a bootstrap script, the session in a meta tag —
+        # is only reached by the `redact` the call site passes, and a
+        # site that passes none writes it to disk.
+        #
+        # Per CALL, not per file: the failure this catches is a harness
+        # that routes some of its captures and forgets the rest, which a
+        # file-level scan reads as clean.
+        scanned = 0
+        for path in self._collector_sources():
+            for line, args in self._capture_page_calls(
+                    path.read_text(encoding="utf-8")):
+                scanned += 1
+                self.assertIn(
+                    "redact=", args,
+                    f"{path}:{line} captures a page without a redactor — "
+                    f"pass redact= (debugcap.secret_redactor for a run "
+                    f"holding credentials, debugcap.session_redactor / "
+                    f"SessionMask for one holding only a session)")
+        self.assertTrue(scanned, "no capture_page call found to scan")
+
+    def test_the_capture_page_scan_reads_a_call_whole(self):
+        # The scan above is only as good as its paren matching, and a
+        # matcher that stopped at the first `)` would read the call below
+        # as ending inside the lambda and miss the redactor after it —
+        # passing the guard while covering nothing. Drive it over
+        # synthetic text, where the shape is visible.
+        calls = list(self._capture_page_calls(
+            "debugcap.capture_page(page, d, n, log=log,\n"
+            "                      redact=lambda h: mask(blank(h)))\n"))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("redact=", calls[0][1])
+        self.assertNotIn(
+            "redact=",
+            list(self._capture_page_calls(
+                "debugcap.capture_page(page, d, n, log=log)"))[0][1])
 
     def test_every_explore_harness_calls_the_shared_redactor(self):
         # Guards the guards above: they scan for an absent anti-pattern, so a
@@ -439,10 +655,10 @@ class BodyCaptureTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _capture(self, out_dir="default"):
+    def _capture(self, out_dir="default", redact=None):
         return debugcap.BodyCapture(
             self.out if out_dir == "default" else out_dir,
-            host_markers=("sws-gateway",), log=log)
+            host_markers=("sws-gateway",), log=log, redact=redact)
 
     def test_records_only_matching_hosts_and_flushes_bodies(self):
         cap, ctx = self._capture(), _Context()
@@ -486,6 +702,26 @@ class BodyCaptureTest(unittest.TestCase):
         self.assertNotIn("response", ctx.handlers)   # no listener at all
         self.assertEqual(cap.flush(), 0)
 
+    def test_the_redactor_reaches_the_body_and_the_file_name(self):
+        # The file is a JSON re-encoding of the body, so the redactor has to
+        # run on the RAW text: a secret carrying a quote reaches the file
+        # doubly escaped, in a spelling no variant knows. And the name is
+        # built from the URL path, which the query-only redact_url never
+        # touches.
+        cap, ctx = self._capture(
+            redact=debugcap.secret_redactor('EXAMPLEPW"X', "EXAMPLEID")), \
+            _Context()
+        cap.attach(ctx)
+        ctx.emit(_Resp(
+            "https://sws-gateway.example.invalid/session/EXAMPLEID/whoami",
+            body=json.dumps({"pw": 'EXAMPLEPW"X', "id": "EXAMPLEID"})))
+        self.assertEqual(cap.flush(), 1)
+        written = next(self.out.glob("body-*.json"))
+        self.assertNotIn("EXAMPLEID", written.name)
+        blob = written.read_text()
+        self.assertNotIn("EXAMPLEPW", blob)
+        self.assertNotIn("EXAMPLEID", blob)
+
     def test_flush_drains_the_buffer(self):
         cap, ctx = self._capture(), _Context()
         cap.attach(ctx)
@@ -494,8 +730,366 @@ class BodyCaptureTest(unittest.TestCase):
         self.assertEqual(cap.flush(), 0)   # nothing written twice
 
 
-if __name__ == "__main__":
-    unittest.main()
+class RedactHarTest(unittest.TestCase):
+    """Playwright writes the HAR itself, whole: the login POST as text AND
+    as parsed params, every header, the cookie jar, the query string. It is
+    JSON, so it is cleaned after the context close that produced it."""
+
+    SECRET = "a$b^c%d e&f"
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.har = Path(self._tmp.name) / "network.har"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write(self, entry):
+        self.har.write_text(json.dumps({"log": {"version": "1.2",
+                                                "entries": [entry]}}),
+                            encoding="utf-8")
+
+    ENTRY = {
+        "request": {
+            "method": "POST",
+            "url": "https://x.invalid/login?api_key=EXAMPLEAPIKEY&page=2",
+            "queryString": [{"name": "api_key", "value": "EXAMPLEAPIKEY"},
+                            {"name": "page", "value": "2"}],
+            "headers": [{"name": "Cookie", "value": "sid=EXAMPLESESSION"},
+                        {"name": "X-CSRF-Token", "value": "EXAMPLECSRF"},
+                        {"name": "Accept", "value": "application/json"}],
+            "cookies": [{"name": "sid", "value": "EXAMPLESESSION"}],
+            "postData": {
+                "mimeType": "application/x-www-form-urlencoded",
+                "text": "user=example-user&password=a%24b%5Ec%25d+e%26f",
+                "params": [{"name": "user", "value": "example-user"},
+                           {"name": "password",
+                            "value": "a%24b%5Ec%25d+e%26f"}],
+            },
+        },
+        "response": {
+            "status": 200,
+            "headers": [{"name": "Set-Cookie",
+                         "value": "sid=EXAMPLESESSION; Path=/"}],
+            "cookies": [{"name": "sid", "value": "EXAMPLESESSION"}],
+            "content": {"mimeType": "application/json",
+                        "text": '{"who": "a$b^c%d e&f"}'},
+        },
+    }
+
+    # A JSON / GraphQL sign-in — the normal shape for the SPAs these
+    # harnesses target. Playwright fills postData.params for a form-encoded
+    # body only, so this one arrives as `text` alone.
+    JSON_ENTRY = {
+        "request": {
+            "method": "POST",
+            "url": "https://x.invalid/graphql",
+            "postData": {
+                "mimeType": "application/json",
+                "text": '{"op": "SignIn", "vars": {"user": "example-user", '
+                        '"password": "EXAMPLEPASSWORD"}}',
+            },
+        },
+        "response": {"status": 200},
+    }
+
+    # A password shorter than the echo pass's length floor.
+    SHORT_PW_ENTRY = {
+        "request": {
+            "method": "POST",
+            "url": "https://x.invalid/login",
+            "postData": {
+                "mimeType": "application/x-www-form-urlencoded",
+                "text": "user=example-user&password=shortpw",
+                "params": [{"name": "user", "value": "example-user"},
+                           {"name": "password", "value": "shortpw"}],
+            },
+        },
+        "response": {"status": 200},
+    }
+
+    def _redacted(self, redact=None, entry=None):
+        import copy
+        self._write(copy.deepcopy(self.ENTRY if entry is None else entry))
+        self.assertTrue(debugcap.redact_har(self.har, redact, log=log))
+        return self.har.read_text()
+
+    def test_masks_the_credentials_it_was_given(self):
+        blob = self._redacted(debugcap.secret_redactor(self.SECRET,
+                                                       "example-user"))
+        self.assertNotIn("a%24b", blob)       # the parsed param
+        self.assertNotIn("a$b^c", blob)       # the echoed response body
+        self.assertNotIn("example-user", blob)
+
+    def test_masks_by_name_what_no_redactor_could_know(self):
+        # The session the server minted, the key the SPA was issued: their
+        # values are knowable only from the name they arrived under.
+        blob = self._redacted()
+        self.assertNotIn("EXAMPLESESSION", blob)
+        self.assertNotIn("EXAMPLEAPIKEY", blob)
+        self.assertNotIn("EXAMPLECSRF", blob)
+
+    def test_masks_the_password_param_even_unknown(self):
+        # The --no-prefill case again: nobody passed the password in, but
+        # the parameter it sits in names it.
+        self.assertNotIn("a%24b", self._redacted())
+
+    def test_keeps_what_diagnoses(self):
+        blob = self._redacted()
+        self.assertIn("page=2", blob)
+        self.assertIn("application/json", blob)
+        self.assertIn("api_key", blob)        # that one rode along is the
+        self.assertIn("Cookie", blob)         # diagnostic; the value is not
+
+    def test_masks_a_json_body_password_nobody_passed_in(self):
+        # Same --no-prefill case as above, in the shape a parsed-parameter
+        # pass cannot see: the key the value nests under still names it.
+        blob = self._redacted(entry=self.JSON_ENTRY)
+        self.assertNotIn("EXAMPLEPASSWORD", blob)
+        self.assertIn("SignIn", blob)      # what diagnoses survives
+        self.assertIn("password", blob)    # the name is the diagnostic
+
+    def test_a_short_named_password_is_masked_by_its_field_name(self):
+        # Too short for the echo pass to chase, and it does not need to
+        # be chased: the field it was posted in names it, so the body is
+        # masked by name and the floor never comes into it.
+        self.assertNotIn("shortpw", self._redacted(entry=self.SHORT_PW_ENTRY))
+
+    def test_a_short_named_value_is_not_chased_through_the_bodies(self):
+        # The regression the floor exists to stop. `key` is a credential
+        # name, so its value is masked where it sits — but chasing a
+        # one-character value through the payload beside it would blank
+        # every matching character and leave a capture that reads as
+        # redacted while showing nothing.
+        entry = {
+            "request": {
+                "method": "GET",
+                "url": "https://x.invalid/a?key=1&page=2",
+                "queryString": [{"name": "key", "value": "1"},
+                                {"name": "page", "value": "2"}],
+            },
+            "response": {"status": 200,
+                         "content": {"mimeType": "application/json",
+                                     "text": '{"rows": 1, "pages": 1}'}},
+        }
+        out = json.loads(self._redacted(entry=entry))["log"]["entries"][0]
+        self.assertEqual(out["request"]["queryString"][0]["value"],
+                         debugcap.REDACTED)
+        self.assertEqual(out["response"]["content"]["text"],
+                         '{"rows": 1, "pages": 1}')
+
+    def test_a_short_cookie_value_is_not_chased_through_the_bodies(self):
+        # The same floor from the other side: a one-character session
+        # cookie must not blank every matching character in the bodies
+        # beside it.
+        entry = {
+            "request": {"method": "GET", "url": "https://x.invalid/a",
+                        "cookies": [{"name": "sid", "value": "1"}]},
+            "response": {"status": 200,
+                         "content": {"mimeType": "application/json",
+                                     "text": '{"count": 1}'}},
+        }
+        out = json.loads(self._redacted(entry=entry))["log"]["entries"][0]
+        self.assertEqual(out["request"]["cookies"][0]["value"],
+                         debugcap.REDACTED)
+        self.assertEqual(out["response"]["content"]["text"], '{"count": 1}')
+
+    def test_a_form_body_the_recorder_did_not_parse_is_masked_by_name(self):
+        # No `params` array, so the parsed pass has nothing to walk and
+        # the echo pass has nothing to echo. The field name in the body
+        # is the only thing left that identifies the value.
+        entry = {
+            "request": {
+                "method": "POST", "url": "https://x.invalid/login",
+                "postData": {
+                    "mimeType": "application/x-www-form-urlencoded;"
+                                " charset=UTF-8",
+                    "text": "user=example-user&password=EXAMPLEPASSWORD"
+                            "&locale=de",
+                },
+            },
+            "response": {"status": 200},
+        }
+        blob = self._redacted(entry=entry)
+        self.assertNotIn("EXAMPLEPASSWORD", blob)
+        self.assertIn("password=", blob)     # the name is the diagnostic
+        self.assertIn("locale=de", blob)     # an innocent field is untouched
+
+    def test_a_base64_response_body_is_dropped_not_passed_through(self):
+        # No value-based pass can see inside base64, so passing the body
+        # through would leave it whole in a file that now reads as
+        # redacted. That there was a body stays; the body goes.
+        entry = {
+            "request": {"method": "GET", "url": "https://x.invalid/a"},
+            "response": {"status": 200,
+                         "content": {"mimeType": "application/octet-stream",
+                                     "encoding": "base64",
+                                     "text": "RVhBTVBMRUJPRFk="}},
+        }
+        out = json.loads(self._redacted(entry=entry))["log"]["entries"][0]
+        content = out["response"]["content"]
+        self.assertNotIn("RVhBTVBMRUJPRFk=", content["text"])
+        self.assertNotIn("encoding", content)
+        self.assertEqual(content["mimeType"], "application/octet-stream")
+
+    def test_a_credential_named_form_field_is_masked_anywhere_it_sits(self):
+        # One name, three places. A CSRF token is a header on one call and
+        # a form field on the next, so the name set that reaches it in a
+        # header has to reach it in a body and a query string too.
+        entry = {
+            "request": {
+                "method": "POST", "url": "https://x.invalid/login",
+                "postData": {
+                    "mimeType": "application/x-www-form-urlencoded",
+                    "text": "x-csrf-token=EXAMPLECSRF&step=2",
+                    "params": [{"name": "x-csrf-token",
+                                "value": "EXAMPLECSRF"},
+                               {"name": "step", "value": "2"}],
+                },
+            },
+            "response": {"status": 200},
+        }
+        blob = self._redacted(entry=entry)
+        self.assertNotIn("EXAMPLECSRF", blob)
+        self.assertIn("step", blob)
+
+    def test_an_absent_har_is_not_an_error(self):
+        # The browser-closed path never flushes one.
+        self.assertFalse(debugcap.redact_har(self.har, log=log))
+
+    def test_an_unparseable_har_is_left_alone_with_a_warning(self):
+        # And the warning says what the file now is. A line reading only
+        # "redaction failed" invites the file being opened as if it were
+        # clean; the credentials it recorded are still in it.
+        self.har.write_text("{not json", encoding="utf-8")
+        with self.assertLogs(log, level="WARNING") as caught:
+            self.assertFalse(debugcap.redact_har(self.har, log=log))
+        self.assertIn("still holds every credential it recorded",
+                      "\n".join(caught.output))
+        self.assertEqual(self.har.read_text(), "{not json")
+
+    def test_a_har_without_entries_is_left_alone(self):
+        self.har.write_text(json.dumps({"log": {"version": "1.2"}}),
+                            encoding="utf-8")
+        with self.assertLogs(log, level="WARNING"):
+            self.assertFalse(debugcap.redact_har(self.har, log=log))
+
+
+class RedactBodyTest(unittest.TestCase):
+    """The body-shaped counterpart to redact_headers: a body's own syntax
+    names its values, which is the only thing that reaches a credential
+    nobody passed in."""
+
+    def test_masks_a_form_field_by_name(self):
+        out = debugcap.redact_body(
+            "user=example-user&password=EXAMPLEPASSWORD&locale=de",
+            "application/x-www-form-urlencoded")
+        self.assertNotIn("EXAMPLEPASSWORD", out)
+        self.assertIn("locale=de", out)
+
+    def test_masks_a_json_member_by_key_at_any_depth(self):
+        out = debugcap.redact_body(
+            json.dumps({"op": "SignIn",
+                        "vars": {"user": "example-user",
+                                 "password": "EXAMPLEPASSWORD"}}),
+            "application/json")
+        self.assertNotIn("EXAMPLEPASSWORD", out)
+        self.assertIn("SignIn", out)
+
+    def test_applies_the_value_mask_as_well(self):
+        out = debugcap.redact_body(
+            "user=example-user&step=2", "application/x-www-form-urlencoded",
+            debugcap.secret_redactor("example-user"))
+        self.assertNotIn("example-user", out)
+        self.assertIn("step=2", out)
+
+    def test_a_body_in_neither_shape_gets_the_value_mask_alone(self):
+        out = debugcap.redact_body("plain EXAMPLESECRET text", "text/plain",
+                                   debugcap.secret_redactor("EXAMPLESECRET"))
+        self.assertEqual(out, f"plain {debugcap.REDACTED} text")
+
+    def test_a_json_body_that_does_not_parse_is_not_mangled(self):
+        # Best effort: a body the mime type mislabels keeps its bytes.
+        self.assertEqual(
+            debugcap.redact_body("{not json", "application/json"),
+            "{not json")
+
+    def test_an_absent_body_passes_through(self):
+        self.assertIsNone(debugcap.redact_body(None, "application/json"))
+        self.assertEqual(debugcap.redact_body("", "application/json"), "")
+
+
+class SessionRedactorTest(unittest.TestCase):
+    """A download run is handed no password, only a lifted session — so
+    the jar is the credential a capture could leak."""
+
+    JAR = [{"name": "sid", "value": "EXAMPLESESSIONVALUE"},
+           {"name": "lang", "value": "de"},
+           {"name": "csrf", "value": "EXAMPLECSRFVALUE"}]
+
+    def test_masks_every_session_length_cookie_whatever_it_is_called(self):
+        redact = debugcap.session_redactor(self.JAR)
+        out = redact('<meta name="csrf" content="EXAMPLECSRFVALUE">'
+                     "EXAMPLESESSIONVALUE")
+        self.assertNotIn("EXAMPLESESSIONVALUE", out)
+        self.assertNotIn("EXAMPLECSRFVALUE", out)
+
+    def test_a_short_cookie_value_is_left_alone(self):
+        # `de` is a locale, not a session, and masking it would blank the
+        # letters out of the markup the capture exists to show.
+        redact = debugcap.session_redactor(self.JAR)
+        self.assertEqual(redact("<html lang=de>order</html>"),
+                         "<html lang=de>order</html>")
+
+    def test_an_extra_credential_is_masked_however_short(self):
+        # Not a guess: the caller named it.
+        redact = debugcap.session_redactor([], "pw")
+        self.assertEqual(redact("pw"), debugcap.REDACTED)
+
+    def test_an_empty_jar_is_the_identity(self):
+        self.assertEqual(debugcap.session_redactor([])("anything"), "anything")
+        self.assertEqual(debugcap.session_redactor(None)("anything"),
+                         "anything")
+
+    def test_a_malformed_jar_entry_is_skipped(self):
+        redact = debugcap.session_redactor(
+            ["not-a-dict", {"name": "sid"}, {"value": None}])
+        self.assertEqual(redact("anything"), "anything")
+
+
+class SessionMaskTest(unittest.TestCase):
+    """The persistent-profile case: the jar belongs to the browser, so it
+    is read at the first capture rather than at wiring time."""
+
+    class _Page:
+        def __init__(self, cookies, fail=False):
+            self.reads = 0
+            outer = self
+
+            class _Context:
+                def cookies(self_ctx):
+                    outer.reads += 1
+                    if fail:
+                        raise RuntimeError("context gone")
+                    return cookies
+
+            self.context = _Context()
+
+    def test_reads_the_jar_once_and_reuses_the_mask(self):
+        page = self._Page([{"name": "sid", "value": "EXAMPLESESSIONVALUE"}])
+        mask = debugcap.SessionMask()
+        first = mask.for_page(page)
+        self.assertNotIn("EXAMPLESESSIONVALUE", first("EXAMPLESESSIONVALUE"))
+        self.assertIs(mask.for_page(page), first)
+        self.assertEqual(page.reads, 1)
+
+    def test_an_unreadable_jar_still_yields_a_mask(self):
+        # A capture that fails is worse than one masked only by what the
+        # caller named, so the jar read never propagates.
+        mask = debugcap.SessionMask("EXAMPLEEXTRA")
+        redact = mask.for_page(self._Page([], fail=True))
+        self.assertEqual(redact("EXAMPLEEXTRA"), debugcap.REDACTED)
 
 
 class SafeErrorTest(unittest.TestCase):
@@ -544,7 +1138,21 @@ class RedactHeadersTest(unittest.TestCase):
         self.assertEqual(out["authorization"], debugcap.REDACTED)
         self.assertEqual(out["accept"], "application/json")
 
+    def test_masks_every_known_credential_header(self):
+        for name in KNOWN_PARAMS + HEADER_ONLY:
+            with self.subTest(name):
+                self.assertEqual(debugcap.redact_headers({name: "LEAKME"}),
+                                 {name: debugcap.REDACTED})
+
+    def test_the_credential_header_set_is_the_one_stated_here(self):
+        self.assertEqual(frozenset(KNOWN_PARAMS) | frozenset(HEADER_ONLY),
+                         debugcap._SECRET_HEADERS)
+
     def test_empty_and_unmappable_inputs_are_safe(self):
         self.assertEqual(debugcap.redact_headers(None), {})
         self.assertEqual(debugcap.redact_headers({}), {})
         self.assertEqual(debugcap.redact_headers("not a mapping"), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

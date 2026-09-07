@@ -137,11 +137,16 @@ order operation. See [CLAUDE.md](CLAUDE.md).
 `/accounts/login/`, pre-fills the credentials (origin- and login-path-
 gated; never submits), and records three artefact channels under
 `/debug/<UTC-ts>/`: **HAR** + a crash-safe `network.jsonl` (the primary
-signal — this is where the GraphQL operations in §2 were read from), a
-**Playwright trace** (DOM + screenshots), and a **clicks.jsonl** click /
-lifecycle log (VNC clicks bypass Playwright's API). Credentials +
-password fields are redacted from `network.jsonl`. The persistent
-Camoufox profile carries the post-TOTP session between runs.
+signal — this is where the GraphQL operations in §2 were read from), an
+opt-in **Playwright trace** (`--trace`; DOM + screenshots), and a
+**clicks.jsonl** click / lifecycle log (VNC clicks bypass Playwright's
+API). Credentials + password fields are redacted from `network.jsonl`,
+and the HAR is rewritten with its credentials, cookies and query-string
+tokens out once the context close has written it. The trace is the one
+artefact nothing redacts: it cannot be cleaned after the fact, because
+its DOM snapshots store every input's value — which is why it is off by
+default. The persistent Camoufox profile carries the post-TOTP session
+between runs.
 
 The first real session confirmed the login form selectors (email is
 `input#email type=text` — no `name`, so id/placeholder are the only

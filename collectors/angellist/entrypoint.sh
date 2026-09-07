@@ -189,8 +189,9 @@ Subcommands:
   prune       Delete non-complete dumps (crashed / interrupted downloads
               that never wrote a terminal run.json) from the bronze tree.
               --dry-run prints the plan first.
-  explore     Discovery harness: Camoufox under VNC with HAR + Playwright
-              trace + click log under /debug (route mapping; --cookies loads
+  explore     Discovery harness: Camoufox under VNC with a redacted HAR +
+              network/click logs under /debug, and --trace for a Playwright
+              trace, which nothing redacts (route mapping; --cookies loads
               the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
               port (printed at handoff).
   sh|bash     Open an interactive shell inside the container.

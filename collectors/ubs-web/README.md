@@ -349,16 +349,19 @@ The recording lands in a UTC-stamped subdir of the `/debug` mount:
 | Artefact | What it is for |
 | --- | --- |
 | `network.jsonl` | every request and response with headers and text bodies, written line by line so a crash keeps what was seen. The endpoint shapes behind each screen are read off this. |
-| `network.har` | the same traffic for a HAR viewer; flushed only on a clean exit. |
+| `network.har` | the same traffic for a HAR viewer; flushed only on a clean exit, and rewritten with its credentials out once it is. |
 | `clicks.jsonl` | one record per click with the attributes a selector is built from, plus navigation, download and lifecycle events. |
 | `dom/<NNN>/` | each structurally distinct screen's DOM (one file per UBS frame) plus a screenshot and the page URLs. |
 | `downloads/` | every file fetched during the session, sequence-prefixed so a reused filename cannot overwrite an earlier one. |
-| `trace.zip`, `trace-chunks/` | opt-in with `--trace`. |
+| `trace.zip`, `trace-chunks/` | opt-in with `--trace`. Unredacted: a trace is a zip of driver-written blobs whose DOM snapshots carry every input's value, so nothing masks it afterwards. |
 
-These artefacts hold real account data and unredacted identifiers. They
-live outside bronze and outside the repo, and nothing derived from them
-belongs in a tracked file (root [CLAUDE.md](../../CLAUDE.md) §4). `prune`
-reclaims them by age along with the rest of the debug dir.
+These artefacts hold real account data and unredacted identifiers, and
+the trace holds the credential itself: a trace cannot be rewritten after
+the fact, so nothing redacts it
+(collectors/README.md, "Captures carry credentials"). They live outside
+bronze and outside the repo, and nothing derived from them belongs in a
+tracked file (root [CLAUDE.md](../../CLAUDE.md) §4). `prune` reclaims
+them by age along with the rest of the debug dir.
 
 #### Reclaiming disk
 

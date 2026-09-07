@@ -34,12 +34,20 @@ writing. No CLI flag may ever trigger a write action.
 A fresh login fires an MFA challenge to the user's device and may
 trip source-side fraud heuristics or lock-out. Allowed without
 asking: read code/config/docs, `login --check` (probe the stored
-session, no new MFA), `download --dry-run` (walk with the existing
-session, export nothing), and unit/fixture tests. Not allowed
-unless explicitly asked: full `login` (mints a session, pushes
-MFA), real `download`, any live navigation from a REPL/one-off,
-and adding scheduling (cron/launchd) that would fire logins
-automatically. These toolkits are human-triggered by design.
+session, no new MFA — amex has no session to probe and reports its
+device-trust cookie instead, see
+[collectors/README.md](collectors/README.md)), `download --dry-run`
+**only where that dry run walks with a session that already exists and
+exports nothing**, and unit/fixture tests. That qualifier is the rule,
+not a footnote about one collector: a dry run that can sign in or raise
+a challenge is a real session whatever the flag is called, and it
+belongs with the verbs below. Which of the two a collector's dry run is
+belongs in its own CLAUDE.md; where nothing says, assume it signs in.
+Not allowed unless explicitly asked: any verb that can sign in or fire a
+challenge — full `login` (mints a session, pushes MFA), a real
+`download`, a `--dry-run` that signs in — plus any live navigation from
+a REPL/one-off, and adding scheduling (cron/launchd) that would fire
+logins automatically. These toolkits are human-triggered by design.
 
 ## 3. Do not weaken authentication
 

@@ -34,10 +34,16 @@ three channels:
 1. **HAR** — full network capture via Playwright's `record_har_path`.
    The primary artefact for finding internal REST endpoints. Every
    fetch / XHR / fetch-API / form-submit appears with headers and
-   bodies.
-2. **Playwright trace** — `tracing.start(screenshots=True,
-   snapshots=True, sources=True)` captures DOM + screenshot
-   snapshots at every navigation. Open with `playwright show-trace`.
+   bodies. Playwright writes it whole, so the harness rewrites it
+   with its credentials, cookies and query-string tokens out once
+   the close has flushed it.
+2. **Playwright trace** — opt-in with `--trace`:
+   `tracing.start(screenshots=True, snapshots=True, sources=True)`
+   captures DOM + screenshot snapshots at every navigation. Open
+   with `playwright show-trace`. Off by default because the pinned
+   tracer crashes the Camoufox Firefox build, and because a trace
+   cannot be redacted after the fact: its DOM snapshots store every
+   input's value, a hand-typed password included.
 3. **Click log (`clicks.jsonl`)** — a custom JS init script
    listens to every `click` event in the DOM and emits one JSON
    object per click to the page's console; the Python side

@@ -347,7 +347,13 @@ def run_check(state_path: Path, screenshot_dir: Path | None,
             storage_state=str(state_path), user_agent=USER_AGENT,
         )
         if trace:
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            # snapshots=False on the sign-in paths: a trace's DOM
+            # snapshots record every input's value — here the contract
+            # number typed into the login form — and nothing can redact a
+            # trace after the fact. The per-action screenshots still show
+            # the flow, and the network records are the redacted ones.
+            context.tracing.start(screenshots=True, snapshots=False,
+                                  sources=True)
         page = context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
         try:
@@ -405,7 +411,13 @@ def run_login(contract_number: str, state_path: Path, mfa_timeout: int,
         )
         context = browser.new_context(user_agent=USER_AGENT)
         if trace:
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            # snapshots=False on the sign-in paths: a trace's DOM
+            # snapshots record every input's value — here the contract
+            # number typed into the login form — and nothing can redact a
+            # trace after the fact. The per-action screenshots still show
+            # the flow, and the network records are the redacted ones.
+            context.tracing.start(screenshots=True, snapshots=False,
+                                  sources=True)
         page = context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
 

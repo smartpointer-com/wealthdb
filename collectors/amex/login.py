@@ -25,10 +25,10 @@ Session and device trust answer differently here (DESIGN.md §G):
 * the **`device-id` cookie persists** (about a year) in the Camoufox profile
   and skips the passcode, so a run on a trusted device is unattended.
 
-That durable trust is what `login --check` reports, and it reports it from
-the profile's own cookie — no sign-in, no network, no MFA — because on this
-source a probe that signs in costs exactly what the whole design is trying
-to save.
+That durable trust is what `login --check` reports, and it reports it by
+reading the profile's own Firefox cookie jar — no browser, no sign-in, no
+network, no MFA — because on this source a probe that signs in costs exactly
+what the whole design is trying to save.
 
 Authentication is decided by the **logon response**, never by a URL: the
 pre-auth and post-auth pages share origins, and the SPA route is not a
@@ -48,7 +48,9 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +121,11 @@ def camoufox(profile_dir: Path, fresh: bool = False):
         window=(1280, 800),
         headless=False,
         humanize=True,
+        # geoip resolves the egress IP from a public lookup service at
+        # launch, so opening this context is NOT a network-free act. That is
+        # deliberate for a sign-in — the fingerprint should match where the
+        # traffic comes from — and it is why `login --check` reads the
+        # profile's cookie jar instead of coming through here.
         geoip=True,
         firefox_user_prefs=launch.firefox_prefs(),
     )
@@ -394,7 +401,11 @@ def enter_otp(page, code: str) -> bool:
                     box.click(timeout=4000)
                     box.fill(digit, timeout=3000)
         except Exception as exc:
-            log.debug("passcode entry (%s) failed: %r", attempt, exc)
+            # safe_error, never %r: a failed fill() renders the typed value
+            # verbatim inside Playwright's Call log block, and the value
+            # here is the live one-time passcode.
+            log.debug("passcode entry (%s) failed: %s", attempt,
+                      debugcap.safe_error(exc))
             continue
         if _readback() == code:
             return _click_continue(page)
@@ -413,7 +424,7 @@ def _click_continue(page) -> bool:
     return False
 
 
-def register_device(page) -> None:
+def register_device(page, timeout_s: float = 20) -> None:
     """Click the device-registration control so this browser is trusted on
     later runs.
 
@@ -424,7 +435,7 @@ def register_device(page) -> None:
     (§M): either the control has drifted, or the provider did not offer it,
     and the two want different responses."""
     _wait_for(lambda: page.locator(amexclient.SEL_REGISTER_DEVICE).count() > 0,
-              page, 20)
+              page, timeout_s)
     with contextlib.suppress(Exception):
         btn = page.locator(amexclient.SEL_REGISTER_DEVICE).first
         if btn.count():
@@ -726,18 +737,80 @@ def drive_to_auth(context, page, args, *, two_factor: str) -> bool:
     return ok
 
 
-def device_trust_cookie(context) -> dict | None:
-    """The persisted device-trust cookie from the profile, or None.
+# Firefox's own cookie jar inside the persistent profile.
+COOKIE_DB = "cookies.sqlite"
+
+
+def _cookie_expiry(raw) -> int | None:
+    """`moz_cookies.expiry` as epoch SECONDS, or None for a session cookie.
+
+    Some Firefox builds store the column in milliseconds, which read as
+    seconds lands tens of thousands of years out; a value too large to be
+    seconds is divided down rather than printed."""
+    try:
+        value = int(raw or 0)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    if value > 100_000_000_000:     # too large for seconds → milliseconds
+        value //= 1000
+    return value
+
+
+def profile_trust_cookie(profile_dir: Path) -> dict | None:
+    """The persisted device-trust cookie, read from the profile on disk.
 
     `device-id` is what skips the passcode across browser restarts
-    (DESIGN.md §G); the session cookies beside it die with the browser and
-    say nothing about the next run."""
-    with contextlib.suppress(Exception):
-        for c in context.cookies():
-            if (c.get("name") == amexclient.DEVICE_TRUST_COOKIE
-                    and c.get("value")):
-                return c
-    return None
+    (DESIGN.md §G). It is persistent — about a year — so it is written to
+    the jar; the `Discard`-scoped session cookies beside it never reach the
+    file at all, which is exactly the distinction the probe wants.
+
+    Reads the file rather than opening a browser on it: launching Camoufox
+    resolves the egress IP over the network, and creates or relinks profile
+    contents, neither of which a probe advertised as free may do. A missing
+    profile or jar is simply "not registered".
+
+    The jar is copied with its `-wal` / `-shm` siblings and opened
+    read-only, so a browser holding the write lock cannot block the read and
+    pending WAL writes are still seen. Returns {"value", "expires"} or None.
+
+    The host match is anchored to the brand's own domain and its subdomains.
+    An unanchored suffix would also match a lookalike host, letting anything
+    the profile ever visited mint its own "trust" — and a false REGISTERED
+    sends an unattended run into a passcode nobody is there to answer.
+    """
+    db = Path(profile_dir) / COOKIE_DB
+    if not db.is_file():
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="amex-check-"))
+    try:
+        for ext in ("", "-wal", "-shm"):
+            src = Path(str(db) + ext)
+            if src.exists():
+                shutil.copy2(src, tmp / (COOKIE_DB + ext))
+        conn = sqlite3.connect(f"file:{tmp / COOKIE_DB}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT value, expiry FROM moz_cookies WHERE name=? AND "
+                "(host = 'americanexpress.com' OR "
+                "host LIKE '%.americanexpress.com') "
+                "ORDER BY expiry DESC LIMIT 1",
+                (amexclient.DEVICE_TRUST_COOKIE,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.warning("could not read the profile cookie jar (%s): %s",
+                    db, exc)
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not row or not row[0]:
+        # A cookie cleared to "" is the shape a revoked one takes in the
+        # jar; reading it as trust would report a device that will be
+        # challenged.
+        return None
+    return {"value": row[0], "expires": _cookie_expiry(row[1])}
 
 
 def run_check(args: argparse.Namespace) -> int:
@@ -749,34 +822,38 @@ def run_check(args: argparse.Namespace) -> int:
     are the scarce thing this whole design is arranged around (DESIGN.md §K):
     a probe that spends one to answer "can I spend one?" is self-defeating.
 
-    So this reads the profile's own `device-id` cookie and reports THAT — no
-    navigation, no network, no MFA. It answers "is this device registered",
-    which is the question that decides whether `download` runs unattended.
-    It does NOT answer "will the next sign-in succeed": the provider can
-    revoke trust server-side, and only a sign-in would see that. The limit is
-    real, it is stated here and in the help, and it is the honest trade for
-    not spending a sign-in on a question.
+    So this reads the profile's own `device-id` cookie out of the Firefox
+    jar on disk and reports THAT — no browser, no navigation, no network, no
+    MFA. Opening a browser would not be free either: the shared launcher
+    resolves the egress IP over the network at launch, so the "touches no
+    network" claim only holds while nothing here starts one.
+
+    It answers "is this device registered", which is the question that
+    decides whether `download` runs unattended. It does NOT answer "will the
+    next sign-in succeed": the provider can revoke trust server-side, and
+    only a sign-in would see that. The limit is real, it is stated here and
+    in the help, and it is the honest trade for not spending a sign-in on a
+    question.
 
     Exit 0 = registered; 1 = not (the next `download` will be challenged).
     """
-    with camoufox(args.profile_dir) as (context, _page):
-        cookie = device_trust_cookie(context)
-        if cookie is None:
-            log.info("device NOT registered — no %s cookie in %s. The next "
-                     "`download` will be challenged; run it with a terminal "
-                     "so it can answer, or `vnc-login` by hand.",
-                     amexclient.DEVICE_TRUST_COOKIE, args.profile_dir)
-            return 1
-        expires = cookie.get("expires")
-        when = ""
-        if isinstance(expires, (int, float)) and expires > 0:
-            when = (" until " + datetime.fromtimestamp(expires, timezone.utc)
-                    .strftime("%Y-%m-%d"))
-        log.info("device REGISTERED%s — `download` should sign in without a "
-                 "passcode. (Read from the profile: the provider can still "
-                 "revoke trust server-side, which only a sign-in would see.)",
-                 when)
-        return 0
+    cookie = profile_trust_cookie(args.profile_dir)
+    if cookie is None:
+        log.info("device NOT registered — no %s cookie in %s. The next "
+                 "`download` will be challenged; run it with a terminal "
+                 "so it can answer, or `vnc-login` by hand.",
+                 amexclient.DEVICE_TRUST_COOKIE, args.profile_dir)
+        return 1
+    expires = cookie.get("expires")
+    when = ""
+    if expires:
+        when = (" until " + datetime.fromtimestamp(expires, timezone.utc)
+                .strftime("%Y-%m-%d"))
+    log.info("device REGISTERED%s — `download` should sign in without a "
+             "passcode. (Read from the profile: the provider can still "
+             "revoke trust server-side, which only a sign-in would see.)",
+             when)
+    return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -797,8 +874,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "device-trust cookie). Default: %(default)s.")
     p.add_argument("--check", action="store_true",
                    help="Report whether this device is registered, read from "
-                        "the profile's own device-trust cookie. Signs in to "
-                        "nothing: no network, no passcode, no MFA. Exit 0 = "
+                        "the profile's own device-trust cookie. Opens no "
+                        "browser and signs in to nothing: no network, no "
+                        "passcode, no MFA. Exit 0 = "
                         "registered. It cannot see a trust the provider "
                         "revoked server-side — only a sign-in would, and on "
                         "this source sign-ins are the scarce thing.")

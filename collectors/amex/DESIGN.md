@@ -57,22 +57,29 @@ One run records, under `/debug/<UTC-ts>/` (host:
 
 | Artefact | Purpose |
 | --- | --- |
-| `network.har` | The primary endpoint map — every request + response. Flushed only on a clean context close. |
-| `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 200 KB captured inline, OFX/QFX content types included. |
+| `network.har` | The primary endpoint map — every request + response. Flushed on the context close and rewritten through the redactor on the same unwind, error included: Playwright records it raw, so it is never crash-safe and secret-free at once. |
+| `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 200 KB captured inline, OFX/QFX content types included, and a form-urlencoded request body masked field by field like the HAR's. |
 | `clicks.jsonl` | Click log via an injected `document.addEventListener` (VNC clicks bypass the Playwright API), plus lifecycle, login-form and OTP-field events. |
 | `dom/<NNN>/` | **Every distinct screen's full DOM** (all americanexpress.com frames) + a screenshot, deduped by DOM structure — the record selectors are pinned from. |
 | `downloads/` | Every file the session fetches (statement PDFs, exports), sequence-prefixed against reused filenames. |
-| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). |
+| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). Written by Playwright in its own format and **not scrubbed**: a trace cannot be redacted after the fact, its DOM snapshots store every input's value, so a trace holds the credential. |
 
 Mechanics carried over from chase (see that harness's DESIGN.md §2 for the
 full rationale): frame-aware login pre-fill gated to americanexpress.com
 frames, both-fields-in-one-frame before either is touched, fill-once with
 read-back verification, `signon.*` prefs off so a profile-saved credential
 can never autofill on top of the programmatic fill, an OTP-field detector
-that logs the field's static descriptor (never its value), and
-username/password redaction across every logged header and body. Sign-in
-and 2FA are always submitted by hand over VNC; the harness never clicks a
-button.
+that logs the field's static descriptor (never its value), and credential
+redaction across every logged URL, header and body. The redaction is two
+independent masks: the known credentials in every wire spelling, and a mask
+by parameter and header NAME, which is the only thing that reaches a
+bearer, CSRF token or session cookie the site minted at runtime. The click
+log goes through the same redactor and records element labels only, never a
+field value. The HAR is rewritten through the redactor after the context
+close (`debugcap.redact_har`, shared with every sibling harness), because
+Playwright records it raw. The opt-in trace
+stays outside that reach, as the table above records. Sign-in and 2FA are
+always submitted by hand over VNC; the harness never clicks a button.
 
 ## 3. What discovery was pointed at
 
@@ -194,9 +201,11 @@ body percent-encodes the password, which the literal-substring redactor
 missed; and the serialized sign-in form carried the typed password as a
 `value` attribute, which nothing redacted. Both are fixed in
 `collectorkit.debugcap` (`secret_redactor`, `scrub_dom`) and adopted by
-every sibling harness, with fleet-wide guard tests. The lesson for the
-fleet: **a credential does not reach the wire verbatim, and a DOM snapshot
-is a capture surface of its own.**
+every sibling harness, guarded by tests that key `scrub_dom` on any module
+serialising a DOM, a redactor on any `capture_page` call, and `redact_har`
+on any harness that records a HAR. The
+lesson for the fleet: **a credential does not reach the wire verbatim, and
+a DOM snapshot is a capture surface of its own.**
 
 ### §C — The card roster
 
@@ -435,7 +444,7 @@ coding against:
 
 What ships instead reads the profile's own `device-id` cookie and reports
 that — **exit 0 when the device is registered, 1 when it is not** — with no
-navigation and no network (§L). It answers "will `download` run
+navigation and no call to the source (§L). It answers "will `download` run
 unattended", not "will the next sign-in succeed": only a sign-in sees a
 trust the provider revoked server-side, and spending one to ask whether a
 sign-in can be spent is self-defeating on this source.
@@ -602,12 +611,14 @@ What changed is that a durable trust does not by itself justify a verb.
 | `login` | a no-op, trapped **host-side** so an orchestrator's login → download → load neither trips nor pays a container start |
 | `login --check` | reports whether this device is registered |
 
-**`login --check` reads the profile, not the network.** The fleet's usual
+**`login --check` reads the profile, not the source.** The fleet's usual
 `--check` makes the cheapest authenticated call the source allows, precisely
 so a credential that exists but is rejected is caught. Here that call is a
 full sign-in — and a probe that spends the scarce thing to ask whether the
 scarce thing can be spent is self-defeating. So it reads the profile's own
-`device-id` cookie and reports that, with no navigation and no network. It
+`device-id` cookie straight out of the Firefox jar on disk and reports that,
+opening no browser at all — launching one resolves the egress IP over the
+network, which would break the very claim the probe rests on. It
 answers "is this device registered", which is what decides whether
 `download` needs a human; it does **not** answer "will the next sign-in
 succeed", because the provider can revoke trust server-side and only a
@@ -706,6 +717,15 @@ later changed one, the lettered section that changed it is cited.
    retention, so clamping it too would put the deep backfill out of reach of
    every invocation. Both are in the manifest: `since` with
    `window_clamped`, and `documents_since` (null under `--no-documents`).
+   The manifest also records `coverage` for **every** account on the roster
+   — rows fetched, rows the source said it had, and whether the two agree.
+   `complete` is three-valued: null when the source reported no usable
+   total, so a fetch that was never measured cannot read as a positive claim
+   of full coverage. A run whose activity fetch came back short is still
+   `complete` at the run level, because what it holds is real and loadable;
+   without this block nothing would distinguish it from one the source
+   honoured in full, and the seam it moves would read as the account's true
+   reach.
    The year-end summaries are the
    one exception — the archive lists them per year with no period to
    compare, so every one is fetched whenever the documents are — which is
@@ -789,6 +809,34 @@ later changed one, the lettered section that changed it is cited.
    Validated against every statement in the captures, all of which
    reconcile on both gates. The accessible-PDF variant renders no summary this parser
    reads and is refused by the gates rather than imported short.
+
+   Three properties keep the rebuild from turning a bad render or a broken
+   tool into lost history, since it deletes the statement era before
+   re-importing it and that era exists nowhere else:
+
+   - **Every copy of a period is kept, newest first.** Each run re-fetches
+     the same statements, so a period has one copy per run. The newest is
+     parsed and the walk stops there when it passes the gates — one
+     `pdftotext` per period in the ordinary case — but a refused render
+     falls through to the older copies rather than erasing the period. A
+     copy whose bytes match one already refused is skipped without parsing.
+   - **Parse first, write second, in one transaction.** Every document is
+     read before anything is deleted, and the delete plus re-import run
+     inside an explicit `BEGIN IMMEDIATE`, so a failure leaves silver as it
+     was rather than emptied. `load` also refuses to start at all when
+     `pdftotext` is absent.
+   - **A tooling fault is not a rebuild.** Every parse raising while silver
+     already holds statement periods is a broken parser, not bronze losing
+     its documents, and the rebuild raises instead of proceeding. One
+     unreadable document stays a per-document skip.
+
+   `statement_balances` is keyed `(account, period_end)`, which the activity
+   channel shares: when a statement closes on the same day a run's own
+   activity window ended, the statement wins that day. The rebuild
+   re-derives the activity row it displaces from bronze first, so an
+   incremental load and a `--force` rebuild agree, and a period whose
+   statement copies are all refused keeps a mark. An anchor's `snapshot_at`
+   names the run holding the copy that survived, not the newest run loaded.
 6. **Gold adapter** — `wealthdb/internal/silver/amex/`, on the chase
    adapter's card half: `canonical.AccountKindCard`, the owed balance
    negated into gold's canonical negative cash at exactly one point, credit

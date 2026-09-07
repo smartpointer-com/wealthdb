@@ -6,19 +6,24 @@ AngelList Investor Portal, and records every action taken in the VNC
 session so download.py can be written from real traces:
 
   - **HAR** (`network.har`)        — every request + response with
-                                     headers and bodies. The primary
-                                     artefact for finding the internal
-                                     JSON/XHR endpoints the React SPA
-                                     hits.
+                                     headers and bodies, credentials
+                                     redacted once the close has written
+                                     it. The primary artefact for finding
+                                     the internal JSON/XHR endpoints the
+                                     React SPA hits.
   - **network.jsonl**              — a crash-safe, line-flushed mirror
                                      of the request/response stream
                                      (HAR only flushes on a clean
                                      close, which a browser-X close
                                      does not survive).
   - **Playwright trace**
-    (`trace.zip` + trace-chunks/)  — screenshots + DOM snapshots +
-                                     network events at every action.
-                                     Open with `playwright show-trace`.
+    (`trace.zip` + trace-chunks/)  — opt-in via `--trace`: screenshots +
+                                     DOM snapshots + network events at
+                                     every action. Open with `playwright
+                                     show-trace`. UNREDACTED and
+                                     unredactable — its DOM snapshots
+                                     carry every input's value, a
+                                     hand-typed password included.
   - **Click log**
     (`clicks.jsonl`)               — one JSON object per click on the
                                      page (timestamp, URL, tag, id,
@@ -259,10 +264,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "2FA code."),
     )
     p.add_argument(
+        "--trace", action="store_true",
+        help=("Record a Playwright trace (DOM snapshots + screenshots, "
+              "chunked zips). OFF by default, for two reasons: the pinned "
+              "Playwright tracer crashes the Camoufox Firefox build "
+              "outright (matched-set drift — navigation works, tracing "
+              "kills the browser), and a trace is the one capture nothing "
+              "can redact afterwards — its DOM snapshots carry every "
+              "input's value, a hand-typed password included. "
+              "network.jsonl + clicks.jsonl + the redacted HAR cover "
+              "discovery meanwhile."),
+    )
+    p.add_argument(
         "--chunk-interval", type=int, default=30,
-        help=("Seconds between incremental trace-chunk saves. Lower = "
-              "less data loss on abrupt close, more disk I/O. Default: "
-              "%(default)s."),
+        help=("Seconds between incremental trace-chunk saves (with "
+              "--trace). Lower = less data loss on abrupt close, more "
+              "disk I/O. Default: %(default)s."),
     )
     cli.add_common_args(p)
     return p.parse_args(argv)
@@ -316,7 +333,8 @@ def main(argv: list[str]) -> int:
     downloads_dir = debug_dir / "downloads"
     downloads_dir.mkdir(parents=True, exist_ok=True)
     trace_chunks_dir = debug_dir / "trace-chunks"
-    trace_chunks_dir.mkdir(parents=True, exist_ok=True)
+    if args.trace:
+        trace_chunks_dir.mkdir(parents=True, exist_ok=True)
     har_path = debug_dir / "network.har"
     trace_path = debug_dir / "trace.zip"
     clicks_path = debug_dir / "clicks.jsonl"
@@ -392,6 +410,17 @@ def main(argv: list[str]) -> int:
         # capture in cleartext.
         redact = debugcap.secret_redactor(username, password)
 
+        # The HAR is Playwright's own recording, and it records whole: the
+        # login POST body, every header, the cookie jar. It is the one
+        # capture in this dir written by the driver rather than by the
+        # handlers, and it exists only once the context close has flushed
+        # it. Registered on the stack rather than called after the block so
+        # a walk that raises is cleaned too — an unwind closes the context,
+        # which flushes the HAR, and a run that crashed is exactly the one
+        # whose debug dir gets opened. LIFO puts this after the close.
+        stack.callback(
+            lambda: debugcap.redact_har(har_path, redact, log=log))
+
         # Camoufox launched with persistent_context returns a
         # BrowserContext directly. record_har_path enables HAR capture
         # for the whole context's lifetime. block_webrtc stops a STUN
@@ -436,13 +465,14 @@ def main(argv: list[str]) -> int:
             log.info("injected %d BYO cookie(s) from %s (names: %s)",
                      len(byo), args.cookies,
                      ", ".join(sorted(c.get("name", "?") for c in byo)))
-        context.tracing.start(
-            screenshots=True, snapshots=True, sources=True,
-        )
-        # Use chunks so we can flush partial traces every N seconds
-        # during the polling loop. Worst-case data loss on browser-X
-        # close is bounded to args.chunk_interval seconds.
-        context.tracing.start_chunk()
+        if args.trace:
+            context.tracing.start(
+                screenshots=True, snapshots=True, sources=True,
+            )
+            # Use chunks so we can flush partial traces every N seconds
+            # during the polling loop. Worst-case data loss on browser-X
+            # close is bounded to args.chunk_interval seconds.
+            context.tracing.start_chunk()
         if not args.no_recorder:
             context.add_init_script(CLICK_RECORDER_JS)
         else:
@@ -471,9 +501,16 @@ def main(argv: list[str]) -> int:
                     "kind": "request",
                     "ts": _now_iso(),
                     "method": request.method,
-                    "url": request.url,
+                    "url": debugcap.redact_url(redact(request.url)),
                     "resource_type": request.resource_type,
-                    "headers": {k: redact(v) for k, v in request.headers.items()},
+                    # Two redactions, because they catch different
+                    # things: `redact` masks the values known in advance
+                    # (the credentials), while `redact_headers` masks by
+                    # header NAME — the only way to catch one the site
+                    # issues at runtime, like a session cookie or the
+                    # SPA's own api key.
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in request.headers.items()}),
                     "post_data": redact(request.post_data) if request.method == "POST" else None,
                 })
             except Exception as exc:
@@ -487,11 +524,18 @@ def main(argv: list[str]) -> int:
                 payload = {
                     "kind": "response",
                     "ts": _now_iso(),
-                    "url": response.url,
+                    "url": debugcap.redact_url(redact(response.url)),
                     "method": response.request.method,
                     "status": response.status,
                     "resource_type": response.request.resource_type,
-                    "headers": {k: redact(v) for k, v in response.headers.items()},
+                    # Two redactions, because they catch different
+                    # things: `redact` masks the values known in advance
+                    # (the credentials), while `redact_headers` masks by
+                    # header NAME — the only way to catch one the site
+                    # issues at runtime, like a session cookie or the
+                    # SPA's own api key.
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in response.headers.items()}),
                 }
                 # Body capture: only for likely-interesting text-shaped
                 # responses, capped at 200 KB. Skips bundled JS/CSS and
@@ -524,6 +568,8 @@ def main(argv: list[str]) -> int:
         # chunk-NNN.zip`. The polling loop below drives the cadence.
         chunk_seq = {"n": 0}
         def save_trace_chunk(label="periodic") -> bool:
+            if not args.trace:
+                return False
             chunk_seq["n"] += 1
             chunk_path = trace_chunks_dir / f"chunk-{chunk_seq['n']:03d}-{label}.zip"
             try:
@@ -720,24 +766,32 @@ def main(argv: list[str]) -> int:
             "ts": _now_iso(),
             "reason": exit_reason,
         })
-        final_ok = save_trace_chunk(label="final")
-        log.info("stopping (reason: %s) — %d trace chunk(s) saved "
-                 "(final chunk: %s)", exit_reason, chunk_seq["n"],
-                 "ok" if final_ok else "browser dead, last periodic chunk is most-recent")
-        with contextlib.suppress(Exception):
-            context.tracing.stop(path=str(trace_path))
+        if args.trace:
+            final_ok = save_trace_chunk(label="final")
+            log.info("stopping (reason: %s) — %d trace chunk(s) saved "
+                     "(final chunk: %s)", exit_reason, chunk_seq["n"],
+                     "ok" if final_ok
+                     else "browser dead, last periodic chunk is most-recent")
+            with contextlib.suppress(Exception):
+                context.tracing.stop(path=str(trace_path))
+        else:
+            log.info("stopping (reason: %s)", exit_reason)
 
     log.info("artefacts written:")
     log.info("  clicks:        %s  (events + lifecycle)", clicks_path)
     log.info("  network:       %s  (requests + responses, crash-safe)",
              network_path)
-    log.info("  trace-chunks/: %s/  (%d chunk(s); open with "
-             "`playwright show-trace chunk-NNN.zip`)",
-             trace_chunks_dir, chunk_seq["n"])
-    log.info("  HAR:           %s  (best-effort; complete on Ctrl-C/SIGTERM exit, may be missing on browser-X close)",
+    log.info("  HAR:           %s  (redacted; best-effort — complete on "
+             "Ctrl-C/SIGTERM exit, may be missing on browser-X close)",
              har_path)
-    log.info("  trace.zip:     %s  (best-effort; final-flush attempt; "
-             "trace-chunks/ is the durable record)", trace_path)
+    if args.trace:
+        log.info("  trace-chunks/: %s/  (%d chunk(s); open with "
+                 "`playwright show-trace chunk-NNN.zip`)",
+                 trace_chunks_dir, chunk_seq["n"])
+        log.info("  trace.zip:     %s  (best-effort; final-flush attempt; "
+                 "trace-chunks/ is the durable record). UNREDACTED: a "
+                 "trace carries the typed credential — never commit it",
+                 trace_path)
     log.info("  downloads:     %s/  (%d file(s))",
              downloads_dir, download_seq["n"])
     return 0

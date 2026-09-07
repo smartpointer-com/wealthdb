@@ -74,11 +74,11 @@ One run records, under `/debug/<UTC-ts>/` (host:
 
 | Artefact | Purpose |
 | --- | --- |
-| `network.har` | The primary endpoint map — every request + response. Flushed only on a clean context close. |
+| `network.har` | The primary endpoint map — every request + response. Flushed on the context close and rewritten through the redactor on the same unwind, error included: Playwright records it raw, so it is never crash-safe and secret-free at once. |
 | `network.jsonl` | Crash-safe line-flushed twin of the HAR; text bodies ≤ 200 KB captured inline, OFX/QFX content types included. |
 | `clicks.jsonl` | Click log via an injected `document.addEventListener` (VNC clicks bypass the Playwright API), plus lifecycle, login-form and OTP-field events. |
 | `downloads/` | Every file the session fetches (statement PDFs, exports), sequence-prefixed against reused filenames. |
-| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). |
+| `trace-chunks/`, `trace.zip` | Opt-in `--trace` Playwright trace — off by default because the pinned Playwright 1.49 tracer crashes the camoufox 152.0.4 build (matched-set drift; see base-camoufox). A trace cannot be redacted after the fact: its DOM snapshots store every input's value, the typed password included. |
 
 Mechanics worth knowing before reading the code:
 
@@ -99,10 +99,15 @@ Mechanics worth knowing before reading the code:
   maxlength — never its value) is logged, so the 2FA surface is
   recorded even if no click lands on it.
 - **Credential redaction.** The username and password are scrubbed from
-  every logged header, POST body, and response body — the debug dir is
-  outside `~/.secrets/`, so a leak there is a real risk. Response
-  bodies still carry full account data; the whole debug dir is treated
-  as sensitive.
+  every header, POST body, and response body *the harness itself
+  writes*, and password inputs are blanked out of the DOM snapshots
+  (`collectorkit.debugcap`) — the debug dir is outside `~/.secrets/`, so
+  a leak there is a real risk. The HAR comes from Playwright raw and is
+  rewritten through the same redactor once the context close has flushed
+  it; the opt-in trace is the one artefact nothing rewrites
+  (collectors/README.md, "Captures carry credentials"). Response bodies
+  still carry full account data; the whole debug dir is treated as
+  sensitive.
 
 ## 3. What Phase 1 must capture — the three flows
 

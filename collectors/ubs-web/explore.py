@@ -23,8 +23,10 @@ Recorded under ``--debug-dir``:
     bodies. The primary artefact: UBS's SPA reads its own JSON, and this is
     where the endpoint shapes behind each screen are read off.
   - **HAR** (``network.har``) — the same traffic in a standard format, for
-    a viewer. Playwright only flushes it on a clean context close, so
-    ``network.jsonl`` is the durable record and this is the convenience.
+    a viewer. Playwright writes it itself and writes it whole, so it is
+    rewritten with its credentials out once the close has flushed it; it
+    only flushes on a clean context close, which makes ``network.jsonl``
+    the durable record and this the convenience.
   - **Click log** (``clicks.jsonl``) — one record per click, plus navigation,
     download and lifecycle events. Captured through a
     ``document.addEventListener`` init script, because clicks made in the VNC
@@ -38,6 +40,8 @@ Recorded under ``--debug-dir``:
     and invoice PDFs, CSV exports), materialised as the browser received it.
   - **Playwright trace** (``trace.zip`` + ``trace-chunks/``) — opt-in via
     ``--trace``; screenshots, DOM snapshots and network per action.
+    UNREDACTED, and unredactable after the fact: the driver writes a zip
+    of blobs whose DOM snapshots carry every input's value.
 
 Recording stops when the browser window is closed, on Ctrl-C or SIGTERM, or
 after ``--max-duration``. Every path flushes: the two JSONL logs are written
@@ -47,7 +51,13 @@ The session is the one thing the harness does touch. An existing state file is
 loaded so a live session lands post-auth immediately, and the state is saved
 back on exit (``--no-save-state`` opts out) so a login done here is not paid
 for twice. The contract number is pre-filled into the login form when the env
-file supplies it — never submitted, and redacted from every log.
+file supplies it, and never submitted.
+
+Where that value is masked, stated exactly: ``network.jsonl``,
+``clicks.jsonl``, ``dom/*/frame*.html``, ``dom/*/url.txt`` and
+``network.har``. Where it is not: ``trace.zip`` / ``trace-chunks/`` and
+``dom/*/screen.png`` — a rendered page cannot be edited without destroying
+what it is for, and a trace is a zip of driver-written blobs.
 
 Artefacts carry real financial data and unredacted account identifiers. They
 land in the ``/debug`` mount, outside bronze and outside the repo, under the
@@ -262,7 +272,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--trace", action="store_true",
         help=("Record a Playwright trace (per-action screenshots + DOM), "
               "chunked so an abrupt close loses at most one chunk. Off by "
-              "default — it is heavy, and the DOM snapshots plus the "
+              "default — it is heavy, nothing redacts it (its DOM "
+              "snapshots carry every input's value, and its screenshots "
+              "carry the screen), and the redacted DOM snapshots plus the "
               "network log already carry what selectors are pinned from."),
     )
     p.add_argument(
@@ -376,11 +388,15 @@ def capture_dom_snapshot(context, dom_dir: Path, seq: int,
             if not is_ubs_host(frame.url):
                 continue
             try:
-                # scrub_dom before `redact`, because they catch different
-                # things: the harness never submits the password, so the
-                # human types it into the browser and no value-based masker
-                # here knows it — but the serialized form carries it as a
-                # `value` attribute, which scrub_dom blanks unconditionally.
+                # scrub_dom before `redact`, because they catch
+                # different things. `redact` masks the one credential this
+                # harness knows, the contract number. scrub_dom is the
+                # shared guard that blanks `value=` on every type=password
+                # input whatever was typed into it — UBS's own login has
+                # none (contract number + Access App QR, see landmarks
+                # TEMPLATE_CONTRACT_NR / TEMPLATE_QR), so here it is
+                # defence in depth for a password-type field the operator
+                # meets by hand on a screen the harness never scripts.
                 frames.append(debugcap.scrub_dom(frame.content(), redact))
             except Exception:  # noqa: BLE001 — a frame mid-navigation
                 continue
@@ -499,12 +515,33 @@ def main(argv: list[str]) -> int:
     download_seq = {"n": 0}
 
     with contextlib.ExitStack() as stack:
+        # The HAR is Playwright's own recording, and it records whole: the
+        # login POST body, every header, the cookie jar. It is the one
+        # capture in this dir written by the driver rather than by the
+        # handlers, and it exists only once the context close below has
+        # flushed it. Registered on the stack rather than called after the
+        # block so a walk that raises is cleaned too — an unwind closes the
+        # context, which flushes the HAR, and a run that crashed is exactly
+        # the one whose debug dir gets opened. Registered first, so LIFO
+        # runs it last, after everything that could still write to the file.
+        stack.callback(
+            lambda: debugcap.redact_har(har_path, redact, log=log))
+
         clicks_fp = stack.enter_context(
             open(clicks_path, "w", encoding="utf-8"))
         network_fp = stack.enter_context(
             open(network_path, "w", encoding="utf-8"))
 
         def write_event(payload: dict) -> None:
+            # Every click log entry carries the URL it happened on, and on
+            # this source the contract number rides in the post-auth URL as
+            # well as in the form. Masking here rather than at each call
+            # site makes it structural: the in-page recorder's own records
+            # (location.href, from an init script this code does not see
+            # the fields of) go through the same choke point as the ones
+            # built below.
+            if isinstance(payload.get("url"), str):
+                payload["url"] = redact(payload["url"])
             clicks_fp.write(json.dumps(payload, default=str) + "\n")
             clicks_fp.flush()
 
@@ -644,7 +681,7 @@ def main(argv: list[str]) -> int:
                 event = {
                     "kind": "download",
                     "ts": _now_iso(),
-                    "url": redact(download.url),
+                    "url": download.url,
                     "suggested_filename": download.suggested_filename,
                     "saved_to": str(out),
                 }
@@ -661,7 +698,7 @@ def main(argv: list[str]) -> int:
                     lambda f: f == page.main_frame and write_event({
                         "kind": "navigation",
                         "ts": _now_iso(),
-                        "url": redact(f.url),
+                        "url": f.url,
                     }))
 
         context.on("page", on_page)
@@ -776,15 +813,15 @@ def main(argv: list[str]) -> int:
     log.info("stopped (%s). artefacts:", reason)
     log.info("  network:    %s", network_path)
     log.info("  clicks:     %s", clicks_path)
-    log.info("  HAR:        %s", har_path)
+    log.info("  HAR:        %s (redacted)", har_path)
     log.info("  downloads:  %s/ (%d file(s))", downloads_dir,
              download_seq["n"])
     if args.dom_interval > 0:
         log.info("  dom/:       %s/ (%d distinct screen(s))",
                  dom_dir, dom_seq)
     if args.trace:
-        log.info("  trace:      %s/ (%d chunk(s))", trace_chunks_dir,
-                 chunk_seq["n"])
+        log.info("  trace:      %s/ (%d chunk(s)) — UNREDACTED, never "
+                 "commit it", trace_chunks_dir, chunk_seq["n"])
     return 0
 
 

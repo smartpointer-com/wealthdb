@@ -331,6 +331,12 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 		// vocabulary translates — the spending the bill used to stand in for.
 		txn{"amex", "T-AMEX-BUY", "AMEXCARD", "purchase", day(18), -60,
 			"Corner Market", "", "Merchandise & Supplies"},
+		// A purchase the ISSUER could not place. The verdict row below
+		// only shows the row survives as signature-only, which a value
+		// that had drifted would too; the UnmappedProviderCategories
+		// check after the table is what pins the untranslatable set.
+		txn{"amex", "T-AMEX-OTHER", "AMEXCARD", "purchase", day(19), -25,
+			"Example Merchant", "", "Other"},
 	)
 
 	res := runPass(t, db, ctx, Options{})
@@ -339,6 +345,7 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 		{"bank", "T-AMEX-BILL", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
 		{"amex", "T-AMEX-LEG", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
 		{"amex", "T-AMEX-BUY", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", ProvenanceProvider},
+		{"amex", "T-AMEX-OTHER", "", ProvenanceSignatureOnly},
 	} {
 		detailed, provenance := verdictOf(t, db, ctx, tc.src, tc.id)
 		if detailed != tc.detailed || provenance != tc.provenance {
@@ -349,6 +356,12 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 	// The placeholder is gone: no row is left as generic card spend.
 	if res.RuleRows != 0 {
 		t.Errorf("rule rows = %d, want 0 — the bill should pair, not fall to the rule", res.RuleRows)
+	}
+	// And the issuer's residual bucket left the canary alone: the card's
+	// account kind resolves the source-wide amex vocabulary, whose
+	// untranslatable set exempts the value from the count.
+	if res.UnmappedProviderCategories != 0 {
+		t.Errorf("UnmappedProviderCategories = %d, want 0", res.UnmappedProviderCategories)
 	}
 }
 
@@ -368,8 +381,9 @@ func TestAmexResidualCategoryIsNotDrift(t *testing.T) {
 		{"", false, false},
 	} {
 		// Cards are the only product this source has, so its vocabulary is
-		// registered source-wide and every account kind inherits it.
-		_, ok, drift := ProviderCategory("amex", "", tc.category)
+		// registered source-wide and the `card` account kind every row
+		// carries in production inherits it.
+		_, ok, drift := ProviderCategory("amex", "card", tc.category)
 		if ok != tc.ok || drift != tc.drift {
 			t.Errorf("ProviderCategory(amex, %q) = (ok %v, drift %v), want (%v, %v)",
 				tc.category, ok, drift, tc.ok, tc.drift)

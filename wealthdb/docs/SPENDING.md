@@ -578,13 +578,17 @@ does not translate *means*:
   a wrong category is invisible in a report, while an uncategorised row
   is visible as backlog and an unmapped-value count is visible as
   drift. `wealthdb categorize` prints those counts, and `load` prints
-  the pass's. The exception is the issuer's own residual bucket — its
-  literal "Other" — which the vocabulary lists as `untranslatable`
-  beside the translations: reviewed, so a miss on it is not drift, and
-  deliberately left untranslated, because a row the issuer itself could
-  not place is the row the model tier exists for. Translating it would
-  lose the row to a bucket; counting it would inflate the drift signal
-  with a value there is nothing to review.
+  the pass's. The exceptions are the values the vocabulary lists as
+  `untranslatable` beside the translations: the issuer's own residual
+  bucket — its literal "Other" — and any value that names a money
+  MOVEMENT rather than a line of business, such as a bank's catch-all
+  for the card rows that transferred money instead of buying something.
+  Both are reviewed, so a miss on either is not drift, and both are
+  deliberately left untranslated, because a row the provider itself
+  could not place, or placed under a movement, is the row the model tier
+  exists for. Translating one would lose the row to a bucket; counting
+  it would inflate the drift signal with a value there is nothing to
+  review.
 - A **booking-type** vocabulary — a bank's (`ubs`) — names how each
   entry was booked, in whichever spelling the era used: the statement
   PDF's `E-BANKING PAYMENT ORDER`, the MT940 feed's `NTRF`, the web
@@ -1101,8 +1105,10 @@ picture is right:
   one;
 - **provider-map misses** — a card issuer's categorical vocabulary has
   moved and the map has not; a bank's untranslated booking types are
-  rails and an issuer's own residual bucket is reviewed, so neither is
-  a miss (§3);
+  rails, and the values the map marks `untranslatable` — an issuer's own
+  residual bucket, and a category that names a money movement rather
+  than a line of business — are reviewed, so none of those is a miss
+  (§3);
 - **the matched-pair listing, both legs** — the audit surface for the
   matcher, the one tier that *removes* rows from spending. Its
   mistakes are invisible in a chart: an over-eager pair makes a month
@@ -1454,9 +1460,10 @@ tidies the store — by then the rows have moved on.
   the only honest verdict, and the tiers above still overrule it (§3).
 - **An unmapped booking type is a rail, not drift.** A card issuer's
   vocabulary is categorical, so a value the map lacks is drift and is
-  counted — bar the issuer's own residual bucket, which the map marks
-  `untranslatable` (§3); a bank's booking types mostly name payment rails,
-  so a value
+  counted — bar the values the map marks `untranslatable`, the issuer's
+  own residual bucket and a category naming a money movement rather than
+  a line of business (§3); a bank's booking types mostly name payment
+  rails, so a value
   the map lacks is the normal case and is not. The shape is a flag on
   the map, which keeps the misses canary meaningful for the issuers it
   was built for (§3).

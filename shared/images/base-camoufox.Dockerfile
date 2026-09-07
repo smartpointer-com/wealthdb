@@ -11,6 +11,14 @@
 # Build context is shared/ (so collectorkit/ in the base layers is
 # resolvable):
 #   docker build -f images/base-camoufox.Dockerfile -t wealthdb/base-camoufox:latest .
+#
+# That command builds on whatever wealthdb/base-playwright:latest is
+# already local, so it must be preceded by a base-playwright rebuild —
+# Xvfb/x11vnc, /opt/entrypoint-lib.sh and the baked-in collectorkit all
+# live one layer down now, and a stale parent yields a camoufox image
+# whose collectors start without them or redact with an old collectorkit
+# while their unit tests still pass. `make base-images` (or `make all`,
+# or any `make build-<name>`) builds the pair in order and is the way in.
 FROM wealthdb/base-playwright:latest
 
 # Xvfb, x11vnc and the shared entrypoint bootstrap come from

@@ -44,14 +44,15 @@ payment, rewards, offers, or settings surface.
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import logging
 import re
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli
+from collectorkit import bronze, cli, debugcap
 
 import amexclient
 import login
@@ -84,6 +85,18 @@ def safe_stem(value: str) -> str:
     return stem or "item"
 
 
+def _months_back(d: date, months: int) -> date:
+    """`d` rolled back a whole number of CALENDAR months.
+
+    A day the target month does not have is clamped to its last (31 Mar
+    minus one month is 28 or 29 Feb), which is the same rule the source's
+    own horizon follows."""
+    index = d.month - 1 - months
+    year = d.year + index // 12
+    month = index % 12 + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+
+
 def clamp_since(since: date | None, until: date) -> tuple[date | None, bool]:
     """Clamp `since` to the structured channels' 24-month horizon.
 
@@ -93,10 +106,14 @@ def clamp_since(since: date | None, until: date) -> tuple[date | None, bool]:
     than either failing or pretending. Returns (since, was_clamped)."""
     if since is None:
         return None, False
-    # 30-day months: ~10 days short of 24 calendar months, deliberately —
-    # the server caps the window anyway, so erring narrow costs nothing while
-    # erring wide would ask for a range it silently truncates.
-    floor = until - timedelta(days=amexclient.MAX_AVAILABLE_MONTHS * 30)
+    # The floor is the source's own `startDateForSearch` — 24 CALENDAR
+    # months, not 24 thirty-day ones (DESIGN.md §E). Counting 30-day months
+    # lands about ten days short, which made `--lookback 2y` warn about a
+    # window the source honours and moved the manifest's `since` away from
+    # what was asked for. No safety hedge either way: over-asking by a day
+    # is harmless because the server truncates the window silently, and the
+    # seam is MIN(posted_at) over the rows that landed, not this date.
+    floor = _months_back(until, amexclient.MAX_AVAILABLE_MONTHS)
     if since < floor:
         return floor, True
     return since, False
@@ -206,7 +223,11 @@ def _export_account(context, acct: dict, run_dir: Path,
             bronze.atomic_write_bytes(out, resp.body())
             written += 1
         except Exception as exc:
-            log.warning("export %s/%s failed: %r", log_id(key), fmt, exc)
+            # safe_error, never %r: a Playwright request error's Call log
+            # reproduces the request headers, cookie jar included, and this
+            # line is written to be pasted around.
+            log.warning("export %s/%s failed: %s", log_id(key), fmt,
+                        debugcap.safe_error(exc))
     return written
 
 
@@ -231,7 +252,8 @@ def _fetch_pdf(context, url: str, out: Path) -> bool:
         bronze.atomic_write_bytes(out, resp.body())
         return True
     except Exception as exc:
-        log.warning("document %s failed: %r", out.name, exc)
+        log.warning("document %s failed: %s", out.name,
+                    debugcap.safe_error(exc))
         return False
 
 
@@ -275,11 +297,17 @@ def build_manifest(status: str, *, accounts: list[dict], counts: dict,
                    since: date | None, until: date | None,
                    formats: tuple[str, ...], clamped: bool,
                    documents_since: date | None,
-                   pagination: str | None = None) -> dict:
+                   pagination: str | None = None,
+                   coverage: dict | None = None) -> dict:
     """The run.json body. `status` is 'in-progress' at creation, overwritten
     with 'complete' (or 'dry-run') at the end. Account keys only — no
     balances, and no card number beyond the mask the roster already
-    carries."""
+    carries.
+
+    `coverage` says, per account, how much of the activity window the source
+    actually honoured. A run whose fetch came back short is still `complete`
+    — what it holds is real and loadable — but a consumer must be able to
+    tell it from one that got everything, which `status` alone cannot."""
     return {
         "source": "amex",
         "status": status,
@@ -297,6 +325,9 @@ def build_manifest(status: str, *, accounts: list[dict], counts: dict,
         "formats": list(formats),
         "account_keys": [a.get("account_key") for a in accounts],
         "counts": counts,
+        # Per account: rows fetched, rows the source said it had, and
+        # whether the two agree. See the docstring.
+        "coverage": coverage or {},
     }
 
 
@@ -349,6 +380,7 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
 
     counts = {"transactions": 0, "exports": 0, "statements": 0,
               "year_end_summaries": 0}
+    coverage: dict = {}
     pagination: str | None = None
     for acct in accounts:
         # `stem` names files (the loader joins on the full key); `shown` is
@@ -357,6 +389,11 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
         shown = log_id(acct["account_key"])
         if not acct["account_token"]:
             log.warning("account %s has no activity token — skipped", shown)
+            # Recorded rather than omitted: a key present in `accounts` with
+            # no coverage row is indistinguishable from one the block forgot,
+            # and telling a full fetch from a short one is the whole point.
+            coverage[acct["account_key"]] = {
+                "transactions": 0, "expected": None, "complete": False}
             continue
         if dry_run:
             merged = _paginate(context, acct["account_token"],
@@ -371,7 +408,10 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
             merged = _paginate(context, acct["account_token"],
                                since=since, until=until)
         except RuntimeError as exc:
-            log.warning("activity %s: %s", shown, exc)
+            log.warning("activity %s: %s — the run stays loadable, and "
+                        "run.json flags this account as short", shown, exc)
+            coverage[acct["account_key"]] = {
+                "transactions": 0, "expected": None, "complete": False}
         else:
             pagination = merged.get("paginationMode") or pagination
             bronze.atomic_write_json(
@@ -379,9 +419,17 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
             got = len(merged["transactions"])
             total = merged["totalTransactionCount"]
             counts["transactions"] += got
-            if isinstance(total, int) and got < total:
-                log.warning("activity %s: fetched %d of %d rows", shown, got,
-                            total)
+            short = isinstance(total, int) and got < total
+            # Tri-state: null when the source reported no usable total, so a
+            # fetch that was never measured cannot read as a positive claim
+            # of full coverage.
+            coverage[acct["account_key"]] = {
+                "transactions": got, "expected": total,
+                "complete": None if not isinstance(total, int) else not short}
+            if short:
+                log.warning("activity %s: fetched %d of %d rows — the run "
+                            "stays loadable, and run.json flags this account "
+                            "as short", shown, got, total)
             else:
                 log.info("  %s: %d transaction(s)", shown, got)
 
@@ -397,7 +445,8 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
     bronze.atomic_write_json(run_dir / "run.json", build_manifest(
         status_str, accounts=accounts, counts=counts, since=since,
         until=until, formats=formats, clamped=clamped,
-        documents_since=documents_since, pagination=pagination))
+        documents_since=documents_since, pagination=pagination,
+        coverage=coverage))
     log.info("download %s: %s", status_str, counts)
     return {"run_dir": str(run_dir), "accounts": len(accounts), **counts}
 

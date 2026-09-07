@@ -1,15 +1,18 @@
 """Unit tests for download.py's browserless surface: argument parsing, the
 format resolver, the 24-month clamp, the statement window, the bronze
-manifest, and the activity pagination — the last driven against a stub
-request context, so no browser and no network are needed.
+manifest, the activity pagination, the per-card fan-out, and the export and
+statement passes — all driven against a stub request context, so no browser
+and no network are needed.
 
 Synthetic payloads only.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,7 +24,10 @@ import download  # noqa: E402
 import login  # noqa: E402
 
 KEY = "0123456789ABCDEF0123456789ABCDEF"
+KEY_B = "FEDCBA9876543210FEDCBA9876543210"
+KEY_C = "00112233445566778899AABBCCDDEEFF"
 TOKEN = "AAAA1B2C3D4E5F6"
+TOKEN_B = "BBBB2C3D4E5F6A7"
 
 
 # ============================================================
@@ -143,6 +149,34 @@ def test_no_window_is_left_alone():
     assert download.clamp_since(None, date(2026, 3, 1)) == (None, False)
 
 
+@pytest.mark.parametrize("until", [
+    date(2026, 9, 7),      # 24 months back is exactly 730 days
+    date(2028, 3, 1),      # ...and 731 across a leap day
+])
+def test_a_two_year_lookback_is_inside_the_horizon(until):
+    # `--lookback 2y` is 730 days. Counting 24 thirty-day months put the
+    # floor about ten days inside that, so the preset warned about a window
+    # the source honours and moved the manifest's `since` off the request.
+    asked = until - timedelta(days=730)
+    assert download.clamp_since(asked, until) == (asked, False)
+
+
+def test_a_day_past_the_horizon_is_clamped_to_the_calendar_floor():
+    until = date(2026, 9, 7)
+    floor = download._months_back(until, amexclient.MAX_AVAILABLE_MONTHS)
+    assert download.clamp_since(floor - timedelta(days=1), until) == (floor,
+                                                                      True)
+
+
+@pytest.mark.parametrize("until,floor", [
+    (date(2028, 2, 29), date(2026, 2, 28)),   # no 29 Feb two years back
+    (date(2026, 5, 31), date(2024, 5, 31)),
+    (date(2026, 1, 15), date(2024, 1, 15)),
+])
+def test_the_month_rollback_clamps_to_the_target_months_last_day(until, floor):
+    assert download._months_back(until, 24) == floor
+
+
 # ============================================================
 # The statement window
 # ============================================================
@@ -242,17 +276,26 @@ def _activity_body(rows, total):
 
 
 class _StubRequest:
-    """Answers each activity POST from a scripted list of (status, body),
-    recording the offsets it was asked for."""
+    """Answers each POST from a scripted list of (status, body), recording
+    the offsets it was asked for, and each GET from its own script,
+    recording the URLs. One stub therefore serves the activity/statement
+    POSTs and the document/export GETs alike."""
 
-    def __init__(self, pages):
+    def __init__(self, pages, gets=()):
         self.pages = list(pages)
+        self.gets = list(gets)
         self.offsets: list[int] = []
+        self.urls: list[str] = []
 
     def post(self, url, headers=None, data=None):
         self.offsets.append((data or {}).get("transactionFilters", {})
                             .get("offset"))
         status, body = (self.pages.pop(0) if self.pages else (200, None))
+        return _StubResponse(status, body)
+
+    def get(self, url, headers=None):
+        self.urls.append(url)
+        status, body = (self.gets.pop(0) if self.gets else (404, None))
         return _StubResponse(status, body)
 
 
@@ -265,10 +308,13 @@ class _StubResponse:
             raise ValueError("no body")
         return self._body
 
+    def body(self):
+        return self._body if isinstance(self._body, bytes) else b""
+
 
 class _StubContext:
-    def __init__(self, pages):
-        self.request = _StubRequest(pages)
+    def __init__(self, pages=(), gets=()):
+        self.request = _StubRequest(pages, gets)
 
 
 def test_a_single_short_page_needs_no_continuation():
@@ -343,20 +389,22 @@ def test_the_window_rides_the_request_body():
 # walk(): the two windows
 # ============================================================
 
-def _stub_walk(monkeypatch):
+def _stub_walk(monkeypatch, accounts=None):
     """Stub every collaborator walk() calls, recording the window each was
-    handed. Returns the dict those land in."""
+    handed. Returns the dict those land in. `accounts` is the roster the
+    fan-out runs over; the default is one card."""
     seen = {}
+    accounts = accounts if accounts is not None else [
+        {"account_key": KEY, "account_token": TOKEN}]
     monkeypatch.setattr(download.login, "fn_post",
                         lambda ctx, fn: (200, {"roster": "synthetic"}))
     monkeypatch.setattr(download.amexclient, "parse_accounts",
-                        lambda body, cards_only=True: [
-                            {"account_key": KEY, "account_token": TOKEN}])
+                        lambda body, cards_only=True: accounts)
 
     def _paginate(ctx, token, *, since, until):
         seen["activity_since"] = since
-        return {"transactions": [], "totalTransactionCount": 0,
-                "categories": {}}
+        return {"transactions": [{"identifier": token}],
+                "totalTransactionCount": 1, "categories": {}}
 
     def _export(ctx, acct, run_dir, formats, *, since, until):
         seen["export_since"] = since
@@ -416,3 +464,199 @@ def test_no_documents_leaves_the_document_window_unclaimed(
     assert manifest["documents_since"] is None
     assert "documents_since" not in seen
     assert manifest["window_clamped"] is True
+
+
+# ============================================================
+# walk(): the per-card fan-out
+# ============================================================
+
+def test_walk_fans_out_per_card_and_skips_a_tokenless_one(tmp_path,
+                                                          monkeypatch,
+                                                          caplog):
+    # Every card is walked, and one the roster gives no activity token is
+    # skipped loudly rather than silently costing its whole ledger. The
+    # tokenless card still belongs on the roster the manifest records.
+    _stub_walk(monkeypatch, accounts=[
+        {"account_key": KEY, "account_token": TOKEN},
+        {"account_key": KEY_B, "account_token": TOKEN_B},
+        {"account_key": KEY_C, "account_token": ""},
+    ])
+    with caplog.at_level(logging.WARNING, logger="amex.download"):
+        summary = download.walk(object(), tmp_path, since=date(2026, 1, 1),
+                                until=date(2026, 3, 1))
+    run = Path(summary["run_dir"])
+    assert (run / "activity" / f"{KEY}.json").is_file()
+    assert (run / "activity" / f"{KEY_B}.json").is_file()
+    assert not (run / "activity" / f"{KEY_C}.json").exists()
+    manifest = json.loads((run / "run.json").read_text())
+    assert manifest["account_keys"] == [KEY, KEY_B, KEY_C]
+    assert manifest["counts"]["transactions"] == 2
+    assert "has no activity token" in caplog.text
+    # It gets a coverage row too: a roster key with none is indistinguishable
+    # from one the block forgot to write.
+    assert manifest["coverage"][KEY_C] == {"transactions": 0,
+                                           "expected": None,
+                                           "complete": False}
+
+
+# ============================================================
+# What the manifest says about a window the source honoured only in part
+# ============================================================
+
+def test_a_full_fetch_is_marked_covered(tmp_path, monkeypatch):
+    _stub_walk(monkeypatch)
+    summary = download.walk(object(), tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 3, 1))
+    manifest = json.loads((Path(summary["run_dir"]) / "run.json").read_text())
+    assert manifest["coverage"][KEY] == {"transactions": 1, "expected": 1,
+                                         "complete": True}
+
+
+def test_a_short_activity_fetch_is_flagged_beside_a_complete_status(
+        tmp_path, monkeypatch):
+    # The run is still loadable and still 'complete' — what it holds is real
+    # — but `since` alone would claim a window the source did not honour.
+    _stub_walk(monkeypatch)
+    monkeypatch.setattr(download, "_paginate",
+                        lambda ctx, token, *, since, until: {
+                            "transactions": [{"identifier": "1"}],
+                            "totalTransactionCount": 500, "categories": {}})
+    summary = download.walk(object(), tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 3, 1))
+    manifest = json.loads((Path(summary["run_dir"]) / "run.json").read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["coverage"][KEY] == {"transactions": 1, "expected": 500,
+                                         "complete": False}
+
+
+def test_an_unmeasured_fetch_claims_nothing_either_way(tmp_path,
+                                                       monkeypatch):
+    # A total that comes back null (or as a string) says nothing about
+    # coverage, and a run must not turn that silence into a positive claim
+    # of a complete fetch.
+    _stub_walk(monkeypatch)
+    monkeypatch.setattr(download, "_paginate",
+                        lambda ctx, token, *, since, until: {
+                            "transactions": [{"identifier": "1"}],
+                            "totalTransactionCount": None, "categories": {}})
+    summary = download.walk(object(), tmp_path, since=date(2026, 1, 1),
+                            until=date(2026, 3, 1))
+    manifest = json.loads((Path(summary["run_dir"]) / "run.json").read_text())
+    assert manifest["coverage"][KEY] == {"transactions": 1, "expected": None,
+                                         "complete": None}
+
+
+def test_an_account_whose_activity_fetch_failed_is_flagged(tmp_path,
+                                                           monkeypatch):
+    _stub_walk(monkeypatch)
+
+    def _boom(ctx, token, *, since, until):
+        raise RuntimeError("activity fetch failed (HTTP 500)")
+    monkeypatch.setattr(download, "_paginate", _boom)
+    summary = download.walk(object(), tmp_path, since=None,
+                            until=date(2026, 3, 1))
+    manifest = json.loads((Path(summary["run_dir"]) / "run.json").read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["coverage"][KEY] == {"transactions": 0, "expected": None,
+                                         "complete": False}
+
+
+# ============================================================
+# The statement and export passes, against the stub request context
+# ============================================================
+
+def _statements_body(periods=(), summaries=()):
+    return {"billingStatements": {
+        "recentStatements": [
+            {"statementEndDate": end,
+             "downloadOptions": {
+                 "STATEMENT_PDF":
+                     f"/api/servicing/v1/documents/statements/T{end}"}}
+            for end in periods],
+        "olderStatements": [],
+        "yearEndSummaries": [
+            {"year": year, "downloadOptions": {
+                "YES_PDF":
+                    f"/api/servicing/v2/financials/documents?year={year}"}}
+            for year in summaries],
+    }}
+
+
+PDF = b"%PDF-1.4 synthetic\n"
+
+
+def test_statements_land_only_for_periods_in_the_window(tmp_path):
+    # `--lookback` reaches the documents unclamped, and the window is applied
+    # to the PERIOD END. The year-end summary carries no period, so it is
+    # always fetched.
+    ctx = _StubContext(
+        [(200, _statements_body(periods=("2026-03-12", "2025-06-12"),
+                                summaries=(2025,)))],
+        [(200, PDF), (200, PDF)])
+    acct = {"account_key": KEY, "account_token": TOKEN}
+    assert download._download_statements(ctx, acct, tmp_path,
+                                         since=date(2026, 1, 1)) == (1, 1)
+    out = tmp_path / "statements" / KEY
+    assert (out / "2026-03-12.pdf").read_bytes() == PDF
+    assert not (out / "2025-06-12.pdf").exists()
+    assert (out / "yes-2025.pdf").read_bytes() == PDF
+    # The archive body is kept as provenance, and each GET went to the URL
+    # the entry named.
+    assert (tmp_path / "raw" / f"statements-{KEY}.json").is_file()
+    assert ctx.request.urls == [
+        "https://global.americanexpress.com"
+        "/api/servicing/v1/documents/statements/T2026-03-12",
+        "https://global.americanexpress.com"
+        "/api/servicing/v2/financials/documents?year=2025",
+    ]
+
+
+def test_a_document_the_source_refuses_lands_no_file(tmp_path):
+    ctx = _StubContext([(200, _statements_body(periods=("2026-03-12",)))],
+                       [(404, None)])
+    acct = {"account_key": KEY, "account_token": TOKEN}
+    assert download._download_statements(ctx, acct, tmp_path,
+                                         since=None) == (0, 0)
+    assert not (tmp_path / "statements" / KEY / "2026-03-12.pdf").exists()
+
+
+def test_export_writes_one_file_per_format_and_skips_a_non_2xx(tmp_path):
+    ctx = _StubContext(gets=[(200, b"synthetic,export"), (500, None)])
+    acct = {"account_key": KEY, "account_token": TOKEN}
+    written = download._export_account(ctx, acct, tmp_path, ("csv", "qfx"),
+                                       since=date(2026, 1, 1),
+                                       until=date(2026, 3, 1))
+    assert written == 1
+    assert (tmp_path / "transactions" / f"{KEY}.csv").read_bytes() == (
+        b"synthetic,export")
+    assert not (tmp_path / "transactions" / f"{KEY}.qfx").exists()
+
+
+# ============================================================
+# What an unanswerable sign-in exits with
+# ============================================================
+
+def _stub_sign_in(monkeypatch, raises):
+    @contextlib.contextmanager
+    def _camoufox(profile_dir, fresh=False):
+        yield object(), object()
+
+    def _drive(context, page, args, *, two_factor):
+        raise raises
+    monkeypatch.setattr(download.login, "camoufox", _camoufox)
+    monkeypatch.setattr(download.login, "drive_to_auth", _drive)
+
+
+def test_an_unattended_run_that_meets_a_challenge_exits_two(tmp_path,
+                                                            monkeypatch):
+    # Distinct from a refusal: nothing is wrong with the credentials, the
+    # device trust simply expired and this run cannot answer a passcode.
+    _stub_sign_in(monkeypatch, login.NeedsLogin("device trust has expired"))
+    args = download.parse_args(["--bronze-dir", str(tmp_path), "--no-cli-mfa"])
+    assert download.run_download(args) == 2
+
+
+def test_a_refused_sign_in_exits_one(tmp_path, monkeypatch):
+    _stub_sign_in(monkeypatch, login.LogonFailed("example refusal"))
+    args = download.parse_args(["--bronze-dir", str(tmp_path), "--no-cli-mfa"])
+    assert download.run_download(args) == 1

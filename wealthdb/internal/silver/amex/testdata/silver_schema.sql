@@ -1,8 +1,14 @@
 -- amex silver schema for adapter tests — the tables of
 -- collectors/amex/migrations/0001_initial.sql, hand-written here rather than
--- generated from it, column-for-column and in the migration's order, so the
--- tests' positional inserts write the row shape real silver has. Only what no
--- test reads is left out: schema_meta and the indexes.
+-- generated from it: the container these tests run in cannot see the
+-- collectors tree. Only what no test reads is left out: schema_meta and the
+-- indexes.
+--
+-- Nothing joins this copy to that migration, so a column added, renamed or
+-- retyped there does NOT fail these tests — the two are kept in step by
+-- reading both. What is pinned is this copy: the seeds name their columns,
+-- so a change made here fails as a named-column error rather than silently
+-- writing a row into the neighbouring column.
 --
 -- `documents` is reproduced although the projection never reads it, and the
 -- fixture seeds a row into it: an inventory table that started yielding

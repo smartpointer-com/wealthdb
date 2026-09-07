@@ -84,7 +84,7 @@ is a `wealthdb.cfg` `silver_sources` entry pointing at the silver DB.
 
 | Verb | Status | Notes |
 | --- | --- | --- |
-| `explore`  | **implemented** | Camoufox + VNC discovery harness (HAR + crash-safe network log + trace + click log). Pre-fills the login form (login-path-gated, fill-once + clear/verify, Firefox password-manager disabled; never submits). Already run; re-run only when a selector changes. |
+| `explore`  | **implemented** | Camoufox + VNC discovery harness (redacted HAR + crash-safe network log + click log, opt-in `--trace`). Pre-fills the login form (login-path-gated, fill-once + clear/verify, Firefox password-manager disabled; never submits). Already run; re-run only when a selector changes. |
 | `login`    | **implemented** | Headless CLI flow: headed Camoufox under Xvfb (no VNC), email/password (`submitLogIn`) + stdin TOTP prompt → Submit-button click (`loginTotp`), persistent profile. Renews silently if the session is still valid. Verified end-to-end. |
 | `download` | **implemented** | Headed Camoufox under Xvfb. Captures `getBuyerInvestments` per stage (Ongoing/Closed/Exited tabs) + `getMyInvestmentDetails` per offering → bronze JSON. `--dry-run` (read-only) verified; each offering's document PDF blobs (capital-account statements, K-1s) are fetched via the session by default, with a `--no-documents` opt-out. **Download-avoidant** (`collectorkit.docdedup`), chosen per document class: parsed / restatement-prone documents (statements, K-1s, reports) are always fetched and content-compared (a restated one is kept, an unchanged one hardlinked for disk reclaim), while executed-once legal / offering documents (an explicit, curated allow-list) are hardlinked in rather than re-fetched. `--documents-force` bypasses it. |
 | `load`     | **implemented** | SQLite silver (`migrations/0001_initial.sql`): offerings (immutable) / positions (event-sourced) / cash_flows / tax_documents / capital_account_statements / k1_documents. Parses statement + K-1 PDFs (`statements.py`, `pdftotext`); injects fund NAVs as positions revaluation events. Idempotent (`--force` deletes silver + rebuilds from bronze). |
@@ -108,7 +108,8 @@ run is then just the `wealthdb.cfg` `silver_sources` entry above.
 #    EOF
 
 # 3. (One-time, dev) Discovery: drive the live buyer UI over VNC and
-#    record HAR + trace + clicks so login/download can be written.
+#    record a redacted HAR + network/click logs so login/download can
+#    be written (--trace adds a Playwright trace, which nothing redacts).
 ./equityzen explore --fresh
 
 # 4. Mint the session. Prompts for the TOTP code on stdin once; the

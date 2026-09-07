@@ -1204,7 +1204,13 @@ A few rules apply to every adapter regardless of bank:
   to gold `kind = 'other'`** with the raw source value preserved
   in `payload`, rather than failing the load. `wealthdb status -v`
   reports the count of `other` rows per silver source so taxonomy
-  drift is visible.
+  drift is visible. The one adapter that departs is **amex**, which
+  kinds a row with no usable direction by the sign of its amount
+  (`purchase` / `card_payment`) and keeps the raw value in
+  `payload.source_kind`: on a card ledger `other` reaches neither the
+  spending base nor the internal-transfer matcher, so the row would
+  vanish from both rather than surface as backlog
+  ([adapters/amex.md](adapters/amex.md) §5).
 - **Unrecognised `asset_class` source codes fall through to the
   `(other, other)` pair** with the raw code preserved in `payload`.
   Same rationale.

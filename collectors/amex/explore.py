@@ -16,7 +16,15 @@ raises. One run records:
                                      measuring WHICH of them carry
                                      bot-defense sensor headers, the
                                      observation that settled the data
-                                     path as plain REST (§A).
+                                     path as plain REST (§A). Playwright
+                                     records it raw and flushes it only on
+                                     a clean context close, so it is
+                                     rewritten through the shared
+                                     redactor afterwards
+                                     (`debugcap.redact_har`): the HAR is
+                                     never crash-safe, and network.jsonl —
+                                     masked as each line is written — is
+                                     what is.
   - **Network log**
     (`network.jsonl`)              — crash-safe, line-flushed request +
                                      response log (the HAR only flushes on
@@ -30,6 +38,11 @@ raises. One run records:
                                      OPT-IN via --trace: the current
                                      Playwright/camoufox pair crashes on
                                      tracing (see the --trace help).
+                                     Playwright writes these in its own
+                                     archive format and nothing here
+                                     rewrites them, so a trace is NOT
+                                     scrubbed: treat one as holding the
+                                     credential.
   - **Click log**
     (`clicks.jsonl`)               — one JSON object per click on the page
                                      (timestamp, URL, tag, id, text,
@@ -174,11 +187,13 @@ CLICK_RECORDER_JS = r"""
   };
   document.addEventListener('click', (e) => {
     const t = e.target;
-    // Redact password-input values so they never end up in the
-    // trace / click log.
+    // Never log a form VALUE. innerText is empty on INPUT/TEXTAREA, so a
+    // button or link keeps its label while a field can contribute nothing
+    // — which is what keeps a filled username, or a password field a
+    // show-password toggle flipped to type=text, out of the click log.
     const safeText = (t && t.tagName === 'INPUT' && t.type === 'password')
       ? '<redacted>'
-      : (t.innerText || t.value || '').toString().slice(0, 80);
+      : (t.innerText || '').toString().slice(0, 80);
     const data = {
       kind: 'click',
       ts: new Date().toISOString(),
@@ -317,7 +332,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "(matched-set drift — navigation works, tracing kills the "
               "browser). Enable only once base-camoufox realigns the pair; "
               "network.jsonl + clicks.jsonl + the HAR cover discovery "
-              "meanwhile."),
+              "meanwhile. A trace is NOT scrubbed — Playwright writes it in "
+              "its own format — so it holds the credential and is worth "
+              "deleting once it has been read."),
     )
     p.add_argument(
         "--chunk-interval", type=int, default=30,
@@ -458,7 +475,11 @@ def _maybe_prefill_login(page, username: str, password: str,
                         "want %d) — type it manually in the VNC session",
                         kind, len(got or ""), len(value))
             except Exception as exc:
-                log.debug("prefill %s field failed: %r", kind, exc)
+                # safe_error, never %r: a failed fill() renders the typed
+                # value verbatim inside Playwright's Call log block, so
+                # --debug would print the password to stderr.
+                log.debug("prefill %s field failed: %s", kind,
+                          debugcap.safe_error(exc))
         # The first americanexpress.com frame carrying both fields is the
         # login form; other frames (marketing embeds) don't get a second
         # pass.
@@ -533,31 +554,37 @@ def main(argv: list[str]) -> int:
     # statement.pdf across cards and months) don't collide.
     download_seq = {"n": 0}
 
+    # Credential redaction for every artefact this run writes: the click
+    # log, the network log, the DOM snapshots, and the HAR once the context
+    # close has flushed it. Defence-in-depth — debug-dir files are not under
+    # .secrets/, so a debug-dir leak is a real risk. The shared redactor
+    # knows every spelling a credential takes on the wire — percent-encoded
+    # in a form body, escaped in a JSON one — because a literal-substring
+    # masker let a percent-encoded password through into a capture in
+    # cleartext.
+    redact = debugcap.secret_redactor(username, password)
+
     with contextlib.ExitStack() as stack:
         clicks_fp = stack.enter_context(open(clicks_path, "w", encoding="utf-8"))
         network_fp = stack.enter_context(open(network_path, "w", encoding="utf-8"))
 
         def write_event(payload: dict) -> None:
-            clicks_fp.write(json.dumps(payload) + "\n")
+            # Redacted after serialisation: the redactor's variants include
+            # the json.dumps-escaped spelling, and a click event can carry a
+            # URL or an element label the page put a credential into.
+            clicks_fp.write(redact(json.dumps(payload)) + "\n")
             clicks_fp.flush()
 
         def write_network_event(payload: dict) -> None:
             network_fp.write(json.dumps(payload, default=str) + "\n")
             network_fp.flush()
 
-        # Credential redaction for network.jsonl. The login POST carries
-        # the password in its body; without this it would land in the debug
-        # log in plaintext. Defence-in-depth — debug-dir files are not under
-        # .secrets/, so a debug-dir leak is a real risk. The shared
-        # redactor knows every spelling a credential takes on the wire —
-        # percent-encoded in a form body, escaped in a JSON one — because a
-        # literal-substring masker let a percent-encoded password through
-        # into a capture in cleartext.
-        redact = debugcap.secret_redactor(username, password)
-
         # Camoufox launched with persistent_context returns a BrowserContext
         # directly. record_har_path enables HAR capture for the whole
-        # context's lifetime. We enter it manually (not via enter_context) so
+        # context's lifetime; Playwright writes that file raw, so it is
+        # rewritten through the redactor after the close below flushes it
+        # (debugcap.redact_har). We enter it manually (not via
+        # enter_context) so
         # the unwind can swallow the TargetClosedError its __exit__ raises on
         # the browser-X-closed path — browser.close() against an already-dead
         # browser. By then the artefacts are flushed (line-buffered logs +
@@ -591,6 +618,14 @@ def main(argv: list[str]) -> int:
                              "(artefacts flushed): %s", exc)
                 else:
                     raise
+        # Both registered on the stack, and registration order is what puts
+        # them in the right sequence: callbacks unwind LIFO, so the scrub
+        # queued FIRST runs LAST — after the close that flushes the HAR.
+        # Doing the scrub after the `with` block instead would skip it on
+        # exactly the path that matters, an unexpected error unwinding the
+        # stack: the close still flushes the raw HAR, and nothing masks it.
+        stack.callback(
+            lambda: debugcap.redact_har(har_path, redact, log=log))
         stack.callback(_close_camoufox)
         if args.trace:
             context.tracing.start(
@@ -627,13 +662,29 @@ def main(argv: list[str]) -> int:
                     "kind": "request",
                     "ts": _now_iso(),
                     "method": request.method,
-                    "url": request.url,
+                    # Two redactions, because they catch different things:
+                    # `redact` masks values known in advance (the
+                    # credentials), while redact_url / redact_headers mask
+                    # by parameter and header NAME — the only way to catch
+                    # one the site issued at runtime, like a bearer, a CSRF
+                    # token or the SPA's own api key.
+                    "url": debugcap.redact_url(redact(request.url)),
                     "resource_type": request.resource_type,
-                    "headers": {k: redact(v) for k, v in request.headers.items()},
-                    "post_data": redact(request.post_data) if request.method == "POST" else None,
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in request.headers.items()}),
+                    # The sign-in POST is form-urlencoded and carries a
+                    # `Password` field, so the body gets the same
+                    # field-by-field mask the HAR's does: on a --no-prefill
+                    # run `redact` is the identity and only the field NAME
+                    # can reach what was typed by hand.
+                    "post_data": debugcap.redact_body(
+                        request.post_data,
+                        request.headers.get("content-type"), redact)
+                    if request.method == "POST" and request.post_data
+                    else None,
                 })
             except Exception as exc:
-                log.debug("on_request error: %r", exc)
+                log.debug("on_request error: %s", debugcap.safe_error(exc))
 
         def on_response(response) -> None:
             try:
@@ -643,11 +694,12 @@ def main(argv: list[str]) -> int:
                 payload = {
                     "kind": "response",
                     "ts": _now_iso(),
-                    "url": response.url,
+                    "url": debugcap.redact_url(redact(response.url)),
                     "method": response.request.method,
                     "status": response.status,
                     "resource_type": response.request.resource_type,
-                    "headers": {k: redact(v) for k, v in response.headers.items()},
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in response.headers.items()}),
                 }
                 # Body capture: only for likely-interesting text-shaped
                 # responses, capped at 200 KB. Skips bundled JS/CSS and
@@ -657,7 +709,10 @@ def main(argv: list[str]) -> int:
                     try:
                         body = response.body()
                     except Exception as exc:
-                        payload["body_error"] = repr(exc)
+                        # safe_error, never repr: a Playwright transport
+                        # error's Call log reproduces the request headers,
+                        # cookie jar included, into this very file.
+                        payload["body_error"] = debugcap.safe_error(exc)
                     else:
                         if len(body) < 200_000:
                             try:
@@ -669,7 +724,7 @@ def main(argv: list[str]) -> int:
                             payload["body_truncated"] = True
                 write_network_event(payload)
             except Exception as exc:
-                log.debug("on_response error: %r", exc)
+                log.debug("on_response error: %s", debugcap.safe_error(exc))
 
         context.on("request", on_request)
         context.on("response", on_response)
@@ -688,7 +743,8 @@ def main(argv: list[str]) -> int:
                 context.tracing.start_chunk()
                 return True
             except Exception as exc:
-                log.debug("trace chunk save failed: %r", exc)
+                log.debug("trace chunk save failed: %s",
+                          debugcap.safe_error(exc))
                 return False
 
         # Fields already filled, keyed (id(page), kind) — the fill-once
@@ -752,7 +808,10 @@ def main(argv: list[str]) -> int:
                 try:
                     download.save_as(str(out_path))
                 except Exception as exc:
-                    event["save_error"] = repr(exc)
+                    # safe_error, never repr: a Playwright download error
+                    # renders its Call log, request headers and all, into
+                    # the click log this event is written to.
+                    event["save_error"] = debugcap.safe_error(exc)
                 write_event(event)
 
             page.on("console", on_console)
@@ -842,7 +901,8 @@ def main(argv: list[str]) -> int:
                             context, dom_dir, dom_seq, last_dom_skeleton, log,
                             redact)
                     except Exception as exc:
-                        log.debug("dom snapshot error: %r", exc)
+                        log.debug("dom snapshot error: %s",
+                                  debugcap.safe_error(exc))
                 # Periodic login pre-fill. The JS console detector only
                 # fires on field-set changes; this poll covers SPA route
                 # changes and late-mounting frames by re-checking every
@@ -862,7 +922,8 @@ def main(argv: list[str]) -> int:
                                 log.info("pre-filled login field(s) on %s",
                                          pg.url[:70])
                         except Exception as exc:
-                            log.debug("prefill poll error: %r", exc)
+                            log.debug("prefill poll error: %s",
+                                      debugcap.safe_error(exc))
                 try:
                     context.wait_for_event("close", timeout=1000)
                     exit_reason = "browser-closed"
@@ -912,14 +973,17 @@ def main(argv: list[str]) -> int:
     log.info("  clicks:        %s  (events + lifecycle)", clicks_path)
     log.info("  network:       %s  (requests + responses, crash-safe)",
              network_path)
-    log.info("  HAR:           %s  (best-effort; complete on Ctrl-C/SIGTERM exit, may be missing on browser-X close)",
+    log.info("  HAR:           %s  (scrubbed after the context close; "
+             "complete on Ctrl-C/SIGTERM exit, absent on browser-X close)",
              har_path)
     if args.trace:
         log.info("  trace-chunks/: %s/  (%d chunk(s); open with "
                  "`playwright show-trace chunk-NNN.zip`)",
                  trace_chunks_dir, chunk_seq["n"])
         log.info("  trace.zip:     %s  (best-effort; final-flush attempt; "
-                 "trace-chunks/ is the durable record)", trace_path)
+                 "trace-chunks/ is the durable record). Traces are NOT "
+                 "scrubbed — treat them as holding the credential.",
+                 trace_path)
     log.info("  downloads:     %s/  (%d file(s))",
              downloads_dir, download_seq["n"])
     if args.dom_interval > 0:

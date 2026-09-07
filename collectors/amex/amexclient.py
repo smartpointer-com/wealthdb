@@ -25,10 +25,13 @@ header — only the session cookie — so download.py replays the calls over
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
+
+log = logging.getLogger("amex.client")
 
 # --- origins and entry points --------------------------------------------
 
@@ -240,17 +243,44 @@ def export_url(account_key: str, fmt_handle: str, *,
     return f"{APP_ORIGIN}{DOCUMENTS_PATH}?{urlencode(params)}"
 
 
+# The document surface the contract allows (CLAUDE.md §1). Every document a
+# payload may point at lives under it; `absolute_url` is the single choke
+# point both document fetches go through, so the gate sits here.
+SERVICING_PREFIX = "/api/servicing/"
+
+
 def absolute_url(url: str) -> str:
-    """Resolve a `downloadOptions` URL against the app origin. The payload
-    gives them site-relative; a value that is already absolute is returned
-    unchanged.
+    """Resolve a `downloadOptions` URL against the app origin, refusing
+    anything off the servicing surface.
+
+    The payload gives them site-relative; an already-absolute value is kept
+    only when it resolves to https on the app origin's own host, under
+    `/api/servicing/`. The document fetches carry the session jar, so what
+    they may reach has to be decided by the contract rather than by whatever
+    string the provider payload happens to name. Host is matched exactly,
+    not by suffix: sibling americanexpress.com hosts receive the domain
+    cookies too. A refused value comes back "".
 
     An ABSENT url stays absent. Resolving "" would yield the app origin — a
     perfectly fetchable page — so a period offering no such document would
-    quietly store the SPA's own HTML under a `.pdf` name and count it."""
+    quietly store the SPA's own HTML under a `.pdf` name and count it.
+
+    The gate covers the first hop only: the fetches follow redirects, and no
+    redirect was observed on either document endpoint (DESIGN.md §E), so
+    pinning `max_redirects` waits on a capture that shows it is safe."""
     if not url:
         return ""
-    return urljoin(APP_ORIGIN + "/", url)
+    resolved = urljoin(APP_ORIGIN + "/", url)
+    parts = urlparse(resolved)
+    if (parts.scheme != "https"
+            or parts.hostname != urlparse(APP_ORIGIN).hostname
+            or not parts.path.startswith(SERVICING_PREFIX)):
+        # Host and path only — the query is where a document token rides.
+        log.warning("document URL is off the servicing surface "
+                    "(%s %s%s); ignored",
+                    parts.scheme or "-", parts.hostname or "-", parts.path)
+        return ""
+    return resolved
 
 
 # --- logon classification -------------------------------------------------

@@ -840,14 +840,17 @@ def _suggest_extension(suggested: str | None, fmt: str) -> str:
 
 def harvest_documents(page, since: date, until: date, run_dir: Path,
                       context, screenshot_dir: Path | None,
-                      debug: bool = False) -> list[dict]:
+                      debug: bool = False, mask=None) -> list[dict]:
     """Scrape document URLs across [since, until], paginating
     through the 999-row UBS cap by bisecting the window.
 
     ``debug`` additionally writes the settled documents page into
     ``run_dir/screenshots/`` — the DOM the window-bisect walk reads its
-    counts and rows out of. Only reached on a real run, so ``run_dir`` is
-    always a real dir here."""
+    counts and rows out of, masked through ``mask`` (the run's session
+    mask) on the way. Only reached on a real run, so ``run_dir`` is always
+    a real dir here."""
+    if mask is None:
+        mask = debugcap.SessionMask()
     docs_dir = run_dir / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     _dismiss_open_overlays(page)
@@ -860,14 +863,16 @@ def harvest_documents(page, since: date, until: date, run_dir: Path,
     except Exception:
         maybe_screenshot(page, screenshot_dir, "docs-no-filters")
         if debug:
-            debugcap.capture_page(page, run_dir, "30-documents", log=log)
+            debugcap.capture_page(page, run_dir, "30-documents", log=log,
+                                  redact=mask.for_page(page))
         raise SystemExit(
             "Documents page filter buttons did not appear. Session "
             "may have expired, or UBS may have redesigned the page."
         )
     maybe_screenshot(page, screenshot_dir, "docs-rendered")
     if debug:
-        debugcap.capture_page(page, run_dir, "30-documents", log=log)
+        debugcap.capture_page(page, run_dir, "30-documents", log=log,
+                              redact=mask.for_page(page))
 
     seen_tokens: set[str] = set()
     harvested: list[dict] = []
@@ -1345,10 +1350,19 @@ def main(argv: list[str]) -> int:
         log.warning("--debug: --dry-run persists nothing to bronze; "
                     "no captures will be written")
 
+    # The run's own credential. This walk is handed no password — it is
+    # handed a lifted session — so the session jar is what a capture could
+    # leak, and the SPA bootstraps its state into the markup a capture
+    # serialises. Read once, at the first capture, and never fatally: a
+    # mask that cannot be built must not take down the walk it exists to
+    # diagnose.
+    mask = debugcap.SessionMask()
+
     def capture(page, name: str) -> None:
         """Snapshot a landmark into the run dir; a no-op unless --debug."""
         if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log)
+            debugcap.capture_page(page, debug_dir, name, log=log,
+                                  redact=mask.for_page(page))
 
     from playwright.sync_api import sync_playwright
 
@@ -1423,6 +1437,7 @@ def main(argv: list[str]) -> int:
                     doc_results = harvest_documents(
                         page, since, until, run_dir,
                         context, args.screenshot_dir, debug=args.debug,
+                        mask=mask,
                     )
                     if not args.no_cards:
                         cards_meta = _capture_cards(

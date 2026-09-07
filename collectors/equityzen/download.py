@@ -353,10 +353,19 @@ def main(argv: list[str]) -> int:
         else:
             debug_dir = run
 
+    # The run's own credential. This walk is handed no password — it is
+    # handed a lifted session — so the jar is what a capture could leak,
+    # and an SPA that echoes its session into a meta tag or a bootstrap
+    # script puts it in the markup a capture serialises.
+    # The session lives in the persistent profile, so the jar is the
+    # browser's and is read at the first capture rather than here.
+    mask = debugcap.SessionMask()
+
     def capture(page, name: str) -> None:
         """Snapshot a page once it has settled; a no-op unless --debug."""
         if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, name, log=log)
+            debugcap.capture_page(page, debug_dir, name, log=log,
+                                  redact=mask.for_page(page))
 
     # Relocate the profile's regenerable startupCache out of the secrets
     # tree (idempotent; also migrates a pre-relocation profile) before

@@ -104,15 +104,18 @@ fi
 # orchestrator's login -> download -> load from tripping, and — since the
 # orchestrator runs the pair for every source — saves a container start per
 # source per refresh. `login --check` is a real verb and passes through; it
-# reads the profile's device-trust cookie and touches no network.
+# reads the profile's device-trust cookie off disk and touches no network.
+# `--help` / `-h` pass through too: the parser's usage is what the footer
+# below promises for every subcommand, and printing it must not be traded
+# for the fold notice.
 if [[ "${1:-}" == "login" ]]; then
-    HAS_CHECK=no
+    PASSES_THROUGH=no
     for arg in "$@"; do
-        if [[ "$arg" == "--check" ]]; then
-            HAS_CHECK=yes
-        fi
+        case "$arg" in
+            --check|--help|-h) PASSES_THROUGH=yes ;;
+        esac
     done
-    if [[ "$HAS_CHECK" == "no" ]]; then
+    if [[ "$PASSES_THROUGH" == "no" ]]; then
         echo "amex: 'login' folds into 'download' — the sign-in budget is" \
              "too small to spend one on a separate verb (DESIGN.md §L)." >&2
         echo "  Run 'download', or 'login --check' to report whether this" \

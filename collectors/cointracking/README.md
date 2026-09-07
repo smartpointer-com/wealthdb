@@ -69,7 +69,7 @@ shared collector conventions.
 | `load`     | implemented | DuckDB silver, aggregate-then-window holdings replay with incremental upsert + balance reconciliation + portfolio_prices ingest (per-portfolio quote currency). |
 | `fetch-prices` | implemented | USDT-denominated price backfill from Binance public spot (no key, no signup). 1000-day chunked klines, polite rate-limited. Stablecoins emit synthetic 1.0. |
 | `prune`    | implemented | Reclaim bronze disk — deletes whole non-complete dumps (crashed / in-progress walks) and strips `screenshots/` (the `download --debug` captures) from complete dumps. A complete dump's load inputs are left intact. |
-| `explore`  | implemented | Discovery harness (Camoufox + VNC + HAR + trace + click log). Kept around for re-discovery if cointracking changes their UI. |
+| `explore`  | implemented | Discovery harness (Camoufox + VNC + redacted HAR + network/click logs, opt-in `--trace`). Kept around for re-discovery if cointracking changes their UI. |
 
 The device-trust cookie is multi-year, so once `login` has been
 run once the collector slots into unattended scheduling like the
@@ -166,8 +166,10 @@ cointracking changes a selector that the headless flow depends on
 (e.g. the "Extended with additional columns" mode dropdown, or the
 "Don't ask again" checkbox). It launches Camoufox in the
 container's Xvfb display and exposes a VNC port for driving the
-live browser interactively; meanwhile it records HAR, Playwright
-trace, click log, and any blob downloads:
+live browser interactively; meanwhile it records a redacted HAR, a
+crash-safe network log, a click log, any blob downloads, and — with
+`--trace`, off by default because nothing redacts one — a Playwright
+trace:
 
 ```sh
 ./cointracking explore --fresh      # --fresh wipes the profile so 2FA is forced
@@ -180,7 +182,8 @@ trace, click log, and any blob downloads:
 ```
 
 Artefacts land under `$HOME/.cache/wealthdb/debug/cointracking/<UTC-ts>/`
-(network.jsonl + trace-chunks/ + clicks.jsonl + downloads/).
+(network.jsonl + clicks.jsonl + network.har + downloads/, plus
+trace-chunks/ with `--trace`).
 Close the browser window OR Ctrl-C the container — either path
 flushes everything to disk.
 

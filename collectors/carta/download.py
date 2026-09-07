@@ -602,6 +602,13 @@ def run(context, args, run_dir: Path, snapshot_at: int,
         debug_dir: Path | None = None) -> int:
     page = context.new_page()
     api = Api(context)
+    # The run's own credential. This walk is handed no password — it is
+    # handed a lifted session — so the jar is what a capture could leak,
+    # and an SPA that echoes its session into a meta tag or a bootstrap
+    # script puts it in the markup a capture serialises.
+    # The session lives in the persistent profile, so the jar is the
+    # browser's and is read at the capture below rather than here.
+    mask = debugcap.SessionMask()
 
     try:
         iid = land_and_get_individual_id(page)
@@ -614,7 +621,8 @@ def run(context, args, run_dir: Path, snapshot_at: int,
         # read out of actually looked like. Captured on the raise path too:
         # a landing that never resolved an id is the failure worth seeing.
         if debug_dir is not None:
-            debugcap.capture_page(page, debug_dir, "10-landing", log=log)
+            debugcap.capture_page(page, debug_dir, "10-landing", log=log,
+                                  redact=mask.for_page(page))
     log.info("individual id discovered")
     firm_id, nav, acct = discover_firm_id(api, iid)
     if not firm_id:

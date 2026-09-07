@@ -138,12 +138,13 @@ AMEX_PASSWORD='...'
 ```
 ./amex download                    # the whole run: sign in + REST fetch → bronze (~90 days)
 ./amex download --lookback all     # everything the source offers (the initial backfill)
-./amex download --dry-run          # enumerate the roster + activity, export nothing
+./amex download --dry-run          # roster + activity — STILL SIGNS IN, exports nothing
 ./amex download --no-documents     # skip the statement PDFs
 ./amex download --fresh            # move device trust aside, forcing the untrusted flow
+./amex download --format xls       # csv, xls, qfx, qbo (repeatable; default csv+qfx)
 
 ./amex vnc-login              # the same walk, sign-in by hand over VNC (answers a captcha)
-./amex login --check          # is this device registered? (no sign-in, no network)
+./amex login --check          # is this device registered? (profile cookie, no sign-in)
 
 ./amex load                   # bronze → silver SQLite
 ./amex load --force           # delete the silver DB and rebuild from all bronze
@@ -175,7 +176,13 @@ land in `~/.cache/wealthdb/debug/amex/screenshots/`, each `explore` capture
 in `~/.cache/wealthdb/debug/amex/<UTC-ts>/`, and bronze runs under
 `$XDG_DATA_HOME/wealthdb/amex/<UTC-ts>/`. On `login`, `--debug` only raises
 the log level — it captures nothing. Both trees carry real account data —
-treat those directories as sensitive.
+treat those directories as sensitive. Credentials are masked out of every
+capture the harness writes itself, including the HAR, which is rewritten
+after the browser closes; `explore --trace` is the exception — Playwright
+writes that bundle in its own format and nothing scrubs it, and a trace
+cannot be redacted after the fact because its DOM snapshots store every
+input's value, so a trace holds the credential and is worth deleting once
+it has been read.
 
 Real sessions can fire a real passcode at your device — run them only
 deliberately, **never in quick succession**. Amex's budget is small: about

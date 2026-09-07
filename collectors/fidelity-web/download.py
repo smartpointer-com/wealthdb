@@ -2738,7 +2738,7 @@ def maybe_source_env_files(args):
 # ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def open_camoufox_context(profile_dir, trace):
+def open_camoufox_context(profile_dir, trace, snapshots=False):
     """Open Camoufox with a persistent profile dir, yielding the
     BrowserContext. The context auto-closes on exit.
 
@@ -2760,6 +2760,12 @@ def open_camoufox_context(profile_dir, trace):
     cleanup raises TargetClosedError `from None`, which would replace
     the body's exception — the actual diagnosis — with a generic close
     error. A cleanup failure is logged instead, never raised.
+
+    ``snapshots`` defaults off because the sign-in shares this context:
+    a trace's DOM snapshots carry every input's value and no redactor
+    reaches a trace. A caller that types no credential passes True, and
+    the sign-in path turns them on for the walk with
+    :func:`restart_trace_after_signin`.
     """
     from camoufox.sync_api import Camoufox
     cm = Camoufox(
@@ -2790,8 +2796,13 @@ def open_camoufox_context(profile_dir, trace):
         context.set_default_navigation_timeout(LANDMARK_TIMEOUT_MS)
         context.set_default_timeout(LANDMARK_TIMEOUT_MS)
         if trace:
+            # snapshots=False because the sign-in comes first and a trace's
+            # DOM snapshots record every input's value, the typed password
+            # included — and nothing can redact a trace after the fact.
+            # restart_trace_after_signin() turns them back on for the walk,
+            # which is the phase they are worth having for.
             context.tracing.start(
-                screenshots=True, snapshots=True, sources=True,
+                screenshots=True, snapshots=snapshots, sources=True,
             )
         yield context
     finally:
@@ -2857,19 +2868,39 @@ def maybe_capture(page, screenshot_dir, label):
         log.debug("screenshot %s failed (HTML saved): %s", label, e)
 
 
-def stop_trace_if_active(context, trace, screenshot_dir, label):
+def stop_trace_if_active(context, trace, screenshot_dir, label) -> bool:
+    """Write the running trace out. Returns whether it was stopped, which
+    is what lets the caller know a fresh one may be started."""
     if not trace:
-        return
+        return False
     if screenshot_dir is None:
         log.warning("--trace without --screenshot-dir; trace discarded")
-        return
+        return False
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     trace_path = screenshot_dir / f"{bronze.ts_slug()}-{label}-trace.zip"
     try:
         context.tracing.stop(path=str(trace_path))
         log.info("trace saved to %s", trace_path)
+        return True
     except Exception as e:
         log.warning("stop trace failed: %s", e)
+        return False
+
+
+def restart_trace_after_signin(context, trace, screenshot_dir) -> None:
+    """Close the snapshot-free sign-in trace and open a snapshotting one.
+
+    The DOM snapshots that make a trace worth reading are the same ones
+    that would carry the typed password, so they are off until the
+    credential screens are behind us and on for the walk. Best effort: a
+    trace that will not restart costs diagnostics, never the run.
+    """
+    if not stop_trace_if_active(context, trace, screenshot_dir, "signin"):
+        return
+    try:
+        context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    except Exception as e:
+        log.warning("restarting the trace after sign-in failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -3247,7 +3278,10 @@ def run_check(args):
         log.error("--profile-dir does not exist: %s", args.profile_dir)
         return 2
     launch.prepare_profile_dir(args.profile_dir)
-    with open_camoufox_context(args.profile_dir, args.trace) as context:
+    # snapshots=True: --check navigates to the landing page and types
+    # nothing, so there is no credential for a DOM snapshot to catch.
+    with open_camoufox_context(args.profile_dir, args.trace,
+                               snapshots=True) as context:
         try:
             page = open_page(context)
             landing = POST_AUTH_PREFIX + "summary"
@@ -3295,6 +3329,11 @@ def run_oneshot(args):
             page = open_page(context)
             if not login(page, args, username, password):
                 return 3
+            # Sign-in done: from here a DOM snapshot can only catch account
+            # data, which the trace already holds, so the walk gets the
+            # richer artefact.
+            restart_trace_after_signin(context, args.trace,
+                                       args.screenshot_dir)
             if args.vnc and args.mode == "none":
                 # VNC handoff that's just seeding the profile dir —
                 # no walk requested.
@@ -3446,8 +3485,15 @@ def parse_args(argv):
     )
     p.add_argument(
         "--trace", action="store_true",
-        help="Capture a Playwright trace bundle (requires "
-             "--screenshot-dir).",
+        help="Capture a Playwright trace bundle into --screenshot-dir "
+             "(required). A run that signs in writes two: a "
+             "'<ts>-signin-trace.zip' with DOM snapshots off, because a "
+             "snapshot records every input's value and no redactor "
+             "reaches a trace after the fact, and a "
+             "'<ts>-download-trace.zip' with them on for the walk, where "
+             "they are what makes a trace worth reading. --check types no "
+             "credential and writes one bundle, snapshots on. UNREDACTED "
+             "either way — never commit one.",
     )
     return p.parse_args(argv)
 

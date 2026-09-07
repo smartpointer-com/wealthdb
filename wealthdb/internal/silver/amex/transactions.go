@@ -174,7 +174,9 @@ var statementSectionKinds = map[string]canonical.TxKind{
 //     with the withdrawal on the cash account that paid it, replacing the
 //     `card_spend` placeholder with the purchases this card itemises.
 //   - CREDIT with a category → `refund`. It nets against the spend it reverses
-//     inside the spending base.
+//     inside the spending base. The reversal of a FEE reads the same way: the
+//     direction is settled before the category, so it stays a credit rather
+//     than becoming a second, sign-forced `fee`.
 //   - DEBIT categorised under fees → `fee`. Interest is billed into the same
 //     bucket and is not separated here: only the statement states it as its own
 //     figure, and guessing it from a descriptor would be a worse answer than a
@@ -191,8 +193,6 @@ var statementSectionKinds = map[string]canonical.TxKind{
 // categorised credit; there is no reward transaction to map, so the kind is
 // left unproduced rather than guessed at.
 func cardTxKind(rawKind, category string, amt canonical.Decimal) (canonical.TxKind, bool) {
-	fees := strings.HasPrefix(strings.ToLower(strings.TrimSpace(category)),
-		feesCategory)
 	norm := strings.ToUpper(strings.TrimSpace(rawKind))
 	if k, ok := statementSectionKinds[norm]; ok {
 		return k, true
@@ -204,7 +204,12 @@ func cardTxKind(rawKind, category string, amt canonical.Decimal) (canonical.TxKi
 		}
 		return canonical.TxKindRefund, true
 	case "DEBIT":
-		if fees {
+		// The fees test lives inside the DEBIT case, not above the
+		// switch: a fee REVERSAL carries the same category, and `fee`
+		// forces a negative canonical sign, which would state the
+		// charge twice.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(category)),
+			feesCategory) {
 			return canonical.TxKindFee, true
 		}
 		return canonical.TxKindPurchase, true

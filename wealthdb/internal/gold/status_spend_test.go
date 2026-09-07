@@ -124,3 +124,50 @@ func TestStatusSpendCountersSkippedWithoutVerbose(t *testing.T) {
 		t.Errorf("non-verbose status computed spending counters: %+v", st)
 	}
 }
+
+// TestStatusCountsAKindGuessedBySign pins the drift counter for the
+// adapters that do NOT fall to `other` on an unrecognised source kind:
+// they park the raw value in payload.source_kind and kind the row by
+// its sign instead, so the row reads as an ordinary purchase or bill
+// everywhere downstream and no `other` counter can see it.
+func TestStatusCountsAKindGuessedBySign(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at) VALUES
+            ('test-src', 'CARD1', 'card', 'Example Card', 1, 1);
+
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount,
+                                  payload) VALUES
+            ('test-src', 'T-GUESSED', 3000, 'CARD1', 'purchase', 'USD', -20,
+             '{"source_kind": "A DIRECTION THIS BUILD HAS NOT SEEN"}'),
+            -- The other shape: an adapter that parks the raw value AND
+            -- buckets the row as 'other'. The two counters must not both
+            -- claim it, or status -v double-reports one row of drift.
+            ('test-src', 'T-OTHER',   3000, 'CARD1', 'other', 'USD', -50,
+             '{"source_kind": "A KIND THIS BUILD FILED AS OTHER"}'),
+            -- A payload that names the key but holds no value: JSON null
+            -- is not SQL NULL, so only a string-typed read excludes it.
+            ('test-src', 'T-JSONNULL', 3000, 'CARD1', 'purchase', 'USD', -60,
+             '{"source_kind": null}'),
+            ('test-src', 'T-MAPPED',  3000, 'CARD1', 'purchase', 'USD', -30, '{}'),
+            ('test-src', 'T-NOPAY',   3000, 'CARD1', 'purchase', 'USD', -40, NULL);
+    `); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	st, err := StatusForSource(ctx, db, "test-src", true)
+	if err != nil {
+		t.Fatalf("StatusForSource: %v", err)
+	}
+	if st.GuessedTxKindCount != 1 {
+		t.Errorf("GuessedTxKindCount = %d, want 1 — only the row carrying a raw source_kind under a kind that is not 'other'",
+			st.GuessedTxKindCount)
+	}
+	// The guessed row is a purchase, which is exactly why it needs a
+	// counter of its own; the `other` row belongs to the older counter
+	// alone.
+	if st.OtherTxKindCount != 1 {
+		t.Errorf("OtherTxKindCount = %d, want 1", st.OtherTxKindCount)
+	}
+}

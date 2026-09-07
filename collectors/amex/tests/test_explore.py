@@ -1,15 +1,18 @@
 """Unit tests for the browserless half of explore.py: argument parsing,
 the americanexpress.com origin gate, the click-recorder-JS ↔ Python
-contract, the env-file sourcing contract, and the login pre-fill logic —
-the latter driven against stub Playwright objects, so no browser is
-needed.
+contract, the env-file sourcing contract, the post-close HAR scrub, what a
+whole session leaves on disk, and the login pre-fill logic — all driven
+against stub Playwright objects, so no browser is needed.
 
 Synthetic values only (no real credentials or account data).
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -60,7 +63,6 @@ def test_parse_args_overrides():
 def test_no_password_flag_exists():
     # Credentials reach the harness via env only (root CLAUDE.md §3);
     # a --password flag must never parse.
-    import pytest
     with pytest.raises(SystemExit):
         explore.parse_args(["--password", "x"])
 
@@ -123,6 +125,232 @@ def test_js_mirrors_the_python_host_gate():
 def test_js_redacts_password_values():
     assert "<redacted>" in explore.CLICK_RECORDER_JS
     assert "type === 'password'" in explore.CLICK_RECORDER_JS
+
+
+def test_the_click_recorder_never_logs_a_form_value():
+    # innerText is always empty on INPUT/TEXTAREA, so a button or link keeps
+    # its label while no field value can contribute anything — which is what
+    # keeps a filled username, and a password field a show-password toggle
+    # flipped to type=text, out of the click log.
+    assert ".value" not in explore.CLICK_RECORDER_JS
+
+
+# ============================================================
+# What reaches the network log, and what the HAR keeps
+# ============================================================
+
+def test_the_network_log_masks_by_name_as_well_as_by_value():
+    # Masking by credential VALUE alone leaves every runtime-issued secret
+    # standing — a bearer, a CSRF token, an api key, a token in a query
+    # string. Both handlers therefore also mask by parameter and header NAME.
+    source = Path(explore.__file__).read_text()
+    assert '"url": request.url' not in source
+    assert '"url": response.url' not in source
+    assert source.count("debugcap.redact_headers(") >= 2   # both handlers
+    assert source.count("debugcap.redact_url(") >= 2
+
+
+def _har(**request_extra) -> dict:
+    request = {
+        "method": "POST",
+        "url": "https://www.example.com/logon?api_key=SYNTHETICKEY",
+        "queryString": [{"name": "api_key", "value": "SYNTHETICKEY"}],
+        "headers": [
+            {"name": "Cookie", "value": "session=SYNTHETICJAR"},
+            {"name": "Authorization", "value": "Bearer SYNTHETICBEARER"},
+            {"name": "Content-Type",
+             "value": "application/x-www-form-urlencoded"},
+        ],
+        "cookies": [{"name": "session", "value": "SYNTHETICJAR"}],
+        "postData": {
+            "mimeType": "application/x-www-form-urlencoded",
+            "text": "UserID=example-user&Password=p%40ss%2Bword",
+            "params": [{"name": "UserID", "value": "example-user"},
+                       {"name": "Password", "value": "p@ss+word"}],
+        },
+    }
+    request.update(request_extra)
+    return {"log": {"entries": [{
+        "request": request,
+        "response": {
+            "status": 200,
+            "url": "https://www.example.com/logon?api_key=SYNTHETICKEY",
+            "redirectURL":
+                "https://www.example.com/next?token=SYNTHETICREDIRECT",
+            "headers": [{"name": "Set-Cookie",
+                         "value": "session=SYNTHETICJAR"}],
+            "cookies": [{"name": "session", "value": "SYNTHETICJAR"}],
+            "content": {"text": '{"user":"example-user"}'},
+        },
+    }]}}
+
+
+def test_the_har_is_redacted_of_every_credential_it_recorded(tmp_path):
+    # Playwright records the HAR raw — the sign-in POST body, the cookie jar,
+    # the response bodies — and nothing else in the harness touches it. The
+    # rewrite is the SHARED one; what this pins is that amex's own recorded
+    # shape comes out of it clean. The generic properties (an absent file, an
+    # unparseable one, a base64 body) are pinned once, in the collectorkit
+    # suite, rather than per collector.
+    har = tmp_path / "network.har"
+    har.write_text(json.dumps(_har()), encoding="utf-8")
+    redact = explore.debugcap.secret_redactor("example-user", "p@ss+word")
+
+    assert explore.debugcap.redact_har(har, redact, log=explore.log)
+
+    blob = har.read_text(encoding="utf-8")
+    for secret in ("SYNTHETICKEY", "SYNTHETICJAR", "SYNTHETICBEARER",
+                   "SYNTHETICREDIRECT",
+                   "example-user", "p@ss+word", "p%40ss%2Bword"):
+        assert secret not in blob, secret
+    entry = json.loads(blob)["log"]["entries"][0]
+    # The jar's VALUES go and its names stay: a cookie name is not a
+    # credential, and which cookies an endpoint set is a diagnostic.
+    for half in ("request", "response"):
+        assert [c["name"] for c in entry[half]["cookies"]] == ["session"]
+        assert entry[half]["cookies"][0]["value"] == explore.debugcap.REDACTED
+    # Header and field NAMES survive — that a request carried a bearer, and
+    # that the form posts a Password field, is exactly the diagnostic.
+    assert [h["name"] for h in entry["request"]["headers"]] == [
+        "Cookie", "Authorization", "Content-Type"]
+    assert "Password" in entry["request"]["postData"]["text"]
+    # A header carrying nothing secret is left legible.
+    assert entry["request"]["headers"][2]["value"] == (
+        "application/x-www-form-urlencoded")
+
+
+def test_a_form_field_named_password_goes_even_when_its_value_is_unknown(
+        tmp_path):
+    # The --no-prefill case on amex's own sign-in body: the credential was
+    # typed by hand, so no value-based masker can reach it. The field NAME
+    # still can.
+    har = tmp_path / "network.har"
+    har.write_text(json.dumps(_har()), encoding="utf-8")
+    assert explore.debugcap.redact_har(har, log=explore.log)
+    blob = har.read_text(encoding="utf-8")
+    assert "p@ss+word" not in blob and "p%40ss%2Bword" not in blob
+
+
+# ============================================================
+# What a whole session leaves behind — driven with no browser
+# ============================================================
+
+class _StubPage:
+    """The one page main() opens, which it only navigates."""
+    url = "https://www.example.com/"
+
+    def goto(self, *args, **kwargs) -> None:
+        pass
+
+
+class _StubRequest:
+    """The sign-in POST: form-urlencoded, carrying a `Password` field."""
+    method = "POST"
+    url = "https://www.example.com/logon"
+    resource_type = "xhr"
+    headers = {"content-type": "application/x-www-form-urlencoded"}
+    post_data = "UserID=example-user&Password=p%40ss%2Bword"
+
+
+class _StubContext:
+    """Enough BrowserContext for one lap of main() with no browser.
+
+    `on` fires the request handler as it is registered: that handler is a
+    closure over the open network.jsonl, so firing it from inside is the
+    only way to put a real body through the path that writes the log.
+    """
+
+    def __init__(self, *, fire_request=None, fail_on_init_script=False):
+        self._fire_request = fire_request
+        self._fail = fail_on_init_script
+
+    def add_init_script(self, *args, **kwargs) -> None:
+        if self._fail:
+            raise RuntimeError("session died mid-flight")
+
+    def on(self, event, handler) -> None:
+        if event == "request" and self._fire_request is not None:
+            handler(self._fire_request)
+
+    def new_page(self):
+        return _StubPage()
+
+
+def _stub_camoufox(monkeypatch, context, *, har_body=None):
+    """Replace Camoufox with a stub whose close flushes a raw HAR.
+
+    Playwright writes the recorded HAR only on the context close and writes
+    it unmasked, which is exactly the sequencing the scrub has to survive.
+    """
+    sync_api = pytest.importorskip("camoufox.sync_api")
+
+    class _Cam:
+        def __init__(self, **kwargs):
+            self._har = Path(kwargs["record_har_path"])
+
+        def __enter__(self):
+            return context
+
+        def __exit__(self, *exc_info):
+            if har_body is not None:
+                self._har.write_text(json.dumps(har_body), encoding="utf-8")
+            return False
+
+    monkeypatch.setattr(sync_api, "Camoufox", _Cam)
+
+
+def _session_argv(tmp_path) -> list[str]:
+    # --max-duration 0 makes the poll loop fall through at its first check,
+    # so a session runs start to finish without waiting on anything.
+    return ["--debug-dir", str(tmp_path / "debug"),
+            "--profile-dir", str(tmp_path / "profile"),
+            "--env-file", str(tmp_path / "absent.env"),
+            "--dom-interval", "0",
+            "--max-duration", "0"]
+
+
+def _no_credentials(monkeypatch, tmp_path) -> None:
+    # The run this harness is most often given: no env file, so the redactor
+    # is the identity function and the credential is typed by hand.
+    monkeypatch.delenv(explore.USER_ENV, raising=False)
+    monkeypatch.delenv(explore.PASS_ENV, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
+def test_the_network_log_masks_a_password_field_it_never_saw(tmp_path,
+                                                             monkeypatch):
+    # network.jsonl is the crash-safe record, so it cannot be the weaker of
+    # the two: the sign-in body reaches it as well, and on a run with no
+    # credentials to mask by value only the field NAME can catch it.
+    _no_credentials(monkeypatch, tmp_path)
+    _stub_camoufox(monkeypatch, _StubContext(fire_request=_StubRequest()))
+
+    assert explore.main(_session_argv(tmp_path)) == 0
+
+    blob = (tmp_path / "debug" / "network.jsonl").read_text(encoding="utf-8")
+    assert "p@ss+word" not in blob and "p%40ss%2Bword" not in blob
+    # That the form posts a Password field is the diagnostic; its value is
+    # the secret.
+    assert "Password" in blob
+
+
+def test_an_error_mid_session_still_leaves_the_har_scrubbed(tmp_path,
+                                                            monkeypatch):
+    # The close that flushes the raw HAR runs on every unwind, so a scrub
+    # sequenced after the with-block would be skipped on exactly the path
+    # that leaves a cleartext credential on disk.
+    _no_credentials(monkeypatch, tmp_path)
+    _stub_camoufox(monkeypatch,
+                   _StubContext(fail_on_init_script=True),
+                   har_body=_har())
+
+    with pytest.raises(RuntimeError):
+        explore.main(_session_argv(tmp_path))
+
+    blob = (tmp_path / "debug" / "network.har").read_text(encoding="utf-8")
+    for secret in ("SYNTHETICKEY", "SYNTHETICJAR", "SYNTHETICBEARER",
+                   "SYNTHETICREDIRECT", "p@ss+word", "p%40ss%2Bword"):
+        assert secret not in blob, secret
 
 
 # ============================================================

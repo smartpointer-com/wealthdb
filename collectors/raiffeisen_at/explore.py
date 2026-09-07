@@ -15,6 +15,9 @@ real traces:
                                      statement generator — the ELBA
                                      wiring is unknown, so this decides
                                      scrape-vs-REST per surface.
+                                     Credentials, cookies and
+                                     query-string tokens are masked out
+                                     of it once the close has written it.
   - **Network log**
     (`network.jsonl`)              — crash-safe, line-flushed request +
                                      response log (the HAR only flushes on
@@ -28,6 +31,10 @@ real traces:
                                      OPT-IN via --trace: the current
                                      Playwright/camoufox pair crashes on
                                      tracing (see the --trace help).
+                                     UNREDACTED and unredactable — its
+                                     DOM snapshots carry every input's
+                                     value, a hand-typed password
+                                     included.
   - **Click log**
     (`clicks.jsonl`)               — one JSON object per click on the page
                                      (timestamp, URL, tag, id, text,
@@ -552,6 +559,17 @@ def main(argv: list[str]) -> int:
         # into a capture in cleartext.
         redact = debugcap.secret_redactor(username, password)
 
+        # The HAR is Playwright's own recording, and it records whole: the
+        # login POST body, every header, the cookie jar. It is the one
+        # capture in this dir written by the driver rather than by the
+        # handlers, and it exists only once the context close has flushed
+        # it. Registered on the stack rather than called after the block so
+        # a walk that raises is cleaned too — an unwind closes the context,
+        # which flushes the HAR, and a run that crashed is exactly the one
+        # whose debug dir gets opened. LIFO puts this after the close.
+        stack.callback(
+            lambda: debugcap.redact_har(har_path, redact, log=log))
+
         # Camoufox launched with persistent_context returns a BrowserContext
         # directly. record_har_path enables HAR capture for the whole
         # context's lifetime. We enter it manually (not via enter_context) so
@@ -625,9 +643,16 @@ def main(argv: list[str]) -> int:
                     "kind": "request",
                     "ts": _now_iso(),
                     "method": request.method,
-                    "url": request.url,
+                    "url": debugcap.redact_url(redact(request.url)),
                     "resource_type": request.resource_type,
-                    "headers": {k: redact(v) for k, v in request.headers.items()},
+                    # Two redactions, because they catch different
+                    # things: `redact` masks the values known in advance
+                    # (the credentials), while `redact_headers` masks by
+                    # header NAME — the only way to catch one the site
+                    # issues at runtime, like a session cookie or the
+                    # SPA's own api key.
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in request.headers.items()}),
                     "post_data": redact(request.post_data) if request.method == "POST" else None,
                 })
             except Exception as exc:
@@ -641,11 +666,18 @@ def main(argv: list[str]) -> int:
                 payload = {
                     "kind": "response",
                     "ts": _now_iso(),
-                    "url": response.url,
+                    "url": debugcap.redact_url(redact(response.url)),
                     "method": response.request.method,
                     "status": response.status,
                     "resource_type": response.request.resource_type,
-                    "headers": {k: redact(v) for k, v in response.headers.items()},
+                    # Two redactions, because they catch different
+                    # things: `redact` masks the values known in advance
+                    # (the credentials), while `redact_headers` masks by
+                    # header NAME — the only way to catch one the site
+                    # issues at runtime, like a session cookie or the
+                    # SPA's own api key.
+                    "headers": debugcap.redact_headers(
+                        {k: redact(v) for k, v in response.headers.items()}),
                 }
                 # Body capture: only for likely-interesting text-shaped
                 # responses, capped at 200 KB. Skips bundled JS/CSS and
@@ -909,14 +941,17 @@ def main(argv: list[str]) -> int:
     log.info("  clicks:        %s  (events + lifecycle)", clicks_path)
     log.info("  network:       %s  (requests + responses, crash-safe)",
              network_path)
-    log.info("  HAR:           %s  (best-effort; complete on Ctrl-C/SIGTERM exit, may be missing on browser-X close)",
+    log.info("  HAR:           %s  (redacted; best-effort — complete on "
+             "Ctrl-C/SIGTERM exit, may be missing on browser-X close)",
              har_path)
     if args.trace:
         log.info("  trace-chunks/: %s/  (%d chunk(s); open with "
                  "`playwright show-trace chunk-NNN.zip`)",
                  trace_chunks_dir, chunk_seq["n"])
         log.info("  trace.zip:     %s  (best-effort; final-flush attempt; "
-                 "trace-chunks/ is the durable record)", trace_path)
+                 "trace-chunks/ is the durable record). UNREDACTED: a "
+                 "trace carries the typed credential — never commit it",
+                 trace_path)
     log.info("  downloads:     %s/  (%d file(s))",
              downloads_dir, download_seq["n"])
     if args.dom_interval > 0:

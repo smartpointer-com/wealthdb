@@ -41,15 +41,15 @@ case "${1:-help}" in
         # `login` folds into `download` (DESIGN.md §L). The host wrapper
         # already traps a bare one; this closes the direct-`docker run amex
         # login` path, which would otherwise reach the container's
-        # util-linux /bin/login. `login --check` is a real verb: it reads the
-        # profile's device-trust cookie, which needs Camoufox but no network
-        # and no sign-in.
+        # util-linux /bin/login. `login --check` is a real verb: it reads
+        # the profile's device-trust cookie straight out of the Firefox jar
+        # on disk, so it needs no display, no browser and no network.
+        # `--help` prints argparse's usage and likewise starts nothing.
         shift
         for a in "$@"; do
-            if [[ "$a" == "--check" ]]; then
-                start_xvfb
-                exec python3 /app/login.py "$@"
-            fi
+            case "$a" in
+                --check|--help|-h) exec python3 /app/login.py "$@" ;;
+            esac
         done
         echo "amex: 'login' folds into 'download' — the sign-in budget is" \
              "too small to spend one on a separate verb (DESIGN.md §L)." >&2
