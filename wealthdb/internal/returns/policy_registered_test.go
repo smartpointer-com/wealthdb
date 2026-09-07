@@ -15,6 +15,7 @@ import (
 
 	// Blank-import every silver adapter that registers a policy, mirroring
 	// cmd/wealthdb/main.go, so registration runs before the assertions.
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/amex"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/chase"
@@ -150,6 +151,35 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if rp.AccountsGrain != returns.AccountsGrainHidden {
 			t.Errorf("%s: AccountsGrain must be hidden (cash plumbing)", k)
 		}
+	}
+
+	// amex: the card-only source. No knob here can move a figure — the engine
+	// drops `card` accounts at the loader — so what the policy declares is
+	// what there is to pin: Known, so the kind never reports
+	// unknown_adapter_policy; the shared bank set, on which none of the card
+	// kinds count as owner capital; and AccountsGrainHidden, which states the
+	// same invisibility a second way and holds if a card-only source ever
+	// emits a non-card account.
+	amx, _ := returns.ReturnsPolicyFor("amex")
+	if !amx.Flow.Known {
+		t.Error("amex: policy must be Known (registered)")
+	}
+	if amx.Flow.Regime != returns.RegimeFlowComplete {
+		t.Errorf("amex: regime %v, want flow_complete", amx.Flow.Regime)
+	}
+	for _, tk := range returns.BankExternal() {
+		if !amx.Flow.IsExternal(tk) {
+			t.Errorf("amex: %s must be external", tk)
+		}
+	}
+	for _, tk := range []canonical.TxKind{canonical.TxKindPurchase,
+		canonical.TxKindRefund, canonical.TxKindCardPayment} {
+		if amx.Flow.IsExternal(tk) {
+			t.Errorf("amex: %s must not count as owner capital", tk)
+		}
+	}
+	if amx.AccountsGrain != returns.AccountsGrainHidden {
+		t.Error("amex: AccountsGrain must be hidden (a card emits no return row)")
 	}
 
 	// fred is blank-imported but registers NO policy — it must fall to the

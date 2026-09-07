@@ -12,6 +12,7 @@ package gold
 // (the boundary documented in open.go). No import cycle: silver/<kind> imports
 // internal/returns, not internal/gold.
 import (
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/amex"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/chase"

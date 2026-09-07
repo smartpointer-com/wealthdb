@@ -3,7 +3,6 @@ package chase
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -112,7 +111,7 @@ SELECT fitid, posted_at, account_external_id, amount,
 			// The provider's own category, verbatim and un-normalised.
 			// Empty on payments, which the provider leaves uncategorised.
 			ProviderCategory: silver.StrPtrIfNonEmpty(category),
-			Payload:          payloadWith(payload, extra),
+			Payload:          silver.PayloadWith(payload, extra),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -221,26 +220,4 @@ func cardTxKind(raw string, amt canonical.Decimal) (canonical.TxKind, bool) {
 		return canonical.TxKindCardPayment, true
 	}
 	return k, true
-}
-
-// payloadWith returns the silver payload with `extra`'s keys merged in — the
-// projection's own annotations beside the collector's. A payload that does not
-// decode as a JSON object (the loader never writes one, but the column is free
-// text) is replaced by the annotations alone rather than losing them.
-func payloadWith(payload string, extra map[string]any) json.RawMessage {
-	if len(extra) == 0 {
-		return json.RawMessage(payload)
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(payload), &m); err != nil || m == nil {
-		m = map[string]any{}
-	}
-	for k, v := range extra {
-		m[k] = v
-	}
-	blob, err := json.Marshal(m)
-	if err != nil {
-		return json.RawMessage(payload)
-	}
-	return blob
 }

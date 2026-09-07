@@ -141,6 +141,28 @@ func JSONOrNil(s sql.NullString) json.RawMessage {
 	return json.RawMessage(s.String)
 }
 
+// PayloadWith returns a silver payload with `extra`'s keys merged in — an
+// adapter's own annotations beside the collector's. A payload that does not
+// decode as a JSON object (no loader writes one, but the column is free text)
+// is replaced by the annotations alone rather than losing them.
+func PayloadWith(payload string, extra map[string]any) json.RawMessage {
+	if len(extra) == 0 {
+		return json.RawMessage(payload)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payload), &m); err != nil || m == nil {
+		m = map[string]any{}
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	blob, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(payload)
+	}
+	return blob
+}
+
 // DatePtrFromNullUnix converts a nullable unix-seconds timestamp to a
 // pointer to its UTC-midnight calendar date, or nil for SQL NULL.
 // Gold stores acquisition dates as DATE, so the time-of-day is dropped.

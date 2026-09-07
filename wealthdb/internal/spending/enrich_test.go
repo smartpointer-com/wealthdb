@@ -296,6 +296,87 @@ func TestPassUnpairedCardPaymentIsCardSpend(t *testing.T) {
 // card rule's alone.
 //
 // Every value is synthetic.
+
+// TestPassAmexBillPairsWithTheCollectedCard is the same precedence, checked
+// against the OTHER shape it has to hold for: a bill paid to an issuer whose
+// card is collected as its own SOURCE, not as a sibling product of the paying
+// bank.
+//
+// It matters because the two paths through the matcher differ. A Chase card
+// paid from a Chase account pairs same-source; an Amex card paid from any bank
+// pairs across sources, which is the commoner arrangement and the one the
+// `card_spend` placeholder was written for. The card's leg is the collector's
+// `card_payment` projection of an UNCATEGORISED credit — the tell that
+// separates the monthly bill from a merchant refund — so this also pins that
+// mapping: kind the bill `refund` instead and the pair never forms.
+func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
+	db, ctx := openGold(t)
+	// The card is its own SOURCE here, which is the whole point: the shared
+	// fixture's card is a sibling product of the paying bank.
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('amex', 'amex', '/tmp/amex.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at)
+             VALUES ('amex', 'AMEXCARD', 'card', 'Example Card', 1, 1);
+    `); err != nil {
+		t.Fatalf("seed amex dimensions: %v", err)
+	}
+	const bill = "AMERICAN EXPRESS ACH PMT"
+	seedTxns(t, db, ctx,
+		txn{"bank", "T-AMEX-BILL", "CASH1", "withdrawal", day(20), -400, "", bill, ""},
+		txn{"amex", "T-AMEX-LEG", "AMEXCARD", "card_payment", day(20), 400, "", "", ""},
+		// A purchase on the card, carrying the provider category the amex
+		// vocabulary translates — the spending the bill used to stand in for.
+		txn{"amex", "T-AMEX-BUY", "AMEXCARD", "purchase", day(18), -60,
+			"Corner Market", "", "Merchandise & Supplies"},
+	)
+
+	res := runPass(t, db, ctx, Options{})
+
+	for _, tc := range []struct{ src, id, detailed, provenance string }{
+		{"bank", "T-AMEX-BILL", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
+		{"amex", "T-AMEX-LEG", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
+		{"amex", "T-AMEX-BUY", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", ProvenanceProvider},
+	} {
+		detailed, provenance := verdictOf(t, db, ctx, tc.src, tc.id)
+		if detailed != tc.detailed || provenance != tc.provenance {
+			t.Errorf("%s = (%q, %q), want (%q, %q)", tc.id, detailed, provenance,
+				tc.detailed, tc.provenance)
+		}
+	}
+	// The placeholder is gone: no row is left as generic card spend.
+	if res.RuleRows != 0 {
+		t.Errorf("rule rows = %d, want 0 — the bill should pair, not fall to the rule", res.RuleRows)
+	}
+}
+
+// TestAmexResidualCategoryIsNotDrift pins the third ProviderCategory outcome
+// for the amex vocabulary: the issuer's own "Other" bucket is REVIEWED, so it
+// is neither translated (which would pre-empt the model on exactly the rows
+// the model exists for) nor counted as drift (which is supposed to mean the
+// issuer said something this build does not understand).
+func TestAmexResidualCategoryIsNotDrift(t *testing.T) {
+	for _, tc := range []struct {
+		category  string
+		ok, drift bool
+	}{
+		{"Merchandise & Supplies", true, false},
+		{"Other", false, false},
+		{"A Category Amex Just Invented", false, true},
+		{"", false, false},
+	} {
+		// Cards are the only product this source has, so its vocabulary is
+		// registered source-wide and every account kind inherits it.
+		_, ok, drift := ProviderCategory("amex", "", tc.category)
+		if ok != tc.ok || drift != tc.drift {
+			t.Errorf("ProviderCategory(amex, %q) = (ok %v, drift %v), want (%v, %v)",
+				tc.category, ok, drift, tc.ok, tc.drift)
+		}
+	}
+}
+
 func TestPassCardBillCarriesItsIssuer(t *testing.T) {
 	db, ctx := openGold(t)
 	const chaseBill = "PAYMENT TO CHASE CARD ENDING IN ####"

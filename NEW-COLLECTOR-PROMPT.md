@@ -426,6 +426,17 @@ as hard rules rather than advice.
   `time.sleep` — sync-Playwright callbacks only fire inside Playwright
   calls). Anything *displayed* to the user — a 2FA comparison code —
   is read from the DOM, never from a network event.
+- **A response watcher must match the METHOD, not just the URL.** Any
+  endpoint an SPA calls cross-origin is preceded by a CORS **preflight** to
+  the same URL, and that `OPTIONS` answers `200` with an EMPTY BODY about a
+  second before the real response. A watcher keyed on the URL alone reads
+  the preflight as the outcome, and what that costs depends only on where
+  it sits: `amex` reported a sign-in refusal the provider never made, the
+  same shape in two siblings would have declared a *successful* login
+  instead, and in a fourth it sat on a document download, where the empty
+  body decoded to no file and failed every row. This is the response-side twin of
+  "authenticate on a read, never on a URL" — an OPTIONS response is never an
+  outcome.
 - **Web components need the real inner control.** Zero-box hosts with
   open shadow roots ignore native `.click()`, dispatched events,
   keyboard, and coordinate clicks; the working click is a real
@@ -464,11 +475,19 @@ as hard rules rather than advice.
   architecture and much simpler downloads.
 - **Logins are budgeted.** Banks rate-limit: a handful of rapid
   attempts has triggered multi-hour fraud holds (pushes silently stop
-  arriving; logins stall before the challenge). Recognize the tell,
+  arriving; logins stall before the challenge), and about seven sign-ins
+  in twenty minutes provoked a captcha at `amex`. Recognize the tell,
   stop unprompted, and let the user time the single retry. Captcha
   reputation typically accrues per account, not per session —
   parallelism does not scale past the gate, and it decays only with
-  idle time.
+  idle time. **Count the sign-ins a routine run costs**: a `login` →
+  `download` pair is two, and a fleet orchestrator runs that pair for
+  every source, so the budget goes twice as fast as it looks.
+- **A step-up is not one thing.** A logon response saying "more is
+  required" may mean an OTP, a push — or a captcha, which no terminal
+  can answer. A CLI 2FA drive must recognise the ones it cannot drive
+  and stop with the verb that can, instead of timing out against UI
+  that will never render.
 
 ### Bronze, silver, and data contracts
 
@@ -564,5 +583,9 @@ as hard rules rather than advice.
   gates, selector rot). The explore harness is the standing repair
   tool — keep it working forever, and make login failure paths
   self-diagnosing (print the page URL, title, and visible controls) so
-  the next drift debugs itself from a pasted log. Fix a bug in every
+  the next drift debugs itself from a pasted log. Print that
+  UNCONDITIONALLY, not behind `--debug`: the run that hits the drift is
+  rarely the one that thought to ask for a capture. Identifiers only,
+  never element text — a challenge screen's labels carry the masked
+  destination and the log gets pasted around. Fix a bug in every
   sibling collector that shares the pattern, in the same commit.

@@ -495,9 +495,9 @@ much of a candidate is described, and the transfer fence decides which
 signatures are candidates at all. See docs/SPENDING.md §5.
 
 Every run ends with the categorisation rate per source, the
-provider-map misses (a card issuer's categorical vocabulary moving; a
-bank's untranslated booking types are rails, not misses — SPENDING.md
-§3), the matched internal-transfer pairs (both legs —
+provider-map misses (a card issuer's categorical vocabulary moving, bar
+the residual bucket its map marks untranslatable; a bank's untranslated
+booking types are rails, not misses — SPENDING.md §3), the matched internal-transfer pairs (both legs —
 the audit surface for what the matcher removed from spending), the
 largest unmatched legs including the cross-currency shapes the matcher
 structurally cannot pair, and a stratified sample of what is still
@@ -1184,6 +1184,7 @@ to keep this document focused on gold-side architecture:
 - [adapters/carta.md](adapters/carta.md)
 - [adapters/cointracking.md](adapters/cointracking.md)
 - [adapters/chase.md](adapters/chase.md)
+- [adapters/amex.md](adapters/amex.md)
 
 (Adapters without a dedicated doc here are described inline
 where they diverge from the gold-side contract above.)
@@ -1340,7 +1341,7 @@ CREATE TABLE silver_sources (
         'schwab', 'ubs', 'swissquote', 'fidelity',
         'relevate', 'viac', 'cointracking', 'carta', 'angellist',
         'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
-        'raiffeisen_at'
+        'raiffeisen_at', 'amex'
     )),
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
@@ -2469,15 +2470,15 @@ wealthdb/
 ├── go.mod / go.sum
 ├── docs/
 │   ├── DESIGN.md · RETURNS-NOTES.md · SPENDING.md · TAXONOMY.md
-│   └── adapters/                   — per-bank adapter design (carta, chase, cointracking, schwab, swissquote, ubs)
+│   └── adapters/                   — per-bank adapter design (amex, carta, chase, cointracking, schwab, swissquote, ubs)
 ├── cmd/
 │   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
 │   ├── silver/                     — adapter interface + registry, one package per source:
-│   │   │                             angellist carta chase cointracking equityzen fidelity
-│   │   │                             firstcitizens fred manual raiffeisen_at relevate schwab
-│   │   │                             swissquote ubs viac
+│   │   │                             amex angellist carta chase cointracking equityzen
+│   │   │                             fidelity firstcitizens fred manual raiffeisen_at
+│   │   │                             relevate schwab swissquote ubs viac
 │   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   └── migrations/             — 0001…NNNN SQL, //go:embed-ed by schema.go

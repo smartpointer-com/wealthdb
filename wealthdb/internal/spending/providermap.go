@@ -62,6 +62,17 @@ type providerVocabulary struct {
 	// a value and a cosmetic change on the provider's side does not
 	// silently unmap it.
 	translations map[string]string
+	// untranslatable are the provider's own "I could not place this"
+	// values — an issuer's literal "Other" bucket. They are REVIEWED,
+	// so a miss on one is not drift; and they are deliberately not
+	// translated, because a row the provider could not place is
+	// exactly the row the model tier can, and any verdict here would
+	// pre-empt it. Without this a categorical vocabulary has only two
+	// ways to treat such a value, and both are wrong: translate it and
+	// lose the row to a bucket, or omit it and inflate a counter that
+	// is supposed to mean "the issuer said something this build does
+	// not understand".
+	untranslatable map[string]bool
 	// categorical marks a vocabulary in which every value is a spend
 	// category, so a value outside the table is drift worth counting.
 	// False for a booking-type vocabulary, where a miss is a rail.
@@ -91,6 +102,41 @@ var chaseCardCategories = map[string]string{
 	"Home":                  "HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT",
 	"Gifts & Donations":     "GOVERNMENT_AND_NON_PROFIT_DONATIONS",
 }
+
+// amexCardCategories translates the American Express card vocabulary —
+// the categories Amex files a modern-era card row under when it files one
+// at all, which the collector resolves from the code → label map the
+// activity payload ships beside the rows, so gold receives the label
+// rather than a code. The deep era, read from statement PDFs, carries no
+// category and falls to the model tier.
+//
+// Same rule as chase's table: where the issuer's bucket is coarser
+// than the taxonomy's, the translation targets that primary's OTHER_*
+// value rather than its most common member, and the model tier can
+// refine a merchant later from its name. Amex's buckets are coarse
+// almost throughout — nine categories for everything a card can buy —
+// so most entries land on an OTHER_*.
+//
+// "Communications" is the one that reads oddly: Amex files phone,
+// internet and cable under it, which the taxonomy splits across
+// RENT_AND_UTILITIES. OTHER_UTILITIES is the honest parent of that
+// split, and picking TELEPHONE would assert a device the category
+// never named.
+var amexCardCategories = map[string]string{
+	"Business Services":      "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Communications":         "RENT_AND_UTILITIES_OTHER_UTILITIES",
+	"Entertainment":          "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	"Fees & Adjustments":     "BANK_FEES_OTHER_BANK_FEES",
+	"Merchandise & Supplies": "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Restaurants":            "FOOD_AND_DRINK_RESTAURANT",
+	"Transportation":         "TRANSPORTATION_OTHER_TRANSPORTATION",
+	"Travel":                 "TRAVEL_OTHER_TRAVEL",
+}
+
+// amexUncategorized is Amex's own residual bucket. It is reviewed and
+// deliberately left untranslated: it says the ISSUER could not place
+// the row, which is the case the model tier exists for.
+var amexUncategorized = map[string]bool{"other": true}
 
 // ubsBookingTypes translates the UBS booking types whose meaning is
 // unambiguous, across the three eras the adapter emits: the
@@ -307,7 +353,9 @@ var ubsCardCategories = map[string]string{
 // with one vocabulary needs only the broad entry, and an account kind
 // with no entry of its own inherits it.
 var providerVocabularies = map[string]providerVocabulary{
-	"chase":    {translations: chaseCardCategories, categorical: true},
+	"chase": {translations: chaseCardCategories, categorical: true},
+	"amex": {translations: amexCardCategories, untranslatable: amexUncategorized,
+		categorical: true},
 	"ubs":      {translations: ubsBookingTypes, categorical: false},
 	"ubs/card": {translations: ubsCardCategories, categorical: true},
 }
@@ -324,7 +372,15 @@ func foldProviderVocabularies(in map[string]providerVocabulary) map[string]provi
 		for value, detailed := range v.translations {
 			folded[providerCategoryKey(value)] = detailed
 		}
-		out[kind] = providerVocabulary{translations: folded, categorical: v.categorical}
+		var skip map[string]bool
+		if len(v.untranslatable) > 0 {
+			skip = make(map[string]bool, len(v.untranslatable))
+			for value := range v.untranslatable {
+				skip[providerCategoryKey(value)] = true
+			}
+		}
+		out[kind] = providerVocabulary{translations: folded,
+			untranslatable: skip, categorical: v.categorical}
 	}
 	return out
 }
@@ -345,8 +401,9 @@ func providerCategoryKey(s string) string {
 //	                      count it as drift and fall through
 //	("", false, false)    nothing to count — the kind publishes no
 //	                      mapped vocabulary, the row carries no value,
-//	                      or the vocabulary is a list of booking types
-//	                      and this value names a rail
+//	                      the value is the issuer's own reviewed
+//	                      residual bucket, or the vocabulary is a list
+//	                      of booking types and this value names a rail
 //
 // Separating the last two keeps the unmapped counter meaningful:
 // without it every uncategorised row from every non-card source, and
@@ -361,6 +418,11 @@ func ProviderCategory(silverKind, accountKind, providerCategory string) (detaile
 	key := providerCategoryKey(providerCategory)
 	if key == "" {
 		// No value published for this row — not a vocabulary gap.
+		return "", false, false
+	}
+	if v.untranslatable[key] {
+		// The issuer's own residual bucket: reviewed, so not drift, and
+		// left for the model tier.
 		return "", false, false
 	}
 	detailed, ok = v.translations[key]

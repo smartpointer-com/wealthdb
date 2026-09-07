@@ -8,6 +8,7 @@ import (
 	// Adapter packages register themselves in init(); blank-import
 	// here so they show up in the silver registry by the time the
 	// dispatcher runs.
+	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/amex"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/angellist"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/carta"
 	_ "github.com/ptu-gh/wealthdb/wealthdb/internal/silver/chase"

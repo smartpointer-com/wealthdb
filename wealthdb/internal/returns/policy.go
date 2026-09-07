@@ -127,6 +127,23 @@ func DepositBankPolicy() ReturnsPolicy {
 	return p
 }
 
+// CardIssuerPolicy is the shared policy of the card-only collectors — a
+// source whose every account is a revolving-credit or charge card.
+//
+// It changes no return figure and cannot: the engine drops `card` accounts at
+// the loader (gold.returnsInvisibleKind), because a card's balance swings are
+// purchases and payments, and running them through TWR/MWR would report
+// shopping as performance. The policy exists so the source DECLARES that
+// rather than falling through to the unknown-adapter default, which is
+// reported as a data-quality warning. AccountsGrainHidden states the same
+// thing a second way, and holds if a card-only source ever also emits a
+// non-card account.
+func CardIssuerPolicy() ReturnsPolicy {
+	p := DefaultReturnsPolicy(BankFlowPolicy())
+	p.AccountsGrain = AccountsGrainHidden
+	return p
+}
+
 // PrivateMarketLedgerPolicy is the shared policy of private-market collectors
 // whose cash-flow ledger is complete double-entry on the custody account: the
 // deposit/withdrawal legs are real dated cash crossings of the source
