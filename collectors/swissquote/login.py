@@ -31,7 +31,7 @@ import landmarks as sq  # local module: DOM landmarks + URL constants
 
 import subprocess
 
-from collectorkit import cli, envfile, launch, session
+from collectorkit import cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("swissquote.login")
 
@@ -160,7 +160,9 @@ def _dump_html(page, screenshot_dir: Path | None, name: str) -> None:
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     path = screenshot_dir / f"{name}.html"
     try:
-        path.write_text(page.content(), encoding="utf-8")
+        # Scrubbed: a dump taken on the sign-in page would otherwise
+        # persist the typed password as a `value` attribute.
+        path.write_text(debugcap.scrub_dom(page.content()), encoding="utf-8")
         log.info("Page HTML: %s", path)
     except Exception as e:  # noqa: BLE001 - best-effort debug aid
         log.warning("HTML dump %s failed: %s", path, e)

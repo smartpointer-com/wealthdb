@@ -75,6 +75,9 @@ _SECRET_HEADERS = frozenset(_SECRET_PARAMS | {
     "cookie", "set-cookie", "x-api-key", "x-auth-token", "proxy-authorization",
 })
 
+# A percent-escape, for re-spelling one in lower-case hex.
+_PCT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+
 
 def redact_url(url: str) -> str:
     """Return `url` with credential-bearing query parameters masked.
@@ -140,6 +143,120 @@ def redact_headers(headers) -> dict:
     return {k: (REDACTED if k.lower() in _SECRET_HEADERS else v)
             for k, v in items}
 
+# An <input> tag, with whatever attributes it carries. Serializing a live DOM
+# can emit the typed value as a `value=` attribute.
+#
+# Attribute values are skipped over as units rather than scanned for the next
+# `>`: a password containing `>` closes the tag early for a naive `[^>]*`
+# matcher, and the credential then survives the scrub — which is the one
+# input this exists to catch.
+_INPUT_TAG_RE = re.compile(
+    r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.I)
+_PASSWORD_TYPE_RE = re.compile(r"""\btype\s*=\s*(["']?)password\1""", re.I)
+_VALUE_ATTR_RE = re.compile(
+    r"""\bvalue\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)""", re.I)
+
+
+def _blank_password_value(match):
+    """Blank `value` on a password input, leave every other input alone."""
+    tag = match.group(0)
+    if not _PASSWORD_TYPE_RE.search(tag):
+        return tag
+    return _VALUE_ATTR_RE.sub('value=""', tag)
+
+
+def scrub_dom(html: str, redact=None) -> str:
+    """Strip credentials from a serialized DOM before it is written out.
+
+    Two independent defences, because each catches what the other cannot:
+
+    * Every ``type="password"`` input loses its ``value`` attribute. This
+      holds even when the capturing code has no idea what the password is
+      — a harness run with ``--no-prefill``, where the human typed it, is
+      exactly the case a value-based redactor cannot cover, and exactly
+      the case a discovery session is most likely to be run in.
+    * `redact`, when given (a :func:`secret_redactor`), masks the known
+      credentials anywhere else in the markup — a hidden field, an inline
+      script, a data attribute.
+
+    A DOM snapshot is the record selectors are pinned from, so it is kept
+    whole apart from these; nothing else is rewritten.
+    """
+    if not html:
+        return html
+    html = _INPUT_TAG_RE.sub(_blank_password_value, html)
+    return redact(html) if redact is not None else html
+
+
+def secret_variants(secret: str) -> tuple[str, ...]:
+    """Every spelling `secret` can take in a captured request.
+
+    A credential does not reach the wire verbatim. A login form body is
+    ``application/x-www-form-urlencoded``, so every reserved character is
+    percent-encoded; a JSON body escapes quotes, backslashes and (with
+    ``ensure_ascii``) non-ASCII. A redactor that only knows the raw string
+    therefore masks the username — which is usually alphanumeric and
+    survives encoding unchanged — while writing a password full of
+    punctuation to disk in full. That is not hypothetical: it is how a real
+    password reached a debug capture in cleartext.
+
+    Returned longest-first, so a longer spelling is masked before a shorter
+    one can match inside it. Duplicates are dropped, which is the common
+    case for an alphanumeric secret whose spellings all coincide.
+
+    Base64 and other opaque re-encodings are deliberately NOT covered — a
+    value the page transformed before sending is unrecognisable here, and
+    pretending otherwise would sell false assurance. What the wire formats
+    above carry, this catches.
+    """
+    if not secret:
+        return ()
+    out = {secret}
+    for enc in (urllib.parse.quote(secret, safe=""),
+                urllib.parse.quote_plus(secret)):
+        out.add(enc)
+        # Percent-escapes are hex, and clients disagree on its case
+        # (%5E vs %5e). Both spellings decode to the same byte, so both
+        # have to be masked.
+        out.add(_PCT_ESCAPE_RE.sub(lambda m: m.group(0).lower(), enc))
+    # json.dumps quotes the string; strip the quotes it added.
+    out.add(json.dumps(secret)[1:-1])
+    out.add(json.dumps(secret, ensure_ascii=False)[1:-1])
+    return tuple(sorted(out, key=len, reverse=True))
+
+
+def secret_redactor(*secrets: str, placeholder: str = REDACTED):
+    """A ``str -> str`` masker for every spelling of every `secret`.
+
+    Built once per run and applied to headers, request bodies and response
+    bodies alike. Falsy secrets are skipped; with none left the returned
+    function is the identity, so a harness running without credentials pays
+    nothing.
+
+    Deliberately over-redacts rather than under-redacts: a short secret can
+    mask innocuous text, which costs a debug capture some legibility, while
+    the opposite failure writes a credential to disk.
+    """
+    variants: list[str] = []
+    seen: set[str] = set()
+    for secret in secrets:
+        for variant in secret_variants(secret):
+            if variant not in seen:
+                seen.add(variant)
+                variants.append(variant)
+    variants.sort(key=len, reverse=True)
+    if not variants:
+        return lambda value: value
+
+    def redact(value):
+        if not value:
+            return value
+        for variant in variants:
+            value = value.replace(variant, placeholder)
+        return value
+
+    return redact
+
 
 def capture_dir(run_dir: Path) -> Path:
     """`<run_dir>/screenshots`, created. The one place captures go."""
@@ -149,7 +266,7 @@ def capture_dir(run_dir: Path) -> Path:
 
 
 def capture_page(page, run_dir: Path, name: str, *,
-                 log: logging.Logger, png: bool = True) -> None:
+                 log: logging.Logger, png: bool = True, redact=None) -> None:
     """Capture a Playwright / Camoufox `page` as ``<name>.html`` (+ ``.png``).
 
     The DOM is what a parser selector is matched against, so it is the
@@ -157,10 +274,16 @@ def capture_page(page, run_dir: Path, name: str, *,
     explains the ones the DOM cannot — an overlay, a consent wall, a
     challenge. Each is written independently: a screenshot timing out on a
     busy page must not cost the DOM dump too.
+
+    The markup goes through :func:`scrub_dom` — a captured sign-in page can
+    serialize the typed password as a ``value`` attribute. Pass `redact` (a
+    :func:`secret_redactor`) at a site that knows the credentials to mask
+    them elsewhere in the markup too.
     """
     d = capture_dir(run_dir)
     try:
-        (d / f"{name}.html").write_text(page.content(), encoding="utf-8")
+        (d / f"{name}.html").write_text(scrub_dom(page.content(), redact),
+                                        encoding="utf-8")
     except Exception as e:  # noqa: BLE001 - any driver error, never fatal
         log.warning("--debug: DOM capture %s failed: %s", name, e)
     if not png:

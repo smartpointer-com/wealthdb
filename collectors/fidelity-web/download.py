@@ -104,7 +104,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from collectorkit import bronze, cli, compress, envfile, launch
+from collectorkit import bronze, cli, compress, debugcap, envfile, launch
 
 
 log = logging.getLogger("fidelity-web.download")
@@ -436,8 +436,10 @@ def capture(page, capture_dir, label):
             html = page.evaluate(
                 "() => document.documentElement.outerHTML"
             )
+        # Scrubbed: a capture taken on the sign-in page serializes the
+        # form with the typed password in a `value` attribute.
         (capture_dir / f"{ts}-{label}.html").write_text(
-            html, encoding="utf-8",
+            debugcap.scrub_dom(html), encoding="utf-8",
         )
     except Exception as e:
         log.warning("html capture %s: %s", label, e)
@@ -1517,6 +1519,26 @@ def _pdf_from_docapi_body(body):
     return None
 
 
+def _is_docapi_download_response(resp):
+    """True for the doc center's own ``financial-documents/download``
+    POST response.
+
+    **Only the POST counts.** Documents are fetched from a host other
+    than the one serving the page they are clicked on, so the browser
+    preflights that URL, and the OPTIONS answers 200 with an empty body
+    before the real response arrives. Matched on the URL alone the wait
+    below returns the preflight, whose empty body decodes to no PDF, and
+    every row this serves — tax forms and statements alike — fails as if
+    the endpoint had changed shape.
+    Browserless, so it is unit-tested."""
+    try:
+        if "financial-documents/download" not in (resp.url or ""):
+            return False
+        return (resp.request.method or "").upper() == "POST"
+    except Exception:
+        return False
+
+
 def _doccenter_download_row(page, context, row_loc):
     """Click one '(pdf)' row and return the PDF bytes.
 
@@ -1536,10 +1558,10 @@ def _doccenter_download_row(page, context, row_loc):
         # The click fires an authenticated POST to
         # .../financial-documents/download; wait for that response via
         # the canonical expect_response (reliable, unlike reading
-        # bodies inside an ad-hoc event handler), then decode it.
-        with page.expect_response(
-                lambda r: "financial-documents/download" in (r.url or ""),
-                timeout=25_000) as resp_info:
+        # bodies inside an ad-hoc event handler), then decode it. The
+        # predicate skips the CORS preflight the same URL draws.
+        with page.expect_response(_is_docapi_download_response,
+                                  timeout=25_000) as resp_info:
             try:
                 row_loc.click(timeout=5_000)
             except Exception as e:
@@ -1550,10 +1572,6 @@ def _doccenter_download_row(page, context, row_loc):
             raise RuntimeError("download response carried no decodable PDF")
         return pdf
     finally:
-        try:
-            context.remove_listener("response", _on_response)
-        except Exception:
-            pass
         # Close any popup tab the click spawned; restore the list tab
         # if the click navigated it away.
         for p in list(context.pages):
@@ -2822,7 +2840,9 @@ def maybe_capture(page, screenshot_dir, label):
             html = page.evaluate(
                 "() => document.documentElement.outerHTML"
             )
-        html_path.write_text(html, encoding="utf-8")
+        # Scrubbed: this is the login-flow capture, and one of its
+        # landmarks is the sign-in form immediately after prefill.
+        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
         log.debug("wrote HTML %s", html_path)
     except Exception as e:
         log.warning("html capture %s failed: %s", label, e)

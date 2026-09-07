@@ -193,6 +193,13 @@ class _AuthWatch:
     def _on_response(self, resp):
         try:
             url = resp.url
+            if resp.request.method.upper() == "OPTIONS":
+                # A CORS preflight answers 200 for the URL it precedes, so an
+                # auth signal keyed on URL + status would read one as a
+                # completed sign-in. The /svc/ calls are same-origin today and
+                # send none; the guard costs nothing and the amex sibling hit
+                # exactly this live.
+                return
             if is_authenticated_response(url, resp.status):
                 self.ok = True
             if "/svc/" not in url:
@@ -273,8 +280,11 @@ def _capture(page, args, name: str) -> None:
         d = debugcap.capture_dir(args.screenshot_dir)
         for i, frame in enumerate(mdsui.chase_frames(page)):
             with contextlib.suppress(Exception):
+                # Scrubbed like the main document: the sign-in form lives in
+                # one of these frames, so a serialized capture carries the
+                # typed password in a `value` attribute.
                 (d / f"{name}-frame{i}.html").write_text(
-                    frame.content(), encoding="utf-8")
+                    debugcap.scrub_dom(frame.content()), encoding="utf-8")
 
 
 def run_check(profile_dir: Path) -> int:

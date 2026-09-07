@@ -37,7 +37,7 @@ import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch
 
 log = logging.getLogger("cointracking.login")
 
@@ -210,7 +210,10 @@ def login(page, username: str, password: str) -> None:
         # Dump the current page so we can see exactly what went
         # wrong (cointracking sometimes re-renders with a visible
         # error: "Invalid 2FA code", "Session expired", etc.).
-        body = page.content()[:2000].replace("\n", " ").strip()
+        # Scrubbed before truncation: a re-render can bring the sign-in
+        # form back with the password still in it, and this string is raised.
+        body = debugcap.scrub_dom(page.content())[:2000] \
+            .replace("\n", " ").strip()
         raise RuntimeError(
             f"did not land on /dashboard after 2FA submit. "
             f"Current URL: {page.url}. Page body (first 2000 chars):"

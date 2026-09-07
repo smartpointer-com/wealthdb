@@ -590,5 +590,56 @@ class SessionTest(unittest.TestCase):
             s, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
 
 
+COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+
+# The library modules a collector reaches for by name. A reference to one it
+# never imported is a NameError, and collectors call these from inside
+# best-effort handlers that swallow exceptions at DEBUG — so the failure is
+# silent, and what it takes down is a diagnostic nobody notices is missing.
+_KIT_MODULES = frozenset({
+    "bronze", "cli", "debugcap", "envfile", "launch", "parse", "prune",
+    "session", "silver",
+})
+
+
+@unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
+class CollectorImportsTest(unittest.TestCase):
+    """Every collectorkit module a collector names is one it imported.
+
+    There is no Python linter in the build, so an undefined name reaches a
+    real run. This catches the one shape that recurs: a module using
+    `debugcap.x` (or a sibling) that never imported it.
+    """
+
+    def test_every_referenced_kit_module_is_imported(self):
+        import ast
+        scanned = 0
+        for path in sorted(COLLECTORS.glob("*/*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            bound, used = set(), set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    bound.update((a.asname or a.name).split(".")[0]
+                                 for a in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    bound.update(a.asname or a.name for a in node.names)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    bound.add(node.name)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx,
+                                                               ast.Store):
+                    bound.add(node.id)
+                elif (isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id in _KIT_MODULES):
+                    used.add(node.value.id)
+            scanned += 1
+            missing = sorted(used - bound)
+            self.assertFalse(
+                missing,
+                f"{path} calls {missing} without importing it — "
+                f"a NameError inside a best-effort handler")
+        self.assertTrue(scanned, "no collector sources found to scan")
+
+
 if __name__ == "__main__":
     unittest.main()

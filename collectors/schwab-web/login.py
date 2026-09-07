@@ -289,7 +289,9 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
             html = page.evaluate(
                 "() => document.documentElement.outerHTML",
             )
-        html_path.write_text(html, encoding="utf-8")
+        # Scrubbed: a landmark on the sign-in page serializes the form with
+        # the typed password in a `value` attribute.
+        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
         log.debug("wrote HTML %s", html_path)
     except Exception as e:
         log.warning("html capture %s failed: %s", label, e)

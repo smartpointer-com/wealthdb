@@ -1,6 +1,6 @@
-"""Unit tests for login.py's browserless surface: argument parsing and the
-q2token header helper. The browser-driven flow itself needs a live site and
-is validated separately (DESIGN.md §4.2).
+"""Unit tests for login.py's browserless surface: argument parsing, the
+q2token header helper and the logon watcher. The browser-driven flow itself
+needs a live site and is validated separately (DESIGN.md §4.2).
 
 Synthetic values only.
 """
@@ -71,3 +71,78 @@ def test_q2_headers_without_cookie_omits_token():
     headers = login.q2_headers(_StubContext([]))
     assert q2client.Q2TOKEN not in headers
     assert headers["Accept"] == "application/json"
+
+
+# ============================================================
+# The logon watcher
+# ============================================================
+
+class _StubRequest:
+    def __init__(self, method):
+        self.method = method
+
+
+class _StubResponse:
+    def __init__(self, url, status=200, body=None, method="POST"):
+        self.url = url
+        self.status = status
+        self._body = body
+        self.request = _StubRequest(method)
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+class _ResponseContext:
+    def __init__(self):
+        self.handlers = []
+
+    def on(self, _event, handler):
+        self.handlers.append(handler)
+
+    def fire(self, resp):
+        for h in self.handlers:
+            h(resp)
+
+
+def _watch_with(status, body, method="POST"):
+    ctx = _ResponseContext()
+    watch = login._LogonWatch().attach(ctx)
+    ctx.fire(_StubResponse(q2client.logon_url(), status, body, method))
+    return watch
+
+
+def test_watch_reads_a_trusted_logon_as_authenticated():
+    watch = _watch_with(200, {"data": {"userProfileData": {"name": "example"},
+                                       "accessCodeTargets": None}})
+    assert watch.outcome().authenticated
+
+
+def test_watch_ignores_the_cors_preflight():
+    # The browser preflights the logon URL, and that OPTIONS answers 200
+    # with an EMPTY BODY — which classify_logon reads as a trusted-device
+    # login. Taken for the outcome it declares a sign-in that never
+    # happened; the amex sibling hit exactly this live.
+    assert _watch_with(200, None, method="OPTIONS").outcome() is None
+
+
+def test_the_preflight_does_not_mask_the_real_response():
+    # Both arrive, preflight first; the verdict must be the POST's.
+    ctx = _ResponseContext()
+    watch = login._LogonWatch().attach(ctx)
+    ctx.fire(_StubResponse(q2client.logon_url(), 200, None, "OPTIONS"))
+    ctx.fire(_StubResponse(q2client.logon_url(), 203, {"data": {
+        "userProfileData": None,
+        "accessCodeTargets": [{"notificationType": 3,
+                               "display": "Text: (XXX) XXX-XXXX",
+                               "value": "1001"}]}}))
+    assert watch.outcome().needs_2fa
+
+
+def test_watch_ignores_an_unrelated_response():
+    ctx = _ResponseContext()
+    watch = login._LogonWatch().attach(ctx)
+    ctx.fire(_StubResponse(q2client.accounts_url(), 200, {"data": []}))
+    assert watch.outcome() is None

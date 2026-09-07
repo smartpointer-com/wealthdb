@@ -357,8 +357,10 @@ def maybe_capture_html(page, screenshot_dir: Path | None, label: str) -> None:
     try:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         ts = ts_slug()
+        # Scrubbed: this is called on the sign-in page after prefill, so a
+        # raw serialization would persist the typed password.
         (screenshot_dir / f"{ts}-{label}.html").write_text(
-            page.content(), encoding="utf-8")
+            debugcap.scrub_dom(page.content()), encoding="utf-8")
         try:
             page.screenshot(path=str(screenshot_dir / f"{ts}-{label}.png"),
                             full_page=False, timeout=3_000,
@@ -809,7 +811,7 @@ def _explore_dump(page, screenshot_dir, state) -> None:
     try:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         (screenshot_dir / f"{label}.html").write_text(
-            page.content(), encoding="utf-8")
+            debugcap.scrub_dom(page.content()), encoding="utf-8")
         try:
             page.screenshot(path=str(screenshot_dir / f"{label}.png"),
                             full_page=True, timeout=4_000)

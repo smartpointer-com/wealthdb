@@ -93,7 +93,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch
 
 log = logging.getLogger("chase.explore")
 
@@ -327,7 +327,8 @@ def _dom_skeleton(html: str) -> str:
     return "".join(re.findall(r'<[a-z][a-z0-9-]*|id="[^"]+"', html, re.I))
 
 
-def _capture_dom_snapshot(context, dom_dir, seq, last_skeleton, log):
+def _capture_dom_snapshot(context, dom_dir, seq, last_skeleton, log,
+                          redact=None):
     """Write every chase.com frame's DOM (+ a screenshot) across all pages,
     but only when the composite structure changed since the last snapshot.
     This is the record the click log can't produce: the login form and the
@@ -356,7 +357,8 @@ def _capture_dom_snapshot(context, dom_dir, seq, last_skeleton, log):
     snap.mkdir(parents=True, exist_ok=True)
     for i, (_pg, content) in enumerate(frames):
         with contextlib.suppress(Exception):
-            (snap / f"frame{i}.html").write_text(content, encoding="utf-8")
+            (snap / f"frame{i}.html").write_text(
+                debugcap.scrub_dom(content, redact), encoding="utf-8")
     with contextlib.suppress(Exception):
         context.pages[0].screenshot(path=str(snap / "screen.png"),
                                     full_page=True)
@@ -517,14 +519,12 @@ def main(argv: list[str]) -> int:
         # Credential redaction for network.jsonl. The login POST carries
         # the password in its body; without this it would land in the debug
         # log in plaintext. Defence-in-depth — debug-dir files are not under
-        # .secrets/, so a debug-dir leak is a real risk.
-        secrets_to_redact = [s for s in (username, password) if s]
-        def redact(s):
-            if not s or not secrets_to_redact:
-                return s
-            for sec in secrets_to_redact:
-                s = s.replace(sec, "<REDACTED>")
-            return s
+        # .secrets/, so a debug-dir leak is a real risk. The shared
+        # redactor knows every spelling a credential takes on the wire —
+        # percent-encoded in a form body, escaped in a JSON one — because a
+        # literal-substring masker let a percent-encoded password through
+        # into a capture in cleartext.
+        redact = debugcap.secret_redactor(username, password)
 
         # Camoufox launched with persistent_context returns a BrowserContext
         # directly. record_har_path enables HAR capture for the whole
@@ -808,7 +808,8 @@ def main(argv: list[str]) -> int:
                     last_dom_at = time.monotonic()
                     try:
                         dom_seq, last_dom_skeleton = _capture_dom_snapshot(
-                            context, dom_dir, dom_seq, last_dom_skeleton, log)
+                            context, dom_dir, dom_seq, last_dom_skeleton, log,
+                            redact)
                     except Exception as exc:
                         log.debug("dom snapshot error: %r", exc)
                 # Periodic login pre-fill. The JS console detector only
@@ -853,7 +854,7 @@ def main(argv: list[str]) -> int:
         if args.dom_interval > 0 and exit_reason != "browser-closed":
             with contextlib.suppress(Exception):
                 dom_seq, last_dom_skeleton = _capture_dom_snapshot(
-                    context, dom_dir, dom_seq, last_dom_skeleton, log)
+                    context, dom_dir, dom_seq, last_dom_skeleton, log, redact)
 
         # Finally: ALWAYS write the trace + the stop event, even on signal /
         # exception. For Ctrl-C / SIGTERM / timeout the context is still

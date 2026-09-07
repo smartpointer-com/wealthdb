@@ -1,7 +1,8 @@
 """Unit tests for login.py's browserless parts — the authenticated-response
-predicate, the event-loop-pumping waiter, and argument parsing. The browser
-flow (pre-fill, submit, CLI 2FA, handoff to download.walk) needs a live
-session and is validated on a real run. No credentials or live navigation.
+predicate, the response watcher, the event-loop-pumping waiter, and argument
+parsing. The browser flow (pre-fill, submit, CLI 2FA, handoff to
+download.walk) needs a live session and is validated on a real run. No
+credentials or live navigation.
 """
 from __future__ import annotations
 
@@ -36,6 +37,64 @@ def test_is_authenticated_response():
     # Non-/svc/ URLs never count.
     assert not login.is_authenticated_response(
         B + "/web/auth/dashboard#/dashboard/overview", 200)
+
+
+AUTHED_URL = ("https://secure.chase.com/svc/rr/accounts/secure/v2/"
+              "account/detail/dda/list")
+
+
+class _StubRequest:
+    def __init__(self, method):
+        self.method = method
+
+
+class _StubResponse:
+    """Stands in for a Playwright response; `request.method` is what the
+    preflight guard reads."""
+
+    def __init__(self, url, status=200, method="GET"):
+        self.url = url
+        self.status = status
+        self.request = _StubRequest(method)
+
+
+class _StubContext:
+    def __init__(self):
+        self.handlers = []
+
+    def on(self, _event, handler):
+        self.handlers.append(handler)
+
+    def fire(self, resp):
+        for h in self.handlers:
+            h(resp)
+
+
+def test_watch_flips_ok_on_an_authenticated_response():
+    ctx = _StubContext()
+    watch = login._AuthWatch().attach(ctx)
+    ctx.fire(_StubResponse(AUTHED_URL))
+    assert watch.ok
+
+
+def test_watch_ignores_the_cors_preflight():
+    # The browser preflights a cross-origin /svc/ call, and that OPTIONS
+    # answers 200 for the marker URL about a second before the real call —
+    # so an auth signal keyed on URL + status reads it as a completed
+    # sign-in. The amex sibling hit exactly this live.
+    ctx = _StubContext()
+    watch = login._AuthWatch().attach(ctx)
+    ctx.fire(_StubResponse(AUTHED_URL, method="OPTIONS"))
+    assert not watch.ok
+
+
+def test_the_preflight_does_not_hide_the_real_response():
+    # Both arrive, preflight first; the signal must still be the real one's.
+    ctx = _StubContext()
+    watch = login._AuthWatch().attach(ctx)
+    ctx.fire(_StubResponse(AUTHED_URL, method="OPTIONS"))
+    ctx.fire(_StubResponse(AUTHED_URL))
+    assert watch.ok
 
 
 class _StubPage:

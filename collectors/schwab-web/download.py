@@ -43,7 +43,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import landmarks as schwab
-from collectorkit import bronze
+from collectorkit import bronze, debugcap
 
 log = logging.getLogger("schwab-web.download")
 
@@ -100,7 +100,9 @@ def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
             html = page.evaluate(
                 "() => document.documentElement.outerHTML",
             )
-        html_path.write_text(html, encoding="utf-8")
+        # Scrubbed: a landmark on the sign-in page serializes the form
+        # with the typed password in a `value` attribute.
+        html_path.write_text(debugcap.scrub_dom(html), encoding="utf-8")
         log.debug("wrote HTML %s", html_path)
     except Exception as e:
         log.warning("html capture %s failed: %s", label, e)
@@ -1711,7 +1713,8 @@ def capture_transactions(page, account: dict, dest_dir: Path,
             shots_dir = dest_dir / "screenshots"
             shots_dir.mkdir(parents=True, exist_ok=True)
             html_path = shots_dir / f"tx-{account['suffix']}-landing.html"
-            html_path.write_text(page.content(), encoding="utf-8")
+            html_path.write_text(debugcap.scrub_dom(page.content()),
+                                 encoding="utf-8")
             html_pages = 1
         except Exception as e:
             log.warning("tx-history …%s: landing HTML capture failed: %s",

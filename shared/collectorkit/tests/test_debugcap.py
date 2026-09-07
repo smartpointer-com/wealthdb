@@ -24,6 +24,8 @@ from collectorkit import debugcap  # noqa: E402
 
 log = logging.getLogger("test.debugcap")
 
+COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+
 
 class RedactUrlTest(unittest.TestCase):
     def test_masks_a_credential_param_but_keeps_its_name(self):
@@ -58,6 +60,192 @@ class RedactUrlTest(unittest.TestCase):
         # A string we cannot parse is exactly where a naive mask would miss,
         # so drop it whole rather than write something we did not understand.
         self.assertEqual(debugcap.redact_url("http://[oops"), debugcap.REDACTED)
+
+
+class SecretRedactorTest(unittest.TestCase):
+    """A credential reaches the wire encoded, so the redactor has to know
+    every spelling. A literal-substring masker once let a percent-encoded
+    password through into a debug capture in cleartext."""
+
+    # Punctuation-heavy on purpose: every one of these characters changes
+    # under form-urlencoding, which is what defeats a raw-string masker.
+    SECRET = "a$b^c%d e&f"
+    USER = "example-user"
+
+    def test_masks_the_raw_secret(self):
+        redact = debugcap.secret_redactor(self.SECRET)
+        self.assertEqual(redact(f"p={self.SECRET}"), f"p={debugcap.REDACTED}")
+
+    def test_masks_the_form_urlencoded_secret(self):
+        # The regression: a login POST body percent-encodes the password.
+        redact = debugcap.secret_redactor(self.SECRET, self.USER)
+        body = ("request_type=login&UserID=example-user"
+                "&Password=a%24b%5Ec%25d+e%26f&channel=Web")
+        out = redact(body)
+        self.assertNotIn("a%24b", out)
+        self.assertNotIn("example-user", out)
+        self.assertIn("request_type=login", out)
+
+    def test_masks_lower_case_percent_escapes(self):
+        # Clients disagree on the case of the hex digits; both decode the
+        # same, so both must be masked.
+        redact = debugcap.secret_redactor(self.SECRET)
+        self.assertNotIn("a%24b", redact("Password=a%24b%5ec%25d+e%26f"))
+
+    def test_masks_the_json_escaped_secret(self):
+        redact = debugcap.secret_redactor('pa"ss\\word')
+        self.assertNotIn("pa", redact(json.dumps({"p": 'pa"ss\\word'})))
+
+    def test_masks_a_non_ascii_secret_in_both_json_spellings(self):
+        redact = debugcap.secret_redactor("pässwörd")
+        self.assertNotIn("p\\u00e4", redact(json.dumps({"p": "pässwörd"})))
+        self.assertNotIn(
+            "pässwörd",
+            redact(json.dumps({"p": "pässwörd"}, ensure_ascii=False)))
+
+    def test_no_secrets_is_the_identity(self):
+        redact = debugcap.secret_redactor("", None)
+        self.assertEqual(redact("nothing to hide"), "nothing to hide")
+
+    def test_falsy_values_pass_through(self):
+        redact = debugcap.secret_redactor(self.SECRET)
+        self.assertIsNone(redact(None))
+        self.assertEqual(redact(""), "")
+
+    def test_variants_are_longest_first(self):
+        # A longer spelling must be masked before a shorter one can match
+        # inside it and leave a mangled remainder behind.
+        variants = debugcap.secret_variants(self.SECRET)
+        self.assertEqual(list(variants), sorted(variants, key=len,
+                                                reverse=True))
+
+    def test_variants_of_an_empty_secret_are_none(self):
+        self.assertEqual(debugcap.secret_variants(""), ())
+
+    def test_alphanumeric_secret_has_one_spelling(self):
+        # Nothing to encode, so the spellings coincide and dedupe to one.
+        self.assertEqual(debugcap.secret_variants("abc123"), ("abc123",))
+
+
+class ScrubDomTest(unittest.TestCase):
+    """A serialized login form can carry the typed password as a `value`
+    attribute — a leak the network redactor never sees."""
+
+    PW_INPUT = ('<input id="p" type="password" name="pw" '
+                'value="s3cr3t!" class="x">')
+
+    def test_blanks_a_password_inputs_value(self):
+        out = debugcap.scrub_dom(self.PW_INPUT)
+        self.assertIn('value=""', out)
+        self.assertNotIn("s3cr3t", out)
+
+    def test_blanks_without_knowing_the_credential(self):
+        # The --no-prefill case: the human typed it, so no value-based
+        # redactor could ever cover this.
+        self.assertNotIn("typed-by-hand", debugcap.scrub_dom(
+            '<input type="password" value="typed-by-hand">'))
+
+    def test_keeps_other_inputs_intact(self):
+        out = debugcap.scrub_dom('<input type="text" value="keep-me">')
+        self.assertIn("keep-me", out)
+
+    def test_handles_single_quoted_attributes(self):
+        self.assertNotIn("s3cr3t", debugcap.scrub_dom(
+            "<input type='password' value='s3cr3t'>"))
+
+    def test_keeps_the_rest_of_the_tag(self):
+        # The snapshot is what selectors are pinned from, so only the value
+        # is rewritten.
+        out = debugcap.scrub_dom(self.PW_INPUT)
+        self.assertIn('id="p"', out)
+        self.assertIn('name="pw"', out)
+        self.assertIn('class="x"', out)
+
+    def test_applies_the_redactor_to_the_rest_of_the_markup(self):
+        redact = debugcap.secret_redactor("hunted")
+        out = debugcap.scrub_dom('<div data-u="hunted">hunted</div>', redact)
+        self.assertNotIn("hunted", out)
+
+    def test_empty_markup_passes_through(self):
+        self.assertEqual(debugcap.scrub_dom(""), "")
+
+    def test_a_password_containing_an_angle_bracket_is_still_blanked(self):
+        # `>` inside the value closes the tag early for a naive matcher, and
+        # a punctuation-heavy password is exactly the kind worth protecting.
+        out = debugcap.scrub_dom('<input type="password" value="a>b!" name=p>')
+        self.assertNotIn("a>b!", out)
+        self.assertIn('value=""', out)
+
+    def test_unquoted_attributes_are_blanked_too(self):
+        out = debugcap.scrub_dom("<input type=password value=p@ss>")
+        self.assertNotIn("p@ss", out)
+
+    def test_a_non_password_input_keeps_its_value(self):
+        # The snapshot is what selectors are pinned from; only the credential
+        # is removed.
+        markup = '<input type="text" name="userid" value="keepme">'
+        self.assertEqual(debugcap.scrub_dom(markup), markup)
+
+
+@unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
+class CollectorRedactionTest(unittest.TestCase):
+    """Every collector masks credentials through the shared redactor.
+
+    The explore harnesses are copy-adapted per source by design, so a
+    security primitive inlined in one of them is inlined in all of them —
+    and a fix reaches only the copy it was typed into. Credential masking
+    is that kind of primitive: the literal-substring version each harness
+    once carried wrote a percent-encoded password to a debug capture in
+    cleartext."""
+
+    def _collector_sources(self):
+        return sorted(COLLECTORS.glob("*/*.py"))
+
+    def test_no_collector_inlines_its_own_credential_masker(self):
+        for path in self._collector_sources():
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn(
+                "secrets_to_redact", text,
+                f"{path} inlines a credential masker — use "
+                f"collectorkit.debugcap.secret_redactor()")
+
+    def test_every_dom_serialising_module_scrubs(self):
+        # Keyed on the BEHAVIOUR — serialising a DOM — not on a file name.
+        # Two earlier versions of this guard keyed on names and each missed
+        # a real leak: the first on one harness's private function, which
+        # skipped every login flow; the second on `login.py`/`explore.py`,
+        # which skipped the one collector whose sign-in lives in its
+        # download.py. Any module that can serialize a page can serialize a
+        # sign-in form, and that markup carries the typed password.
+        #
+        # File-level, so it proves a module scrubs somewhere rather than at
+        # every site. It catches the failure that actually happens — a
+        # capture path with no scrubbing at all.
+        scanned = 0
+        for path in self._collector_sources():
+            text = path.read_text(encoding="utf-8")
+            if ".content()" not in text:
+                continue
+            scanned += 1
+            self.assertIn(
+                "debugcap.scrub_dom(", text,
+                f"{path} serialises a DOM without "
+                f"collectorkit.debugcap.scrub_dom() — a sign-in form "
+                f"captured there carries the typed password")
+        self.assertTrue(scanned, "no DOM-serialising module found to scan")
+
+    def test_every_explore_harness_calls_the_shared_redactor(self):
+        # Guards the guards above: they scan for an absent anti-pattern, so a
+        # scan reaching nothing would pass vacuously. Stated as the invariant
+        # every harness must satisfy rather than as a collector count, it
+        # holds at any point in history and cannot rot as sources are added.
+        harnesses = sorted(COLLECTORS.glob("*/explore.py"))
+        self.assertTrue(harnesses, "no explore harness found to scan")
+        for path in harnesses:
+            self.assertIn(
+                "debugcap.secret_redactor(", path.read_text(encoding="utf-8"),
+                f"{path} does not route its captures through "
+                f"collectorkit.debugcap.secret_redactor()")
 
 
 class HttpTraceTest(unittest.TestCase):
@@ -197,6 +385,21 @@ class CapturePageTest(unittest.TestCase):
         d = self.run / debugcap.SCREENSHOTS_DIR
         self.assertTrue((d / "landing.html").exists())
         self.assertFalse((d / "landing.png").exists())
+
+    def test_a_captured_password_field_is_scrubbed(self):
+        # A --debug capture of a sign-in page must not persist the typed
+        # credential, whether or not the caller knows what it is.
+        p = self._Page('<input type="password" value="s3cr3t">')
+        debugcap.capture_page(p, self.run, "signin", log=log)
+        out = (self.run / debugcap.SCREENSHOTS_DIR / "signin.html").read_text()
+        self.assertNotIn("s3cr3t", out)
+
+    def test_a_redactor_masks_known_credentials_too(self):
+        p = self._Page('<div>example-user</div>')
+        debugcap.capture_page(p, self.run, "signin", log=log,
+                              redact=debugcap.secret_redactor("example-user"))
+        out = (self.run / debugcap.SCREENSHOTS_DIR / "signin.html").read_text()
+        self.assertNotIn("example-user", out)
 
 
 class _Resp:

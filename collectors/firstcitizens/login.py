@@ -123,6 +123,14 @@ class _LogonWatch:
     def _on_response(self, resp):
         try:
             if resp.url.rstrip("/").endswith("/logonUser"):
+                if resp.request.method.upper() == "OPTIONS":
+                    # A CORS preflight to the same URL, answering 200 with an
+                    # empty body — and classify_logon reads a 200 carrying no
+                    # targets as AUTHENTICATED, so taking one for the outcome
+                    # would declare a sign-in that never happened. The Q2 app
+                    # is same-origin today and sends none; the guard costs
+                    # nothing and the amex sibling hit exactly this live.
+                    return
                 self.status = resp.status
                 with contextlib.suppress(Exception):
                     body = resp.json()

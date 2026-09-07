@@ -69,7 +69,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile, launch
+from collectorkit import cli, debugcap, envfile, launch
 
 log = logging.getLogger("angellist.explore")
 
@@ -385,13 +385,12 @@ def main(argv: list[str]) -> int:
         # password in the form body; without this it would land in the
         # debug log in plaintext. Defence-in-depth — debug-dir files
         # are not under .secrets/, so a debug-dir leak is a real risk.
-        secrets_to_redact = [s for s in (username, password) if s]
-        def redact(s):
-            if not s or not secrets_to_redact:
-                return s
-            for sec in secrets_to_redact:
-                s = s.replace(sec, "<REDACTED>")
-            return s
+        # The shared redactor knows every spelling a credential
+        # takes on the wire — percent-encoded in a form body,
+        # escaped in a JSON one — because a literal-substring
+        # masker let a percent-encoded password through into a
+        # capture in cleartext.
+        redact = debugcap.secret_redactor(username, password)
 
         # Camoufox launched with persistent_context returns a
         # BrowserContext directly. record_har_path enables HAR capture

@@ -78,7 +78,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, envfile, launch, session
+from collectorkit import cli, debugcap, envfile, launch, session
 
 # The state-file locations and the user agent are download.py's, imported
 # rather than restated: a session minted or reused here is the one
@@ -323,18 +323,12 @@ def make_redactor(secrets: list[str]):
 
     The contract number is the one credential in this flow, and it travels
     in the login POST body. Debug artefacts are not under ~/.secrets, so a
-    log that quoted it would be a real leak.
+    log that quoted it would be a real leak — and it reaches that body
+    percent-encoded, which a literal-substring masker writes out in full.
+    `debugcap.secret_redactor` masks every spelling a value takes on the
+    wire; this only adapts the list argument.
     """
-    values = sorted({s for s in secrets if s}, key=len, reverse=True)
-
-    def redact(text):
-        if not text or not values:
-            return text
-        for value in values:
-            text = text.replace(value, "<redacted>")
-        return text
-
-    return redact
+    return debugcap.secret_redactor(*secrets)
 
 
 def resolve_env_file(explicit: Path | None) -> Path | None:
@@ -382,7 +376,12 @@ def capture_dom_snapshot(context, dom_dir: Path, seq: int,
             if not is_ubs_host(frame.url):
                 continue
             try:
-                frames.append(redact(frame.content()))
+                # scrub_dom before `redact`, because they catch different
+                # things: the harness never submits the password, so the
+                # human types it into the browser and no value-based masker
+                # here knows it — but the serialized form carries it as a
+                # `value` attribute, which scrub_dom blanks unconditionally.
+                frames.append(debugcap.scrub_dom(frame.content(), redact))
             except Exception:  # noqa: BLE001 — a frame mid-navigation
                 continue
     if not frames:
