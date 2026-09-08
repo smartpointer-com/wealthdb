@@ -34,6 +34,7 @@ CREATE TABLE cash_flows (
     kind                  TEXT NOT NULL,        -- 'purchase' | 'distribution'
     flow_date             TEXT,                 -- ISO
     amount                REAL,                 -- positive magnitude
+    execution_fee         REAL,                 -- charged ON TOP of amount
     shares                REAL,
     price_per_share       REAL,
     currency              TEXT NOT NULL DEFAULT 'USD'

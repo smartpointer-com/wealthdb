@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -405,6 +407,153 @@ func assertPair(t *testing.T, what string, gotAC canonical.AssetClass, gotV cano
 
 // TestTaxonomyForKind pins the kind → (exposure, vehicle) mapping and its
 // unknown-kind default, and asserts every emitted pair is admitted.
+func TestAPurchaseWithAnExecutionFeeIsThreeLegs(t *testing.T) {
+	// EquityZen charges the fee ON TOP: the bank debit is amount + fee, to
+	// the cent. So the deposit leg carries what actually crossed, the buy
+	// keeps the basis EquityZen itself states, and the fee stands alone.
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	if _, err := db.Exec(
+		`UPDATE cash_flows SET execution_fee = 50 WHERE cash_flow_external_id = 'cf-d1-buy'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]canonical.TransactionChange{}
+	sum := canonical.NewDecimalFromInt(0)
+	for _, tx := range batch.Transactions {
+		byID[tx.TransactionExternalID] = tx
+		if tx.NetAmount != nil {
+			sum = sum.Add(*tx.NetAmount)
+		}
+	}
+	// The invariant survives the third leg: still no implied cash position.
+	if !sum.IsZero() {
+		t.Errorf("ledger nets to %s, want 0.00", sum.StringFixed(2))
+	}
+
+	for _, c := range []struct {
+		id   string
+		kind canonical.TxKind
+		net  string
+	}{
+		{"cf-d1-buy:deposit", canonical.TxKindDeposit, "1050.00"}, // amount + fee
+		{"cf-d1-buy:buy", canonical.TxKindBuy, "-1000.00"},        // EquityZen's own basis
+		{"cf-d1-buy:fee", canonical.TxKindFee, "-50.00"},
+	} {
+		tx, ok := byID[c.id]
+		if !ok {
+			t.Fatalf("missing %s", c.id)
+		}
+		if tx.Kind != c.kind {
+			t.Errorf("%s kind = %q, want %q", c.id, tx.Kind, c.kind)
+		}
+		if tx.NetAmount == nil || tx.NetAmount.StringFixed(2) != c.net {
+			t.Errorf("%s net = %v, want %s", c.id, tx.NetAmount, c.net)
+		}
+	}
+	// The buy keeps the lot it always had — shares x price still ties to it.
+	if buy := byID["cf-d1-buy:buy"]; buy.Quantity == nil || buy.Quantity.StringFixed(2) != "100.00" {
+		t.Errorf("buy quantity = %v, want 100.00", buy.Quantity)
+	}
+
+	// The link a future cost-basis feature joins on.
+	var got map[string]string
+	if err := json.Unmarshal(byID["cf-d1-buy:fee"].Payload, &got); err != nil {
+		t.Fatalf("fee payload: %v", err)
+	}
+	want := map[string]string{
+		"fee_type": "execution_fee",
+		"fee_role": "acquisition",
+		"fee_for":  "cf-d1-buy:buy",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fee payload = %v, want %v", got, want)
+	}
+	if byID["cf-d1-buy:fee"].InstrumentExternalID == nil ||
+		*byID["cf-d1-buy:fee"].InstrumentExternalID != "d1" {
+		t.Error("the fee leg must carry the deal it was charged on")
+	}
+}
+
+func TestAFundPurchaseFeeLinksToTheContribution(t *testing.T) {
+	// A private fund has no share lot: the investment leg is a contribution,
+	// and that is what the fee has to name.
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	if _, err := db.Exec(
+		`UPDATE cash_flows SET execution_fee = 100 WHERE cash_flow_external_id = 'cf-d2-buy'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tx := range batch.Transactions {
+		if tx.TransactionExternalID != "cf-d2-buy:fee" {
+			continue
+		}
+		var got map[string]string
+		if err := json.Unmarshal(tx.Payload, &got); err != nil {
+			t.Fatalf("fee payload: %v", err)
+		}
+		if got["fee_for"] != "cf-d2-buy:contribution" {
+			t.Errorf("fee_for = %q, want cf-d2-buy:contribution", got["fee_for"])
+		}
+		return
+	}
+	t.Fatal("no fee leg emitted for the fund purchase")
+}
+
+func TestADistributionFeeIsLeftAlone(t *testing.T) {
+	// Deliberate: the purchase direction is proven by the funding bank leg,
+	// and no such witness exists for a distribution's fee. Until the deal's
+	// statement settles it, the distribution legs do not move.
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	if _, err := db.Exec(
+		`UPDATE cash_flows SET execution_fee = 40 WHERE cash_flow_external_id = 'cf-d1-dist'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, err := conn.Transactions(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	batch, _, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tx := range batch.Transactions {
+		if tx.TransactionExternalID == "cf-d1-dist:fee" {
+			t.Fatal("a distribution fee was booked; the direction is not settled yet")
+		}
+	}
+}
+
 func TestTaxonomyForKind(t *testing.T) {
 	cases := []struct {
 		kind   string
