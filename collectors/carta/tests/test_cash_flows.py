@@ -171,3 +171,81 @@ def test_captable_side_loaded_exit_replaces_auto_exit(migrated, tmp_path):
     assert legs == [("sell", 7000.0, 1500.0),
                     ("withdrawal", 6000.0, None),
                     ("withdrawal", 1000.0, None)]
+
+
+# ============================================================
+# capital-call / distribution notices
+# ============================================================
+
+_CALL_NOTICE = """
+Example Fund I L.P.
+Capital Call Notice
+
+Initiated by                                          Example Fund I L.P.
+Date of notice                                                May 20, 2098
+Due date                                                     June 15, 2098
+
+Capital Call details
+Contribution                                                    $61,250.00
+Amount due to fund                                              $61,250.00
+
+Commitment summary
+Commitment                                                     $625,000.00
+Called capital (post call)                                     $217,500.00
+Remaining uncalled of commitment (post call)                   $407,500.00
+"""
+
+_DIST_NOTICE = """
+Example Fund I L.P.
+Distribution Notice
+
+Date of notice                                             January 15, 2099
+Distribution date                                          January 15, 2099
+
+Distribution details
+Distribution                                                     $1,234.56
+Amount due to investor                                           $1,234.56
+
+Commitment summary
+Commitment                                                     $625,000.00
+Distributed capital to date (post distribution)                  $1,234.56
+"""
+
+
+def test_a_call_notice_yields_its_due_date_and_amount():
+    # The point of reading notices at all: a statement can only place a call
+    # in the period it fell in, so every call lands at the period end that
+    # follows it. The notice states the day the money was due.
+    got = load.parse_notice_text(_CALL_NOTICE)
+    assert got["kind"] == "capital_call"
+    assert got["date"] == "06/15/2098"       # due date, not the notice date
+    assert got["issued"] == "05/20/2098"     # kept for dating the residue
+    assert got["amount"] == 61250.0
+    assert got["cumulative"] == 217500.0
+
+
+def test_a_distribution_notice_reads_its_own_labels():
+    got = load.parse_notice_text(_DIST_NOTICE)
+    assert got["kind"] == "distribution"
+    assert got["date"] == "01/15/2099"
+    assert got["amount"] == 1234.56          # to the cent; the statement rounds
+    assert got["cumulative"] == 1234.56
+
+
+def test_the_amount_label_does_not_read_the_line_below_it():
+    # "Distribution" must not match "Distribution date", and the
+    # "Amount due to ..." restatement under it is not the figure.
+    got = load.parse_notice_text(_DIST_NOTICE.replace("$1,234.56", "$1.00", 1))
+    assert got["amount"] == 1.00
+
+
+def test_a_document_that_is_neither_notice_is_skipped():
+    assert load.parse_notice_text("Capital Account Statement\nEnding balance $10") is None
+
+
+def test_the_residue_is_what_the_earliest_notice_says_preceded_it():
+    # Called capital post-call, less this call, is everything called before
+    # Carta shared anything — stated by the fund, not derived.
+    notice = load.parse_notice_text(_CALL_NOTICE)
+    assert load._residue_from_cumulative(notice) == 156250.0
+    assert load._residue_from_cumulative({"amount": 1.0, "cumulative": None}) is None

@@ -660,6 +660,100 @@ def _parse_statement_flows(pdf: Path) -> tuple[float | None, float | None]:
     return _statement_flows_from_text(out)
 
 
+# A notice's fields, as pdftotext -layout renders them: a label at the left
+# and its value flushed right on the same line. The two document kinds share
+# the shape and differ in three labels, which is the whole of the difference.
+_NOTICE_KINDS = {
+    "Capital Call Notice": {
+        "kind": "capital_call",
+        "date": "Due date",
+        "amount": "Contribution",
+        "cumulative": "Called capital (post call)",
+    },
+    "Distribution Notice": {
+        "kind": "distribution",
+        "date": "Distribution date",
+        "amount": "Distribution",
+        "cumulative": "Distributed capital to date (post distribution)",
+    },
+}
+
+
+def _notice_field(text: str, label: str) -> str | None:
+    """The value printed against `label`, or None. Anchored at the start of a
+    line so `Distribution` does not also read `Distribution date`, and so the
+    `Amount due to ...` restatement below it is never mistaken for the figure
+    itself."""
+    m = re.search(rf"(?m)^\s*{re.escape(label)}\s{{2,}}(.+?)\s*$", text)
+    return m.group(1).strip() if m else None
+
+
+def _notice_money(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    try:
+        return float(raw.replace("$", "").replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def parse_notice_text(text: str) -> dict | None:
+    """One capital-call or distribution notice -> its dated amount.
+
+    The notices are why this exists: a capital-account statement reports
+    inception-to-date figures, so differencing consecutive ones can only place
+    a call in the PERIOD it appeared in, and every call ends up dated at the
+    period end that follows it — up to a full statement period after the
+    money actually moved. A notice states the date the money was really due
+    and the amount to the cent.
+
+    `cumulative` is the fund's own running total AFTER this event. On the
+    earliest notice it is what makes the pre-coverage lump computable: called
+    capital post-call, less this call, is everything called before Carta
+    shared anything.
+
+    Returns None for a document that is neither notice — the caller passes
+    every PDF it has.
+    """
+    for header, spec in _NOTICE_KINDS.items():
+        if header not in text:
+            continue
+        when = _notice_field(text, spec["date"])
+        amount = _notice_money(_notice_field(text, spec["amount"]))
+        if not when or amount is None:
+            log.warning("notice: %s missing its date or amount; skipped", header)
+            return None
+        try:
+            day = dt.datetime.strptime(when, "%B %d, %Y").date()
+        except ValueError:
+            log.warning("notice: unparseable %s %r; skipped", spec["date"], when)
+            return None
+        issued = _notice_field(text, "Date of notice")
+        try:
+            issued = dt.datetime.strptime(issued, "%B %d, %Y").date().strftime("%m/%d/%Y")
+        except (TypeError, ValueError):
+            issued = None
+        return {
+            "kind": spec["kind"],
+            "date": day.strftime("%m/%d/%Y"),
+            "issued": issued,
+            "amount": amount,
+            "cumulative": _notice_money(_notice_field(text, spec["cumulative"])),
+        }
+    return None
+
+
+def _parse_notice(pdf: Path) -> dict | None:
+    """parse_notice_text over one PDF; split for testability."""
+    try:
+        out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("pdftotext failed on %s: %s", pdf.name, exc)
+        return None
+    return parse_notice_text(out)
+
+
 def _period_deltas(statements) -> list[tuple]:
     """Difference inception-to-date statement figures into per-period flows.
     `statements` is an iterable of (date 'MM/DD/YYYY', doc_id, contributions_itd,
@@ -791,32 +885,121 @@ def _captable_cash_flows(conn, eid, edir: Path, snap: int,
 
 
 def _fund_cash_flows(conn, eid, docs_dir: Path, snap: int) -> int:
-    """Fund cash flows from the capital-account statements: `capital_call`
-    (deposit+contribution in gold) and `distribution` (distribution+withdrawal).
-    Each statement reports inception-to-date figures; sorting by date and
-    differencing consecutive statements yields the per-period flow. The first
-    statement's value lumps any contributions made before the earliest
-    available statement, so the running total reconciles to the fund's
-    contributed-capital basis."""
+    """Fund cash flows: `capital_call` (deposit+contribution in gold) and
+    `distribution` (distribution+withdrawal).
+
+    Two sources, and the better one wins per kind. A NOTICE states the day the
+    money was due and the amount to the cent, so where the fund has issued
+    notices they are the ledger. A capital-account STATEMENT reports only
+    inception-to-date figures, so differencing consecutive ones can place a
+    flow no more precisely than the period it fell in — every call ends up
+    dated at the period end that follows it, up to a full period after the
+    money moved — and it is the fallback for a fund that shares no notices.
+
+    The two are reconciled rather than mixed: the statements' inception-to-date
+    total is what the fund says was called in all, the notices account for the
+    part Carta shares, and the difference is emitted as ONE residue row —
+    everything called before Carta shared anything, which is not itemised
+    anywhere. The residue is dated at the earliest notice, the last day on
+    which it is KNOWN to have been fully called; it is a bound, not an event,
+    and its description says so.
+    """
     idx = _read_json(docs_dir / "index.json")
     rows = idx.get("results") if isinstance(idx, dict) else None
-    stmts = []
+    stmts, notices = [], []
     for row in rows or []:
-        if "apital account" not in (row.get("document_type") or ""):
-            continue
+        dtype = row.get("document_type") or ""
         pdf = docs_dir / f"doc_{row.get('id')}.pdf"
-        date = _s(row.get("document_date"))
-        if not pdf.is_file() or not date:
+        if not pdf.is_file():
             continue
-        contrib, dist = _parse_statement_flows(pdf)
-        stmts.append((date, row.get("id"), contrib, dist))
+        if "apital account" in dtype:
+            date = _s(row.get("document_date"))
+            if not date:
+                continue
+            contrib, dist = _parse_statement_flows(pdf)
+            stmts.append((date, row.get("id"), contrib, dist))
+        elif "apital call" in dtype or "istribution" in dtype:
+            parsed = _parse_notice(pdf)
+            if parsed:
+                parsed["docid"] = row.get("id")
+                notices.append(parsed)
+
+    # The fund ledger is DERIVED WHOLLY from the documents this run holds, so
+    # it is rebuilt rather than accumulated: a run that can read the notices
+    # emits dated calls where an earlier run — whose copies of those notices
+    # were url envelopes, unreadable — emitted statement-differenced ones under
+    # different ids. Left to accumulate, both shapes survive and the fund's
+    # called capital doubles. Runs load oldest-first, so the newest view wins,
+    # and a run only ever holds MORE documents than its predecessor.
+    conn.execute("DELETE FROM cash_flows WHERE entity_external_id = ? "
+                 "  AND kind IN ('capital_call', 'distribution')", (eid,))
+
+    deltas = _period_deltas(stmts)
+    from_stmts = {"capital_call": 0.0, "distribution": 0.0}
+    for _docid, _date, kind, amount in deltas:
+        from_stmts[kind] = from_stmts.get(kind, 0.0) + amount
+    noticed = {"capital_call": 0.0, "distribution": 0.0}
+    for nt in notices:
+        noticed[nt["kind"]] = noticed.get(nt["kind"], 0.0) + nt["amount"]
+
     n = 0
-    for docid, date, kind, amount in _period_deltas(stmts):
+    for kind in ("capital_call", "distribution"):
         prefix = "call" if kind == "capital_call" else "dist"
         desc = "fund capital call" if kind == "capital_call" else "fund distribution"
-        n += _insert_cash_flow(conn, f"{prefix}:{eid}:{docid}", eid, snap,
-                               kind, date, amount, None, None, desc)
+        mine = sorted((x for x in notices if x["kind"] == kind),
+                      key=lambda x: _flow_sort_key(x["date"]))
+        if not mine:
+            # No notices for this kind: the statements are all there is.
+            for docid, date, k, amount in deltas:
+                if k == kind:
+                    n += _insert_cash_flow(conn, f"{prefix}:{eid}:{docid}", eid,
+                                           snap, kind, date, amount, None, None, desc)
+            continue
+        for nt in mine:
+            n += _insert_cash_flow(conn, f"{prefix}:{eid}:notice:{nt['docid']}",
+                                   eid, snap, kind, nt["date"], nt["amount"],
+                                   None, None, desc)
+        residue = round(from_stmts.get(kind, 0.0) - noticed[kind], 2)
+        stated = _residue_from_cumulative(mine[0])
+        if stated is not None:
+            # The notice's own running total is the fund's statement of what
+            # preceded it, so it wins. A statement-derived figure BELOW it is
+            # the ordinary case of a notice issued since the last statement —
+            # not a disagreement, and not worth saying. Above it means there
+            # is called capital that neither the notices nor the residue
+            # account for, which is.
+            if residue - stated > 0.01:
+                log.warning("%s: the statements imply %.2f called before the "
+                            "earliest notice, which itself says %.2f; %.2f is "
+                            "accounted for by neither",
+                            kind, residue, stated, residue - stated)
+            residue = stated
+        if residue > 0.01:
+            # Dated at the notice, not at its due date: the notice is what
+            # STATES the residue was already called, and dating it on the due
+            # date would stack it on top of that call — recreating on one day
+            # the very lump this exists to take apart.
+            n += _insert_cash_flow(
+                conn, f"{prefix}:{eid}:pre:{mine[0]['docid']}", eid, snap, kind,
+                mine[0].get("issued") or mine[0]["date"], residue, None, None,
+                f"{desc} before Carta's coverage (not itemised; dated at the "
+                "earliest notice, the last day it is known to have been called)")
     return n
+
+
+def _flow_sort_key(date: str) -> tuple:
+    """`MM/DD/YYYY` -> a sortable tuple, the same reading _period_deltas uses."""
+    return (date[6:10], date[0:2], date[3:5])
+
+
+def _residue_from_cumulative(notice: dict) -> float | None:
+    """What the earliest notice says was already called before it: the fund's
+    own running total after the event, less the event. Stated by the fund
+    rather than derived from a difference of statement figures, so it is the
+    better of the two when they disagree."""
+    if notice.get("cumulative") is None:
+        return None
+    return round(notice["cumulative"] - notice["amount"], 2)
 
 
 def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
