@@ -379,15 +379,64 @@ func TestRuleCategoriesAreInTheTaxonomy(t *testing.T) {
 	}
 }
 
+func TestConfigRuleScopeNarrowsWhereARuleMayFire(t *testing.T) {
+	// The point of a scope: a pattern right for one booking on one
+	// account in one month must not sweep up a later row that merely
+	// reads the same.
+	const day = 1734307200 // 2024-12-16T00:00:00Z
+	scoped := []Rule{{
+		Match:    regexp.MustCompile(`(?i)^\s*closing\s*$`),
+		Category: "internal_transfer",
+		Scope: RuleScope{
+			Source: "ubs", Account: "ACCT-1",
+			From: day - 15*86400, To: day + 15*86400,
+		},
+	}}
+	row := func(src, acct string, at int64) RuleRow {
+		return RuleRow{Counterparty: "Closing", Source: src, Account: acct, OccurredAt: at}
+	}
+	for _, tc := range []struct {
+		name string
+		row  RuleRow
+		want bool
+	}{
+		{"inside every dimension", row("ubs", "ACCT-1", day), true},
+		{"another source", row("chase", "ACCT-1", day), false},
+		{"another account", row("ubs", "ACCT-2", day), false},
+		{"before the range", row("ubs", "ACCT-1", day-30*86400), false},
+		{"after the range", row("ubs", "ACCT-1", day+30*86400), false},
+		{"on the first admitted second", row("ubs", "ACCT-1", day-15*86400), true},
+		{"on the last admitted second", row("ubs", "ACCT-1", day+15*86400), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := ConfigRuleCategory(scoped, tc.row)
+			if ok != tc.want {
+				t.Errorf("fired = %v, want %v", ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnUnscopedRuleStillFiresEverywhere(t *testing.T) {
+	// Every rule written before scopes existed carries the zero scope,
+	// and must keep matching exactly as it did.
+	rules := []Rule{{Match: regexp.MustCompile(`(?i)acme`), Category: "gift"}}
+	got, ok := ConfigRuleCategory(rules, RuleRow{
+		Counterparty: "ACME LTD", Source: "anywhere", Account: "any", OccurredAt: 1})
+	if !ok || got != "gift" {
+		t.Errorf("got (%q, %v), want (gift, true)", got, ok)
+	}
+}
+
 // TestConfigRuleCategory pins the helper's contract: either narrative
 // field fires a rule on its own, the match is case-insensitive (the
 // loader compiles with (?i)), the first rule written wins, and no
 // rules means nothing fires. Names and entities are invented.
 func TestConfigRuleCategory(t *testing.T) {
 	rules := []Rule{
-		{regexp.MustCompile(`(?i)SAMPLE HOLDER`), canonical.SpendDetailedInternalTransfer},
-		{regexp.MustCompile(`(?i)EXAMPLE EXCHANGE LTD`), canonical.SpendDetailedInternalTransfer},
-		{regexp.MustCompile(`(?i)EXAMPLE VENTURES FUND`), canonical.SpendDetailedInvestment},
+		{Match: regexp.MustCompile(`(?i)SAMPLE HOLDER`), Category: canonical.SpendDetailedInternalTransfer},
+		{Match: regexp.MustCompile(`(?i)EXAMPLE EXCHANGE LTD`), Category: canonical.SpendDetailedInternalTransfer},
+		{Match: regexp.MustCompile(`(?i)EXAMPLE VENTURES FUND`), Category: canonical.SpendDetailedInvestment},
 	}
 	cases := []struct {
 		counterparty, description string
@@ -407,13 +456,15 @@ func TestConfigRuleCategory(t *testing.T) {
 		{"", "", "", false},
 	}
 	for _, tc := range cases {
-		got, ok := ConfigRuleCategory(rules, tc.counterparty, tc.description)
+		got, ok := ConfigRuleCategory(rules, RuleRow{
+			Counterparty: tc.counterparty, Description: tc.description})
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("ConfigRuleCategory(%q, %q) = (%q, %v), want (%q, %v)",
 				tc.counterparty, tc.description, got, ok, tc.want, tc.ok)
 		}
 	}
-	if _, ok := ConfigRuleCategory(nil, "Sample Holder", "Sample Holder"); ok {
+	if _, ok := ConfigRuleCategory(nil, RuleRow{
+		Counterparty: "Sample Holder", Description: "Sample Holder"}); ok {
 		t.Error("no rules must fire on nothing")
 	}
 }
@@ -487,9 +538,9 @@ func TestRuleRefusalReadsTheFilingOnlyToDecline(t *testing.T) {
 // issuers that announce themselves that way keep their own phrase.
 func TestOnlinePaymentAloneIsNotACardBill(t *testing.T) {
 	cases := []struct {
-		name       string
-		narrative  string
-		wantCard   bool
+		name      string
+		narrative string
+		wantCard  bool
 	}{
 		{"bill-pay to a landlord", "01/02 Online Payment 9000000001 To Example Person", false},
 		{"bill-pay to a firm", "01/03 Online Payment 90000000002 To Example Appliance Co", false},

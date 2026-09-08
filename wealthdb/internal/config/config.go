@@ -537,19 +537,85 @@ type SpendingConfig struct {
 }
 
 // SpendingRule is one entry of `spending.rules` as written in the
-// file: `match`, a regular expression, and `category`, the
-// spend_detailed value a match places.
+// file: `match`, a regular expression, `category`, the spend_detailed
+// value a match places, and an optional `scope` narrowing WHERE and
+// WHEN the rule is allowed to fire.
 type SpendingRule struct {
-	Match    string `json:"match"`
-	Category string `json:"category"`
+	Match    string             `json:"match"`
+	Category string             `json:"category"`
+	Scope    *SpendingRuleScope `json:"scope,omitempty"`
+}
+
+// SpendingRuleScope narrows a rule to part of the ledger. Every field
+// is optional and an omitted one does not constrain; a rule with no
+// scope, or an empty one, matches everywhere — which is what every
+// rule written before this existed does.
+//
+// It exists because a pattern specific enough for one booking is
+// rarely specific enough for the whole future. `^\s*closing\s*$` is
+// exactly right for one mortgage settlement on one account in one
+// month, and a liability the day another bank writes "Closing" on
+// something else. Scoping is how a rule can be surgical instead of
+// permanent: state the account and the month, and a later row that
+// merely reads the same falls through to be asked about rather than
+// being silently swept into last year's answer.
+//
+// `From` and `To` are inclusive ISO dates (YYYY-MM-DD) compared
+// against the transaction's own day, so a single-day range is written
+// with both set the same.
+type SpendingRuleScope struct {
+	Source    string `json:"source,omitempty"`    // silver_source_id
+	Portfolio string `json:"portfolio,omitempty"` // portfolio_external_id
+	Account   string `json:"account,omitempty"`   // account_external_id
+	From      string `json:"from,omitempty"`      // inclusive, YYYY-MM-DD
+	To        string `json:"to,omitempty"`        // inclusive, YYYY-MM-DD
 }
 
 // CompiledSpendRule is a SpendingRule after Validate: the pattern
-// compiled case-insensitively, the category checked. What the
+// compiled case-insensitively, the category checked, the scope's dates
+// resolved to the unix bounds the pass compares against. What the
 // enrichment pass consumes.
 type CompiledSpendRule struct {
 	Match    *regexp.Regexp
 	Category string
+	Scope    CompiledSpendScope
+}
+
+// CompiledSpendScope is a SpendingRuleScope with its dates resolved.
+// `From`/`To` are unix seconds, inclusive of the whole named day; zero
+// means unbounded on that side. `Any` reports the do-nothing scope, so
+// the hot path can skip the check entirely.
+type CompiledSpendScope struct {
+	Source    string
+	Portfolio string
+	Account   string
+	From      int64
+	To        int64
+}
+
+// Any reports whether the scope constrains nothing.
+func (s CompiledSpendScope) Any() bool {
+	return s.Source == "" && s.Portfolio == "" && s.Account == "" &&
+		s.From == 0 && s.To == 0
+}
+
+// Admits reports whether a transaction is inside the scope. The
+// arguments are the row's own facts; an empty portfolio or account on
+// the row can never satisfy a scope that names one.
+func (s CompiledSpendScope) Admits(source, portfolio, account string, occurredAt int64) bool {
+	switch {
+	case s.Source != "" && s.Source != source:
+		return false
+	case s.Portfolio != "" && s.Portfolio != portfolio:
+		return false
+	case s.Account != "" && s.Account != account:
+		return false
+	case s.From != 0 && occurredAt < s.From:
+		return false
+	case s.To != 0 && occurredAt > s.To:
+		return false
+	}
+	return true
 }
 
 // SpendingAccounts lists the account-scope overrides, keyed by

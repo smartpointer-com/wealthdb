@@ -58,7 +58,7 @@ func TestPassMemoNeverFiresABuiltInRule(t *testing.T) {
 
 	// A config rule keyed on the memo is the holder's own word about
 	// the row, and it places.
-	rules := []Rule{{regexp.MustCompile(`(?i)hypothekarzins`), canonical.SpendDetailedInternalTransfer}}
+	rules := []Rule{{Match: regexp.MustCompile(`(?i)hypothekarzins`), Category: canonical.SpendDetailedInternalTransfer}}
 	runPass(t, db, ctx, Options{Rules: rules})
 	if detailed, provenance := verdictOf(t, db, ctx, "swiss-bank", "T-MEMO-MORTGAGE"); detailed != canonical.SpendDetailedInternalTransfer || provenance != ProvenanceRule {
 		t.Errorf("T-MEMO-MORTGAGE with a config rule = (%q, %q), want (internal_transfer, rule)", detailed, provenance)

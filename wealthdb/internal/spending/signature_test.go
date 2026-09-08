@@ -192,8 +192,9 @@ func TestNormalizeIgnoresMemo(t *testing.T) {
 		t.Errorf("RuleCategory on a narrative that names the machine = (%q, %v), want the atm rule", detailed, ok)
 	}
 	// A config rule may key on the memo: it is the holder's own input.
-	rules := []Rule{{regexp.MustCompile(`(?i)hypothekarzins`), canonical.SpendDetailedInternalTransfer}}
-	if got, ok := ConfigRuleCategory(rules, cp, canonical.JoinDescriptionMemo(caption, "Hypothekarzins Q3")); !ok || got != canonical.SpendDetailedInternalTransfer {
+	rules := []Rule{{Match: regexp.MustCompile(`(?i)hypothekarzins`), Category: canonical.SpendDetailedInternalTransfer}}
+	if got, ok := ConfigRuleCategory(rules, RuleRow{Counterparty: cp,
+		Description: canonical.JoinDescriptionMemo(caption, "Hypothekarzins Q3")}); !ok || got != canonical.SpendDetailedInternalTransfer {
 		t.Errorf("ConfigRuleCategory on a memo = (%q, %v), want the rule to fire", got, ok)
 	}
 }

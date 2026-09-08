@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
@@ -396,7 +397,44 @@ func compileSpendRules(rules []SpendingRule) ([]CompiledSpendRule, error) {
 			return nil, fmt.Errorf("config: spending.rules[%d].category %q is not a spend_detailed value: case-sensitive, in the taxonomy's own spelling (a vendored detailed value or one of the deltas, docs/SPENDING.md §2)",
 				i, r.Category)
 		}
-		out = append(out, CompiledSpendRule{Match: re, Category: r.Category})
+		scope, err := compileSpendScope(r.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("config: spending.rules[%d].scope: %w", i, err)
+		}
+		out = append(out, CompiledSpendRule{Match: re, Category: r.Category, Scope: scope})
+	}
+	return out, nil
+}
+
+// compileSpendScope resolves a rule's optional scope. The dates become
+// the unix bounds of the days they name — `from` at its first second,
+// `to` at its last — so both ends are inclusive, and a one-day range is
+// written with the two set the same. An inverted range is refused
+// rather than silently matching nothing: a scope that can never admit a
+// row is a typo every time, and a rule that never fires is invisible.
+func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
+	if sc == nil {
+		return CompiledSpendScope{}, nil
+	}
+	out := CompiledSpendScope{
+		Source: sc.Source, Portfolio: sc.Portfolio, Account: sc.Account,
+	}
+	if sc.From != "" {
+		t, err := time.Parse(time.DateOnly, sc.From)
+		if err != nil {
+			return out, fmt.Errorf("from %q is not a YYYY-MM-DD date: %w", sc.From, err)
+		}
+		out.From = t.UTC().Unix()
+	}
+	if sc.To != "" {
+		t, err := time.Parse(time.DateOnly, sc.To)
+		if err != nil {
+			return out, fmt.Errorf("to %q is not a YYYY-MM-DD date: %w", sc.To, err)
+		}
+		out.To = t.UTC().Add(24*time.Hour - time.Second).Unix()
+	}
+	if out.From != 0 && out.To != 0 && out.To < out.From {
+		return out, fmt.Errorf("to %q is before from %q; the scope could never admit a row", sc.To, sc.From)
 	}
 	return out, nil
 }

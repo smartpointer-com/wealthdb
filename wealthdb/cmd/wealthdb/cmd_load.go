@@ -196,7 +196,16 @@ func spendRules(cfg *config.Config) []spending.Rule {
 	}
 	rules := make([]spending.Rule, 0, len(compiled))
 	for _, r := range compiled {
-		rules = append(rules, spending.Rule{Match: r.Match, Category: r.Category})
+		rules = append(rules, spending.Rule{
+			Match: r.Match, Category: r.Category,
+			Scope: spending.RuleScope{
+				Source:    r.Scope.Source,
+				Portfolio: r.Scope.Portfolio,
+				Account:   r.Scope.Account,
+				From:      r.Scope.From,
+				To:        r.Scope.To,
+			},
+		})
 	}
 	return rules
 }

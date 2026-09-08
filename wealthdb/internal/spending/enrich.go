@@ -345,6 +345,12 @@ type candidate struct {
 	counterparty     string
 	description      string
 	providerCategory string
+	// Scope facts: what an optional `spending.rules[].scope` narrows a
+	// rule by. Carried on every candidate because the rule tier cannot
+	// know in advance which dimension a rule will name.
+	account    string
+	portfolio  string
+	occurredAt int64
 }
 
 func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
@@ -352,7 +358,9 @@ func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
         SELECT silver_source_id, transaction_external_id,
                COALESCE(account_kind, ''),
                COALESCE(counterparty, ''), COALESCE(description, ''),
-               COALESCE(provider_category, '')
+               COALESCE(provider_category, ''),
+               COALESCE(account_external_id, ''),
+               COALESCE(portfolio_external_id, ''), occurred_at
           FROM spend_enrichment_population(?, ?)
          ORDER BY silver_source_id, transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
@@ -363,7 +371,8 @@ func loadPopulation(ctx context.Context, tx querier) ([]candidate, error) {
 	for rows.Next() {
 		var r candidate
 		if err := rows.Scan(&r.key.source, &r.key.txID, &r.accountKind,
-			&r.counterparty, &r.description, &r.providerCategory); err != nil {
+			&r.counterparty, &r.description, &r.providerCategory,
+			&r.account, &r.portfolio, &r.occurredAt); err != nil {
 			return nil, fmt.Errorf("spending: scan enrichment population: %w", err)
 		}
 		out = append(out, r)
@@ -619,7 +628,11 @@ func assignCategories(
 			if detailed, label, ok := RuleCategory(row.signature, r.counterparty, r.description, r.providerCategory); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 				row.merchantLabel = label
-			} else if detailed, ok := ConfigRuleCategory(rules, r.counterparty, r.description); ok {
+			} else if detailed, ok := ConfigRuleCategory(rules, RuleRow{
+				Counterparty: r.counterparty, Description: r.description,
+				Source: r.key.source, Portfolio: r.portfolio,
+				Account: r.account, OccurredAt: r.occurredAt,
+			}); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
 			}
 		}

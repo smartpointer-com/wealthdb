@@ -389,6 +389,54 @@ func newNarrativeField(s string) (narrativeField, bool) {
 type Rule struct {
 	Match    *regexp.Regexp
 	Category string
+	// Scope optionally narrows where and when the rule may fire. The
+	// zero value constrains nothing, which is what a rule written
+	// without a scope means.
+	Scope RuleScope
+}
+
+// RuleScope narrows a rule to part of the ledger: a source, a
+// portfolio, an account, a date range, or any combination. An empty
+// field does not constrain. `From`/`To` are unix seconds and inclusive
+// — the config layer resolves the named days to their first and last
+// second, so a one-day scope is written with both dates the same.
+//
+// The point is that a pattern specific enough for one booking is
+// rarely specific enough for the whole future: a rule that reads a
+// mortgage settlement correctly today is a liability the day another
+// bank writes the same word on something else. A scope lets such a
+// rule stay surgical instead of permanent.
+type RuleScope struct {
+	Source    string
+	Portfolio string
+	Account   string
+	From      int64
+	To        int64
+}
+
+// Any reports whether the scope constrains nothing — the hot path
+// skips the check entirely for the rules that carry no scope.
+func (s RuleScope) Any() bool {
+	return s.Source == "" && s.Portfolio == "" && s.Account == "" &&
+		s.From == 0 && s.To == 0
+}
+
+// Admits reports whether a row is inside the scope. An empty portfolio
+// or account on the row can never satisfy a scope that names one.
+func (s RuleScope) Admits(source, portfolio, account string, occurredAt int64) bool {
+	switch {
+	case s.Source != "" && s.Source != source:
+		return false
+	case s.Portfolio != "" && s.Portfolio != portfolio:
+		return false
+	case s.Account != "" && s.Account != account:
+		return false
+	case s.From != 0 && occurredAt < s.From:
+		return false
+	case s.To != 0 && occurredAt > s.To:
+		return false
+	}
+	return true
 }
 
 // ConfigRuleCategory applies the config-supplied rules to a row's
@@ -407,14 +455,30 @@ type Rule struct {
 // which is the holder's own local input about the holder's own rows.
 // Patterns arrive compiled case-insensitively by the config loader; a
 // nil list never fires.
-func ConfigRuleCategory(rules []Rule, counterparty, description string) (string, bool) {
+func ConfigRuleCategory(rules []Rule, row RuleRow) (string, bool) {
 	for _, r := range rules {
-		if (counterparty != "" && r.Match.MatchString(counterparty)) ||
-			(description != "" && r.Match.MatchString(description)) {
+		if !r.Scope.Any() && !r.Scope.Admits(row.Source, row.Portfolio, row.Account, row.OccurredAt) {
+			continue
+		}
+		if (row.Counterparty != "" && r.Match.MatchString(row.Counterparty)) ||
+			(row.Description != "" && r.Match.MatchString(row.Description)) {
 			return r.Category, true
 		}
 	}
 	return "", false
+}
+
+// RuleRow is what a config rule is tested against: the narrative it
+// matches on, plus the facts an optional scope narrows by. Passing a
+// struct rather than a widening argument list is what keeps a new
+// scope dimension from touching every caller.
+type RuleRow struct {
+	Counterparty string
+	Description  string
+	Source       string
+	Portfolio    string
+	Account      string
+	OccurredAt   int64
 }
 
 // matchesAny reports whether the rule fires on any one of the fields,

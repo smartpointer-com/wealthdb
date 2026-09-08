@@ -441,7 +441,7 @@ func TestPassCardBillCarriesItsIssuer(t *testing.T) {
 	}
 
 	runPass(t, db, ctx, Options{
-		Rules: []Rule{{regexp.MustCompile(`(?i)EXAMPLE CARD SERVICES`), canonical.SpendDetailedCardSpend}},
+		Rules: []Rule{{Match: regexp.MustCompile(`(?i)EXAMPLE CARD SERVICES`), Category: canonical.SpendDetailedCardSpend}},
 		Pins: []Pin{{Source: "bank", Account: "CASH1", Day: day(42), Amount: -300,
 			Currency: "USD", Detailed: canonical.SpendDetailedGift}},
 	})
@@ -816,10 +816,10 @@ func TestPassAppliesConfigRules(t *testing.T) {
 		txn{"bank", "T-LAWYER", "CASH1", "withdrawal", day(74), -800, "", "SEPA transfer Example Law Office invoice", ""},
 	)
 	rules := []Rule{
-		{regexp.MustCompile(`(?i)SAMPLE HOLDER`), canonical.SpendDetailedInternalTransfer},
-		{regexp.MustCompile(`(?i)EXAMPLE EXCHANGE LTD`), canonical.SpendDetailedInternalTransfer},
-		{regexp.MustCompile(`(?i)EXAMPLE VENTURES FUND`), canonical.SpendDetailedInvestment},
-		{regexp.MustCompile(`(?i)EXAMPLE LAW OFFICE`), "GENERAL_SERVICES_CONSULTING_AND_LEGAL"},
+		{Match: regexp.MustCompile(`(?i)SAMPLE HOLDER`), Category: canonical.SpendDetailedInternalTransfer},
+		{Match: regexp.MustCompile(`(?i)EXAMPLE EXCHANGE LTD`), Category: canonical.SpendDetailedInternalTransfer},
+		{Match: regexp.MustCompile(`(?i)EXAMPLE VENTURES FUND`), Category: canonical.SpendDetailedInvestment},
+		{Match: regexp.MustCompile(`(?i)EXAMPLE LAW OFFICE`), Category: "GENERAL_SERVICES_CONSULTING_AND_LEGAL"},
 	}
 
 	// No rules: the own-name wire, the exchange transfer and the

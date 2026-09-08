@@ -528,8 +528,8 @@ carry the phrase `CARD PAYMENT`.
 #### Config-supplied rules
 
 One input to the rule tier is not an engine constant: `spending.rules`,
-a list of `{ "match": <regex>, "category": <spend_detailed> }`
-entries. `match`
+a list of `{ "match": <regex>, "category": <spend_detailed>, "scope": {…} }`
+entries, of which `scope` is optional. `match`
 is compiled case-insensitively and tested against a row's raw
 narrative (`counterparty` and `description`, each on its own — the
 description whole, memo included, so a rule may key on what the payer
@@ -538,6 +538,27 @@ provenance `rule`. The key is
 named for what the entries are — rules in the same tier as the three
 built-ins, with the same provenance — rather than for a pattern with
 one fixed verdict.
+
+**Scoping a rule.** `scope` narrows where and when a rule may fire:
+`source` (a silver_source_id), `portfolio`, `account` and the inclusive
+date range `from` / `to` (`YYYY-MM-DD`, compared against the row's own
+day). Every field is optional and an omitted one does not constrain, so
+a rule with no scope — every rule written before scopes existed —
+matches everywhere.
+
+It exists because a pattern specific enough for one booking is rarely
+specific enough for the whole future. `^\s*closing\s*$` reads a
+mortgage settlement exactly right, and is a liability the day another
+bank writes "Closing" on something else; scoped to the account and the
+month it stays surgical, and a later row that merely reads the
+same falls through to be asked about rather than inheriting last
+year's answer. Prefer the narrowest scope that still admits what the
+rule is FOR: a self-describing phrase wants the account but not a date
+(another extraordinary amortization on the same mortgage would be the
+same thing again), while a generic word wants both.
+
+An inverted range is a config error rather than a rule that silently
+never fires — a scope that can admit nothing is a typo every time.
 
 It exists for three populations neither the matcher nor the model can
 ever reach. One is own-money movement whose receiving side is booked
