@@ -23,7 +23,7 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
               fees="+0.00", interest="+0.00", new="120.00",
               payment_rows=(), credit_rows=(), charge_rows=(), fee_rows=(),
               interest_rows=(), closing="03/12/26", card_ending=False,
-              trailer=True) -> str:
+              trailer=True, member=None) -> str:
     """Render a synthetic statement in the real layout.
 
     The summary is deliberately interleaved with legal prose on the same
@@ -37,9 +37,14 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
         return abs(float(str(raw).replace(",", "").replace("+", "")
                          .replace("$", "")))
 
-    def rows(items):
+    def rows(items, member=None):
+        """One activity row per item. `member` renders the card-member column
+        a statement prints on every credit and fee row when more than one
+        card is on the account — the merchant then sits in the SECOND
+        column, which is the layout _row_description exists for."""
+        lead = f"{member:<36s}" if member else ""
         return "\n".join(
-            f" {d}{'*' if star else ''}     {desc:<40s}"
+            f" {d}{'*' if star else ''}     {lead}{desc:<40s}"
             f"{'CA':>12s}          {amt}"
             for d, star, desc, amt in items)
 
@@ -59,6 +64,13 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
         "",
         " Payments and Credits",
         f" Payments -${mag(payments):.2f}" if payment_rows else " Payments $0.00",
+    ]
+    if credit_rows:
+        # The summary itemises its credits per card member, which leaves the
+        # label standing bare where a total would otherwise follow it.
+        given = sum(mag(a) for *_, a in credit_rows)
+        out += [" Credits", f"    A CARD MEMBER 3-05678          -${given:.2f}"]
+    out += [
         f" Total Payments and Credits {payments.replace('-', '-$')}",
         "",
         " Detail *Indicates posting date",
@@ -66,7 +78,7 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
         rows(payment_rows),
     ]
     if credit_rows:
-        out += [" Credits", rows(credit_rows)]
+        out += [" Credits Amount", rows(credit_rows, member)]
     out += [
         "",
         " New Charges",
@@ -77,7 +89,7 @@ def statement(*, previous="100.00", payments="-40.00", charges="+60.00",
         out += [" Card Ending 2-05678", " Detail Continued"]
     out += [rows(charge_rows)]
     if fee_rows:
-        out += ["", " Fees", rows(fee_rows),
+        out += ["", " Fees", rows(fee_rows, member),
                 f" Total Fees for this Period ${mag(fees):.2f}"]
     if interest_rows:
         out += ["", " Interest Charged", rows(interest_rows),
@@ -175,6 +187,23 @@ def test_a_credits_subsection_is_its_own_kind():
         payment_rows=PAY, credit_rows=credits, charge_rows=BUY))
     kinds = {t.kind for t in p.transactions}
     assert "STMT_CREDIT" in kinds and "STMT_PAYMENT" in kinds
+    assert sp.rows_reconcile(p)
+
+
+def test_the_summary_credits_label_does_not_stamp_the_detail_below_it():
+    # The bare "Credits" the summary prints when it itemises them per card
+    # member stands above the whole detail region, so the payments in it
+    # would carry the credit section's kind. Nothing downstream catches
+    # that: payments and credits share one summary figure, so the rows
+    # still reconcile either way.
+    credits = [("03/02/26", False, "CREDIT ADJUSTMENT", "-$15.00")]
+    p = sp.parse_card_statement_text(statement(
+        payments="-55.00", new="105.00",
+        payment_rows=PAY, credit_rows=credits, charge_rows=BUY))
+    assert [(t.kind, str(t.amount)) for t in p.transactions] == [
+        ("STMT_PAYMENT", "-40.00"),
+        ("STMT_CREDIT", "-15.00"),
+        ("STMT_PURCHASE", "60.00")]
     assert sp.rows_reconcile(p)
 
 
@@ -322,3 +351,37 @@ def test_period_chaining_is_order_independent():
             load.epoch_day(date(2026, 1, 12))]
     starts = load.statement_period_starts(ends)
     assert starts[ends[0]] == ends[1] + 86400
+
+
+def test_the_card_member_column_is_not_the_description():
+    """Under Payments and Credits and under Fees a statement with more than
+    one card prints the MEMBER's name as the row's first column and the
+    merchant — or the fee's own name — as the second. Reading the first
+    column there returns the cardholder for every credit and every fee on the
+    statement: one string, repeated, standing where the only record of what
+    the row was should be. Every value here is synthetic."""
+    credits = [("03/02/26", False, "EXAMPLE SHOP REFUND", "-$15.00")]
+    fees = [("02/28/26", False, "ANNUAL MEMBERSHIP FEE", "$12.00")]
+    p = sp.parse_card_statement_text(statement(
+        payments="-55.00", fees="+12.00", new="117.00",
+        payment_rows=PAY, credit_rows=credits, charge_rows=BUY,
+        fee_rows=fees, member="A CARD MEMBER"))
+    got = {t.kind: t.description for t in p.transactions}
+    assert got["STMT_CREDIT"] == "EXAMPLE SHOP REFUND"
+    assert got["STMT_FEE"] == "ANNUAL MEMBERSHIP FEE"
+    # The charge rows carry no such column — under New Charges the member is
+    # a heading above the block — so they are untouched.
+    assert got["STMT_PURCHASE"] == "EXAMPLE STORE"
+    assert sp.rows_reconcile(p)
+
+
+def test_a_row_that_merely_starts_like_a_member_is_left_alone():
+    """The names come from the statement's own per-member breakdown, so a
+    merchant is only ever dropped if the document itself named it as a card
+    member. A single-card statement prints no member column at all."""
+    credits = [("03/02/26", False, "CREDIT ADJUSTMENT", "-$15.00")]
+    p = sp.parse_card_statement_text(statement(
+        payments="-55.00", new="105.00",
+        payment_rows=PAY, credit_rows=credits, charge_rows=BUY))
+    got = {t.kind: t.description for t in p.transactions}
+    assert got["STMT_CREDIT"] == "CREDIT ADJUSTMENT"

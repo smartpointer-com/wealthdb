@@ -122,6 +122,24 @@ _ACTIVITY_END_RE = re.compile(
 # the summary followed by an amount.
 _HEADING_RE = re.compile(r"^\s*([A-Za-z][A-Za-z /]*[A-Za-z])\s*$")
 
+# In the detail region a heading carries the amount column's title on its own
+# line ("Payments        Amount"), while the summary above prints the same word
+# bare whenever a per-card-member breakdown stands where its total would. So
+# the bare word is the SUMMARY's and the titled one is the section's, and
+# dropping the title is what lets the detail heading correct a section the
+# summary already set. Without it a statement that itemises its credits stamps
+# every payment below as a credit — invisible to the reconciliation, because
+# payments and credits share one summary figure.
+_COLUMN_TITLE_RE = re.compile(r"\s+Amount$", re.IGNORECASE)
+
+# A per-card-member summary line: the member's name, the last digits of their
+# card, and optionally that member's share of the section total. It is how a
+# statement with more than one card names its members, and the names are what
+# _member_names collects.
+_MEMBER_SUMMARY_RE = re.compile(
+    r"^\s*(?P<name>[A-Z][A-Z .'\-]{3,40}?)\s+\d-\d{4,6}\s*"
+    r"(?:" + _SUMMARY_AMOUNT + r")?\s*$")
+
 
 @dataclass
 class StatementTxn:
@@ -229,6 +247,8 @@ def parse_card_statement_text(text: str) -> ParsedCardStatement:
     for name, value in _summary(text).items():
         setattr(parsed, name, value)
 
+    members = _member_names(text)
+
     # `kind` doubles as the in-activity flag: it is set only by a known
     # section heading and cleared where the activity ends.
     kind: str | None = None
@@ -241,7 +261,8 @@ def parse_card_statement_text(text: str) -> ParsedCardStatement:
             continue
         heading = _HEADING_RE.match(line)
         if heading:
-            found = CARD_SECTION_KINDS.get(heading.group(1).strip().upper())
+            name = _COLUMN_TITLE_RE.sub("", heading.group(1).strip())
+            found = CARD_SECTION_KINDS.get(name.upper())
             if found:
                 kind = found
             continue
@@ -254,14 +275,50 @@ def parse_card_statement_text(text: str) -> ParsedCardStatement:
         amount = _dec(m["amt"])
         if when is None or amount is None:
             continue
-        # The description is the row's leading text; the trailing columns a
-        # statement prints beside it (a reference, a city/state) are dropped
-        # by taking only what precedes a run of two or more spaces.
-        description = re.split(r"\s{2,}", m["rest"].strip())[0].strip()
+        description = _row_description(m["rest"], members)
         parsed.transactions.append(StatementTxn(
             when=when, description=description, amount=amount, kind=kind,
             posting_date=bool(m["star"])))
     return parsed
+
+
+def _member_names(text: str) -> set[str]:
+    """The card members this statement names, upper-cased.
+
+    A statement with more than one card breaks each section total down per
+    member, and that breakdown is the only place the names are stated as data
+    rather than as page furniture. They are needed because those same names
+    are printed IN the rows — see _row_description."""
+    return {m["name"].strip().upper()
+            for line in text.split("\n")
+            if (m := _MEMBER_SUMMARY_RE.match(line))}
+
+
+def _row_description(rest: str, members: set[str]) -> str:
+    """The description of one activity row: its leading column, with the
+    trailing ones a statement prints beside it (a reference, a city/state)
+    dropped by taking only what precedes a run of two or more spaces.
+
+    The exception is what this function exists for. Under `New Charges` the
+    card member is a HEADING above their block, so the leading column is the
+    merchant. Under `Payments and Credits` and `Fees` there is no such
+    heading: the member's name is printed as the row's FIRST COLUMN and the
+    merchant — or the fee's own name — is the second. Reading the leading
+    column there returns the cardholder for every credit and every fee on the
+    statement, which is not a merchant, is the same string on every such row,
+    and hides what the row actually was: an annual membership fee, a foreign
+    transaction fee, a refund from a named shop, a cash reward.
+
+    So a leading column that IS one of this statement's own card members is
+    dropped. A statement with one card prints no such column and is
+    unaffected, and a row whose leading column is anything else is unchanged —
+    the names come from the document, so nothing is assumed about them."""
+    columns = [c.strip() for c in re.split(r"\s{2,}", rest.strip()) if c.strip()]
+    if not columns:
+        return ""
+    if len(columns) > 1 and columns[0].upper() in members:
+        return columns[1]
+    return columns[0]
 
 
 def summary_reconciles(parsed: ParsedCardStatement) -> bool:
