@@ -304,3 +304,231 @@ def test_an_unreachable_card_surface_leaves_the_rest_of_the_dump(tmp_path,
     manifest, _ = _card_run(tmp_path, monkeypatch, capture=lambda: None)
     assert manifest["status"] == "complete"
     assert "cards" not in manifest
+
+
+# --------------------------------------------------------------------
+# _export_with_split: the 1000-transaction export cap
+#
+# UBS refuses a transaction export whose period holds more than
+# TRX_EXPORT_CAP rows, in BOTH formats: MT940 swaps its variant
+# chooser for an info dialog, CSV answers the click with a dialog and
+# no download. The bisect exists so no window is ever exported over
+# the cap — a window that is costs DOWNLOAD_TIMEOUT_MS and yields
+# nothing, reproducibly, for as long as the account stays that busy.
+# --------------------------------------------------------------------
+
+from datetime import date, timedelta  # noqa: E402
+
+
+class _FakeTxnPage:
+    """Stand-in for the transactions page: remembers the applied
+    period and answers the count from a fixed synthetic ledger."""
+
+    url = "https://example.invalid/app/#/home"
+
+    def __init__(self, txn_dates):
+        self.txn_dates = txn_dates
+        self.window = None
+
+    def goto(self, _url, **_kw):
+        pass
+
+    def wait_for_selector(self, _sel, **_kw):
+        pass
+
+
+def _install_fake_txn_page(monkeypatch, page):
+    """Replace the three browser-driving helpers the split calls, so
+    the bisect arithmetic is what's under test."""
+    monkeypatch.setattr(download, "_navigate_to_account_fresh",
+                        lambda _p, _account: None)
+
+    def set_period(p, since, until, _screenshot_dir, _account_id):
+        p.window = (since, until)
+        return since, until
+
+    monkeypatch.setattr(download, "_set_transaction_period_custom", set_period)
+    monkeypatch.setattr(
+        download, "_read_transaction_count",
+        lambda p: sum(1 for d in p.txn_dates
+                      if p.window[0] <= d <= p.window[1]))
+
+
+def _recording_exporter(calls, page):
+    """Per-window exporter that records the window it was handed and
+    writes a synthetic file for it."""
+
+    def export(_page, _account, out_dir, since, until):
+        count = sum(1 for d in page.txn_dates if since <= d <= until)
+        calls.append((since, until, count))
+        path = out_dir / f"cash_{since:%Y%m%d}_{until:%Y%m%d}.out"
+        path.write_text("synthetic export")
+        return path
+
+    return export
+
+
+_ACCOUNT = {"kind": "cash", "account_id": "synthetic-account-id",
+            "route": "#/accounts?target=cash-account-transactions"}
+
+
+def _run_split(monkeypatch, tmp_path, txn_dates, since, until, fmt="CSV",
+               export=None):
+    page = _FakeTxnPage(txn_dates)
+    _install_fake_txn_page(monkeypatch, page)
+    calls: list[tuple] = []
+    paths, count, gaps = download._export_with_split(
+        page, _ACCOUNT, since, until, tmp_path, None,
+        depth=0, fmt=fmt, export=export or _recording_exporter(calls, page),
+    )
+    return paths, count, calls, gaps
+
+
+def test_split_under_cap_exports_the_window_whole(tmp_path, monkeypatch):
+    since, until = date(2026, 1, 1), date(2026, 3, 31)
+    dates = [since + timedelta(days=i % 90) for i in range(50)]
+    paths, count, calls, gaps = _run_split(monkeypatch, tmp_path, dates,
+                                          since, until)
+    assert count == 50
+    assert calls == [(since, until, 50)]
+    assert len(paths) == 1
+
+
+def test_split_never_exports_a_window_over_the_cap(tmp_path, monkeypatch):
+    """The regression: an over-cap window must be bisected, not handed
+    to the exporter to wait out a download UBS will never produce."""
+    since, until = date(2024, 1, 1), date(2026, 9, 7)
+    span = (until - since).days
+    # Dense enough that the full window is far over the cap.
+    dates = [since + timedelta(days=i % span)
+             for i in range(4 * download.TRX_EXPORT_CAP)]
+    paths, count, calls, gaps = _run_split(monkeypatch, tmp_path, dates,
+                                          since, until)
+    assert count == 4 * download.TRX_EXPORT_CAP
+    assert calls, "the window was never exported at all"
+    assert all(c <= download.TRX_EXPORT_CAP for _s, _u, c in calls), \
+        f"exported an over-cap window: {calls}"
+    assert len(paths) == len(calls) > 1
+
+
+def test_split_windows_tile_the_period_without_gap_or_overlap(tmp_path,
+                                                              monkeypatch):
+    since, until = date(2024, 1, 1), date(2026, 9, 7)
+    span = (until - since).days
+    dates = [since + timedelta(days=i % span)
+             for i in range(3 * download.TRX_EXPORT_CAP)]
+    _paths, _count, calls, _gaps = _run_split(monkeypatch, tmp_path, dates,
+                                              since, until)
+    windows = sorted((s, u) for s, u, _c in calls)
+    assert windows[0][0] == since
+    assert windows[-1][1] == until
+    for (_s1, u1), (s2, _u2) in zip(windows, windows[1:]):
+        assert s2 == u1 + timedelta(days=1), \
+            f"windows are not contiguous at {u1} -> {s2}"
+    # Every transaction lands in exactly one exported window.
+    assert sum(c for _s, _u, c in calls) == len(dates)
+
+
+def test_split_gives_up_inside_a_one_day_window(tmp_path, monkeypatch):
+    """A single day over the cap cannot be bisected further; it is
+    reported and skipped rather than exported into a stall."""
+    day = date(2026, 5, 4)
+    dates = [day] * (download.TRX_EXPORT_CAP + 1)
+    paths, count, calls, gaps = _run_split(monkeypatch, tmp_path, dates,
+                                          day, day)
+    assert count == download.TRX_EXPORT_CAP + 1
+    assert calls == []
+    assert paths == []
+    assert gaps == [(day, day)], "the day it gave up on was not reported"
+
+
+def test_split_reports_a_window_the_exporter_could_not_download(tmp_path,
+                                                                monkeypatch):
+    """Under the cap and still no file — UBS answered the click with a
+    dialog, or the download timed out. The window is lost to the
+    statement PDFs, so the split says which one."""
+    since, until = date(2026, 1, 1), date(2026, 3, 31)
+    dates = [since + timedelta(days=i % 90) for i in range(50)]
+    paths, _count, _calls, gaps = _run_split(
+        monkeypatch, tmp_path, dates, since, until,
+        export=lambda *_a, **_kw: None)
+    assert paths == []
+    assert gaps == [(since, until)]
+
+
+def test_split_reports_no_gap_when_every_window_lands(tmp_path, monkeypatch):
+    # The field is always written, so an empty list has to mean covered.
+    since, until = date(2024, 1, 1), date(2026, 9, 7)
+    span = (until - since).days
+    dates = [since + timedelta(days=i % span)
+             for i in range(3 * download.TRX_EXPORT_CAP)]
+    _p, _c, calls, gaps = _run_split(monkeypatch, tmp_path, dates,
+                                     since, until)
+    assert len(calls) > 1
+    assert gaps == []
+
+
+def test_both_formats_bisect_on_the_same_cap(tmp_path, monkeypatch):
+    """MT940 always bisected; CSV used to be exported "one shot over
+    the full window (no observed cap)" and stalled on a busy account."""
+    since, until = date(2024, 1, 1), date(2026, 9, 7)
+    span = (until - since).days
+    dates = [since + timedelta(days=i % span)
+             for i in range(3 * download.TRX_EXPORT_CAP)]
+    _p, _c, csv_calls, _g = _run_split(monkeypatch, tmp_path, dates,
+                                       since, until, fmt="CSV")
+    _p, _c, mt_calls, _g = _run_split(monkeypatch, tmp_path, dates,
+                                      since, until, fmt="MT940")
+    assert [w[:2] for w in csv_calls] == [w[:2] for w in mt_calls]
+    assert len(csv_calls) > 1
+
+
+def test_export_transactions_records_every_csv_chunk(tmp_path, monkeypatch):
+    """run.json carries a list per format: a busy account's CSV is
+    several files, and naming only one of them would hide the rest
+    from anyone reading the dump's manifest."""
+    since, until = date(2024, 1, 1), date(2026, 9, 7)
+    span = (until - since).days
+    dates = [since + timedelta(days=i % span)
+             for i in range(3 * download.TRX_EXPORT_CAP)]
+    page = _FakeTxnPage(dates)
+    _install_fake_txn_page(monkeypatch, page)
+    monkeypatch.setattr(download, "_dismiss_open_overlays", lambda _p: None)
+    calls: list[tuple] = []
+    exporter = _recording_exporter(calls, page)
+    monkeypatch.setattr(download, "_export_csv", exporter)
+    monkeypatch.setattr(download, "_export_mt940", exporter)
+
+    meta = download.export_transactions(page, _ACCOUNT, since, until,
+                                        tmp_path, None)
+
+    assert meta["transaction_count"] == 3 * download.TRX_EXPORT_CAP
+    assert len(meta["csv_filenames"]) > 1
+    assert len(meta["mt940_filenames"]) > 1
+    assert meta["csv_gaps"] == [] and meta["mt940_gaps"] == []
+    written = {p.name for p in (tmp_path / "transactions").iterdir()}
+    assert set(meta["csv_filenames"]) <= written
+
+
+def test_export_transactions_records_a_format_that_produced_nothing(
+        tmp_path, monkeypatch):
+    """The silent loss this exists to stop: when one format's export
+    produces nothing but the other succeeds, the manifest still reads as
+    complete and the missing format goes unnoticed."""
+    since, until = date(2026, 1, 1), date(2026, 3, 31)
+    dates = [since + timedelta(days=i % 90) for i in range(50)]
+    page = _FakeTxnPage(dates)
+    _install_fake_txn_page(monkeypatch, page)
+    monkeypatch.setattr(download, "_dismiss_open_overlays", lambda _p: None)
+    calls: list[tuple] = []
+    monkeypatch.setattr(download, "_export_csv", lambda *_a, **_kw: None)
+    monkeypatch.setattr(download, "_export_mt940",
+                        _recording_exporter(calls, page))
+
+    meta = download.export_transactions(page, _ACCOUNT, since, until,
+                                        tmp_path, None)
+
+    assert meta["csv_filenames"] == []
+    assert meta["csv_gaps"] == ["2026-01-01..2026-03-31"]
+    assert len(meta["mt940_filenames"]) == 1
+    assert meta["mt940_gaps"] == []

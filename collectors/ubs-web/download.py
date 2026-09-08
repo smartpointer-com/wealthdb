@@ -81,10 +81,13 @@ WINDOW_MAX_DEPTH = 20
 # end, and a walk that is merely slow reads as a hung one.
 PROGRESS_EVERY = 25
 
-# UBS's hard cap on MT940 export. The variant-chooser dialog shows
-# this number explicitly in its info banner. Exceeding it triggers
-# the "max 1000 transactions" info-only dialog (no Export button).
-MT940_TRX_CAP = 1000
+# UBS's hard cap on a transaction export, in either format. The MT940
+# variant-chooser dialog shows this number explicitly in its info
+# banner; exceeding it replaces the chooser with the "max 1000
+# transactions" info-only dialog (no Export button). CSV binds to the
+# same cap and answers an over-cap click with a dialog of its own
+# rather than a file, so both formats bisect their window on it.
+TRX_EXPORT_CAP = 1000
 
 
 # ============================================================
@@ -309,8 +312,9 @@ def _build_spa_url(current_url: str, hash_route: str) -> str:
 
 def export_transactions(page, account: dict, since: date, until: date,
                         run_dir: Path, screenshot_dir: Path | None) -> dict:
-    """Download CSV (one file) + MT940 (one or more files, depending
-    on whether the period exceeds the 1000-trx cap) for one account."""
+    """Download CSV + MT940 for one account: one file per format per
+    window, and more than one window where the period exceeds the
+    1000-transaction export cap."""
     route = account["route"]
     url = _build_spa_url(page.url, route)
     log.info("navigating to transactions for %s account %s",
@@ -332,38 +336,82 @@ def export_transactions(page, account: dict, since: date, until: date,
     out_dir = run_dir / "transactions"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- CSV: one shot over the full window (no observed cap) ---
-    applied_since, applied_until = _set_transaction_period_custom(
+    # The count over the whole requested window, for run.json and the
+    # filtered-view capture. Each export below re-reads it per window.
+    _set_transaction_period_custom(
         page, since, until, screenshot_dir, account["account_id"],
     )
     full_count = _read_transaction_count(page)
     maybe_screenshot(page, screenshot_dir, f"txn-filtered-{account['account_id'][:8]}")
-    csv_path = _export_csv(page, account, out_dir, applied_since, applied_until)
 
-    # --- MT940: bisect on the 1000-trx cap ---
-    mt940_paths = _export_mt940_with_split(
-        page, account, since, until, out_dir, screenshot_dir, depth=0,
+    # Both formats bisect on the same export cap.
+    csv_paths, _, csv_gaps = _export_with_split(
+        page, account, since, until, out_dir, screenshot_dir,
+        depth=0, fmt="CSV", export=_export_csv,
+    )
+    mt940_paths, _, mt940_gaps = _export_with_split(
+        page, account, since, until, out_dir, screenshot_dir,
+        depth=0, fmt="MT940", export=_export_mt940,
     )
 
-    log.info("exported %s account %s: %s transactions; csv=%s; mt940 chunks=%d",
+    log.info("exported %s account %s: %s transactions; "
+             "csv chunks=%d; mt940 chunks=%d",
              account["kind"], account["account_id"][:12],
              full_count if full_count is not None else "?",
-             csv_path.name if csv_path else None, len(mt940_paths))
+             len(csv_paths), len(mt940_paths))
+    if csv_gaps or mt940_gaps:
+        log.error("incomplete transaction export for %s account %s: "
+                  "csv missing %s; mt940 missing %s. The statement PDFs "
+                  "are the only record of those windows, and they carry "
+                  "a poorer narrative than the export does.",
+                  account["kind"], account["account_id"][:12],
+                  _windows(csv_gaps) or "nothing",
+                  _windows(mt940_gaps) or "nothing")
     return {
         **account,
         "since": since.isoformat(),
         "until": until.isoformat(),
         "transaction_count": full_count,
-        "csv_filename": csv_path.name if csv_path else None,
+        "csv_filenames": [p.name for p in csv_paths],
+        "csv_gaps": _windows(csv_gaps),
         "mt940_filenames": [p.name for p in mt940_paths],
+        "mt940_gaps": _windows(mt940_gaps),
     }
 
 
-def _export_mt940_with_split(page, account: dict, since: date, until: date,
-                             out_dir: Path,
-                             screenshot_dir: Path | None,
-                             depth: int) -> list[Path]:
-    """MT940 export with automatic window bisection on the 1000-trx cap.
+def _windows(gaps: list[tuple[date, date]]) -> list[str]:
+    """Un-exported windows as `YYYY-MM-DD..YYYY-MM-DD` strings, for the
+    manifest and the log. Always written, empty list included, so a
+    reader can tell a run that covered everything from one taken before
+    the field existed."""
+    return [f"{a.isoformat()}..{b.isoformat()}" for a, b in gaps]
+
+
+def _export_with_split(page, account: dict, since: date, until: date,
+                       out_dir: Path,
+                       screenshot_dir: Path | None,
+                       depth: int, fmt: str,
+                       export) -> tuple[list[Path], int | None,
+                                        list[tuple[date, date]]]:
+    """Export one account's transactions, bisecting the window on the
+    1000-trx cap. Returns the files written, the transaction count of
+    the whole window this call was given, and the windows it could not
+    export at all.
+
+    That third value is why this function reports rather than warns.
+    An export that yields nothing leaves the account's history to the
+    statement-PDF reconstruction, which is a strictly poorer record of
+    the same bookings — it prints upper-case and drops every accent a
+    payee's name carries. The loss is invisible in the row count, so
+    the gap is carried out to the manifest instead of ending in a log
+    line nobody reads.
+
+    The count is read from the filtered table BEFORE the export is
+    attempted, because over the cap UBS answers the click with an
+    info dialog instead of a file: waiting for a download that is
+    never produced costs DOWNLOAD_TIMEOUT_MS and yields nothing. The
+    format differ only in how they are driven, so `export` is the
+    per-window exporter and `fmt` names it in the log.
 
     Each bisect window does a FULL page.goto to the account URL
     before setting the period. The UBS DatePicker remembers prior
@@ -375,36 +423,38 @@ def _export_mt940_with_split(page, account: dict, since: date, until: date,
     + Apply path works as on the first call.
     """
     if depth > WINDOW_MAX_DEPTH:
-        log.warning("MT940 max bisect depth at [%s..%s]; chunk skipped",
-                    since, until)
-        return []
+        log.warning("%s max bisect depth at [%s..%s]; chunk skipped",
+                    fmt, since, until)
+        return [], None, [(since, until)]
     _navigate_to_account_fresh(page, account)
     applied_since, applied_until = _set_transaction_period_custom(
         page, since, until, screenshot_dir, account["account_id"],
     )
     count = _read_transaction_count(page)
-    log.debug("MT940 window [%s..%s] (applied [%s..%s]) trx count: %s",
-              since, until, applied_since, applied_until, count)
-    if count is not None and count > MT940_TRX_CAP:
+    log.debug("%s window [%s..%s] (applied [%s..%s]) trx count: %s",
+              fmt, since, until, applied_since, applied_until, count)
+    if count is not None and count > TRX_EXPORT_CAP:
         if (applied_until - applied_since).days <= WINDOW_MIN_DAYS:
-            log.error("MT940 cap exceeded in 1-day window [%s..%s] "
+            log.error("%s cap exceeded in 1-day window [%s..%s] "
                       "(%d trx). Apply additional filters manually.",
-                      applied_since, applied_until, count)
-            return []
+                      fmt, applied_since, applied_until, count)
+            return [], count, [(applied_since, applied_until)]
         # Bisect within the APPLIED window — UBS may have clamped
         # `since` (or `until`) due to its retention limit, and
         # bisecting the original window would just keep hitting the
         # same clamp on every recursion.
         mid = applied_since + (applied_until - applied_since) // 2
-        return (
-            _export_mt940_with_split(page, account, applied_since, mid,
-                                     out_dir, screenshot_dir, depth + 1)
-            + _export_mt940_with_split(page, account, mid + timedelta(days=1),
-                                       applied_until, out_dir,
-                                       screenshot_dir, depth + 1)
-        )
-    path = _export_mt940(page, account, out_dir, applied_since, applied_until)
-    return [path] if path else []
+        left, _, left_gaps = _export_with_split(
+            page, account, applied_since, mid, out_dir, screenshot_dir,
+            depth + 1, fmt, export)
+        right, _, right_gaps = _export_with_split(
+            page, account, mid + timedelta(days=1), applied_until, out_dir,
+            screenshot_dir, depth + 1, fmt, export)
+        return left + right, count, left_gaps + right_gaps
+    path = export(page, account, out_dir, applied_since, applied_until)
+    if path is None:
+        return [], count, [(applied_since, applied_until)]
+    return [path], count, []
 
 
 def _navigate_to_docs_fresh(page) -> None:
@@ -655,7 +705,11 @@ def _fill_custom_dates(page, since: date, until: date,
 
 def _export_csv(page, account: dict, out_dir: Path,
                 since: date, until: date) -> Path | None:
-    """CSV export — direct download on click (no dialog)."""
+    """CSV export — a click downloads the file directly, as long as
+    the period is within the export cap. Over it, UBS answers with an
+    info dialog and no download ever arrives; the caller bisects the
+    window to stay under, and the dialog handling here is the net for
+    a cap this code failed to predict."""
     button = page.locator(ubs.TXN_BUTTON_CSV_SELECTOR).first
     try:
         button.wait_for(state="visible", timeout=LANDMARK_TIMEOUT_MS)
@@ -668,7 +722,14 @@ def _export_csv(page, account: dict, out_dir: Path,
             button.click()
         download = dl_info.value
     except Exception as e:
-        log.warning("CSV export click did not produce a download: %s", e)
+        log.warning("CSV export click did not produce a download for "
+                    "%s account %s over [%s..%s] — likely the "
+                    "%d-transaction cap: %s",
+                    account["kind"], account["account_id"][:12],
+                    since, until, TRX_EXPORT_CAP, e)
+        # Whatever it opened instead of downloading would intercept
+        # the next click, so clear it before handing the page back.
+        _dismiss_open_overlays(page)
         return None
     return _save_download(download, account, out_dir, since, until,
                           default_ext="csv")
@@ -891,7 +952,7 @@ def _walk_window(page, context, since: date, until: date,
 
     Each bisect window navigates fresh to the documents URL before
     applying the period filter. Same rationale as
-    `_export_mt940_with_split`: the docs page's DatePicker has the
+    `_export_with_split`: the docs page's DatePicker has the
     same React-controlled-input staleness as the transactions page,
     so applying a new period without a fresh navigate silently
     leaves the previous filter in place.
