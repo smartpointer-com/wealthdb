@@ -358,7 +358,8 @@ def _replace_with_hardlink(src: Path, target: Path) -> None:
 
 def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
                   fetch: Callable[[], Path | None], force: bool = False,
-                  expected_size: int | None = None) -> str:
+                  expected_size: int | None = None,
+                  usable: Callable[[Path], bool] | None = None) -> str:
     """link-mode: hardlink a prior identical file into the new run dir; fall
     through to a real fetch on ANY error (the viac invariant — degrade to a
     fetch, never to a missing document).
@@ -378,10 +379,20 @@ def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
     mismatch (or an un-stattable prior) is taken as a mis-keyed cross-account
     collision and falls through to a real fetch rather than silently linking the
     wrong file. ``None`` (equityzen) leaves the guard off.
+
+    ``usable`` is the second guard, and it exists because link-mode is the one
+    mode that can serve a file NO run ever validated: a fetch that once wrote
+    the wrong bytes — an error page, an unfollowed url envelope — is hardlinked
+    forward by every later run, and a mode that never re-fetches never notices.
+    When given, the prior copy must satisfy it before the link is trusted; a
+    copy that does not is treated exactly like a missing one and falls through
+    to a real fetch. Cheap to satisfy (a magic-number read), and it turns a
+    permanent poisoning into one wasted download.
     """
     if not force:
         prior = skipset.take(key)
-        if prior is not None and _size_ok(prior, expected_size):
+        if (prior is not None and _size_ok(prior, expected_size)
+                and _usable(prior, usable)):
             target = Path(target_dir) / (stem + prior.suffix)
             try:
                 _hardlink(prior, target)
@@ -390,6 +401,42 @@ def link_or_fetch(skipset: SkipSet, key: tuple, *, target_dir: Path, stem: str,
                 log.debug("hardlink %s -> %s failed: %s; falling through to fetch.",
                           prior, target, e)
     return FETCHED if fetch() is not None else FETCH_FAILED
+
+
+def is_pdf(path: Path) -> bool:
+    """True if the file really starts with the PDF magic number.
+
+    The ``usable`` predicate every adopter wants, because every adopter links
+    PDFs: statements, notices, tax forms. It exists here rather than four times
+    over because what it guards against is not a per-collector accident — a
+    document endpoint that answers with an error page, or with a JSON envelope
+    naming the real url, writes something that is not a PDF, and link-mode
+    would hardlink that forward for ever.
+
+    An unreadable file counts as unusable: the caller then fetches, which is
+    the safe direction.
+    """
+    try:
+        with path.open("rb") as f:
+            return f.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _usable(prior: Path, usable: Callable[[Path], bool] | None) -> bool:
+    """True if the caller's usability predicate passes, or none was given. A
+    predicate that raises counts as unusable -> the caller fetches, which is the
+    safe direction and the same one :func:`_size_ok` takes on a stat error."""
+    if usable is None:
+        return True
+    try:
+        if usable(prior):
+            return True
+    except OSError:
+        pass
+    log.debug("usability guard: prior %s is not a usable document; "
+              "fetching rather than linking it forward.", prior)
+    return False
 
 
 def _size_ok(prior: Path, expected_size: int | None) -> bool:
@@ -448,21 +495,22 @@ def process(skipset: SkipSet, key: tuple, *, doc_class: str | None,
             target_dir: Path, stem: str, fetch: Callable[[], Path | None],
             digest_of: Callable[[Path], str] | None = None,
             force: bool = False, expected_size: int | None = None,
-            class_modes: dict[str, str] | None = None) -> str:
+            class_modes: dict[str, str] | None = None,
+            usable: Callable[[Path], bool] | None = None) -> str:
     """Dispatch one document to the mode its class selects (:func:`mode_for_class`).
 
     ``immutable -> link_or_fetch``; ``tax``/``mutable`` and any unknown class
     ``-> fetch_verify_dedup`` (always fetch, dedup a byte-identical copy).
     ``force`` bypasses the index (always fetch; for fetch-verify, keep the fresh
     bytes without deduping). ``expected_size`` is passed to link-mode's collision
-    guard (inert for fetch-verify, which re-reads the bytes anyway). Returns the
-    per-document outcome code.
+    guard, and ``usable`` to its usability guard (both inert for fetch-verify,
+    which re-reads the bytes anyway). Returns the per-document outcome code.
     """
     mode = mode_for_class(doc_class, class_modes)
     if mode == MODE_LINK:
         return link_or_fetch(skipset, key, target_dir=target_dir, stem=stem,
                              fetch=fetch, force=force,
-                             expected_size=expected_size)
+                             expected_size=expected_size, usable=usable)
     # fetch-verify — the default for tax / mutable / unknown classes.
     return fetch_verify_dedup(skipset, key, fetch=fetch,
                               digest_of=digest_of, force=force)

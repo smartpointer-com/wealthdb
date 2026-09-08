@@ -183,7 +183,8 @@ def _dispatch(run: Path, skip, doc_id: int, file_name: str, body: bytes,
 
     return docdedup.process(
         skip, key=(doc_id,), doc_class=download._document_class(entry),
-        target_dir=docs_dir, stem=str(doc_id), fetch=_fetch, force=force)
+        target_dir=docs_dir, stem=str(doc_id), fetch=_fetch, force=force,
+        usable=docdedup.is_pdf)
 
 
 def _ino(p: Path) -> int:
@@ -356,6 +357,23 @@ def test_unknown_kind_is_fetch_verified(tmp_path):
     assert calls == [DOC_ID_OTHER]                   # the fetch DID run
     fetched = run / "documents" / f"{DOC_ID_OTHER}.pdf"
     assert _ino(fetched) == _ino(prior / "documents" / f"{DOC_ID_OTHER}.pdf")
+
+
+def test_a_linked_document_must_still_be_a_pdf(tmp_path):
+    """link-mode never re-fetches, so a prior copy that is an error page or a
+    url envelope would be hardlinked forward for ever. Relevate's own fetch
+    already refuses a non-PDF content type, so this is belt-and-braces here —
+    but the guard costs five bytes and the failure it prevents is permanent."""
+    _prior_run(tmp_path, DOC_ID_FEE, b'{"url": "https://cdn.example/x.pdf"}', FEE_NAME)
+    run = bronze.run_dir(tmp_path, CUR)
+    run.mkdir()
+    skip = docdedup.SkipSet.derive(tmp_path, download.extract_relevate,
+                                   exclude_run=run)
+    calls: list = []
+    status = _dispatch(run, skip, DOC_ID_FEE, FEE_NAME, BODY, calls)
+    assert status == docdedup.FETCHED       # not LINKED
+    assert len(calls) == 1
+    assert (run / "documents" / f"{DOC_ID_FEE}.pdf").read_bytes() == BODY
 
 
 def test_link_kind_within_freshness_window_is_refetched(tmp_path):

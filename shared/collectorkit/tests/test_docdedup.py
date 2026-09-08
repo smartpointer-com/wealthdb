@@ -223,6 +223,73 @@ def test_link_miss_calls_fetch(tmp_path):
     assert (target_dir / f"{DOC1}.pdf").read_bytes() == BODY
 
 
+def test_is_pdf_reads_the_magic_number_not_the_extension(tmp_path):
+    # What every adopter passes as `usable`. A url envelope and an error page
+    # are both named .pdf and are neither.
+    real = tmp_path / "real.pdf"; real.write_bytes(b"%PDF-1.4 body")
+    envelope = tmp_path / "envelope.pdf"; envelope.write_bytes(b'{"url": "https://cdn/x"}')
+    html = tmp_path / "error.pdf"; html.write_bytes(b"<!DOCTYPE html><h1>404</h1>")
+    empty = tmp_path / "empty.pdf"; empty.write_bytes(b"")
+    assert docdedup.is_pdf(real)
+    assert not docdedup.is_pdf(envelope)
+    assert not docdedup.is_pdf(html)
+    assert not docdedup.is_pdf(empty)
+    assert not docdedup.is_pdf(tmp_path / "missing.pdf")
+
+
+def test_link_refetches_a_prior_copy_the_guard_rejects(tmp_path):
+    """The regression link-mode alone can produce: a fetch that once wrote the
+    wrong bytes is hardlinked forward by every later run, because the one mode
+    that never re-fetches never notices. An unfollowed url envelope is carried
+    forward this way until something checks the bytes."""
+    _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": b'{"url": "https://cdn/x"}'})
+    cur = bronze.run_dir(tmp_path, OLD_B)
+    cur.mkdir()
+    skip = docdedup.SkipSet.derive(tmp_path, extract_disk, exclude_run=cur)
+    calls: list = []
+    target_dir = cur / "documents" / DEAL
+    status = docdedup.link_or_fetch(
+        skip, (DEAL, DOC1), target_dir=target_dir, stem=DOC1,
+        fetch=_stub_fetch(target_dir / f"{DOC1}.pdf", BODY, calls),
+        usable=lambda p: p.read_bytes().startswith(b"%PDF-"))
+
+    assert status == docdedup.FETCHED
+    assert len(calls) == 1                          # the poison was not linked
+    assert (target_dir / f"{DOC1}.pdf").read_bytes() == BODY
+
+
+def test_link_still_links_a_prior_copy_the_guard_accepts(tmp_path):
+    _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": b"%PDF-1.4 body"})
+    cur = bronze.run_dir(tmp_path, OLD_B)
+    cur.mkdir()
+    skip = docdedup.SkipSet.derive(tmp_path, extract_disk, exclude_run=cur)
+    calls: list = []
+    target_dir = cur / "documents" / DEAL
+    status = docdedup.link_or_fetch(
+        skip, (DEAL, DOC1), target_dir=target_dir, stem=DOC1,
+        fetch=_stub_fetch(target_dir / f"{DOC1}.pdf", BODY, calls),
+        usable=lambda p: p.read_bytes().startswith(b"%PDF-"))
+    assert status == docdedup.LINKED and calls == []
+
+
+def test_link_guard_that_raises_falls_through_to_fetch(tmp_path):
+    _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": BODY})
+    cur = bronze.run_dir(tmp_path, OLD_B)
+    cur.mkdir()
+    skip = docdedup.SkipSet.derive(tmp_path, extract_disk, exclude_run=cur)
+    calls: list = []
+    target_dir = cur / "documents" / DEAL
+
+    def explode(_p):
+        raise OSError("unreadable")
+
+    status = docdedup.link_or_fetch(
+        skip, (DEAL, DOC1), target_dir=target_dir, stem=DOC1,
+        fetch=_stub_fetch(target_dir / f"{DOC1}.pdf", BODY, calls),
+        usable=explode)
+    assert status == docdedup.FETCHED and len(calls) == 1
+
+
 def test_link_force_always_fetches(tmp_path):
     _run(tmp_path, OLD_A, {f"documents/{DEAL}/{DOC1}.pdf": BODY})
     cur = bronze.run_dir(tmp_path, OLD_B)

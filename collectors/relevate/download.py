@@ -851,7 +851,7 @@ def fetch_documents(
             skip, key=(doc_id,), doc_class=_document_class(entry),
             target_dir=docs_dir, stem=str(doc_id),
             fetch=(lambda d=doc_id, t=target: _fetch_blob(d, t)),
-            force=force,
+            force=force, usable=docdedup.is_pdf,
         )
         _tally(counts, status)
         manifest.flush()

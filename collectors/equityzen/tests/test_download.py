@@ -174,6 +174,30 @@ def test_executed_legal_doc_is_linked(tmp_path):
     assert linked.read_bytes() == BODY
 
 
+def test_a_linked_document_must_still_be_a_pdf(tmp_path):
+    """Drives the REAL _process_document, so it proves the guard is wired and
+    not merely available. link-mode is the one mode that never re-fetches, so
+    a prior copy that is an error page or a url envelope would be hardlinked
+    forward for ever."""
+    _prior_run(tmp_path, LEGAL_SLUG, b'{"url": "https://cdn.example/x.pdf"}')
+    run = bronze.run_dir(tmp_path, CUR)
+    run.mkdir()
+    skip = docdedup.SkipSet.derive(tmp_path, download.extract_equityzen,
+                                   exclude_run=run)
+    calls: list = []
+    target_dir = run / "documents" / DEAL_SLUG
+    status = download._process_document(
+        skip, deal_slug=DEAL_SLUG,
+        doc={"id": LEGAL_ID, "documentType": "SUB_AGT",
+             "downloadUrl": "https://example.invalid/doc"},
+        target_dir=target_dir,
+        fetch_blob=lambda _url, path: (calls.append(path), path.parent.mkdir(parents=True, exist_ok=True),
+                                       path.write_bytes(BODY), path)[-1])
+
+    assert status == docdedup.FETCHED       # not LINKED
+    assert len(calls) == 1
+
+
 def test_statement_unchanged_is_verified(tmp_path):
     # A capital-account statement is now fetch-verify (parsed → restatement-
     # prone), NOT link: it is ALWAYS fetched, and a byte-identical prior is

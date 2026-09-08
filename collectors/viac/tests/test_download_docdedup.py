@@ -405,6 +405,24 @@ def test_fetch_pdf_links_immutable(tmp_path):
     assert _ino(target) == _ino(_prior_blob(prior, CONTRACT_ID))
 
 
+def test_fetch_pdf_will_not_link_a_prior_copy_that_is_not_a_pdf(tmp_path):
+    """Drives the REAL fetch_pdf, so it proves the guard is wired and not
+    merely available. link-mode never re-fetches, so a prior copy that is an
+    error page or a url envelope would be hardlinked forward for ever."""
+    _prior_run(tmp_path, CONTRACT_ID, b'{"url": "https://cdn.example/x.pdf"}')
+    run = tmp_path / CUR
+    run.mkdir()
+    skip = _skip(tmp_path, run)
+    client = FakeStreamClient(BODY)
+    doc = {"documentNumber": CONTRACT_ID, "type": "CONTRACT",
+           "subType": "PROVISION_CONTRACT"}
+    target = run / "documents" / f"{CONTRACT_ID}.pdf"
+    status = download.fetch_pdf(client, doc, CONTRACT_ID, target, skip)
+    assert status == docdedup.FETCHED                    # not LINKED
+    assert client.gets                                   # it really fetched
+    assert target.read_bytes() == BODY
+
+
 def test_fetch_pdf_verifies_report(tmp_path):
     # A REPORT statement is always fetched (stream client hit once); a
     # byte-identical prior is hardlinked to reclaim disk → VERIFIED.

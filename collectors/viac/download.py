@@ -485,7 +485,7 @@ def fetch_pdf(client: ViacClient, doc: dict, docid: str, target: Path,
     return docdedup.process(
         skip, key=(docid,), doc_class=_document_class(doc),
         target_dir=target.parent, stem=docid,
-        fetch=_fetch, force=force)
+        fetch=_fetch, force=force, usable=docdedup.is_pdf)
 
 
 def walk(client: ViacClient, dest_root: Path, *,

@@ -127,15 +127,19 @@ def test_document_class_mapping():
         assert download._document_class({"document_type": t}) == docdedup.CLASS_TAX
         assert docdedup.mode_for_class(
             download._document_class({"document_type": t})) == docdedup.MODE_FETCH_VERIFY
-    # Capital-account statements (parsed by load.py) → CLASS_MUTABLE → fetch-verify.
-    for t in ("Capital account statement", "Capital account statements"):
+    # Documents load.py parses → CLASS_MUTABLE → fetch-verify. The call and
+    # distribution NOTICES are here because they carry the only real dates and
+    # amounts the fund ever states; the capital-account statements only ever
+    # date a call at the period end that follows it.
+    for t in ("Capital account statement", "Capital account statements",
+              "Capital calls", "Capital call notice",
+              "Distributions", "Distribution notice"):
         assert download._document_class({"document_type": t}) == docdedup.CLASS_MUTABLE
         assert docdedup.mode_for_class(
             download._document_class({"document_type": t})) == docdedup.MODE_FETCH_VERIFY
-    # Executed-once archival notices/reports → CLASS_IMMUTABLE → link.
+    # Executed-once archival reports → CLASS_IMMUTABLE → link.
     for t in ("Annual and quarterly report", "Quarterly report",
-              "Distributions", "Distribution notice", "Capital calls",
-              "Capital call notice", "Financial statements"):
+              "Financial statements"):
         assert download._document_class({"document_type": t}) == docdedup.CLASS_IMMUTABLE
         assert docdedup.mode_for_class(
             download._document_class({"document_type": t})) == docdedup.MODE_LINK
@@ -195,15 +199,30 @@ def test_extract_carta_no_documents_dir(tmp_path):
 # End-to-end dispatch by class (real _process_document + _fetch_document)
 # ============================================================
 
-def test_archival_notice_is_linked(tmp_path):
-    # An archival distribution notice identical to a prior run is hardlinked in —
+def test_archival_report_is_linked(tmp_path):
+    # An archival quarterly report identical to a prior run is hardlinked in —
     # the fetch-avoidance win, safe because it is immutable and not parsed.
     prior = _prior_run(tmp_path, LINK_ID, BODY)
     run = _new_run(tmp_path)
-    status, api = _process(run, _skip(tmp_path, run), LINK_ID, "Distributions", BODY)
+    status, api = _process(run, _skip(tmp_path, run), LINK_ID,
+                           "Annual and quarterly report", BODY)
     assert status == docdedup.LINKED
     assert api.calls == []                                   # fetch avoided
     assert _ino(_blob(run, LINK_ID)) == _ino(_blob(prior, LINK_ID))
+    assert _blob(run, LINK_ID).read_bytes() == BODY
+
+
+def test_a_linked_document_must_still_be_a_pdf(tmp_path):
+    """The poisoning link-mode alone can carry: a fetch that once wrote the url
+    envelope instead of following it leaves JSON on disk, and link-mode — the
+    one mode that never re-fetches — hardlinks it forward for ever, which
+    is how a whole class of documents came to be envelopes."""
+    _prior_run(tmp_path, LINK_ID, b'{"url": "https://cdn.example/x.pdf"}')
+    run = _new_run(tmp_path)
+    status, api = _process(run, _skip(tmp_path, run), LINK_ID,
+                           "Annual and quarterly report", BODY)
+    assert status == docdedup.FETCHED           # not LINKED
+    assert api.calls                            # it really went and got it
     assert _blob(run, LINK_ID).read_bytes() == BODY
 
 

@@ -288,7 +288,7 @@ def _process_document(skip, *, deal_slug: str, doc: dict, target_dir: Path,
         skip, key=(deal_slug, doc_slug), doc_class=_document_class(doc),
         target_dir=target_dir, stem=doc_slug,
         fetch=(lambda: fetch_blob(doc.get("downloadUrl"), target_dir / doc_slug)),
-        force=force)
+        force=force, usable=docdedup.is_pdf)
 
 
 def main(argv: list[str]) -> int:

@@ -405,7 +405,8 @@ _TAX_KEYWORDS = frozenset({"k-1", "k1", "1042", "1099", "tax"})
 # is classified fetch-verify here and can never fall into the link set below —
 # the safe direction (a stray non-parsed statement fetch-verified only costs a
 # fetch, never a stale NAV).
-_STATEMENT_KEYWORDS = frozenset({"capital account"})
+_STATEMENT_KEYWORDS = frozenset({"capital account", "capital call",
+                                 "distribution"})
 
 # link (fetch-avoidance): executed-once archival notices/reports — quarterly &
 # annual financials, capital-call notices, distribution notices — immutable once
@@ -413,9 +414,7 @@ _STATEMENT_KEYWORDS = frozenset({"capital account"})
 # / distributions are differenced from the statements above, never these
 # notices). An identical copy from a prior complete run is hardlinked in and the
 # fetch skipped; any hardlink error falls through to a real fetch.
-_LINK_KEYWORDS = frozenset({
-    "capital call", "distribution", "quarterly", "annual", "financial",
-})
+_LINK_KEYWORDS = frozenset({"quarterly", "annual", "financial"})
 
 
 def _document_class(doc: dict) -> str | None:
@@ -428,10 +427,10 @@ def _document_class(doc: dict) -> str | None:
         re-issued form under a stable id is caught, never linked stale);
       * a capital-account STATEMENT (``_STATEMENT_KEYWORDS`` — the figures load.py
         parses) → `mutable` → fetch-verify (a restatement is never missed);
-      * an executed-once archival notice/report (``_LINK_KEYWORDS``: quarterly /
-        annual financials, capital-call & distribution notices) → `immutable` →
-        link-mode (hardlink the prior identical copy, skip the fetch) — safe
-        because these are immutable under their id and never parsed;
+      * an executed-once archival report (``_LINK_KEYWORDS``: quarterly and
+        annual financials) → `immutable` → link-mode (hardlink the prior
+        identical copy, skip the fetch) — safe because these are immutable
+        under their id and never parsed;
       * anything else / an absent type → unclassified → fetch-verify (the safe
         default: always fetched, a byte-identical copy still deduped).
     """
@@ -532,7 +531,8 @@ def _process_document(skip, api: Api, row: dict, docs_dir: Path, *,
     return docdedup.process(
         skip, key=(doc_id,), doc_class=_document_class(row),
         target_dir=docs_dir, stem=f"doc_{doc_id}",
-        fetch=(lambda: _fetch_document(api, url, out)), force=force)
+        fetch=(lambda: _fetch_document(api, url, out)), force=force,
+        usable=docdedup.is_pdf)
 
 
 def capture_documents(api: Api, iid: str, docs_dir: Path, *,
