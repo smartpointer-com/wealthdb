@@ -310,9 +310,9 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		}
 	}
 	for _, t := range txns {
-		collect("USD", attachOneFlow(byCcy["USD"], fx, "USD", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valUSD), t)
-		collect("CHF", attachOneFlow(byCcy["CHF"], fx, "CHF", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valCHF), t)
-		collect("EUR", attachOneFlow(byCcy["EUR"], fx, "EUR", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valEUR), t)
+		collect("USD", attachOneFlow(byCcy["USD"], fx, "USD", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valUSD, t.returnsInternal), t)
+		collect("CHF", attachOneFlow(byCcy["CHF"], fx, "CHF", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valCHF, t.returnsInternal), t)
+		collect("EUR", attachOneFlow(byCcy["EUR"], fx, "EUR", t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.valEUR, t.returnsInternal), t)
 	}
 	for _, ccy := range materializeCurrencies {
 		matchCrossTransfers(cands[ccy], tm, byCcy[ccy])
@@ -337,6 +337,8 @@ type txnMultiRow struct {
 	occurredAt             int64
 	valUSD, valCHF, valEUR *string
 	netAmt                 *string // native-currency net amount (transfer matching)
+	// returnsInternal: the adapter's conduit verdict, as in flowTxnRow.
+	returnsInternal bool
 }
 
 // loadTransactionsMulti loads every transaction once with its net amount in
@@ -344,12 +346,16 @@ type txnMultiRow struct {
 // order matches the single-currency attachFlows.
 func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT silver_source_id, account_external_id, occurred_at, kind, currency,
-		        transaction_external_id,
-		        CAST(value_usd AS VARCHAR), CAST(value_chf AS VARCHAR), CAST(value_eur AS VARCHAR),
-		        CAST(net_amount AS VARCHAR)
-		   FROM report_transactions_multi(?, ?)
-		  ORDER BY occurred_at, silver_source_id, transaction_external_id`, int64(0), MaxEpoch)
+		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
+		        r.currency, r.transaction_external_id,
+		        CAST(r.value_usd AS VARCHAR), CAST(r.value_chf AS VARCHAR),
+		        CAST(r.value_eur AS VARCHAR), CAST(r.net_amount AS VARCHAR),
+		        COALESCE(t.payload ->> 'returns_flow' = 'internal', FALSE) AS returns_internal
+		   FROM report_transactions_multi(?, ?) r
+		   LEFT JOIN transactions t
+		          ON t.silver_source_id        = r.silver_source_id
+		         AND t.transaction_external_id = r.transaction_external_id
+		  ORDER BY r.occurred_at, r.silver_source_id, r.transaction_external_id`, int64(0), MaxEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("MaterializeReturns transactions: %w", err)
 	}
@@ -362,7 +368,7 @@ func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, erro
 			vUSD, vCHF, vEUR, netAmt sql.NullString
 		)
 		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &kind, &r.ccy, &r.txID,
-			&vUSD, &vCHF, &vEUR, &netAmt); err != nil {
+			&vUSD, &vCHF, &vEUR, &netAmt, &r.returnsInternal); err != nil {
 			return nil, fmt.Errorf("MaterializeReturns transactions scan: %w", err)
 		}
 		r.kind = canonical.TxKind(kind)

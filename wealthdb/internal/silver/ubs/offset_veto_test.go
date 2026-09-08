@@ -3,6 +3,8 @@ package ubs
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -118,6 +120,34 @@ func emittedKinds(t *testing.T, r *webReader, psn *psnReader) map[string]canonic
 	return out
 }
 
+// emittedInternal is what the veto now writes: the conduit verdict rides the
+// payload so the row keeps a truthful kind, which the SPENDING population
+// reads. Before this the verdict was a rewritten kind, and a vetoed
+// supermarket payment vanished from spending along with the flow.
+func emittedInternal(t *testing.T, r *webReader, psn *psnReader) map[string]bool {
+	t.Helper()
+	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psn, nil)
+	if err != nil {
+		t.Fatalf("transactionsBeforePSNStart: %v", err)
+	}
+	out := map[string]bool{}
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		for _, tx := range batch.Transactions {
+			out[tx.TransactionExternalID] = strings.Contains(
+				string(tx.Payload), `"returns_flow":"internal"`)
+		}
+		if !more {
+			break
+		}
+	}
+	return out
+}
+
 // TestOffsetVetoDemotesMirroredLegs pins the same-day offset veto: an
 // intra-relationship move recorded as a PDF payment order (no counter IBAN)
 // plus its mirror credit on another own account must demote BOTH legs to a
@@ -131,12 +161,12 @@ func TestOffsetVetoDemotesMirroredLegs(t *testing.T) {
 	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -250000, true) // PDF payment order out
 	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 250000, false) // MT940-era credit in
 
-	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {
-		t.Errorf("outbound mirrored leg = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T1@"+vetoAcctA] {
+		t.Errorf("outbound mirrored leg: want the conduit verdict on its payload")
 	}
-	if got := kinds["T2@"+vetoAcctB]; got != canonical.TxKindOther {
-		t.Errorf("inbound mirrored leg = %v, want other", got)
+	if !internal["T2@"+vetoAcctB] {
+		t.Errorf("inbound mirrored leg: want the conduit verdict on its payload")
 	}
 }
 
@@ -201,21 +231,21 @@ func TestOffsetVetoIsOneToOne(t *testing.T) {
 	seedWebTx(t, r, "T3", vetoAcctB, vetoDay1, "CHF", 10000, false)
 
 	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T3@"+vetoAcctB]; got != canonical.TxKindOther {
-		t.Errorf("mirror credit = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T3@"+vetoAcctB] {
+		t.Errorf("mirror credit: want the conduit verdict on its payload")
 	}
-	demoted := 0
+	vetoed := 0
 	for _, id := range []string{"T1@" + vetoAcctA, "T2@" + vetoAcctA} {
-		switch kinds[id] {
-		case canonical.TxKindOther:
-			demoted++
-		case canonical.TxKindWithdrawal:
-		default:
-			t.Errorf("%s = %v, want other or withdrawal", id, kinds[id])
+		if got := kinds[id]; got != canonical.TxKindWithdrawal {
+			t.Errorf("%s = %v, want withdrawal — the veto no longer rewrites the kind", id, got)
+		}
+		if internal[id] {
+			vetoed++
 		}
 	}
-	if demoted != 1 {
-		t.Errorf("demoted %d of the twin debits, want exactly 1", demoted)
+	if vetoed != 1 {
+		t.Errorf("vetoed %d of the twin debits, want exactly 1", vetoed)
 	}
 }
 
@@ -238,8 +268,9 @@ func TestOffsetVetoPrefersBankLinkedTwin(t *testing.T) {
 	seedWebTx(t, r, "T9", acctC, vetoDay1, "CHF", 25000, false)
 
 	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T9@"+acctC]; got != canonical.TxKindOther {
-		t.Errorf("bank-linked twin = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T9@"+acctC] {
+		t.Errorf("bank-linked twin: want the conduit verdict on its payload")
 	}
 	if got := kinds["T2@"+vetoAcctB]; got != canonical.TxKindDeposit {
 		t.Errorf("coincidental credit = %v, want deposit", got)
@@ -279,6 +310,7 @@ func TestOffsetVetoPairsAgainstPSNMovement(t *testing.T) {
 		t.Fatalf("merged Transactions: %v", err)
 	}
 	kinds := map[string]canonical.TxKind{}
+	internal := map[string]bool{}
 	for {
 		batch, more, err := stream.Next(context.Background())
 		if err != nil {
@@ -286,16 +318,18 @@ func TestOffsetVetoPairsAgainstPSNMovement(t *testing.T) {
 		}
 		for _, tx := range batch.Transactions {
 			kinds[tx.TransactionExternalID] = tx.Kind
+			internal[tx.TransactionExternalID] = strings.Contains(
+				string(tx.Payload), `"returns_flow":"internal"`)
 		}
 		if !more {
 			break
 		}
 	}
-	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {
-		t.Errorf("web debit mirrored by a PSN movement = %v, want other", got)
+	if !internal["T1@"+vetoAcctA] {
+		t.Errorf("web debit mirrored by a PSN movement: want the conduit verdict on its payload")
 	}
-	if got := kinds["mt940:1"]; got != canonical.TxKindOther {
-		t.Errorf("PSN mirror leg = %v, want other (both sides of a pair drop)", got)
+	if !internal["mt940:1"] {
+		t.Errorf("PSN mirror leg: want the conduit verdict on the payload")
 	}
 	if got := kinds["mt940:2"]; got != canonical.TxKindDeposit {
 		t.Errorf("unmatched PSN movement = %v, want deposit", got)
@@ -320,11 +354,12 @@ func TestOffsetVetoTwinPhaseIsGlobal(t *testing.T) {
 	seedWebTx(t, r, "T9", acctC, vetoDay1, "CHF", 15000, false)
 
 	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T9@"+vetoAcctB]; got != canonical.TxKindOther {
-		t.Errorf("twinned debit = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T9@"+vetoAcctB] {
+		t.Errorf("twinned debit: want the conduit verdict on its payload")
 	}
-	if got := kinds["T9@"+acctC]; got != canonical.TxKindOther {
-		t.Errorf("twin credit = %v, want other", got)
+	if !internal["T9@"+acctC] {
+		t.Errorf("twin credit: want the conduit verdict on its payload")
 	}
 	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindWithdrawal {
 		t.Errorf("twin-less debit = %v, want withdrawal (must not steal the twin)", got)
@@ -352,12 +387,12 @@ func TestOffsetVetoInternalLegPairsItsMirror(t *testing.T) {
 	}
 	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 20000, false)
 
-	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {
-		t.Errorf("parser-internal debit = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T1@"+vetoAcctA] {
+		t.Errorf("parser-internal debit: want the conduit verdict on its payload")
 	}
-	if got := kinds["T2@"+vetoAcctB]; got != canonical.TxKindOther {
-		t.Errorf("its MT940 mirror = %v, want other (both sides of the move drop)", got)
+	if !internal["T2@"+vetoAcctB] {
+		t.Error("its MT940 mirror: want the conduit verdict too (both sides of the move drop)")
 	}
 }
 
@@ -420,9 +455,9 @@ func TestDeepEraWireStaysInternal(t *testing.T) {
 	seedWebAccount(t, r, vetoAcctA)
 	seedWebTx(t, r, "T1", vetoAcctA, vetoDay1, "CHF", -123400, true)
 
-	kinds := emittedKinds(t, r, nil)
-	if got := kinds["T1@"+vetoAcctA]; got != canonical.TxKindOther {
-		t.Errorf("deep-era outbound payment order = %v, want other", got)
+	internal := emittedInternal(t, r, nil)
+	if !internal["T1@"+vetoAcctA] {
+		t.Errorf("deep-era outbound payment order: want the conduit verdict on its payload")
 	}
 }
 
@@ -447,5 +482,67 @@ func TestWebChangeWindowStartIsTrueMinimum(t *testing.T) {
 	}
 	if !w.HasChanges || w.Start != 500 {
 		t.Errorf("Start = %d (HasChanges=%v), want the snapshot minimum 500", w.Start, w.HasChanges)
+	}
+}
+
+// TestConduitVerdictLeavesTheRowSpendable is the regression this whole
+// carrier change exists for. The verdict answers a RETURNS question — is
+// this owner capital crossing the boundary? — and used to be recorded by
+// rewriting the row's kind. The spending population selects on that same
+// kind, so a deep-era card payment, which is not owner capital under any
+// reading, was demoted out of spending too — taking the whole pre-2024
+// card and cash population with it.
+func TestConduitVerdictLeavesTheRowSpendable(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, vetoAcctA)
+	// A deep-era (pre-rail) debit-card payment: conservative-internal for
+	// returns, and unambiguous consumption for spending.
+	seedWebTxRaw(t, r, "CARD", vetoAcctA, vetoDay1, "CHF", -111.11,
+		"DEBIT CARD PAYMENT",
+		`{"source":"account_statement_pdf","booking_type":"DEBIT CARD PAYMENT",`+
+			`"internal_transfer":false,"counter_account":null,"continuation":[]}`)
+
+	kinds := emittedKinds(t, r, nil)
+	internal := emittedInternal(t, r, nil)
+	if got := kinds["CARD@"+vetoAcctA]; got != canonical.TxKindWithdrawal {
+		t.Errorf("kind = %v, want withdrawal — spending reads the kind", got)
+	}
+	if !internal["CARD@"+vetoAcctA] {
+		t.Error("want the conduit verdict on the payload — returns must still skip it")
+	}
+}
+
+// TestTheConduitVerdictNeverGoesMissing: a payload that cannot carry the
+// flag falls back to the old carrier rather than losing the verdict.
+// Counting conduit churn as owner capital is the worse of the two errors —
+// a row demoted to `other` is merely absent from spending, which is where
+// every such row already was.
+func TestTheConduitVerdictNeverGoesMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, want string
+		degrades            bool
+	}{
+		{"object", `{"a":1}`, `{"returns_flow":"internal","a":1}`, false},
+		{"empty object", `{}`, `{"returns_flow":"internal"}`, false},
+		{"not an object", `"scalar"`, `"scalar"`, true},
+		{"empty", ``, ``, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := withReturnsFlow(tc.payload, true)
+			if string(got) != tc.want {
+				t.Errorf("payload = %s, want %s", got, tc.want)
+			}
+			if ok == tc.degrades {
+				t.Errorf("carried = %v, want %v", ok, !tc.degrades)
+			}
+			_, kind := markReturnsInternal(json.RawMessage(tc.payload), canonical.TxKindWithdrawal)
+			wantKind := canonical.TxKindWithdrawal
+			if tc.degrades {
+				wantKind = canonical.TxKindOther
+			}
+			if kind != wantKind {
+				t.Errorf("kind = %v, want %v", kind, wantKind)
+			}
+		})
 	}
 }

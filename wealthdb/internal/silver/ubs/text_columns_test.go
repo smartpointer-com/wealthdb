@@ -319,9 +319,11 @@ func TestTextProjectionLeavesNonTextColumnsUnchanged(t *testing.T) {
 		add("P2", 201, no, canonical.TxKindFee, "-3",
 			`{"source":"account_statement_pdf","booking_type":"FEES","internal_transfer":false,"counter_account":null,"continuation":[]}`)
 		// PDF credit with no counter IBAN and no rail booking: conservative
-		// internal, demoted to `other`, source sign kept.
-		add("P3", 202, no, canonical.TxKindOther, "40",
-			`{"source":"account_statement_pdf","booking_type":null,"internal_transfer":false,"counter_account":null,"continuation":[]}`)
+		// internal. The verdict rides the payload now, so the row keeps
+		// its deposit kind (the spending population reads the kind) and
+		// carries `returns_flow`.
+		add("P3", 202, no, dp, "40",
+			`{"returns_flow":"internal","source":"account_statement_pdf","booking_type":null,"internal_transfer":false,"counter_account":null,"continuation":[]}`)
 		checkShapes(t, got, want)
 	})
 	t.Run("psn", func(t *testing.T) {

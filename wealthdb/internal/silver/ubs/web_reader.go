@@ -474,33 +474,42 @@ SELECT transaction_external_id, value_date, account_external_id,
 			continue
 		}
 		// Classify each deposit/withdrawal as EXTERNAL (boundary-crossing
-		// owner capital) or INTERNAL (conduit churn); INTERNAL rows are
-		// demoted to a non-flow kind (TxKindOther) so they stay queryable
-		// in gold but out of the return. Two layers:
+		// owner capital) or INTERNAL (conduit churn). Two layers:
 		//
-		//  1. The same-day offset veto (buildSameDayOffsetVeto) demotes
+		//  1. The same-day offset veto (buildSameDayOffsetVeto) catches
 		//     any leg — either feed — whose mirror books on another own
 		//     account the same value day.
 		//  2. PDF-backfill rows additionally pass pdfCashIsExternal
 		//     (default INTERNAL; counter-IBAN + era-gated rail bookings —
 		//     its doc carries the conduit model and the engine-policy
 		//     interplay).
+		//
+		// The verdict is carried as its OWN flag, not by rewriting the
+		// kind. Demoting the row to TxKindOther conflates two questions
+		// a single column cannot answer at once: "is this owner capital
+		// crossing the boundary?" (returns) and "is this a spending
+		// row?" (the spending population selects on kind). A card
+		// purchase is not owner capital under any reading, and it is
+		// still spending — so the flag lets returns skip the row while
+		// it stays in the spending base.
+		returnsInternal := false
 		if kind == canonical.TxKindDeposit || kind == canonical.TxKindWithdrawal {
 			railEra := mt940Start > 0 && valueDate >= mt940Start
 			switch {
 			case offsetVeto[txID+"@"+accountID]:
-				kind = canonical.TxKindOther
+				returnsInternal = true
 			case pdfBackfill && !pdfCashIsExternal(p, ownIBANs, kind == canonical.TxKindWithdrawal, railEra):
-				kind = canonical.TxKindOther
+				returnsInternal = true
 			}
 		}
 
-		// The demotion above is a flow classification, but the canonical
-		// sign is read off the kind, so it is re-applied against the kind
-		// the row ENDS with. `other` pins no direction, so a demoted row
-		// reaches gold with whatever sign its silver columns carried;
-		// webProjectedNet's undemoted reading is what the era fold keys
-		// on, and the two agree wherever no demotion happened.
+		// The verdict is stamped here, before the sign is pinned: a
+		// payload that cannot carry it degrades to the older demotion,
+		// and the sign must then be read off the kind the row ENDS with.
+		rowPayload := json.RawMessage(payload)
+		if returnsInternal {
+			rowPayload, kind = markReturnsInternal(rowPayload, kind)
+		}
 		if _, isReversal := stripReversalSuffix(kindStr.String); !isReversal {
 			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 		}
@@ -555,7 +564,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			// to a provider category, and what the spending provider
 			// tier translates. The payer's message never enters it.
 			ProviderCategory: category,
-			Payload:          json.RawMessage(payload),
+			Payload:          rowPayload,
 		})
 	}
 	if summaries > 0 {
@@ -565,6 +574,52 @@ SELECT transaction_external_id, value_date, account_external_id,
 		log.Printf("ubs adapter: folded %d statement row(s) into the export or feed record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), psnHints{veto: psnVeto, carry: fold.psn}, rows.Err()
+}
+
+// returnsFlowInternal is the payload key carrying the conduit verdict to the
+// returns engine. It is the vehicle for the "silver-side pre-tagging" the UBS
+// ReturnsPolicy's ExternalOnly describes; the tag used to be a rewritten
+// `kind`, which the spending population reads too and therefore could not
+// share.
+const returnsFlowInternal = `"returns_flow":"internal"`
+
+// withReturnsFlow stamps the conduit verdict onto a row's payload. Only an
+// INTERNAL verdict is written: external is the meaning of the key's absence,
+// so nothing changes for the rows — every source but this one — that never
+// classify a flow at all.
+//
+// The payload is the silver JSON object verbatim, so the key is spliced after
+// the opening brace rather than round-tripped through a map: re-marshalling
+// would reorder and re-space every other key and make each row's payload
+// differ from the record silver holds, for one added field.
+func withReturnsFlow(payload string, internal bool) (json.RawMessage, bool) {
+	if !internal {
+		return json.RawMessage(payload), true
+	}
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "{}" {
+		return json.RawMessage("{" + returnsFlowInternal + "}"), true
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		return json.RawMessage("{" + returnsFlowInternal + "," + trimmed[1:]), true
+	}
+	// Not an object — absent, or malformed enough that decoding failed.
+	// The verdict has nowhere to live, and a row that silently loses it
+	// would be counted as owner capital. Report the failure so the caller
+	// falls back to the older, cruder carrier: the kind itself.
+	return json.RawMessage(payload), false
+}
+
+// markReturnsInternal stamps the conduit verdict on a row, degrading to the
+// kind when the payload cannot hold it. Losing the verdict would let conduit
+// churn into the return, which is the worse error of the two: a row demoted
+// to `other` is merely absent from spending, where the older behaviour left
+// every such row anyway.
+func markReturnsInternal(payload json.RawMessage, kind canonical.TxKind) (json.RawMessage, canonical.TxKind) {
+	if out, ok := withReturnsFlow(string(payload), true); ok {
+		return out, kind
+	}
+	return payload, canonical.TxKindOther
 }
 
 // dumpRunTimesInWindow returns the chronologically-sorted set of

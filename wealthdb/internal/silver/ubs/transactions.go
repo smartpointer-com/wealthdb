@@ -45,12 +45,13 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		if err != nil {
 			return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 		}
-		// Same-day offset veto, PSN half. The kind flips AFTER
-		// ApplyCanonicalSign ran inside buildTransaction, so the signed
-		// amount is untouched — only the flow classification changes.
+		// Same-day offset veto, PSN half. The verdict rides the payload
+		// so the row keeps a truthful kind — the spending population
+		// reads the kind, and a returns-only judgement must not decide
+		// whether a row is spending (see withReturnsFlow).
 		if offsetVeto[eventID] &&
 			(tx.Kind == canonical.TxKindDeposit || tx.Kind == canonical.TxKindWithdrawal) {
-			tx.Kind = canonical.TxKindOther
+			tx.Payload, tx.Kind = markReturnsInternal(tx.Payload, tx.Kind)
 		}
 		out.Transactions = append(out.Transactions, tx)
 	}

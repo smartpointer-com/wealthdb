@@ -769,7 +769,8 @@ func attachFlows(ctx context.Context, db *sql.DB, outCcy string, byKey map[strin
 	var cands []crossCandidate
 	for _, t := range txns {
 		attached := attachOneFlow(byKey, fx, outCcy, t.src, t.acct,
-			canonical.TxKind(t.kind), t.occurredAt, t.txID, t.ccy, t.valueOut)
+			canonical.TxKind(t.kind), t.occurredAt, t.txID, t.ccy, t.valueOut,
+			t.returnsInternal)
 		if attached && tm != nil {
 			cands = appendCrossCandidate(cands, t.src, t.acct, t.txID, t.ccy, t.occurredAt, t.netAmt)
 		}
@@ -791,6 +792,10 @@ type flowTxnRow struct {
 	txID       string
 	valueOut   *string
 	netAmt     *string // native-currency net amount (transfer matching)
+	// returnsInternal is the adapter's own verdict that this row is
+	// conduit churn rather than owner capital — read only under the
+	// policy's ExternalOnly (see attachOneFlow).
+	returnsInternal bool
 }
 
 // loadFlowTransactions reads every transaction's flow-relevant fields in the
@@ -799,10 +804,14 @@ type flowTxnRow struct {
 // path relies on, so the flow sequence is identical to the wide loader.
 func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flowTxnRow, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT silver_source_id, account_external_id, occurred_at, kind, currency,
-		        transaction_external_id, value_outccy, net_amount
-		   FROM report_transactions(?, ?, ?)
-		  ORDER BY occurred_at, silver_source_id, transaction_external_id`,
+		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
+		        r.currency, r.transaction_external_id, r.value_outccy, r.net_amount,
+		        COALESCE(t.payload ->> 'returns_flow' = 'internal', FALSE) AS returns_internal
+		   FROM report_transactions(?, ?, ?) r
+		   LEFT JOIN transactions t
+		          ON t.silver_source_id         = r.silver_source_id
+		         AND t.transaction_external_id  = r.transaction_external_id
+		  ORDER BY r.occurred_at, r.silver_source_id, r.transaction_external_id`,
 		int64(0), MaxEpoch, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("attachFlows transactions: %w", err)
@@ -814,7 +823,8 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 			r                flowTxnRow
 			valueOut, netAmt sql.NullString
 		)
-		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID, &valueOut, &netAmt); err != nil {
+		if err := rows.Scan(&r.src, &r.acct, &r.occurredAt, &r.kind, &r.ccy, &r.txID,
+			&valueOut, &netAmt, &r.returnsInternal); err != nil {
 			return nil, fmt.Errorf("attachFlows transactions scan: %w", err)
 		}
 		r.valueOut = trimmedDecimalPtr(valueOut)
@@ -831,9 +841,19 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 // valueOut is the transaction's net amount already converted to outCcy (nil ⇒
 // unresolved FX ⇒ not a flow); txCcy is the transaction's own currency, for
 // the day-0 clamp check.
-func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string) bool {
+func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string, returnsInternal bool) bool {
 	a := byKey[acctKey(src, acct)]
 	if a == nil {
+		return false
+	}
+	// The silver-side pre-tag ExternalOnly describes: an adapter that can
+	// tell owner capital from conduit churn says so on the row. It is read
+	// only under ExternalOnly, so a source that tags nothing is unaffected,
+	// and it replaces the older convention of rewriting the row's KIND —
+	// which the spending population reads too, and which therefore could
+	// not carry a returns-only verdict without erasing the row from
+	// spending as well.
+	if a.rpolicy.ExternalOnly && returnsInternal {
 		return false
 	}
 	if a.policy.Regime == returns.RegimeCryptoPartial &&

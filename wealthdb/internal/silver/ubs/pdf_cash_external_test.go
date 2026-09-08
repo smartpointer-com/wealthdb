@@ -186,10 +186,16 @@ func TestUndecodablePayloadStaysGated(t *testing.T) {
 		"E-BANKING PAYMENT ORDER", "{"+rail+`,"continuation":"not-a-list"}`)
 
 	kinds := emittedKinds(t, r, nil)
+	internal := emittedInternal(t, r, nil)
 	if got := kinds["RAIL-READABLE@"+vetoAcctA]; got != canonical.TxKindWithdrawal {
 		t.Fatalf("control = %q, want withdrawal — the promotion path must be open", got)
 	}
-	if got := kinds["RAIL-UNDECODABLE@"+vetoAcctA]; got != canonical.TxKindOther {
-		t.Errorf("undecodable row = %q, want other — it must not skip the external/internal gate", got)
+	if internal["RAIL-READABLE@"+vetoAcctA] {
+		t.Error("control carries the conduit verdict; the promotion path must be open")
+	}
+	// The gate still catches it — the verdict just rides the payload now,
+	// so the row keeps a kind the spending population can read.
+	if !internal["RAIL-UNDECODABLE@"+vetoAcctA] {
+		t.Error("undecodable row: want the conduit verdict — it must not skip the gate")
 	}
 }
