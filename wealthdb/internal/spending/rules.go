@@ -126,7 +126,15 @@ var cardIssuers = []cardIssuer{
 		// UBS AG;C/O UBS CARD CENTER AG …
 		// …; UBS CARD CENTER; CREDIT CARD STATEMENT …   (direct debit)
 		// …; UBS CARD CENTER; CARD PAYMENT …            (direct debit)
-		"UBS CARD CENTER",
+		//
+		// VIS1W is the objection notice the card centre prints on its
+		// own LSV collection, and it is the descriptor that does not
+		// depend on the creditor line: a statement that drops
+		// `c/o UBS Card Center` and prints a plain company address
+		// instead (`UBS SWITZERLAND AG; 9999 EXAMPLETOWN`, synthetic)
+		// would otherwise stop being read as a card bill at all. The
+		// code names the scheme, so it survives a change of address.
+		"UBS CARD CENTER", "VIS1W",
 	}},
 	{"", []string{
 		// XXXX XXXX XXXX ####: a masked card number as the whole
