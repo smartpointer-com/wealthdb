@@ -607,10 +607,11 @@ func TestTransferShaped(t *testing.T) {
 		"CREDIT UBS TWINT",
 		"REVERSAL UBS TWINT",
 		"Payment UBS TWINT",
-		// IBAN-shaped, spaced and unspaced. Both values are invented
-		// placeholders that only carry the SHAPE.
-		"XX99 1234 5678 9012 3456 7",
-		"ZZ42ABCD12345678901234",
+		// A well-formed IBAN, spaced and unspaced. Both are invented:
+		// the check digits are computed so the fence's mod-97 test
+		// passes, over an account body no bank issues.
+		"CH35 0000 0123 4567 8901 2",
+		"DE21123456780000012345",
 	}
 	for _, s := range fenced {
 		if !TransferShaped(s) {
@@ -626,6 +627,17 @@ func TestTransferShaped(t *testing.T) {
 		"WIRELESS SERVICES MONTHLY",
 		"BLUE HARBOUR CAFE",
 		"",
+		// Two letters and two digits at a token start, and no IBAN:
+		// a Swiss legal form in front of a postal code, a canton in
+		// front of an ESR reference, the word No. in front of an
+		// invoice number, and the reference prefixes a bank writes on
+		// an ordinary domestic payment. Each of these used to fence a
+		// tradesman's bill out of candidacy. Every value is invented.
+		"EXAMPLE VERSICHERUNG AG 9999 EXAMPLE 000000123456789012345",
+		"EXAMPLE SCHULEN 9999 ZH 25 12345 00500 12345 00012 34567",
+		"INVOICE NO. 12345678 EXAMPLE MINISTORAGE AG",
+		"EXAMPLE MOTORS GMBH CH RN123456789",
+		"EXAMPLE MINISTORAGE AG TN:012345678",
 	}
 	for _, s := range open {
 		if TransferShaped(s) {
@@ -718,17 +730,16 @@ func TestP2PRowCandidacy(t *testing.T) {
 // the address are the bank's filing and are trimmed off it (§4) — so
 // the two bills that differ only in a house number key alike, which
 // is the point of the trim. That also closes on the signature side an
-// old gap in the unanchored IBAN match
-// (`[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}`, searched anywhere with the
-// spaces removed): a two-digit house number in front of the country
-// code used to read as an account number on the key itself
-// (`...SE12CHEXAMPLE...`), and no address reaches the key now. The
-// raw narrative still carries every one of those shapes, and the
-// fence reads it whole, which is where the test still bites: a
-// postal code in front of more text reads as an account number there
-// (`...LE9999ORDENTLICHE...`). The last group is the boundary the
-// narrowing must not cross: the same address shape carrying an IBAN,
-// spaced or not, stays fenced.
+// old gap in the unanchored IBAN match: a two-digit house number in
+// front of the country code used to read as an account number on the
+// key itself (`...SE12CHEXAMPLE...`), and no address reaches the key
+// now. The raw narrative still carries every one of those shapes, and
+// the fence reads it whole — a postal code in front of more text is
+// two letters and two digits at a token start there
+// (`...LE9999ORDENTLICHE...`), and it is the registry length and the
+// mod-97 check that refuse it. The last group is the boundary the
+// narrowing must not cross: the same address shape carrying a real
+// IBAN, spaced or not, stays fenced.
 func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -769,10 +780,11 @@ func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 		})
 	}
 
-	// IBAN placeholders carry the SHAPE only; both are invented.
+	// Both IBANs are invented, and both are well-formed: the check
+	// digits are computed over an account body no bank issues.
 	for _, narrative := range []string{
-		"Z44?EXAMPLE PERSON; HAUPTSTRASSE 12; CH EXAMPLE 9999; XX99 1234 5678 9012 3456 7",
-		"Z44?EXAMPLE PERSON; HAUPTSTRASSE 12; CH EXAMPLE 9999; ZZ42ABCD12345678901234",
+		"Z44?EXAMPLE PERSON; HAUPTSTRASSE 12; CH EXAMPLE 9999; CH35 0000 0123 4567 8901 2",
+		"Z44?EXAMPLE PERSON; HAUPTSTRASSE 12; CH EXAMPLE 9999; DE21123456780000012345",
 	} {
 		if !TransferShaped(narrative) {
 			t.Errorf("TransferShaped(%q) = false; an IBAN behind a postal address is still an IBAN", narrative)

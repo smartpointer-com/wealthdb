@@ -715,31 +715,98 @@ func startsWith(tokens []string, at int, want ...string) bool {
 	return true
 }
 
-// ibanShaped matches an IBAN's opening shape — two letters, two check
-// digits, then the account body — at the head of a string.
-var ibanShaped = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}`)
+// ibanLengths is the IBAN registry's total character count per
+// country. A country the registry does not list issues no IBAN, so a
+// two-letter token that opens no entry here opens no account number.
+var ibanLengths = map[string]int{
+	"AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16,
+	"BG": 22, "BH": 22, "BI": 27, "BR": 29, "BY": 28, "CH": 21, "CR": 22,
+	"CY": 28, "CZ": 24, "DE": 22, "DJ": 27, "DK": 18, "DO": 28, "EE": 20,
+	"EG": 29, "ES": 24, "FI": 18, "FO": 18, "FR": 27, "GB": 22, "GE": 22,
+	"GI": 23, "GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28, "IE": 22,
+	"IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20,
+	"LB": 28, "LC": 32, "LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25,
+	"MC": 27, "MD": 24, "ME": 22, "MK": 19, "MN": 20, "MR": 27, "MT": 31,
+	"MU": 30, "NI": 28, "NL": 18, "NO": 15, "OM": 23, "PK": 24, "PL": 28,
+	"PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "RU": 33, "SA": 24,
+	"SC": 31, "SD": 18, "SE": 24, "SI": 19, "SK": 24, "SM": 27, "SO": 23,
+	"ST": 25, "SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22,
+	"VG": 24, "XK": 20, "YE": 30,
+}
+
+// ibanShaped matches an IBAN's printed alphabet — two letters, two
+// check digits, then the account body. It is the cheap pre-test; the
+// registry length and the check digits are what decide.
+var ibanShaped = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]+$`)
 
 // ibanShapedRun reports whether the tokens, spaces removed, carry an
-// IBAN-shaped run that begins where a token begins. An IBAN is
-// printed either as one token or as spaced groups whose first group
-// is the country code and check digits, so a real one always starts
-// a token; anchoring there is what tells it from a postal address,
-// which holds the same letters-digits-letters sequence once its
-// spaces are gone. `HAUPTSTRASSE 12; CH EXAMPLE` folds to
-// `...SE12CHEXAMPLE...`, and an unanchored search read the tail of
-// the street, the house number and the country as an account number
-// — every wire-paid bill carries such an address, and none of them
-// could reach the model.
+// IBAN that begins where a token begins. An IBAN is printed either as
+// one token or as spaced groups whose first group is the country code
+// and check digits, so a real one always starts a token; anchoring
+// there is the first of three narrowings.
+//
+// The other two are what tell an IBAN from the letters-and-digits
+// every European remittance carries anyway. Anchoring alone does not:
+// a run is read from a token start, but SO IS a Swiss legal form in
+// front of a postal code (`EXAMPLE VERSICHERUNG AG; 9999 EXAMPLE;
+// 000000...`), a canton in front of an ESR reference (`ZH; 12 34567
+// ...`), a reference prefix (`RN123456789`, `TN:012345678` — and a
+// bank writes one of those on nearly every domestic e-banking
+// narrative) and the word `No.` in front of an invoice number. Each
+// of those is two letters and two digits at a token start followed by
+// more, and each one used to fence an ordinary tradesman's bill out
+// of candidacy.
+//
+// So the run must also be exactly as long as that country's IBAN and
+// must satisfy the ISO 7064 mod-97 check. A real IBAN passes both by
+// construction; a legal form, a canton, a postal code and a reference
+// number pass neither.
 func ibanShapedRun(tokens []string) bool {
 	joined := strings.Join(tokens, "")
 	off := 0
 	for _, tok := range tokens {
-		if ibanShaped.MatchString(joined[off:]) {
+		if isIBAN(joined[off:]) {
 			return true
 		}
 		off += len(tok)
 	}
 	return false
+}
+
+// isIBAN reports whether s OPENS with a well-formed IBAN — the run may
+// carry more text behind it, which is how a spaced IBAN reads once the
+// spaces are gone.
+func isIBAN(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	n, ok := ibanLengths[s[:2]]
+	if !ok || len(s) < n {
+		return false
+	}
+	candidate := s[:n]
+	return ibanShaped.MatchString(candidate) && ibanMod97(candidate) == 1
+}
+
+// ibanMod97 computes an IBAN's ISO 7064 MOD-97-10 residue: the first
+// four characters move to the end, each letter expands to its
+// position in the alphabet plus ten, and the resulting decimal is
+// taken modulo 97. A valid IBAN leaves 1. The digits are folded in
+// one at a time because the expansion of a full IBAN overflows every
+// integer width.
+func ibanMod97(s string) int {
+	rem := 0
+	for i := range s {
+		switch c := s[(i+4)%len(s)]; {
+		case c >= '0' && c <= '9':
+			rem = (rem*10 + int(c-'0')) % 97
+		case c >= 'A' && c <= 'Z':
+			rem = (rem*100 + int(c-'A') + 10) % 97
+		default:
+			return -1
+		}
+	}
+	return rem
 }
 
 // transferFenceTokens fence a narrative when they appear as a whole
