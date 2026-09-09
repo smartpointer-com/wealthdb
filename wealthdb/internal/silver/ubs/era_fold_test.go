@@ -396,3 +396,54 @@ func TestEraFoldKeepsACrossEraReversalApart(t *testing.T) {
 		t.Errorf("rows on the day = %d, want 3 (the pair, plus the folded booking)", n)
 	}
 }
+
+// TestStatementReversalKeepsItsSignEndToEnd is the same guard as
+// TestWebProjectedNetKeepsAStatementReversal, but taken through the emit
+// path — because the sign is pinned in TWO places and the projection helper
+// is only the first. The second runs after the returns verdict is stamped,
+// re-signing the row from the kind it ENDS with, and for a while it asked a
+// narrower question than the first: it exempted the export's `;Reversal`
+// booking type and nothing else, so a statement's negative figure was
+// signed correctly by the projection and then flipped straight back. Both
+// now ask webReversal, and this test fails if either stops.
+//
+// A cancelled withdrawal is money coming BACK, so the emitted amount is
+// positive while the kind stays the base kind — that is what lets the pair
+// net to zero when summed. Every value is synthetic.
+func TestStatementReversalKeepsItsSignEndToEnd(t *testing.T) {
+	const day = 480 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	// The statement's booking, printed positive in the debit column.
+	seedWebTextRow(t, r, foldStmtA, day, 100.0, nil, "EXAMPLE PAYEE", "MATURITY",
+		statementPayload("MATURITY", "EXAMPLE PAYEE"))
+	// The statement's cancellation of it: a negative in that same column,
+	// which is the only way a statement can say so.
+	seedWebTextRow(t, r, foldStmtB, day, -100.0, nil, "EXAMPLE REFERENCE", "CANC.MAT.",
+		statementPayload("CANC.MAT.", "EXAMPLE REFERENCE"))
+
+	got := drainTx(t, emitWebStream(t, r))
+	booking, ok := got[foldStmtA+"@"+textAcct]
+	if !ok {
+		t.Fatal("the booking must survive")
+	}
+	cancellation, ok := got[foldStmtB+"@"+textAcct]
+	if !ok {
+		t.Fatal("the cancellation must survive: it is a second entry, not a duplicate")
+	}
+	if booking.NetAmount == nil || cancellation.NetAmount == nil {
+		t.Fatal("both rows must carry a net amount")
+	}
+	if !booking.NetAmount.IsNegative() {
+		t.Errorf("booking NetAmount = %s, want negative (money out)", booking.NetAmount)
+	}
+	if !cancellation.NetAmount.IsPositive() {
+		t.Errorf("cancellation NetAmount = %s, want positive — a cancelled withdrawal is money coming back, "+
+			"and forcing it back to the kind's direction makes it a second copy of the booking it cancels",
+			cancellation.NetAmount)
+	}
+	if sum := booking.NetAmount.Add(*cancellation.NetAmount); !sum.IsZero() {
+		t.Errorf("booking + cancellation = %s, want 0", sum)
+	}
+}

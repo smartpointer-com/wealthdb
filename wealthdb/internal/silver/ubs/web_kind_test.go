@@ -1,6 +1,7 @@
 package ubs
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
@@ -110,6 +111,53 @@ func TestWebKindClassification(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("webKind(%q, debit=%v, credit=%v) = %q, want %q",
 					tc.desc, tc.hasDebit, tc.hasCredit, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWebProjectedNetKeepsAStatementReversal pins the second way a
+// reversal announces itself. The export names it in the booking type
+// (`<base>;Reversal`); a statement cannot, because its amount columns hold
+// magnitudes and its booking type is whatever the bank printed — so it
+// states the correction by printing a NEGATIVE FIGURE IN THE COLUMN THE
+// ORIGINAL WENT IN. Forcing such a row back to its kind's normal direction
+// turns a cancellation into a second copy of the booking it cancels, which
+// is the error this guards.
+//
+// The last two cases are the boundary: the export's amount columns carry
+// the direction in their own sign, so a negative debit there is an ordinary
+// payment out and must still be normalised. Every value is synthetic.
+func TestWebProjectedNetKeepsAStatementReversal(t *testing.T) {
+	debit := func(v float64) sql.NullFloat64 { return sql.NullFloat64{Float64: v, Valid: true} }
+	var none sql.NullFloat64
+
+	for _, tc := range []struct {
+		name          string
+		descKind      string
+		statementEra  bool
+		debit, credit sql.NullFloat64
+		want          float64
+	}{
+		{"a statement withdrawal", "E-BANKING PAYMENT ORDER", true, debit(100), none, -100},
+		{"a statement dividend", "DIVIDEND", true, none, debit(100), 100},
+		// The cancellations: money comes back, and money goes out again.
+		{"a cancelled statement withdrawal", "CANC.MORT.MAT.", true, debit(-100), none, 100},
+		{"a cancelled statement dividend", "REVERSAL DIVIDEND", true, none, debit(-100), -100},
+		{"a cancelled statement purchase", "SHARE", true, debit(-100), none, 100},
+		// The export states direction in the cell's own sign, and the
+		// booking type is where its reversals are named.
+		{"an export payment", "e-banking payment order", false, debit(-100), none, -100},
+		{"an export reversal", "Dividend;Reversal", false, none, debit(-100), -100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, got := webProjectedNet(tc.descKind, tc.statementEra, tc.debit, tc.credit)
+			if got == nil {
+				t.Fatalf("webProjectedNet(%q) returned no signed amount", tc.descKind)
+			}
+			if want := canonical.NewDecimalFromFloat(tc.want); got.Cmp(want) != 0 {
+				t.Errorf("webProjectedNet(%q, statementEra=%v) = %s, want %s",
+					tc.descKind, tc.statementEra, got.String(), want.String())
 			}
 		})
 	}

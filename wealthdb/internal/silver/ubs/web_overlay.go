@@ -312,7 +312,7 @@ SELECT transaction_external_id, account_external_id, value_date,
 				continue
 			}
 		}
-		_, _, net := webProjectedNet(kindStr.String, debit, credit)
+		_, _, net := webProjectedNet(kindStr.String, isStatementEraID(txID), debit, credit)
 		amount, ok := bookingCents(net)
 		if !ok {
 			continue

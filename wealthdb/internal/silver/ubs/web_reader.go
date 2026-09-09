@@ -446,7 +446,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 			continue
 		}
 
-		kind, net, netAmount := webProjectedNet(kindStr.String, debit, credit)
+		kind, net, netAmount := webProjectedNet(kindStr.String, isStatementEraID(txID), debit, credit)
 		netPtr := net
 
 		// A statement's period summary is not a booking. The "Turnover
@@ -510,7 +510,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		if returnsInternal {
 			rowPayload, kind = markReturnsInternal(rowPayload, kind)
 		}
-		if _, isReversal := stripReversalSuffix(kindStr.String); !isReversal {
+		if !webReversal(kindStr.String, isStatementEraID(txID), debit, credit) {
 			netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
 		}
 
@@ -1152,11 +1152,23 @@ func populateCutoffMap(
 // the source's sign, so there the two eras can still disagree and such a
 // pair simply does not fold: the fold never guesses.
 //
-// Reversal rows (`<base>;Reversal`) bypass the sign helper, which would
-// otherwise mask the bank's correction by forcing the amount back to the
-// base kind's normal direction. Their kind still maps to the underlying
-// canonical kind so they net against the originals when summed.
-func webProjectedNet(descKind string, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
+// Reversal rows bypass the sign helper, which would otherwise mask the
+// bank's correction by forcing the amount back to the base kind's normal
+// direction — and a correction forced back into its base direction is not a
+// correction, it is a SECOND COPY of the thing it cancels. Their kind still
+// maps to the underlying canonical kind so they net against the originals
+// when summed.
+//
+// A reversal announces itself in one of two ways, and both are read here.
+// The export names it in the booking type (`<base>;Reversal`). The
+// statement does not: it prints a NEGATIVE FIGURE IN THE COLUMN THE
+// ORIGINAL WAS PRINTED IN — a negative in the debit column is money coming
+// back, a negative in the credit column is money going out again. That
+// reading is only available in the statement era, which is why the caller
+// has to say which era the row belongs to: the export's amount columns
+// already carry the direction in their sign, so there a negative debit is
+// an ordinary payment out and means nothing of the kind.
+func webProjectedNet(descKind string, statementEra bool, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
 	var net canonical.Decimal
 	if credit.Valid {
 		net = net.Add(canonical.NewDecimalFromFloat(credit.Float64))
@@ -1166,10 +1178,32 @@ func webProjectedNet(descKind string, debit, credit sql.NullFloat64) (canonical.
 	}
 	kind := webKind(descKind, debit.Valid, credit.Valid)
 	signed := net
-	if _, isReversal := stripReversalSuffix(descKind); isReversal {
+	if webReversal(descKind, statementEra, debit, credit) {
 		return kind, net, &signed
 	}
 	return kind, net, canonical.ApplyCanonicalSign(kind, &signed)
+}
+
+// webReversal reports whether a row is the bank correcting a booking it has
+// already made. Both places that pin a sign ask this ONE question, because
+// a row that answers yes in one of them and no in the other is signed twice
+// by two different rules and the second wins.
+//
+// A web era says it in one of two ways. The export names it in the booking
+// type (`<base>;Reversal`). The statement cannot — its booking type is
+// whatever the bank printed and its amount columns hold magnitudes — so it
+// prints a NEGATIVE FIGURE IN THE COLUMN THE ORIGINAL WENT IN: a negative
+// in the debit column is money coming back, a negative in the credit column
+// is money going out again. That second reading is only available in the
+// statement era, which is why the caller has to say which era the row
+// belongs to; the export's cells carry the direction in their own sign, so
+// there a negative debit is an ordinary payment out and means nothing of
+// the kind.
+func webReversal(descKind string, statementEra bool, debit, credit sql.NullFloat64) bool {
+	if _, ok := stripReversalSuffix(descKind); ok {
+		return true
+	}
+	return statementEra && (debit.Valid && debit.Float64 < 0 || credit.Valid && credit.Float64 < 0)
 }
 
 // webKind maps the web silver's `description_kind` string plus
