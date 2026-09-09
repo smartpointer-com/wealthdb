@@ -11,6 +11,7 @@ import pytest
 
 from pdf_parsers import (
     _stmt_is_internal_transfer,
+    _stmt_split_multi,
     parse_account_statement_text,
     parse_account_statement_transactions_pages,
     parse_label_statement_of_assets,
@@ -223,6 +224,187 @@ class TestInternalTransferDetection:
         # re-tagged (it is already excluded from flows as a buy/sell).
         assert not _stmt_is_internal_transfer("SHARE", ["MANAGE US EQ PORTFOLIO"])
         assert not _stmt_is_internal_transfer("DIVIDEND", ["MANAGE PORTFOLIO"])
+
+
+# ============================================================
+# Bundled payment orders
+# ============================================================
+#
+# The statement books a batch of e-banking payments as ONE movement
+# carrying the batch total, with the beneficiaries listed under it and
+# a "<N> times <rail>" trailer closing the list. Beneficiaries below
+# are invented; the shapes are the statement's.
+
+def _cont(*lines: str) -> list[str]:
+    return list(lines)
+
+
+class TestSplitBundledOrder:
+    def test_a_batch_becomes_one_entry_per_payment(self):
+        legs = _stmt_split_multi(_cont(
+            "EXAMPLE DENTAL AG 111.11",
+            "CH 0000 EXAMPLETOWN",
+            "NORTHWIND CLINIC 825.26",
+            "CH 0000 EXAMPLEBURG",
+            "2 times E-Banking CHF domestic",
+        ), 936.37)
+        assert [x["amount"] for x in legs] == [111.11, 825.26]
+        # The amount comes off the name, and the address stays with it.
+        assert legs[0]["lines"] == ["EXAMPLE DENTAL AG", "CH 0000 EXAMPLETOWN"]
+        assert legs[1]["lines"] == ["NORTHWIND CLINIC", "CH 0000 EXAMPLEBURG"]
+
+    def test_a_beneficiary_block_runs_as_long_as_it_needs(self):
+        # The amount sits on the first line of the block, so a name that
+        # wraps must not be read as a payment of its own.
+        legs = _stmt_split_multi(_cont(
+            "EXAMPLE INTERIORS 55 434.17",
+            "GMBH",
+            "EXAMPLE STREET 35A",
+            "AT 0000 EXAMPLESTADT",
+            "NORTHWIND CLINIC 12 503.00",
+            "CH 0000 EXAMPLEBURG",
+            "2 times E-Banking SEPA",
+        ), 67937.17)
+        assert len(legs) == 2
+        assert legs[0]["lines"][:2] == ["EXAMPLE INTERIORS", "GMBH"]
+        assert legs[0]["amount"] == 55434.17
+
+    def test_an_address_that_ends_in_a_postcode_opens_no_payment(self):
+        # The decimals are what separate an amount from a postcode.
+        legs = _stmt_split_multi(_cont(
+            "EXAMPLE DENTAL AG 222.22",
+            "EXAMPLE STREET 3, 9999",
+            "EXAMPLE DENTAL AG 66.66",
+            "EXAMPLE STREET 3, 9999",
+            "2 times E-Banking CHF domestic",
+        ), 288.88)
+        assert [x["amount"] for x in legs] == [222.22, 66.66]
+
+    def test_page_furniture_after_the_trailer_belongs_to_no_payment(self):
+        legs = _stmt_split_multi(_cont(
+            "NORTHWIND CLINIC 44 251.00",
+            "CH 0000 EXAMPLEBURG",
+            "EXAMPLE DENTAL AG 11 758.13",
+            "CH 0000 EXAMPLETOWN",
+            "2 times E-Banking SEPA",
+            "Form without signature Page 1 / 4",
+            "AAAAAA00 / 000000 / EXAMPLE0000000000000 01.01.2098",
+        ), 56009.13)
+        assert len(legs) == 2
+        assert all("Form without signature" not in ln
+                   for x in legs for ln in x["lines"])
+
+    def test_a_single_order_is_not_a_batch(self):
+        assert _stmt_split_multi(_cont(
+            "EXAMPLE DENTAL AG",
+            "CH 0000 EXAMPLETOWN",
+            "1 times E-Banking CHF domestic",
+        ), 111.11) is None
+
+    def test_a_movement_with_no_trailer_is_not_a_batch(self):
+        assert _stmt_split_multi(_cont("EXAMPLE DENTAL AG"), 111.11) is None
+
+    def test_a_split_that_cannot_be_proved_is_refused(self):
+        # Both of the trailer's claims are checked, because either alone
+        # is too weak: the count catches a merged pair, the total catches
+        # a misread amount.
+        wrong_count = _cont(
+            "EXAMPLE DENTAL AG 111.11",
+            "NORTHWIND CLINIC 825.26",
+            "3 times E-Banking CHF domestic",
+        )
+        assert _stmt_split_multi(wrong_count, 936.37) is None
+        wrong_total = _cont(
+            "EXAMPLE DENTAL AG 111.11",
+            "NORTHWIND CLINIC 825.26",
+            "2 times E-Banking CHF domestic",
+        )
+        assert _stmt_split_multi(wrong_total, 999.99) is None
+        # ... and a movement whose total was never read cannot be proved.
+        assert _stmt_split_multi(wrong_total, None) is None
+
+    def test_text_before_the_first_amount_is_an_unknown_shape(self):
+        assert _stmt_split_multi(_cont(
+            "SOMETHING UNEXPECTED",
+            "EXAMPLE DENTAL AG 111.11",
+            "NORTHWIND CLINIC 825.26",
+            "2 times E-Banking CHF domestic",
+        ), 936.37) is None
+
+
+def _bundle_pdf() -> _FakePDF:
+    """A one-page statement whose only movement is a two-payment batch."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [_w("04.10.21", 42, 77, 140),
+           *_info_words("MULTI E-BANKING ORDER", 140),
+           _band_word("300.00", "debit", 140),
+           _w("04.10.21", 432, 468, 140),
+           _band_word("700.00", "bal", 140)]
+    p1 += [_w("EXAMPLE", 85, 130, 155), _w("DENTAL", 132, 170, 155),
+           _w("AG", 172, 185, 155), _w("100.00", 300, 329, 155)]
+    p1 += [_w(_SYN_COUNTER_IBAN, 85, 200, 168)]
+    p1 += [_w("NORTHWIND", 85, 145, 182), _w("CLINIC", 147, 180, 182),
+           _w("200.00", 300, 329, 182)]
+    p1 += [_w("CH", 85, 95, 195), _w("0000", 97, 120, 195),
+           _w("EXAMPLEBURG", 122, 190, 195)]
+    p1 += [_w("2", 85, 92, 208), _w("times", 94, 120, 208),
+           _w("E-Banking", 122, 170, 208), _w("CHF", 172, 190, 208),
+           _w("domestic", 192, 235, 208)]
+    p1 += [_w("31.10.21", 42, 77, 230), *_info_words("Closing balance", 230),
+           _band_word("700.00", "bal", 230)]
+    return _FakePDF([_FakePage(p1, _PAGE_TEXT)])
+
+
+class TestBundledOrderReachesTheLoaderSplit:
+    def _rows(self):
+        return parse_account_statement_transactions_pages(
+            _bundle_pdf(), "synthetic-token")
+
+    def test_the_batch_row_is_replaced_by_its_payments(self):
+        rows = self._rows()
+        assert len(rows) == 2
+        assert [r["amount_debit"] for r in rows] == [100.00, 200.00]
+        # The batch total is gone as a row and survives as the sum.
+        assert sum(r["amount_debit"] for r in rows) == 300.00
+        assert all(r["description_kind"] == "MULTI E-BANKING ORDER" for r in rows)
+
+    def test_each_payment_names_its_own_beneficiary(self):
+        rows = self._rows()
+        assert rows[0]["counterparty"] == "EXAMPLE DENTAL AG"
+        assert rows[1]["counterparty"] == "NORTHWIND CLINIC"
+        # A counter-account belongs to the payment that carries it, not
+        # to every payment the batch happened to include.
+        assert rows[0]["counter_account"] == "CH0000000000000000002"
+        assert rows[1]["counter_account"] is None
+
+    def test_each_payment_carries_only_its_own_narrative(self):
+        import json
+        rows = self._rows()
+        first = json.loads(rows[0]["payload"])
+        assert first["continuation"] == ["EXAMPLE DENTAL AG",
+                                         _SYN_COUNTER_IBAN]
+        assert first["multi_leg"] == {"index": 1, "count": 2,
+                                      "rail": "E-Banking CHF domestic"}
+        assert json.loads(rows[1]["payload"])["multi_leg"]["index"] == 2
+
+    def test_the_printed_balance_belongs_to_the_last_payment(self):
+        # The balances between the payments were never printed, and
+        # deriving them would state something the statement does not.
+        rows = self._rows()
+        assert rows[0]["running_balance"] is None
+        assert rows[1]["running_balance"] == 700.00
+
+    def test_the_statement_still_reconciles(self):
+        # Reconciliation reads the movement the statement printed, so
+        # splitting it must not disturb the chain: 1000 − 300 = 700.
+        assert all(r["reconciled"] for r in self._rows())
+
+    def test_the_payments_carry_the_batch_total_for_the_id(self):
+        rows = self._rows()
+        assert [r["multi_leg_index"] for r in rows] == [1, 2]
+        assert all(r["multi_parent_debit"] == 300.00 for r in rows)
 
 
 # ---- Issue 2: portfolio_external_id length must be 16 -------------

@@ -279,6 +279,78 @@ def test_content_id_dedups_overlapping_statements(tmp_path: Path):
         "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 2
 
 
+def _leg(account: str, booking: int, *, debit, index, count,
+         parent_debit, desc="MULTI E-BANKING ORDER", occ=0) -> dict:
+    """One payment out of a batch the parser split: it carries its own
+    share, and the batch total the movement is identified by."""
+    r = _mv(account, booking, debit=debit, desc=desc, occ=occ)
+    r.update({"multi_leg_index": index,
+              "multi_parent_debit": parent_debit,
+              "multi_parent_credit": None})
+    return r
+
+
+def test_a_batch_payments_ids_are_the_movements_id_plus_a_position():
+    """Legs share the movement the statement printed and differ only by
+    position, so identical amounts inside one batch stay apart and the
+    same batch on the monthly and the annual statement still dedups."""
+    legs = [_leg(_IBAN_A, _PRE, debit=50.0, index=i, count=3,
+                 parent_debit=150.0) for i in (1, 2, 3)]
+    ids = [loader._stmt_txn_id(_IBAN_A, r) for r in legs]
+    assert len(set(ids)) == 3                      # equal amounts stay apart
+    batch = loader._stmt_batch_txn_id(_IBAN_A, legs[0])
+    assert all(i == f"{batch}#{n}" for n, i in enumerate(ids, start=1))
+    # Re-reading the same batch from another statement mints the same ids.
+    assert [loader._stmt_txn_id(_IBAN_A, dict(r)) for r in legs] == ids
+
+
+def test_an_unsplit_rows_id_is_unchanged_by_the_batch_columns():
+    """Every id minted before batches were split must still be minted,
+    or the overlap dedup breaks and silver keeps both spellings."""
+    r = _mv(_IBAN_A, _PRE, credit=100.0)
+    assert loader._stmt_txn_id(_IBAN_A, r) == loader._stmt_batch_txn_id(_IBAN_A, r)
+
+
+def test_the_batch_row_an_earlier_load_wrote_is_retired(tmp_path: Path):
+    """A load that predates the split wrote the batch total as one row.
+    Once the payments carry it, that row must go, or the total is counted
+    twice — once whole, once as its parts."""
+    conn = _fresh_db(tmp_path)
+    batch = _mv(_IBAN_A, _PRE, debit=150.0, desc="MULTI E-BANKING ORDER")
+    with conn:
+        loader._insert_hist_transactions(conn, 1, [batch], {})
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 1
+
+    legs = [_leg(_IBAN_A, _PRE, debit=50.0, index=i, count=3,
+                 parent_debit=150.0) for i in (1, 2, 3)]
+    with conn:
+        loader._insert_hist_transactions(conn, 2, legs, {})
+    rows = conn.execute(
+        "SELECT transaction_external_id t, amount_debit d FROM transactions "
+        "ORDER BY t").fetchall()
+    assert [r["d"] for r in rows] == [50.0, 50.0, 50.0]
+    assert loader._stmt_batch_txn_id(_IBAN_A, batch) not in [r["t"] for r in rows]
+
+
+def test_the_batch_row_survives_where_the_cut_over_skips_its_payments(
+        tmp_path: Path):
+    """Above the MT940 floor the payments are not inserted, so retiring
+    the batch row would drop the movement entirely rather than replace
+    it."""
+    conn = _fresh_db(tmp_path)
+    batch = _mv(_IBAN_A, _POST, debit=150.0, desc="MULTI E-BANKING ORDER")
+    with conn:
+        # Written while no floor applied, as an earlier load would have.
+        loader._insert_hist_transactions(conn, 1, [batch], {})
+    legs = [_leg(_IBAN_A, _POST, debit=50.0, index=i, count=3,
+                 parent_debit=150.0) for i in (1, 2, 3)]
+    with conn:
+        loader._insert_hist_transactions(conn, 2, legs, {_IBAN_A: _FLOOR})
+    rows = conn.execute("SELECT amount_debit d FROM transactions").fetchall()
+    assert [r["d"] for r in rows] == [150.0]
+
+
 def test_stmt_txn_id_stable_and_namespaced():
     r = _mv(_IBAN_A, _PRE, credit=100.0)
     a = loader._stmt_txn_id(_IBAN_A, r)

@@ -923,6 +923,86 @@ def _stmt_counter_account(cont_lines: list[str]) -> str | None:
     return None
 
 
+# A bundled payment order. The statement books a batch of e-banking
+# payments as ONE movement carrying the batch total, and prints the
+# beneficiaries under it, closed by a "<N> times <rail>" trailer. With
+# N > 1 that single row is several unrelated payments — different
+# beneficiaries, different purposes — added together, and no consumer
+# downstream can take them apart again: the gold description becomes
+# every beneficiary concatenated, and one merchant signature stands for
+# the lot.
+#
+# The trailer is what makes the batch legible, and it is printed by
+# booking type rather than belonging to one: MULTI E-BANKING ORDER and
+# MULTI PAYNET ORDER both bundle, and the same trailer closes an
+# ordinary single order with "1 times". Matching the SHAPE rather than
+# the booking type therefore splits every bundle the statement can
+# print, including types not yet seen, and leaves every single order
+# alone by construction.
+_STMT_MULTI_TRAILER_RE = re.compile(r"^(\d+)\s+times\s+(\S.*)$", re.I)
+
+# A leg's own amount, at the end of its first line ("EXAMPLE AG 1 234.50").
+# The decimals are required: an address line ends in a postcode, and a
+# bare integer would open a leg that does not exist. Thousands are
+# grouped with a space or an apostrophe, as elsewhere in the ledger.
+_STMT_LEG_AMOUNT_RE = re.compile(r"\s(\d{1,3}(?:[ '\u2019]\d{3})*|\d+)\.(\d{2})$")
+
+
+def _stmt_multi_trailer(cont_lines: list[str]) -> tuple[int, str, int] | None:
+    """The batch trailer as (count, rail, line index), or None when the
+    movement carries none."""
+    for i, line in enumerate(cont_lines):
+        m = _STMT_MULTI_TRAILER_RE.match(str(line).strip())
+        if m:
+            return int(m.group(1)), m.group(2).strip(), i
+    return None
+
+
+def _stmt_split_multi(cont_lines: list[str],
+                      total: float | None) -> list[dict] | None:
+    """Split a bundled order's continuation into one entry per payment,
+    as {amount, lines}. None when the movement is not a bundle, or when
+    the split cannot be proved — a shape that does not add up is left
+    whole rather than guessed at, because a wrong split moves money
+    between beneficiaries.
+
+    A line ending in an amount opens a payment and the amount is taken
+    off its text; the lines under it are that beneficiary's name and
+    address overflow, which run to as many lines as the beneficiary
+    needs. Anything after the trailer is the page's own furniture and
+    belongs to no payment.
+
+    Proved means both of the trailer's claims hold: as many payments
+    were found as it counts, and they add up to the movement's printed
+    total. Either alone is too weak — equal counts with a misread
+    amount still moves money, and an accidental sum with the wrong
+    count still merges two payments.
+    """
+    trailer = _stmt_multi_trailer(cont_lines)
+    if trailer is None or total is None:
+        return None
+    count, _rail, at = trailer
+    if count < 2:
+        return None
+    legs: list[dict] = []
+    for line in cont_lines[:at]:
+        line = str(line).rstrip()
+        m = _STMT_LEG_AMOUNT_RE.search(line)
+        if m:
+            legs.append({"amount": float(re.sub(r"[ '\u2019]", "",
+                                                m.group(1) + "." + m.group(2))),
+                         "lines": [line[:m.start()].rstrip()]})
+        elif legs:
+            legs[-1]["lines"].append(line)
+        else:
+            return None          # text before the first amount: unknown shape
+    if len(legs) != count:
+        return None
+    if abs(round(sum(x["amount"] for x in legs), 2) - round(total, 2)) > 0.005:
+        return None
+    return legs
+
+
 def parse_account_statement_combined(
         pdf_path: Path, doc_token: str, label: str
         ) -> tuple[list[dict], list[dict]]:
@@ -1079,32 +1159,78 @@ def parse_account_statement_transactions_pages(
                mv["amount_debit"], mv["amount_credit"])
         idx = occ.get(key, 0)
         occ[key] = idx + 1
-        out.append({
-            "booking_date": booking,
-            "value_date": value,
-            "account_external_id": iban,
-            "currency_iso": currency,
-            "amount_debit": mv["amount_debit"],
-            "amount_credit": mv["amount_credit"],
-            "description_kind": raw_kind,
-            "counterparty": counterparty,
-            "counter_account": counter,
-            "running_balance": mv["running_balance"],
-            "post_closing": mv["post_closing"],
-            "occurrence": idx,
-            "reconciled": reconciled,
-            "source_doc_token": doc_token,
-            "payload": json.dumps({
+
+        def emit(amount_debit, amount_credit, cparty, caccount, cont,
+                 is_internal, balance, extra=None):
+            row = {
+                "booking_date": booking,
+                "value_date": value,
+                "account_external_id": iban,
+                "currency_iso": currency,
+                "amount_debit": amount_debit,
+                "amount_credit": amount_credit,
+                "description_kind": raw_kind,
+                "counterparty": cparty,
+                "counter_account": caccount,
+                "running_balance": balance,
+                "post_closing": mv["post_closing"],
+                "occurrence": idx,
+                "reconciled": reconciled,
+                "source_doc_token": doc_token,
+            }
+            payload = {
                 "booking_type": raw_kind,
-                "internal_transfer": internal,
-                "running_balance": mv["running_balance"],
+                "internal_transfer": is_internal,
+                "running_balance": balance,
                 "value_date": mv["value_dmy"],
-                "counter_account": counter,
-                "continuation": mv["_cont"],
+                "counter_account": caccount,
+                "continuation": cont,
                 "post_closing": mv["post_closing"],
                 "source": "account_statement_pdf",
-            }, ensure_ascii=False),
-        })
+            }
+            if extra:
+                row.update(extra["row"])
+                payload["multi_leg"] = extra["payload"]
+            row["payload"] = json.dumps(payload, ensure_ascii=False)
+            out.append(row)
+
+        # A bundle becomes one row per payment and the batch row itself
+        # is not emitted: every consumer downstream sees plain single
+        # transactions, and the total survives as the sum of the legs.
+        # A movement that is not a bundle, or one whose split could not
+        # be proved, is emitted whole exactly as before.
+        total = mv["amount_debit"] if mv["amount_debit"] is not None else mv["amount_credit"]
+        legs = _stmt_split_multi(mv["_cont"], total)
+        if legs is None:
+            emit(mv["amount_debit"], mv["amount_credit"], counterparty,
+                 counter, mv["_cont"], internal, mv["running_balance"])
+            continue
+        count, rail, _at = _stmt_multi_trailer(mv["_cont"])
+        debit_side = mv["amount_debit"] is not None
+        for i, leg in enumerate(legs, start=1):
+            lines = [ln for ln in leg["lines"] if ln.strip()]
+            emit(
+                leg["amount"] if debit_side else None,
+                None if debit_side else leg["amount"],
+                lines[0] if lines else None,
+                # Each leg is read on its own: a counter-account or a
+                # mandate marker belongs to the payment that carries it,
+                # not to every payment the batch happened to include.
+                _stmt_counter_account(lines),
+                lines,
+                _stmt_is_internal_transfer(mv["description_kind"], lines),
+                # The printed balance is the one after the whole batch
+                # posted, so it belongs to the last leg. The balances
+                # between legs were never printed, and deriving them
+                # would state something the statement does not.
+                mv["running_balance"] if i == len(legs) else None,
+                extra={
+                    "row": {"multi_leg_index": i,
+                            "multi_parent_debit": mv["amount_debit"],
+                            "multi_parent_credit": mv["amount_credit"]},
+                    "payload": {"index": i, "count": count, "rail": rail},
+                },
+            )
     if return_head_text:
         return out, "\n".join(head_texts)
     return out

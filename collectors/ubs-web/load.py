@@ -1247,19 +1247,36 @@ def _mt940_floors_by_account(dump_dir: Path) -> dict[str, int]:
     return floors
 
 
-def _stmt_txn_id(account: str, r: dict) -> str:
-    """Content-stable transaction id for a PDF movement row. Same
-    booking on the monthly AND the annual statement (and in a
-    statement's post-closing trailer) hashes identically, so the
-    ON CONFLICT upsert dedups the overlap; the per-statement
-    occurrence index keeps genuinely-distinct identical same-day
-    bookings apart."""
+def _stmt_batch_txn_id(account: str, r: dict) -> str:
+    """Content-stable transaction id for the MOVEMENT a PDF row came
+    from. Same booking on the monthly AND the annual statement (and in
+    a statement's post-closing trailer) hashes identically, so the
+    ON CONFLICT upsert dedups the overlap; the per-statement occurrence
+    index keeps genuinely-distinct identical same-day bookings apart.
+
+    A split bundle's legs all hash to this same value — they are the
+    one movement the statement printed — which is what lets a leg name
+    the batch row it replaces."""
     parts = "|".join(str(x) for x in (
         account, r["booking_date"], r["value_date"],
-        r.get("amount_debit"), r.get("amount_credit"),
+        # A leg carries its own share in amount_debit/amount_credit;
+        # the movement is identified by the batch total the statement
+        # printed, so the hash reads that where a leg has one.
+        r.get("multi_parent_debit", r.get("amount_debit")),
+        r.get("multi_parent_credit", r.get("amount_credit")),
         r.get("description_kind") or "", r.get("occurrence", 0),
     ))
     return "stmt:" + hashlib.sha256(parts.encode("utf-8")).hexdigest()[:16]
+
+
+def _stmt_txn_id(account: str, r: dict) -> str:
+    """The row's own id: the movement id, suffixed with the leg's
+    position when the movement was a bundle the parser split. An
+    unsplit row keeps the bare movement id, so every id minted before
+    bundles were split is unchanged."""
+    tid = _stmt_batch_txn_id(account, r)
+    leg = r.get("multi_leg_index")
+    return f"{tid}#{leg}" if leg else tid
 
 
 def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
@@ -1286,6 +1303,17 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
         if floor is not None and r["booking_date"] >= floor:
             continue  # MT940 owns this window for this account
         txn_id = _stmt_txn_id(account, r)
+        # The batch row this leg replaces was written by an earlier load,
+        # under the id the movement still hashes to. Retiring it as the
+        # first leg lands keeps the batch total from being counted a
+        # second time beside the legs that now carry it. Deliberately
+        # after the MT940 cut-over above: where the legs are skipped,
+        # nothing replaces the batch row and it must stay.
+        if r.get("multi_leg_index") == 1:
+            conn.execute(
+                "DELETE FROM transactions WHERE transaction_external_id = ? "
+                "  AND account_external_id = ?",
+                (_stmt_batch_txn_id(account, r), account))
         try:
             conn.execute(
                 "INSERT INTO transactions ("

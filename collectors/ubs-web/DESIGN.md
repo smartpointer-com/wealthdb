@@ -261,6 +261,39 @@ ids do not meet, and silver does not decide merge policy. The wealthdb
 UBS adapter owns that reconciliation: see the era fold in
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
+**A batch order becomes its payments.** The statement books a batch of
+e-banking payments as ONE movement carrying the batch total, listing the
+beneficiaries under it and closing the list with a `<N> times <rail>`
+trailer. Left whole, that row is several unrelated payments added
+together, and nothing downstream can take it apart: the narrative is
+every beneficiary concatenated and the amount is a sum nobody was paid.
+The loader stores one row per payment instead, so every consumer sees
+plain single transactions.
+
+The trailer is what makes the batch legible, and it is printed by
+booking type rather than belonging to one — `MULTI E-BANKING ORDER` and
+`MULTI PAYNET ORDER` both bundle, and the same trailer closes an
+ordinary single order with `1 times`. The parser therefore matches the
+shape, not the booking type: every bundle the statement can print is
+split, including types not yet seen, and every single order is left
+alone by construction.
+
+A split is only taken when it can be proved, because a wrong one moves
+money between beneficiaries: as many payments must be found as the
+trailer counts, AND they must add up to the movement's printed total.
+A movement that fails either check is stored whole, exactly as before.
+Each payment keeps only its own narrative lines, and its own
+counter-account and mandate markers are read from those lines rather
+than inherited from whatever else the batch contained; the printed
+running balance belongs to the last payment, since the balances between
+them were never printed. The row ids are the movement's content hash
+suffixed with the payment's position, so a batch re-read from the annual
+statement still dedups against the monthly one, and identical amounts
+inside one batch stay apart. `payload.multi_leg` records the position,
+the count and the rail. A batch row written by a load that predates the
+split is retired when its payments land, so the total is never counted
+both whole and in parts.
+
 ### 3.7 Documents (PDFs)
 
 Web-only — PSN has no document concept. The silver `documents`
