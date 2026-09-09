@@ -121,7 +121,7 @@ verdict.`)
 
 	if len(forget) > 0 {
 		// The dump's flags have no meaning for a removal; refusing them
-		// is cheaper than guessing which of the two the operator meant.
+		// is cheaper than guessing which of the two was meant.
 		var dumpFlag string
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
@@ -244,7 +244,7 @@ type rowQuerier interface {
 // resolve-symbols and categorize — the read-only rejection names the
 // dry run, and the dry run opens gold read-only so it takes no write
 // lock. A miss is reported on stdout beside the removals and is not an
-// error: the operator may be clearing a key an earlier --forget already
+// error: a run may be clearing a key an earlier --forget already
 // emptied, or one the last re-key moved on from.
 func forgetCategorizations(ctx context.Context, g globalFlags, cfg *config.Config, signatures []string, dryRun bool, stdout io.Writer) error {
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)

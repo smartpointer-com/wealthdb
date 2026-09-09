@@ -316,7 +316,9 @@ func printCategorizeSummary(
 }
 
 // printSpendCanaries writes the four canaries. Printed even when there
-// was nothing to categorise: they describe gold, not the run.
+// was nothing to categorise: they describe gold, not the run — and they
+// are read BEFORE the run's own verdicts are stored, so a rate here is
+// the one this run started from, not the one it leaves behind.
 func printSpendCanaries(w io.Writer, c *spendCanaries) {
 	if c == nil {
 		return

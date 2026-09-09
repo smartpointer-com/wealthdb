@@ -6,7 +6,8 @@ SQLite silver built from the migrations). Every value is invented.
 The properties that carry weight:
 
 * a RESERVED row is never a transaction, and its magnitude is not lost;
-* the row key is the API's `_id`, so a re-download converges;
+* the row key is minted from row content, so a re-login does not
+  duplicate the ledger;
 * a partial run never zeroes what it did not cover;
 * the invoice identity is checked, and a period that fails it is kept
   and marked rather than dropped.

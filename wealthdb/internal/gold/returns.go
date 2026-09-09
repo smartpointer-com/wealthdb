@@ -1006,7 +1006,7 @@ const MaxEpoch = int64(1) << 62
 
 // SecondsPerDay converts gold's Unix-seconds timestamps to epoch days.
 // The day grain is a property of that timestamp convention, so it lives
-// beside MaxEpoch rather than being spelled out per caller.
+// beside MaxEpoch as the shared spelling for callers.
 const SecondsPerDay = 86400
 
 // EpochDay floors a Unix-seconds timestamp to its epoch day. Floor

@@ -33,10 +33,11 @@
 -- crossed with the (source, account, currency) keys and ASOF-joined
 -- per key, so one account's dump day cannot hide another's.
 --
--- Zero balances are KEPT here, unlike `cash_chosen` / the history line
--- bases which drop `amount <> 0` rows as noise. A paid-off card really
--- is at zero, and dropping the row would leave the carry-forward
--- showing the last balance it owed forever.
+-- Zero balances are KEPT here, unlike `cash_chosen`, which still drops
+-- `amount <> 0` rows as noise. A paid-off card really is at zero, and
+-- dropping the row would leave the carry-forward showing the last
+-- balance it owed forever. Migration 0051 later took the same filter
+-- off the history line bases, for the same reason.
 --
 -- CREATE OR REPLACE throughout keeps this replayable for the DDL-rerun
 -- test (see gold.Migrate's REPLAY note). A view binds its macros lazily on

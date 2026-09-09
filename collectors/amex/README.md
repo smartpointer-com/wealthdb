@@ -189,5 +189,5 @@ deliberately, **never in quick succession**. Amex's budget is small: about
 seven sign-ins inside twenty minutes provoked a **captcha**, which no
 terminal can answer (`vnc-login` and a human can). Captcha reputation
 accrues per account and decays with idle time, so the remedy is to wait, not
-to retry. Note that a `login` → `download` pair is two sign-ins, and that
-once the device is trusted `download` alone is enough.
+to retry. `login` is a host-side no-op here, so a `login` → `download` pair is one
+sign-in, and once the device is trusted `download` alone is enough.

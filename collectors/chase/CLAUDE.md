@@ -93,7 +93,7 @@ Forbidden — do not navigate to, click, or scrape:
 - **The secure message center** — composing or sending anything.
 - **Any J.P. Morgan investment surface** the login may also expose
   (self-directed investing, advisory accounts). This collector observes
-  the retail deposit relationship only.
+  the retail deposit and credit-card relationship only.
 - Any "confirm" / "submit" / "send" / "save" control outside the
   sign-in + 2FA forms themselves.
 - Anything that performs a `POST` / `PUT` / `DELETE` other than the
@@ -147,7 +147,8 @@ including how many cards or deposit accounts it exposes, or that a kind is
 absent. Widening scope to cards does not license roster prose as
 rationale. The explore debug dir
 (`~/.cache/wealthdb/debug/chase/`) carries full response bodies and
-downloaded statements; the harness redacts the username + password from
-`network.jsonl`, but everything else in there is real account data —
-treat the dir as sensitive and never commit anything derived from it
-without stripping identifiers first.
+downloaded statements; the harness masks the username and password
+wherever they appear — headers, bodies, URLs and the DOM — but the
+Playwright trace is written unredacted, and everything else in there is
+real account data. Treat the dir as sensitive and never commit anything
+derived from it without stripping identifiers first.

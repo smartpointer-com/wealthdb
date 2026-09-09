@@ -188,7 +188,7 @@ var cardTxKinds = map[string]canonical.TxKind{
 
 // cardTxKind maps a card row's kind and reports whether it was recognised. An
 // unrecognised type lands as `other` with the raw string kept in the payload,
-// per the global fallback rule (DESIGN.md §6.7).
+// per the global fallback rule (docs/DESIGN.md §6.8).
 //
 // Adjustment and the two TRNTYPE values are the types whose direction is not
 // fixed by their name, so they are read off the amount the same way

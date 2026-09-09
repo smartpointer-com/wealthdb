@@ -1,11 +1,12 @@
 # shellcheck shell=bash
-# Shared Camoufox bootstrap for the base-camoufox collector entrypoints.
+# Shared browser bootstrap for the containerised collector entrypoints.
 #
-# Baked into wealthdb/base-camoufox at /opt/entrypoint-lib.sh and SOURCED
-# (not executed) from each collector's /app/entrypoint.sh, so every
-# camoufox collector shares one copy of the Xvfb + x11vnc + camoufox-cache
-# setup instead of pasting it into seven entrypoints. The caller runs under
-# `set -euo pipefail`; keep this file source-safe.
+# Baked into wealthdb/base-playwright at /opt/entrypoint-lib.sh — and so
+# inherited by base-camoufox above it — and SOURCED (not executed) from
+# each collector's /app/entrypoint.sh, so every browser collector shares
+# one copy of the Xvfb + x11vnc + browser-cache setup instead of pasting
+# it into each entrypoint. The caller runs under `set -euo pipefail`;
+# keep this file source-safe.
 
 VFB_DISPLAY=99
 

@@ -140,7 +140,7 @@ func (c merchantCandidate) DominantSource() string {
 
 // skippedSignatures counts what candidacy refused, by reason. Each is
 // a count of DISTINCT signatures, not rows, and each is reported so
-// the operator sees the gate doing something rather than wondering why
+// a gate that fired is visible rather than leaving it unclear why
 // a row stayed uncategorised.
 type skippedSignatures struct {
 	Fenced        int // transfer-shaped: a person or an account where a merchant would be
@@ -357,9 +357,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		if err := flush(); err != nil {
 			// Held, not lost: the verdicts stay in `pending` and the
 			// end-of-run retryFlush writes them, whether or not another
-			// batch follows. Saying "after the next batch" read as data
-			// loss on the LAST batch, where no next batch exists — the
-			// retry that saves them is the one at the end.
+			// batch follows.
 			fmt.Fprintf(stderr, "categorize: %d verdict(s) held after a failed store (%s); "+
 				"they are retried before the run ends\n", len(pending), err.Error())
 		}
@@ -568,7 +566,7 @@ SELECT c.merchant_signature,
 }
 
 // printNeverSent reports what candidacy refused, one line per gate
-// that fired. It prints beside the plan so the operator reads why a
+// that fired. It prints beside the plan, so why a
 // row will stay uncategorised before deciding to wait on the run.
 func printNeverSent(w io.Writer, skipped skippedSignatures) {
 	if skipped.Fenced > 0 {
@@ -827,7 +825,7 @@ type batchOutcome struct {
 // The write path persists here; a dry run observes and stores nothing.
 type batchSink func(batchOutcome) error
 
-// estimateTokens is the operator's cost preview. Four characters per
+// estimateTokens is the run's cost preview. Four characters per
 // token is the usual rough ratio for English prose and CSV; the point
 // is an order of magnitude before the first call, not a tokenizer.
 func estimateTokens(s string) int { return (len(s) + 3) / 4 }
@@ -836,7 +834,7 @@ func estimateTokens(s string) int { return (len(s) + 3) / 4 }
 // call is made: how many batches, how big, how many anchors the first
 // carries, how large its prompt is, and how many calls the run can
 // spend. On a run measured in tens of minutes this is what the
-// operator reads before deciding to wait. A dry run asks the model
+// preview is read before deciding to wait. A dry run asks the model
 // exactly as a real run does — that is the precedent's shape, and
 // the only way to see verdicts without writing them — so there the
 // plan is the one cost signal that arrives before any call.

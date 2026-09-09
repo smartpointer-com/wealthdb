@@ -12,8 +12,10 @@ import (
 // Text-column helpers shared by the web and PSN emitters. The contract they
 // implement — which silver field becomes gold's description, counterparty and
 // provider_category in each era — is documented in docs/adapters/ubs.md §7.
-// They only ever assign those three columns; kinds, signs, amounts, dates and
-// ids are decided before they run and never read from the text they compose.
+// Kinds, signs, amounts and dates are decided before they run and are never
+// read from the text they compose. The one identifier they do derive is the
+// instrument id a security-bearing narrative names, which projectWebTxText
+// returns alongside the columns.
 
 // narrativeText flattens a multi-line narrative (an MT940 :86: block, whose
 // lines the collector joined with "\n") into a single description line via

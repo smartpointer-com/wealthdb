@@ -55,11 +55,13 @@ CREATE TABLE card_accounts (
     balance                  REAL,
     available                REAL,               -- remaining spending power
     credit_limit             REAL,
-    -- Authorised-but-unposted activity, summed from the ledger's
-    -- RESERVED rows. Those rows carry no id and cannot be stored
-    -- individually (see card_transactions); this is the whole of what
-    -- silver keeps about them, and it is the gap between a balance
-    -- reconstructed from booked rows and the balance the card reports.
+    -- Authorised-but-unposted activity, from the roster: each card's
+    -- `balanceIncludingReserved` less its `balance`. NOT summed from
+    -- the ledger's RESERVED rows — those carry no id and cannot be
+    -- stored individually (see card_transactions). This is the whole
+    -- of what silver keeps about them, and it is the gap between a
+    -- balance reconstructed from booked rows and the one the card
+    -- reports.
     reserved_amount          REAL,
     reserved_count           INTEGER,
     product_name             TEXT,               -- e.g. the card product line
@@ -74,17 +76,15 @@ CREATE TABLE card_accounts (
 -- ============================================================
 -- EVENT TABLE — card transactions
 --
--- One row per BOOKED card transaction, keyed on the provider's own
--- opaque row id.
+-- One row per BOOKED card transaction, keyed on a content id the
+-- loader mints (card_parsers.py).
 --
--- Why `_id` and not `transactionNr`: the latter is a one- to
--- three-digit sequence that repeats across hundreds of rows — a
--- position within a statement, not a key. `_id` is unique per row and
--- stable across fetches; where overlapping windows returned a row
--- twice, every repeat agreed field for field. So a re-download UPSERTs
--- rather than duplicating, and no occurrence index is needed (the
--- chase collector synthesises one only because its source offers no
--- usable id at all).
+-- Not `transactionNr`: it is a one- to three-digit sequence that
+-- repeats across hundreds of rows — a position within a statement, not
+-- a key. Not the API's `_id` either: it distinguishes rows within one
+-- session, but it is re-minted at every login, so keying on it made a
+-- re-download append a second copy of the whole ledger (migration
+-- 0008). A content id UPSERTs across sessions instead.
 --
 -- RESERVED rows are deliberately absent. A pending authorisation
 -- carries no `_id`, no value date and no posting amount — nothing that
@@ -208,7 +208,7 @@ CREATE TABLE card_statements (
     account_external_id      TEXT    NOT NULL,
     invoice_external_id      TEXT    NOT NULL,
     period_end               INTEGER NOT NULL,
-    file_path                TEXT    NOT NULL,   -- relative to bronze root
+    file_path                TEXT    NOT NULL,   -- absolute path on disk at load time
     size_bytes               INTEGER NOT NULL,
     snapshot_at              INTEGER NOT NULL
 );

@@ -487,7 +487,7 @@ optionally narrowed to one card with `creditCardIds`.
 
 | Field | What it is |
 | --- | --- |
-| `_id` | **the row identity.** An opaque ~65-char token, unique per row and stable across fetches: where overlapping windows returned the same row twice, every repeat agreed field for field. Ids share no prefix, so unlike the account tokens they need no hashing to be told apart |
+| `_id` | **a per-session handle, not a key.** An opaque ~65-char token, re-minted at every login: two dumps a day apart shared not one id. Within a single session it is stable and distinguishes rows, which is all the paging needs; the silver row key is minted from row content instead (`card_parsers.py`) |
 | `transactionNr` | **not an id** — a one- to three-digit sequence number that repeats heavily across rows. It reads as a position within a statement, not a key. Keying on it would collapse most of the ledger into a hundred rows |
 | `transactionDate` / `valueDate` | purchase timestamp / booking date |
 | `postingAmount` / `originalAmount` | `{amount, currency}` each — equal on a domestic row, different on a foreign-currency one |
@@ -642,12 +642,13 @@ no PSN twin at all.
 
 Four decisions of record:
 
-- **The key is the API's `_id`.** Not `transactionNr` (§5.3), and not a
-  synthesised content hash either: the chase collector derives ids
-  because its source offers none that survives both export formats,
-  while here the provider hands over one that is unique per row and
-  stable across fetches. A re-download therefore UPSERTs, and no
-  occurrence index is needed.
+- **The key is a content id, like chase's.** Not `transactionNr` (§5.3),
+  and not the API's `_id` either: that is re-minted at every login, so
+  keying on it made a re-download append a second copy of the ledger
+  rather than UPSERT it (migration 0008). The key is `card:` plus a hash
+  of the row's own facts — card, transaction and value dates, both
+  amounts and currencies, merchant — with an occurrence index, so two
+  identical purchases on one day stay two spends.
 - **`RESERVED` rows are counted, not stored and not summed.** They carry
   nothing that could key them, so the ledger keeps only what has posted.
   Their magnitude comes from the roster — each card's

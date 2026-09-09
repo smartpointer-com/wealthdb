@@ -265,13 +265,17 @@ below. (No values reproduced here — PII.)
   statement (parsed by `load`) or a tax document (K-1 / 1042-S / 1099) is
   restatement-prone under its stable doc id, so it is **always** re-fetched and
   byte-compared — an unchanged copy is hardlinked to reclaim disk, a re-issue
-  keeps its fresh bytes; an executed-once archival notice/report (quarterly &
-  annual financials, capital-call & distribution notices) is immutable and
-  unparsed, so an identical copy from a prior complete run is **hardlinked in**
-  and the fetch skipped (any hardlink error falls through to a real fetch); any
-  other/unknown `document_type` is fetch-verified (the safe default). Because the
-  statement keyword mirrors `load`'s own `apital account` match, nothing `load`
-  parses can ever fall to link-mode. A hardlink is a real in-run file, so run
+  keeps its fresh bytes. Capital-call and distribution notices are fetch-verified
+  for the same reason — `load` parses them for the due date and the amount. Only
+  an executed-once archival report nobody parses (quarterly & annual financials)
+  is immutable, so an identical copy from a prior complete run is **hardlinked
+  in** and the fetch skipped, provided that copy still passes
+  `docdedup.is_pdf` — link mode is the one mode that never re-fetches, so a
+  wrong copy would otherwise be carried forward for ever. Any hardlink error
+  falls through to a real fetch; any other/unknown `document_type` is
+  fetch-verified (the safe default). The classifier is fetch-verify-first and
+  its statement keywords are a case-folded superset of every trigger `load`
+  parses, so nothing `load` parses can fall to link-mode. A hardlink is a real in-run file, so run
   dirs stay self-contained and the loader is unchanged; `--documents-force`
   bypasses the cross-run index (re-fetch everything).
 

@@ -813,7 +813,8 @@ def _insert_transaction(conn, account_external_id: str, tx: dict) -> None:
 # Which card column each export is authoritative for. The CSV alone carries
 # the transaction date, the provider category and the 5-way `Type`; the QFX
 # alone carries the un-mangled descriptor (the CSV replaces a descriptor's
-# commas with spaces) — see `merge_card_transactions`.
+# commas with spaces) and `source`, which names the export a row was read
+# from and so appears in no CSV set — see `merge_card_transactions`.
 _CARD_CSV_COLUMNS = ("category", "txn_date", "kind")
 _CARD_QFX_COLUMNS = ("merchant", "description", "source")
 

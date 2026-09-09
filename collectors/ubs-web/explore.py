@@ -11,7 +11,7 @@ before they can be automated, and a walk a human improvises reaches pages no
 scripted one would think to visit.
 
 The harness **never navigates and never clicks**. It opens the login entry
-point once, and from there every action is the operator's. That is the whole
+point once, and every action from there is driven by hand. That is the whole
 safety model: a recorder cannot stray onto a payment form or a card-management
 control, because it issues no interaction at all. What is off limits is off
 limits to the *operator*, and CLAUDE.md §1 lists it.
@@ -102,7 +102,7 @@ log = logging.getLogger("ubs-web.explore")
 # Every UBS host the session can legitimately touch: the numbered
 # e-banking front ends, the auth gateway, and the public secure.ubs.com
 # pages the SPA links out to. Used to decide which frames are worth a DOM
-# snapshot — never to restrict what the operator may open.
+# snapshot — never to restrict what may be opened.
 UBS_HOST_RE = re.compile(r'(^|\.)ubs\.com$', re.I)
 
 # Console-message prefix the init script tags its events with, so page
@@ -382,7 +382,7 @@ def capture_dom_snapshot(context, dom_dir: Path, seq: int,
                 # input whatever was typed into it — UBS's own login has
                 # none (contract number + Access App QR, see landmarks
                 # TEMPLATE_CONTRACT_NR / TEMPLATE_QR), so here it is
-                # defence in depth for a password-type field the operator
+                # defence in depth for a password-type field the session
                 # meets by hand on a screen the harness never scripts.
                 frames.append(debugcap.scrub_dom(frame.content(), redact))
             except Exception:  # noqa: BLE001 — a frame mid-navigation
@@ -411,7 +411,7 @@ def capture_dom_snapshot(context, dom_dir: Path, seq: int,
 def prefill_contract(page, contract: str, filled: set) -> bool:
     """Fill the contract-number field once per page, and never submit.
 
-    Mirrors what login.py fills, so the operator only has to scan the QR.
+    Mirrors what login.py fills, so only the QR is left to scan.
     The value is written through Playwright rather than the page's own JS
     context, and read back to confirm; a field already carrying something
     is left alone, so a hand-typed value is never fought over.

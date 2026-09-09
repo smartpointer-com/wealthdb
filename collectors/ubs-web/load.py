@@ -801,7 +801,7 @@ def _insert_card_accounts(conn: sqlite3.Connection, snapshot_at: int,
 
 def _insert_card_transactions(conn: sqlite3.Connection, snapshot_at: int,
                               rows: list[dict]) -> int:
-    """UPSERT the ledger, keyed on the provider's own row id.
+    """UPSERT the ledger, keyed on the content id card_parsers mints.
 
     `snapshot_at` is deliberately left out of the update clause: the
     column means "the dump that first captured this row", and a later

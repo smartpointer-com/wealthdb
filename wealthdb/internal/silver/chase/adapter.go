@@ -31,9 +31,9 @@
 //   - TRANSACTIONS: the whole ledger of both products. See transactions.go for
 //     the sign treatment and the kind mapping.
 //
-// Requires chase silver schema 3 (cards and their statement coverage flag).
-// `load` applies the migrations in place, so any silver a load has touched is
-// at that version.
+// Requires chase silver schema 3 or later (cards and their statement coverage
+// flag). `load` applies the migrations in place, so any silver a load has
+// touched is at the current version.
 package chase
 
 import (
