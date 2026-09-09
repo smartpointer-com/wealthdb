@@ -140,8 +140,8 @@ SELECT transaction_external_id, account_external_id, counterparty, description_k
 		if err := rows.Scan(&txID, &acct, &counterparty, &kindStr, &payload); err != nil {
 			return nil, fmt.Errorf("ubs-web transactionTextByKey scan: %w", err)
 		}
-		p, decoded := decodeWebTxPayload(payload)
-		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, !decoded || isPDFCashBackfill(p))
+		p, pdfBackfill := decodeWebTxEra(payload)
+		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
 		out[webTxTextKey{account: acct, txnNo: txID}] = text
 	}
 	return out, rows.Err()
@@ -328,8 +328,8 @@ SELECT transaction_external_id, account_external_id, value_date,
 			exports[k] = append(exports[k], emitted)
 			continue
 		}
-		p, decoded := decodeWebTxPayload(payload)
-		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, !decoded || isPDFCashBackfill(p))
+		p, pdfBackfill := decodeWebTxEra(payload)
+		text, _, _ := projectWebTxText(counterparty.String, kindStr.String, p, pdfBackfill)
 		statements[k] = append(statements[k], statementRow{key: emitted, text: text})
 	}
 	if err := rows.Err(); err != nil {

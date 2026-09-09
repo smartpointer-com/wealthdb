@@ -467,8 +467,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// uses stay on the same side: the summary drop needs a summary
 		// line the zero payload does not carry, and the booking type
 		// travels whole instead of being split into memo + type.
-		p, decoded := decodeWebTxPayload(payload)
-		pdfBackfill := !decoded || isPDFCashBackfill(p)
+		p, pdfBackfill := decodeWebTxEra(payload)
 		if pdfBackfill && net.IsZero() && isStatementSummary(p) {
 			summaries++
 			continue
@@ -1371,6 +1370,18 @@ func decodeWebTxPayload(payload string) (webTxPayload, bool) {
 		return webTxPayload{}, false
 	}
 	return p, true
+}
+
+// decodeWebTxEra decodes a row's payload and reports whether it is to be
+// read as a PDF backfill. It pairs the two questions every caller asks
+// together, because the conservative rule that joins them —
+// AN UNDECODABLE PAYLOAD IS TREATED AS A BACKFILL — belongs in one
+// place: re-spelled per call site it is one edit away from a caller
+// that decodes, ignores the failure, and takes the permissive branch on
+// the classifier that keeps owner capital from being fabricated.
+func decodeWebTxEra(payload string) (webTxPayload, bool) {
+	p, decoded := decodeWebTxPayload(payload)
+	return p, !decoded || isPDFCashBackfill(p)
 }
 
 // isPDFCashBackfill reports whether a transaction came from the

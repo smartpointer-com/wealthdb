@@ -336,6 +336,44 @@ func TestSnapshots(t *testing.T) {
 
 // A card projects as a liability: AccountKind 'card', and every balance
 // NEGATED out of silver's provider-verbatim owed-positive convention.
+// The statement-balance source is product-guarded to cards, and nothing
+// else enforces that: a deposit account's historic marks come from its
+// export's own running-balance column, at day density, so a statement
+// closing on top of them would be a second mark for the same day from a
+// coarser source.
+//
+// The period is chosen to leave the guard as the only thing suppressing
+// the row: acct-1's ledger runs 2026-01-10..2026-02-15, so a period in
+// 2025-10 contains no balance-carrying deposit transaction and the
+// NOT EXISTS clause admits it. Delete the product filter and this fails.
+func TestStatementBalancesAreCardOnly(t *testing.T) {
+	path, db := newFixture(t)
+	seed(t, db)
+	seedCard(t, db)
+	exec(t, db, insertStmtBalance,
+		"acct-1", day(2025, 10, 1), day(2025, 10, 31), 0.00, 999.00, loadUnix, 1)
+
+	sb, _ := project(t, path)
+
+	for _, cb := range sb.CashBalances {
+		if cb.AccountExternalID == "acct-1" && cb.SnapshotAt == day(2025, 10, 31) {
+			t.Errorf("a deposit account's statement closing was emitted (%s); "+
+				"the statement-balance source is card-only", cb.Amount.String())
+		}
+	}
+	// The card's own row over the same period still lands, so the test
+	// fails for the guard rather than for an empty projection.
+	var sawCard bool
+	for _, cb := range sb.CashBalances {
+		if cb.AccountExternalID == "card-1" && cb.SnapshotAt == day(2025, 10, 31) {
+			sawCard = true
+		}
+	}
+	if !sawCard {
+		t.Error("the card's 2025-10 closing is missing; the fixture no longer bites")
+	}
+}
+
 func TestCardSnapshots(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)

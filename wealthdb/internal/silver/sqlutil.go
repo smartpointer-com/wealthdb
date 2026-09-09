@@ -174,3 +174,92 @@ func DatePtrFromNullUnix(n sql.NullInt64) *time.Time {
 	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 	return &d
 }
+
+// The load clock, shared by every collector whose silver records its
+// dumps in a `dump_runs` table.
+//
+// Those sources have no change feed of their own: a dump is a whole
+// re-read of what the source will show, so the only honest trigger is
+// "a dump was loaded since the last watermark", and the only honest
+// response is to re-emit the full history and let gold's deleteWindow
+// over [Start,End] make that idempotent. Four adapters had the same
+// three queries and the same two methods written out; what genuinely
+// differs between them is which tables bound the span, so that arrives
+// as `spanExtrema` — a query yielding (MIN, MAX) over every date the
+// source's projection touches. `kind` names the source in errors.
+
+// LoadClockStatus reports the content ranges and pins LatestChangeNumber
+// to MAX(dump_runs.snapshot_at). Each bronze dump loaded bumps it and a
+// subsequent `wealthdb load` re-emits; an idle reload is a no-op.
+func LoadClockStatus(ctx context.Context, db *sql.DB, kind, spanExtrema string) (canonical.Status, error) {
+	s := canonical.Status{
+		OldestSnapshotAt:    -1,
+		LatestSnapshotAt:    -1,
+		OldestTransactionAt: -1,
+		LatestTransactionAt: -1,
+		LatestChangeNumber:  -1,
+	}
+
+	var oldS, newS sql.NullInt64
+	if err := db.QueryRowContext(ctx, spanExtrema).Scan(&oldS, &newS); err != nil {
+		return s, fmt.Errorf("%s Status snapshot: %w", kind, err)
+	}
+	if oldS.Valid {
+		s.OldestSnapshotAt = oldS.Int64
+	}
+	if newS.Valid {
+		s.LatestSnapshotAt = newS.Int64
+	}
+
+	var oldT, newT sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT MIN(posted_at), MAX(posted_at) FROM transactions`).Scan(&oldT, &newT); err != nil {
+		return s, fmt.Errorf("%s Status transactions: %w", kind, err)
+	}
+	if oldT.Valid {
+		s.OldestTransactionAt = oldT.Int64
+	}
+	if newT.Valid {
+		s.LatestTransactionAt = newT.Int64
+	}
+
+	var latestLoad sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT MAX(snapshot_at) FROM dump_runs`).Scan(&latestLoad); err != nil {
+		return s, fmt.Errorf("%s Status load: %w", kind, err)
+	}
+	if latestLoad.Valid {
+		s.LatestChangeNumber = latestLoad.Int64
+	}
+	return s, nil
+}
+
+// LoadClockChangeWindow triggers on a new load — any dump_run past
+// `since` — and then re-emits the FULL history: Start/End span every
+// date spanExtrema covers, so gold's deleteWindow over [Start,End]
+// makes the re-emit idempotent. NewChangeNumber advances to the latest
+// load so an idle reload does not re-trigger.
+func LoadClockChangeWindow(ctx context.Context, db *sql.DB, kind, spanExtrema string, since int64) (canonical.Window, error) {
+	w := canonical.Window{NewChangeNumber: since}
+
+	var latestLoad sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT MAX(snapshot_at) FROM dump_runs`).Scan(&latestLoad); err != nil {
+		return w, fmt.Errorf("%s ChangeWindow load: %w", kind, err)
+	}
+	if !latestLoad.Valid || latestLoad.Int64 <= since {
+		return w, nil // no new load since the watermark
+	}
+
+	var start, end sql.NullInt64
+	if err := db.QueryRowContext(ctx, spanExtrema).Scan(&start, &end); err != nil {
+		return w, fmt.Errorf("%s ChangeWindow span: %w", kind, err)
+	}
+	w.NewChangeNumber = latestLoad.Int64
+	if start.Valid && end.Valid {
+		w.Start = start.Int64
+		w.End = end.Int64
+		w.HasChanges = true
+	}
+	return w, nil
+}

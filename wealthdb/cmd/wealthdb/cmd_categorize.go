@@ -316,56 +316,21 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	}
 	dbOpen = false
 
-	// Verdicts are stored as each batch completes, not when the run
-	// ends: a run that dies at batch 30 of 50 has kept 29 batches'
-	// worth of paid answers, and a re-run asks only about the rest,
-	// because the backlog excludes every signature the store answers.
-	// A batch whose store fails keeps its verdicts in memory and the
-	// next flush writes them — an answer already paid for is never
-	// dropped for a transient open failure.
-	stored, completed, storeTotal := 0, 0, 0
-	var pending []categorization
-	pendingBatches := 0
-	flush := func() error {
-		if pendingBatches == 0 {
-			return nil
+	store := &verdictStore{warn: stderr, write: func(rows []categorization) (int, error) {
+		wdb, err := gold.ReopenReadWrite(cfg.GoldDB)
+		if err != nil {
+			return 0, err
 		}
-		if len(pending) > 0 {
-			wdb, err := gold.ReopenReadWrite(cfg.GoldDB)
-			if err != nil {
-				return err
-			}
-			defer wdb.Close()
-			total, err := persistCategorizations(ctx, wdb, pending, time.Now().Unix(), modelCfg.Name)
-			if err != nil {
-				return err
-			}
-			stored += len(pending)
-			storeTotal = total
-			pending = nil
-		}
-		completed += pendingBatches
-		pendingBatches = 0
-		return nil
-	}
-	sink := func(o batchOutcome) error {
-		if *dryRun {
-			return nil
-		}
-		pending = append(pending, o.Accepted...)
-		pendingBatches++
-		if err := flush(); err != nil {
-			// Held, not lost: the verdicts stay in `pending` and the
-			// end-of-run retryFlush writes them, whether or not another
-			// batch follows.
-			fmt.Fprintf(stderr, "categorize: %d verdict(s) held after a failed store (%s); "+
-				"they are retried before the run ends\n", len(pending), err.Error())
-		}
-		return nil
+		defer wdb.Close()
+		return persistCategorizations(ctx, wdb, rows, time.Now().Unix(), modelCfg.Name)
+	}}
+	sink := store.accept
+	if *dryRun {
+		sink = func(batchOutcome) error { return nil }
 	}
 	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, modelCaller(modelCfg), batches, anchors,
 		level, *maxAttempts, *maxAnchors, *showPrompt, sink, stdout, stderr)
-	flushErr := retryFlush(ctx, flush)
+	flushErr := retryFlush(ctx, store.flush)
 	if runErr != nil {
 		if *dryRun {
 			fmt.Fprintln(stdout, "categorize: stopped; nothing stored (dry run)")
@@ -376,16 +341,16 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 			// line below only counts what did reach gold.
 			if flushErr != nil {
 				fmt.Fprintf(stderr, "categorize: %d verdict(s) could not be stored: %v\n",
-					len(pending), flushErr)
+					len(store.pending), flushErr)
 			}
 			fmt.Fprintf(stdout, "categorize: stopped; %d verdict(s) from %d completed batch(es) are already stored — re-run to continue with the rest\n",
-				stored, completed)
+				store.stored, store.completed)
 		}
 		return runErr
 	}
 	if flushErr != nil {
 		return fmt.Errorf("categorize: %d verdict(s) could not be stored; re-run to ask for them again: %w",
-			len(pending), flushErr)
+			len(store.pending), flushErr)
 	}
 	sort.Slice(valid, func(i, j int) bool { return valid[i].Signature < valid[j].Signature })
 
@@ -399,12 +364,12 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		}
 		return nil
 	}
-	if stored == 0 {
+	if store.stored == 0 {
 		fmt.Fprintln(stdout, "categorize: no valid verdicts to persist")
 		return nil
 	}
 	fmt.Fprintf(stdout, "categorize: %d verdict(s) upserted over %d batch(es); total spend_merchant_categories rows now %d\n",
-		stored, len(batches), storeTotal)
+		store.stored, len(batches), store.total)
 	return nil
 }
 
@@ -1254,6 +1219,62 @@ func formatEpochDay(day int64) string {
 }
 
 // ---- persistence -------------------------------------------------------------
+
+// verdictStore is a run's write path. Verdicts reach gold as each batch
+// completes, not when the run ends: a run that dies at batch 30 of 50 has
+// kept 29 batches' worth of paid answers, and a re-run asks only about the
+// rest, because the backlog excludes every signature the store answers.
+//
+// A write that fails holds its verdicts rather than dropping them — an
+// answer already paid for is never lost to a transient open failure — so
+// the next flush, or the end-of-run retryFlush, writes them.
+type verdictStore struct {
+	// write persists one flush's verdicts and reports the merchant
+	// store's row count afterwards. A field, not a call to
+	// persistCategorizations, so the bookkeeping above it is exercisable
+	// without a gold handle.
+	write func([]categorization) (int, error)
+	warn  io.Writer
+
+	pending   []categorization // accepted, not yet written
+	held      int              // batches accepted, not yet written
+	stored    int              // verdicts that reached gold
+	completed int              // batches whose verdicts reached gold
+	total     int              // merchant-store rows after the last write
+}
+
+// accept is the batchSink: it takes one batch's verdicts and writes
+// everything outstanding. A failed write is reported and swallowed, since
+// the run's remaining batches are still worth asking for.
+func (s *verdictStore) accept(o batchOutcome) error {
+	s.pending = append(s.pending, o.Accepted...)
+	s.held++
+	if err := s.flush(); err != nil {
+		fmt.Fprintf(s.warn, "categorize: %d verdict(s) held after a failed store (%s); "+
+			"they are retried before the run ends\n", len(s.pending), err.Error())
+	}
+	return nil
+}
+
+// flush writes the outstanding verdicts. A batch that accepted nothing
+// still completes — there is nothing to write and nothing to hold.
+func (s *verdictStore) flush() error {
+	if s.held == 0 {
+		return nil
+	}
+	if len(s.pending) > 0 {
+		total, err := s.write(s.pending)
+		if err != nil {
+			return err
+		}
+		s.stored += len(s.pending)
+		s.total = total
+		s.pending = nil
+	}
+	s.completed += s.held
+	s.held = 0
+	return nil
+}
 
 // persistCategorizations upserts the verdicts into the global merchant
 // store and returns the table's row count afterwards. The store is
