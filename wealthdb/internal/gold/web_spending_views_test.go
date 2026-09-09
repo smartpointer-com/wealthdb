@@ -401,3 +401,43 @@ func TestMigration0049DDLIsRerunnable(t *testing.T) {
 		}
 	}
 }
+
+// TestWebSpendingLabelsAnUnnamedAccount pins the fallback. Several
+// adapters leave display_name NULL deliberately — UBS cash accounts are
+// the clearest — and a view that groups by the label must not collapse
+// every one of them into a single "null" that leads the chart.
+func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingFixture(t, db, ctx)
+	// Two accounts with no name of their own, and one with a name.
+	if _, err := db.ExecContext(ctx, `
+        UPDATE accounts SET display_name = NULL WHERE account_external_id = 'CASH1';
+    `); err != nil {
+		t.Fatalf("unname CASH1: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, `
+        SELECT DISTINCT account_external_id, display_name FROM web_spending
+         ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("web_spending: %v", err)
+	}
+	defer rows.Close()
+	labels := map[string]string{}
+	for rows.Next() {
+		var id string
+		var label sql.NullString
+		if err := rows.Scan(&id, &label); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if !label.Valid || label.String == "" {
+			t.Errorf("account %s has no label; the view must fall back to the id", id)
+		}
+		labels[id] = label.String
+	}
+	if got, ok := labels["CASH1"]; ok && got != "CASH1" {
+		t.Errorf("unnamed account labelled %q, want its own id", got)
+	}
+	if len(labels) < 2 {
+		t.Fatalf("fixture produced %d account(s); the collapse this guards against needs at least 2", len(labels))
+	}
+}
