@@ -979,15 +979,21 @@ const wordMinLetters = 3
 //
 // It is a further refusal at candidacy beside TransferShaped, and a
 // narrower claim: not "this is a transfer" but "there is no word here
-// at all". It says nothing about WHICH words are merchants. A token
-// mixing letters and digits is a code, and an all-letter code cannot
-// be told from a word — that one goes to the model, where the
-// gauntlet's verbatim-echo check remains the backstop.
+// at all". It says nothing about WHICH words are merchants. An
+// all-letter code cannot be told from a word — that one goes to the
+// model, where the gauntlet's verbatim-echo check remains the
+// backstop.
+//
+// A brand with a reference number glued to it counts as a word too,
+// which is a LOOSER test than the one Normalize keys on — see
+// isBrandWithReference. The two predicates want different things: a
+// signature must not be keyed on a booking code, but a signature that
+// merely CONTAINS one alongside a name is still worth asking about.
 //
 // The argument may be either a raw narrative or a Normalize'd
 // signature; the same folding is applied internally either way.
 func Uninformative(s string) bool {
-	return !hasWord(tokenize(s))
+	return !hasNameable(tokenize(s))
 }
 
 // FilingOnly reports whether a signature is nothing but the provider's
@@ -1009,6 +1015,56 @@ func FilingOnly(signature, providerCategory string) bool {
 func hasWord(tokens []string) bool {
 	for _, tok := range tokens {
 		if isWord(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNameable reports whether any token is something a model could
+// name: a word, or a brand carrying a reference number.
+func hasNameable(tokens []string) bool {
+	for _, tok := range tokens {
+		if isWord(tok) || isBrandWithReference(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// brandMinLetters is the shortest leading letter run that reads as a
+// NAME rather than a code once digits follow it. It is higher than
+// wordMinLetters on purpose: an all-letter token of three characters
+// is plausibly an abbreviated name and isWord admits it, but three
+// letters followed by digits is the shape of a booking code — the
+// mandate notice a Swiss direct-debit narrative opens with is exactly
+// that, three letters then a digit and a letter, and admitting one
+// would key a signature on the notice instead of on the creditor
+// behind it.
+const brandMinLetters = 5
+
+// isBrandWithReference reports whether a token opens with a long
+// enough letter run and then carries a digit — a brand with its order
+// or reference number glued on, which is how a card descriptor
+// routinely reaches the key as ONE token: a meal-kit delivery, an
+// online course and an electronics order all arrive as
+// `<BRAND><digits>` beside a two-letter state code.
+//
+// isWord refuses those, because the token is not all letters, and the
+// refusal it feeds is about WASTE rather than privacy: the cost of
+// being wrong here is one model call on a code, while the cost of the
+// old reading was a merchant the model could have named in one look
+// sitting in the catch-all instead.
+func isBrandWithReference(tok string) bool {
+	n := 0
+	for n < len(tok) && tok[n] >= 'A' && tok[n] <= 'Z' {
+		n++
+	}
+	if n < brandMinLetters || n == len(tok) {
+		return false
+	}
+	for i := n; i < len(tok); i++ {
+		if tok[i] >= '0' && tok[i] <= '9' {
 			return true
 		}
 	}

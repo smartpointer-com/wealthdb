@@ -854,6 +854,18 @@ func TestUninformative(t *testing.T) {
 		{"a non-ASCII merchant name", "Café Grünhafen", false},
 		{"a three-letter abbreviation is a word", "NWH 12", false},
 		{"an all-letter code cannot be told from a word", "NTRF", false},
+		// A card descriptor fuses the brand to its order number and
+		// reaches the key as one token. The brand is still a name, and
+		// refusing it left a merchant the model could place in one
+		// look sitting in the catch-all. Every value is invented.
+		{"a brand with an order number glued on", "EXAMPLEFRESH1234567890 NY", false},
+		{"a brand with a reference and a phone", "EXAMPLESHOP123456789012 888EXAMPLE MN", false},
+		// The boundary this must not cross: a direct-debit mandate
+		// notice is three or four letters and a digit, and keying a
+		// signature on one hides the creditor behind it.
+		{"a mandate notice is a code, not a brand", "CRD1W", true},
+		{"a short letter run and a long number is still a code", "ZV0123456789", true},
+		{"letters alone with no reference are judged by isWord", "EXAMPLES", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
