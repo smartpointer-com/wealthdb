@@ -779,3 +779,19 @@ def test_blanking_the_passcode_leaves_every_other_input_alone():
     markup = "<input data-testid='eliloUserID' type='text' value='keepme'>"
     assert login.blank_otp(markup) == markup
     assert login.blank_otp("") == ""
+
+
+def test_prefill_asks_explore_to_overwrite(monkeypatch):
+    """`_prefill` exists to pass overwrite=True: on a trusted device the
+    form arrives carrying a MASKED user id, which submits successfully
+    only while the trust holds (DESIGN.md §G). A dropped keyword here is
+    silent — the sign-in keeps working until the device is forgotten."""
+    seen = {}
+
+    def _spy(page, username, password, filled, *, overwrite=False):
+        seen["overwrite"] = overwrite
+        return True
+
+    monkeypatch.setattr(login, "_maybe_prefill_login", _spy)
+    assert login._prefill(object(), "EXAMPLEUSER", "EXAMPLEPASS")
+    assert seen["overwrite"] is True

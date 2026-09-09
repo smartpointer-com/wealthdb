@@ -775,6 +775,40 @@ def test_download_card_statements_leaves_a_failed_card_uncovered(monkeypatch,
     assert covered == 1
 
 
+def test_download_card_statements_skips_a_card_the_menu_lists_without_them(
+        monkeypatch, tmp_path):
+    # The documents menu is the only thing that says which cards carry
+    # statements at all. A card it lists without them is covered — there is
+    # nothing to fetch — and must not be paged; a card it does list is paged
+    # as usual, so the filter cannot quietly skip the whole roster.
+    _stub_mdsui(monkeypatch)
+    monkeypatch.setattr(download, "_wait_visible", lambda *_a, **_k: True)
+    paged = []
+    monkeypatch.setattr(download, "_save_statements",
+                        lambda _page, out_dir, *_a, **_k: (paged.append(
+                            out_dir.name), (2, 0))[1])
+    menu = {"items": [
+        {"accountId": 900003, "type": "BAC", "summaryType": "CARD",
+         "docItems": ["NOTICES"]},
+        {"accountId": 900005, "type": "BAC", "summaryType": "CARD",
+         "docItems": ["STATEMENTS"]},
+    ]}
+    cards = [{"account_external_id": "900003", "mask": "…9012"},
+             {"account_external_id": "900005", "mask": "…7788"}]
+    saved, covered = download._download_card_statements(
+        _StubPage(), cards, [menu], tmp_path, None, date(2026, 8, 11), 1000)
+    assert paged == ["900005"]
+    assert (saved, covered) == (2, 2)
+
+    # No menu captured at all: unknown filters nothing, so every card is
+    # paged rather than every card being skipped on missing evidence.
+    paged.clear()
+    saved, covered = download._download_card_statements(
+        _StubPage(), cards, [], tmp_path, None, date(2026, 8, 11), 1000)
+    assert paged == ["900003", "900005"]
+    assert (saved, covered) == (4, 2)
+
+
 # ---- the export form's account-picker guard -----------------------------
 
 PICKER = download.SEL_ACCOUNT_SELECT

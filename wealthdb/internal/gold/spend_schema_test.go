@@ -338,6 +338,68 @@ func TestMigration0052DDLIsRerunnable(t *testing.T) {
 	}
 }
 
+// TestMigration0055DDLIsRerunnable holds the scope-projection re-issue to
+// the replay bar. 0055 re-issues two macros, so a replay that dropped one
+// would leave the enrichment pass with no population to read.
+func TestMigration0055DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingFixture(t, db, ctx)
+
+	rerunMigrationDDL(t, db, ctx, "0055_spend_rule_scope.sql")
+
+	for _, q := range []string{
+		"SELECT COUNT(*) FROM spend_scoped_accounts()",
+		"SELECT COUNT(*) FROM spend_enrichment_population(0, 9999999999)",
+	} {
+		var n int
+		if err := db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+			t.Errorf("%s after re-run: %v", q, err)
+		}
+	}
+
+	// The population projects the columns a scoped rule narrows by; a
+	// re-issue that dropped one would fail the rule tier, not the query.
+	rows, err := db.QueryContext(ctx,
+		"SELECT * FROM spend_enrichment_population(0, 9999999999) LIMIT 0")
+	if err != nil {
+		t.Fatalf("population columns: %v", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("population columns: %v", err)
+	}
+	have := map[string]bool{}
+	for _, c := range cols {
+		have[c] = true
+	}
+	for _, c := range []string{"silver_source_id", "portfolio_external_id",
+		"account_external_id", "occurred_at"} {
+		if !have[c] {
+			t.Errorf("population is missing %q, which a rule scope narrows by", c)
+		}
+	}
+}
+
+// TestMigration0056DDLIsRerunnable holds the extension-category seed to the
+// replay bar. Its INSERT is OR REPLACE for exactly this reason, so a second
+// application must neither fail nor duplicate the row.
+func TestMigration0056DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+
+	rerunMigrationDDL(t, db, ctx, "0056_spend_digital_services.sql")
+
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = ?`,
+		canonical.SpendDetailedDigitalServices).Scan(&n); err != nil {
+		t.Fatalf("count the seeded row: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("got %d rows for the extension category after a re-run, want 1", n)
+	}
+}
+
 // TestMigration0054DDLIsRerunnable holds the signature-fallback
 // re-issue to the same bar and pins what it publishes: a line no store
 // row covers falls back to its own signature, a line the store named

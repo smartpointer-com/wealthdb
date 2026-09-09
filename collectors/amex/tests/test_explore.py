@@ -519,6 +519,20 @@ def test_prefill_leaves_hand_typed_values_alone():
     assert pwd.value == PASSWORD
 
 
+def test_prefill_overwrites_an_existing_value_when_told_to():
+    """The trusted-device shape (DESIGN.md §G): the form arrives already
+    carrying a MASKED user id, which submits successfully only while the
+    device trust holds. login.py passes overwrite=True so the real
+    username replaces it — the default would leave the mask in place and
+    the sign-in would work until it silently did not."""
+    user = StubField(value="***masked***")
+    pwd = StubField()
+    page = StubPage(amex_frame(user=user, pwd=pwd))
+    assert explore._maybe_prefill_login(page, USERNAME, PASSWORD, set(),
+                                        overwrite=True)
+    assert user.value == USERNAME
+
+
 def test_prefill_retries_once_then_gives_up_without_refighting():
     # A field that rejects programmatic fills: fill → verify-fail →
     # clear + refill → verify-fail → marked done (so later polls never

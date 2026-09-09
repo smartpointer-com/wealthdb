@@ -249,3 +249,135 @@ def test_the_residue_is_what_the_earliest_notice_says_preceded_it():
     notice = load.parse_notice_text(_CALL_NOTICE)
     assert load._residue_from_cumulative(notice) == 156250.0
     assert load._residue_from_cumulative({"amount": 1.0, "cumulative": None}) is None
+
+
+# ============================================================
+# the fund ledger: notices reconciled against statements
+# ============================================================
+
+def _fund_docs(tmp_path: Path, rows: list[dict]) -> Path:
+    """A documents dir holding an index and one (empty) PDF per row. The
+    parsers are stubbed per test, so the bytes never matter — only that the
+    file the index names is on disk, which is what _fund_cash_flows checks."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.json").write_text(json.dumps({"results": rows}))
+    for row in rows:
+        (docs / f"doc_{row['id']}.pdf").write_bytes(b"")
+    return docs
+
+
+def _stub_parsers(monkeypatch, statements: dict, notices: dict):
+    """Keyed by document id: `statements` yields (contributions, distributions)
+    inception-to-date, `notices` yields a parsed notice."""
+    monkeypatch.setattr(load, "_parse_statement_flows",
+                        lambda pdf: statements[pdf.stem.removeprefix("doc_")])
+    monkeypatch.setattr(load, "_parse_notice",
+                        lambda pdf: notices.get(pdf.stem.removeprefix("doc_")))
+
+
+def _ledger(conn) -> list[tuple]:
+    return conn.execute(
+        "SELECT cash_flow_external_id, kind, flow_date, amount FROM cash_flows "
+        "ORDER BY kind, cash_flow_external_id").fetchall()
+
+
+_STMT_ROW = {"id": "s1", "document_type": "Capital account statement",
+             "document_date": "12/31/2098"}
+_CALL_A = {"id": "n1", "document_type": "Capital call notice"}
+_CALL_B = {"id": "n2", "document_type": "Capital call notice"}
+
+
+def _two_call_notices() -> dict:
+    """The `_CALL_NOTICE` fixture above, already parsed, plus a second call
+    three months later: 61250 + 93750 noticed, and 156250 the earliest one
+    says preceded it."""
+    return {
+        "n1": {"kind": "capital_call", "date": "06/15/2098",
+               "issued": "05/20/2098", "amount": 61250.0, "cumulative": 217500.0},
+        "n2": {"kind": "capital_call", "date": "09/16/2098",
+               "issued": "08/20/2098", "amount": 93750.0, "cumulative": 311250.0},
+    }
+
+
+def test_fund_notices_win_and_the_remainder_is_one_residue_row(migrated, tmp_path,
+                                                               monkeypatch):
+    # Per kind, the better source wins: calls come from the notices, which
+    # state the day the money was due, while the statements' inception-to-date
+    # total is only reconciled against them. What the notices do not account
+    # for is ONE residue row — everything called before Carta shared anything
+    # — dated at the earliest notice's issue date, the last day it is known to
+    # have been called. Distributions have no notices here, so they fall back
+    # to statement differencing and keep the period-end date that implies.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 46250.0)}, _two_call_notices())
+
+    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000) == 4
+    assert _ledger(migrated) == [
+        ("call:42:notice:n1", "capital_call", "06/15/2098", 61250.0),
+        ("call:42:notice:n2", "capital_call", "09/16/2098", 93750.0),
+        # the fund's own figure (called post-call less the call), not the
+        # 126250 the statements imply, and dated at the notice's issue date
+        ("call:42:pre:n1", "capital_call", "05/20/2098", 156250.0),
+        ("dist:42:s1", "distribution", "12/31/2098", 46250.0),
+    ]
+    desc = migrated.execute(
+        "SELECT description FROM cash_flows WHERE cash_flow_external_id = "
+        "'call:42:pre:n1'").fetchone()[0]
+    assert "not itemised" in desc
+
+
+def test_fund_falls_back_to_statement_differencing_without_notices(migrated,
+                                                                   tmp_path,
+                                                                   monkeypatch):
+    # No notices at all: the statements are all there is, and each positive
+    # jump in the inception-to-date figure becomes one flow at the period end.
+    rows = [_STMT_ROW, {"id": "s2", "document_type": "Capital account statement",
+                        "document_date": "12/31/2099"}]
+    docs = _fund_docs(tmp_path, rows)
+    _stub_parsers(monkeypatch,
+                  {"s1": (281250.0, 0.0), "s2": (358750.0, 46250.0)}, {})
+
+    assert load._fund_cash_flows(migrated, 42, docs, 1_700_000_000) == 3
+    assert _ledger(migrated) == [
+        ("call:42:s1", "capital_call", "12/31/2098", 281250.0),
+        ("call:42:s2", "capital_call", "12/31/2099", 77500.0),
+        ("dist:42:s2", "distribution", "12/31/2099", 46250.0),
+    ]
+
+
+def test_fund_ledger_is_rebuilt_not_accumulated(migrated, tmp_path, monkeypatch):
+    # An earlier run whose notice copies were unreadable emitted
+    # statement-differenced calls under different ids. Left to accumulate,
+    # both shapes survive and the fund's called capital doubles — so the run
+    # clears its own two kinds first, and only those.
+    migrated.execute(
+        "INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, "
+        "snapshot_at, kind, currency, payload) VALUES "
+        "('call:42:s1', 42, 1, 'capital_call', 'USD', '{}'), "
+        "('exercise:42:c1', 42, 1, 'exercise', 'USD', '{}')")
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (281250.0, 0.0)}, _two_call_notices())
+
+    load._fund_cash_flows(migrated, 42, docs, 1_700_000_000)
+    ids = [r[0] for r in _ledger(migrated)]
+    assert "call:42:s1" not in ids                 # the superseded shape is gone
+    assert "exercise:42:c1" in ids                 # another kind is untouched
+    assert ids.count("call:42:pre:n1") == 1
+
+
+def test_fund_warns_when_the_two_sources_leave_capital_unaccounted(
+        migrated, tmp_path, monkeypatch, caplog):
+    # The notice's own running total wins over the differenced figure. Below
+    # it is the ordinary case of a notice issued since the last statement, and
+    # says nothing; above it means called capital neither source accounts for.
+    docs = _fund_docs(tmp_path, [_STMT_ROW, _CALL_A, _CALL_B])
+    _stub_parsers(monkeypatch, {"s1": (406250.0, 0.0)}, _two_call_notices())
+
+    with caplog.at_level("WARNING"):
+        load._fund_cash_flows(migrated, 42, docs, 1_700_000_000)
+    assert "accounted for by neither" in caplog.text
+    residue = migrated.execute(
+        "SELECT amount FROM cash_flows WHERE cash_flow_external_id = "
+        "'call:42:pre:n1'").fetchone()[0]
+    assert residue == 156250.0                     # the fund's figure, not 251250

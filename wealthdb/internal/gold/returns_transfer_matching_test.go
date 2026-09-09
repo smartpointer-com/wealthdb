@@ -406,3 +406,105 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 		t.Errorf("OnboardNone nonTransfer pre-debut pair must net: pairs=%d drops=%v", pairs, drops)
 	}
 }
+
+// TestMatchCrossTransfersHonoursOverrideRules pins TransferMatching.Rules —
+// the field that carries the holder's manual decisions from the same ledger
+// the spending pass reads — through the matcher. Without it the field could
+// be dropped on the floor and every test here would still pass.
+func TestMatchCrossTransfersHonoursOverrideRules(t *testing.T) {
+	mk := func() map[string]*accountData {
+		return map[string]*accountData{
+			acctKey("s1", "A"): {src: "s1", acct: "A"},
+			acctKey("s2", "B"): {src: "s2", acct: "B"},
+		}
+	}
+	// Selectors name a leg by day in Unix seconds; legs carry epoch days.
+	sel := func(src, acct string, day int64, amt float64) TransferOverrideSelector {
+		return TransferOverrideSelector{Source: src, Account: acct,
+			Day: day * SecondsPerDay, Amount: amt, Currency: "USD"}
+	}
+	debit := crossCandidate{src: "s1", acct: "A", txID: "out", day: 100, ccy: "USD", amt: -5000}
+	nearCredit := crossCandidate{src: "s2", acct: "B", txID: "in", day: 102, ccy: "USD", amt: 5000}
+	farCredit := crossCandidate{src: "s2", acct: "B", txID: "in", day: 130, ccy: "USD", amt: 5000}
+	linked := func(byKey map[string]*accountData) string {
+		return byKey[acctKey("s1", "A")].crossLinks["out"].txID
+	}
+
+	tm := func(rules ...TransferOverrideRule) *TransferMatching {
+		return &TransferMatching{WindowDays: 5, TolerancePct: 0.5, Rules: rules}
+	}
+
+	t.Run("no rules, the pair links", func(t *testing.T) {
+		byKey := mk()
+		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(), byKey)
+		if got := linked(byKey); got != "in" {
+			t.Fatalf("control: linked %q, want the ordinary match", got)
+		}
+	})
+
+	t.Run("unmatch forbids just that pairing", func(t *testing.T) {
+		byKey := mk()
+		b := sel("s2", "B", 102, 5000)
+		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
+			Verb: "unmatch", A: sel("s1", "A", 100, -5000), B: &b,
+		}), byKey)
+		if got := linked(byKey); got != "" {
+			t.Errorf("linked %q; the holder forbade this pairing", got)
+		}
+	})
+
+	t.Run("unmatch with one leg isolates it", func(t *testing.T) {
+		byKey := mk()
+		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
+			Verb: "unmatch", A: sel("s1", "A", 100, -5000),
+		}), byKey)
+		if got := linked(byKey); got != "" {
+			t.Errorf("linked %q; an isolated leg pairs with nothing", got)
+		}
+	})
+
+	t.Run("match reaches past the day window", func(t *testing.T) {
+		byKey := mk()
+		b := sel("s2", "B", 130, 5000)
+		rule := TransferOverrideRule{Verb: "match", A: sel("s1", "A", 100, -5000), B: &b}
+		// Control: 30 days apart, so the window alone never pairs them.
+		matchCrossTransfers([]crossCandidate{debit, farCredit}, tm(), byKey)
+		if got := linked(byKey); got != "" {
+			t.Fatalf("control: linked %q outside a 5-day window", got)
+		}
+		byKey = mk()
+		matchCrossTransfers([]crossCandidate{debit, farCredit}, tm(rule), byKey)
+		if got := linked(byKey); got != "in" {
+			t.Errorf("linked %q, want the forced pair", got)
+		}
+		// Orientation is read off the amounts, not off the rule's order.
+		if l := byKey[acctKey("s2", "B")].crossLinks["in"]; l.txID != "out" {
+			t.Errorf("credit side links %q, want the debit leg", l.txID)
+		}
+	})
+
+	t.Run("a rule naming no leg leaves the matcher alone", func(t *testing.T) {
+		byKey := mk()
+		b := sel("s2", "B", 102, 4200)
+		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
+			Verb: "unmatch", A: sel("s1", "A", 100, -4200), B: &b,
+		}), byKey)
+		if got := linked(byKey); got != "in" {
+			t.Errorf("linked %q; a stale rule is reported by the caller, not obeyed", got)
+		}
+	})
+
+	t.Run("a contradictory ledger overrides nothing", func(t *testing.T) {
+		// Isolated and forced at once: ResolveTransferOverrides errors, and
+		// the matcher runs unoverridden rather than taking down the run.
+		byKey := mk()
+		b := sel("s2", "B", 102, 5000)
+		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(
+			TransferOverrideRule{Verb: "unmatch", A: sel("s1", "A", 100, -5000)},
+			TransferOverrideRule{Verb: "match", A: sel("s1", "A", 100, -5000), B: &b},
+		), byKey)
+		if got := linked(byKey); got != "in" {
+			t.Errorf("linked %q; a malformed ledger must fall back to the plain match", got)
+		}
+	})
+}

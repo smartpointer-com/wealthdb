@@ -271,11 +271,13 @@ def test_fetch_document_non_pdf_returns_none(tmp_path):
 
 def _card_run(tmp_path, monkeypatch, *flags, capture=None):
     """A real run with the card pass stubbed, returning its run.json and
-    the record of whether the pass was invoked."""
+    one entry per invocation holding the `statements` sense it was passed.
+    Recording the kwarg rather than a bare marker is what lets a test see
+    --no-card-statements arrive, instead of only that the pass ran."""
     calls = []
 
     def _stub(*_a, **_kw):
-        calls.append("cards")
+        calls.append(_kw.get("statements"))
         return {"accounts": []} if capture is None else capture()
 
     monkeypatch.setattr(download, "_capture_cards", _stub)
@@ -286,7 +288,7 @@ def _card_run(tmp_path, monkeypatch, *flags, capture=None):
 
 def test_cards_are_captured_by_default(tmp_path, monkeypatch):
     manifest, calls = _card_run(tmp_path, monkeypatch)
-    assert calls == ["cards"]
+    assert calls == [True]
     assert "cards" in manifest
 
 
@@ -295,6 +297,14 @@ def test_no_cards_skips_the_pass_entirely(tmp_path, monkeypatch):
     assert calls == []
     # Absent, not empty: a reader must tell "not fetched" from "none found".
     assert "cards" not in manifest
+
+
+def test_no_card_statements_reaches_the_card_pass(tmp_path, monkeypatch):
+    """The flag has one job and no observable effect on the run.json, so
+    without this the wiring could invert — statements fetched when the run
+    asked for none — and every other assertion would still hold."""
+    _, calls = _card_run(tmp_path, monkeypatch, "--no-card-statements")
+    assert calls == [False]
 
 
 def test_an_unreachable_card_surface_leaves_the_rest_of_the_dump(tmp_path,

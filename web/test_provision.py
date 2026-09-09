@@ -119,6 +119,21 @@ check("every *_PARAM_ID constant is distinct",
 
 # ---- the models -------------------------------------------------------
 
+# A timestamp column is rendered with epoch_ms, never to_timestamp. The two
+# differ by type, and so by what a reader sees: to_timestamp yields
+# TIMESTAMPTZ, which Metabase renders in the reading session's zone, so a
+# day-grain figure lands on the wrong day for anyone east or west of UTC.
+# epoch_ms yields a zone-free TIMESTAMP. A regression here is silent —
+# every chart still renders, just shifted — so it is asserted rather than
+# left to the eye.
+_MODEL_SQL = "\n".join(sql for sql, _desc in p.report_models().values())
+check("no model renders a timestamp with to_timestamp",
+      "to_timestamp" not in _MODEL_SQL,
+      "to_timestamp is TIMESTAMPTZ and renders in the session zone")
+check("timestamp columns are rendered with epoch_ms",
+      "epoch_ms(" in _MODEL_SQL)
+
+
 resolve_field_ids()
 MID = model_ids()
 MODELS = p.report_models()
@@ -501,6 +516,19 @@ KIND_VOCAB = set(re.findall(r"'([a-z_]+)'", re.findall(
 check("every account kind the flow charts fence out is one gold can store",
       set(p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS) <= KIND_VOCAB,
       f"{p.FLOW_CHART_EXCLUDED_ACCOUNT_KINDS} not all in {sorted(KIND_VOCAB)}")
+
+# The fence is written the long way ON PURPOSE, in both the MBQL and the
+# native form: a bare `!=` drops the rows whose account_kind is NULL — a
+# transaction with no matching accounts row — and those are flows the chart
+# is supposed to show. The NULL-keeping branch is the whole reason it is not
+# a one-liner, so a future simplification has to fail here.
+_CARD_QUERIES = "\n".join(json.dumps(q) for _d, _desc, q in CARDS.values())
+check("the MBQL flow fence keeps rows with a NULL account_kind",
+      '"is-null"' in _CARD_QUERIES,
+      "no card spells the null branch; a bare != would drop unmatched rows")
+check("the native flow fence keeps rows with a NULL account_kind",
+      "account_kind IS NULL OR account_kind NOT IN" in _CARD_QUERIES,
+      "the native form dropped its null branch")
 
 # ---- the dashboard PUT payloads ---------------------------------------
 
