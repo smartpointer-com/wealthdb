@@ -1,0 +1,58 @@
+-- The first EXTENSION value, `GENERAL_SERVICES_DIGITAL_SERVICES`: a
+-- household's software and online subscriptions.
+--
+-- An extension is a third class beside the vendored rows and the six
+-- deltas, and it differs from a delta in the one way that matters: the
+-- model tier MAY emit it. A delta is decided from structure a merchant
+-- name cannot reveal — whose account the money reached, whether a card
+-- is itemised — so the gauntlet refuses one. This is the opposite: an
+-- ordinary merchant judgement, of exactly the kind a merchant name
+-- answers, for which the vendored vocabulary has no word.
+--
+-- The vendored taxonomy has ELECTRONICS for physical goods, ONLINE
+-- MARKETPLACES for retail and INTERNET AND CABLE for the connection
+-- itself. None of those is a password manager, a mailbox, a cloud
+-- host, an office suite or a model subscription. Every tier therefore
+-- files them somewhere false, and does so silently:
+--
+--   * the model reaches for "other general services", which says only
+--     that nothing fit;
+--   * an issuer's own MCC can file a model subscription as
+--     "other general merchandise" — a PHYSICAL-GOODS bucket for
+--     something that was never a good, and worse than the catch-all
+--     because it is confidently wrong and the provider tier outranks
+--     the model.
+--
+-- Under GENERAL_SERVICES rather than as a primary of its own. That is
+-- the one real choice here, and it is the opposite of the one `gift`
+-- made (migration 0047). A delta earns its own primary BECAUSE it is
+-- not a merchant category and must not fold into a plausible-looking
+-- one. Digital services is a merchant category: it belongs beside
+-- EDUCATION, INSURANCE and STORAGE and rolls up with them, it shows as
+-- its own line at `--level detailed`, and when the vendored taxonomy
+-- adds this value it will land in the same place, so the refreshed CSV
+-- supersedes this row as a clean diff instead of sitting beside it.
+--
+-- One statement, and nothing else changes:
+--
+--   * spend_categories gains the row, seeded from
+--     internal/canonical/spendtaxonomy.go exactly as migrations 0040
+--     and 0045-0047 seed theirs; TestSpendCategoriesMatchGoTable pins
+--     the dimension to the Go table.
+--   * spending_lines_base is NOT re-issued. Its exclusion list names
+--     `internal_transfer` and `investment` one by one (migration
+--     0045), so a row resolving to this value passes it by
+--     construction, as every vendored value does.
+--
+-- The gauntlet needs no change either: it validates against
+-- canonical.ModelSpendDetailed, which is derived from the vendored
+-- rows PLUS the extensions, so this value is accepted and the deltas
+-- stay refused.
+--
+-- INSERT OR REPLACE keeps this replayable for the DDL-rerun test (see
+-- gold.Migrate's REPLAY note).
+INSERT OR REPLACE INTO spend_categories (spend_primary, spend_detailed, description) VALUES
+    ('GENERAL_SERVICES', 'GENERAL_SERVICES_DIGITAL_SERVICES', 'Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device');
+
+INSERT INTO schema_meta (gold_schema_version, applied_at)
+    VALUES (56, CAST(epoch(now()) AS BIGINT));

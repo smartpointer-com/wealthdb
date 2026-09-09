@@ -741,7 +741,7 @@ SELECT merchant_signature, merchant_name, spend_detailed
 		if err := rows.Scan(&a.Signature, &a.Name, &a.Detailed); err != nil {
 			return nil, fmt.Errorf("categorize: scan anchor: %w", err)
 		}
-		if exclude[a.Signature] || !canonical.VendoredSpendDetailed(a.Detailed) {
+		if exclude[a.Signature] || !canonical.ModelSpendDetailed(a.Detailed) {
 			continue
 		}
 		if rowFenced[a.Signature] || spending.TransferShaped(a.Signature) {
@@ -1080,7 +1080,7 @@ func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]ca
 			continue
 		}
 		detailed := strings.ToUpper(category)
-		if !canonical.VendoredSpendDetailed(detailed) {
+		if !canonical.ModelSpendDetailed(detailed) {
 			invalid = append(invalid, invalidRow{Raw: row,
 				Reason: fmt.Sprintf("spend_detailed %q is not a value of the taxonomy", category)})
 			continue
@@ -1098,7 +1098,7 @@ func parseAndValidateCategorizations(body string, candSet map[string]bool) ([]ca
 // the specific rejection, not the generic one.
 func isDeltaSpendCategory(s string) bool {
 	folded := strings.ToLower(strings.TrimSpace(s))
-	return canonical.ValidSpendDetailed(folded) && !canonical.VendoredSpendDetailed(folded)
+	return canonical.ValidSpendDetailed(folded) && !canonical.ModelSpendDetailed(folded)
 }
 
 // ---- prompt assembly ---------------------------------------------------------
@@ -1119,7 +1119,7 @@ func buildCategorizeUserPrompt(candidates []merchantCandidate, anchors []merchan
 
 Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
 `)
-	for _, c := range canonical.VendoredSpendCategories() {
+	for _, c := range canonical.ModelSpendCategories() {
 		fmt.Fprintf(&b, "  %s\t(%s)\t%s\n", c.Detailed, c.Primary, c.Description)
 	}
 	deltas := canonical.DeltaSpendCategories()

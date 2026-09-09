@@ -31,6 +31,17 @@ package canonical
 // `gift`, `investment` and `other`. They keep the repo's lowercase enum
 // idiom, which also marks them at a glance as not-from-Plaid.
 //
+// EXTENSIONS are the third class, and they differ from the deltas in
+// the one way that matters: a model MAY emit them. A delta is decided
+// from structure a merchant name cannot reveal — whose account the
+// money went to, whether a card is itemised — so the gauntlet refuses
+// one. An extension is the opposite: an ordinary merchant judgement
+// for which the vendored vocabulary simply has no word yet. It is
+// therefore shaped like a vendored row, `<PRIMARY>_<DETAIL>` under an
+// existing primary, so that when the taxonomy does catch up the
+// refreshed CSV supersedes ours as a clean diff rather than sitting
+// beside it.
+//
 // The policy each delta encodes — what is and is not spending, which
 // tier places it — is docs/SPENDING.md §2; it is not restated here.
 
@@ -57,6 +68,12 @@ const (
 	SpendDetailedGift             = "gift"
 	SpendDetailedInvestment       = "investment"
 	SpendDetailedOther            = "other"
+)
+
+// The extension values: ours, but shaped like the vendored rows and
+// emittable by the model tier. See extensionSpendCategories.
+const (
+	SpendDetailedDigitalServices = "GENERAL_SERVICES_DIGITAL_SERVICES"
 )
 
 // vendoredSpendCategories is the Plaid subset, in the source CSV's
@@ -176,13 +193,44 @@ var deltaSpendCategories = []SpendCategory{
 		"Spend that no rule, matcher or model could place in another category"},
 }
 
-// SpendCategories is the whole taxonomy — the vendored pairs followed
-// by the deltas. Ordered for readable diffs; the seed migrations (0040,
+// extensionSpendCategories are detailed values of OURS that sit under
+// a vendored primary and that the model tier MAY emit.
+//
+// A household's software subscriptions have no home in the vendored
+// vocabulary: it has ELECTRONICS for physical goods, ONLINE
+// MARKETPLACES for retail and INTERNET AND CABLE for an ISP, and none
+// of those is a password manager, a mailbox, an office suite or a
+// model subscription. Left to itself every tier files them somewhere
+// false — the model reaches for "other general services", and an
+// issuer's own MCC has been seen calling one "other general
+// merchandise", which is a physical-goods bucket for something that
+// was never a good.
+//
+// Under GENERAL_SERVICES rather than as a primary of its own, which is
+// the one real choice here. A delta earns its own primary because it
+// is not a merchant category at all and must not fold into a
+// plausible-looking one; digital services IS a merchant category, so
+// it belongs beside EDUCATION, INSURANCE and STORAGE, and rolls up
+// with them. It also means that if the vendored taxonomy adds this
+// value it lands in the same place and the diff is a supersession.
+var extensionSpendCategories = []SpendCategory{
+	{"GENERAL_SERVICES", SpendDetailedDigitalServices,
+		"Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device"},
+}
+
+// SpendCategories is the whole taxonomy — the vendored pairs, then the
+// extensions, then the deltas. Ordered for readable diffs; the seed migrations (0040,
 // 0045-0047) were generated from it and TestSpendCategoriesMatchGoTable
 // compares the two as sets, so the order carries no contract.
-var SpendCategories = append(append(
-	make([]SpendCategory, 0, len(vendoredSpendCategories)+len(deltaSpendCategories)),
-	vendoredSpendCategories...), deltaSpendCategories...)
+var SpendCategories = append(append(append(
+	make([]SpendCategory, 0, len(vendoredSpendCategories)+len(extensionSpendCategories)+len(deltaSpendCategories)),
+	vendoredSpendCategories...), extensionSpendCategories...), deltaSpendCategories...)
+
+// modelSpendCategories is the vocabulary a model may choose from: the
+// vendored rows plus the extensions, and never a delta.
+var modelSpendCategories = append(append(
+	make([]SpendCategory, 0, len(vendoredSpendCategories)+len(extensionSpendCategories)),
+	vendoredSpendCategories...), extensionSpendCategories...)
 
 // spendDetailedValues is the validity set: every recognised
 // spend_detailed value. Unlike the hand-written `map[T]struct{}` sets
@@ -193,10 +241,10 @@ var SpendCategories = append(append(
 // `spend_categories` dimension, so Go carries no such lookup.
 var spendDetailedValues = indexSpendCategories(SpendCategories)
 
-// vendoredSpendDetailedValues is the same set over the VENDORED rows
-// alone, so the delta values are absent from it rather than filtered
-// out of it at every call site.
-var vendoredSpendDetailedValues = indexSpendCategories(vendoredSpendCategories)
+// modelSpendDetailedValues is the same set over the rows a model may
+// emit — vendored plus extension — so the delta values are absent from
+// it rather than filtered out of it at every call site.
+var modelSpendDetailedValues = indexSpendCategories(modelSpendCategories)
 
 func indexSpendCategories(cats []SpendCategory) map[string]struct{} {
 	m := make(map[string]struct{}, len(cats))
@@ -207,22 +255,23 @@ func indexSpendCategories(cats []SpendCategory) map[string]struct{} {
 }
 
 // ValidSpendDetailed reports whether s is a recognised spend_detailed
-// value — a vendored Plaid detailed value or one of the six deltas.
-// A primary on its own is not valid unless it is also a delta.
+// value — a vendored Plaid detailed value, an extension of ours, or
+// one of the six deltas. A primary on its own is not valid unless it
+// is also a delta.
 func ValidSpendDetailed(s string) bool {
 	_, ok := spendDetailedValues[s]
 	return ok
 }
 
-// VendoredSpendDetailed is the stricter sibling: it recognises the
-// vendored values and REFUSES the six deltas, because every delta is
-// decided from structure a merchant-keyed verdict cannot see. The
-// categorisation gauntlet validates against this predicate;
-// ValidSpendDetailed stays the storage-level check. What each delta is
-// decided from, and what one emitted by a model would do to a report:
-// docs/SPENDING.md §2.
-func VendoredSpendDetailed(s string) bool {
-	_, ok := vendoredSpendDetailedValues[s]
+// ModelSpendDetailed is the stricter sibling: it recognises the values
+// a model may emit — vendored and extension — and REFUSES the six
+// deltas, because every delta is decided from structure a
+// merchant-keyed verdict cannot see. The categorisation gauntlet
+// validates against this predicate; ValidSpendDetailed stays the
+// storage-level check. What each delta is decided from, and what one
+// emitted by a model would do to a report: docs/SPENDING.md §2.
+func ModelSpendDetailed(s string) bool {
+	_, ok := modelSpendDetailedValues[s]
 	return ok
 }
 
@@ -233,10 +282,16 @@ func DeltaSpendCategories() []SpendCategory {
 	return append(make([]SpendCategory, 0, len(deltaSpendCategories)), deltaSpendCategories...)
 }
 
-// VendoredSpendCategories returns the vendored rows — the vocabulary a
-// model may choose from, with the descriptions that tell it what each
-// value means. A copy, so a caller assembling a prompt cannot reorder
-// the table the seed migrations are pinned to.
+// ModelSpendCategories returns the rows a model may choose from — the
+// vendored vocabulary plus the extensions — with the descriptions that
+// tell it what each value means. A copy, so a caller assembling a
+// prompt cannot reorder the table the seed migrations are pinned to.
+func ModelSpendCategories() []SpendCategory {
+	return append(make([]SpendCategory, 0, len(modelSpendCategories)), modelSpendCategories...)
+}
+
+// VendoredSpendCategories returns the vendored rows alone — what a
+// taxonomy refresh diffs against. A copy, for the same reason.
 func VendoredSpendCategories() []SpendCategory {
 	return append(make([]SpendCategory, 0, len(vendoredSpendCategories)), vendoredSpendCategories...)
 }

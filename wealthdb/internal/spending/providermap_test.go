@@ -232,11 +232,11 @@ func TestUnknownAccountKindFallsBackToTheSourceVocabulary(t *testing.T) {
 
 // TestUBSCardValuesAreVendored: the provider tier may place a delta, but
 // every value in this map names a line of business, so all of them must
-// be real vendored taxonomy values.
+// be real taxonomy values a merchant judgement can carry.
 func TestUBSCardValuesAreVendored(t *testing.T) {
 	for category, detailed := range ubsCardCategories {
-		if !canonical.VendoredSpendDetailed(detailed) {
-			t.Errorf("%q -> %q is not a vendored taxonomy value",
+		if !canonical.ModelSpendDetailed(detailed) {
+			t.Errorf("%q -> %q is not a merchant-shaped taxonomy value",
 				category, detailed)
 		}
 	}

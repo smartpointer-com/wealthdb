@@ -19,11 +19,17 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 	if got := len(vendoredSpendCategories); got != 80 {
 		t.Errorf("vendored detailed values = %d, want 80", got)
 	}
+	if got := len(extensionSpendCategories); got != 1 {
+		t.Errorf("extension values = %d, want 1", got)
+	}
 	if got := len(deltaSpendCategories); got != 6 {
 		t.Errorf("delta values = %d, want 6", got)
 	}
-	if got := len(SpendCategories); got != 86 {
-		t.Errorf("SpendCategories = %d, want 86", got)
+	if got := len(SpendCategories); got != 87 {
+		t.Errorf("SpendCategories = %d, want 87", got)
+	}
+	if got := len(modelSpendCategories); got != 81 {
+		t.Errorf("modelSpendCategories = %d, want 81", got)
 	}
 
 	primaries := map[string]struct{}{}
@@ -142,28 +148,38 @@ func TestValidSpendDetailed(t *testing.T) {
 	}
 }
 
-// TestVendoredSpendDetailed pins the split ValidSpendDetailed and
-// VendoredSpendDetailed express. The distinction is what stops a
+// TestModelSpendDetailed pins the split ValidSpendDetailed and
+// ModelSpendDetailed express. The distinction is what stops a
 // merchant-keyed model verdict from carrying a delta value, so it has
 // to hold in both directions: every delta recognised by one and
-// refused by the other, every vendored value accepted by both.
-func TestVendoredSpendDetailed(t *testing.T) {
+// refused by the other, every vendored value accepted by both. An
+// extension sits with the vendored rows on both counts — it is ours,
+// but it is an ordinary merchant judgement and a model may emit it.
+func TestModelSpendDetailed(t *testing.T) {
 	for _, d := range deltaSpendCategories {
 		if !ValidSpendDetailed(d.Detailed) {
 			t.Errorf("%q must be a valid stored value", d.Detailed)
 		}
-		if VendoredSpendDetailed(d.Detailed) {
-			t.Errorf("%q is a delta and must not pass the vendored check", d.Detailed)
+		if ModelSpendDetailed(d.Detailed) {
+			t.Errorf("%q is a delta and must not pass the model check", d.Detailed)
 		}
 	}
 	for _, c := range vendoredSpendCategories {
-		if !VendoredSpendDetailed(c.Detailed) {
-			t.Errorf("%q is vendored and must pass the vendored check", c.Detailed)
+		if !ModelSpendDetailed(c.Detailed) {
+			t.Errorf("%q is vendored and must pass the model check", c.Detailed)
+		}
+	}
+	for _, c := range extensionSpendCategories {
+		if !ModelSpendDetailed(c.Detailed) {
+			t.Errorf("%q is an extension and must pass the model check: the model is what places it", c.Detailed)
+		}
+		if !ValidSpendDetailed(c.Detailed) {
+			t.Errorf("%q must be a valid stored value", c.Detailed)
 		}
 	}
 	for _, s := range []string{"", "FOOD_AND_DRINK", "NOT_A_CATEGORY", "food_and_drink_coffee"} {
-		if VendoredSpendDetailed(s) {
-			t.Errorf("%q must not pass the vendored check", s)
+		if ModelSpendDetailed(s) {
+			t.Errorf("%q must not pass the model check", s)
 		}
 	}
 	// card_spend by name, over and above the loop: it is the one delta
@@ -171,7 +187,7 @@ func TestVendoredSpendDetailed(t *testing.T) {
 	// could most plausibly reach for — and it is decided by the absence
 	// of a counter-leg, which a merchant-keyed verdict cannot know. The
 	// gauntlet's delta check is derived from this predicate.
-	if VendoredSpendDetailed(SpendDetailedCardSpend) {
+	if ModelSpendDetailed(SpendDetailedCardSpend) {
 		t.Errorf("%q is a delta and must be refused as model output", SpendDetailedCardSpend)
 	}
 	if !ValidSpendDetailed(SpendDetailedCardSpend) {
@@ -181,7 +197,7 @@ func TestVendoredSpendDetailed(t *testing.T) {
 	// the spending base. It is decided by who the counterparty is to
 	// the holder, which no narrative says — only a config rule or a pin
 	// carries that knowledge.
-	if VendoredSpendDetailed(SpendDetailedGift) {
+	if ModelSpendDetailed(SpendDetailedGift) {
 		t.Errorf("%q is a delta and must be refused as model output", SpendDetailedGift)
 	}
 	if !ValidSpendDetailed(SpendDetailedGift) {
