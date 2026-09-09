@@ -95,9 +95,12 @@ def sql_of(query):
 section("filter-field registry (the two spending views)")
 check("web_spending registered",
       "web_spending" in p.FILTER_FIELD_COLUMNS)
+# The category field is the LABEL column: the Category picker is shared
+# with the money dashboard, whose model column of the same name holds the
+# label, so both sides of the filter must speak one vocabulary.
 check("web_spending columns: timestamp, source, display name, primary category",
       set(p.FILTER_FIELD_COLUMNS.get("web_spending", ())) ==
-      {"occurred_at", "silver_source_id", "display_name", "spend_primary"},
+      {"occurred_at", "silver_source_id", "display_name", "spend_primary_label"},
       str(p.FILTER_FIELD_COLUMNS.get("web_spending")))
 check("web_card_balances_history columns: day, source, display name",
       set(p.FILTER_FIELD_COLUMNS.get("web_card_balances_history", ())) ==
@@ -223,13 +226,13 @@ check("the privacy merchant ranking is r (ranked rows) then t (the total)",
       bool(CTE_BOUNDARY) and "FROM web_spending" in T_BODY)
 check("the privacy merchant ranking keeps only named, non-delta lines",
       "AND merchant_name IS NOT NULL" in R_BODY and
-      "AND spend_primary <> spend_detailed" in R_BODY and
+      "AND spend_primary_label <> spend_label" in R_BODY and
       "GROUP BY merchant_name" in R_BODY)
 check("...and its shares stay of the window's whole net spend: the total "
       "is summed apart from the ranked rows, without either filter",
       RANK_SQL.count("FROM web_spending") == 2 and
       "merchant_name" not in T_BODY and
-      "spend_primary <> spend_detailed" not in T_BODY)
+      "spend_primary_label <> spend_label" not in T_BODY)
 check("both rankings say delta lines are outside them",
       all("outside the ranking" in CARDS[c][1] and
           "issuer" in CARDS[c][1] for c in MERCHANT_RANKINGS))
@@ -272,6 +275,37 @@ check("currency offers the reporting trio",
       PARAMS["Currency"]["values_source_config"]["values"] == ["USD", "CHF", "EUR"])
 check("the account picker draws display_name values",
       PARAMS["Account"]["values_source_config"]["value_field"][1] == "display_name")
+# The spending model renders the taxonomy in words and keeps the values
+# beside them. A dashboard picker's dropdown IS the list of labels it
+# filters by, so the label is what a reader sees and selects; the value
+# is there for a filter that must survive a rewording. The issuer's own
+# classification travels too, and no tile may aggregate it.
+# The Category picker is shared by both dashboards: its dropdown comes
+# from the money model's `spend_primary`, and the privacy twin's native
+# cards field-filter web_spending through FILTER_FIELD_COLUMNS. If those
+# two named different vocabularies the picker would offer labels and the
+# native cards would match them against vendored values — every privacy
+# tile silently empty, with no error anywhere.
+check("both sides of the shared Category filter speak one vocabulary",
+      p.SPEND_FILTERS["category"][0] in p.FILTER_FIELD_COLUMNS["web_spending"] and
+      p.SPEND_FILTERS["category"][0].endswith("_label"))
+_PRIV_SQL = "\n".join(sql_of(c[2]) or "" for n, c in CARDS.items()
+                      if n.endswith(p.PRIVACY_SUFFIX) and len(c) > 2)
+check("...and the privacy cards project the same labels they filter on",
+      "spend_primary_label" in _PRIV_SQL and "spend_primary," not in _PRIV_SQL)
+
+check("the spending model renders labels as the category columns",
+      "spend_primary_label AS spend_primary" in SPEND_SQL and
+      "spend_label         AS spend_detailed" in SPEND_SQL)
+check("...and keeps the vendored values beside them",
+      "AS spend_primary_id" in SPEND_SQL and
+      "AS spend_detailed_id" in SPEND_SQL)
+check("...and carries the issuer's own view",
+      "AS provider_category" in SPEND_SQL)
+check("the privacy twin keeps the same category columns",
+      "spend_primary_label AS spend_primary" in PCT_SQL and
+      "AS provider_category" in PCT_SQL)
+
 check("the category picker is a multi-select on spend_primary",
       PARAMS["Category"]["isMultiSelect"] is True and
       PARAMS["Category"]["values_source_config"]["value_field"][1] == "spend_primary")
@@ -354,7 +388,7 @@ check("the existing privacy charts still map as dimensions",
 # An unsynced column drops its filter rather than emitting a {{tag}} the
 # query never declares.
 saved = dict(p.FIELD_IDS)
-p.FIELD_IDS = {k: v for k, v in saved.items() if k != ("web_spending", "spend_primary")}
+p.FIELD_IDS = {k: v for k, v in saved.items() if k != ("web_spending", "spend_primary_label")}
 degraded = p.spending_privacy_defs(1, MID)
 check("an unsynced filter column leaves its clause out of the SQL",
       "{{category}}" not in sql_of(degraded["Top 50 merchants (privacy)"][3]))

@@ -562,3 +562,33 @@ func TestOnlinePaymentAloneIsNotACardBill(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigRuleMatchesTheIssuersOwnFiling pins the field that makes the
+// issuer an input to our classification rather than a tier above it: a
+// rule may key on what the issuer called a row, which is the only way to
+// write one about a class of merchant the descriptor never names.
+func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
+	rules := []Rule{{
+		Match:    regexp.MustCompile(`(?i)^Club Membership$`),
+		Category: "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS",
+	}}
+	// The descriptor says nothing a rule could use; the issuer's filing does.
+	got, ok := ConfigRuleCategory(rules, RuleRow{
+		Counterparty: "EXAMPLE ASSOCIATION", Description: "",
+		ProviderCategory: "Club Membership",
+	})
+	if !ok || got != "PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS" {
+		t.Errorf("= (%q, %v), want the rule keyed on the issuer's value to fire", got, ok)
+	}
+	// It is one field among three, not a special case: the same rule
+	// must not fire on a row the issuer filed differently.
+	if _, ok := ConfigRuleCategory(rules, RuleRow{
+		Counterparty: "EXAMPLE ASSOCIATION", ProviderCategory: "Groceries",
+	}); ok {
+		t.Error("fired on a row the issuer filed as something else")
+	}
+	// And a row the issuer never filed still matches on the narrative.
+	if _, ok := ConfigRuleCategory(rules, RuleRow{Counterparty: "Club Membership"}); !ok {
+		t.Error("the counterparty field must keep working when the issuer is silent")
+	}
+}

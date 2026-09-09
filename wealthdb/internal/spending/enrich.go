@@ -557,6 +557,14 @@ type enrichmentRow struct {
 	// rule placed rather than the row. spend_txn_categories() reads it
 	// as the merchant of a delta line (migration 0052).
 	merchantLabel string
+	// providerDetailed is what the issuer's own filing of this row
+	// translates to, recorded whether or not the provider tier claimed
+	// the row and whether or not a tier above overruled it. It is the
+	// faithful record of the card provider's view — never a verdict of
+	// ours — so a report can show it beside our own and the
+	// disagreement is a number rather than a silent overwrite. Empty
+	// where the issuer published nothing this build translates.
+	providerDetailed string
 }
 
 // assignCategories applies the deterministic tiers to every reachable
@@ -621,7 +629,22 @@ func assignCategories(
 		}
 		if inPopulation {
 			if detailed, ok, drift := ProviderCategory(kinds[r.key.source], r.accountKind, r.providerCategory); ok {
-				row.detailed, row.provenance = detailed, ProvenanceProvider
+				// Recorded either way: this is the issuer's own view of the
+				// row, and it is kept whether or not it decides anything.
+				row.providerDetailed = detailed
+				// ...but claimed only where the value is a verdict. A
+				// catch-all from a card issuer is not one: it says only
+				// "somewhere in this primary", and claiming would
+				// pre-empt the model tier, which reads the merchant
+				// name the issuer never saw. A catch-all from a bank's
+				// booking type IS one — the bank is naming the
+				// movement, there is no merchant to read, and the row
+				// is fenced out of model candidacy anyway.
+				// ProviderCategoryClaims holds that distinction, beside
+				// the vocabularies it turns on.
+				if ProviderCategoryClaims(kinds[r.key.source], r.accountKind, detailed) {
+					row.detailed, row.provenance = detailed, ProvenanceProvider
+				}
 			} else if drift {
 				res.UnmappedProviderCategories++
 			}
@@ -630,7 +653,8 @@ func assignCategories(
 				row.merchantLabel = label
 			} else if detailed, ok := ConfigRuleCategory(rules, RuleRow{
 				Counterparty: r.counterparty, Description: r.description,
-				Source: r.key.source, Portfolio: r.portfolio,
+				ProviderCategory: r.providerCategory,
+				Source:           r.key.source, Portfolio: r.portfolio,
 				Account: r.account, OccurredAt: r.occurredAt,
 			}); ok {
 				row.detailed, row.provenance = detailed, ProvenanceRule
@@ -702,15 +726,15 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, now
 	const head = `INSERT INTO spend_txn_enrichment (
             silver_source_id, transaction_external_id, merchant_signature,
             signature_version, spend_detailed, provenance, merchant_label,
-            assigned_at
+            provider_spend_detailed, assigned_at
         ) VALUES `
 	return gold.InsertChunked(ctx, tx, "spending: write enrichment", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(rows),
 		func(i int, args []any) []any {
 			r := &rows[i]
 			return append(args, r.key.source, r.key.txID, nullableString(r.signature),
 				SignatureVersion, nullableString(r.detailed), r.provenance,
-				nullableString(r.merchantLabel), now)
+				nullableString(r.merchantLabel), nullableString(r.providerDetailed), now)
 		})
 }
 

@@ -332,6 +332,72 @@ var ubsCardCategories = map[string]string{
 	"Misc. publishing and printing services":           "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Equipment rental and leasing services":            "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
 	"Professional Services - Not Elsewhere Classified": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+
+	// Values the issuer has published since the map was last reviewed.
+	// Each is the issuer's own MCC description; where its bucket is
+	// coarser than the taxonomy's the translation targets that
+	// primary's OTHER_* value, on the same rule as the block above.
+
+	"Barber or beauty shops":                      "PERSONAL_CARE_HAIR_AND_BEAUTY",
+	"Spas - health and beauty":                    "PERSONAL_CARE_HAIR_AND_BEAUTY",
+	"Cleaning - laundry and garment services":     "PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING",
+	"Freezer and locker meat provisioners":        "FOOD_AND_DRINK_GROCERIES",
+	"Caterers":                                    "FOOD_AND_DRINK_RESTAURANT",
+	"Package stores - beer":                       "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR",
+	"Catalog order stores / Mail order houses":    "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+	"Home supply warehouse stores":                "HOME_IMPROVEMENT_HARDWARE",
+	"Garden and hardware center":                  "HOME_IMPROVEMENT_HARDWARE",
+	"Floor coverings, Rugs":                       "HOME_IMPROVEMENT_FURNITURE",
+	"Charitable and Social Service Organizations": "GOVERNMENT_AND_NON_PROFIT_DONATIONS",
+	"Civic, Social, and Fraternal Associations":   "GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT",
+	"Automobile dealers / Truck dealers":          "GENERAL_SERVICES_AUTOMOTIVE",
+	"Automobile services":                         "GENERAL_SERVICES_AUTOMOTIVE",
+	"Car component":                               "GENERAL_SERVICES_AUTOMOTIVE",
+	"Courier services - air or ground":            "GENERAL_SERVICES_POSTAGE_AND_SHIPPING",
+	"Postal Services":                             "GENERAL_SERVICES_POSTAGE_AND_SHIPPING",
+	"Data processing services":                    "GENERAL_SERVICES_DIGITAL_SERVICES",
+	"Direct marketing insurance services":         "GENERAL_SERVICES_INSURANCE",
+	"Camp grounds":                                "TRAVEL_LODGING",
+	"Airlines":                                    "TRAVEL_FLIGHTS",
+	"Airports, Airport terminals":                 "TRAVEL_OTHER_TRAVEL",
+	// Card schemes assign codes to individual airlines and hotel chains,
+	// so a few of the issuer's descriptions are brand names rather than
+	// lines of business. They are ordinary published vocabulary — the
+	// block above has held several since it was written — and are
+	// translated like any other value.
+	"The Ritz Carlton Hotels":                 "TRAVEL_LODGING",
+	"Westin Hotels":                           "TRAVEL_LODGING",
+	"Hoteles Melia":                           "TRAVEL_LODGING",
+	"Icelandair":                              "TRAVEL_FLIGHTS",
+	"Cathay":                                  "TRAVEL_FLIGHTS",
+	"Florists":                                "GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES",
+	"Leather goods":                           "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"Furriers and fur shops":                  "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"Clock or jewelry or watch stores":        "GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+	"Telecommunications equipment":            "GENERAL_MERCHANDISE_ELECTRONICS",
+	"News Dealer & Newsstands":                "GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
+	"Office supplies":                         "GENERAL_MERCHANDISE_OFFICE_SUPPLIES",
+	"Record Stores":                           "ENTERTAINMENT_MUSIC_AND_AUDIO",
+	"Bands, Orchestras & Music Entertainment": "ENTERTAINMENT_MUSIC_AND_AUDIO",
+	"Doctors and Physicians":                  "MEDICAL_PRIMARY_CARE",
+	"Dentists and Orthodontists":              "MEDICAL_DENTAL_CARE",
+	"Hospitals":                               "MEDICAL_OTHER_MEDICAL",
+	"Medical laboratories":                    "MEDICAL_OTHER_MEDICAL",
+	"Orthopedic goods prosthetic devices":     "MEDICAL_OTHER_MEDICAL",
+	"Drugstore products":                      "MEDICAL_PHARMACIES_AND_SUPPLEMENTS",
+	// Coarser than the taxonomy: these name a trade, a channel or a
+	// membership rather than a line of business, so they resolve to
+	// their primary's OTHER_* value and, being catch-alls, decline the
+	// row rather than claiming it (see ProviderCategoryClaims).
+	"Club Membership": "ENTERTAINMENT_OTHER_ENTERTAINMENT",
+	"Membership Organizations - Not Elsewhere Classified": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Business services":                     "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Estate agency":                         "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Blueprinting or photocopying services": "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Photograpgic studios":                  "GENERAL_SERVICES_OTHER_GENERAL_SERVICES",
+	"Art dealers / Art galleries":           "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Durable Goods (B2B)":                   "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	"Continuity / Subscription Merchant":    "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
 }
 
 // ubsCardMoneyMovement is the bank's own catch-all for a card row that
@@ -340,7 +406,49 @@ var ubsCardCategories = map[string]string{
 // here would file person-to-person transfers as shopping. It is
 // REVIEWED, so a miss on it is not drift, and it is left for the model
 // tier, which sees the descriptor the category withholds.
-var ubsCardMoneyMovement = map[string]bool{"Banks - merchandise and services": true}
+var ubsCardMoneyMovement = map[string]bool{
+	"Banks - merchandise and services":               true,
+	"POI Funding Transactions (Excluding MoneySend)": true,
+}
+
+// raiffeisenCategories translates the Mein ELBA vocabulary, which the
+// bank publishes as lower-case tokens rather than MCC prose.
+//
+// The bank's "*_other" tokens are not all coarse in the same way, and
+// the token's spelling does not decide whether the row is claimed —
+// the TRANSLATION does. `electronics_shop_other` and `insurance_other`
+// name a real line of business and resolve to one, so they claim;
+// `shopping_other` and `utility` resolve to their primary's catch-all
+// and so decline, leaving the merchant name to the model. What the
+// vocabulary declines outright is in raiffeisenUncategorized below.
+var raiffeisenCategories = map[string]string{
+	"supermarket":                   "FOOD_AND_DRINK_GROCERIES",
+	"tv_phone_internet":             "RENT_AND_UTILITIES_INTERNET_AND_CABLE",
+	"utility":                       "RENT_AND_UTILITIES_OTHER_UTILITIES",
+	"bank_fee":                      "BANK_FEES_OTHER_BANK_FEES",
+	"insurance_other":               "GENERAL_SERVICES_INSURANCE",
+	"government_service":            "GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES",
+	"airline":                       "TRAVEL_FLIGHTS",
+	"electronics_shop_other":        "GENERAL_MERCHANDISE_ELECTRONICS",
+	"tobacco_smoking_related_store": "GENERAL_MERCHANDISE_TOBACCO_AND_VAPE",
+	"shopping_other":                "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+	// A movement, not a line of business: the bank names the rail.
+	"atm_withdrawal": canonical.SpendDetailedCashWithdrawal,
+}
+
+// raiffeisenUncategorized are the values Mein ELBA publishes when it
+// has placed nothing: its own "not categorised" token, its bucket for
+// a payment it could not read, and its income token — which names a
+// direction rather than a category and belongs to no spend value at
+// all. `real_estate_other` joins them because it can cover both a
+// rent payment and a property purchase, and the two are a utility bill
+// and a capital movement.
+var raiffeisenUncategorized = map[string]bool{
+	"not_categorized":   true,
+	"payment_other":     true,
+	"income_other":      true,
+	"real_estate_other": true,
+}
 
 // providerVocabularies is the registry. A source with no entry
 // contributes no provider verdicts at all, which is the correct
@@ -364,6 +472,8 @@ var providerVocabularies = map[string]providerVocabulary{
 	"ubs": {translations: ubsBookingTypes, categorical: false},
 	"ubs/card": {translations: ubsCardCategories,
 		untranslatable: ubsCardMoneyMovement, categorical: true},
+	"raiffeisen_at": {translations: raiffeisenCategories,
+		untranslatable: raiffeisenUncategorized, categorical: true},
 }
 
 // foldedProviderVocabularies is providerVocabularies re-keyed on the
@@ -434,6 +544,35 @@ func ProviderCategory(silverKind, accountKind, providerCategory string) (detaile
 	}
 	detailed, ok = v.translations[key]
 	return detailed, ok, !ok && v.categorical
+}
+
+// ProviderCategoryClaims reports whether a translated value should CLAIM
+// the row or merely be recorded on it.
+//
+// A catch-all is not a verdict — but only where the vocabulary is
+// CATEGORICAL. The two shapes fail differently:
+//
+//   - A card issuer's vocabulary files a merchant's line of business.
+//     A catch-all there means the issuer could not place the MERCHANT,
+//     and the row still carries the merchant's name in its descriptor —
+//     which the model tier reads and the issuer never saw. Claiming
+//     would pre-empt the one tier that can do better, so the value is
+//     recorded and the row declined.
+//
+//   - A bank's booking-type vocabulary names how the entry was BOOKED.
+//     Its catch-alls are not shrugs: "CUSTODY PRICE" resolving to
+//     BANK_FEES_OTHER_BANK_FEES is the bank saying the movement was a
+//     fee of its own, which is the most any tier will ever know about
+//     that row. There is no merchant name to read — and the signature
+//     of such a row is fenced out of model candidacy anyway, by
+//     Uninformative or by FilingOnly — so declining would not defer the
+//     verdict to a better tier, it would discard it. The value claims.
+func ProviderCategoryClaims(silverKind, accountKind, detailed string) bool {
+	v, mapped := vocabularyFor(silverKind, accountKind)
+	if !mapped {
+		return false
+	}
+	return !(v.categorical && canonical.CatchAllSpendDetailed(detailed))
 }
 
 // vocabularyFor resolves the product-scoped vocabulary, falling back to

@@ -200,6 +200,21 @@ def report_models():
         0043), which already renders occurred_at as TIMESTAMP and labels an
         unresolved category '(uncategorized)'.
 
+        `spend_primary` and `spend_detailed` carry the DISPLAY LABEL
+        (migration 0058), not the vendored value: a dashboard picker's
+        dropdown is the list of labels it filters by, so the label is what
+        a reader both sees and selects. The vendored values travel beside
+        them as `*_id` for a filter that must survive a label being
+        reworded. Swapping the two is safe for the cards that compare
+        them, because the labels preserve the relation the comparison
+        turns on: a delta's primary and detailed read the same, a vendored
+        pair does not.
+
+        `provider_category` is the ISSUER's own classification of the line
+        (migration 0057), kept for a reader who wants the card provider's
+        view. It is never summed with ours and no tile aggregates it — the
+        two disagree by design.
+
         The wide value trio is unpivoted to one row per (spending line,
         reporting currency) — the long shape report_returns already has,
         and the only shape an MBQL card can switch currency in: a dashboard
@@ -218,7 +233,11 @@ def report_models():
         cols = ("s.occurred_at, s.silver_source_id, s.account_external_id,\n"
                 "       s.display_name, s.account_kind,\n"
                 + ("" if pct else "       s.merchant_name,\n") +
-                "       s.spend_primary, s.spend_detailed, c.currency")
+                "       s.spend_primary_label AS spend_primary,\n"
+                "       s.spend_label         AS spend_detailed,\n"
+                "       s.spend_primary AS spend_primary_id,\n"
+                "       s.spend_detailed AS spend_detailed_id,\n"
+                "       s.provider_spend_label AS provider_category, c.currency")
         legs = ["CASE c.currency"] + [
             f" WHEN '{c.upper()}' THEN s.value_{c}" + (f" / nw.nw_{c}" if pct else "")
             for c in ("chf", "eur")] + [
@@ -592,8 +611,14 @@ FILTER_FIELD_COLUMNS = {
     # bind their account picker to display_name rather than
     # account_external_id — see dashboard_parameters for why the readable
     # column wins, and why the privacy twin carries no such picker.
+    # spend_primary_label, not spend_primary: a field filter's widget is
+    # a dropdown of the values its column takes, and the Category picker
+    # is SHARED with the money dashboard, whose model column of the same
+    # name now holds the display label. Binding the two to different
+    # vocabularies would leave the picker offering labels and the native
+    # cards matching them against vendored values — every tile empty.
     "web_spending": ("occurred_at", "silver_source_id", "display_name",
-                     "spend_primary"),
+                     "spend_primary_label"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
                                   "display_name"),
 }
@@ -1391,7 +1416,7 @@ def _cl(tags, name):
 SPEND_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
                  "source": ("silver_source_id", "string/="),
                  "account": ("display_name", "string/="),
-                 "category": ("spend_primary", "string/=")}
+                 "category": ("spend_primary_label", "string/=")}
 CARD_BALANCE_FILTERS = {"time_range": ("as_of_day", "date/all-options"),
                         "source": ("silver_source_id", "string/="),
                         "account": ("display_name", "string/=")}
@@ -1831,7 +1856,7 @@ def spending_privacy_defs(db_id, model_ids):
         "window's biggest spending month — the tallest bar reads 100. A "
         "category can dip negative (a month whose refunds beat its "
         "purchases).",
-        month_cte("spend_primary AS category,\n         ")
+        month_cte("spend_primary_label AS category,\n         ")
         + "   GROUP BY 1, 2),\n" + peak_cte +
         f"SELECT month, category, {peak_div} AS spend_pct\n"
         "  FROM m\n ORDER BY 1",
@@ -1853,10 +1878,10 @@ def spending_privacy_defs(db_id, model_ids):
                       " FROM r) * 100")
 
     for name, col, limit, what in (
-            ("Spending by category (privacy)", "spend_primary", "",
+            ("Spending by category (privacy)", "spend_primary_label", "",
              "Primary-category shares (%) of the window's net spend; sums "
              "to 100."),
-            ("Spending by subcategory (privacy)", "spend_detailed",
+            ("Spending by subcategory (privacy)", "spend_label",
              "\n LIMIT 25",
              "Detailed-category shares (%) of the window's net spend, the "
              "twenty-five largest — the shares are of the whole window, so "
@@ -1896,7 +1921,7 @@ def spending_privacy_defs(db_id, model_ids):
         f"  SELECT {val} AS v\n"
         "    FROM web_spending" + where + "\n"
         "     AND merchant_name IS NOT NULL\n"
-        "     AND spend_primary <> spend_detailed\n"
+        "     AND spend_primary_label <> spend_label\n"
         "   GROUP BY merchant_name),\n"
         "t AS (\n"
         f"  SELECT CASE WHEN {val} <> 0 THEN {val} END AS total\n"
@@ -1953,11 +1978,11 @@ def spending_privacy_defs(db_id, model_ids):
         "window's net spend, with the merchant and the account label "
         "redacted — date, source and both category levels remain.",
         "WITH r AS (\n"
-        "  SELECT occurred_at, silver_source_id, spend_primary, spend_detailed,\n"
+        "  SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
         f"         ({_ccy_case('value', neg=True)})::DOUBLE AS v\n"
         "    FROM web_spending" + where + "),\n"
         "t AS (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END AS total FROM r)\n"
-        "SELECT occurred_at, silver_source_id, spend_primary, spend_detailed,\n"
+        "SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
         "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
         "  FROM r\n ORDER BY v DESC\n LIMIT 50", {})
 

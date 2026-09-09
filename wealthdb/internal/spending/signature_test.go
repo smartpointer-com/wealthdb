@@ -709,9 +709,9 @@ func TestP2PRowCandidacy(t *testing.T) {
 	// this split the rail's own name fenced both, and in Switzerland
 	// the shops are the larger half by far.
 	const (
-		cardFiling    = "TWINT"
-		cardPerson    = "TWINT * Sent to A.B.     079***1234   CHE"
-		cardShop      = "TWINT * EXAMPLE SPORTS AG   EXAMPLE CITY   CHE"
+		cardFiling = "TWINT"
+		cardPerson = "TWINT * Sent to A.B.     079***1234   CHE"
+		cardShop   = "TWINT * EXAMPLE SPORTS AG   EXAMPLE CITY   CHE"
 	)
 	personCardSig := Normalize("", cardPerson)
 	if !RowTransferShaped(personCardSig, cardFiling, cardPerson) {

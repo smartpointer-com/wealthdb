@@ -28,7 +28,7 @@ func TestCollectMerchantCandidatesDropsTheMemo(t *testing.T) {
 	}
 	runEnrichment(t, db, ctx)
 
-	cands, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, false)
+	cands, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCollectMerchantCandidatesRefusesBareFiling(t *testing.T) {
 	runEnrichment(t, db, ctx)
 
 	for _, all := range []bool{false, true} {
-		cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, all)
+		cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogOf(all, false))
 		if err != nil {
 			t.Fatalf("collectMerchantCandidates(all=%v): %v", all, err)
 		}

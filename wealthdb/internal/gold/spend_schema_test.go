@@ -804,3 +804,180 @@ func TestSpendPopulationLayering(t *testing.T) {
 		t.Errorf("spend_scoped_accounts = %d, want 3 (both cash/card defaults plus the pulled-in account, minus the fenced one)", scoped)
 	}
 }
+
+// TestMigration0057DDLIsRerunnable holds the issuer-view migration to the
+// replay bar: the ADD COLUMN must be IF NOT EXISTS, and the macro re-issue
+// must keep every refinement made since 0042 — a re-issue replaces the
+// whole body, so a carried-forward clause dropped here is a silent
+// regression in what every spending report reads.
+func TestMigration0057DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0057_spend_provider_view.sql")
+
+	var n int
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM information_schema.columns
+         WHERE table_name = 'spend_txn_enrichment'
+           AND column_name = 'provider_spend_detailed'`).Scan(&n); err != nil {
+		t.Fatalf("column check: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("provider_spend_detailed columns = %d, want 1", n)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM spend_txn_categories() LIMIT 0")
+	if err != nil {
+		t.Fatalf("macro after re-run: %v", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("macro columns: %v", err)
+	}
+	have := map[string]bool{}
+	for _, c := range cols {
+		have[c] = true
+	}
+	// The two new columns, and the three refinements 0042 did not have.
+	for _, c := range []string{"provider_spend_detailed", "provider_spend_primary",
+		"merchant_name", "spend_detailed", "spend_primary", "provenance"} {
+		if !have[c] {
+			t.Errorf("spend_txn_categories() lost %q in the re-issue", c)
+		}
+	}
+}
+
+// TestProviderViewRecordsWithoutDeciding pins the two halves of the
+// policy at once: the issuer's mapped value is recorded on every row it
+// translates, and a catch-all among them does not become the verdict.
+func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
+	db, ctx := openMigrated(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+              merchant_signature, signature_version, spend_detailed, provenance,
+              provider_spend_detailed, assigned_at) VALUES
+            -- the issuer said something specific, and it decided
+            ('s', 'T-SPECIFIC', 'SIG-A', 1, 'FOOD_AND_DRINK_GROCERIES', 'provider',
+             'FOOD_AND_DRINK_GROCERIES', 1),
+            -- the issuer said only "somewhere in general merchandise": recorded,
+            -- but the row is left for a tier that can read the merchant name
+            ('s', 'T-CATCHALL', 'SIG-B', 1, NULL, 'signature-only',
+             'GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE', 1),
+            -- the issuer said nothing at all: NULL, which is not the same
+            ('s', 'T-SILENT', 'SIG-C', 1, NULL, 'signature-only', NULL, 1)`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	type got struct{ ours, theirs, theirPrim sql.NullString }
+	for id, want := range map[string]got{
+		"T-SPECIFIC": {ours: sql.NullString{String: "FOOD_AND_DRINK_GROCERIES", Valid: true},
+			theirs:    sql.NullString{String: "FOOD_AND_DRINK_GROCERIES", Valid: true},
+			theirPrim: sql.NullString{String: "FOOD_AND_DRINK", Valid: true}},
+		"T-CATCHALL": {theirs: sql.NullString{String: "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", Valid: true},
+			theirPrim: sql.NullString{String: "GENERAL_MERCHANDISE", Valid: true}},
+		"T-SILENT": {},
+	} {
+		var g got
+		if err := db.QueryRowContext(ctx, `
+            SELECT spend_detailed, provider_spend_detailed, provider_spend_primary
+              FROM spend_txn_categories() WHERE transaction_external_id = ?`, id).
+			Scan(&g.ours, &g.theirs, &g.theirPrim); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if g != want {
+			t.Errorf("%s = %+v, want %+v", id, g, want)
+		}
+	}
+}
+
+// TestSpendCategoryLabelsMatchGoTable pins the seeded display labels to
+// canonical.SpendLabel. The migration seeds them literally so one can be
+// corrected by hand; this is what stops a correction there from silently
+// disagreeing with the rule in Go, and what catches a new taxonomy value
+// seeded without a label at all.
+func TestSpendCategoryLabelsMatchGoTable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rows, err := db.QueryContext(ctx,
+		`SELECT spend_primary, spend_detailed, label, primary_label FROM spend_categories`)
+	if err != nil {
+		t.Fatalf("read labels: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var prim, det string
+		var label, primLabel sql.NullString
+		if err := rows.Scan(&prim, &det, &label, &primLabel); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		n++
+		if !label.Valid || !primLabel.Valid {
+			t.Errorf("%s has no label; every value must read as something", det)
+			continue
+		}
+		if want := canonical.SpendLabel(det); label.String != want {
+			t.Errorf("%s label = %q, want %q", det, label.String, want)
+		}
+		if want := canonical.SpendPrimaryLabel(prim); primLabel.String != want {
+			t.Errorf("%s primary_label = %q, want %q", det, primLabel.String, want)
+		}
+	}
+	if n != len(canonical.SpendCategories) {
+		t.Errorf("labelled %d rows, want %d", n, len(canonical.SpendCategories))
+	}
+}
+
+// TestMigration0058DDLIsRerunnable holds the label seed to the replay
+// bar: the ALTERs are IF NOT EXISTS and the UPDATE is idempotent, so a
+// second application neither fails nor changes a label.
+func TestMigration0058DDLIsRerunnable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rerunMigrationDDL(t, db, ctx, "0058_spend_category_labels.sql")
+	var label string
+	if err := db.QueryRowContext(ctx,
+		`SELECT label FROM spend_categories WHERE spend_detailed = 'BANK_FEES_ATM_FEES'`).
+		Scan(&label); err != nil {
+		t.Fatalf("read label after re-run: %v", err)
+	}
+	if label != "ATM fees" {
+		t.Errorf("label = %q after a re-run, want %q", label, "ATM fees")
+	}
+}
+
+// TestSpendCategoryCatchAllMatchesGoTable pins the seeded catch-all flag
+// to canonical.CatchAllSpendDetailed. The rule is expressed twice — once
+// in Go for the enrichment pass, once in SQL for the seed — and this is
+// what stops the two drifting.
+func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
+	db, ctx := openMigrated(t)
+	rows, err := db.QueryContext(ctx,
+		`SELECT spend_detailed, catch_all FROM spend_categories`)
+	if err != nil {
+		t.Fatalf("read catch_all: %v", err)
+	}
+	defer rows.Close()
+	seen, flagged := 0, 0
+	for rows.Next() {
+		var det string
+		var flag sql.NullBool
+		if err := rows.Scan(&det, &flag); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen++
+		if !flag.Valid {
+			t.Errorf("%s has no catch_all flag", det)
+			continue
+		}
+		if flag.Bool {
+			flagged++
+		}
+		if want := canonical.CatchAllSpendDetailed(det); flag.Bool != want {
+			t.Errorf("%s catch_all = %v, want %v", det, flag.Bool, want)
+		}
+	}
+	if seen != len(canonical.SpendCategories) {
+		t.Errorf("flagged %d rows, want %d", seen, len(canonical.SpendCategories))
+	}
+	if flagged == 0 {
+		t.Error("no value is a catch-all; the seed is not doing anything")
+	}
+}

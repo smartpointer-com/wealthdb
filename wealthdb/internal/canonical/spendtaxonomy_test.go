@@ -241,3 +241,45 @@ func TestDeltaSpendCategoriesIsACopy(t *testing.T) {
 		t.Error("DeltaSpendCategories must return a copy")
 	}
 }
+
+// TestCatchAllSpendDetailed pins the predicate a tier declines on. Every
+// primary has exactly one catch-all and it is the only value in that
+// primary the predicate admits; a delta is never one, because a delta is
+// a verdict about what the row IS rather than a shrug about a merchant.
+func TestCatchAllSpendDetailed(t *testing.T) {
+	byPrimary := map[string][]string{}
+	for _, c := range SpendCategories {
+		if CatchAllSpendDetailed(c.Detailed) {
+			byPrimary[c.Primary] = append(byPrimary[c.Primary], c.Detailed)
+		}
+	}
+	for _, c := range VendoredSpendCategories() {
+		if _, ok := byPrimary[c.Primary]; !ok {
+			t.Errorf("primary %s has no catch-all; a tier cannot decline in it", c.Primary)
+		}
+	}
+	for prim, vals := range byPrimary {
+		if len(vals) != 1 {
+			t.Errorf("primary %s has %d catch-alls (%v), want exactly 1", prim, len(vals), vals)
+		}
+	}
+	for _, d := range DeltaSpendCategories() {
+		if CatchAllSpendDetailed(d.Detailed) {
+			t.Errorf("delta %s reads as a catch-all; a delta is a verdict, not a shrug", d.Detailed)
+		}
+	}
+	for _, s := range []string{"", "NOT_A_VALUE", "GENERAL_MERCHANDISE"} {
+		if CatchAllSpendDetailed(s) {
+			t.Errorf("%q must not read as a catch-all", s)
+		}
+	}
+	// The two shapes the convention takes, both admitted.
+	for _, s := range []string{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "RENT_AND_UTILITIES_OTHER_UTILITIES"} {
+		if !CatchAllSpendDetailed(s) {
+			t.Errorf("%s is a catch-all", s)
+		}
+	}
+	if CatchAllSpendDetailed(SpendDetailedDigitalServices) {
+		t.Error("an extension that names a real category is not a catch-all")
+	}
+}

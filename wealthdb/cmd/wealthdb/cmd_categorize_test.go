@@ -676,7 +676,7 @@ func seedBacklogGold(t *testing.T) (*sql.DB, context.Context) {
 func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, false)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestCollectMerchantCandidatesBacklogOnly(t *testing.T) {
 func TestCollectMerchantCandidatesAll(t *testing.T) {
 	db, ctx := seedBacklogGold(t)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, true)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogAll)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestCollectMerchantCandidatesFenceHoldsAtEveryContext(t *testing.T) {
 		config.SpendContextDescriptor,
 		config.SpendContextTransaction,
 	} {
-		cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, true)
+		cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogAll)
 		if err != nil {
 			t.Fatalf("%s: collectMerchantCandidates: %v", level, err)
 		}
@@ -777,7 +777,7 @@ func TestCollectMerchantCandidatesSkipsUninformativeAtEveryContext(t *testing.T)
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, all)
+			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogOf(all, false))
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -825,7 +825,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T2", "CARD1", "purchase", 10, -60, "Orchard Lane Market", "")
 	runEnrichment(t, db, ctx)
 
-	merchant, _, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, false)
+	merchant, _, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("merchant level: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 		t.Error("the merchant level must not send the raw narrative")
 	}
 
-	descriptor, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, false)
+	descriptor, _, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("descriptor level: %v", err)
 	}
@@ -850,7 +850,7 @@ func TestCollectMerchantCandidatesContextDepth(t *testing.T) {
 		t.Error("the descriptor level must not send dates or amounts")
 	}
 
-	transaction, _, err := collectMerchantCandidates(ctx, db, config.SpendContextTransaction, 3, false)
+	transaction, _, err := collectMerchantCandidates(ctx, db, config.SpendContextTransaction, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("transaction level: %v", err)
 	}
@@ -875,7 +875,7 @@ func TestCollectMerchantCandidatesFencesTheRawNarrative(t *testing.T) {
 	seedSpendTxn(t, db, ctx, "T1", "CARD1", "purchase", 10, -40, long, "")
 	runEnrichment(t, db, ctx)
 
-	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, false)
+	cands, skipped, err := collectMerchantCandidates(ctx, db, config.SpendContextDescriptor, 3, backlogUnplaced)
 	if err != nil {
 		t.Fatalf("collectMerchantCandidates: %v", err)
 	}
@@ -1579,7 +1579,7 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 			config.SpendContextTransaction,
 		} {
 			name := fmt.Sprintf("%s/all=%v", level, all)
-			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, all)
+			cands, skipped, err := collectMerchantCandidates(ctx, db, level, 3, backlogOf(all, false))
 			if err != nil {
 				t.Fatalf("%s: collectMerchantCandidates: %v", name, err)
 			}
@@ -1625,5 +1625,86 @@ func TestCollectMerchantCandidatesFencesTheWholeRow(t *testing.T) {
 	}
 	if csv := formatAnchorSignatureCSV(anchors); strings.Contains(csv, "EXAMPLE") {
 		t.Errorf("the payee reached the anchor CSV:\n%s", csv)
+	}
+}
+
+// TestRefineBacklogAsksOnlyWhereTheModelGaveUp pins the narrow re-ask.
+//
+// Three signatures with a catch-all verdict and one with a real one, each
+// placed by a different tier. Only the model's catch-all may be asked
+// about again: a catch-all a rule or a pin placed is a considered
+// decision — the taxonomy has no word for it and one was chosen on
+// purpose — and re-asking would undo deliberate work.
+func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
+	db, ctx := openCategorizeGold(t)
+	const catchAll = "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE"
+	seedSpendTxn(t, db, ctx, "T-MODEL", "CARD1", "purchase", 10, -10, "Model Shop", "")
+	seedSpendTxn(t, db, ctx, "T-RULE", "CARD1", "purchase", 11, -20, "Rule Shop", "")
+	seedSpendTxn(t, db, ctx, "T-PIN", "CARD1", "purchase", 12, -30, "Pin Shop", "")
+	seedSpendTxn(t, db, ctx, "T-PLACED", "CARD1", "purchase", 13, -40, "Placed Shop", "")
+	// A merchant the MODEL placed on a real value. Same provenance as the
+	// one that must be re-asked, so only the catch_all half of the
+	// predicate can tell them apart — without it this test passes with
+	// that half deleted.
+	seedSpendTxn(t, db, ctx, "T-MODEL-OK", "CARD1", "purchase", 14, -50, "Answered Shop", "")
+	runEnrichment(t, db, ctx)
+
+	// The model's verdict lives in the merchant store and resolves as
+	// provenance `model`; the other two are stamped on the overlay row.
+	for _, st := range []struct {
+		id, detailed, provenance string
+	}{
+		{"T-MODEL", "", "signature-only"},
+		{"T-RULE", catchAll, "rule"},
+		{"T-PIN", catchAll, "manual"},
+		{"T-PLACED", "FOOD_AND_DRINK_GROCERIES", "rule"},
+		{"T-MODEL-OK", "", "signature-only"},
+	} {
+		var d any
+		if st.detailed != "" {
+			d = st.detailed
+		}
+		if _, err := db.ExecContext(ctx, `
+            UPDATE spend_txn_enrichment SET spend_detailed = ?, provenance = ?
+             WHERE transaction_external_id = ?`, d, st.provenance, st.id); err != nil {
+			t.Fatalf("stage %s: %v", st.id, err)
+		}
+	}
+	sigOf := func(id string) string {
+		t.Helper()
+		var sig string
+		if err := db.QueryRowContext(ctx, `SELECT merchant_signature FROM spend_txn_enrichment
+             WHERE transaction_external_id = ?`, id).Scan(&sig); err != nil {
+			t.Fatalf("read signature for %s: %v", id, err)
+		}
+		return sig
+	}
+	sig, sigOK := sigOf("T-MODEL"), sigOf("T-MODEL-OK")
+	for _, v := range []struct{ sig, name, detailed string }{
+		{sig, "Model Shop", catchAll},
+		{sigOK, "Answered Shop", "FOOD_AND_DRINK_COFFEE"},
+	} {
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO spend_merchant_categories (merchant_signature, merchant_name,
+                  spend_detailed, signature_version, assigned_at, model_name)
+            VALUES (?, ?, ?, 1, 1, 'test-model')`, v.sig, v.name, v.detailed); err != nil {
+			t.Fatalf("seed store verdict for %s: %v", v.name, err)
+		}
+	}
+
+	cands, _, err := collectMerchantCandidates(ctx, db, config.SpendContextMerchant, 0, backlogRefine)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	got := signaturesOf(cands)
+	if len(got) != 1 || got[0] != sig {
+		t.Errorf("--refine asked about %v, want only the model's catch-all (%q)", got, sig)
+	}
+
+	// The flag reaches the backlog it names, and the two widening flags
+	// are mutually exclusive.
+	if backlogOf(false, true) != backlogRefine || backlogOf(true, false) != backlogAll ||
+		backlogOf(false, false) != backlogUnplaced {
+		t.Error("backlogOf does not map the flags to the backlogs they name")
 	}
 }

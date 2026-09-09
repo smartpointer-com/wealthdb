@@ -186,6 +186,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		"merchant signatures per model call; the default keeps a local model's answer well inside the 5-minute call timeout")
 	showPrompt := fs.Bool("show-prompt", false, "print the first batch's prompt to stderr in full; later batches only its size (debugging)")
 	all := fs.Bool("all", false, "re-ask every signature candidacy admits, including ones already in the merchant store")
+	refine := fs.Bool("refine", false, "re-ask only the merchants the model itself could place no better than a catch-all")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, categorizeUsage())
 	}
@@ -202,6 +203,11 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if *batch < 1 {
 		fs.Usage()
 		return errs.Newf(2, "categorize: --batch must be at least 1, got %d", *batch)
+	}
+	// Beside the other flag check, and before the pass takes the gold
+	// write lock: a usage error must not cost a full overlay rewrite.
+	if *all && *refine {
+		return errs.Newf(2, "categorize: --all and --refine choose different backlogs; pass one")
 	}
 
 	cfg, err := config.Load(g.ConfigPath)
@@ -277,7 +283,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return err
 	}
 
-	candidates, skipped, err := collectMerchantCandidates(ctx, db, level, cz.Samples(), *all)
+	candidates, skipped, err := collectMerchantCandidates(ctx, db, level, cz.Samples(), backlogOf(*all, *refine))
 	if err != nil {
 		return err
 	}
@@ -373,6 +379,36 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	return nil
 }
 
+// backlog names which signatures a run asks about.
+type backlog int
+
+const (
+	// backlogUnplaced is the default: signatures no tier could place.
+	backlogUnplaced backlog = iota
+	// backlogAll re-asks every signature candidacy admits, placed or
+	// not — what a taxonomy revision or a model change wants.
+	backlogAll
+	// backlogRefine re-asks only where the MODEL's own verdict is a
+	// catch-all: it was asked, and could say no more than the primary
+	// already did. It is deliberately the narrowest re-ask, and it is
+	// scoped by provenance rather than by value for one reason — a
+	// catch-all placed by a RULE or a PIN is a considered decision
+	// (the taxonomy has no word for a portrait photographer, so one
+	// was chosen on purpose), and a pass that re-asked those would
+	// undo deliberate work and push private individuals at a model.
+	backlogRefine
+)
+
+func backlogOf(all, refine bool) backlog {
+	switch {
+	case all:
+		return backlogAll
+	case refine:
+		return backlogRefine
+	}
+	return backlogUnplaced
+}
+
 // ---- candidate collection ---------------------------------------------------
 
 // collectMerchantCandidates reads the model tier's backlog.
@@ -401,11 +437,17 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 // name, and a round-trip spent on it ends in the gauntlet every time.
 // Both counts are returned so the run report can show each gate doing
 // something rather than silently doing nothing.
-func collectMerchantCandidates(ctx context.Context, db *sql.DB, level string, samples int, all bool) ([]merchantCandidate, skippedSignatures, error) {
+func collectMerchantCandidates(ctx context.Context, db *sql.DB, level string, samples int, which backlog) ([]merchantCandidate, skippedSignatures, error) {
 	backlogFilter := `
    AND c.spend_detailed IS NULL`
-	if all {
+	switch which {
+	case backlogAll:
 		backlogFilter = ""
+	case backlogRefine:
+		backlogFilter = `
+   AND c.provenance = 'model'
+   AND EXISTS (SELECT 1 FROM spend_categories sc
+                WHERE sc.spend_detailed = c.spend_detailed AND sc.catch_all)`
 	}
 	q := `
 SELECT c.merchant_signature,
@@ -1327,7 +1369,7 @@ ON CONFLICT (merchant_signature) DO UPDATE SET
 // ---- usage --------------------------------------------------------------------
 
 func categorizeUsage() string {
-	return `usage: wealthdb categorize [-n | --dry-run] [--batch N] [--max-attempts N] [--max-anchors N] [--show-prompt] [--all]
+	return `usage: wealthdb categorize [-n | --dry-run] [--batch N] [--max-attempts N] [--max-anchors N] [--show-prompt] [--all | --refine]
 
 Categorise the merchants the deterministic spending tiers could not
 place, using the LLM configured in wealthdb.cfg's
@@ -1377,5 +1419,9 @@ Flags:
       --show-prompt     print the first batch's prompt to stderr in full;
                         later batches print only its size (debugging)
       --all             re-ask every signature candidacy admits, including
-                        the ones already answered in the merchant store`
+                        the ones already answered in the merchant store
+      --refine          re-ask only the merchants the model itself could
+                        place no better than a catch-all. The narrow
+                        re-ask: a catch-all a RULE or a PIN placed is a
+                        considered decision and is never disturbed`
 }

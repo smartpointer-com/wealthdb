@@ -248,8 +248,14 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 			Extract: func(r gold.SpendCategoryRow) string { return spendPeriodStart(r.PeriodStart) }},
 		// The category is taxonomy — a vocabulary value, not an
 		// identifier — and stays legible under -p, like asset_class
-		// and the other taxonomy labels.
+		// and the other taxonomy labels. Two spellings of the same
+		// thing: `category` is what a report reads as, `category_id`
+		// the value it groups on. The label is the default because it
+		// is what a person reads; the id is there for a caller
+		// scripting against a stable key.
 		{Name: "category", Align: output.AlignLeft,
+			Extract: func(r gold.SpendCategoryRow) string { return r.CategoryLabel }},
+		{Name: "category_id", Align: output.AlignLeft,
 			Extract: func(r gold.SpendCategoryRow) string { return r.Category }},
 		{Name: "txn_count", Align: output.AlignRight,
 			Extract: func(r gold.SpendCategoryRow) string { return fmt.Sprintf("%d", r.TxnCount) }},
@@ -330,6 +336,26 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendPrimary) }},
 		{Name: "spend_detailed", Align: output.AlignLeft,
 			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendDetailed) }},
+		// The same two values as they read (migration 0058).
+		{Name: "category", Align: output.AlignLeft,
+			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendLabel) }},
+		{Name: "category_primary", Align: output.AlignLeft,
+			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.SpendPrimaryLabel) }},
+		// The ISSUER's own classification of the line, mapped into our
+		// vocabulary and kept beside ours (migration 0057). Off by
+		// default: it is a second opinion, it disagrees with ours by
+		// design, and nothing may sum the two. Empty where the issuer
+		// published nothing this build translates — which is not the
+		// same as the issuer filing the row under a catch-all.
+		//
+		// Named `issuer_*` rather than `provider_category`, which
+		// everywhere else in the product — `transactions.provider_category`
+		// (migration 0038), the field a config rule matches — means the
+		// issuer's RAW string. These two are our translation of it.
+		{Name: "issuer_category", Align: output.AlignLeft,
+			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.ProviderSpendLabel) }},
+		{Name: "issuer_category_id", Align: output.AlignLeft,
+			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.ProviderSpendDetailed) }},
 		// Which tier decided the category (matcher / rule / provider /
 		// signature-only / model / manual) — vocabulary, not data.
 		// Five of the six are stamped on the overlay row by the
@@ -364,7 +390,7 @@ func buildSpendTransactionColumnRegistry(outCcy string) []columnSpec[gold.SpendT
 }
 
 var defaultSpendTransactionColumns = []string{
-	"silver_source", "date", "account", "merchant", "spend_detailed",
+	"silver_source", "date", "account", "merchant", "category",
 	"currency", "net_amount", "value",
 }
 

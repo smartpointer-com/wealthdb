@@ -254,6 +254,17 @@ provider, and it reads weakest-first:
   verdict is per transaction, placed from the provider's structured
   filing of that row rather than from a merchant's name, and every
   tier above still overrules it.
+
+  **A catch-all is not a verdict.** Where the issuer's value translates
+  only to a primary's own `OTHER_*` bucket, the tier records what the
+  issuer said and DECLINES the row. A catch-all carries no more than
+  the primary already did, and claiming with one would pre-empt the
+  model — the only tier that reads the merchant name, and the one that
+  can do better: the issuer knew the row was "shopping", and the
+  descriptor said Apple. Declining is not the same as the issuer
+  saying nothing; both leave the row for a later tier, and
+  `provider_spend_detailed` tells them apart (§ The issuer's view,
+  kept).
 - A **rule** beats it because a rule encodes something structural
   about the product's own account graph — that the mortgage being paid
   is itself tracked, that cash out of an ATM is unattributable — which
@@ -533,8 +544,12 @@ entries, of which `scope` is optional. `match`
 is compiled case-insensitively and tested against a row's raw
 narrative (`counterparty` and `description`, each on its own — the
 description whole, memo included, so a rule may key on what the payer
-wrote a payment was for); `category` is what a match places, with
-provenance `rule`. The key is
+wrote a payment was for) **and against `provider_category`, the
+issuer's own filing of the row**, on the same terms. That third field
+is how a rule reaches a class of merchant the descriptor never names —
+a membership, a trade — and it is what makes the issuer an input to
+our classification rather than a tier that outranks it. `category` is
+what a match places, with provenance `rule`. The key is
 named for what the entries are — rules in the same tier as the three
 built-ins, with the same provenance — rather than for a pattern with
 one fixed verdict.
@@ -705,6 +720,75 @@ gold stores at the end of the description behind the memo separator
 (§4, docs/adapters/ubs.md §7).
 
 ---
+
+#### Reading the taxonomy
+
+The vendored values shout in full caps and repeat their primary in the
+detail; the six deltas are lower-case, because one vocabulary is
+Plaid's and the other is ours. Each row therefore carries what it
+should READ as beside what it IS: `spend_categories.label` and
+`.primary_label` (migration 0058), seeded from `canonical.SpendLabel`.
+`FOOD_AND_DRINK_GROCERIES` reads "Groceries",
+`GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
+merchandise", `internal_transfer` reads "Internal transfer".
+
+The label is presentation and nothing more. The value stays the join
+key, the name a rule and a pin write, and what the model gauntlet
+validates — so a taxonomy refresh still diffs against the vendored
+spelling. The CLI's `category` column and the Metabase pickers render
+the label; `category_id` and the model's `spend_*_id` columns carry the
+value for a caller that needs a key a rewording cannot move.
+
+#### The issuer's view, kept
+
+`transactions.provider_category` holds what the issuer called a row,
+verbatim. `spend_txn_enrichment.provider_spend_detailed` holds what our
+vocabulary translates that string to (migration 0057), and
+`spend_txn_categories()` publishes it beside our own verdict together
+with the primary it rolls up to.
+
+It is a record, never a verdict of ours. It is written for every row
+the vocabulary translates — whether or not the tier went on to claim
+the row, and whether or not a tier above overruled it — so the
+disagreement between the issuer and us is a reportable number instead
+of a silent overwrite. Three values, three meanings:
+
+| `provider_spend_detailed` | the issuer |
+| --- | --- |
+| a specific value | filed the row under a real line of business |
+| a catch-all (`*_OTHER_*`) | filed the row, but said no more than the primary |
+| NULL | published nothing this build translates |
+
+The last two must never be collapsed. A mapped catch-all is a real if
+uninformative opinion; NULL is no opinion at all, and the distinction
+is exactly what the decline rule turns on.
+
+Reports show our verdict by default and the issuer's on request.
+Nothing sums across the two — they disagree on roughly a third of the
+rows an issuer classifies, which is the reason both are kept.
+
+A rule may also MATCH on `provider_category` (§ The rule tier), which
+is what makes the issuer an input to our own classification rather
+than a tier that outranks it.
+
+### Re-asking the model: `--all` and `--refine`
+
+A run asks about the backlog — signatures no tier could place. Two
+flags widen it, and they choose different things:
+
+- `--all` re-asks every signature candidacy admits, placed or not. That
+  is what a taxonomy revision or a model change wants.
+- `--refine` re-asks only where the MODEL's own verdict is a catch-all:
+  it was asked, and could say no more than the primary already did.
+
+`--refine` is scoped by PROVENANCE, not by value, and that is the whole
+point. A catch-all a rule or a pin placed is a considered decision —
+the taxonomy has no word for a portrait photographer or for household
+removals, so one was chosen deliberately after checking — and a pass
+that re-asked those would undo the work and push private individuals at
+a model. `spend_categories.catch_all` (migration 0060) is the same
+predicate as `canonical.CatchAllSpendDetailed`, as data, so the query
+and the enrichment pass share one definition of what a catch-all is.
 
 ## 4. Merchant signatures
 

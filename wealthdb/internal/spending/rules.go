@@ -468,8 +468,16 @@ func ConfigRuleCategory(rules []Rule, row RuleRow) (string, bool) {
 		if !r.Scope.Any() && !r.Scope.Admits(row.Source, row.Portfolio, row.Account, row.OccurredAt) {
 			continue
 		}
+		// The issuer's own filing is a field a rule may match on, like
+		// the counterparty and the narrative. It is the only way to
+		// write a rule about a class of merchant the descriptor does
+		// not name — a membership, a trade — and it is what makes the
+		// issuer an INPUT to our classification rather than a tier
+		// that outranks it. Tested whole, on the raw value, so a rule
+		// says what the issuer said.
 		if (row.Counterparty != "" && r.Match.MatchString(row.Counterparty)) ||
-			(row.Description != "" && r.Match.MatchString(row.Description)) {
+			(row.Description != "" && r.Match.MatchString(row.Description)) ||
+			(row.ProviderCategory != "" && r.Match.MatchString(row.ProviderCategory)) {
 			return r.Category, true
 		}
 	}
@@ -483,10 +491,15 @@ func ConfigRuleCategory(rules []Rule, row RuleRow) (string, bool) {
 type RuleRow struct {
 	Counterparty string
 	Description  string
-	Source       string
-	Portfolio    string
-	Account      string
-	OccurredAt   int64
+	// ProviderCategory is the issuer's own filing of the row, verbatim.
+	// A rule may match it like any other field; it never decides on its
+	// own (see the provider tier in enrich.go, which records it and
+	// declines a catch-all).
+	ProviderCategory string
+	Source           string
+	Portfolio        string
+	Account          string
+	OccurredAt       int64
 }
 
 // matchesAny reports whether the rule fires on any one of the fields,

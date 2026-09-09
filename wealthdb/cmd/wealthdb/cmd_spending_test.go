@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -454,10 +455,12 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
 		}
-		if !strings.Contains(primary, "FOOD_AND_DRINK ") {
+		// The column renders the display label (migration 0058); the
+		// vendored value is `category_id`, which is not selected here.
+		if !strings.Contains(primary, "Food and drink") {
 			t.Errorf("--level primary missing the primary bucket:\n%s", primary)
 		}
-		if strings.Contains(primary, "FOOD_AND_DRINK_GROCERIES") {
+		if strings.Contains(primary, "Groceries") {
 			t.Errorf("--level primary emitted a detailed value:\n%s", primary)
 		}
 
@@ -465,10 +468,18 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("detailed exit=%d", code)
 		}
-		for _, want := range []string{"FOOD_AND_DRINK_GROCERIES", "FOOD_AND_DRINK_RESTAURANT", "cash_withdrawal"} {
+		for _, want := range []string{"Groceries", "Restaurant", "Cash withdrawal"} {
 			if !strings.Contains(detailed, want) {
 				t.Errorf("--level detailed missing %q:\n%s", want, detailed)
 			}
+		}
+		// The value is still reachable, under its own column.
+		byID, _, code := spending("categories", "--period", "total", "--level", "detailed", "-C", "+category_id")
+		if code != 0 {
+			t.Fatalf("category_id exit=%d", code)
+		}
+		if !strings.Contains(byID, "FOOD_AND_DRINK_GROCERIES") {
+			t.Errorf("category_id lost the vendored value:\n%s", byID)
 		}
 		// The backlog is a labelled bucket, never a blank row.
 		if !strings.Contains(detailed, "(uncategorized)") {
@@ -504,12 +515,12 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		// `rule` is a tier that stamps the overlay row; `model` is the
 		// one that does not — a line the merchant store placed reads it
 		// only because the two scopes resolve in the macro.
-		for _, want := range []string{"CornerMart", "FOOD_AND_DRINK_GROCERIES", "cash_withdrawal", "rule", "model", spendTestCounterparty} {
+		for _, want := range []string{"CornerMart", "Groceries", "Cash withdrawal", "rule", "model", spendTestCounterparty} {
 			if !strings.Contains(so, want) {
 				t.Errorf("transactions missing %q:\n%s", want, so)
 			}
 		}
-		if strings.Contains(so, "T-CARDPAY") || strings.Contains(so, "internal_transfer") {
+		if strings.Contains(so, "T-CARDPAY") || strings.Contains(so, "Internal transfer") {
 			t.Errorf("an own-account move reached the transactions view:\n%s", so)
 		}
 		// The store names the ATM signature and the line is a delta:
@@ -578,7 +589,10 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 				t.Errorf("privacy leaked the merchant fold %q:\n%s", fold, so)
 			}
 		}
-		if !strings.Contains(so, "FOOD_AND_DRINK_GROCERIES") {
+		// The taxonomy stays readable, in the spelling the column
+		// renders: the default `category` column is the display label
+		// (migration 0058), not the vendored value.
+		if !strings.Contains(so, "Groceries") {
 			t.Errorf("privacy redacted a category:\n%s", so)
 		}
 	})
@@ -643,4 +657,48 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSpendingTransactionsCarriesBothClassifications pins the columns the
+// issuer view reaches the CLI through — and that they are two vocabularies
+// side by side, never one silently standing in for the other.
+func TestSpendingTransactionsCarriesBothClassifications(t *testing.T) {
+	cfg := setupSpendingGold(t)
+	// Stamp an issuer view that DISAGREES with ours, which is the case a
+	// column quietly rendering the wrong one would hide.
+	db, err := sql.Open("duckdb", goldPathFromCfg(cfg))
+	if err != nil {
+		t.Fatalf("open gold: %v", err)
+	}
+	// On every row: the enrichment table's own spend_detailed is NULL
+	// wherever the merchant store answered, so keying the stamp on it
+	// would silently match nothing.
+	res, err := db.Exec(`
+        UPDATE spend_txn_enrichment
+           SET provider_spend_detailed = 'GENERAL_MERCHANDISE_SUPERSTORES'`)
+	if err != nil {
+		t.Fatalf("stamp issuer view: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		t.Fatal("stamped no rows; the fixture has no enrichment to carry an issuer view")
+	}
+	db.Close()
+
+	so, se, code := run(t, "-c", cfg, "spending", "transactions",
+		"2026-05-01", "2026-06-30",
+		"-C", "+category_primary,issuer_category,issuer_category_id,spend_detailed")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, se)
+	}
+	for _, want := range []string{
+		"Groceries",                       // ours, as a label
+		"FOOD_AND_DRINK_GROCERIES",        // ours, as the value
+		"Food and drink",                  // our primary, as a label
+		"Superstores",                     // the issuer's, as a label
+		"GENERAL_MERCHANDISE_SUPERSTORES", // the issuer's, as the value
+	} {
+		if !strings.Contains(so, want) {
+			t.Errorf("spending transactions is missing %q:\n%s", want, so)
+		}
+	}
 }

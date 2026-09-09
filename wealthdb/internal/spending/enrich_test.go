@@ -168,6 +168,22 @@ func verdictOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string)
 	return d.String, provenance
 }
 
+// providerViewOf reads the issuer's own mapped verdict for a row — kept
+// whether or not it decided anything — and whether one was recorded at
+// all. The distinction is load-bearing: "" with ok=false means the
+// issuer published nothing this build translates, while a recorded
+// catch-all means the issuer did file the row, just uninformatively.
+func providerViewOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string) (string, bool) {
+	t.Helper()
+	var v sql.NullString
+	if err := db.QueryRowContext(ctx, `
+        SELECT provider_spend_detailed FROM spend_txn_enrichment
+         WHERE silver_source_id = ? AND transaction_external_id = ?`, source, id).Scan(&v); err != nil {
+		t.Fatalf("read provider view for %s/%s: %v", source, id, err)
+	}
+	return v.String, v.Valid
+}
+
 // TestPassPrecedence pins matcher > rule > provider on rows that each
 // have MORE than one tier's worth of evidence, which is the only way
 // the ordering is observable at all.
@@ -327,8 +343,9 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 	seedTxns(t, db, ctx,
 		txn{"bank", "T-AMEX-BILL", "CASH1", "withdrawal", day(20), -400, "", bill, ""},
 		txn{"amex", "T-AMEX-LEG", "AMEXCARD", "card_payment", day(20), 400, "", "", ""},
-		// A purchase on the card, carrying the provider category the amex
-		// vocabulary translates — the spending the bill used to stand in for.
+		// A purchase on the card, carrying a provider category the amex
+		// vocabulary translates only to its primary's catch-all — the
+		// issuer filed the row, but said no more than the primary does.
 		txn{"amex", "T-AMEX-BUY", "AMEXCARD", "purchase", day(18), -60,
 			"Corner Market", "", "Merchandise & Supplies"},
 		// A purchase the ISSUER could not place. The verdict row below
@@ -344,7 +361,7 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 	for _, tc := range []struct{ src, id, detailed, provenance string }{
 		{"bank", "T-AMEX-BILL", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
 		{"amex", "T-AMEX-LEG", canonical.SpendDetailedInternalTransfer, ProvenanceMatcher},
-		{"amex", "T-AMEX-BUY", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", ProvenanceProvider},
+		{"amex", "T-AMEX-BUY", "", ProvenanceSignatureOnly},
 		{"amex", "T-AMEX-OTHER", "", ProvenanceSignatureOnly},
 	} {
 		detailed, provenance := verdictOf(t, db, ctx, tc.src, tc.id)
@@ -353,6 +370,16 @@ func TestPassAmexBillPairsWithTheCollectedCard(t *testing.T) {
 				tc.detailed, tc.provenance)
 		}
 	}
+	// Both rows end signature-only, for opposite reasons, and the issuer
+	// view is what tells them apart. Collapsing the two would erase the
+	// evidence the decline rule turns on.
+	if v, ok := providerViewOf(t, db, ctx, "amex", "T-AMEX-BUY"); !ok || v != "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE" {
+		t.Errorf("T-AMEX-BUY provider view = (%q, %v), want the catch-all the issuer filed, recorded", v, ok)
+	}
+	if v, ok := providerViewOf(t, db, ctx, "amex", "T-AMEX-OTHER"); ok {
+		t.Errorf("T-AMEX-OTHER provider view = %q, want none: the issuer placed nothing", v)
+	}
+
 	// The placeholder is gone: no row is left as generic card spend.
 	if res.RuleRows != 0 {
 		t.Errorf("rule rows = %d, want 0 — the bill should pair, not fall to the rule", res.RuleRows)

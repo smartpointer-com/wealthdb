@@ -43,11 +43,15 @@ type SpendSummaryRow struct {
 type SpendCategoryRow struct {
 	PeriodStart *int64
 	Category    string
-	TxnCount    int64
-	Spend       *string
-	Refunds     *string
-	NetSpend    *string
-	Share       *float64
+	// CategoryLabel is what Category reads as — the taxonomy value with
+	// its primary's prefix taken off and opened out (migration 0058).
+	// Presentation only: Category stays the key a caller groups on.
+	CategoryLabel string
+	TxnCount      int64
+	Spend         *string
+	Refunds       *string
+	NetSpend      *string
+	Share         *float64
 }
 
 // SpendTransactionRow is one spending line — what a summary or a
@@ -76,7 +80,18 @@ type SpendTransactionRow struct {
 	MerchantName          *string
 	SpendPrimary          *string
 	SpendDetailed         *string
-	Provenance            *string
+	// SpendLabel and SpendPrimaryLabel are what the two above read as
+	// (migration 0058) — presentation only, never a key.
+	SpendLabel        *string
+	SpendPrimaryLabel *string
+	Provenance        *string
+	// ProviderSpendDetailed and ProviderSpendLabel are the ISSUER's own
+	// classification of the line, mapped to our vocabulary and kept
+	// beside ours (migration 0057). Nil where the issuer published
+	// nothing this build translates. Never summed with ours: the two
+	// disagree by design.
+	ProviderSpendDetailed *string
+	ProviderSpendLabel    *string
 	Currency              string
 	NetAmount             *string
 	Description           *string
@@ -143,7 +158,7 @@ func SpendingCategories(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int6
 			spend, refunds, netSpend sql.NullString
 			share                    sql.NullFloat64
 		)
-		if err := rows.Scan(&bucket, &r.Category, &r.TxnCount,
+		if err := rows.Scan(&bucket, &r.Category, &r.CategoryLabel, &r.TxnCount,
 			&spend, &refunds, &netSpend, &share); err != nil {
 			return nil, fmt.Errorf("SpendingCategories scan: %w", err)
 		}
@@ -181,6 +196,8 @@ func SpendingTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch in
 			nickname, category                   sql.NullString
 			signature, merchant                  sql.NullString
 			primary, detailed, provenance        sql.NullString
+			spendLabel, primaryLabel             sql.NullString
+			providerDetailed, providerLabel      sql.NullString
 			netAmount, description, counterparty sql.NullString
 			valueOut                             sql.NullString
 		)
@@ -188,7 +205,8 @@ func SpendingTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch in
 			&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
 			&r.AccountExternalID, &acctKind, &displayName, &nickname, &category,
 			&r.Kind, &signature, &merchant, &primary, &detailed,
-			&provenance, &r.Currency, &netAmount,
+			&spendLabel, &primaryLabel,
+			&provenance, &providerDetailed, &providerLabel, &r.Currency, &netAmount,
 			&description, &counterparty, &valueOut,
 		); err != nil {
 			return nil, fmt.Errorf("SpendingTransactions scan: %w", err)
@@ -201,7 +219,11 @@ func SpendingTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch in
 		r.MerchantName = nullStringToPtr(merchant)
 		r.SpendPrimary = nullStringToPtr(primary)
 		r.SpendDetailed = nullStringToPtr(detailed)
+		r.SpendLabel = nullStringToPtr(spendLabel)
+		r.SpendPrimaryLabel = nullStringToPtr(primaryLabel)
 		r.Provenance = nullStringToPtr(provenance)
+		r.ProviderSpendDetailed = nullStringToPtr(providerDetailed)
+		r.ProviderSpendLabel = nullStringToPtr(providerLabel)
 		r.Description = nullStringToPtr(description)
 		r.Counterparty = nullStringToPtr(counterparty)
 		r.NetAmount = trimmedDecimalPtr(netAmount)

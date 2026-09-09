@@ -1,5 +1,7 @@
 package canonical
 
+import "strings"
+
 // Spend-category taxonomy: the two-level vocabulary behind gold's
 // `spend_categories` dimension and the `spend_detailed` column of the
 // spending overlay tables. The primary is the coarse bucket a report
@@ -241,6 +243,18 @@ var modelSpendCategories = append(append(
 // `spend_categories` dimension, so Go carries no such lookup.
 var spendDetailedValues = indexSpendCategories(SpendCategories)
 
+// spendPrimaryOf maps every detailed value to its primary, so a
+// caller can read a value's bucket without scanning the table.
+var spendPrimaryOf = indexSpendPrimaries(SpendCategories)
+
+func indexSpendPrimaries(cats []SpendCategory) map[string]string {
+	m := make(map[string]string, len(cats))
+	for _, c := range cats {
+		m[c.Detailed] = c.Primary
+	}
+	return m
+}
+
 // modelSpendDetailedValues is the same set over the rows a model may
 // emit — vendored plus extension — so the delta values are absent from
 // it rather than filtered out of it at every call site.
@@ -273,6 +287,80 @@ func ValidSpendDetailed(s string) bool {
 func ModelSpendDetailed(s string) bool {
 	_, ok := modelSpendDetailedValues[s]
 	return ok
+}
+
+// spendLabelAcronyms are the words the mechanical rule would sentence-case
+// wrongly. Two, and both are initialisms the vendored taxonomy spells in
+// full caps because every value is in full caps.
+var spendLabelAcronyms = map[string]string{"Atm": "ATM", "Tv": "TV"}
+
+// SpendLabel is a detailed value's display name: the vendored value with
+// its primary's prefix taken off, underscores opened out and one capital
+// at the front. `FOOD_AND_DRINK_GROCERIES` reads "Groceries";
+// `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
+// merchandise"; a delta, which is its own primary, reads "Internal
+// transfer".
+//
+// The label is presentation only. The value stays the join key, the name
+// a rule and a pin write, and what the model gauntlet validates — so a
+// taxonomy refresh still diffs against the vendored spelling, and nothing
+// downstream depends on how a label reads. An unknown value is returned
+// unchanged rather than guessed at.
+//
+// Nothing at run time calls this: the labels are SEEDED into
+// spend_categories by migration 0058, so a label can be corrected by
+// hand without the correction being computed away. This is the rule that
+// seed was generated from, and TestSpendCategoryLabelsMatchGoTable holds
+// the two together — which is why its only caller is a test.
+func SpendLabel(detailed string) string {
+	primary, ok := spendPrimaryOf[detailed]
+	if !ok {
+		return detailed
+	}
+	s := detailed
+	if primary != detailed {
+		s = detailed[len(primary)+1:]
+	}
+	return humanise(s)
+}
+
+// SpendPrimaryLabel is the same for a primary: "General merchandise",
+// "Rent and utilities", "Gift".
+func SpendPrimaryLabel(primary string) string { return humanise(primary) }
+
+func humanise(s string) string {
+	words := strings.Split(strings.ToLower(s), "_")
+	for i, w := range words {
+		if i == 0 && w != "" {
+			w = strings.ToUpper(w[:1]) + w[1:]
+		}
+		if fixed, ok := spendLabelAcronyms[strings.ToUpper(w[:1])+w[1:]]; ok {
+			w = fixed
+		}
+		words[i] = w
+	}
+	return strings.Join(words, " ")
+}
+
+// CatchAllSpendDetailed reports whether s is a primary's own catch-all
+// — the value that says only "somewhere in this primary, and nothing
+// finer". Every one spells its detail part `OTHER_...`, which is the
+// vendored taxonomy's own convention and the reason this can be read
+// off the value rather than listed.
+//
+// It exists so a tier can decline a row it can only place in a
+// catch-all. A catch-all is not a verdict: it carries no more
+// information than the primary already did, and a tier that claims a
+// row with one pre-empts a later tier that could have read the
+// merchant name and done better. The six deltas are not catch-alls —
+// `other` names a movement the taxonomy has no merchant word for, and
+// is a deliberate verdict about what the row IS.
+func CatchAllSpendDetailed(s string) bool {
+	primary, ok := spendPrimaryOf[s]
+	if !ok || primary == s {
+		return false // unknown, or a delta, which is primary-level
+	}
+	return strings.HasPrefix(s[len(primary)+1:], "OTHER_")
 }
 
 // DeltaSpendCategories returns the delta rows — the values the model

@@ -67,7 +67,8 @@ the command; no setup, no paths, no flags required to connect.
 - **transactions**: `silver_source, date, account, kind, symbol, description, currency, gross_amount, net_amount, value_<CCY>`
 - **spending summary**: `period, txn_count, spend_<CCY>, refunds_<CCY>, net_spend_<CCY>`
 - **spending categories**: the same plus `category` and `share_%`
-- **spending transactions**: `silver_source, date, account, merchant, spend_detailed, currency, net_amount, value_<CCY>` (add `spend_primary`, `provenance`, `counterparty`, `description` with `-C`)
+- **spending transactions**: `silver_source, date, account, merchant, category, currency, net_amount, value_<CCY>` (add `category_primary`, `spend_detailed`, `provenance`, `counterparty`, `description` with `-C`). `category` is the display label; `spend_detailed` is the taxonomy value behind it, which is what a filter or a comparison should use.
+- **the issuer's own view**: `issuer_category` (add with `-C`) is what the CARD PROVIDER called the line, translated into our vocabulary. It is a second opinion kept for reference, it disagrees with ours by design, and it must never be summed or mixed with the category columns. Blank means the issuer published nothing — not that it said "other".
 - **Narrative columns, handle with care:** `counterparty`, `description` and `merchant_signature` are raw statement narratives — whatever text the bank put on the line — so they can name a private individual rather than a business, along with an address or a phone-shaped group. `merchant` is a name taken off such a narrative and belongs with them. Request them only when the question actually needs them, and never echo them wholesale into a summary.
 
 `silver_source` is the institution (e.g. `schwab`, `ubs`, `fidelity`, …); the configured sources are your silver DBs under `$WEALTHDB_DATA_ROOT`. The value column shows as `value_USD`, `total_value_CHF`, etc. — matching your `-x`. Use `-C all` to list every column for a command.
@@ -176,6 +177,11 @@ sum to that period's summary row.
 
 A category of `(uncategorized)` is the backlog: rows nothing could place. Say
 so when it is a material share rather than folding it into a conclusion.
+Category names in the CLI render as labels — "Cash withdrawal", "Card
+spend", "Gift", "Other" — while the values behind them keep the taxonomy's
+own spelling (`cash_withdrawal`, `card_spend`, `gift`, `other`). Both name
+the same thing; quote whichever the reader is looking at.
+
 `cash_withdrawal` is *unattributable* spending (ATM cash — what it bought has
 no record), not a category of purchase. `card_spend` is the same idea for a
 card bill with no purchases behind it: a card wealthdb does not itemise.

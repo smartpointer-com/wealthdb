@@ -1258,6 +1258,19 @@ func TestMigration0042DDLIsRerunnable(t *testing.T) {
 	if n != 1 {
 		t.Errorf("web_transactions.account_kind columns = %d, want 1", n)
 	}
+	// Replaying a SUPERSEDED migration is a downgrade, not a no-op: it
+	// puts every object it defines back at its own version, and a view
+	// a later migration built on a later version stops binding until
+	// the chain is replayed forward. So replay the migrations that
+	// redefine these macros, which is what Migrate itself would do —
+	// and extend this list when another one does.
+	for _, later := range []string{
+		"0045_spend_investment.sql",        // spending_lines_base
+		"0059_spend_labels_in_reports.sql", // the label + issuer columns
+	} {
+		rerunMigrationDDL(t, db, ctx, later)
+	}
+
 	// The macros still answer, including the one the re-run replaced
 	// underneath a view that reads it.
 	from, to := spendWindow()
@@ -1273,5 +1286,73 @@ func TestMigration0042DDLIsRerunnable(t *testing.T) {
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_spending`).Scan(&n); err != nil {
 		t.Errorf("web_spending after the macro re-issue: %v", err)
+	}
+}
+
+// TestSpendReportColumnsSurviveAReissue pins the column set every
+// spending report publishes.
+//
+// A macro is re-issued whole, so a migration that adds one column has to
+// retype every other. Twice now that has silently dropped columns a
+// later migration had added — and nothing failed until a caller went
+// looking for one. This is the cheap guard: it does not care what a
+// column means, only that the report still has it.
+func TestSpendReportColumnsSurviveAReissue(t *testing.T) {
+	db, ctx := openMigrated(t)
+	cols := func(q string) map[string]bool {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		defer rows.Close()
+		names, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("%s columns: %v", q, err)
+		}
+		out := map[string]bool{}
+		for _, n := range names {
+			out[n] = true
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"SELECT * FROM report_spending_categories(0, 9, 'USD', 'month', 'detailed') LIMIT 0",
+			[]string{"period_start", "category", "category_label", "txn_count",
+				"spend", "refunds", "net_spend", "share"}},
+		{"SELECT * FROM report_spending_categories_multi(0, 9, 'month', 'detailed') LIMIT 0",
+			[]string{"period_start", "category", "category_label", "txn_count",
+				"spend_usd", "spend_chf", "spend_eur",
+				"refunds_usd", "refunds_chf", "refunds_eur",
+				"net_spend_usd", "net_spend_chf", "net_spend_eur",
+				"share_usd", "share_chf", "share_eur"}},
+		{"SELECT * FROM report_spending_transactions(0, 9, 'USD') LIMIT 0",
+			[]string{"merchant_name", "spend_primary", "spend_detailed",
+				"spend_label", "spend_primary_label", "provenance",
+				"provider_spend_detailed", "provider_spend_label", "value_outccy"}},
+		{"SELECT * FROM report_spending_transactions_multi(0, 9) LIMIT 0",
+			[]string{"merchant_name", "spend_primary", "spend_detailed",
+				"spend_label", "spend_primary_label", "provenance",
+				"provider_spend_detailed", "provider_spend_label",
+				"value_usd", "value_chf", "value_eur"}},
+		{"SELECT * FROM web_spending LIMIT 0",
+			[]string{"occurred_at", "merchant_name", "spend_primary", "spend_detailed",
+				"spend_primary_label", "spend_label", "provider_spend_label",
+				"value_usd", "value_chf", "value_eur"}},
+		{"SELECT * FROM spending_lines_base(0, 9) LIMIT 0",
+			[]string{"spend_detailed", "spend_primary", "spend_label",
+				"spend_primary_label", "provider_spend_detailed",
+				"provider_spend_primary", "provider_spend_label",
+				"provider_spend_primary_label", "provider_category"}},
+	} {
+		have := cols(tc.query)
+		for _, c := range tc.want {
+			if !have[c] {
+				t.Errorf("%s lost column %q", tc.query, c)
+			}
+		}
 	}
 }
