@@ -3,6 +3,7 @@ package spending
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sort"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/gold"
@@ -129,8 +130,9 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	}
 	sort.Slice(unmatched, func(i, j int) bool {
 		a, b := unmatched[i], unmatched[j]
-		if absf(a.Amount) != absf(b.Amount) {
-			return absf(a.Amount) > absf(b.Amount) // largest first: the ones worth a look
+		am, bm := math.Abs(a.Amount), math.Abs(b.Amount)
+		if am != bm {
+			return am > bm // largest first: the ones worth a look
 		}
 		if a.Source != b.Source {
 			return a.Source < b.Source
@@ -160,11 +162,4 @@ func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 		return a.Debit.TxID < b.Debit.TxID
 	})
 	return out
-}
-
-func absf(f float64) float64 {
-	if f < 0 {
-		return -f
-	}
-	return f
 }

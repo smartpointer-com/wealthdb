@@ -867,22 +867,12 @@ def _save_download(download, account: dict, out_dir: Path,
     customer prefix, plus a ~22-char depot prefix shared by multiple
     accounts of the same customer, so simple slice-based shortening
     collides silently."""
-    short_id = _account_short_id(account["account_id"])
+    short_id = bronze.short_token(account["account_id"])
     ext = _suggest_extension(download.suggested_filename, default_ext)
     window = f"{since:%Y%m%d}_{until:%Y%m%d}"
     out_path = out_dir / f"{account['kind']}_{short_id}_{window}.{ext}"
     download.save_as(str(out_path))
     return out_path
-
-
-def _account_short_id(account_id: str) -> str:
-    """The bronze-filename reduction of a UBS account token.
-
-    UBS tokens share a ~12-char per-customer prefix plus a ~22-char
-    per-depot one, so a slice collides silently; `bronze.short_token`
-    hashes for exactly that reason and is the one implementation.
-    """
-    return bronze.short_token(account_id)
 
 
 def _suggest_extension(suggested: str | None, fmt: str) -> str:
@@ -1270,9 +1260,7 @@ def export_positions(page, run_dir: Path,
         route = ubs.positions_url_for_portfolio(
             p["portfolio_uid"], p["banking_relation_id"],
         )
-        # Filename includes a sha256 prefix of the portfolioUid — the
-        # raw token is too long and case-mixed for safe filenames.
-        short = hashlib.sha256(p["portfolio_uid"].encode()).hexdigest()[:16]
+        short = bronze.short_token(p["portfolio_uid"])
         meta = _download_positions_csv(
             page, route, out_dir,
             filename=f"positions_{short}.csv",
@@ -1493,7 +1481,7 @@ def main(argv: list[str]) -> int:
                             # would bury it. Named by the sha256 prefix the
                             # export filenames already use.
                             capture(page, "20-txn-"
-                                    f"{_account_short_id(account['account_id'])}"
+                                    f"{bronze.short_token(account['account_id'])}"
                                     "-failed")
                     doc_results = harvest_documents(
                         page, since, until, run_dir,

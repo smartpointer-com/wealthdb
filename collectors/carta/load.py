@@ -764,7 +764,7 @@ def _period_deltas(statements) -> list[tuple]:
     out: list[tuple] = []
     prev_c = prev_d = 0.0
     for date, docid, contrib, dist in sorted(
-            statements, key=lambda s: (s[0][6:10], s[0][0:2], s[0][3:5])):
+            statements, key=lambda s: _flow_sort_key(s[0])):
         if contrib is not None and contrib > prev_c:
             out.append((docid, date, "capital_call", contrib - prev_c))
             prev_c = contrib

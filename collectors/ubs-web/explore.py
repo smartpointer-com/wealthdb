@@ -330,19 +330,6 @@ def safe_download_name(suggested: str | None, seq: int) -> str:
     return f"{seq:02d}-{name[:120]}"
 
 
-def make_redactor(secrets: list[str]):
-    """A function masking every non-empty value in `secrets`.
-
-    The contract number is the one credential in this flow, and it travels
-    in the login POST body. Debug artefacts are not under ~/.secrets, so a
-    log that quoted it would be a real leak — and it reaches that body
-    percent-encoded, which a literal-substring masker writes out in full.
-    `debugcap.secret_redactor` masks every spelling a value takes on the
-    wire; this only adapts the list argument.
-    """
-    return debugcap.secret_redactor(*secrets)
-
-
 def resolve_env_file(explicit: Path | None) -> Path | None:
     """The env file to source: the explicit one, else ubs-web's, else the
     bank-level fallback the README documents. None when none exists."""
@@ -507,7 +494,11 @@ def main(argv: list[str]) -> int:
              "loaded" if have_state else "absent — sign in by hand")
     log.info("initial URL: %s", args.url)
 
-    redact = make_redactor([contract])
+    # The contract number is the one credential in this flow and it travels
+    # in the login POST body. Debug artefacts are not under ~/.secrets, so a
+    # log that quoted it would be a real leak — and it reaches that body
+    # percent-encoded, which a literal-substring masker writes out in full.
+    redact = debugcap.secret_redactor(contract)
 
     from playwright.sync_api import sync_playwright
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError

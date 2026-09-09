@@ -75,6 +75,44 @@ def test_guard_runs_before_the_request_is_made():
         api._get("/api/v2/credit-card-accounts/ACC-1/unregister")
 
 
+def test_an_absolute_cursor_is_refused_at_the_request():
+    """The ledger's paging cursor is a URL the SERVER composes, and
+    `refuse_path` reads only the path component — so an absolute URL
+    with an allowed path would sail past it. The refusal has to happen
+    in `_get`, where the request is actually made."""
+    class _Ctx:
+        class request:
+            @staticmethod
+            def get(*_a, **_kw):  # pragma: no cover - must not run
+                raise AssertionError("issued a request off-origin")
+
+    api = cards.CardApi(_Ctx(), "https://bank.test", "KEY")
+    for cursor in (
+            "https://evil.test/api/v1/credit-card-transactions?cursor=2",
+            "//evil.test/api/v1/credit-card-transactions?cursor=2",
+    ):
+        with pytest.raises(RuntimeError, match="site-relative"):
+            api._get(cursor)
+
+
+def test_a_relative_cursor_with_a_query_is_allowed():
+    """The guard must not reject the real thing: the cursor is a path
+    plus a query, and that is what a page walk follows."""
+    seen = {}
+
+    class _Ctx:
+        class request:
+            @staticmethod
+            def get(url, **_kw):
+                seen["url"] = url
+                return object()
+
+    api = cards.CardApi(_Ctx(), "https://bank.test", "KEY")
+    api._get("/api/v1/credit-card-transactions?cursor=2")
+    assert seen["url"] == (
+        "https://bank.test/api/v1/credit-card-transactions?cursor=2")
+
+
 # --------------------------------------------------------------------
 # A whole capture, against a scripted API
 # --------------------------------------------------------------------

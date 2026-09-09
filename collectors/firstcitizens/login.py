@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import functools
 import logging
 import os
 import shutil
@@ -503,19 +502,6 @@ def authenticate(context, page, watch: "_LogonWatch", *, two_factor: str,
 
 # --- verbs ----------------------------------------------------------------
 
-@functools.lru_cache(maxsize=1)
-def _redactor():
-    """The run's credential mask, built once.
-
-    The env file is sourced before the first capture, so the credentials
-    are in the environment by the time this is first asked for, and the
-    cache keeps it one build per run. On a run that was given none — the
-    credentials are typed by hand — this is the identity, and the
-    password-input blanking in :func:`debugcap.scrub_dom` is what covers
-    the markup instead.
-    """
-    return debugcap.secret_redactor(os.environ.get(USER_ENV, ""),
-                                    os.environ.get(PASS_ENV, ""))
 
 
 def _capture(page, args, name: str) -> None:
@@ -526,7 +512,7 @@ def _capture(page, args, name: str) -> None:
         return
     with contextlib.suppress(Exception):
         debugcap.capture_page(page, args.screenshot_dir, name, log=log,
-                              redact=_redactor())
+                              redact=debugcap.env_redactor(USER_ENV, PASS_ENV))
 
 
 def _load_credentials(env_file: Path) -> tuple[str, str]:

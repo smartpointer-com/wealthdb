@@ -22,7 +22,7 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 	}
 
 	t.Run("forbidding one pairing frees the leg for the right one", func(t *testing.T) {
-		o, err := NewTransferOverrides(nil, [][2]LegRef{{
+		o, err := newTransferOverrides(nil, [][2]LegRef{{
 			{"bank", "checking", "out"}, {"bank", "checking", "coincidence"},
 		}}, nil)
 		if err != nil {
@@ -37,7 +37,7 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 	})
 
 	t.Run("isolating a leg keeps it out of every pair", func(t *testing.T) {
-		o, err := NewTransferOverrides([]LegRef{{"bank", "checking", "out"}}, nil, nil)
+		o, err := newTransferOverrides([]LegRef{{"bank", "checking", "out"}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestTransferOverridesSteerTheMatcher(t *testing.T) {
 		if got := MatchTransferLegs(append([]TransferLeg(nil), far...), opts); len(got) != 0 {
 			t.Fatalf("fixture is wrong: 6 days apart should not pair at a 5-day window, got %v", got)
 		}
-		o, err := NewTransferOverrides(nil, nil, []ForcedPair{{
+		o, err := newTransferOverrides(nil, nil, []ForcedPair{{
 			Debit:  LegRef{"bank", "checking", "out"},
 			Credit: LegRef{"exchange", "wallet", "credited-first"},
 		}})
@@ -102,11 +102,11 @@ func TestResolveTransferOverridesReportsWhatItCannotFind(t *testing.T) {
 // one; the contradiction is the holder's to resolve, not this file's.
 func TestTransferOverridesRejectContradictions(t *testing.T) {
 	l := LegRef{"bank", "checking", "out"}
-	if _, err := NewTransferOverrides([]LegRef{l}, nil,
+	if _, err := newTransferOverrides([]LegRef{l}, nil,
 		[]ForcedPair{{Debit: l, Credit: LegRef{"bank", "checking", "in"}}}); err == nil {
 		t.Error("forced and isolated at once must be rejected")
 	}
-	if _, err := NewTransferOverrides(nil, nil, []ForcedPair{{Debit: l, Credit: l}}); err == nil {
+	if _, err := newTransferOverrides(nil, nil, []ForcedPair{{Debit: l, Credit: l}}); err == nil {
 		t.Error("a leg forced to pair with itself must be rejected")
 	}
 }

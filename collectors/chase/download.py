@@ -171,7 +171,6 @@ CACHED_ROSTER_URL_RE = re.compile(
 # stable and light-DOM, so plain clicks work (no shadow piercing). {n} is the
 # 0-based row index.
 SEL_STATEMENTS_ACCORDION = "#button-accountsAccordian-STATEMENTS"
-SEL_STATEMENTS_YEAR_FILTER = "#header-filterstyledselect-0"
 STMT_DATE_CELL = "#accountsTable-STATEMENTS-row{n}-cell0"
 # The row's save control, newest shape first: a direct "Saves document" anchor
 # whose clickable target is the icon inside it.
@@ -693,7 +692,7 @@ def walk(page, bronze_dir: Path, *, since: date | None = None,
                      "+".join(f.upper() for f in EXPORT_FORMATS),
                      acct.get("mask") or acct["account_external_id"])
             continue
-        got = _export_account(page, acct, run_dir, since, until, nav_timeout_ms)
+        got = _export_account(page, acct, run_dir, nav_timeout_ms)
         counts["transactions_files"] += got
         if got == len(EXPORT_FORMATS):
             coverage[acct.get("product") or "dda"]["exported"] += 1
@@ -782,8 +781,7 @@ def _discover_accounts(page, captured_bodies: list, timeout_ms: int) -> list[dic
     return roster
 
 
-def _export_account(page, acct: dict, run_dir: Path, since, until,
-                    timeout_ms: int) -> int:
+def _export_account(page, acct: dict, run_dir: Path, timeout_ms: int) -> int:
     """Export the CSV + QFX activity for one account — deposit or card — into
     transactions/<ext_id>.<fmt>. Returns the number of files captured.
 

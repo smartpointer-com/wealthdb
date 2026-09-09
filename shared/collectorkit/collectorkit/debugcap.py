@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import functools
 import os
 import re
 import time
@@ -311,13 +312,22 @@ def redact_body(text, mime=None, redact=None):
     field and a JSON one member by member at any depth; a body in neither
     shape gets the value-based mask alone.
 
+    What the name pass masks is then masked wherever the same body spells
+    it again — a token in a JSON member and again in a free-text field
+    beside it — which is the echo pass :func:`_redact_har_entry` runs for
+    the same reason. It stays body-local: only values this body named are
+    echoed, so one body's secret can never leak into another's mask.
+
     Best effort and never raising, like the rest of this module: a body
     that does not parse is returned with the value mask applied and
     nothing else.
     """
     if not isinstance(text, str) or not text:
         return text
-    text = _mask_body_by_name(text, mime, set())
+    found: set = set()
+    text = _mask_body_by_name(text, mime, found)
+    if found:
+        text = secret_redactor(*sorted(found))(text)
     return redact(text) if redact is not None else text
 
 
@@ -581,6 +591,21 @@ def secret_redactor(*secrets: str, placeholder: str = REDACTED):
         return value
 
     return redact
+
+
+@functools.lru_cache(maxsize=None)
+def env_redactor(user_env: str, pass_env: str):
+    """The run's credential mask, built once from the environment.
+
+    A login flow sources its env file before the first capture, so the
+    credentials are in the environment by the time this is first asked
+    for, and the cache keeps it one build per run. On a run that was
+    given none — the credentials are typed by hand — this is the
+    identity, and the password-input blanking in :func:`scrub_dom` is
+    what covers the markup instead.
+    """
+    return secret_redactor(os.environ.get(user_env, ""),
+                           os.environ.get(pass_env, ""))
 
 
 def session_redactor(cookies, *extra: str):

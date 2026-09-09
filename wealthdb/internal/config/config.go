@@ -583,39 +583,15 @@ type CompiledSpendRule struct {
 
 // CompiledSpendScope is a SpendingRuleScope with its dates resolved.
 // `From`/`To` are unix seconds, inclusive of the whole named day; zero
-// means unbounded on that side. `Any` reports the do-nothing scope, so
-// the hot path can skip the check entirely.
+// means unbounded on that side. It is plain data: whether a row is
+// inside a scope is decided by spending.RuleScope, next to the rule
+// tier that asks the question.
 type CompiledSpendScope struct {
 	Source    string
 	Portfolio string
 	Account   string
 	From      int64
 	To        int64
-}
-
-// Any reports whether the scope constrains nothing.
-func (s CompiledSpendScope) Any() bool {
-	return s.Source == "" && s.Portfolio == "" && s.Account == "" &&
-		s.From == 0 && s.To == 0
-}
-
-// Admits reports whether a transaction is inside the scope. The
-// arguments are the row's own facts; an empty portfolio or account on
-// the row can never satisfy a scope that names one.
-func (s CompiledSpendScope) Admits(source, portfolio, account string, occurredAt int64) bool {
-	switch {
-	case s.Source != "" && s.Source != source:
-		return false
-	case s.Portfolio != "" && s.Portfolio != portfolio:
-		return false
-	case s.Account != "" && s.Account != account:
-		return false
-	case s.From != 0 && occurredAt < s.From:
-		return false
-	case s.To != 0 && occurredAt > s.To:
-		return false
-	}
-	return true
 }
 
 // SpendingAccounts lists the account-scope overrides, keyed by

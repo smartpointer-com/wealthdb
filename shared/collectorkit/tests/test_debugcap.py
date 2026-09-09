@@ -18,6 +18,7 @@ import logging
 import re
 import sys
 import unittest
+from unittest import mock
 import urllib.parse
 from pathlib import Path
 
@@ -975,6 +976,31 @@ class RedactHarTest(unittest.TestCase):
         with self.assertLogs(log, level="WARNING"):
             self.assertFalse(debugcap.redact_har(self.har, log=log))
 
+    def test_a_failed_rewrite_leaves_the_original_and_cleans_up(self):
+        """The guarantee that makes an in-place rewrite safe: if the write
+        or the replace fails part-way, the file that survives is the one
+        that was already there — never a half-written mixture — and the
+        .redacting temp does not outlive the attempt as a second copy of
+        everything the HAR recorded."""
+        original = json.dumps({"log": {"entries": [
+            {"request": {"url": "https://example.test/in",
+                         "headers": [{"name": "authorization",
+                                      "value": "Bearer EXAMPLESECRET"}]},
+             "response": {}}]}})
+        self.har.write_text(original, encoding="utf-8")
+
+        def _boom(src, dst):
+            raise OSError("replace failed")
+
+        with mock.patch.object(debugcap.os, "replace", _boom):
+            with self.assertLogs(log, level="WARNING") as caught:
+                self.assertFalse(debugcap.redact_har(self.har, log=log))
+
+        self.assertIn("still holds every credential it recorded",
+                      "\n".join(caught.output))
+        self.assertEqual(self.har.read_text(encoding="utf-8"), original)
+        self.assertFalse(self.har.with_name(self.har.name + ".redacting").exists())
+
 
 class RedactBodyTest(unittest.TestCase):
     """The body-shaped counterpart to redact_headers: a body's own syntax
@@ -996,6 +1022,26 @@ class RedactBodyTest(unittest.TestCase):
             "application/json")
         self.assertNotIn("EXAMPLEPASSWORD", out)
         self.assertIn("SignIn", out)
+
+    def test_masks_the_echo_of_what_it_masked_by_name(self):
+        """A body names its secret once and then spells it again somewhere the
+        name pass cannot see — a JSON member beside a free-text field that
+        quotes it back. The HAR path has always run that second pass; the
+        body-only path computed the same set and threw it away."""
+        out = debugcap.redact_body(
+            json.dumps({"password": "EXAMPLESECRET",
+                        "detail": "rejected value EXAMPLESECRET for user"}),
+            "application/json")
+        self.assertNotIn("EXAMPLESECRET", out)
+        self.assertIn("rejected value", out)
+
+    def test_the_echo_is_body_local(self):
+        """Only values THIS body named are echoed, so one body's secret can
+        never widen the mask applied to another's."""
+        out = debugcap.redact_body(
+            json.dumps({"note": "EXAMPLESECRET is not named here"}),
+            "application/json")
+        self.assertIn("EXAMPLESECRET", out)
 
     def test_applies_the_value_mask_as_well(self):
         out = debugcap.redact_body(

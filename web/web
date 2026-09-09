@@ -56,7 +56,6 @@ _load_config() {
     ENABLED="${WEALTHDB_WEB_ENABLED:-0}"
     PORT="${WEALTHDB_WEB_PORT:-3000}"
     GOLD_DB="${WEALTHDB_GOLD_DB:-}"
-    DEFAULT_CCY="${WEALTHDB_DEFAULT_CURRENCY:-USD}"
 }
 
 _require_docker() {
@@ -289,8 +288,7 @@ _provision() {
     fi
     echo "web: provisioning Metabase (admin + gold database + report models + dashboards)…" >&2
     if python3 "$HERE/provision.py" --base "http://127.0.0.1:$PORT" \
-         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold \
-         --default-currency "${DEFAULT_CCY:-USD}"; then
+         --email "$email" --password "$pw" --gold-path /gold/wealthdb.db --db-name gold; then
         PROV_LOGIN="log in as $email (password $pwhint)"
     else
         PROV_LOGIN="auto-provision incomplete — finish setup in the browser"

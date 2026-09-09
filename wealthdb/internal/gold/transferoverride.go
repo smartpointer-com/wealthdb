@@ -47,10 +47,10 @@ type TransferOverrides struct {
 // ForcedPair is one manually asserted movement.
 type ForcedPair struct{ Debit, Credit LegRef }
 
-// NewTransferOverrides builds the resolved set. A leg named on both sides of
+// newTransferOverrides builds the resolved set. A leg named on both sides of
 // one forced pair, or forced and isolated at once, is a contradiction the
 // caller should have caught; it is reported rather than silently resolved.
-func NewTransferOverrides(isolated []LegRef, forbidden [][2]LegRef, forced []ForcedPair) (TransferOverrides, error) {
+func newTransferOverrides(isolated []LegRef, forbidden [][2]LegRef, forced []ForcedPair) (TransferOverrides, error) {
 	o := TransferOverrides{
 		isolated:  map[string]bool{},
 		forbidden: map[string]bool{},
@@ -87,10 +87,6 @@ func pairKey(a, b LegRef) string {
 		ka, kb = kb, ka
 	}
 	return ka + "\x01" + kb
-}
-
-func (o TransferOverrides) empty() bool {
-	return len(o.isolated) == 0 && len(o.forbidden) == 0 && len(o.forced) == 0
 }
 
 func (o TransferOverrides) blocks(d, c TransferLeg) bool {
@@ -202,6 +198,6 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 			}
 		}
 	}
-	o, err := NewTransferOverrides(isolated, forbidden, forced)
+	o, err := newTransferOverrides(isolated, forbidden, forced)
 	return o, unmatched, err
 }

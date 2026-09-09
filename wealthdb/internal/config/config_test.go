@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 )
@@ -115,6 +116,54 @@ func TestLoadReturnsExclude(t *testing.T) {
 		"empty id":       `"returns_exclude":{"accounts":{"cointracking":[""]}}}`,
 	} {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {
+			t.Errorf("%s: Load should have failed", name)
+		}
+	}
+}
+
+// TestSpendingRuleScopeCompiles pins the date half of `spending.rules[].scope`,
+// which is the part a person can get wrong in a way no later stage would
+// notice: the bounds are INCLUSIVE of both named days, so a one-day scope has
+// to admit that day whole, and a range that runs backwards admits nothing and
+// is therefore a typo rather than a filter. Every value is synthetic.
+func TestSpendingRuleScopeCompiles(t *testing.T) {
+	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"bank","kind":"chase","path":"/tmp/b.db"}],`
+	rule := func(scope string) string {
+		return base + `"spending":{"rules":[{"match":"example","category":"FOOD_AND_DRINK_COFFEE","scope":` + scope + `}]}}`
+	}
+
+	cfg, err := Load(writeConfig(t, rule(`{"source":"bank","from":"2099-03-01","to":"2099-03-01"}`)))
+	if err != nil {
+		t.Fatalf("a one-day scope must load: %v", err)
+	}
+	got := cfg.SpendRules()[0].Scope
+	if got.Source != "bank" {
+		t.Errorf("source = %q, want bank", got.Source)
+	}
+	// Inclusive of the whole named day: midnight through 23:59:59 UTC.
+	if want := time.Date(2099, 3, 1, 0, 0, 0, 0, time.UTC).Unix(); got.From != want {
+		t.Errorf("from = %d, want %d (UTC midnight)", got.From, want)
+	}
+	if got.To-got.From != 86399 {
+		t.Errorf("to-from = %d, want 86399 — the named day, whole", got.To-got.From)
+	}
+
+	// An unscoped rule compiles to the zero value, which is what lets the
+	// rule tier skip the check entirely.
+	cfg, err = Load(writeConfig(t, base+`"spending":{"rules":[{"match":"example","category":"FOOD_AND_DRINK_COFFEE"}]}}`))
+	if err != nil {
+		t.Fatalf("an unscoped rule must load: %v", err)
+	}
+	if (cfg.SpendRules()[0].Scope != CompiledSpendScope{}) {
+		t.Errorf("an absent scope must compile to the zero value, got %+v", cfg.SpendRules()[0].Scope)
+	}
+
+	for name, scope := range map[string]string{
+		"inverted range": `{"from":"2099-03-10","to":"2099-03-01"}`,
+		"from not a day": `{"from":"March 2099"}`,
+		"to not a day":   `{"to":"2099-13-40"}`,
+	} {
+		if _, err := Load(writeConfig(t, rule(scope))); err == nil {
 			t.Errorf("%s: Load should have failed", name)
 		}
 	}

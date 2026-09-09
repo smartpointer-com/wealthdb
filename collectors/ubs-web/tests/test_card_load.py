@@ -191,7 +191,7 @@ def test_a_re_login_does_not_duplicate_the_ledger(tmp_path):
     apart shared not one ledger id, and the second load
     inserted a whole second copy of the history instead of re-observing
     it. Gold then counted every card purchase twice."""
-    conn = _silver(tmp_path)
+    conn = _silver()
     purchases = [_booked("SESSION-A-1", "2026-01-05", "-42.50"),
                  _booked("SESSION-A-2", "2026-01-06", "-17.00")]
     load._load_cards(conn, 1000, _write_bronze(
@@ -332,7 +332,7 @@ def test_reconcile_tolerance_admits_a_rounding_cent_but_not_a_real_gap():
 # load.py — the card pass against a real silver
 # --------------------------------------------------------------------
 
-def _silver(tmp_path) -> sqlite3.Connection:
+def _silver() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON;")
     for path in sorted((Path(load.__file__).parent / "migrations").glob("*.sql")):
@@ -367,14 +367,14 @@ def _write_bronze(dump: Path, *, pages=None, roster=None, invoices=None,
 
 
 def test_a_dump_without_cards_loads_as_zeros(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = tmp_path / "20260101T000000Z"
     dump.mkdir()
     assert load._load_cards(conn, 1, dump) == (0, 0, 0, 0)
 
 
 def test_a_whole_card_dump_lands_in_silver(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node()),
@@ -404,7 +404,7 @@ def test_a_whole_card_dump_lands_in_silver(tmp_path):
 
 
 def test_reloading_the_same_dump_changes_nothing(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node()),
@@ -419,7 +419,7 @@ def test_reloading_the_same_dump_changes_nothing(tmp_path):
 
 
 def test_snapshot_at_records_first_sight_not_the_latest_load(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node()),
@@ -433,7 +433,7 @@ def test_snapshot_at_records_first_sight_not_the_latest_load(tmp_path):
 def test_a_partial_run_never_zeroes_what_it_did_not_cover(tmp_path):
     """The load-bearing guarantee: a later dump covering one account must
     leave another account's rows, balances and periods untouched."""
-    conn = _silver(tmp_path)
+    conn = _silver()
     full = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node(ACCOUNT),
@@ -473,7 +473,7 @@ def test_a_partial_run_never_zeroes_what_it_did_not_cover(tmp_path):
 
 
 def test_coverage_needs_the_ledger_to_span_the_whole_period(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     # A ledger that starts inside the period does not cover it.
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
@@ -498,7 +498,7 @@ def test_coverage_needs_the_ledger_to_span_the_whole_period(tmp_path):
 
 
 def test_a_statement_without_attribution_is_not_indexed(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node()),
@@ -509,7 +509,7 @@ def test_a_statement_without_attribution_is_not_indexed(tmp_path):
 
 
 def test_a_corrupt_artefact_costs_its_facet_not_the_dump(tmp_path):
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node()),
@@ -681,7 +681,7 @@ def test_a_bare_status_string_still_works():
 def test_the_whole_dump_loads_with_the_real_shapes(tmp_path):
     # The end-to-end guard: every shape here is the one the live API
     # actually sends, so a bind error cannot hide behind a fixture.
-    conn = _silver(tmp_path)
+    conn = _silver()
     dump = _write_bronze(
         tmp_path / "20260101T000000Z",
         roster=_roster(_account_node(ACCOUNT, cards=[

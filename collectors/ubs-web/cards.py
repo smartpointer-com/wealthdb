@@ -60,10 +60,6 @@ _ALLOWED_PATHS = (
     re.compile(r"^/api/v1/credit-card-invoices/[A-Za-z0-9_-]+/extract$"),
 )
 
-# The ledger returns this many rows per page and hands back a cursor.
-# Recorded for the log line, not sent — the page size is the server's.
-PAGE_ROWS = 300
-
 # A runaway cursor loop would hammer the source; the ledger's reach is
 # bounded at roughly two years, so this is far above any real history.
 MAX_PAGES = 200
@@ -108,9 +104,22 @@ class CardApi:
         self._apikey = apikey
 
     def _get(self, path_and_query: str, *, accept: str = "application/json"):
-        """One guarded GET. Returns the Playwright response."""
-        path = urlsplit(path_and_query).path
-        refusal = refuse_path(path)
+        """One guarded GET. Returns the Playwright response.
+
+        The scheme/host check is not redundant with `refuse_path`. The
+        ledger's paging cursor is a URL the SERVER composed, and
+        `refuse_path` reads only the path component — so an absolute URL
+        would present an allowed path while naming a host of the
+        server's choosing. Only a site-relative reference is ever
+        requested, which is what keeps "follow the link" from meaning
+        "follow any link".
+        """
+        split = urlsplit(path_and_query)
+        if split.scheme or split.netloc:
+            raise RuntimeError(
+                "refusing to request: not a site-relative reference: "
+                f"{path_and_query!r}")
+        refusal = refuse_path(split.path)
         if refusal is not None:
             raise RuntimeError(f"refusing to request: {refusal}")
         return self._context.request.get(

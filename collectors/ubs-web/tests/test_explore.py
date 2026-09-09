@@ -15,40 +15,16 @@ from pathlib import Path
 import pytest
 
 import explore
+from collectorkit import debugcap
 
 
 # --------------------------------------------------------------------
 # Redaction — the contract number must not reach an artefact
 # --------------------------------------------------------------------
 
-def test_redactor_masks_the_contract_number():
-    redact = explore.make_redactor(["123-456-789"])
-    assert redact("loginalias=123-456-789&x=1") == "loginalias=<redacted>&x=1"
-
-
-def test_redactor_masks_every_occurrence():
-    redact = explore.make_redactor(["SECRET"])
-    assert redact("SECRET and SECRET") == "<redacted> and <redacted>"
-
-
-def test_redactor_is_a_noop_without_secrets():
-    for secrets in ([], [""], [None]):
-        redact = explore.make_redactor(list(secrets))
-        assert redact("nothing to hide") == "nothing to hide"
-
-
-def test_redactor_passes_through_empty_and_none():
-    redact = explore.make_redactor(["SECRET"])
-    assert redact("") == ""
-    assert redact(None) is None
-
-
-def test_redactor_masks_the_longest_secret_first():
-    # A short secret that is a substring of a longer one must not chop the
-    # longer one into a half-masked string that still leaks its tail.
-    redact = explore.make_redactor(["1234", "1234567"])
-    assert "1234567" not in redact("id=1234567")
-    assert redact("id=1234567") == "id=<redacted>"
+# collectorkit's SecretRedactorTest owns the redactor's contract — every
+# wire spelling, longest-secret-first, the falsy identity. What belongs
+# here is only that this collector's own artefacts route through it.
 
 
 # --------------------------------------------------------------------
@@ -248,7 +224,7 @@ def test_dom_capture_redacts_the_contract_number(tmp_path):
     # login form, so a DOM capture would otherwise carry the one value
     # every other artefact masks.
     contract = "987-654-321"
-    redact = explore.make_redactor([contract])
+    redact = debugcap.secret_redactor(contract)
 
     class _Frame:
         url = "https://ebanking-ch3.ubs.com/app/x/ebanking/spa.html"

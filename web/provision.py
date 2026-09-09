@@ -51,9 +51,6 @@ def main():
     ap.add_argument("--password", required=True)
     ap.add_argument("--gold-path", required=True)
     ap.add_argument("--db-name", default="gold")
-    ap.add_argument("--default-currency", default="USD",
-                    help="accepted for compatibility; no longer used — the report "
-                         "models now expose USD/CHF/EUR columns via report_x_multi(...)")
     a = ap.parse_args()
 
     if not wait_health(a.base):

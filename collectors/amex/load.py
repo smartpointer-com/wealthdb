@@ -515,10 +515,11 @@ def _log_id(value: str) -> str:
 
 def _safe_stem(value: str) -> str:
     """The filesystem-safe stem download.py derives a directory / file name
-    from (kept in sync with download.safe_stem). Copied rather than imported:
-    pulling download.py in for two string helpers would drag the browser-side
-    chain behind it (download → login → explore, and Playwright with them)
-    into a loader that never opens a browser."""
+    from (kept in sync with download.safe_stem). Copied rather than imported
+    to keep the offline half of the collector independent of the browser
+    half: `load` runs against a bronze tree that is already on disk, and a
+    two-line string helper is not worth a dependency on the module that
+    fetched it."""
     stem = _SAFE_STEM_RE.sub("-", str(value)).strip("-.")
     return stem or "item"
 
