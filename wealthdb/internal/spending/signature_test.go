@@ -599,14 +599,22 @@ func TestTransferShaped(t *testing.T) {
 		"DIRECT DEBIT COLLECTION",
 		"STANDING ORDER MONTHLY",
 		"PAYMENT THANK YOU MOBILE",
-		// The Swiss mobile rail, in every booking type both eras
-		// spell it in and in both cases: one token fences them all,
-		// because a rail carries a person as readily as a shop.
+		// The Swiss mobile rail as the BANK feed books it, in every
+		// booking type both eras spell it in and in both cases. That
+		// half is fenced whole, shops included: every row of it prints
+		// the unmasked mobile of the account that INITIATED the
+		// payment, so the personal data is the payer's and is there
+		// whatever was bought.
 		"PAYMENT UBS TWINT",
 		"DEBIT UBS TWINT",
 		"CREDIT UBS TWINT",
 		"REVERSAL UBS TWINT",
 		"Payment UBS TWINT",
+		// The same rail as the CARD feed prints it, person-to-person
+		// half: the payee is initials and a masked mobile, and either
+		// half of that shape fences on its own. Both values invented.
+		"TWINT * Sent to A.B.     079***1234   CHE",
+		"079***1234",
 		// A well-formed IBAN, spaced and unspaced. Both are invented:
 		// the check digits are computed so the fence's mod-97 test
 		// passes, over an account body no bank issues.
@@ -627,6 +635,13 @@ func TestTransferShaped(t *testing.T) {
 		"WIRELESS SERVICES MONTHLY",
 		"BLUE HARBOUR CAFE",
 		"",
+		// The same Swiss rail's OTHER half, which is most of it: a
+		// consumer-to-business payment, printed by the card feed as a
+		// trading name and a place. Fencing the rail's name fenced
+		// this too, and a shop the model never sees is a shop that
+		// gets lumped under a generic category instead of named.
+		"TWINT * EXAMPLE SPORTS AG   EXAMPLE CITY   CHE",
+		"TWINT * EXAMPLE RESTAURANT  EXAMPLETOWN    CHE",
 		// Two letters and two digits at a token start, and no IBAN:
 		// a Swiss legal form in front of a postal code, a canton in
 		// front of an ESR reference, the word No. in front of an
@@ -655,10 +670,11 @@ func TestTransferShaped(t *testing.T) {
 // The key-only assertion is what keeps the rest from being vacuous:
 // all three key-only predicates PASS a private individual's name, so
 // candidacy decided on the key admits it. RowTransferShaped is what
-// refuses the row. The merchant case pins the cost — a rail cannot
-// tell a person from a shop, so a merchant paid on the same rail is
-// refused too and stays placeable by a config rule or a pin — and the
-// bill and memo cases pin the boundary the reading must not cross.
+// refuses the row. The bank-feed merchant case pins the cost where the
+// line cannot tell a person from a shop — that merchant is refused too
+// and stays placeable by a config rule or a pin — while the card-feed
+// pair pins the split where the line CAN; the bill and memo cases pin
+// the boundary the reading must not cross.
 func TestP2PRowCandidacy(t *testing.T) {
 	const (
 		payee           = "EXAMPLE, PERSON"
@@ -683,8 +699,29 @@ func TestP2PRowCandidacy(t *testing.T) {
 
 	shopSig := Normalize(shop, shopNarrative)
 	if !RowTransferShaped(shopSig, shopFiling, shopNarrative) {
-		t.Errorf("RowTransferShaped(%q, %q, %q) = false; the rail fences every row booked on it",
+		t.Errorf("RowTransferShaped(%q, %q, %q) = false; the BANK feed's booking type fences every row it books",
 			shopSig, shopFiling, shopNarrative)
+	}
+
+	// The same rail's card feed, where the line DOES tell the two
+	// apart, so the fence reads the shape instead of the rail's name:
+	// the person stays out and the shop becomes a candidate. Without
+	// this split the rail's own name fenced both, and in Switzerland
+	// the shops are the larger half by far.
+	const (
+		cardFiling    = "TWINT"
+		cardPerson    = "TWINT * Sent to A.B.     079***1234   CHE"
+		cardShop      = "TWINT * EXAMPLE SPORTS AG   EXAMPLE CITY   CHE"
+	)
+	personCardSig := Normalize("", cardPerson)
+	if !RowTransferShaped(personCardSig, cardFiling, cardPerson) {
+		t.Errorf("RowTransferShaped(%q, %q, %q) = false; a masked mobile is the payee's contact details",
+			personCardSig, cardFiling, cardPerson)
+	}
+	shopCardSig := Normalize("", cardShop)
+	if RowTransferShaped(shopCardSig, cardFiling, cardShop) {
+		t.Errorf("RowTransferShaped(%q, %q, %q) = true; a trading name and a place is a shop, and only the model can name it",
+			shopCardSig, cardFiling, cardShop)
 	}
 
 	// A wire-paid bill: an address, a creditor, no rail. It is the

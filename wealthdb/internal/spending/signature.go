@@ -814,19 +814,37 @@ func ibanMod97(s string) int {
 // WIRELESS and ACH from firing on a merchant whose name contains it.
 //
 // The mobile person-to-person rails are named here rail by rail,
-// because their vocabulary is national: the US rails are one set and
-// TWINT is the Swiss one, and a rail nobody has listed fences nothing.
-// A rail token fences every booking type it appears in, whatever verb
-// the era spells in front of it and whatever case the export uses,
-// because tokenize upper-folds. The cost is that merchant payments on
-// the same rail are fenced too — the rail cannot tell a person from a
-// shop — and those rows stay placeable by a config rule or a pin. A
-// further national rail is fenced by adding its token to this list.
+// because their vocabulary is national, and a rail nobody has listed
+// fences nothing. A rail token fences every booking type it appears
+// in, whatever verb the era spells in front of it and whatever case
+// the export uses, because tokenize upper-folds. The cost is that
+// merchant payments on the same rail are fenced too — the rail cannot
+// tell a person from a shop — and those rows stay placeable by a
+// config rule or a pin. A further national rail is fenced by adding
+// its token to this list.
+//
+// TWINT is deliberately NOT here, and it is the exception that shows
+// what the cost above is worth. In Switzerland it is a consumer-to-
+// BUSINESS rail at least as much as a person-to-person one, and the
+// CARD feed's line says which: a payment to a person reads `Sent to
+// <initials> <masked mobile>`, a payment to a shop reads the trading
+// name and a place, and neither shape ever appears in the other. A
+// token on the rail's name fences both, and a shop fenced from the
+// model is a shop that gets lumped under a generic category instead
+// of being named — which on this rail is most of it. So the card feed
+// is fenced by SHAPE instead: maskedContact and the SENT TO phrase
+// keep the people out and let the shops through to be identified.
+//
+// Two things do keep a name-shaped fence. Where a rail's line does not
+// distinguish the two at all — a US P2P rail names a person and a
+// business the same way — the token stays. And TWINT's BANK feed is
+// fenced by its booking type below, because there the personal data
+// is not the counterparty but the payer.
 var transferFenceTokens = map[string]bool{
 	"TRANSFER": true, "TRANSFERS": true, "XFER": true, "UEBERTRAG": true,
 	"WIRE": true, "WIRES": true, "ACH": true, "SEPA": true, "IBAN": true,
 	"GIRO": true, "REMITTANCE": true, "P2P": true,
-	"ZELLE": true, "VENMO": true, "CASHAPP": true, "QUICKPAY": true, "TWINT": true,
+	"ZELLE": true, "VENMO": true, "CASHAPP": true, "QUICKPAY": true,
 	"AUTOPAY": true, "EPAY": true, "AUTOPMT": true,
 }
 
@@ -838,7 +856,31 @@ var transferFencePhrases = []string{
 	"ELECTRONIC PAYMENT", "BILL PAY", "BILL PAYMENT", "DIRECT DEBIT",
 	"STANDING ORDER", "PAYMENT THANK YOU", "FUNDS TRANSFER",
 	"MOBILE TRANSFER", "ONLINE TRANSFER",
+	// What a mobile rail writes where a merchant would be. `SENT TO`
+	// leads the payee half of a person-to-person line and no shop's
+	// name contains it.
+	//
+	// `UBS TWINT` is the BANK feed's own booking type for the same
+	// rail, and that half is fenced WHOLE — shops included — for a
+	// reason the card feed does not share: every one of its rows
+	// prints `TWINT-ACC.:<mobile>`, the account that INITIATED the
+	// payment, unmasked. A mobile number is personal data whoever it
+	// belongs to, and it is on the row whether the counterparty is a
+	// person or a shop, so the feed carries personal data on every row
+	// and no shape test can make any of it safe to send.
+	"SENT TO", "UBS TWINT",
 }
+
+// maskedContact matches a contact number with its middle digits
+// starred out — how a mobile rail names the party at the other end
+// without printing the number. It is personal data whatever rail
+// carries it, so it fences on its own.
+//
+// It is read on the RAW text, before tokenize, because tokenize drops
+// the mask along with every other separator: `079***1234` reaches the
+// token set as `079` and `1234`, two ordinary numbers, and the shape
+// that made it a phone number is gone.
+var maskedContact = regexp.MustCompile(`[0-9]{2,4}\*{2,}[0-9]{2,4}`)
 
 // TransferShaped reports whether a narrative looks like money moving
 // between accounts or between people rather than money being spent at
@@ -866,6 +908,9 @@ var transferFencePhrases = []string{
 // less than deciding it on the whole row, which is what
 // RowTransferShaped reads and what candidacy uses.
 func TransferShaped(s string) bool {
+	if maskedContact.MatchString(s) {
+		return true
+	}
 	tokens := tokenize(s)
 	if len(tokens) == 0 {
 		return false
