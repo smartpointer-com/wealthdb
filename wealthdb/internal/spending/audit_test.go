@@ -119,7 +119,7 @@ func TestMatchedPairsFlagsPopulationLegs(t *testing.T) {
 		// Brokerage to brokerage, across sources: a correct pair that no
 		// spending report ever charted either end of.
 		txn{"bank", "T-BRK-OUT", "BRK1", "transfer_out", day(40), -1000, "To Invested", "", ""},
-		txn{"other-bank", "T-BRK-IN", "BRK2", "transfer_in", day(40), 1000, "", "From Brokerage", ""},
+		txn{"other-bank", "T-BRK-IN", "CUST2", "transfer_in", day(40), 1000, "", "From Brokerage", ""},
 		// A one-legged cash withdrawal, so the flag is seen on an
 		// unmatched leg too.
 		txn{"bank", "T-LONE", "CASH1", "withdrawal", day(60), -9000, "Wire Out", "", ""},

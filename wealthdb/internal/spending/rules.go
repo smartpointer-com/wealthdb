@@ -303,9 +303,9 @@ var builtinRules = []spendRule{
 		// A custodian's SECURITY-level pass-through: the depositary
 		// fee an ADR charges against the position that holds it,
 		// booked once per security per period. The narrative names
-		// the security, never a payee, and the amounts are cents to
-		// low tens — thousands of rows that together buy nothing the
-		// household chose.
+		// the security, never a payee, and each charge is small enough
+		// that only the count of them adds up to anything — none of it
+		// bought the household a thing it chose.
 		//
 		// It is spend all the same: the money is gone, and the
 		// alternative — leaving it out of the base — hides a real
@@ -347,9 +347,10 @@ var builtinRules = []spendRule{
 		// prints both "Advisor Fee" and "Investment Mgr Fee" under
 		// one action verb.
 		detailed: canonical.SpendDetailedInvestmentFees,
+		// "MANAGEMENT FEE" subsumes any longer phrase ending in it, so
+		// none is listed beside it.
 		phrases: []string{"ADVISOR FEE", "ADVISORY FEE",
-			"INVESTMENT MGR FEE", "INVESTMENT MANAGEMENT FEE",
-			"MANAGEMENT FEE"},
+			"INVESTMENT MGR FEE", "MANAGEMENT FEE"},
 	},
 }
 

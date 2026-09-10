@@ -1,16 +1,19 @@
 """
 Tests for the loader-side guards that make a dead phase visible.
 
-Two of them, and both exist because the same two-month activity
-failure walked past every check that was there:
+Three of them, and all exist because a silent activity failure
+walked past every check that was there:
 
   * a presence flag must mean the phase PRODUCED something. The walk
     mkdirs each phase directory before its first navigation, so a flag
-    read off ``is_dir()`` recorded a 1 for all 55 failed runs — the
-    very column an audit would have trusted.
+    read off ``is_dir()`` records a 1 for every failed run — the very
+    column an audit would have trusted.
   * a dump whose manifest says it never finished must not be ingested.
     Eleven of the fleet's loaders already refuse one; this loader did
     not, and would have taken a crashed dump's partial artefacts.
+  * dumps that keep landing while the transactions table stops
+    growing must say so. This is the one case the download's exit
+    code cannot see: an export that SUCCEEDS but parses to nothing.
 """
 
 from __future__ import annotations
@@ -90,3 +93,38 @@ def test_scan_keeps_a_complete_dump_whose_phase_came_back_short(tmp_path):
 def test_scan_rejects_a_bronze_dir_that_does_not_exist(tmp_path):
     with pytest.raises(SystemExit):
         load.scan_bronze(tmp_path / "nope")
+
+
+# ---------------------------------------------------- transaction staleness
+
+DAY = 86400
+STALE = load.TXN_STALE_SECONDS
+
+
+def test_a_table_that_keeps_up_with_the_dumps_is_not_stale():
+    assert load.txn_staleness_days(1_000_000 * DAY, 1_000_000 * DAY - DAY) is None
+
+
+def test_a_table_that_stopped_growing_is_stale_in_days():
+    now = 1_000_000 * DAY
+    assert load.txn_staleness_days(now, now - STALE - 5 * DAY) == 26
+
+
+def test_the_threshold_is_not_crossed_by_an_ordinary_lull():
+    """A quiet account legitimately produces nothing for weeks, so the
+    boundary itself must stay silent — this is a hint, not a rule."""
+    now = 1_000_000 * DAY
+    assert load.txn_staleness_days(now, now - STALE) is None
+    assert load.txn_staleness_days(now, now - STALE - 1) is not None
+
+
+def test_a_dump_landing_against_an_empty_table_is_always_stale():
+    """An activity phase has run and the table has nothing to show for
+    it — the exact shape of the failure these guards exist to catch."""
+    assert load.txn_staleness_days(1_000_000 * DAY, None) is not None
+
+
+def test_nothing_is_stale_before_the_first_activity_dump():
+    """With no dump claiming to have fetched transactions there is
+    nothing to be stale against."""
+    assert load.txn_staleness_days(None, None) is None

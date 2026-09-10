@@ -3,9 +3,9 @@
 -- A brokerage account books two things no narrative explains: a
 -- security-level fee (an ADR depositary charge, a platform or custody
 -- fee) and tax withheld at source. Their narrative is the SECURITY —
--- `ISHARES TREASURY FLOATING RATE B ETF` — or, on two sources,
+-- `EXAMPLE TREASURY FLOATING RATE ETF` — or, on some sources,
 -- nothing at all. There is no payee in them, so no rule can key on
--- one: of 403 such rows only 9 carried a word a pattern could match.
+-- one: barely any such row carries a word a pattern could match.
 --
 -- But the row is not unknown. Its KIND says `fee` or `tax`, and that
 -- is not a guess — each adapter derives it from whatever evidence its
@@ -36,8 +36,8 @@
 -- This also closes the categorization backlog on these rows, which
 -- selects on this macro's `spend_detailed IS NULL`
 -- (cmd_categorize.go). That matters beyond tidiness: the signature on
--- a withheld-tax row reads `NRA TAX DOMINOS PIZZA INC`, and a model
--- asked to place that will answer with a pizza.
+-- a withheld-tax row reads `NRA TAX <security>`, and a model asked
+-- to place one answers with whatever trade that name suggests.
 --
 -- The rest of the body is migration 0059's verbatim — a re-issue
 -- replaces the whole macro, so the label and issuer columns it added,

@@ -479,10 +479,10 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 // ADVISOR joins FEE rather than getting a kind of its own: both are
 // money out for a fee, and what tells a management fee from a
 // security-level ADR pass-through is the NARRATIVE, which the rule
-// tier reads. WIRE becomes a withdrawal so the internal-transfer
-// matcher gets first refusal on it — a wire to an account wealthdb
-// also tracks pairs and nets out; one to an account it does not is
-// spend.
+// tier reads. An outbound WIRE becomes a withdrawal so the
+// internal-transfer matcher gets first refusal on it — a wire to an
+// account wealthdb also tracks pairs and nets out; one to an account
+// it does not is spend.
 func TestOutflowKindsReachSpending(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
@@ -492,6 +492,8 @@ func TestOutflowKindsReachSpending(t *testing.T) {
              '{"Action": "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)"}'),
             ('wire', 910, 'ACC1', 'WIRE',    NULL, 'USD', 0, 0, -5678.00,
              '{"Action": "WIRE TRANSFER TO BANK (Cash)"}'),
+            ('wirein', 915, 'ACC1', 'WIRE',   NULL, 'USD', 0, 0,  5678.00,
+             '{"Action": "WIRE TRANSFER FROM BANK (Cash)"}'),
             ('adr',  920, 'ACC1', 'FEE',     'XYZ', 'USD', 0, 0, -1.50,
              '{"Action": "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)", "Description": "EXAMPLE CORP SPON ADR"}');
     `); err != nil {
@@ -510,7 +512,13 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 	for id, want := range map[string]canonical.TxKind{
 		"adv":  canonical.TxKindFee,
 		"wire": canonical.TxKindWithdrawal,
-		"adr":  canonical.TxKindFee,
+		// Fidelity's verb carries no direction — both wires reduce to
+		// `WIRE` — so the SIGN decides. It has to: TxKindWithdrawal
+		// has a fixed direction and ApplyCanonicalSign forces it, so
+		// calling an inbound wire one would store a credit as a debit
+		// rather than merely mislabel it.
+		"wirein": canonical.TxKindDeposit,
+		"adr":    canonical.TxKindFee,
 	} {
 		if got[id].Kind != want {
 			t.Errorf("%s kind = %q, want %q", id, got[id].Kind, want)
@@ -523,6 +531,7 @@ func TestOutflowKindsReachSpending(t *testing.T) {
 	for id, want := range map[string]string{
 		"adv":  "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
 		"wire": "WIRE TRANSFER TO BANK (Cash)",
+		"wirein": "WIRE TRANSFER FROM BANK (Cash)",
 		"adr":  "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)",
 	} {
 		if got[id].Description == nil {

@@ -596,27 +596,27 @@ func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
 // TestRuleCategoryBrokerageNarratives pins the three rules a brokerage
 // account brought into scope (migration 0064) needs.
 //
-// The account kind widened; the narratives that arrive with it are new
-// to this tier. Two of them look alike and are not: a custodian's
-// SECURITY-level pass-through, booked once per position per period and
-// buying the household nothing it chose, versus the account's own
-// management fee, which is a service it pays for. Filing both as one
-// thing would bury a four-figure advisory fee under four thousand
-// fifteen-dollar depositary charges.
+// The account kind widened, and the narratives that arrive with it are
+// new to this tier. Three shapes, two verdicts: a custodian's
+// SECURITY-level pass-through and the account's own management fee
+// both file as investment fees — they are the same cost, of holding
+// the assets — while tax withheld at source is its own thing. What the
+// rules must NOT do is confuse any of them with a fee for banking,
+// which is what the wire-fee case below pins.
 func TestRuleCategoryBrokerageNarratives(t *testing.T) {
 	for _, tc := range []struct{ narrative, detailed string }{
 		// A depositary charge names the security, never a payee.
-		{"FEE CHARGED ABB LTD SPON ADR EACH REP 1 ORD SHS (Cash)",
+		{"FEE CHARGED EXAMPLE INDUSTRIAL AG SPON ADR EACH REP 1 ORD (Cash)",
 			canonical.SpendDetailedInvestmentFees},
 		{"ADR FEE", canonical.SpendDetailedInvestmentFees},
 
 		// Withholding at source on foreign dividend income. The
 		// household never sees it, but the gross dividend is booked
 		// as income, so the withholding is the tax it paid.
-		{"FOREIGN TAX PAID EQUINOR ASA SPON ADR EACH REP 1 ORD SHS",
+		{"FOREIGN TAX PAID EXAMPLE ENERGY ASA SPON ADR EACH REP 1 ORD",
 			canonical.SpendDetailedWithholdingTax},
 		{"WITHHOLDING TAX", canonical.SpendDetailedWithholdingTax},
-		{"NRA Tax DOMINOS PIZZA INC", canonical.SpendDetailedWithholdingTax},
+		{"NRA Tax EXAMPLE RESTAURANT INC", canonical.SpendDetailedWithholdingTax},
 
 		// The fee for being managed — a service, not a pass-through.
 		{"ADVISOR FEE DEDUCTED Advisor Fee (Cash)",
@@ -658,9 +658,6 @@ func TestRuleCategoryWireFee(t *testing.T) {
 		got, _, ok := RuleCategory("", "", n, "")
 		if !ok || got != "BANK_FEES_OTHER_BANK_FEES" {
 			t.Errorf("RuleCategory(%q) = (%q, %v), want a bank fee", n, got, ok)
-		}
-		if got == canonical.SpendDetailedInvestmentFees {
-			t.Errorf("%q is a banking service, not the cost of holding assets", n)
 		}
 	}
 	if _, _, ok := RuleCategory("", "", "WIRED FUNDS DISBURSED", ""); ok {

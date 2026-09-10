@@ -320,9 +320,26 @@ def main(argv=None):
 # How far the newest transaction may lag the newest activity-covering
 # dump before `validate` says so. Generous on purpose: a quiet month
 # is ordinary, and this check is a hint rather than a rule. Three
-# weeks is short enough to have caught a two-month hole many times
-# over and long enough that an ordinary lull stays quiet.
+# weeks is short enough to catch a silent stall well before it becomes
+# a season's worth, and long enough that an ordinary lull stays quiet.
 TXN_STALE_SECONDS = 21 * 86400
+
+
+def txn_staleness_days(latest_act_dump, latest_txn):
+    """How far the newest transaction trails the newest dump that
+    covered the activity phase, or None when nothing is amiss.
+
+    None also when no such dump has ever landed — with nothing
+    claiming to have fetched transactions there is nothing to be
+    stale against. A dump that landed against an EMPTY transactions
+    table is always stale, however long ago it was: an activity phase
+    has run and the table has nothing to show for it.
+    """
+    if latest_act_dump is None:
+        return None
+    if latest_txn is not None and latest_act_dump - latest_txn <= TXN_STALE_SECONDS:
+        return None
+    return (latest_act_dump - (latest_txn or 0)) // 86400
 
 
 def scan_bronze(bronze_dir):
@@ -2317,10 +2334,8 @@ def validate(conn):
     latest_act_dump = cur.fetchone()[0]
     cur = conn.execute("SELECT MAX(timestamp) FROM transactions")
     latest_txn = cur.fetchone()[0]
-    if latest_act_dump is not None and (
-            latest_txn is None
-            or latest_act_dump - latest_txn > TXN_STALE_SECONDS):
-        gap_days = (latest_act_dump - (latest_txn or 0)) // 86400
+    gap_days = txn_staleness_days(latest_act_dump, latest_txn)
+    if gap_days is not None:
         log.warning(
             "validation: activity-covering dumps keep landing (latest %s) "
             "but the newest transaction is %s (~%d day(s) behind). Either "

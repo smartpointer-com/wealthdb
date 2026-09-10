@@ -16,12 +16,17 @@ import (
 func day(n int64) int64 { return n * gold.SecondsPerDay }
 
 // openGold returns a migrated in-memory gold holding two sources: a
-// `chase` one with a cash, a card and a brokerage account, and a
-// second source with a cash and a brokerage account. `chase` is the
-// silver kind with a provider-category map, so a fixture can exercise
-// that tier; the second source's brokerage account is what a movement
-// out of the first source can land on without being anywhere near the
-// spending scope.
+// `chase` one with a cash, a card, a brokerage and a custody account,
+// and a second source with a cash and a custody account. `chase` is
+// the silver kind with a provider-category map, so a fixture can
+// exercise that tier.
+//
+// CUSTODY is what carries the out-of-scope role, not brokerage. A
+// brokerage account has been IN the default spending scope since
+// migration 0064, so a movement landing on one is not "outside the
+// scope" and a test naming it as such would prove nothing. Custody is
+// the nearest kind the default still excludes, and the scope-override
+// fixtures use it for the same reason.
 func openGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	db, err := gold.Open(":memory:", gold.ModeReadWrite)
@@ -46,7 +51,7 @@ func openGold(t *testing.T) (*sql.DB, context.Context) {
                     ('bank', 'BRK1',  'brokerage', 'Brokerage', 1, 1),
                     ('bank', 'CUST1', 'custody',   'Custody',   1, 1),
                     ('other-bank', 'CASH2', 'cash',      'Elsewhere', 1, 1),
-                    ('other-bank', 'BRK2',  'brokerage', 'Invested',  1, 1);
+                    ('other-bank', 'CUST2', 'custody',   'Invested',  1, 1);
     `); err != nil {
 		t.Fatalf("seed dimensions: %v", err)
 	}
@@ -697,7 +702,7 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 		txn{"bank", "T-FUND-OUT", "CASH1", "withdrawal", day(40), -25000, "", "Outgoing transfer", ""},
 		// Different source, different account kind, same day, same
 		// amount: the receiving half.
-		txn{"other-bank", "T-FUND-IN", "BRK2", "deposit", day(40), 25000, "", "Funds received", ""},
+		txn{"other-bank", "T-FUND-IN", "CUST2", "deposit", day(40), 25000, "", "Funds received", ""},
 		// A real purchase alongside it, so the assertion below is "the
 		// base kept what it should" rather than "the base is empty".
 		txn{"bank", "T-SPEND", "CARD1", "purchase", day(40), -60, "Corner Market", "", ""},
@@ -1088,7 +1093,7 @@ func TestPassKeepsSpendingWithALookalikeCredit(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		txn{"bank", "T-SPEND", "CARD1", "purchase", day(50), -1200, "Ferry Road Depot", "", ""},
-		txn{"other-bank", "T-COINCIDENCE", "BRK2", "deposit", day(50), 1200, "", "Unrelated credit", ""},
+		txn{"other-bank", "T-COINCIDENCE", "CUST2", "deposit", day(50), 1200, "", "Unrelated credit", ""},
 	)
 
 	res := runPass(t, db, ctx, Options{})

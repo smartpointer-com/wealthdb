@@ -46,7 +46,11 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		}
 
 		qty := silver.DecimalPtrOrNil(qtyStr)
-		kind := kindFor(rawKind, qty, payload)
+		// The amount is resolved BEFORE the kind, because one kind
+		// depends on it: Fidelity's `WIRE` verb carries no direction,
+		// and the sign is the only thing that does.
+		netDec := silver.DecimalPtrOrNil(amtStr)
+		kind := kindFor(rawKind, qty, netDec, payload)
 		// The Action text is this source's narrative, and without it
 		// gold has nothing to categorise a fidelity row by: no
 		// merchant, no counterparty, no description. It is what
@@ -58,7 +62,6 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		// about the movement, so it is the fallback rather than the
 		// first choice.
 		descr := payloadNarrative(payload)
-		netDec := silver.DecimalPtrOrNil(amtStr)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            occurredAt,

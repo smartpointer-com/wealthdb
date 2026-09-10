@@ -30,7 +30,7 @@ import (
 //
 // Unrecognised values land as TxKindOther with the raw kind
 // preserved in payload.
-func kindFor(raw string, quantity *canonical.Decimal, payload string) canonical.TxKind {
+func kindFor(raw string, quantity, amount *canonical.Decimal, payload string) canonical.TxKind {
 	switch raw {
 	case "BUY", "REINVESTMENT":
 		// REINVESTMENT is the share-purchase leg of a reinvested
@@ -63,19 +63,31 @@ func kindFor(raw string, quantity *canonical.Decimal, payload string) canonical.
 		// management fee ("ADVISOR FEE DEDUCTED Advisor Fee" /
 		// "Investment Mgr Fee"), which is the household paying for a
 		// service. Both are money out of the account for a fee, so
-		// both are TxKindFee; what separates them is the narrative,
-		// which the rule tier reads (internal/spending/rules.go).
+		// both are TxKindFee — and the rule tier files both under
+		// BANK_FEES_INVESTMENT_FEES, because both are the cost of
+		// holding the assets. The narrative is what lets it tell one
+		// from the other should that ever need to change
+		// (internal/spending/rules.go).
 		return canonical.TxKindFee
 	case "TAX":
 		return canonical.TxKindTax
 	case "WIRE":
-		// Cash wired out of the account to a bank. It is a real
-		// outflow and must be able to reach the spending population,
-		// where the internal-transfer matcher gets first refusal on
-		// it: a wire to an account wealthdb also tracks pairs and
-		// nets out, and one to an account it does not is spend.
-		// Landing it in TxKindOther, as an unrecognised kind would,
-		// puts it beyond both.
+		// A wire, in whichever direction the amount says. Fidelity's
+		// verb does not carry one — `WIRE TRANSFER TO BANK` and its
+		// inbound sibling both reduce to `WIRE` — so the SIGN is the
+		// only signal, and it must be read: TxKindWithdrawal has a
+		// fixed direction, and ApplyCanonicalSign forces it, so
+		// classifying an inbound wire as one would store a credit as
+		// a debit rather than merely mislabel it.
+		//
+		// Outbound has to reach the spending population, where the
+		// internal-transfer matcher gets first refusal: a wire to an
+		// account wealthdb also tracks pairs and nets out, one to an
+		// account it does not is spend. Landing it in TxKindOther, as
+		// an unrecognised kind would, puts it beyond both.
+		if amount != nil && amount.IsPositive() {
+			return canonical.TxKindDeposit
+		}
 		return canonical.TxKindWithdrawal
 	case "TRANSFER", "JOURNAL":
 		// Both can flow either direction; keep source sign so

@@ -19,13 +19,13 @@
 -- belongs beside TAX_PAYMENT, but is not the same thing: a tax payment
 -- is assessed and then paid, while withholding is deducted before the
 -- money is ever received. A report that cannot tell them apart cannot
--- answer "what did we pay in tax that we never saw" — which, on a
--- portfolio of foreign dividends, is most of it.
+-- answer "what was paid in tax that was never seen" — which, where a
+-- portfolio holds foreign dividend payers, can be the larger share.
 --
 -- Both are ordinary judgements about what a row IS, so the model tier
 -- may emit them (canonical.ModelSpendDetailed derives from the
--- vendored rows plus the extensions), and on this data it usefully
--- can: a withheld-tax row's signature often reads `NRA TAX <security>`.
+-- vendored rows plus the extensions), and usefully can: a withheld-tax
+-- row's signature typically reads `NRA TAX <security>`.
 --
 -- Seeded from internal/canonical/spendtaxonomy.go exactly as
 -- migrations 0040, 0045-0047 and 0056 seed theirs, and carrying the

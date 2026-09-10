@@ -25,17 +25,19 @@ line with no store row falls back to).
 ## 1. Scope: outflows only
 
 Spending covers money leaving the tracked accounts. Income, interest
-credited, dividends and investment fees are a future **cashflow**
-feature and are deliberately absent here — including from the
-taxonomy, which drops Plaid's four flow primaries rather than carry
-values nothing may assign.
+credited and dividends are a future **cashflow** feature and are
+deliberately absent here — including from the taxonomy, which drops
+Plaid's four flow primaries rather than carry values nothing may
+assign. Investment FEES are not in that list: they are money leaving,
+they arrived with the brokerage accounts (§2), and they have a value of
+their own.
 
 The population is layered in SQL (migration 0041), each layer narrower
 than the one it reads, so no Go-side predicate restates any of it:
 
 | macro | what it is |
 |---|---|
-| `spend_scoped_accounts()` | which accounts count at all: kind `cash` or `card` by default, overridden either way by a `spend_account_scope` row |
+| `spend_scoped_accounts()` | which accounts count at all: kind `cash`, `card` or `brokerage` by default (migration 0064 — one product can be a brokerage and a chequing account at once), overridden either way by a `spend_account_scope` row |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
 | `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044) |
 | `spending_lines_base(f, t)` | what a report charts: the population with its category resolved and its own-account moves and capital deployed removed — a bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
@@ -209,8 +211,9 @@ institution charged".
 Withholding belongs beside TAX_PAYMENT and is not the same thing: a
 tax payment is assessed and then paid, while withholding is deducted
 before the money is ever received. A report that cannot tell them
-apart cannot answer "what did we pay in tax that we never saw", which
-on a portfolio of foreign dividends is most of it.
+apart cannot answer "what was paid in tax that was never seen", which
+where a portfolio holds foreign dividend payers can be the larger
+share.
 
 It differs from a delta in the one way that matters: **the model MAY
 emit an extension.** A delta is decided from structure a merchant name
@@ -270,15 +273,20 @@ inside `wealthdb load`; the fifth costs money and runs only when
 ```
              transaction scope                       merchant scope
    ┌──────────────────────────────────────┐   ┌────────────────────────┐
-   │ pin > matcher > rule > provider      │ > │ model      │ > │ kind  │
+   │ pin > matcher > rule > provider      │ > │ model                  │ > kind
    └──────────────────────────────────────┘   └────────────────────────┘
              spend_txn_enrichment                spend_merchant_categories
         (per source; derived, pins re-stamped)     (GLOBAL, paid for)
 ```
 
-The **kind** floor (migration 0066) is last and reads the transaction's
-own kind: a row of kind `fee` that nothing else placed is an investment
-fee, one of kind `tax` is withholding. It exists because a brokerage
+The **kind** floor (migration 0066, extended by 0067) is last, stands
+outside both stores — it reads no verdict anyone wrote — and takes the
+transaction's own kind: a row of kind `fee` that nothing else placed is
+an investment fee, one of kind `tax` is withholding, and one of kind
+`interest` is an interest charge when the amount is negative. The sign
+is tested rather than assumed there, because this macro is read at
+transaction grain too, where credited interest reaches it and is
+income. It exists because a brokerage
 books rows no narrative explains — a security-level fee or tax withheld
 at source, whose narrative is the SECURITY or, on some sources, nothing
 at all. There is no payee in them for a rule to key on. But the kind is
@@ -517,7 +525,7 @@ own.
 
 ### The rule tier
 
-Three built-in rules, evaluated in order, first match wins. They are
+The built-in rules are evaluated in order, first match wins. They are
 **engine constants, not user configuration**: each exists because a
 whole class of rows is structurally mis-read without it, and the right
 answer follows from what the product already knows about its own
@@ -528,6 +536,10 @@ accounts rather than from anyone's preference.
 | `card_payment` | `card_spend` | A card bill with no counter-leg in gold is a bill for a card wealthdb does not itemise — a card no collector exists for, or the deep era, where a card payment is dated before the card's own ledger begins — and the bill is the only trace of that spending. So it is kept in the base as generic card spend, not deleted as an own-account move; a bill whose card *is* in gold never reaches this verdict, because the matcher outranks it. Matched on card-payment phrases and an issuer table, never on a store card that names its merchant, and refused outright on a row the `atm` rule matches — cash taken at a machine carries the same masked card number. A match on a named issuer's descriptor also LABELS the bill with that issuer, which is what the line carries as its merchant (§7). |
 | `atm` | `cash_withdrawal` | The money is gone, but *what it bought* has no record anywhere. |
 | `mortgage` | `internal_transfer` | The mortgage is a tracked account; counting the payment as spend would double-count against the liability it reduces. |
+| `investment_fee` | `investment_fees` | A custodian's per-security pass-through, such as an ADR depositary charge, booked once per security per period. The narrative names the security and never a payee, so nothing else can reach it. It is a cost of INVESTING rather than of banking, which is what the extension exists to say. |
+| `wire_fee` | `other_bank_fees` | Sits on the same statements as the pass-through above and is deliberately not one: paying to move money is a banking service, and filing it as an investment fee would overstate what holding the assets costs. Not the wire itself, which no rule places — that is the matcher's to pair or nobody's to guess. |
+| `withholding` | `withholding_tax` | Tax deducted at source on foreign dividend income. The gross dividend is booked as income, so leaving the withholding out would report the gross as though it were net. |
+| `management_fee` | `investment_fees` | The fee an account pays for being managed. It is levied on the account where the pass-through is levied on the security, but both are the cost of holding the assets, which is why they share one value. |
 
 Rules run against three texts, each on its own: the merchant
 **signature**, and the raw `counterparty` and `description` it was

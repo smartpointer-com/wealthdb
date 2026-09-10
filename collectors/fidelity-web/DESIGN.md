@@ -197,9 +197,10 @@ Filename conventions:
   in-scope accounts** (consolidated; account-selector state does
   NOT scope the export). Account dimension lives in the CSV's
   `Account Number` column, same shape as positions. With a
-  `--lookback` window, the request is bisected into ≤93-day
-  chunks (Fidelity's per-export cap, configurable via
-  `MAX_ACTIVITY_WINDOW_DAYS`); one CSV per chunk, named
+  `--lookback` window, the request is bisected into
+  `MAX_ACTIVITY_WINDOW_DAYS` chunks — narrower than Fidelity's own
+  per-export cap, and for a correctness reason given in §8.4.2;
+  one CSV per chunk, named
   `activity_<YYYYMMDD>__<YYYYMMDD>.csv`. With no window, the
   rolling preset (default `Past 90 days`) produces a single
   `activity_past_90_days.csv`. Retention upper-bound is set by
@@ -217,8 +218,8 @@ strings).
 ### 2.1 Coverage, status and the exit code — three different questions
 
 A run answers three questions that must not be conflated, because
-conflating two of them is how the activity phase failed on 55
-consecutive nightly runs while every signal read healthy.
+conflating two of them is how the activity phase came to fail on
+nightly run after nightly run while every signal read healthy.
 
 **`coverage` — did each phase get what it went for?** One entry per
 phase the run *attempted*, always written, each with a `complete`
@@ -706,7 +707,10 @@ VNC. After the post-auth URL lands, the walk runs as normal (or
 
 ## 8. UI surface map
 
-URLs and selectors anchored to the live DOM as of 2026-05-24/25.
+URLs and selectors anchored to the live DOM as of 2026-05-24/25,
+except §8.2 and §8.4, re-anchored 2026-09 after Fidelity renamed the
+signin inputs and rebuilt Activity & Orders on the `fds-*` design
+system.
 
 ### 8.1 URLs
 
@@ -807,7 +811,7 @@ Three properties of the new page are load-bearing and easy to miss:
 | Filter dialog trigger | `button:has-text('Filter')` (also `[aria-label='Filter']`) |
 | Time-period filter pill | `[data-testid='filter-by-time-button']` (expands panel `[id^='time-filter-panel']`; legacy `[data-testid='ap143528-timeperiod-filter']`) |
 | Picker open state | `aria-expanded='true'` on the pill (legacy: the Recent/Custom radios existing at all) |
-| Preset day-count radios (Recent tab) | `input.fds-radio__radio[name='recent-options']` (legacy `helios-radio[pvd-value='<N>']`) |
+| Preset day-count radios (Recent tab) | `helios-radio[pvd-value='<N>']` — what `_select_activity_page_timeperiod` still issues. The rebuilt panel renders them as `input.fds-radio__radio[name='recent-options']`, so the preset path is DEAD against the current page; nothing drives it, because the custom-range path covers every window the collector asks for |
 | Custom tab | `input.fds-segment__radio[type='radio'][value='custom' i]` — matched case-INSENSITIVELY because the generation before spelled the same value `Custom`; then `input#Custom[type='radio']`, then legacy `apex-kit-segment[pvd-value='Custom']` |
 | Custom-tab date inputs | `#input-from-date` / `#input-to-date` (legacy `#customized-timeperiod-from-date` / `-to-date`). HTML5 `<input type="date">`, ISO YYYY-MM-DD. The current generation sets **no `min`/`max`** — the retention floor is enforced by the panel's own validation instead, so the bounds probe finds nothing to clamp to |
 | Apply (Custom tab) | `form:has(#input-from-date) button[type='submit']` — the button is unlabelled and its id is per-render, so it is addressed through the form the date inputs sit in (legacy `button[aria-label='Apply Customized Time Period']`) |
@@ -845,13 +849,8 @@ legitimate, and treating it as stale would retry for ever.
 Fidelity caps a Custom range at 93 days per export, but
 `MAX_ACTIVITY_WINDOW_DAYS` is **30**, and that is a correctness rule.
 
-The CSV is generated from whatever the table currently holds. The
-filter's label updates the moment Apply is pressed — well before the
-rows behind it arrive — so an export taken in that gap is the
-*previous* filter's data under the new window's name. Waiting on
-`networkidle`, on the label, or on the request Apply fires all proved
-insufficient: each can be satisfied while the table is still the old
-one.
+The export lags its filter by a whole apply (§8.4.1), and no signal on
+the page reliably says when it has caught up.
 
 Asking only for windows no wider than the page's own default filter
 ("Past 30 days") makes the stale answer harmless. A stale export is
@@ -964,7 +963,7 @@ the rendered HTML; silver scrapes from there.
 | `download.py` — IUA gate, MFA, trust-device, profile dir, one-shot login → walk → logout | done |
 | `download.py` — positions Overview + DividendView (consolidated CSVs) | done |
 | `download.py` — activity preset 'Past 90 days' (page-level pill → radio → Apply Recent → networkidle) | done |
-| `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into ≤93-day windows) | done |
+| `download.py` — activity Custom-range backfill (Custom tab, ISO date inputs, retention-clamped, bisected into `MAX_ACTIVITY_WINDOW_DAYS` windows) | done |
 | `download.py` — documents: statements + tax forms via the Enterprise Document Center (rail-link type switch, year filter, row click → `financial-documents/download` JSON → base64 PDF; content-hash dedup) | done — see §8.5 |
 | `download.py` — `--explore`: shadow-/iframe-piercing DOM inventory for doc-center UI-drift debugging | done |
 | `download.py` — `--debug` gate on walk-phase captures (off by default; `--explore` implies it) | done |

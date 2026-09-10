@@ -237,12 +237,12 @@ var deltaSpendCategories = []SpendCategory{
 // Withholding is a tax and belongs beside TAX_PAYMENT, but is not the
 // same thing: TAX_PAYMENT is assessed and then paid, while withholding
 // is deducted before the money arrives. A report that cannot tell them
-// apart cannot answer "what did we pay in tax that we never saw".
+// apart cannot answer "what was paid in tax that was never seen".
 //
 // Both are ordinary judgements about what a row IS, so the model tier
-// may emit them — and on this data it usefully can: the signature on a
-// withheld-tax row often reads `NRA TAX <security>`, which names the
-// answer.
+// may emit them — and usefully can, since the signature on a
+// withheld-tax row typically reads `NRA TAX <security>`, which names
+// the answer.
 var extensionSpendCategories = []SpendCategory{
 	{"GENERAL_SERVICES", SpendDetailedDigitalServices,
 		"Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device"},

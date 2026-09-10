@@ -174,9 +174,9 @@ TABLE_RENDER_WAIT_S = 3.0
 SPA_HYDRATE_WAIT_S = 5.0
 DOWNLOAD_TIMEOUT_MS = 30_000
 
-# Fidelity's documented per-request cap on activity exports.
 # Custom-range requests longer than this are bisected into
-# ≤MAX_ACTIVITY_WINDOW_DAYS-day windows, one CSV per window.
+# MAX_ACTIVITY_WINDOW_DAYS-day windows, one CSV per window.
+#
 # The activity Custom range is capped at 93 days per export by
 # Fidelity, but the windows are cut to 30 — the width of the page's
 # OWN default filter ("Past 30 days") — and that is a correctness
@@ -186,12 +186,17 @@ DOWNLOAD_TIMEOUT_MS = 30_000
 # the filter's label updates the instant Apply is pressed, well before
 # the rows behind it arrive. An export taken in that gap is the
 # PREVIOUS filter's data under the new window's name. Asking only for
-# windows no wider than the page's own default means the stale answer
-# is always a SUPERSET of what was asked for, never a truncation of
-# it: extra rows are harmless, because an activity row's id is derived
-# from its content and reloading it is a no-op, whereas missing rows
-# are a hole nothing reports. A 93-day window had the opposite
-# property, and silently returned 30 days.
+# windows no wider than the page's own default bounds the damage: a
+# stale answer is then a SUPERSET of what was asked for rather than a
+# truncation of it, and a superset is recoverable where a truncation
+# is a hole nothing reports. A 93-day window had the opposite
+# property and silently returned 30 days.
+#
+# It is a floor under the damage, not the mechanism that prevents it.
+# `activity_export_matches` is that: it refuses any export whose rows
+# fall outside the window asked for, superset included, and pulls the
+# window again. The cap is what makes a run that exhausts its retries
+# still land something usable.
 MAX_ACTIVITY_WINDOW_DAYS = 30
 
 # How far back an activity backfill reaches when the page publishes no
@@ -243,7 +248,7 @@ SEL_USERNAME_OTHER_OPTION_VALUE = "default"
 # LIST (`autocomplete="username webauthn"` today), so an exact-value
 # match misses it the moment Fidelity adds a token. That one operator
 # would have carried this selector through the rename below on its
-# own, which is why it sits second — ahead of every id.
+# own, which is why it sits ahead of every superseded id.
 SEL_USERNAME_TEXT_INPUT_CANDIDATES = (
     "input#dom-username-input",
     "input[autocomplete~=username]",
@@ -491,17 +496,28 @@ def _gap_label(entry):
     win = entry.get("window")
     if isinstance(win, (list, tuple)) and len(win) == 2 and all(win):
         return f"{win[0]}..{win[1]}"
-    for key in ("view", "row_label", "account"):
+    for key in ("view", "row_label"):
         if entry.get(key):
             return str(entry[key])
     return str(entry.get("error") or "unknown")
 
 
+# A nested attempt reports failure two ways: with an `ok` flag (the
+# list phases) or with a status (the DAF's per-account map). The
+# statuses that mean failure are enumerated here rather than the ones
+# that mean success — at this depth an unfamiliar status is far more
+# likely to be a shape this table has not learned than a failure, and
+# the top-level allow-list (PHASE_OK_STATUS) already catches a phase
+# that went wrong as a whole.
+ENTRY_FAIL_STATUS = ("error", "session-timeout")
+
+
 def _attempt_entries(result):
-    """The list of per-attempt dicts inside a phase result, whatever
-    shape that phase uses. A status-dict phase yields its sub-lists
-    (documents keeps its statements / tax_forms under one envelope);
-    a list phase yields itself."""
+    """The per-attempt dicts inside a phase result, whatever shape
+    that phase uses. A list phase yields itself; a status-dict phase
+    yields the dicts nested one level under it — both its sub-lists
+    (documents keeps statements / tax_forms under one envelope) and
+    its sub-maps (the DAF keys its per-account results by account)."""
     if isinstance(result, list):
         return [e for e in result if isinstance(e, dict)]
     if isinstance(result, dict):
@@ -509,8 +525,15 @@ def _attempt_entries(result):
         for value in result.values():
             if isinstance(value, list):
                 out += [e for e in value if isinstance(e, dict)]
+            elif isinstance(value, dict):
+                out += [e for e in value.values() if isinstance(e, dict)]
         return out
     return []
+
+
+def _entry_failed(entry):
+    return (not entry.get("ok", True)
+            or entry.get("status") in ENTRY_FAIL_STATUS)
 
 
 def phase_coverage(run_json, requested_window=None):
@@ -526,7 +549,7 @@ def phase_coverage(run_json, requested_window=None):
     the phase made succeeded, False when any did not. A phase the run
     never requested has no entry at all, so "not asked for" is never
     confused with "asked for and came back empty" — which is the
-    distinction the activity phase lost for 55 runs.
+    distinction the activity phase lost, run after run.
     """
     coverage = {}
     for name, key in PHASE_RESULT_KEYS:
@@ -534,7 +557,7 @@ def phase_coverage(run_json, requested_window=None):
             continue                      # phase not requested
         result = run_json[key]
         entries = _attempt_entries(result)
-        gaps = [_gap_label(e) for e in entries if not e.get("ok", True)]
+        gaps = [_gap_label(e) for e in entries if _entry_failed(e)]
         complete = not gaps
 
         # A status-dict phase also has to like its own status.
@@ -543,6 +566,17 @@ def phase_coverage(run_json, requested_window=None):
             if status not in PHASE_OK_STATUS[name]:
                 complete = False
                 gaps.append(f"status={status}")
+
+        # A sub-walk that raised outright leaves no attempt list to
+        # judge — only a `<name>_error` beside an envelope status that
+        # is still the successful one, because the sibling sub-walk
+        # did finish. Without this the documents phase can lose half
+        # of what it went for and report complete.
+        if isinstance(result, dict):
+            for field, value in result.items():
+                if field.endswith("_error") and value:
+                    complete = False
+                    gaps.append(f"{field[:-len('_error')]}: {value}")
 
         # An empty ATTEMPT list is the inverse of an empty gap list:
         # the phase ran and covered nothing at all. It is only a gap
@@ -968,12 +1002,18 @@ SEL_ACTIVITY_APPLY = (
     "button[aria-label='Apply Customized Time Period']"
 )
 
-# The popover's CSV item, as a pure-CSS union the open-wait can poll
-# on. The click loop below tries these plus its text-matched
-# fallbacks; this one only has to answer "did the popover open".
-SEL_ACTIVITY_CSV_ITEM = (
-    "#download-csv-button, button[aria-label='Download as CSV']"
+# The popover's CSV item, current generation first: the custom
+# element's own light-DOM id, then the native button by its label.
+# `_click_activity_download` tries these before its text-matched
+# fallbacks, and the open-wait polls their union — which is derived
+# here rather than written out a second time, so the two cannot drift
+# apart. Pure CSS on purpose: a `:has-text()` pseudo-class has no
+# place in a selector used only to answer "did the popover open".
+SEL_ACTIVITY_CSV_SELECTORS = (
+    "#download-csv-button",
+    "button[aria-label='Download as CSV']",
 )
+SEL_ACTIVITY_CSV_ITEM = ", ".join(SEL_ACTIVITY_CSV_SELECTORS)
 
 # The time-filter button states the filter currently in force on its
 # own label ("Open time filter. Current filter: 01/07/2026 -
@@ -1090,6 +1130,50 @@ def _click_custom_timeperiod_tab(page):
         except Exception as e:
             log.debug("custom time-period tab click via %r: %s", sel, e)
     return False
+
+
+def clamp_activity_window(since_date, until_date, fmin, fmax, today):
+    """The window a backfill will actually walk.
+
+    ``fmin``/``fmax`` are whatever the Custom tab published in its
+    date inputs' ``min``/``max`` attributes, either of which may be
+    None. The current generation of the panel publishes NEITHER — it
+    enforces retention through validation messages instead — so an
+    absent ``fmin`` is the normal case rather than a broken probe, and
+    ``ACTIVITY_RETENTION_FLOOR_DAYS`` stands in for it: generous
+    enough to reach everything Fidelity has ever served here, short
+    enough that ``--lookback all`` stays a walk rather than a siege of
+    hundreds of identical empty exports.
+
+    The returned range may be inverted, which is how a request that
+    falls entirely outside the available window reports itself.
+    """
+    if fmin is None:
+        floor = today - timedelta(days=ACTIVITY_RETENTION_FLOOR_DAYS)
+        if since_date < floor:
+            log.info(
+                "activity backfill: the panel published no date "
+                "bounds, so the requested since=%s is clamped to the "
+                "assumed retention floor %s (%d days)",
+                since_date.isoformat(), floor.isoformat(),
+                ACTIVITY_RETENTION_FLOOR_DAYS,
+            )
+            since_date = floor
+    elif since_date < fmin:
+        log.info(
+            "activity backfill: clamping requested since=%s up to "
+            "Fidelity's earliest available %s",
+            since_date.isoformat(), fmin.isoformat(),
+        )
+        since_date = fmin
+    if fmax and until_date > fmax:
+        log.info(
+            "activity backfill: clamping requested until=%s down to "
+            "Fidelity's latest available %s",
+            until_date.isoformat(), fmax.isoformat(),
+        )
+        until_date = fmax
+    return since_date, until_date
 
 
 def _probe_activity_date_bounds(page, capture_dir):
@@ -1313,7 +1397,6 @@ def _select_activity_custom_range(page, since_date, until_date,
             log.warning("apply Custom click failed: %s", e)
             return None
         log.debug("Custom-range Apply triggered no data request")
-
 
     try:
         page.wait_for_load_state("networkidle", timeout=20_000)
@@ -1561,8 +1644,7 @@ def _click_activity_download(page, capture_dir, label_suffix):
     # below. Every skip is logged, so the next drift names the locator
     # that stopped matching instead of failing silently.
     for sel in (
-        "#download-csv-button",
-        "button[aria-label='Download as CSV']",
+        *SEL_ACTIVITY_CSV_SELECTORS,
         "#downloadContent button:has-text('CSV')",
         "#downloadContent a:has-text('CSV')",
         "#downloadContent [role=menuitem]:has-text('CSV')",
@@ -1729,10 +1811,10 @@ def scrape_activity(page, since_date, until_date,
     The preset path is the fast option for routine recurring
     dumps; the Custom-range path serves a one-off historic
     backfill over an explicit ``--lookback <PRESET|YYYY-MM-DD>``
-    window, which runs from that start to today. Bounded by Fidelity's
-    documented ~4-year retention on Activity exports (the Custom
-    tab's date-input ``min`` attribute is the authoritative
-    boundary; ``_select_activity_custom_range`` clamps to it)."""
+    window, which runs from that start to today. Bounded by whatever
+    the Custom tab publishes in its date inputs' ``min``/``max``,
+    and where it publishes neither — which the current generation of
+    the panel does not — by ``ACTIVITY_RETENTION_FLOOR_DAYS``."""
     activity_dir = bronze_dir / "activity"
     activity_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -1753,41 +1835,8 @@ def scrape_activity(page, since_date, until_date,
         # would chunk into ~120 same-empty-CSV iterations before
         # the cursor reaches the available range.
         fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
-        # The probe reads min/max off the date inputs, and the
-        # current generation of the panel sets NEITHER — it enforces
-        # retention through its own validation messages instead. So a
-        # probe that comes back empty is now the normal case, not the
-        # broken one, and without a floor `--lookback all` would chunk
-        # thirty years into hundreds of identical empty exports.
-        # ACTIVITY_RETENTION_FLOOR_DAYS is the fallback: generous
-        # enough to reach everything Fidelity has ever served here,
-        # short enough that "all" stays a walk rather than a siege.
-        if fmin is None:
-            floor = date.today() - timedelta(
-                days=ACTIVITY_RETENTION_FLOOR_DAYS)
-            if since_date < floor:
-                log.info(
-                    "activity backfill: the panel published no date "
-                    "bounds, so the requested since=%s is clamped to "
-                    "the assumed retention floor %s (%d days)",
-                    since_date.isoformat(), floor.isoformat(),
-                    ACTIVITY_RETENTION_FLOOR_DAYS,
-                )
-                since_date = floor
-        if fmin and since_date < fmin:
-            log.info(
-                "activity backfill: clamping requested since=%s up "
-                "to Fidelity's earliest available %s",
-                since_date.isoformat(), fmin.isoformat(),
-            )
-            since_date = fmin
-        if fmax and until_date > fmax:
-            log.info(
-                "activity backfill: clamping requested until=%s "
-                "down to Fidelity's latest available %s",
-                until_date.isoformat(), fmax.isoformat(),
-            )
-            until_date = fmax
+        since_date, until_date = clamp_activity_window(
+            since_date, until_date, fmin, fmax, date.today())
         if until_date < since_date:
             log.info(
                 "activity backfill: requested range falls entirely "

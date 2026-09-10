@@ -1,11 +1,11 @@
 """
 Tests for the phase-coverage contract — what a run says it got.
 
-The failure these exist to stop: the activity phase failed on 55
-consecutive nightly runs while every one of them wrote
-``"status": "complete"`` and exited 0. Positions kept landing, so the
-source looked current everywhere a human would check, and a two-month
-hole in the transaction history was invisible.
+The failure these exist to stop: the activity phase can fail nightly,
+run after run, while every one of those runs writes
+``"status": "complete"`` and exits 0. The other phases keep landing, so
+the source reads current everywhere a person would check, and the hole
+growing in the transaction history is invisible.
 
 Three separable guarantees, one per group below:
 
@@ -180,20 +180,48 @@ def test_coverage_of_a_missing_file_never_raises(tmp_path):
 
 # ----------------------------------------------------- backfill is bounded
 
+TODAY = date(2026, 9, 10)
+
+
 def test_a_backfill_stays_bounded_when_the_page_publishes_no_bounds():
     """`--lookback all` asks for thirty years. The panel that used to
     publish min/max on its date inputs no longer does, so the probe
     that clamped the request comes back empty as a matter of course —
     and without a floor every year past Fidelity's retention is a
     month of identical empty exports."""
-    from datetime import timedelta
-    floor = date.today() - timedelta(days=download.ACTIVITY_RETENTION_FLOOR_DAYS)
-    bounded = download.make_activity_windows(floor, date.today())
-    unbounded = download.make_activity_windows(date(1996, 1, 1), date.today())
-    assert len(bounded) < len(unbounded) / 2
-    assert len(bounded) < 100, (
-        f"{len(bounded)} windows is a siege, not a backfill"
+    since, until = download.clamp_activity_window(
+        date(1996, 1, 1), TODAY, None, None, TODAY)
+    assert until == TODAY
+    assert since > date(2019, 1, 1), "no floor was applied"
+    windows = download.make_activity_windows(since, until)
+    assert len(windows) < 100, (
+        f"{len(windows)} windows is a siege, not a backfill"
     )
+
+
+def test_a_window_inside_the_floor_is_left_alone():
+    """The floor is a backstop for `all`, not a rewrite of every
+    request — an ordinary nightly window must survive it intact."""
+    assert download.clamp_activity_window(
+        date(2026, 8, 1), TODAY, None, None, TODAY) == (date(2026, 8, 1), TODAY)
+
+
+def test_published_bounds_win_over_the_assumed_floor():
+    """When the panel does publish min/max, that is the real answer
+    and the floor must not widen or narrow it."""
+    assert download.clamp_activity_window(
+        date(1996, 1, 1), TODAY,
+        date(2024, 6, 1), date(2026, 9, 9), TODAY,
+    ) == (date(2024, 6, 1), date(2026, 9, 9))
+
+
+def test_a_request_wholly_outside_the_available_window_inverts():
+    """An inverted range is how the clamp says 'nothing to walk';
+    scrape_activity reads it and skips the phase."""
+    since, until = download.clamp_activity_window(
+        date(1996, 1, 1), date(1997, 1, 1),
+        date(2024, 6, 1), date(2026, 9, 9), TODAY)
+    assert until < since
 
 
 # ------------------------------------------- an export must be its own window
@@ -224,3 +252,44 @@ def test_a_window_with_no_rows_matches_by_default():
     place — treating it as stale would retry for ever."""
     assert download.activity_export_matches(
         0, None, None, date(2026, 7, 1), date(2026, 7, 30)) is True
+
+
+# ------------------------------------------- failure shapes that hid before
+
+def test_a_sub_walk_that_raised_outright_is_a_gap():
+    """The envelope's status stays `walked` because the SIBLING
+    sub-walk finished, and a walk that raised leaves no attempt list
+    to judge — only a `<name>_error`. The documents phase could lose
+    half of what it went for and still report complete."""
+    cov = download.phase_coverage({"documents_results": {
+        "status": "walked",
+        "statements": [{"row_label": "2026", "file": "s.pdf", "ok": True}],
+        "statements_error": "Timeout 30000ms exceeded",
+    }})
+    assert cov["documents"]["complete"] is False
+    assert cov["documents"]["gaps"] == ["statements: Timeout 30000ms exceeded"]
+
+
+def test_a_failed_daf_account_is_a_gap():
+    """The DAF keys its per-account results by account rather than
+    listing them, and each says it failed with a status rather than an
+    `ok` flag — two shapes past the list-and-flag reading, so a dead
+    account was invisible under an envelope reading `complete`."""
+    cov = download.phase_coverage({"daf_results": {
+        "status": "complete",
+        "accounts": 2,
+        "per_account": {
+            "acct-a": {"status": "complete", "grants": 3},
+            "acct-b": {"status": "error", "error": "poolBalances 500"},
+        },
+    }})
+    assert cov["daf"]["complete"] is False
+    assert cov["daf"]["gaps"] == ["poolBalances 500"]
+
+
+def test_a_daf_whose_accounts_all_landed_is_complete():
+    cov = download.phase_coverage({"daf_results": {
+        "status": "complete", "accounts": 1,
+        "per_account": {"acct-a": {"status": "complete", "grants": 3}},
+    }})
+    assert cov["daf"] == {"complete": True, "gaps": []}
