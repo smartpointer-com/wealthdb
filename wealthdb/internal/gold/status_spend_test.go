@@ -34,6 +34,12 @@ func TestStatusSpendCounters(t *testing.T) {
                                           spend_detailed, provenance, assigned_at) VALUES
             ('test-src', 'T-WD',  'SIG A', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-BUY', 'SIG B', 1, 'FOOD_AND_DRINK_GROCERIES', 'provider', 100);
+
+        -- Since migration 0068 no account kind is out of scope, so the
+        -- out-of-scope account this test needs is made one the only way
+        -- there is.
+        INSERT INTO spend_account_scope (silver_source_id, account_external_id, mode)
+             VALUES ('test-src', 'CUST1', 'exclude');
     `); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -51,10 +57,8 @@ func TestStatusSpendCounters(t *testing.T) {
 		t.Errorf("UncategorizedSpendCount = %d, want 1", st.UncategorizedSpendCount)
 	}
 	// Both CATCH-ALL kinds count, and only on an IN-SCOPE account: the
-	// cash `other` and `journal` rows are spending gaps, the custody
-	// account's `other` row is not. Custody and not brokerage — a
-	// brokerage account IS in scope (migration 0064), so it would no
-	// longer make the point.
+	// cash `other` and `journal` rows are spending gaps, the excluded
+	// account's `other` row is not.
 	if st.ExcludedUnmappedCount != 2 {
 		t.Errorf("ExcludedUnmappedCount = %d, want 2 (the in-scope 'other' and 'journal' rows)",
 			st.ExcludedUnmappedCount)

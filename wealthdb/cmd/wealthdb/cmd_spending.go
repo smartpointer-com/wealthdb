@@ -402,7 +402,9 @@ func spendingUsage() string {
 	return `usage: wealthdb spending <view> [FROM [TO]] [--period P] [--level L]
                          [-f FORMAT] [-C COLS] [-x CCY] [-p]
 
-What the tracked cash and card accounts spent. Amounts use historic FX
+What the tracked accounts spent. Every account counts unless the
+config takes it out; what makes a row spending is its KIND, not the
+kind of account it sits on. Amounts use historic FX
 (nearest rate at-or-before the transaction) and are sign-split: spend
 and refunds are both POSITIVE magnitudes, net_spend is their
 difference. Own-account moves — card payments, funding wires, mortgage

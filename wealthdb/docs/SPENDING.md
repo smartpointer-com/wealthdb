@@ -1,6 +1,6 @@
 # Spending
 
-How gold turns transactions on cash and card accounts into
+How gold turns transactions on the tracked accounts into
 categorised spend: the vocabulary, the tiers that assign from it, the
 order they win in, and the two gates that decide what a third-party
 model is ever shown.
@@ -37,7 +37,7 @@ than the one it reads, so no Go-side predicate restates any of it:
 
 | macro | what it is |
 |---|---|
-| `spend_scoped_accounts()` | which accounts count at all: kind `cash`, `card` or `brokerage` by default (migration 0064 — one product can be a brokerage and a chequing account at once), overridden either way by a `spend_account_scope` row |
+| `spend_scoped_accounts()` | which accounts count at all: EVERY account by default since migration 0068 — whether an account can pay a fee is not a property of its kind — and a `spend_account_scope` row is the only thing that takes one out |
 | `spend_enrichment_population(f, t)` | what the enrichment pass may write a verdict for |
 | `spend_matcher_pool(f, t)` | what the internal-transfer matcher sees — deliberately BROADER on two axes: the transfer-eligible KINDS, which include the income side the spending base excludes, on EVERY account rather than the scoped ones (migration 0044) |
 | `spending_lines_base(f, t)` | what a report charts: the population with its category resolved and its own-account moves and capital deployed removed — a bill on a card not itemised (`card_spend`) and a cash gift (`gift`) stay in |
@@ -62,7 +62,12 @@ exclusion: DESIGN.md §10.10.
 `wealthdb spending <view>` is the CLI over those three macros, one
 view each, and restates none of it either — see §7.
 
-`spend_account_scope` is configuration stamped into gold, on the
+`spend_account_scope` is where an account leaves the scope, and since
+0068 it is the only place that happens. A donor-advised fund is one
+example: its grants would double-count giving already booked when the
+fund was contributed to. Such a rule argues about a particular
+arrangement rather than about a kind. It is configuration
+stamped into gold, on the
 `SetFxPriorities` precedent: the report macros need no runtime config
 injection, and removing an entry from `spending.accounts` removes its
 effect on the next pass rather than leaving it behind. The key is an
@@ -194,7 +199,8 @@ subscription.
 
 `BANK_FEES_INVESTMENT_FEES` and
 `GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX` (migration 0065) came with
-brokerage accounts, which joined the scope in 0064 (§1). Holding
+brokerage accounts, which joined the scope in 0064 and were followed by
+every other kind in 0068 (§1). Holding
 investments costs money in two ways the vendored vocabulary cannot
 name, and both arrive in volume — together they are most of what a
 managed account books.

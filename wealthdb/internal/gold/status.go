@@ -207,7 +207,7 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 // row it could not classify, so money landing there is money that
 // silently left the spending base. The deliberate exclusions (buy,
 // sell, fx, dividend, card_payment, positive interest) are not
-// counted: they occur in bulk on every cash and card account, and a
+// counted: they occur in bulk on every deposit and card account, and a
 // number that is permanently large says nothing.
 func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
 	if err := db.QueryRowContext(ctx, `

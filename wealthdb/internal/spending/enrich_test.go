@@ -21,12 +21,13 @@ func day(n int64) int64 { return n * gold.SecondsPerDay }
 // the silver kind with a provider-category map, so a fixture can
 // exercise that tier.
 //
-// CUSTODY is what carries the out-of-scope role, not brokerage. A
-// brokerage account has been IN the default spending scope since
-// migration 0064, so a movement landing on one is not "outside the
-// scope" and a test naming it as such would prove nothing. Custody is
-// the nearest kind the default still excludes, and the scope-override
-// fixtures use it for the same reason.
+// NO account kind is out of the spending scope: since migration 0068
+// the default is `include` for every account and `spend_account_scope`
+// is the only thing that takes one out. A fixture that wants an
+// out-of-scope account therefore has to EXCLUDE it through the config,
+// which is what the scope tests below do — and which is the stronger
+// test, because it exercises the mechanism a reader can actually
+// change rather than a list compiled into a macro.
 func openGold(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	db, err := gold.Open(":memory:", gold.ModeReadWrite)
@@ -686,12 +687,12 @@ func inEnrichmentPopulation(t *testing.T, db *sql.DB, ctx context.Context, sourc
 //
 // Money moved out of a cash account into an investment account is
 // booked as a withdrawal on one side and a credit on the other, and
-// the receiving side is an account kind no spending report will ever
-// chart. While the pool drew from spend_scoped_accounts() the
-// receiving leg was not a candidate at all, so the pair could never
-// form; the withdrawal stayed one-legged, which is indistinguishable
-// from spending, and the movement was counted as spend at whatever
-// size it was.
+// the receiving side is an account the household has deliberately
+// taken out of its spending reports. While the pool drew from
+// spend_scoped_accounts() the receiving leg was not a candidate at
+// all, so the pair could never form; the withdrawal stayed one-legged,
+// which is indistinguishable from spending, and the movement was
+// counted as spend at whatever size it was.
 //
 // Narrowing spend_matcher_pool back to the scoped accounts fails this
 // test twice over: no pair forms, and the withdrawal reappears in the
@@ -700,15 +701,18 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		txn{"bank", "T-FUND-OUT", "CASH1", "withdrawal", day(40), -25000, "", "Outgoing transfer", ""},
-		// Different source, different account kind, same day, same
-		// amount: the receiving half.
+		// Different source, same day, same amount: the receiving half,
+		// on the account the config excludes below.
 		txn{"other-bank", "T-FUND-IN", "CUST2", "deposit", day(40), 25000, "", "Funds received", ""},
 		// A real purchase alongside it, so the assertion below is "the
 		// base kept what it should" rather than "the base is empty".
 		txn{"bank", "T-SPEND", "CARD1", "purchase", day(40), -60, "Corner Market", "", ""},
 	)
 
-	res := runPass(t, db, ctx, Options{})
+	// The receiving account is out of scope by the only route there is.
+	res := runPass(t, db, ctx, Options{
+		Exclude: map[string][]string{"other-bank": {"CUST2"}},
+	})
 
 	// The property that matters, asserted first: the movement is out of
 	// the spending base and the purchase beside it is not.
@@ -732,10 +736,10 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 	}
 
 	// The receiving leg is outside the enrichment population entirely —
-	// a credit on a brokerage account is not a spending row and never
-	// becomes one — and still carries the verdict. An out-of-population
-	// leg has a home in the overlay because the table is keyed by
-	// transaction alone.
+	// its account is excluded, and a credit is not a spending row in any
+	// case — and still carries the verdict. An out-of-population leg has
+	// a home in the overlay because the table is keyed by transaction
+	// alone.
 	if inEnrichmentPopulation(t, db, ctx, "other-bank", "T-FUND-IN") {
 		t.Error("the receiving leg reached the enrichment population; only the pool should hold it")
 	}
@@ -747,7 +751,9 @@ func TestPassMatchesOntoAnAccountOutsideTheSpendingScope(t *testing.T) {
 	// The wider pool must not cost the pass its idempotence: the legs
 	// it reaches only through the pool are re-derived like every other.
 	before := enrichmentSnapshot(t, db, ctx)
-	second := runPass(t, db, ctx, Options{})
+	second := runPass(t, db, ctx, Options{
+		Exclude: map[string][]string{"other-bank": {"CUST2"}},
+	})
 	if after := enrichmentSnapshot(t, db, ctx); strings.Join(before, "\n") != strings.Join(after, "\n") {
 		t.Errorf("overlay changed on a second pass:\nfirst:\n%s\nsecond:\n%s",
 			strings.Join(before, "\n"), strings.Join(after, "\n"))
@@ -1761,8 +1767,10 @@ func TestPassOwnsManualRows(t *testing.T) {
 // it — the population macros read the table the pass just wrote.
 func TestPassStampsAccountScope(t *testing.T) {
 	db, ctx := openGold(t)
-	// CUSTODY and not brokerage: a brokerage account is in scope by
-	// default (migration 0064), so pulling one in would prove nothing.
+	// Since migration 0068 every account is in scope by default, so
+	// EXCLUDE is the direction that carries the proof: an include is a
+	// no-op on an account already in, and only a removed exclude can
+	// show that the re-stamp is whole.
 	seedTxns(t, db, ctx,
 		txn{"bank", "T-CUST", "CUST1", "purchase", day(10), -70, "Corner Market", "", "Groceries"},
 		txn{"bank", "T-CARD", "CARD1", "purchase", day(10), -50, "Corner Market", "", "Groceries"})
@@ -1775,23 +1783,23 @@ func TestPassStampsAccountScope(t *testing.T) {
 		t.Errorf("ScopeRows = %d, want 2", res.ScopeRows)
 	}
 	if res.Population != 1 {
-		t.Errorf("Population = %d, want 1 (the included custody row only)", res.Population)
+		t.Errorf("Population = %d, want 1 (the card row is excluded)", res.Population)
 	}
 	if got := enrichmentSnapshot(t, db, ctx); len(got) != 1 || !strings.Contains(got[0], "T-CUST") {
-		t.Errorf("overlay = %v, want the pulled-in account's row alone", got)
+		t.Errorf("overlay = %v, want the un-excluded account's row alone", got)
 	}
 
-	// Dropping the overrides re-stamps the table empty and the default
-	// account-kind scope applies again.
+	// Dropping the overrides re-stamps the table empty, and the excluded
+	// account comes back — the re-stamp is whole, not additive.
 	res = runPass(t, db, ctx, Options{})
 	if res.ScopeRows != 0 {
 		t.Errorf("ScopeRows after clearing the config = %d, want 0", res.ScopeRows)
 	}
-	if res.Population != 1 {
-		t.Errorf("Population after clearing the config = %d, want 1 (the card row)", res.Population)
+	if res.Population != 2 {
+		t.Errorf("Population after clearing the config = %d, want 2 (both rows, nothing excluded)", res.Population)
 	}
-	if got := enrichmentSnapshot(t, db, ctx); len(got) != 1 || !strings.Contains(got[0], "T-CARD") {
-		t.Errorf("overlay = %v, want the card row alone", got)
+	if got := enrichmentSnapshot(t, db, ctx); len(got) != 2 {
+		t.Errorf("overlay = %v, want both rows once no account is excluded", got)
 	}
 }
 

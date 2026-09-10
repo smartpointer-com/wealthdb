@@ -37,7 +37,7 @@ import (
 //     money coming back, not the holder's money going round.
 //   - the pool spans EVERY account in gold — every kind, in or out of
 //     the spending scope (migration 0044). The spending BASE stays
-//     cash and card; the matcher must not, because a leg it cannot see
+//     the scoped ones; the matcher must not, because a leg it cannot see
 //     is a pair it cannot form, and the receiving half of a funding
 //     movement usually lands on an account no spending report charts.
 //     An outgoing leg left one-legged is indistinguishable from

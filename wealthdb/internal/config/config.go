@@ -121,7 +121,7 @@ type Config struct {
 	// Spending groups the per-deployment knobs of the spending
 	// feature: which accounts spending counts, and how hard the
 	// internal-transfer matcher tries to pair the two legs of an
-	// own-account move. Absent block ⇒ every cash and card account
+	// own-account move. Absent block ⇒ every account
 	// counts and the matcher runs on its defaults. See
 	// internal/spending.
 	Spending *SpendingConfig `json:"spending,omitempty"`
@@ -492,7 +492,8 @@ func (m *ReturnsTransferMatching) Tolerance() float64 {
 // overrides.
 type SpendingConfig struct {
 	// Accounts overrides the account-kind default of the spending
-	// scope. Absent ⇒ cash and card accounts count, nothing else does.
+	// scope. Absent ⇒ every account counts; only an entry here takes
+	// one out.
 	Accounts *SpendingAccounts `json:"accounts,omitempty"`
 	// InternalTransferMatching tunes the matcher that pairs the two
 	// legs of an own-account move so neither counts as spending.

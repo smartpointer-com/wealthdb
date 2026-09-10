@@ -24,7 +24,7 @@ var helpText = map[string]string{
 	"holdings":     "Point-in-time portfolio views: positions, accounts, portfolios, sources, global ('wealthdb holdings <view> -h').",
 	"returns":      "Time-weighted (TWR) & money-weighted (MWR/XIRR) returns by accounts, portfolios, sources, global ('wealthdb returns <view> -h').",
 	"transactions": "Print transactions over a date range (-r reverses to newest-first).",
-	"spending":     "What the cash and card accounts spent: summary, categories, transactions ('wealthdb spending <view> -h').",
+	"spending":     "What the tracked accounts spent: summary, categories, transactions ('wealthdb spending <view> -h').",
 	// The holdings views — addressed as `wealthdb holdings <view>`, but kept
 	// here so `wealthdb help <view>` still resolves to a useful blurb.
 	"positions":       "Print consolidated positions as of a date (-f table|csv|csv_plain|json, -x CCY).",
