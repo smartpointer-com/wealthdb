@@ -100,7 +100,7 @@ import re
 import sys
 import time
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -177,7 +177,22 @@ DOWNLOAD_TIMEOUT_MS = 30_000
 # Fidelity's documented per-request cap on activity exports.
 # Custom-range requests longer than this are bisected into
 # ≤MAX_ACTIVITY_WINDOW_DAYS-day windows, one CSV per window.
-MAX_ACTIVITY_WINDOW_DAYS = 93
+# The activity Custom range is capped at 93 days per export by
+# Fidelity, but the windows are cut to 30 — the width of the page's
+# OWN default filter ("Past 30 days") — and that is a correctness
+# rule, not a politeness one.
+#
+# The CSV is generated from whatever the table currently holds, and
+# the filter's label updates the instant Apply is pressed, well before
+# the rows behind it arrive. An export taken in that gap is the
+# PREVIOUS filter's data under the new window's name. Asking only for
+# windows no wider than the page's own default means the stale answer
+# is always a SUPERSET of what was asked for, never a truncation of
+# it: extra rows are harmless, because an activity row's id is derived
+# from its content and reloading it is a no-op, whereas missing rows
+# are a hole nothing reports. A 93-day window had the opposite
+# property, and silently returned 30 days.
+MAX_ACTIVITY_WINDOW_DAYS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +424,170 @@ def make_activity_windows(since_date, until_date):
         windows.append((cursor, end))
         cursor = end + timedelta(days=1)
     return windows
+
+
+# ---------------------------------------------------------------------------
+# Phase coverage — what a run actually got, beside what it attempted
+# ---------------------------------------------------------------------------
+
+# The run.json key each phase writes its result under. A key is
+# present exactly when the phase was requested AND attempted, so the
+# presence of a key — not the value of --mode — is what says a phase
+# ran.
+PHASE_RESULT_KEYS = (
+    ("positions", "positions_results"),
+    ("activity", "activity_results"),
+    ("documents", "documents_results"),
+    ("balances", "balances_results"),
+    ("performance", "performance_results"),
+    ("daf", "daf_results"),
+)
+
+# For the phases whose result is a status dict rather than a list of
+# attempts, the statuses that mean the phase did its job. `no-daf` is
+# one of them: a login with no donor-advised fund has nothing to
+# fetch, and walk() has already upgraded a no-daf that contradicts the
+# enumerated accounts into an error.
+PHASE_OK_STATUS = {
+    "documents": ("walked",),
+    "balances": ("explored-no-export",),
+    "performance": ("explored-no-export",),
+    "daf": ("complete", "dry-run", "no-daf"),
+}
+
+# The exit code a run uses to say a phase came back short. Distinct
+# from the credential (2) and login (3) codes already in use, so a
+# nightly summary tells "the session died" apart from "a phase quietly
+# died".
+EXIT_PHASE_INCOMPLETE = 4
+
+
+def _gap_label(entry):
+    """A failed attempt, named the way ubs-web names one: a window as
+    ``YYYY-MM-DD..YYYY-MM-DD``, anything else by whatever identifies
+    it."""
+    win = entry.get("window")
+    if isinstance(win, (list, tuple)) and len(win) == 2 and all(win):
+        return f"{win[0]}..{win[1]}"
+    for key in ("view", "row_label", "account"):
+        if entry.get(key):
+            return str(entry[key])
+    return str(entry.get("error") or "unknown")
+
+
+def _attempt_entries(result):
+    """The list of per-attempt dicts inside a phase result, whatever
+    shape that phase uses. A status-dict phase yields its sub-lists
+    (documents keeps its statements / tax_forms under one envelope);
+    a list phase yields itself."""
+    if isinstance(result, list):
+        return [e for e in result if isinstance(e, dict)]
+    if isinstance(result, dict):
+        out = []
+        for value in result.values():
+            if isinstance(value, list):
+                out += [e for e in value if isinstance(e, dict)]
+        return out
+    return []
+
+
+def phase_coverage(run_json, requested_window=None):
+    """What each attempted phase actually covered.
+
+    One entry per phase the run attempted, ALWAYS carrying a `gaps`
+    list — empty included, so a reader can tell a run that covered
+    everything from one taken before this field existed. That is
+    ubs-web's convention (`csv_gaps` / `mt940_gaps`), applied per
+    phase.
+
+    `complete` is the field a caller acts on: True when every attempt
+    the phase made succeeded, False when any did not. A phase the run
+    never requested has no entry at all, so "not asked for" is never
+    confused with "asked for and came back empty" — which is the
+    distinction the activity phase lost for 55 runs.
+    """
+    coverage = {}
+    for name, key in PHASE_RESULT_KEYS:
+        if key not in run_json:
+            continue                      # phase not requested
+        result = run_json[key]
+        entries = _attempt_entries(result)
+        gaps = [_gap_label(e) for e in entries if not e.get("ok", True)]
+        complete = not gaps
+
+        # A status-dict phase also has to like its own status.
+        if isinstance(result, dict) and name in PHASE_OK_STATUS:
+            status = result.get("status")
+            if status not in PHASE_OK_STATUS[name]:
+                complete = False
+                gaps.append(f"status={status}")
+
+        # An empty ATTEMPT list is the inverse of an empty gap list:
+        # the phase ran and covered nothing at all. It is only a gap
+        # when something was actually asked for — a window that
+        # resolves to no days legitimately yields no attempts.
+        if isinstance(result, list) and not entries:
+            if name == "activity" and requested_window and all(requested_window):
+                complete = False
+                gaps.append("%s..%s" % requested_window)
+            elif name != "activity":
+                complete = False
+                gaps.append("no attempt recorded")
+
+        coverage[name] = {"complete": complete, "gaps": gaps}
+    return coverage
+
+
+def exit_code_for_coverage(coverage):
+    """0 when every attempted phase covered what it set out to, else
+    EXIT_PHASE_INCOMPLETE.
+
+    This is the signal the nightly relies on. run.json's own status
+    deliberately stays `complete` whatever a phase did (see walk), so
+    the dump keeps its artefacts and its loadability; the exit code is
+    the separate axis that says a phase came back short, and it is
+    emitted only after the manifest has been finalised."""
+    short = sorted(name for name, c in (coverage or {}).items()
+                   if not c.get("complete"))
+    if not short:
+        return 0
+    log.error(
+        "phase(s) came back short: %s — the dump is still loadable and "
+        "run.json records the gaps under `coverage`",
+        ", ".join(short),
+    )
+    return EXIT_PHASE_INCOMPLETE
+
+
+def activity_csv_coverage(path):
+    """What an activity CSV actually covers: ``(rows, first, last)``
+    over its ``Run Date`` column, or ``(0, None, None)`` when it holds
+    no dated row.
+
+    Recorded on every window's result so an export that came back
+    short — or empty, which a header-only CSV looks exactly like from
+    the outside — is visible in run.json instead of reading as a
+    success with a file next to it. Never raises: a coverage figure is
+    diagnostic, and failing to compute one must not cost the export
+    that was already saved."""
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception as e:
+        log.debug("activity coverage read failed: %s", e)
+        return 0, None, None
+    days = []
+    for line in text.splitlines():
+        m = re.match(r'\s*"?(\d{2})/(\d{2})/(\d{4})"?\s*,', line)
+        if not m:
+            continue
+        try:
+            days.append(date(int(m.group(3)), int(m.group(1)),
+                            int(m.group(2))))
+        except ValueError:
+            continue
+    if not days:
+        return 0, None, None
+    return len(days), min(days), max(days)
 
 
 def parse_iso_date(value):
@@ -721,7 +900,88 @@ def scrape_positions(page, bronze_dir, capture_dir):
 # The time-period dropdown renders its Recent/Custom radios + date
 # inputs only while open, so their presence is a reliable
 # open-state probe.
-SEL_TIMEPICKER_OPEN = "input#Custom[type='radio'], input#Recent[type='radio']"
+# The activity time filter, in both generations Fidelity has served.
+#
+# 2026-07: the page moved onto the `fds-*` design system and the
+# inline time-period pill (`ap143528-timeperiod-filter`) became a
+# `<filter-by-time>` button that expands a panel. The button carries
+# the open state on `aria-expanded`, which is the semantic signal and
+# survives another renaming of the panel itself; the legacy radio
+# probe stays as the fallback for a partial rollback.
+SEL_TIMEPICKER_PILL = (
+    "[data-testid='filter-by-time-button'], "
+    "[data-testid='ap143528-timeperiod-filter']"
+)
+SEL_TIMEPICKER_OPEN = (
+    "[data-testid='filter-by-time-button'][aria-expanded='true'], "
+    "input#Custom[type='radio'], input#Recent[type='radio']"
+)
+
+# The Custom tab's own controls, current generation first. The `fds-*`
+# date inputs carry no `min`/`max`, where the generation before them
+# did — the bounds probe reads null and simply does not clamp, and the
+# retention floor is enforced by the panel's own validation instead
+# (`from-date-too-old-error`, `date-range-too-large-error`).
+SEL_ACTIVITY_FROM_DATE = "#input-from-date, #customized-timeperiod-from-date"
+SEL_ACTIVITY_TO_DATE = "#input-to-date, #customized-timeperiod-to-date"
+# Apply is now an unlabelled submit button, so it is addressed through
+# the form the date inputs sit in rather than by name: both the form id
+# and the button id are generated per render, and the label the older
+# generation carried is gone.
+SEL_ACTIVITY_APPLY = (
+    "form:has(#input-from-date) button[type='submit'], "
+    "button[aria-label='Apply Customized Time Period']"
+)
+
+# The popover's CSV item, as a pure-CSS union the open-wait can poll
+# on. The click loop below tries these plus its text-matched
+# fallbacks; this one only has to answer "did the popover open".
+SEL_ACTIVITY_CSV_ITEM = (
+    "#download-csv-button, button[aria-label='Download as CSV']"
+)
+
+# The time-filter button states the filter currently in force on its
+# own label ("Open time filter. Current filter: 01/07/2026 -
+# 10/09/2026"). That label is the only positive confirmation the page
+# offers that an Apply actually took, and reading it is what stops a
+# window from exporting under the WRONG range — see
+# `_activity_filter_shows_range`.
+SEL_TIMEPICKER_LABEL = "[data-testid='filter-by-time-button']"
+
+
+def _activity_filter_shows_range(page, since_date, until_date):
+    """True when the time-filter control's label names both endpoints
+    of the requested range.
+
+    The label renders the dates in the session's own locale, and the
+    site is inconsistent about it: day-first where its CSV is
+    month-first, and dot-separated on one render where the same
+    control was slash-separated on another. So the separator is
+    normalised away and BOTH field orders are accepted, rather than
+    parsing one spelling and trusting it — a matcher that is strict
+    about presentation reports a filter that took as one that did
+    not, which costs the window. A label naming neither rendering of
+    an endpoint is a filter that really did not take."""
+    try:
+        el = page.locator(SEL_TIMEPICKER_LABEL).first
+        if el.count() == 0:
+            return None          # not this generation of the control
+        label = el.evaluate(
+            "el => el.getAttribute('fds-native-button-attributes') "
+            "  || el.getAttribute('aria-label') || el.textContent || ''"
+        ) or ""
+    except Exception as e:
+        log.debug("time-filter label read failed: %s", e)
+        return None
+    flat = re.sub(r"[.\-]", "/", label)
+    for dt in (since_date, until_date):
+        if not any(dt.strftime(f) in flat
+                   for f in ("%d/%m/%Y", "%m/%d/%Y")):
+            log.debug(
+                "time-filter label does not name %s", dt.isoformat(),
+            )
+            return False
+    return True
 
 
 def _ensure_timepicker_open(page):
@@ -738,7 +998,7 @@ def _ensure_timepicker_open(page):
     dropdown ends up open."""
     if page.locator(SEL_TIMEPICKER_OPEN).count() > 0:
         return True
-    pill = page.locator("[data-testid='ap143528-timeperiod-filter']")
+    pill = page.locator(SEL_TIMEPICKER_PILL)
     if pill.count() == 0:
         log.debug("timepicker pill not found")
         return False
@@ -756,21 +1016,28 @@ def _ensure_timepicker_open(page):
 def _click_custom_timeperiod_tab(page):
     """Select the 'Custom' tab in the activity time-period picker.
 
-    Fidelity replaced the old ``apex-kit-segment`` web component with
-    a plain PVD radio group — the Custom option is now
-    ``<input class="pvd-segment__radio" type="radio" id="Custom">``.
-    Try the radio id first, then a value-based radio match, then the
-    legacy ``apex-kit-segment`` so a partial rollback on Fidelity's
-    side doesn't break us. Returns True when a Custom control was
-    found and clicked.
+    Three generations of this control have shipped, and the locators
+    below cover all of them so a partial rollback on Fidelity's side
+    does not break us. Returns True when a Custom control was found
+    and clicked.
 
-    The id `Custom` is generic enough to risk a collision, so the
-    locators pin ``type=radio`` / the segment tag; whichever matches
-    first, we click the radio itself (or the input nested in the
-    legacy wrapper)."""
+    The current one (`fds-*` design system, 2026-07) is a segmented
+    control of ``<input class="fds-segment__radio" type="radio"
+    value="custom">``. Its ids are GENERATED PER RENDER
+    (``segment-444046273391``), so nothing may key on one; the value
+    is the only stable handle. It is matched case-insensitively
+    (``[value='custom' i]``) because the generation before it spelled
+    the same value ``Custom`` — one locator covers both, and the next
+    flip of that shift key costs nothing.
+
+    Before that came a PVD radio group keyed on ``id="Custom"``, and
+    before that an ``apex-kit-segment`` web component. Both are kept
+    below. Whichever matches first, we click the radio itself (or the
+    input nested in the legacy wrapper)."""
     for sel in (
+        "input.fds-segment__radio[type='radio'][value='custom' i]",
+        "input[type='radio'][value='custom' i]",
         "input#Custom[type='radio']",
-        "input[type='radio'][value='Custom']",
         "apex-kit-segment[pvd-value='Custom']",
     ):
         loc = page.locator(sel)
@@ -801,7 +1068,7 @@ def _probe_activity_date_bounds(page, capture_dir):
     chunker can clamp the requested ``--lookback`` window to
     Fidelity's available retention window. Without this clamp, a
     ``--lookback all`` against multi-decade history burns one
-    pointless round-trip per 93-day window walking from the
+    pointless round-trip per window walking from the
     requested start up to Fidelity's retention floor (each clamps
     to the same single-day window and overwrites the same CSV
     file).
@@ -810,13 +1077,14 @@ def _probe_activity_date_bounds(page, capture_dir):
         log.debug("timepicker pill not found; bounds probe aborted")
         return None, None
     time.sleep(0.8)
+    capture(page, capture_dir, "activity-timepicker-open")
     if not _click_custom_timeperiod_tab(page):
         log.debug("Custom tab not found; bounds probe aborted")
         return None, None
     time.sleep(0.8)
     capture(page, capture_dir, "activity-custom-bounds-probe")
-    from_input = page.locator("#customized-timeperiod-from-date").first
-    to_input = page.locator("#customized-timeperiod-to-date").first
+    from_input = page.locator(SEL_ACTIVITY_FROM_DATE).first
+    to_input = page.locator(SEL_ACTIVITY_TO_DATE).first
     if from_input.count() == 0 or to_input.count() == 0:
         log.debug("Custom-tab date inputs not found; bounds probe aborted")
         return None, None
@@ -843,7 +1111,7 @@ def _select_activity_custom_range(page, since_date, until_date,
                                      capture_dir, label_suffix):
     """Drive the page-level time-period filter pill to its
     'Custom' segmented-control tab, fill the since/until inputs
-    with the given dates, click 'Apply Customized Time Period',
+    with the given dates, click the panel's Apply button,
     wait for the table re-fetch.
 
     Returns the range tag (``"<since>__<until>"``) on success or
@@ -851,9 +1119,11 @@ def _select_activity_custom_range(page, since_date, until_date,
     Camoufox's actionability quirks (the picker contents are
     marked 'outside viewport' even when on-screen).
 
-    NOTE: Fidelity's Custom range is capped at 93 days per
-    request; callers MUST chunk longer requested windows via
+    NOTE: callers MUST chunk longer requested windows via
     ``make_activity_windows`` before invoking this function.
+    Fidelity caps a Custom range at 93 days, but the chunk width is
+    MAX_ACTIVITY_WINDOW_DAYS and is narrower than that for a
+    correctness reason — see its comment.
     """
     # Open the dropdown idempotently — the bounds probe ran just
     # before us and left it open; a blind pill-click here would
@@ -874,10 +1144,12 @@ def _select_activity_custom_range(page, since_date, until_date,
     )
 
     # Fill since + until dates. Inputs are HTML5 ``<input type=
-    # "date">`` and want ISO YYYY-MM-DD; Fidelity gates them with
-    # min/max attributes that bound the per-export retention
-    # window (currently ~4 years back). We clamp to those bounds
-    # so an over-eager since= doesn't silently truncate.
+    # "date">`` and want ISO YYYY-MM-DD. Where the input carries
+    # min/max attributes bounding the per-export retention window we
+    # clamp to them, so an over-eager since= doesn't silently
+    # truncate; the current generation sets neither, in which case
+    # there is nothing to clamp to and the panel's own validation is
+    # what refuses an out-of-range request.
     def _fill_date(input_locator, dt):
         # Read the input's min/max attributes and clamp; the SPA
         # rejects out-of-bound values silently which produces a
@@ -926,8 +1198,8 @@ def _select_activity_custom_range(page, since_date, until_date,
             log.debug("date-fill failed: %s", e)
             return None
 
-    from_input = page.locator("#customized-timeperiod-from-date").first
-    to_input = page.locator("#customized-timeperiod-to-date").first
+    from_input = page.locator(SEL_ACTIVITY_FROM_DATE).first
+    to_input = page.locator(SEL_ACTIVITY_TO_DATE).first
     if from_input.count() == 0 or to_input.count() == 0:
         capture(
             page, capture_dir,
@@ -935,7 +1207,7 @@ def _select_activity_custom_range(page, since_date, until_date,
         )
         log.warning(
             "Custom-tab date inputs not found "
-            "(#customized-timeperiod-from-date / -to-date)"
+            f"({SEL_ACTIVITY_FROM_DATE} / {SEL_ACTIVITY_TO_DATE})"
         )
         return None
     orig_since, orig_until = since_date, until_date
@@ -971,29 +1243,75 @@ def _select_activity_custom_range(page, since_date, until_date,
         return None
     since_date, until_date = filled_since, filled_until
 
-    apply_btn = page.locator(
-        "button[aria-label='Apply Customized Time Period']"
-    )
+    apply_btn = page.locator(SEL_ACTIVITY_APPLY)
     if apply_btn.count() == 0:
         log.warning(
-            "no 'Apply Customized Time Period' button for Custom range"
+            "no Apply button for the Custom range (%s)", SEL_ACTIVITY_APPLY
         )
         return None
+    # Apply, and wait for the DATA REQUEST it triggers rather than for
+    # the control to look right.
+    #
+    # The export is generated from whatever the table currently holds,
+    # and the filter's label updates the moment Apply is pressed —
+    # long before the rows behind it arrive. Downloading on the label
+    # alone exports the PREVIOUS range under this window's name: for a
+    # wide window the fetch is slow enough that the file lands, the
+    # run reports ok, and the rows are quietly the last 30 days.
+    #
+    # The predicate is any XHR/fetch rather than a named endpoint, so
+    # it survives the SPA moving its data URL — which is the kind of
+    # change that broke every selector above.
     try:
-        apply_btn.first.evaluate("el => el.click()")
-        log.debug("clicked 'Apply Customized Time Period'")
+        with page.expect_response(
+            lambda r: r.request.resource_type in ("xhr", "fetch"),
+            timeout=20_000,
+        ):
+            apply_btn.first.evaluate("el => el.click()")
+        log.debug("Custom-range Apply triggered a data request")
     except Exception as e:
-        log.warning("apply Custom click failed: %s", e)
-        return None
+        # A timeout here is not fatal on its own — the range may
+        # already be the one loaded, and the label check below still
+        # has to agree before anything is exported. Anything else is
+        # a click that did not land.
+        if "Timeout" not in type(e).__name__:
+            log.warning("apply Custom click failed: %s", e)
+            return None
+        log.debug("Custom-range Apply triggered no data request")
+
 
     try:
         page.wait_for_load_state("networkidle", timeout=20_000)
     except Exception:
         time.sleep(8.0)
+
+    # Wait for the page to SAY it is showing the range we asked for.
+    # `networkidle` cannot answer that — prior unrelated requests may
+    # already have gone idle while the new range fetch has not
+    # started — and downloading a window early exports the PREVIOUS
+    # filter's rows under this window's name. That is worse than
+    # failing: the file lands, the run reports ok, and the rows are
+    # silently the wrong ones. A control that does not carry a label
+    # (an older generation) returns None and is trusted as before.
+    deadline = time.monotonic() + 20.0
+    shown = None
+    while time.monotonic() < deadline:
+        shown = _activity_filter_shows_range(page, since_date, until_date)
+        if shown is not False:
+            break
+        time.sleep(0.5)
     capture(
         page, capture_dir,
         f"activity-custom-applied-{label_suffix}",
     )
+    if shown is False:
+        log.warning(
+            "activity Custom range %s..%s did not take — the filter "
+            "still names a different range; refusing to export this "
+            "window under a range it is not showing",
+            since_date.isoformat(), until_date.isoformat(),
+        )
+        return None
     range_tag = (
         f"{since_date.strftime('%Y%m%d')}"
         f"__{until_date.strftime('%Y%m%d')}"
@@ -1147,35 +1465,79 @@ def _click_activity_download(page, capture_dir, label_suffix):
     # too lenient: prior unrelated requests may have already gone
     # idle while the new range fetch hasn't started, leaving the
     # button briefly disabled when we try to click. Poll for the
-    # disabled attribute to clear (up to ~15s) before clicking.
-    deadline = time.monotonic() + 15.0
+    # disabled state to clear before clicking.
+    #
+    # The state is read from BOTH generations of the control: the
+    # native `disabled` on the button itself, and `fds-disabled` on
+    # the custom element that now wraps it. Reading only the native
+    # one reports "enabled" for a busy button, because the custom
+    # element never sets the native attribute.
+    deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         try:
             disabled = trigger.evaluate(
-                "el => el.disabled || el.getAttribute('disabled') !== null"
+                "el => { const host = el.closest('fds-button') || el; "
+                "  return el.disabled === true "
+                "    || el.getAttribute('disabled') !== null "
+                "    || host.getAttribute('fds-disabled') === 'true'; }"
             )
         except Exception:
             disabled = False
         if not disabled:
             break
         time.sleep(0.5)
-    trigger.click(timeout=10_000)
-    time.sleep(1.0)
+
+    # Opening the popover is what puts the CSV item in the DOM, so
+    # wait for the ITEM rather than for a constant: a wide window
+    # keeps the table re-fetching well past any sleep, and the click
+    # that lands too early opens nothing. A popover that never opened
+    # used to surface as "no CSV item" — the same message as a
+    # renamed item — so the two are told apart here and the trigger
+    # gets one more press before we give up.
+    for attempt in (1, 2):
+        trigger.click(timeout=10_000)
+        opened_by = time.monotonic() + 15.0
+        while time.monotonic() < opened_by:
+            if page.locator(SEL_ACTIVITY_CSV_ITEM).count() > 0:
+                break
+            time.sleep(0.4)
+        if page.locator(SEL_ACTIVITY_CSV_ITEM).count() > 0:
+            break
+        log.debug(
+            "activity Download popover did not open on attempt %d", attempt,
+        )
     capture(
         page, capture_dir, f"activity-download-open-{label_suffix}",
     )
 
+    # The popover's CSV item, current generation first.
+    #
+    # It is an `fds-button` custom element whose native <button> lives
+    # in a SHADOW ROOT, and `#download-csv-button` is that element's
+    # own light-DOM id — the one stable handle on this control, since
+    # every id the shadow tree generates is per-render. The click is
+    # dispatched at the native button THROUGH the shadow root: an
+    # actionability click reads the item as hidden while the popover
+    # animates, and a plain CSS match for the inner button can miss a
+    # shadow root altogether. That combination is what made the
+    # previous generation of this loop fail without a word.
+    #
+    # The generation before was a link inside `#downloadContent`, kept
+    # below. Every skip is logged, so the next drift names the locator
+    # that stopped matching instead of failing silently.
     for sel in (
+        "#download-csv-button",
+        "button[aria-label='Download as CSV']",
         "#downloadContent button:has-text('CSV')",
         "#downloadContent a:has-text('CSV')",
         "#downloadContent [role=menuitem]:has-text('CSV')",
         "a:has-text('Download as CSV')",
+        "button:has-text('Download as CSV')",
     ):
         try:
             loc = page.locator(sel).first
             if loc.count() == 0:
-                continue
-            if not loc.is_visible(timeout=500):
+                log.debug("activity CSV item %r: no match", sel)
                 continue
             log.info(
                 "activity CSV item via %r (%s)",
@@ -1184,7 +1546,12 @@ def _click_activity_download(page, capture_dir, label_suffix):
             with page.expect_download(
                 timeout=DOWNLOAD_TIMEOUT_MS,
             ) as dl_info:
-                loc.click(timeout=5_000)
+                loc.evaluate(
+                    "el => { const b = (el.shadowRoot "
+                    "  && el.shadowRoot.querySelector('button')) "
+                    "  || el.querySelector('button') || el; "
+                    "  b.click(); }"
+                )
             return dl_info.value
         except Exception as e:
             log.debug("activity CSV item %r: %s", sel, e)
@@ -1204,7 +1571,7 @@ ACTIVITY_TIMEPERIOD_PREFERENCE = ("90", "60", "30")
 def _activity_csv_for_window(page, since_date, until_date,
                               bronze_dir, capture_dir):
     """Drive the Custom-range tab to [since..until] (a single
-    ≤93-day window), open the Download popover, save the CSV.
+    window), open the Download popover, save the CSV.
     Returns a single result dict.
 
     The CSV is **consolidated across all visible accounts** — the
@@ -1234,14 +1601,20 @@ def _activity_csv_for_window(page, since_date, until_date,
         )
         csv_path = activity_dir / f"activity_{range_tag}.csv"
         dl.save_as(str(csv_path))
+        rows, first, last = activity_csv_coverage(csv_path)
         log.info(
-            "saved activity/%s (%d bytes, range=%s)",
-            csv_path.name, csv_path.stat().st_size, range_tag,
+            "saved activity/%s (%d bytes, range=%s, rows=%d, covers %s..%s)",
+            csv_path.name, csv_path.stat().st_size, range_tag, rows,
+            first.isoformat() if first else "-",
+            last.isoformat() if last else "-",
         )
         final = compress_export(csv_path)
         return {
             "window": [since_date.isoformat(),
                        until_date.isoformat()],
+            "rows": rows,
+            "covers": [first.isoformat() if first else None,
+                       last.isoformat() if last else None],
             "file": str(final.relative_to(bronze_dir)),
             "ok": True,
         }
@@ -1292,7 +1665,7 @@ def scrape_activity(page, since_date, until_date,
         log.exception("activity-nav failed")
         return [{"ok": False, "error": f"navigate: {e}"}]
 
-    # Custom-range path — historic backfill, one CSV per ≤93d window.
+    # Custom-range path — historic backfill, one CSV per window.
     if since_date is not None and until_date is not None:
         # Pre-flight: clamp the requested range to whatever
         # Fidelity exposes in its Custom-tab min/max attributes
@@ -2704,6 +3077,22 @@ def walk(context, page, config):
     elif mode in ("all", "positions"):
         log.info("no Fidelity Charitable relationship enumerated; "
                  "skipping DAF phase")
+    # What each attempted phase actually got. Always written, so an
+    # empty `gaps` list is a positive statement of coverage rather
+    # than the absence of a field.
+    run_json["coverage"] = phase_coverage(
+        run_json, (config.get("since"), config.get("until")),
+    )
+
+    # The status stays `complete` whatever the phases did, and that is
+    # deliberate rather than an oversight. `complete` means "the walk
+    # reached its end", and it is what keeps the dump loadable and out
+    # of prune's delete path — a run whose activity phase failed still
+    # holds good positions, balances, documents and DAF artefacts, and
+    # downgrading the status would hand all of it to prune and block
+    # the positions load besides. Phase completeness and DUMP
+    # completeness are different axes; this one is the dump's, and
+    # `coverage` above plus the process exit code carry the other.
     run_json["status"] = "complete"
 
     # Atomic (tmp + rename) so a prune racing the finalisation never
@@ -2712,6 +3101,7 @@ def walk(context, page, config):
     run_path = bronze_dir / "run.json"
     bronze.atomic_write_json(run_path, run_json)
     log.info("walk: wrote %s", run_path)
+    return run_json["coverage"]
 
 
 # ---------------------------------------------------------------------------
@@ -3360,10 +3750,10 @@ def run_oneshot(args):
             if args.exclude_accounts:
                 config["exclude_accounts"] = args.exclude_accounts
             try:
-                walk(context, page, config)
+                coverage = walk(context, page, config)
             finally:
                 logout(page, args.screenshot_dir)
-            return 0
+            return exit_code_for_coverage(coverage)
         finally:
             stop_trace_if_active(
                 context, args.trace, args.screenshot_dir, "download",
@@ -3445,7 +3835,7 @@ def parse_args(argv):
               "profile dir."),
     )
     # Shared date-window contract. Fidelity bisects the activity
-    # range into ≤93-day chunks internally; the statements +
+    # range into MAX_ACTIVITY_WINDOW_DAYS chunks internally; the statements +
     # tax-forms walk filters at YEAR granularity (row labels are
     # mixed monthly / quarterly / annual).
     cli.add_standard_args(p, verb="download")

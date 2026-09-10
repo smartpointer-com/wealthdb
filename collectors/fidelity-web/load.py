@@ -317,10 +317,38 @@ def main(argv=None):
 # Bronze scan
 # ============================================================
 
+# How far the newest transaction may lag the newest activity-covering
+# dump before `validate` says so. Generous on purpose: a quiet month
+# is ordinary, and this check is a hint rather than a rule. Three
+# weeks is short enough to have caught a two-month hole many times
+# over and long enough that an ordinary lull stays quiet.
+TXN_STALE_SECONDS = 21 * 86400
+
+
 def scan_bronze(bronze_dir):
+    """The dumps worth loading: every run dir whose manifest does not
+    say it is unfinished.
+
+    A status other than `complete` marks a crashed or still-running
+    dump whose partial artefacts must not be ingested — the check
+    eleven of the fleet's loaders already make, and this one did not.
+    A dump with no manifest at all predates the field and is admitted,
+    as `bronze.run_status` documents.
+
+    A phase that came back SHORT is not this gate's business: such a
+    dump is finished, its status is `complete`, and its artefacts are
+    good — what is missing is recorded in the manifest's `coverage`
+    block and shouted by the download's exit code."""
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
-    return list(bronze.iter_run_dirs(bronze_dir))
+    keep = []
+    for run_dir in bronze.iter_run_dirs(bronze_dir):
+        status = bronze.run_status(run_dir / "run.json")
+        if status not in (None, "complete"):
+            log.info("skipping %s: status=%s", run_dir.name, status)
+            continue
+        keep.append(run_dir)
+    return keep
 
 
 def already_loaded(conn, dump_dir):
@@ -492,6 +520,25 @@ def _read_run_json(dump_dir):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _phase_present(dump_dir, subdir):
+    """Whether a phase actually PRODUCED something in this dump.
+
+    The directory alone does not answer that. Every walk mkdirs its
+    phase directory before its first navigation, so a phase that
+    exported nothing leaves an empty directory behind and a flag read
+    off ``is_dir()`` records a 1 for it. Fifty-five consecutive
+    activity failures were recorded as `activity_present=1` that way —
+    exactly the column an audit would have trusted to notice them.
+
+    Whether the phase covered its whole window is a different question
+    and lives in run.json's `coverage` block; this flag answers only
+    "are there artefacts here"."""
+    d = dump_dir / subdir
+    if not d.is_dir():
+        return 0
+    return int(any(d.iterdir()))
+
+
 def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
     cfg = run_meta.get("cli_config", {}) or {}
     window = run_meta.get("activity_window") or {}
@@ -510,9 +557,9 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta):
             cfg.get("mode"),
             ts_from_iso(window.get("since")),
             ts_from_iso(window.get("until")),
-            int((dump_dir / "positions").is_dir()),
-            int((dump_dir / "activity").is_dir()),
-            int((dump_dir / "documents").is_dir()),
+            _phase_present(dump_dir, "positions"),
+            _phase_present(dump_dir, "activity"),
+            _phase_present(dump_dir, "documents"),
         ),
     )
 
@@ -2248,6 +2295,41 @@ def validate(conn):
             datetime.fromtimestamp(latest_pos_dump, tz=timezone.utc).date(),
             ("none" if latest_pos_row is None else
              datetime.fromtimestamp(latest_pos_row, tz=timezone.utc).date()),
+            gap_days,
+        )
+
+    # Transaction staleness, the same shape and for the same reason:
+    # dumps whose mode covers the activity phase keep landing while
+    # the transactions table stops growing. This is the second line of
+    # defence, and it catches the one case the download's exit code
+    # cannot — an export that SUCCEEDS but parses to nothing, because
+    # a column drifted, which the download side has no way to see.
+    #
+    # A WARNING and never a gate: unlike a positions dump, which
+    # should always yield a holdings snapshot, a quiet account
+    # legitimately produces no transaction for weeks, so this is
+    # heuristic by construction and would false-positive as a rule.
+    # The threshold is generous for that reason.
+    cur = conn.execute(
+        "SELECT MAX(snapshot_at) FROM dump_runs "
+        "WHERE mode IN ('all', 'activity')"
+    )
+    latest_act_dump = cur.fetchone()[0]
+    cur = conn.execute("SELECT MAX(timestamp) FROM transactions")
+    latest_txn = cur.fetchone()[0]
+    if latest_act_dump is not None and (
+            latest_txn is None
+            or latest_act_dump - latest_txn > TXN_STALE_SECONDS):
+        gap_days = (latest_act_dump - (latest_txn or 0)) // 86400
+        log.warning(
+            "validation: activity-covering dumps keep landing (latest %s) "
+            "but the newest transaction is %s (~%d day(s) behind). Either "
+            "the accounts really have been quiet, or the activity export "
+            "is failing silently; check the newest run.json's `coverage` "
+            "block and re-run with --debug.",
+            datetime.fromtimestamp(latest_act_dump, tz=timezone.utc).date(),
+            ("none" if latest_txn is None else
+             datetime.fromtimestamp(latest_txn, tz=timezone.utc).date()),
             gap_days,
         )
 

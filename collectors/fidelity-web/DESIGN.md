@@ -214,6 +214,54 @@ Filename conventions:
 per-phase results (success + file paths, or per-failure error
 strings).
 
+### 2.1 Coverage, status and the exit code — three different questions
+
+A run answers three questions that must not be conflated, because
+conflating two of them is how the activity phase failed on 55
+consecutive nightly runs while every signal read healthy.
+
+**`coverage` — did each phase get what it went for?** One entry per
+phase the run *attempted*, always written, each with a `complete`
+flag and a `gaps` list. The gaps list is written even when empty, so
+an empty list is a positive statement of coverage rather than the
+absence of a field — ubs-web's `csv_gaps` / `mt940_gaps` convention,
+applied per phase. A gap is named the way ubs-web names one:
+`YYYY-MM-DD..YYYY-MM-DD` for a window, otherwise whatever identifies
+the attempt. A phase the run never requested has **no entry at all**,
+so "not asked for" can never be read as "asked for and came back
+empty".
+
+**`status` — did the walk finish?** `in-progress` at run-dir
+creation, `complete` at the end, and it stays `complete` however the
+phases fared. That is deliberate. `complete` is what keeps a dump
+loadable and out of `prune`'s delete path, and a dump whose activity
+phase failed still holds good positions, balances, documents and DAF
+artefacts. Downgrading the status would hand all of that to prune and
+block the positions load besides — chase records the same lesson at
+its `download.py` head and in `load.py`'s "DO NOT re-add a coverage
+gate here". Phase completeness and *dump* completeness are different
+axes and live in different fields.
+
+**The exit code — should a human be told?** `download` exits
+`EXIT_PHASE_INCOMPLETE` (4) when any attempted phase has
+`complete: false`, and 0 when every one of them covered its ground —
+including a phase that legitimately had nothing to fetch. It is
+emitted *after* the manifest is finalised, so the alarm never costs
+the dump its loadability, and it is distinct from the credential (2)
+and login (3) codes so a nightly summary tells "the session died"
+apart from "a phase quietly died". The propagation chain carries it
+unchanged: `entrypoint.sh` execs python, the wrapper execs `docker
+run`, `wealthdb-collect` execs the wrapper.
+
+The loader adds two guards of its own on the same reasoning: it skips
+a dump whose `status` says it never finished (the check eleven of the
+fleet's loaders already make), and `validate` warns when
+activity-covering dumps keep landing while the newest transaction
+stops moving — the second line of defence that catches the one case
+an exit code cannot, an export that succeeds but parses to nothing.
+It is a warning and never a gate, because a quiet account
+legitimately produces no transaction for weeks.
+
 ## 3. Identifier strategy
 
 ### 3.1 `account_external_id`
@@ -717,17 +765,62 @@ round; their lookups are case-insensitive now too.
 
 ### 8.4 Activity & Orders
 
+Fidelity rebuilt this page on the **`fds-*` design system** (Angular
+host, Lit components, AG Grid table) in 2026-07. Every selector below
+carries the current generation first and the ones before it as
+fallbacks, because the rebuild has rolled forward and back before.
+Three properties of the new page are load-bearing and easy to miss:
+
+- **ids are generated per render** (`segment-444046273391`,
+  `button-968185178406`, `form-7107669447`), so nothing may key on
+  one. The stable handles are `data-testid`, a custom element's own
+  light-DOM id, and the value of a radio.
+- **native controls live in shadow roots.** An `fds-button`'s real
+  `<button>` is inside one, so a CSS match for the inner element can
+  miss it and an actionability click can read it as hidden. Clicks go
+  to the native button *through* the shadow root.
+- **the label lies about the data.** The time filter's label updates
+  the instant Apply is pressed; the rows behind it arrive later, and
+  the CSV is generated from whatever the table holds. See §8.4.1.
+
 | Element | Selector |
 | --- | --- |
 | Filter dialog trigger | `button:has-text('Filter')` (also `[aria-label='Filter']`) |
-| Time-period filter pill | `[data-testid='ap143528-timeperiod-filter']` (opens `#timeperiod-select-container`) |
-| Preset day-count radios (Recent tab) | `helios-radio[pvd-value='<N>']` (`N` ∈ {10, 30, 60, 90}; default 30, preference 90) |
-| Apply (preset tab) | `button[aria-label='Apply Recent Time Period']` |
-| Custom tab | `input#Custom[type='radio']` (PVD radio group `time-period-group-hsa`; the legacy `apex-kit-segment[pvd-value='Custom']` web component is gone — `_click_custom_timeperiod_tab` tries the radio first, then the legacy selector as fallback) |
-| Custom-tab date inputs | `#customized-timeperiod-from-date` / `#customized-timeperiod-to-date` (HTML5 `<input type="date">`, ISO YYYY-MM-DD; `min`/`max` attrs bound retention) |
-| Apply (Custom tab) | `button[aria-label='Apply Customized Time Period']` |
-| Download dropdown trigger | `button[aria-label='Download']` (opens `#downloadContent` popover; the SPA disables it while re-fetching after Apply — we poll on `disabled` clearing before clicking) |
-| CSV item inside popover | `#downloadContent button:has-text('CSV')` |
+| Time-period filter pill | `[data-testid='filter-by-time-button']` (expands panel `[id^='time-filter-panel']`; legacy `[data-testid='ap143528-timeperiod-filter']`) |
+| Picker open state | `aria-expanded='true'` on the pill (legacy: the Recent/Custom radios existing at all) |
+| Preset day-count radios (Recent tab) | `input.fds-radio__radio[name='recent-options']` (legacy `helios-radio[pvd-value='<N>']`) |
+| Custom tab | `input.fds-segment__radio[type='radio'][value='custom' i]` — matched case-INSENSITIVELY because the generation before spelled the same value `Custom`; then `input#Custom[type='radio']`, then legacy `apex-kit-segment[pvd-value='Custom']` |
+| Custom-tab date inputs | `#input-from-date` / `#input-to-date` (legacy `#customized-timeperiod-from-date` / `-to-date`). HTML5 `<input type="date">`, ISO YYYY-MM-DD. The current generation sets **no `min`/`max`** — the retention floor is enforced by the panel's own validation instead, so the bounds probe finds nothing to clamp to |
+| Apply (Custom tab) | `form:has(#input-from-date) button[type='submit']` — the button is unlabelled and its id is per-render, so it is addressed through the form the date inputs sit in (legacy `button[aria-label='Apply Customized Time Period']`) |
+| Download dropdown trigger | `button[aria-label='Download']`. Disabled while the SPA re-fetches; the busy state is now `fds-disabled` on the wrapping custom element, NOT the native `disabled` attribute — reading only the native one reports a busy button as ready |
+| CSV item inside popover | `#download-csv-button` — the custom element's own light-DOM id, the one stable handle (legacy `#downloadContent button:has-text('CSV')`) |
+
+#### 8.4.1 Why windows are capped at 30 days, not 93
+
+Fidelity caps a Custom range at 93 days per export, but
+`MAX_ACTIVITY_WINDOW_DAYS` is **30**, and that is a correctness rule.
+
+The CSV is generated from whatever the table currently holds. The
+filter's label updates the moment Apply is pressed — well before the
+rows behind it arrive — so an export taken in that gap is the
+*previous* filter's data under the new window's name. Waiting on
+`networkidle`, on the label, or on the request Apply fires all proved
+insufficient: each can be satisfied while the table is still the old
+one.
+
+Asking only for windows no wider than the page's own default filter
+("Past 30 days") makes the stale answer harmless. A stale export is
+then always a **superset** of what was asked for, never a truncation:
+extra rows are a no-op because an activity row's id is derived from
+its content and reloading it replaces itself, whereas missing rows are
+a hole nothing reports. A 93-day window had the opposite property and
+came back silently holding 30 days.
+
+Every window's result also records `rows` and the `covers` span the
+CSV actually holds, so an export that came back short — or empty,
+which a header-only CSV looks exactly like from the outside — is
+visible in `run.json` rather than reading as a success with a file
+beside it.
 
 **Activity export is consolidated.** Clicking the account-selector
 does NOT scope the resulting CSV — the same CSV comes down
