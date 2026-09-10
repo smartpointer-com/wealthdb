@@ -182,12 +182,35 @@ untracked account of the holder's own. A config rule (§3) or a pin
 A third class, and the newest. An EXTENSION is a value of ours in the
 vendored SHAPE — a `PRIMARY_DETAIL` pair filed under an existing
 primary — added where the vendored vocabulary has no word for
-something a household buys often. The first is
+something a household buys often. There are three.
+
 `GENERAL_SERVICES_DIGITAL_SERVICES` (migration 0056): software and
 online subscriptions, for which the taxonomy offers ELECTRONICS
 (physical goods), ONLINE MARKETPLACES (retail) and INTERNET AND CABLE
 (the connection), none of which is a password manager or a model
 subscription.
+
+`BANK_FEES_INVESTMENT_FEES` and
+`GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX` (migration 0065) came with
+brokerage accounts, which joined the scope in 0064 (§1). Holding
+investments costs money in two ways the vendored vocabulary cannot
+name, and both arrive in volume — together they are most of what a
+managed account books.
+
+Every vendored BANK_FEES value is a fee for BANKING: ATM fees,
+foreign-transaction fees, insufficient funds, interest charges,
+overdrafts. A custodian's ADR depositary charge, a pension platform's
+quarterly fee and an investment manager's bill are fees for INVESTING,
+and filing them under `OTHER_BANK_FEES` buries the cost of being
+invested inside the cost of having an account. They sit under
+BANK_FEES all the same — that is the primary for "what a financial
+institution charged".
+
+Withholding belongs beside TAX_PAYMENT and is not the same thing: a
+tax payment is assessed and then paid, while withholding is deducted
+before the money is ever received. A report that cannot tell them
+apart cannot answer "what did we pay in tax that we never saw", which
+on a portfolio of foreign dividends is most of it.
 
 It differs from a delta in the one way that matters: **the model MAY
 emit an extension.** A delta is decided from structure a merchant name
@@ -240,18 +263,37 @@ the model's restriction has no reason to reach them.
 
 ## 3. The tiers and the precedence lattice
 
-Five tiers assign a category. Four are deterministic and free and run
+Six tiers assign a category. Four are deterministic and free and run
 inside `wealthdb load`; the fifth costs money and runs only when
-`wealthdb categorize` is invoked.
+`wealthdb categorize` is invoked; the sixth is a floor under both.
 
 ```
              transaction scope                       merchant scope
    ┌──────────────────────────────────────┐   ┌────────────────────────┐
-   │ pin > matcher > rule > provider      │ > │ model                  │
+   │ pin > matcher > rule > provider      │ > │ model      │ > │ kind  │
    └──────────────────────────────────────┘   └────────────────────────┘
              spend_txn_enrichment                spend_merchant_categories
         (per source; derived, pins re-stamped)     (GLOBAL, paid for)
 ```
+
+The **kind** floor (migration 0066) is last and reads the transaction's
+own kind: a row of kind `fee` that nothing else placed is an investment
+fee, one of kind `tax` is withholding. It exists because a brokerage
+books rows no narrative explains — a security-level fee or tax withheld
+at source, whose narrative is the SECURITY or, on some sources, nothing
+at all. There is no payee in them for a rule to key on. But the kind is
+not a guess: each adapter derives it from whatever evidence its own
+source gives, which is where source-specific knowledge belongs, so the
+floor reads that verdict rather than re-deriving it from prose.
+
+It sits UNDER the model, and that ordering is the whole design. The
+model files a "Foreign Transaction Fee" as the vendored
+FOREIGN_TRANSACTION_FEES, finer than any floor; a floor written into
+`spend_txn_enrichment` would beat the merchant store and quietly
+coarsen every such row. Resolving it in the macro instead means it
+applies only where the pass AND the model both declined — so `kind`,
+like `model`, is a provenance that exists only at query time and is
+never stored.
 
 **Across scopes**, `spend_txn_categories()` (migration 0042, re-issued
 by 0048, 0050, 0052 and 0054 for the merchant column and the model

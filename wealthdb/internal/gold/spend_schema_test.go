@@ -980,3 +980,115 @@ func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
 		t.Error("no value is a catch-all; the seed is not doing anything")
 	}
 }
+
+// TestSpendKindFloorPlacesWhatNothingElseCould pins migration 0066's
+// last-resort arm, and above all WHERE it sits.
+//
+// A brokerage books security-level fees and tax withheld at source
+// whose narrative is the SECURITY, or on some sources nothing at all —
+// there is no payee for a rule to key on. The transaction's KIND says
+// what the row is, and each adapter derives that from whatever
+// evidence its own source gives, so the floor reads that verdict
+// rather than re-deriving it from prose.
+//
+// Under the merchant store, never over it: the model files a
+// "Foreign Transaction Fee" as the vendored FOREIGN_TRANSACTION_FEES,
+// which is finer than any floor, and a floor that outranked it would
+// quietly coarsen every such row.
+func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount) VALUES
+            ('test-src', 'T-ADR',   1000, 'CASH1', 'fee',      'USD',  -1.50),
+            ('test-src', 'T-WHT',   1000, 'CASH1', 'tax',      'USD', -12.00),
+            ('test-src', 'T-FXFEE', 1000, 'CARD1', 'fee',      'USD',  -3.00),
+            ('test-src', 'T-NOCAT', 1000, 'CASH1', 'purchase', 'USD', -20.00);
+
+        -- Nothing placed any of them; the first three carry a signature.
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                                          merchant_signature, signature_version,
+                                          spend_detailed, provenance, assigned_at) VALUES
+            ('test-src', 'T-ADR',   'EXAMPLE HOLDINGS ADR', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-WHT',   'EXAMPLE TREASURY ETF', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-FXFEE', 'FOREIGN TRANSACTION FEE', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-NOCAT', 'SOMETHING UNPLACED', 1, NULL, 'signature-only', 100);
+
+        -- ...except that the MODEL has a verdict for the fx-fee signature,
+        -- and it is finer than the floor could ever be.
+        INSERT INTO spend_merchant_categories (merchant_signature, merchant_name,
+                                               spend_detailed, signature_version,
+                                               assigned_at, model_name)
+        VALUES ('FOREIGN TRANSACTION FEE', 'Foreign Transaction Fee',
+                'BANK_FEES_FOREIGN_TRANSACTION_FEES', 1, 100, 'test-model');
+    `); err != nil {
+		t.Fatalf("seed the floor fixture: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+        SELECT transaction_external_id, COALESCE(spend_detailed, ''), provenance
+          FROM spend_txn_categories()
+         WHERE transaction_external_id LIKE 'T-%'`)
+	if err != nil {
+		t.Fatalf("spend_txn_categories: %v", err)
+	}
+	defer rows.Close()
+	got := map[string][2]string{}
+	for rows.Next() {
+		var id, detailed, prov string
+		if err := rows.Scan(&id, &detailed, &prov); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[id] = [2]string{detailed, prov}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+
+	for id, want := range map[string][2]string{
+		"T-ADR": {canonical.SpendDetailedInvestmentFees, "kind"},
+		"T-WHT": {canonical.SpendDetailedWithholdingTax, "kind"},
+		// the model's finer verdict survives the floor
+		"T-FXFEE": {"BANK_FEES_FOREIGN_TRANSACTION_FEES", "model"},
+		// the floor covers fee and tax and nothing else
+		"T-NOCAT": {"", "signature-only"},
+	} {
+		if got[id] != want {
+			t.Errorf("%s = %v, want %v", id, got[id], want)
+		}
+	}
+}
+
+// TestSpendKindFloorLabelsResolve: a floored row must read as words
+// like any other. The label join keys on the resolved value, so a
+// floor added to the COALESCE without being added to that join would
+// leave the category legible in the id column and blank in the one a
+// report prints.
+func TestSpendKindFloorLabelsResolve(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount)
+        VALUES ('test-src', 'T-ADR', 1000, 'CASH1', 'fee', 'USD', -1.50);
+        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                                          merchant_signature, signature_version,
+                                          spend_detailed, provenance, assigned_at)
+        VALUES ('test-src', 'T-ADR', 'EXAMPLE HOLDINGS ADR', 1, NULL, 'signature-only', 100);
+    `); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var primary, label, primaryLabel sql.NullString
+	if err := db.QueryRowContext(ctx, `
+        SELECT spend_primary, spend_label, spend_primary_label
+          FROM spend_txn_categories() WHERE transaction_external_id = 'T-ADR'`,
+	).Scan(&primary, &label, &primaryLabel); err != nil {
+		t.Fatalf("read the floored row: %v", err)
+	}
+	if primary.String != "BANK_FEES" || label.String != "Investment fees" ||
+		primaryLabel.String != "Bank fees" {
+		t.Errorf("floored row = (%q, %q, %q), want (BANK_FEES, Investment fees, Bank fees)",
+			primary.String, label.String, primaryLabel.String)
+	}
+}

@@ -76,6 +76,8 @@ const (
 // emittable by the model tier. See extensionSpendCategories.
 const (
 	SpendDetailedDigitalServices = "GENERAL_SERVICES_DIGITAL_SERVICES"
+	SpendDetailedInvestmentFees  = "BANK_FEES_INVESTMENT_FEES"
+	SpendDetailedWithholdingTax  = "GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX"
 )
 
 // vendoredSpendCategories is the Plaid subset, in the source CSV's
@@ -215,9 +217,39 @@ var deltaSpendCategories = []SpendCategory{
 // it belongs beside EDUCATION, INSURANCE and STORAGE, and rolls up
 // with them. It also means that if the vendored taxonomy adds this
 // value it lands in the same place and the diff is a supersession.
+//
+// The other two came with brokerage accounts (migration 0064). Holding
+// investments costs money in two ways the vendored vocabulary cannot
+// name, and both arrive in volume: a fee charged for holding or
+// managing the assets, and tax withheld at source before the income is
+// ever received.
+//
+// BANK_FEES has ATM_FEES, FOREIGN_TRANSACTION_FEES, INSUFFICIENT_FUNDS,
+// INTEREST_CHARGE and OVERDRAFT_FEES — every one of them a fee for
+// BANKING. A custodian's ADR depositary charge, a platform's quarterly
+// fee and an investment manager's bill are fees for INVESTING, and
+// filing them under `OTHER_BANK_FEES` buries the cost of being
+// invested inside the cost of having an account. They sit under
+// BANK_FEES all the same, because that is the primary for "what a
+// financial institution charged", and an extension earns its keep by
+// landing where a vendored value would.
+//
+// Withholding is a tax and belongs beside TAX_PAYMENT, but is not the
+// same thing: TAX_PAYMENT is assessed and then paid, while withholding
+// is deducted before the money arrives. A report that cannot tell them
+// apart cannot answer "what did we pay in tax that we never saw".
+//
+// Both are ordinary judgements about what a row IS, so the model tier
+// may emit them — and on this data it usefully can: the signature on a
+// withheld-tax row often reads `NRA TAX <security>`, which names the
+// answer.
 var extensionSpendCategories = []SpendCategory{
 	{"GENERAL_SERVICES", SpendDetailedDigitalServices,
 		"Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device"},
+	{"BANK_FEES", SpendDetailedInvestmentFees,
+		"Fees for holding or managing investments — advisory and management fees, custody and platform fees, and security-level pass-throughs such as ADR depositary charges; not a fee for banking itself"},
+	{"GOVERNMENT_AND_NON_PROFIT", SpendDetailedWithholdingTax,
+		"Tax withheld at source from investment income, such as foreign dividend or non-resident withholding; deducted before the money is received rather than paid on assessment"},
 }
 
 // SpendCategories is the whole taxonomy — the vendored pairs, then the

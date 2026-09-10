@@ -607,21 +607,22 @@ func TestRuleCategoryBrokerageNarratives(t *testing.T) {
 	for _, tc := range []struct{ narrative, detailed string }{
 		// A depositary charge names the security, never a payee.
 		{"FEE CHARGED ABB LTD SPON ADR EACH REP 1 ORD SHS (Cash)",
-			"BANK_FEES_OTHER_BANK_FEES"},
-		{"ADR FEE", "BANK_FEES_OTHER_BANK_FEES"},
+			canonical.SpendDetailedInvestmentFees},
+		{"ADR FEE", canonical.SpendDetailedInvestmentFees},
 
 		// Withholding at source on foreign dividend income. The
 		// household never sees it, but the gross dividend is booked
 		// as income, so the withholding is the tax it paid.
 		{"FOREIGN TAX PAID EQUINOR ASA SPON ADR EACH REP 1 ORD SHS",
-			"GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"},
-		{"WITHHOLDING TAX", "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"},
+			canonical.SpendDetailedWithholdingTax},
+		{"WITHHOLDING TAX", canonical.SpendDetailedWithholdingTax},
+		{"NRA Tax DOMINOS PIZZA INC", canonical.SpendDetailedWithholdingTax},
 
 		// The fee for being managed — a service, not a pass-through.
 		{"ADVISOR FEE DEDUCTED Advisor Fee (Cash)",
-			"GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING"},
+			canonical.SpendDetailedInvestmentFees},
 		{"ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
-			"GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING"},
+			canonical.SpendDetailedInvestmentFees},
 	} {
 		got, _, ok := RuleCategory("", "", tc.narrative, "")
 		if !ok || got != tc.detailed {
@@ -657,6 +658,9 @@ func TestRuleCategoryWireFee(t *testing.T) {
 		got, _, ok := RuleCategory("", "", n, "")
 		if !ok || got != "BANK_FEES_OTHER_BANK_FEES" {
 			t.Errorf("RuleCategory(%q) = (%q, %v), want a bank fee", n, got, ok)
+		}
+		if got == canonical.SpendDetailedInvestmentFees {
+			t.Errorf("%q is a banking service, not the cost of holding assets", n)
 		}
 	}
 	if _, _, ok := RuleCategory("", "", "WIRED FUNDS DISBURSED", ""); ok {

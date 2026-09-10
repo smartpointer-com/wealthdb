@@ -19,17 +19,17 @@ func TestSpendTaxonomyCounts(t *testing.T) {
 	if got := len(vendoredSpendCategories); got != 80 {
 		t.Errorf("vendored detailed values = %d, want 80", got)
 	}
-	if got := len(extensionSpendCategories); got != 1 {
-		t.Errorf("extension values = %d, want 1", got)
+	if got := len(extensionSpendCategories); got != 3 {
+		t.Errorf("extension values = %d, want 3", got)
 	}
 	if got := len(deltaSpendCategories); got != 6 {
 		t.Errorf("delta values = %d, want 6", got)
 	}
-	if got := len(SpendCategories); got != 87 {
-		t.Errorf("SpendCategories = %d, want 87", got)
+	if got := len(SpendCategories); got != 89 {
+		t.Errorf("SpendCategories = %d, want 89", got)
 	}
-	if got := len(modelSpendCategories); got != 81 {
-		t.Errorf("modelSpendCategories = %d, want 81", got)
+	if got := len(modelSpendCategories); got != 83 {
+		t.Errorf("modelSpendCategories = %d, want 83", got)
 	}
 
 	primaries := map[string]struct{}{}

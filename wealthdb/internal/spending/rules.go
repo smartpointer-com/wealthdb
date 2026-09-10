@@ -309,20 +309,23 @@ var builtinRules = []spendRule{
 		//
 		// It is spend all the same: the money is gone, and the
 		// alternative — leaving it out of the base — hides a real
-		// outflow rather than explaining it. Filed as a bank fee
-		// because that is what it is, a charge levied by the
-		// institution holding the asset, and a report that groups by
-		// category can then set the whole class aside in one line.
-		//
-		// Ordered ahead of nothing in particular; the phrase is
-		// specific enough that no other rule contends for it.
+		// outflow rather than explaining it. It is a cost of
+		// INVESTING rather than of banking, which is what the
+		// extension exists to say, so a report can set the whole
+		// class aside in one line.
+		detailed: canonical.SpendDetailedInvestmentFees,
+		phrases:  []string{"FEE CHARGED", "ADR FEE", "DEPOSITARY FEE"},
+	},
+	{
+		// A broker's charge for SENDING a wire. It sits on the same
+		// statements as the pass-throughs above and is deliberately
+		// NOT one: paying to move money is a banking service, and
+		// filing it as an investment fee would overstate what holding
+		// the assets costs. Not to be confused with the wire itself,
+		// which no rule places.
 		detailed: "BANK_FEES_OTHER_BANK_FEES",
-		phrases: []string{"FEE CHARGED", "ADR FEE", "DEPOSITARY FEE",
-			// A broker's charge for sending a wire. Not a
-			// pass-through, but the same category and the same
-			// reason to name it: unlabelled it reads as spend on
-			// nothing.
-			"WIRED FUNDS FEE", "WIRE FEE", "WIRE TRANSFER FEE"},
+		phrases: []string{"WIRED FUNDS FEE", "WIRE FEE",
+			"WIRE TRANSFER FEE"},
 	},
 	{
 		// Tax withheld at source on foreign dividend income. The
@@ -330,17 +333,20 @@ var builtinRules = []spendRule{
 		// the gross dividend is booked as income — so leaving the
 		// withholding out would report the gross as though it were
 		// net.
-		detailed: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT",
-		phrases:  []string{"FOREIGN TAX PAID", "TAX WITHHELD",
-			"WITHHOLDING TAX"},
+		detailed: canonical.SpendDetailedWithholdingTax,
+		phrases: []string{"FOREIGN TAX PAID", "TAX WITHHELD",
+			"WITHHOLDING TAX", "NRA TAX"},
 	},
 	{
-		// The fee an account pays for being managed — the one fee on
-		// a brokerage account that IS a service the household buys,
-		// as against the security-level pass-through above. Fidelity
+		// The fee an account pays for being managed. It is a service
+		// the household buys, where the pass-through above is levied
+		// on the security — but both are the cost of holding the
+		// assets, and keeping them together is the point of the
+		// extension: an accountant's bill is professional services, a
+		// manager's bill is what the portfolio costs to run. Fidelity
 		// prints both "Advisor Fee" and "Investment Mgr Fee" under
 		// one action verb.
-		detailed: "GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING",
+		detailed: canonical.SpendDetailedInvestmentFees,
 		phrases: []string{"ADVISOR FEE", "ADVISORY FEE",
 			"INVESTMENT MGR FEE", "INVESTMENT MANAGEMENT FEE",
 			"MANAGEMENT FEE"},
