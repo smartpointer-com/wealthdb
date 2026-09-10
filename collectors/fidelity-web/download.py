@@ -194,6 +194,21 @@ DOWNLOAD_TIMEOUT_MS = 30_000
 # property, and silently returned 30 days.
 MAX_ACTIVITY_WINDOW_DAYS = 30
 
+# How far back an activity backfill reaches when the page publishes no
+# date bounds to clamp against — which is the current generation's
+# behaviour, since its date inputs carry no min/max. Fidelity's own
+# retention on this export has been ~4-5 years; five is the generous
+# reading. It matters because `--lookback all` asks for thirty years,
+# and every year past retention is a month of identical empty exports.
+ACTIVITY_RETENTION_FLOOR_DAYS = 5 * 366
+
+# How many times a window's export is pulled before its rows are
+# accepted, and how long to let the table settle between tries. The
+# table lags the filter by one apply, so the second pull is normally
+# the one that lands; the third is slack for a slow fetch.
+ACTIVITY_EXPORT_ATTEMPTS = 3
+ACTIVITY_EXPORT_RETRY_SECONDS = 3.0
+
 
 # ---------------------------------------------------------------------------
 # Login + session constants
@@ -223,9 +238,16 @@ SIGNIN_URL = "https://digital.fidelity.com/prgw/digital/signin/"
 # username" cookie present), a text <input> on first visit.
 SEL_USERNAME_SELECT = "#dom-select-username"
 SEL_USERNAME_OTHER_OPTION_VALUE = "default"
+# The username input, current generation first. `~=` and not `=` on
+# the autocomplete match: the attribute is a SPACE-SEPARATED TOKEN
+# LIST (`autocomplete="username webauthn"` today), so an exact-value
+# match misses it the moment Fidelity adds a token. That one operator
+# would have carried this selector through the rename below on its
+# own, which is why it sits second — ahead of every id.
 SEL_USERNAME_TEXT_INPUT_CANDIDATES = (
+    "input#dom-username-input",
+    "input[autocomplete~=username]",
     "input#userId-input",
-    "input[autocomplete=username]",
     "input[name=userId]",
     "input[aria-labelledby=dom-username-label]",
 )
@@ -588,6 +610,19 @@ def activity_csv_coverage(path):
     if not days:
         return 0, None, None
     return len(days), min(days), max(days)
+
+
+def activity_export_matches(rows, first, last, since_date, until_date):
+    """Whether an export's own rows fall inside the window it was
+    asked for.
+
+    An export with NO rows matches by default: there is nothing to
+    place, and a genuinely quiet window is legitimate. Anything else
+    is judged on content, because content is the only thing on this
+    page that cannot lie about which filter produced it."""
+    if not rows:
+        return True
+    return first >= since_date and last <= until_date
 
 
 def parse_iso_date(value):
@@ -1596,12 +1631,41 @@ def _activity_csv_for_window(page, since_date, until_date,
             "error": "custom-range not applied",
         }
     try:
-        dl = _click_activity_download(
-            page, capture_dir, win_suffix,
-        )
+        # Download, then check the FILE against the window it is
+        # being saved as.
+        #
+        # The export is generated from the table, and the table lags
+        # the filter by a whole apply: a freshly-applied range hands
+        # back the PREVIOUS one's rows, exactly and repeatably. Nothing
+        # on the page reports that — the filter's label, `networkidle`
+        # and the request Apply fires are all satisfied while the old
+        # rows are still loaded — so the only honest test is the
+        # content itself. An export whose rows fall outside the window
+        # it was asked for is stale; wait for the table and pull it
+        # again.
         csv_path = activity_dir / f"activity_{range_tag}.csv"
-        dl.save_as(str(csv_path))
-        rows, first, last = activity_csv_coverage(csv_path)
+        rows = 0
+        first = last = None
+        for attempt in range(1, ACTIVITY_EXPORT_ATTEMPTS + 1):
+            dl = _click_activity_download(
+                page, capture_dir, f"{win_suffix}-try{attempt}",
+            )
+            dl.save_as(str(csv_path))
+            rows, first, last = activity_csv_coverage(csv_path)
+            if activity_export_matches(
+                    rows, first, last, since_date, until_date):
+                break
+            log.warning(
+                "activity export for %s..%s came back holding %s..%s "
+                "— the table had not caught up with the filter; "
+                "retrying (attempt %d of %d)",
+                since_date.isoformat(), until_date.isoformat(),
+                first.isoformat(), last.isoformat(),
+                attempt, ACTIVITY_EXPORT_ATTEMPTS,
+            )
+            time.sleep(ACTIVITY_EXPORT_RETRY_SECONDS)
+        stale = not activity_export_matches(
+            rows, first, last, since_date, until_date)
         log.info(
             "saved activity/%s (%d bytes, range=%s, rows=%d, covers %s..%s)",
             csv_path.name, csv_path.stat().st_size, range_tag, rows,
@@ -1609,15 +1673,30 @@ def _activity_csv_for_window(page, since_date, until_date,
             last.isoformat() if last else "-",
         )
         final = compress_export(csv_path)
-        return {
+        result = {
             "window": [since_date.isoformat(),
                        until_date.isoformat()],
             "rows": rows,
             "covers": [first.isoformat() if first else None,
                        last.isoformat() if last else None],
             "file": str(final.relative_to(bronze_dir)),
-            "ok": True,
+            "ok": not stale,
         }
+        if stale:
+            # The rows are real and they load — an activity id is
+            # derived from its content — but this window is NOT
+            # covered, and saying otherwise is how a hole hides.
+            result["error"] = (
+                "export held %s..%s, outside the requested window"
+                % (first.isoformat(), last.isoformat())
+            )
+            log.error(
+                "activity window %s..%s never came back with its own "
+                "rows after %d attempts; recording it as a gap",
+                since_date.isoformat(), until_date.isoformat(),
+                ACTIVITY_EXPORT_ATTEMPTS,
+            )
+        return result
     except Exception as e:
         log.exception(
             "activity Custom-range download failed for %s",
@@ -1674,6 +1753,27 @@ def scrape_activity(page, since_date, until_date,
         # would chunk into ~120 same-empty-CSV iterations before
         # the cursor reaches the available range.
         fmin, fmax = _probe_activity_date_bounds(page, capture_dir)
+        # The probe reads min/max off the date inputs, and the
+        # current generation of the panel sets NEITHER — it enforces
+        # retention through its own validation messages instead. So a
+        # probe that comes back empty is now the normal case, not the
+        # broken one, and without a floor `--lookback all` would chunk
+        # thirty years into hundreds of identical empty exports.
+        # ACTIVITY_RETENTION_FLOOR_DAYS is the fallback: generous
+        # enough to reach everything Fidelity has ever served here,
+        # short enough that "all" stays a walk rather than a siege.
+        if fmin is None:
+            floor = date.today() - timedelta(
+                days=ACTIVITY_RETENTION_FLOOR_DAYS)
+            if since_date < floor:
+                log.info(
+                    "activity backfill: the panel published no date "
+                    "bounds, so the requested since=%s is clamped to "
+                    "the assumed retention floor %s (%d days)",
+                    since_date.isoformat(), floor.isoformat(),
+                    ACTIVITY_RETENTION_FLOOR_DAYS,
+                )
+                since_date = floor
         if fmin and since_date < fmin:
             log.info(
                 "activity backfill: clamping requested since=%s up "
@@ -3326,6 +3426,63 @@ def accept_iua(page, accept_loc):
     log.info("clicked I Accept on International Usage Agreement")
 
 
+def _username_input(page):
+    """The signin form's username input, whichever generation is
+    served: ``(how, locator)``, or ``(None, None)`` if nothing
+    matches. The last-resort branch is the page's only visible text
+    input, which is right today but keyed on nothing, so it names
+    itself in the log — a run filling through it is a run whose real
+    selector has drifted and is one render away from filling the
+    wrong box."""
+    for sel in SEL_USERNAME_TEXT_INPUT_CANDIDATES:
+        loc = page.locator(sel)
+        try:
+            if loc.count() > 0 and loc.first.is_visible(timeout=2_000):
+                return sel, loc.first
+        except Exception as e:
+            log.debug("username candidate %s failed: %s", sel, e)
+    fallback = page.locator(
+        "input[type=text]:visible, input:not([type]):visible"
+    )
+    if fallback.count() > 0:
+        return "last-resort visible text input", fallback.first
+    return None, None
+
+
+def _fill_verified(loc, value, what, attempts=3):
+    """Fill ``loc`` and read the value back, retrying a few times.
+    True when the field ends up holding it.
+
+    A PVD input is a web component, and the framework can overwrite
+    its value when it hydrates or re-renders. A fill that lands just
+    before that happens leaves the field EMPTY while ``Locator.fill``
+    reports success — so the form submits blank credentials, Fidelity
+    serves the signin page again, and fifteen seconds later the run
+    reports "neither 2FA input nor post-auth URL" with nothing naming
+    the real cause. Reading the value back is what turns that into a
+    retry.
+
+    Only LENGTHS are logged, never the value: this runs on a username
+    and a password."""
+    for attempt in range(1, attempts + 1):
+        try:
+            loc.fill(value)
+            got = loc.input_value(timeout=2_000)
+        except Exception as e:
+            log.debug("%s fill/read-back failed: %s", what, e)
+            got = ""
+        if got == value:
+            return True
+        log.debug(
+            "%s did not stick on attempt %d (field holds %d chars, "
+            "want %d) — the component probably re-rendered under the "
+            "fill; retrying",
+            what, attempt, len(got), len(value),
+        )
+        time.sleep(0.6)
+    return False
+
+
 def fill_username(page, username):
     """Fill the username field, handling both the text-input form
     (fresh-device case) and the <select> dropdown form (returning-
@@ -3337,34 +3494,60 @@ def fill_username(page, username):
             "selecting 'Enter different username'"
         )
         sel_locator.select_option(SEL_USERNAME_OTHER_OPTION_VALUE)
-    for sel in SEL_USERNAME_TEXT_INPUT_CANDIDATES:
-        loc = page.locator(sel)
-        try:
-            if loc.count() > 0 and loc.first.is_visible(timeout=2_000):
-                loc.first.fill(username)
-                log.info("filled username via %s", sel)
-                return
-        except Exception as e:
-            log.debug("username candidate %s failed: %s", sel, e)
-    fallback = page.locator(
-        "input[type=text]:visible, input:not([type]):visible"
-    )
-    if fallback.count() > 0:
-        fallback.first.fill(username)
-        log.info("filled username via last-resort visible text input")
-        return
-    raise SystemExit(
-        "could not locate the username input field. Check the "
-        "captured HTML in --screenshot-dir for what Fidelity served."
-    )
+    how, loc = _username_input(page)
+    if loc is None:
+        raise SystemExit(
+            "could not locate the username input field. Check the "
+            "captured HTML in --screenshot-dir for what Fidelity served."
+        )
+    if not _fill_verified(loc, username, "username"):
+        raise SystemExit(
+            "the username field would not hold its value — Fidelity's "
+            "signin form re-rendered under the fill. Nothing was "
+            "submitted; re-run, and capture with --screenshot-dir if "
+            "it persists."
+        )
+    log.info("filled username via %s", how)
 
 
 def fill_password(page, password):
-    page.locator(SEL_PASSWORD_INPUT).fill(password)
+    if not _fill_verified(
+            page.locator(SEL_PASSWORD_INPUT).first, password, "password"):
+        raise SystemExit(
+            "the password field would not hold its value — Fidelity's "
+            "signin form re-rendered under the fill. Nothing was "
+            "submitted; re-run, and capture with --screenshot-dir if "
+            "it persists."
+        )
     log.info("filled password")
 
 
 def click_login(page):
+    """Submit — but never with an empty field.
+
+    A blank submit is not harmless: Fidelity counts it as a failed
+    sign-in attempt, so a run that makes one nightly walks the account
+    towards a lockout while reporting only that no post-auth URL
+    appeared. The two fills each verify their own field; this checks
+    both once more, because the re-render that empties one can happen
+    between them."""
+    _, user_loc = _username_input(page)
+    checks = [("password", page.locator(SEL_PASSWORD_INPUT).first)]
+    if user_loc is not None:
+        checks.append(("username", user_loc))
+    for what, loc in checks:
+        try:
+            filled = bool(loc.input_value(timeout=1_000))
+        except Exception as e:
+            log.debug("%s pre-submit check: %s", what, e)
+            continue
+        if not filled:
+            raise SystemExit(
+                f"refusing to submit the signin form: the {what} field "
+                "is empty. Fidelity's form re-rendered under the fill, "
+                "and a blank submit would count as a failed sign-in "
+                "attempt against the account."
+            )
     page.locator(SEL_LOGIN_BUTTON).click(timeout=LANDMARK_TIMEOUT_MS)
     log.info("clicked %s", SEL_LOGIN_BUTTON)
 

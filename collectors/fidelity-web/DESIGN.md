@@ -724,12 +724,31 @@ URLs and selectors anchored to the live DOM as of 2026-05-24/25.
 | Element | Selector |
 | --- | --- |
 | Username (returning-device dropdown) | `#dom-select-username` (native `<select>` with `value="default"` = "Enter different username") |
-| Username (fresh-device text input) | fall-back candidates; `input[aria-labelledby=dom-username-label]` etc. |
+| Username (fresh-device text input) | `input#dom-username-input`, then `input[autocomplete~=username]`, then the older ids. **`~=`, not `=`** — the attribute is a space-separated token list (`autocomplete="username webauthn"`), so an exact match misses it the moment Fidelity adds a token |
 | Password | `#dom-pswd-input` |
 | Submit | `#dom-login-button` |
 | 2FA code | `#dom-totp-security-code-input` |
 | Trust-this-browser checkbox | `<input type=checkbox id="dom-trust-device-checkbox">` — must click the `<label for="dom-trust-device-checkbox">` (input is intercepted by the PVD label overlay) |
 | IUA accept | `a.accept-link` (calls `javascript:acceptAgreement()`) |
+
+**A credential that does not land is never submitted.** Both fields
+are filled and then READ BACK, and re-filled if the value did not
+stick: these are PVD web components, and the framework can overwrite a
+value when it hydrates, leaving the field empty while `Locator.fill`
+reports success. `click_login` checks both fields once more before
+submitting, because the re-render that empties one can happen between
+the two fills.
+
+That guard is a safety rule, not tidiness. A blank submit is not a
+no-op — Fidelity counts it as a failed sign-in attempt, so a run that
+makes one nightly walks the account towards a lockout while reporting
+only that no post-auth URL appeared within 15s. When the username
+selector drifted, that is exactly what happened: every candidate
+missed, a last-resort "first visible text input" filled without
+verifying, and the run's own diagnosis pointed at anti-bot blocking.
+The last-resort branch still exists and still names itself in the log
+— a run filling through it has a drifted selector and is one render
+away from filling the wrong box.
 
 ### 8.3 Positions
 
@@ -795,7 +814,33 @@ Three properties of the new page are load-bearing and easy to miss:
 | Download dropdown trigger | `button[aria-label='Download']`. Disabled while the SPA re-fetches; the busy state is now `fds-disabled` on the wrapping custom element, NOT the native `disabled` attribute — reading only the native one reports a busy button as ready |
 | CSV item inside popover | `#download-csv-button` — the custom element's own light-DOM id, the one stable handle (legacy `#downloadContent button:has-text('CSV')`) |
 
-#### 8.4.1 Why windows are capped at 30 days, not 93
+#### 8.4.1 The table lags the filter by a whole apply
+
+A freshly-applied Custom range hands back the **previous** range's
+rows — exactly, repeatably, one apply behind. Three windows requested
+in sequence exported the default 30 days, then window 1's rows, then
+window 2's.
+
+Nothing on the page reports this. The filter's label updates the
+instant Apply is pressed, `networkidle` is satisfied while the old
+rows are still loaded, and the XHR that Apply fires completes before
+the grid re-renders. Each was tried and each passed while the export
+was stale.
+
+So the export is judged on its CONTENT, which is the only thing here
+that cannot lie about which filter produced it:
+`activity_export_matches` requires an export's own rows to fall inside
+the window it was asked for, and a window that fails is pulled again
+after a short settle (`ACTIVITY_EXPORT_ATTEMPTS`). In practice the
+second pull always lands. A window that never comes back with its own
+rows is recorded `ok: false` with the span it actually held — the rows
+themselves are real and would load, but the window is not covered, and
+saying otherwise is how a hole hides.
+
+A window with no rows matches by default: a quiet window is
+legitimate, and treating it as stale would retry for ever.
+
+#### 8.4.2 Why windows are capped at 30 days, not 93
 
 Fidelity caps a Custom range at 93 days per export, but
 `MAX_ACTIVITY_WINDOW_DAYS` is **30**, and that is a correctness rule.
@@ -827,6 +872,16 @@ does NOT scope the resulting CSV — the same CSV comes down
 regardless of selector state. One CSV per window, all accounts
 inside (Account Number column as the per-row discriminator). The
 silver loader fans out per-account from there.
+
+#### 8.4.3 `--lookback all` and the missing bounds
+
+`_probe_activity_date_bounds` clamps a backfill to the retention the
+page publishes on its date inputs' `min`/`max`. The current
+generation sets NEITHER, so the probe comes back empty as a matter of
+course rather than as a fault, and `ACTIVITY_RETENTION_FLOOR_DAYS` is
+the fallback floor. Without it `--lookback all` asks for thirty years
+and chunks every one of them into 30-day windows, most of them past
+anything Fidelity holds.
 
 ### 8.5 Documents
 

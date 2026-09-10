@@ -176,3 +176,51 @@ def test_an_empty_export_reports_no_span_rather_than_raising(tmp_path):
 
 def test_coverage_of_a_missing_file_never_raises(tmp_path):
     assert download.activity_csv_coverage(tmp_path / "nope.csv") == (0, None, None)
+
+
+# ----------------------------------------------------- backfill is bounded
+
+def test_a_backfill_stays_bounded_when_the_page_publishes_no_bounds():
+    """`--lookback all` asks for thirty years. The panel that used to
+    publish min/max on its date inputs no longer does, so the probe
+    that clamped the request comes back empty as a matter of course —
+    and without a floor every year past Fidelity's retention is a
+    month of identical empty exports."""
+    from datetime import timedelta
+    floor = date.today() - timedelta(days=download.ACTIVITY_RETENTION_FLOOR_DAYS)
+    bounded = download.make_activity_windows(floor, date.today())
+    unbounded = download.make_activity_windows(date(1996, 1, 1), date.today())
+    assert len(bounded) < len(unbounded) / 2
+    assert len(bounded) < 100, (
+        f"{len(bounded)} windows is a siege, not a backfill"
+    )
+
+
+# ------------------------------------------- an export must be its own window
+
+def test_an_export_holding_its_own_window_is_accepted():
+    assert download.activity_export_matches(
+        534, date(2026, 7, 1), date(2026, 7, 30),
+        date(2026, 7, 1), date(2026, 7, 30)) is True
+
+
+def test_an_export_holding_the_previous_windows_rows_is_rejected():
+    """The table lags the filter by a whole apply: a freshly-applied
+    range hands back the PREVIOUS one's rows, repeatably. Nothing on
+    the page reports that, so the content is the only honest test."""
+    assert download.activity_export_matches(
+        336, date(2026, 8, 11), date(2026, 9, 10),
+        date(2026, 7, 1), date(2026, 7, 30)) is False
+
+
+def test_an_export_that_overruns_its_window_is_rejected():
+    assert download.activity_export_matches(
+        10, date(2026, 7, 1), date(2026, 8, 2),
+        date(2026, 7, 1), date(2026, 7, 30)) is False
+
+
+def test_a_window_with_no_rows_matches_by_default():
+    """A genuinely quiet window is legitimate and has nothing to
+    place — treating it as stale would retry for ever."""
+    assert download.activity_export_matches(
+        0, None, None, date(2026, 7, 1), date(2026, 7, 30)) is True
