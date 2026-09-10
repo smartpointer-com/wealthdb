@@ -17,9 +17,9 @@ only what gold adds.
 
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
-│   ubs-psn     │  │   schwab-api  │  │   swissquote  │
-│   bronze: zips     │  │   bronze: JSON     │  │   bronze: CSV+XLS  │
-│   silver: SQLite   │  │   silver: SQLite   │  │   silver: SQLite   │
+│   ubs-psn          │  │   schwab-api       │  │   ... one box per  │
+│   bronze: zips     │  │   bronze: JSON     │  │   collector — see  │
+│   silver: SQLite   │  │   silver: SQLite   │  │   collectors/      │
 └──────────┬─────────┘  └─────────┬──────────┘  └─────────┬──────────┘
            │                      │                       │
            └──────────────────────┴───────────────────────┘
@@ -124,6 +124,7 @@ wealthdb resolve-symbols              (RW)    Back-fill missing instrument ticke
 wealthdb resolutions                  (RO)    Dump the symbol_resolutions table (LLM + manual-override tickers).
 wealthdb categorize                   (RW)    Categorise unplaced spending merchants via the configured LLM.
 wealthdb categorizations              (RO)    Dump the spend_merchant_categories table (model-derived merchant verdicts); --forget SIG removes one (RW).
+wealthdb version                      (RO)    Print the wealthdb version.
 wealthdb help [<subcommand>]
 ```
 
@@ -300,13 +301,16 @@ to silently consuming stdin and producing an empty config.
 
 `wealthdb` supports two access modes against the gold database:
 
-- **Read-write** — `init`, `load`, `reset` plus all read commands.
-- **Read-only** — only the read commands: `holdings <view>`, `returns`,
-  `transactions`, `spending <view>`, `snapshots`, `status`,
-  `resolutions`, `categorizations` (the dump; `--forget` writes, and
-  `--forget --dry-run` does not), `help`, plus `categorize --dry-run`
-  (which plans against the enrichment as of the last load and writes
-  nothing).
+- **Read-write** — every subcommand §4.1 marks `(RW)`, plus all the
+  read commands.
+- **Read-only** — the ones §4.1 marks `(RO)`. Two are conditional and
+  the table says so: `categorizations` dumps read-only but writes
+  under `--forget`, and `categorize` writes unless `--dry-run`, which
+  plans against the enrichment as of the last load and writes nothing.
+
+  Neither list is repeated here. §4.1 marks every subcommand and is
+  the one place the two sets are written down; a copy would drift the
+  first time a subcommand was added.
   Suitable when the gold DB lives on a read-only share, has been
   `chmod`'d 0444 for safekeeping, or sits on a consumer
   host that should never write.
@@ -1063,7 +1067,7 @@ type TransactionBatch struct {
 }
 
 // The *Change types mirror the gold-table column shapes one-to-one.
-// They live in the silver package so plugins import only the
+// They live in internal/canonical so an adapter imports only the
 // canonical types, never the gold-writer implementation.
 type PositionChange struct {
     SnapshotAt            int64
@@ -1088,11 +1092,11 @@ type PositionChange struct {
 
 `silver.Register(&Adapter{})` is called from each backend
 package's `init()` (the name comes from the adapter's `Kind()`).
-Backends live under `internal/silver/<source>`
-— currently `angellist`, `carta`, `cointracking`, `equityzen`,
-`fidelity`, `fred`, `manual`, `relevate`, `schwab`, `swissquote`,
-`ubs`, `viac`. `cmd/wealthdb/main.go` blank-imports each backend to
-trigger registration:
+Backends live under `internal/silver/<source>`. The registered set is
+not restated here — it would drift the moment one is added. Two places
+carry it, and both are checked by the build: the blank-import block in
+`cmd/wealthdb/main.go` below, and the `silver_kind` CHECK on
+`silver_sources` (§7.2), which a load validates every source against.
 
 ```go
 import (
@@ -1437,7 +1441,7 @@ CREATE TABLE accounts (
 );
 
 -- portfolios is its own entity (added in migration 0004). A
--- portfolio is the wealth-management wrapper (UBS-specific today)
+-- portfolio is the wealth-management wrapper (UBS, cointracking, fidelity)
 -- that GROUPS one or more accounts under a single mandate; it
 -- does not hold positions or cash directly — its component
 -- accounts do. Portfolio-level totals come from rolling up
@@ -1663,10 +1667,11 @@ CREATE INDEX ix_transactions_kind_time
 
 ### 7.3 What's deliberately omitted
 
-- **Views.** The first cut keeps gold as tables only. Future
-  convenience views (`v_latest_positions`, `v_networth`) can land
-  alongside future subcommands; designing them before the queries
-  exist is premature.
+- **Views.** ~~The first cut keeps gold as tables only.~~ Landed, in
+  the shape the reasoning predicted: the views exist because a query
+  needed them, not ahead of one. They serve the optional Metabase
+  server and are named `web_*` for that reason (§10.10), so nothing
+  in the engine depends on one.
 - **Materialised positions-as-of cache.** The as-of query in §10 runs
   fast on the index; no cache needed at personal scale.
 - **A surrogate `account_id` / `instrument_id` integer key.** Tuple
@@ -2177,8 +2182,8 @@ What follows for readers of these macros:
   rows only for entity-days that have lines.
 - **Where runs are partial the two differ by design**: the history carries every
   account, while the point-in-time reports read one latest snapshot per source
-  and so value only the accounts of the source's last run. `wealthdb global` and
-  `wealthdb positions` read the point-in-time macros, so for such a source the
+  and so value only the accounts of the source's last run. `wealthdb holdings global` and
+  `wealthdb holdings positions` read the point-in-time macros, so for such a source the
   CLI headline sits below a chart built on the history. Pulling the CLI onto the
   same per-account resolution is a known follow-up; nothing in gold depends on
   the two disagreeing.
@@ -2985,7 +2990,7 @@ Adapter-supplied values today:
   trust_non_grantor` + `management_style=discretionary`. Per-
   account registration labels (Roth IRA / Coverdell ESA / etc.)
   aren't currently surfaced by silver; the path to add them is
-  documented in fidelity-web's DESIGN.md §11.6.
+  documented in fidelity-web's DESIGN.md §11.5.
 
 Adapters use SQLite PRAGMA-based feature detection where the
 silver schema has evolved (e.g. Swissquote's pre-v5 silvers used

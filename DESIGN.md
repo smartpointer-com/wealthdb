@@ -15,21 +15,17 @@ one owner and a stable contract with the next.
             (raw, as fetched)    (parsed, source-shaped)  (canonical, cross-bank)
 
  collectors/schwab-api/   JSON dumps  ─→  schwab-api.db   ─┐
- collectors/schwab-web/   PDF + CSV   ─→  schwab-web.db   ─┤
- collectors/ubs-psn/      MT5xx zips  ─→  ubs-psn.db      ─┤
- collectors/ubs-web/      PDF + CSV   ─→  ubs-web.db      ─┤
- collectors/swissquote/   XLS + PDF   ─→  swissquote.db   ─┤
- collectors/fidelity-web/ CSV + HTML  ─→  fidelity-web.db ─┤   wealthdb load
- collectors/relevate/     JSON        ─→  relevate.db     ─┼─────────────────→  wealthdb.db
- collectors/viac/         JSON + PDF  ─→  viac.db         ─┤   (DuckDB, canonical)
- collectors/cointracking/ CSV + JSON  ─→  cointracking.duckdb (DuckDB) ─┤
- collectors/angellist/    JSON        ─→  angellist.db    ─┤   → positions / transactions
- collectors/carta/        JSON + PDF  ─→  carta.db        ─┤   accounts / portfolios ...
- collectors/equityzen/    JSON + PDF  ─→  equityzen.db    ─┤
- collectors/manual/       CSV         ─→  manual.db       ─┤
- collectors/svb/          PDF stmts   ─→  svb.db          ─┤   (historical; loads via the fidelity adapter)
- collectors/fred/         JSON        ─→  fred.db         ─┘
+ collectors/ubs-web/      PDF + CSV   ─→  ubs-web.db      ─┤   wealthdb load
+ collectors/cointracking/ CSV + JSON  ─→  cointracking.duckdb ─┼───────────→  wealthdb.db
+ collectors/manual/       CSV         ─→  manual.db       ─┤   (DuckDB, canonical)
+   ... one row per collector ...                          ─┘   → positions / transactions
+                                                                 accounts / portfolios ...
 ```
+
+Four collectors stand in for the rest above; the diagram shows the
+shape, not the roster. [collectors/README.md](collectors/README.md)
+carries the roster — every source, what it fetches, how it is driven and
+where it stands — and is the one place that list is written down.
 
 - **Bronze** — exactly what the source returned, untouched. Owned
   by each collector's `download.py`. Lands under
@@ -71,16 +67,15 @@ Gold normalises every source into shared dimensions and facts. The
 account taxonomy is **three orthogonal axes** so queries can slice
 without conflating them:
 
-- `account_kind` — technical container: brokerage / cash /
-  safekeeping / custody / overlay / crypto / mortgage / other
-  (with crypto_exchange / crypto_self_custody reserved for a
-  future adapter that distinguishes them).
-- `tax_wrapper` — tax/regulatory registration: taxable_personal,
-  the US IRA family, 401k/403b/457b, 529, coverdell_esa,
-  custodial_utma/ugma, trust_*, and the Swiss pillar_3a /
-  vested_benefits / pillar_2, plus foundation / other.
-- `management_style` — who places trades: self_directed /
-  advisory / discretionary / automated.
+- `account_kind` — the technical container the bank exposes.
+- `tax_wrapper` — the tax / regulatory registration.
+- `management_style` — who decides the allocation.
+
+The values of each are not listed here — three copies of a list is
+three chances to drift.
+[wealthdb/docs/DESIGN.md §13.9](wealthdb/docs/DESIGN.md) carries them,
+beside the rule for what an adapter must stamp and what config may
+override.
 
 Adapters populate whatever a source's silver carries; config-side
 `account_overrides` fills the rest. A per-source adapter

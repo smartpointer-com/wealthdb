@@ -186,13 +186,15 @@ the same thing; quote whichever the reader is looking at.
 no record), not a category of purchase. `card_spend` is the same idea for a
 card bill with no purchases behind it: a card wealthdb does not itemise.
 `gift` is a cash gift or family support: spending in its own right, with no
-merchant behind it. The `merchant` column is filled only when a line's
-resolved category is a vendored one *and* the merchant store has a name for
-its signature. It is blank by design — never missing data — on every delta
-line (`cash_withdrawal`, `card_spend`, `gift`, and `other`, the bucket for a
-line placed nowhere else), on every uncategorised line, and on a vendored
-line the store never named a signature for; `provenance` (add with `-C`) says
-which tier decided.
+merchant behind it. The `merchant` column is filled two different ways, and
+neither is "only when the store named it". On an ordinary line it is the
+merchant store's name for the signature, falling back to the SIGNATURE
+itself where the store never named one — so a line whose merchant reads
+like a raw narrative fold is normal, not missing data. On a delta line
+(`cash_withdrawal`, `card_spend`, `gift`, `other` — where primary and
+detailed are the same value) it carries the issuer a card bill was paid
+to, and is blank wherever no such label applies. `provenance` (add with
+`-C`) says which tier decided.
 
 ```sh
 # Monthly spend for 2026 so far

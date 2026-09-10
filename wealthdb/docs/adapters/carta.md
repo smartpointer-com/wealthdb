@@ -189,6 +189,7 @@ instrument; the buy / sell legs carry the share lot + price.
 | `cash_flows.kind` | gold pair (signed via `ApplyCanonicalSign`) |
 |---|---|
 | `exercise`     | `deposit` (+) + `buy` (−, with lot) |
+| `convertible_purchase` | `deposit` (+) + `buy` (−, no lot — a SAFE or note buys no shares yet) |
 | `capital_call` | `deposit` (+) + `contribution` (−) |
 | `exit`         | `sell` (+, with lot) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
 | `distribution` | `distribution` (+) + `withdrawal` (−) |

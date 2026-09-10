@@ -23,7 +23,7 @@ source (its auth method, what it produces, its quirks).
 
 ## The lifecycle
 
-Every collector exposes the same three steps:
+Every collector exposes the same four steps:
 
 | Step | Produces | What it does |
 | --- | --- | --- |
@@ -45,10 +45,14 @@ A collector's runtime is set by whether it ships a Dockerfile (the
 | **Host venv** | a `requirements.txt`, no Dockerfile — pure-stdlib plus one thin dependency; no container | A wrapper runs the collector's `.py` under its `.venv`. |
 | **Docker** | a Dockerfile + `entrypoint.sh` — browser-based scrapers run headed inside the container | A host wrapper script drives `docker run`: `./<tool> {build,login,download,load}`. |
 
-`schwab-api` is **hybrid**: its weekly OAuth `login` runs in a
-Camoufox/VNC container (Schwab's 7-day refresh token needs an
-interactive browser grant), while `download`/`load` run on the host
-venv. A `.host-venv` marker tells the Makefile to build/test both.
+Two collectors are **hybrid**, and a `.host-venv` marker tells the
+Makefile to build and test both halves. `schwab-api`'s weekly OAuth
+`login` runs in a Camoufox/VNC container (Schwab's 7-day refresh token
+needs an interactive browser grant) while `download`/`load` run on the
+host venv. `fidelity-web` splits the same way for a different reason:
+its session lives only as long as the browser, so the container is
+where a run happens and `vnc-login` seeds the profile dir, while the
+file-only verbs run on the host.
 
 ## Conventions shared across collectors
 
@@ -88,7 +92,8 @@ bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 without a new MFA push; `download --dry-run` walks with the existing
 session but exports nothing — *where a session persists*. On the one-shot
 collectors, where `login` folds into `download` because no session survives
-the browser (schwab-web, chase, raiffeisen_at, amex), a dry-run signs in to
+the browser (schwab-web, chase, raiffeisen_at, amex, fidelity-web — whose
+`login` is an explicit no-op that says so), a dry-run signs in to
 do that walk. On amex that sign-in is silent on a trusted device but comes
 out of a budget small enough that a handful of them draws a captcha, so
 `download --dry-run` is **not** in the run-without-asking set there
@@ -210,8 +215,8 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
-| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. The one recorded deviation is **amex** (see the exceptions below), where a sign-in is the scarce resource: its `--check` reads the device-trust cookie out of the profile's own Firefox jar on disk, opening no browser and touching no network, so exit `0` means *this device is registered*, not *the credential is alive*. | — |
-| human-MFA wait | `--mfa-timeout SECONDS` | ≥ 600 |
+| session probe | `login --check` — exit `0` = credential/session alive, nonzero = not. Every collector implements it, including the ones with no session to mint: where a static credential IS the session (fred's API key, ubs-psn's RSA key), the probe is the cheapest authenticated read against the source, so a credential that is present but rejected fails here. Two deviate. **fidelity-web** has no `login` verb to probe — its session is the browser's lifetime, so there is nothing to persist and nothing to check; the verb exists only to no-op so an orchestrator's login → download → load does not trip. **amex** (see the exceptions below) is the other, where a sign-in is the scarce resource: its `--check` reads the device-trust cookie out of the profile's own Firefox jar on disk, opening no browser and touching no network, so exit `0` means *this device is registered*, not *the credential is alive*. | — |
+| human-MFA wait | `--mfa-timeout SECONDS` | ≥ 600 (swissquote and ubs-web ship 300) |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
 | `--mode` "everything" token | `all` | `all` |
@@ -285,12 +290,6 @@ structurally cannot narrow a fetch, the collector says so at runtime
 - **ubs-web** reads the bank-level `ubs.env` (contract number, shared with
   a future ubs-* sibling) as a legacy fallback behind its own
   `ubs-web.env`.
-- **amex** `login --check` reads the profile's device-trust cookie
-  instead of calling the source, and `download --dry-run` still signs in
-  (`login` folds into `download` there). Both follow from a sign-in
-  budget small enough that a handful inside twenty minutes draws a
-  captcha, which is why that collector's CLAUDE.md withdraws `--dry-run`
-  from the run-without-asking set.
 - **viac** `--no-transaction-documents` opts out of only the per-event
   receipt PDFs — a narrower concept than `--no-documents`; viac's document
   centre always downloads on its date window.
@@ -581,7 +580,7 @@ restated here.
 | [`ubs-psn`](ubs-psn/) | UBS PSN feed | SFTP key | host venv |
 | [`ubs-web`](ubs-web/) | UBS netbanking | scraped session + QR | Docker |
 | [`swissquote`](swissquote/) | Swissquote eBanking | scraped session + push | Docker |
-| [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | Docker (Camoufox) |
+| [`fidelity-web`](fidelity-web/) | Fidelity web | scraped session + 2FA | hybrid: Docker (Camoufox) + host venv |
 | [`chase`](chase/) | Chase retail banking (checking + savings) | scraped session + 2FA | Docker (Camoufox) |
 | [`firstcitizens`](firstcitizens/) | First Citizens retail banking (checking + savings) | Q2 REST + terminal 2FA (persistent device trust) | Docker (Camoufox login + REST download) — full pipeline through gold, validated live |
 | [`raiffeisen_at`](raiffeisen_at/) | Austrian Raiffeisen retail banking, Mein ELBA (checking + savings) | Camoufox login + pushTAN, then REST | Docker (Camoufox login + REST fetch) — full pipeline through gold, validated |

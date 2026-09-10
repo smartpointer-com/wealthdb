@@ -542,36 +542,18 @@ pre-exit marks forward as phantom value.
 
 ### 6.1 Transactions — double-entry pairs on the custody account
 
-Following equityzen, the gold adapter projects the `cash_flows` ledger (§5.2)
-as balanced double-entry transaction PAIRS on the custody account — the
-account carrying the value spine, so the returns engine sees the flows (the
-`deposit`/`withdrawal` legs are the external boundary flows its ReturnsPolicy
-counts). Carta exposes no real funding balance, so every event is a
-self-cancelling pair — no cash position is implied, the same shape as a
-brokerage's same-day deposit + buy. `amount` is the positive magnitude; the
-adapter signs + splits it:
+Following equityzen, the adapter projects the `cash_flows` ledger (§5.2) as
+balanced double-entry PAIRS on the custody account, so the returns engine
+sees the flows: Carta exposes no real funding balance, so each event splits
+into an external-bank leg and a holding leg that net to zero, the same shape
+as a brokerage's same-day deposit + buy. A side-loaded
+`<entity_external_id>-transactions.csv` (§5.2) instead names canonical kinds
+directly and is emitted 1:1, since the CSV already carries both halves.
 
-| cash_flow `kind` | gold pair (signed) |
-|---|---|
-| `exercise`     | `deposit` (+) + `buy` (−, with shares + price) |
-| `convertible_purchase` | `deposit` (+) + `buy` (−, no share lot) |
-| `capital_call` | `deposit` (+) + `contribution` (−) |
-| `exit`         | `sell` (+, with shares) + `withdrawal` (−); a $0 exit emits the $0 `sell` and omits the meaningless $0 `withdrawal` |
-| `distribution` | `distribution` (+) + `withdrawal` (−) |
-
-A **side-loaded** `<entity_external_id>-transactions.csv` (§5.2) instead names
-canonical kinds directly — `sell` / `withdrawal` / `deposit` / `buy` /
-`contribution` — which the adapter emits **1:1** (no auto-pairing): the CSV
-supplies both halves of the exit (a sale plus the withdrawals it splits into), so they net to 0 without synthesis.
-
-Every leg links to the company's instrument (mirroring equityzen); the buy /
-sell legs additionally carry the share lot + price. No `cash_balance` row is
-emitted — each pair nets to 0, so no cash balance is implied (no real external
-balance is observed). `Status` reports
-the `cash_flows` date range as the transaction extrema; the load window already
-covers them (they coincide with the securities / fund_metrics deltas).
-`TxKindContribution` already exists in `internal/canonical/enums.go` (added for
-angellist / equityzen), so no enum change was needed.
+Which `cash_flows.kind` becomes which signed pair — and everything else on
+the gold side — lives in
+[`wealthdb/docs/adapters/carta.md`](../../wealthdb/docs/adapters/carta.md) §7.
+It is not repeated here: the two copies had already drifted apart by a row.
 
 ## 7. Scope (as built)
 

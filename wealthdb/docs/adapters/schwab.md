@@ -133,7 +133,7 @@ real data, maps to the canonical gold `kind` taxonomy:
 | `RECEIVE_AND_DELIVER` | `transfer_in` or `transfer_out` | sign-driven |
 | `SMA_ADJUSTMENT` | `other` | margin-related, rare |
 
-Per the global fallback rule (DESIGN.md §6.7): any new Schwab
+Per the global fallback rule (DESIGN.md §6.8): any new Schwab
 `kind` value an adapter version doesn't recognise lands as `other`
 with the original string preserved in payload.
 

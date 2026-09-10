@@ -539,7 +539,7 @@ Confirmed empirically: after a successful login that writes the
 profile dir to disk, closing the Camoufox process and reopening
 with the same profile dir lands on a signin redirect — Fidelity
 treats the cookie as dead even though the file persists. This
-matches the [schwab-web session model](../schwab-web/DESIGN.md#5-login--mfa-flow)
+matches the [schwab-web session model](../schwab-web/README.md#session-lifecycle)
 exactly.
 
 Consequence: **login and scrape share one continuous Camoufox

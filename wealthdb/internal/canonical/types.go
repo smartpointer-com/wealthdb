@@ -54,7 +54,7 @@ type AccountChange struct {
 
 // PortfolioChange is one upsert into gold's `portfolios` table.
 // Portfolios are wealth-management wrappers that group component
-// accounts (UBS-specific today). They do not hold positions or
+// accounts (UBS, cointracking and fidelity emit them). They do not hold positions or
 // cash directly; their value is the sum of their component
 // accounts'. See docs/DESIGN.md §13.9 and §7.2.
 type PortfolioChange struct {

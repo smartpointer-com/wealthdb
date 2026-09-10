@@ -91,15 +91,12 @@ brokerages, pension providers, crypto, private markets, and reference
 FX. See [`../collectors/README.md`](../collectors/README.md) for the
 sources and [`internal/silver/`](internal/silver/) for their adapters.
 
-Accounts carry a three-dimensional taxonomy: `account_kind`
-(technical container — brokerage / cash / safekeeping / custody /
-overlay / crypto / mortgage / other, with crypto_exchange /
-crypto_self_custody reserved),
-`tax_wrapper` (taxable_personal / IRA / Roth / 529 / coverdell_esa /
-custodial_utma / custodial_ugma / pillar_3a / vested_benefits /
-trust / DAF / HSA / …; covers US + Switzerland),
-and `management_style` (self_directed / advisory / discretionary /
-automated). Adapters populate what silver carries; config-side
+Accounts carry a three-dimensional taxonomy — `account_kind` (the
+technical container), `tax_wrapper` (the tax / regulatory
+registration) and `management_style` (who decides the allocation).
+The values of each live in [docs/DESIGN.md §13.9](docs/DESIGN.md),
+which is the one place they are written down. Adapters populate what
+silver carries; config-side
 `account_overrides` fills the rest.
 
 Future work lives in [docs/DESIGN.md §13](docs/DESIGN.md).
@@ -168,8 +165,6 @@ and read-only sharing pattern.
   method and rationale.
 - **[docs/TAXONOMY.md](docs/TAXONOMY.md)** — the 2-D
   `asset_class` × `vehicle` taxonomy.
-- **[docs/adapters/](docs/adapters/)** — per-source adapter design
-  ([carta](docs/adapters/carta.md),
-  [cointracking](docs/adapters/cointracking.md),
-  [schwab](docs/adapters/schwab.md), [ubs](docs/adapters/ubs.md),
-  [swissquote](docs/adapters/swissquote.md)).
+- **[docs/adapters/](docs/adapters/)** — per-source adapter design,
+  one file per adapter that needed one. Not listed here: the
+  directory is the list.

@@ -85,8 +85,9 @@ It is vendored rather than fetched, so a taxonomy revision arrives as
 a reviewable diff instead of silently re-labelling history. Gold's
 `spend_categories` dimension is seeded from this table — migration
 0040 seeded the vendored rows and the first three deltas,
-0045 / 0046 / 0047 one delta each — and a generator-style test pins
-the migrated dimension to the table so they cannot drift. A new value
+0045 / 0046 / 0047 one delta each, 0056 the first EXTENSION — and a
+generator-style test pins the migrated dimension to the table so they
+cannot drift. A new value
 is a row here plus a new migration; an applied migration is never
 edited.
 
@@ -176,12 +177,39 @@ narrative says a person is family rather than a contractor or an
 untracked account of the holder's own. A config rule (§3) or a pin
 (§7), carrying the holder's own knowledge, is what places it.
 
+### Extensions
+
+A third class, and the newest. An EXTENSION is a value of ours in the
+vendored SHAPE — a `PRIMARY_DETAIL` pair filed under an existing
+primary — added where the vendored vocabulary has no word for
+something a household buys often. The first is
+`GENERAL_SERVICES_DIGITAL_SERVICES` (migration 0056): software and
+online subscriptions, for which the taxonomy offers ELECTRONICS
+(physical goods), ONLINE MARKETPLACES (retail) and INTERNET AND CABLE
+(the connection), none of which is a password manager or a model
+subscription.
+
+It differs from a delta in the one way that matters: **the model MAY
+emit an extension.** A delta is decided from structure a merchant name
+cannot reveal — whose account the money reached, whether a card is
+itemised — so the gauntlet refuses one. An extension is an ordinary
+merchant judgement of exactly the kind a merchant name answers.
+
+It goes under an existing primary rather than becoming one, which is
+the opposite of the choice `gift` made. A delta earns its own primary
+BECAUSE it is not a merchant category and must not fold into a
+plausible-looking one; an extension is a merchant category, so it
+belongs beside its siblings, rolls up with them, and — when the
+vendored taxonomy eventually adds the value — is superseded by the
+refreshed CSV as a clean diff instead of sitting beside it.
+
 ### Two validity predicates, and why
 
 `canonical.ValidSpendDetailed` admits everything storable — the 80
-vendored values *and* the six deltas.
-`canonical.VendoredSpendDetailed` is the stricter sibling and refuses
-the deltas.
+vendored values, our extensions, *and* the six deltas.
+`canonical.ModelSpendDetailed` is the stricter sibling: it admits
+what a model may emit — vendored and extension — and refuses only the
+deltas.
 
 The model tier validates against the stricter one. A model verdict is
 keyed by MERCHANT and therefore applies to every transaction that
@@ -250,7 +278,7 @@ provider, and it reads weakest-first:
   of business — a bank's `ATM WITHDRAWAL` is `cash_withdrawal`, an FX
   conversion between the holder's own currency accounts is
   `internal_transfer`, a `PAYMENT TO CARD` is `card_spend`. The
-  vendored-only restriction (§2) is the model tier's alone: a provider
+  no-deltas restriction (§2) is the model tier's alone: a provider
   verdict is per transaction, placed from the provider's structured
   filing of that row rather than from a merchant's name, and every
   tier above still overrules it.
@@ -605,12 +633,12 @@ The category may be **any** valid `spend_detailed` value, vendored or
 delta (`canonical.ValidSpendDetailed`), in the taxonomy's own
 case-sensitive spelling. A consumption category is allowed on
 purpose: a rule is the holder's own local input, which the model never
-sees, so the vendored-only restriction — which guards what the *model*
+sees, so the no-deltas restriction — which guards what the *model*
 may say (§2) — does not apply to it. A recurring fenced counterparty,
 a lawyer or a contractor or a tax office paid by wire, is kept from
 the model by design and would otherwise be classifiable by nothing but
 a per-transaction pin, one row at a time; a rule is the instrument for
-a counterparty that recurs. `VendoredSpendDetailed` still gates what
+a counterparty that recurs. `ModelSpendDetailed` still gates what
 the model may say. A merchant the model can see and has mis-placed
 still belongs in the merchant store, where the verdict is per-merchant
 and visible; a single row belongs in the pins.
@@ -1661,9 +1689,8 @@ tidies the store — by then the rows have moved on.
   with a payee in it.
 - **The model may never emit a delta.** Enforced by a stricter
   predicate in `canonical`, not by a hardcoded list in the command.
-- **The provider tier may place a delta.** The vendored-only
-  restriction guards a merchant-keyed verdict the model produces from a
-  name; a provider verdict is per transaction, placed from the
+- **The provider tier may place a delta.** The no-deltas restriction
+  guards a merchant-keyed verdict the model produces from a name; a provider verdict is per transaction, placed from the
   provider's own structured filing of the row, and where that filing
   names the movement — an ATM withdrawal, an FX conversion between the
   holder's own currency accounts, a bill paid to a card — the delta is
@@ -1757,7 +1784,7 @@ tidies the store — by then the rows have moved on.
   row at a time, for a counterparty that recurs. A rule is the holder's
   own local input and the model never sees it, so the privacy argument
   behind the restriction never applied to it; the model's output stays
-  vendored-only, and that is a different restriction with a different
+  delta-free, and that is a different restriction with a different
   reason. `spending.rules` validates against `ValidSpendDetailed`, as
   the pins do.
 

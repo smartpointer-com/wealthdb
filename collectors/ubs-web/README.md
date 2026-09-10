@@ -257,6 +257,11 @@ companion PSN silver is at `$XDG_DATA_HOME/wealthdb/ubs-psn/ubs-psn.db` (from
   `accounts` / `transactions`, because a card is keyed by an opaque
   token where a cash account is keyed by IBAN and carries the columns
   that join it to the PSN feed.
+- [`0008_card_session_ids.sql`](migrations/0008_card_session_ids.sql) —
+  re-keys that surface. Every id the card API hands out is re-minted at
+  login, so two dumps a day apart shared no ledger id and the upsert
+  that was meant to re-observe a row inserted a second copy instead.
+  The row key is now a content id the parsers mint.
 
 Full design notes including the per-entity gold-merge contract,
 identifier conventions, IBAN ↔ PSN AcctId conversion, the

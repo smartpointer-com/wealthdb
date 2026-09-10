@@ -61,7 +61,7 @@ same `duckdb/duckdb-go/v2` driver the gold engine uses.
   ```json
   "portfolio_overrides": {
       "cointracking": {
-          "cu_999999": {"tax_wrapper": "ira"}
+          "cu_999999": {"tax_wrapper": "traditional_ira"}
       }
   }
   ```

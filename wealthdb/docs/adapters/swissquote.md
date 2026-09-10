@@ -89,7 +89,7 @@ data, maps to the canonical gold `kind` taxonomy:
 | `Payment` | `deposit` |
 | `Debit` | `withdrawal` |
 
-Per the global fallback rule (DESIGN.md §6.7): any new Swissquote
+Per the global fallback rule (DESIGN.md §6.8): any new Swissquote
 `transaction_type` value an adapter version doesn't recognise
 lands as `other` with the raw type preserved in payload.
 
