@@ -760,6 +760,14 @@ should READ as beside what it IS: `spend_categories.label` and
 `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
 merchandise", `internal_transfer` reads "Internal transfer".
 
+The rule is mechanical, so a value it reads wrongly is corrected by
+hand — `canonical.spendLabelOverrides`, and the same correction seeded
+into the dimension. One so far: `card_spend` reads **"Uncategorized
+card spend"** (migration 0062). The rule read it "Card spend", which is
+true of every card purchase in the product, so among the merchant
+categories on a chart it read as a KIND of spending rather than as the
+placeholder §2 defines it to be.
+
 The label is presentation and nothing more. The value stays the join
 key, the name a rule and a pin write, and what the model gauntlet
 validates — so a taxonomy refresh still diffs against the vendored

@@ -294,12 +294,25 @@ func ModelSpendDetailed(s string) bool {
 // full caps because every value is in full caps.
 var spendLabelAcronyms = map[string]string{"Atm": "ATM", "Tv": "TV"}
 
+// spendLabelOverrides are the values whose display name is not what the
+// mechanical rule reads off them. One so far: `card_spend`, which the
+// rule renders "Card spend" — true of every card purchase in the
+// product, so among the merchant categories on a chart it reads as a
+// KIND of spending rather than as the placeholder it is. The value
+// stands for a bill on a card wealthdb does not itemise (migration
+// 0046): real consumption whose purchases nobody has seen, in the base
+// and replaced by those purchases the day the card is collected.
+// "Uncategorized card spend" says both halves.
+var spendLabelOverrides = map[string]string{
+	SpendDetailedCardSpend: "Uncategorized card spend",
+}
+
 // SpendLabel is a detailed value's display name: the vendored value with
 // its primary's prefix taken off, underscores opened out and one capital
 // at the front. `FOOD_AND_DRINK_GROCERIES` reads "Groceries";
 // `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
 // merchandise"; a delta, which is its own primary, reads "Internal
-// transfer".
+// transfer". A value the rule reads wrongly is in spendLabelOverrides.
 //
 // The label is presentation only. The value stays the join key, the name
 // a rule and a pin write, and what the model gauntlet validates — so a
@@ -313,6 +326,9 @@ var spendLabelAcronyms = map[string]string{"Atm": "ATM", "Tv": "TV"}
 // seed was generated from, and TestSpendCategoryLabelsMatchGoTable holds
 // the two together — which is why its only caller is a test.
 func SpendLabel(detailed string) string {
+	if label, ok := spendLabelOverrides[detailed]; ok {
+		return label
+	}
 	primary, ok := spendPrimaryOf[detailed]
 	if !ok {
 		return detailed
@@ -325,8 +341,14 @@ func SpendLabel(detailed string) string {
 }
 
 // SpendPrimaryLabel is the same for a primary: "General merchandise",
-// "Rent and utilities", "Gift".
-func SpendPrimaryLabel(primary string) string { return humanise(primary) }
+// "Rent and utilities", "Gift" — overrides included, since a delta is
+// its own primary and is labelled at both levels.
+func SpendPrimaryLabel(primary string) string {
+	if label, ok := spendLabelOverrides[primary]; ok {
+		return label
+	}
+	return humanise(primary)
+}
 
 func humanise(s string) string {
 	words := strings.Split(strings.ToLower(s), "_")

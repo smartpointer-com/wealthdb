@@ -283,3 +283,39 @@ func TestCatchAllSpendDetailed(t *testing.T) {
 		t.Error("an extension that names a real category is not a catch-all")
 	}
 }
+
+// TestSpendLabelOverrides pins the corrections to the mechanical rule.
+// `card_spend` is the one: the rule reads it "Card spend", which is
+// true of every card purchase in the product, so it read as a KIND of
+// spending among the merchant categories rather than as the placeholder
+// it is. Both levels take the correction — a delta is its own primary —
+// and nothing else moves with it.
+func TestSpendLabelOverrides(t *testing.T) {
+	const want = "Uncategorized card spend"
+	if got := SpendLabel(SpendDetailedCardSpend); got != want {
+		t.Errorf("SpendLabel(%s) = %q, want %q", SpendDetailedCardSpend, got, want)
+	}
+	if got := SpendPrimaryLabel(SpendDetailedCardSpend); got != want {
+		t.Errorf("SpendPrimaryLabel(%s) = %q, want %q", SpendDetailedCardSpend, got, want)
+	}
+	// The rule still runs everywhere else, initialisms included.
+	for _, tc := range []struct{ value, want string }{
+		{"FOOD_AND_DRINK_GROCERIES", "Groceries"},
+		{"GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", "Other general merchandise"},
+		{"BANK_FEES_ATM_FEES", "ATM fees"},
+		{SpendDetailedInternalTransfer, "Internal transfer"},
+		{SpendDetailedOther, "Other"},
+	} {
+		if got := SpendLabel(tc.value); got != tc.want {
+			t.Errorf("SpendLabel(%s) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+	// Every override names a value the taxonomy actually holds: an
+	// override on a value nothing stores is a correction that never
+	// fires, and would drift unnoticed.
+	for value := range spendLabelOverrides {
+		if !ValidSpendDetailed(value) {
+			t.Errorf("override for %q, which is not a spend_detailed value", value)
+		}
+	}
+}
