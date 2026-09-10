@@ -98,15 +98,15 @@ check("web_spending registered",
 # The category field is the LABEL column: the Category picker is shared
 # with the money dashboard, whose model column of the same name holds the
 # label, so both sides of the filter must speak one vocabulary.
-check("web_spending columns: timestamp, source, display name, primary category",
+check("web_spending columns: timestamp, source, account label, primary category",
       set(p.FILTER_FIELD_COLUMNS.get("web_spending", ())) ==
-      {"occurred_at", "silver_source_id", "display_name", "spend_primary_label"},
+      {"occurred_at", "silver_source_id", "account_label", "spend_primary_label"},
       str(p.FILTER_FIELD_COLUMNS.get("web_spending")))
-check("web_card_balances_history columns: day, source, display name",
+check("web_card_balances_history columns: day, source, account label",
       set(p.FILTER_FIELD_COLUMNS.get("web_card_balances_history", ())) ==
-      {"as_of_day", "silver_source_id", "display_name"},
+      {"as_of_day", "silver_source_id", "account_label"},
       str(p.FILTER_FIELD_COLUMNS.get("web_card_balances_history")))
-check("the account filter binds display_name, never the external id",
+check("the account filter binds account_label, never the external id",
       not any("account_external_id" in cols
               for cols in p.FILTER_FIELD_COLUMNS.values()))
 check("both spending views are in the wanted serving-view set",
@@ -157,6 +157,9 @@ check("the privacy model drops the merchant column",
       "merchant_name" not in PCT_SQL)
 check("the privacy model keeps display_name (the Account picker needs it)",
       "display_name" in PCT_SQL)
+check("both models label an account with its source and kind, not its "
+      "bare name",
+      all("s.account_label AS display_name" in q for q in (SPEND_SQL, PCT_SQL)))
 check("the privacy model scales by the latest net worth, per currency",
       all(f"nw.nw_{c}" in PCT_SQL for c in ("usd", "chf", "eur")))
 
@@ -189,6 +192,62 @@ check("the money cards render merchant labels",
 check("the money cards render account labels",
       all("display_name" in json.dumps(CARDS[c][2])
           for c in ("Spend by account", "Largest transactions")))
+
+# The two breakdowns are rings, on both dashboards. Every slice is drawn
+# on the primary ring — Metabase's own small-slice bucket is called
+# "Other", and so is a real category here — and neither ring carries a
+# LIMIT: a limited ring renormalizes onto what it drew, so its printed
+# shares would disagree with its own values.
+_QDEFS = p.question_defs(1, MID)
+_PDEFS = p.privacy_card_defs(1, MID)
+_RINGS = {n: (_QDEFS[n][0], _QDEFS[n][3]) for n in ("Spending by category",
+                                                    "Spending by subcategory")}
+_RINGS.update({n: (_PDEFS[n][1], _PDEFS[n][4])
+               for n in ("Spending by category (privacy)",
+                         "Spending by subcategory (privacy)")})
+for _name, (_display, _viz) in _RINGS.items():
+    check(f"'{_name}' is a ring", _display == "pie", _display)
+    check(f"'{_name}' shows its shares in the legend",
+          _viz.get("pie.percent_visibility") == "legend")
+    check(f"'{_name}' draws no LIMIT'd ring",
+          "limit" not in json.dumps(CARDS[_name][2])
+          and "LIMIT" not in (sql_of(CARDS[_name][2]) or ""))
+check("the primary ring folds nothing into an 'Other' wedge (a real "
+      "category is called that)",
+      all(_RINGS[n][1].get("pie.slice_threshold") == 0
+          for n in ("Spending by category", "Spending by category (privacy)")))
+check("the detailed rings do fold their tail (eighty-odd values)",
+      all(_RINGS[n][1].get("pie.slice_threshold") > 0
+          for n in ("Spending by subcategory",
+                    "Spending by subcategory (privacy)")))
+
+# Card balances read the way an issuer states them: owed, positive. The
+# flip is in the projection only — gold stores the liability negative.
+for _name in ("Card balances over time", "Card balances over time (privacy)"):
+    _sql = sql_of(CARDS[_name][2]) or ""
+    check(f"'{_name}' states what is owed as a positive figure",
+          "-balance_chf" in _sql and "-balance_eur" in _sql
+          and "-balance_usd" in _sql, _sql)
+check("the money card-balances chart is split by the account label",
+      "account_label" in (sql_of(CARDS["Card balances over time"][2]) or ""))
+
+# A card called "by month" charts months. Metabase infers the x-axis
+# from cardinality, and there are more categories than months in any
+# window worth charting, so both monthly cards pin their dimensions —
+# the money one over the model's columns, the twin over its own SQL
+# aliases. Without the pin the card draws its own transpose.
+check("the monthly cards put the month on the x-axis, categories in the "
+      "stack",
+      _QDEFS["Spending by month"][3]["graph.dimensions"]
+      == ["occurred_at", "spend_primary"]
+      and _PDEFS["Spending by month (privacy)"][4]["graph.dimensions"]
+      == ["month", "category"])
+check("...as stacked bands over a continuous axis",
+      all(d == "area" and v.get("stackable.stack_type") == "stacked"
+          for d, v in ((_QDEFS["Spending by month"][0],
+                        _QDEFS["Spending by month"][3]),
+                       (_PDEFS["Spending by month (privacy)"][1],
+                        _PDEFS["Spending by month (privacy)"][4]))))
 
 # The merchant rankings rank merchants. A line resolved to a delta — a
 # gift, a card bill, cash out of an ATM — is not a merchant
@@ -327,7 +386,7 @@ check("other range dashboards keep just the range pair",
 # ---- the twin never renders a counterparty ----------------------------
 
 section("privacy twin: redaction")
-REDACTED = ("display_name", "account_external_id")
+REDACTED = ("account_label", "display_name", "account_external_id")
 for card, *_ in DEFS["Spending (privacy)"][3]:
     query = CARDS[card][2]
     sql = sql_of(query)

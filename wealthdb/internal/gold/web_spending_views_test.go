@@ -441,3 +441,97 @@ func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
 		t.Fatalf("fixture produced %d account(s); the collapse this guards against needs at least 2", len(labels))
 	}
 }
+
+// TestWebSpendingLabelsAnAccountWithSourceAndKind pins what migration
+// 0063 adds. An account's own name is what its institution calls it and
+// no more: a bar reading `Checking` says neither which bank it belongs
+// to nor whether the money left a deposit account or a card, and the
+// names collide across sources. The label carries all three, name
+// first — a row chart truncates from the end, so what a narrow tile
+// clips is the annotation rather than the thing being labelled — and
+// the bare name and the id stay projected beside it.
+func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedSpendingFixture(t, db, ctx)
+	// An account with no name of its own is labelled by its id: 0061's
+	// rule, now shared by both views through account_display_name.
+	if _, err := db.ExecContext(ctx, `
+        UPDATE accounts SET display_name = NULL WHERE account_external_id = 'CASH1';
+    `); err != nil {
+		t.Fatalf("unname CASH1: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, `
+        SELECT DISTINCT account_external_id, silver_source_id, account_kind,
+               display_name, account_label
+          FROM web_spending ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("web_spending: %v", err)
+	}
+	defer rows.Close()
+	labels := map[string]string{}
+	for rows.Next() {
+		var id, src, kind, name, label string
+		if err := rows.Scan(&id, &src, &kind, &name, &label); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if want := name + " (" + src + " " + kind + ")"; label != want {
+			t.Errorf("account %s labelled %q, want %q", id, label, want)
+		}
+		labels[id] = label
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate web_spending: %v", err)
+	}
+	if got := labels["CASH1"]; got != "CASH1 (test-src cash)" {
+		t.Errorf("unnamed account labelled %q, want its id annotated", got)
+	}
+	if got := labels["CARD1"]; got != "Card (test-src card)" {
+		t.Errorf("named account labelled %q, want its name annotated", got)
+	}
+	// An account whose kind gold never learned still says so, rather
+	// than trailing an empty bracket or collapsing the whole label to
+	// NULL — a NULL label is the "null" bar migration 0061 removed.
+	var unknown string
+	if err := db.QueryRowContext(ctx,
+		`SELECT account_label(NULL, 'ID1', 'test-src', NULL)`).Scan(&unknown); err != nil {
+		t.Fatalf("account_label with no kind: %v", err)
+	}
+	if want := "ID1 (test-src unknown)"; unknown != want {
+		t.Errorf("kindless account labelled %q, want %q", unknown, want)
+	}
+}
+
+// TestCardBalancesLabelsAnAccountWithSourceAndKind is the same for the
+// balances view, which reaches its label the same way. Its kind is a
+// literal there: report_card_balances_history_multi keeps only
+// account_kind = 'card', so every row is one by construction.
+func TestCardBalancesLabelsAnAccountWithSourceAndKind(t *testing.T) {
+	db, ctx := openMigrated(t)
+	seedCardBalanceFixture(t, db, ctx)
+	rows, err := db.QueryContext(ctx, `
+        SELECT DISTINCT display_name, account_label FROM web_card_balances_history`)
+	if err != nil {
+		t.Fatalf("web_card_balances_history: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var name, label string
+		if err := rows.Scan(&name, &label); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		n++
+		if name != "Everyday Card" {
+			t.Errorf("display_name = %q, want the account's own name", name)
+		}
+		if want := "Everyday Card (test-src card)"; label != want {
+			t.Errorf("account_label = %q, want %q", label, want)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate card balances: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("%d labelled card(s), want 1", n)
+	}
+}

@@ -215,6 +215,17 @@ def report_models():
         view. It is never summed with ours and no tile aggregates it — the
         two disagree by design.
 
+        `display_name` carries the account LABEL (migration 0063) on the
+        same reasoning the category columns carry theirs: an account's
+        own name is what its institution calls it and no more — a
+        product nickname, a masked card number, an IBAN — so a bar or a
+        picker entry wearing it says neither which institution the
+        account belongs to nor whether the money moved through a deposit
+        account or a card, and such names collide across sources. The
+        label annotates the name with both, as `<name> (<source>
+        <kind>)`, and the view keeps the bare name and the id beside
+        it.
+
         The wide value trio is unpivoted to one row per (spending line,
         reporting currency) — the long shape report_returns already has,
         and the only shape an MBQL card can switch currency in: a dashboard
@@ -229,9 +240,11 @@ def report_models():
         Account picker lands on this model too (its privacy-exempt tile
         runs over it); the privacy dashboard carries no account picker at
         all, since a picker's dropdown IS the list of labels it filters
-        by (dashboard_parameters)."""
+        by (dashboard_parameters). The label is what stays, not the bare
+        name: it is the only column either dashboard shows an account
+        by."""
         cols = ("s.occurred_at, s.silver_source_id, s.account_external_id,\n"
-                "       s.display_name, s.account_kind,\n"
+                "       s.account_label AS display_name, s.account_kind,\n"
                 + ("" if pct else "       s.merchant_name,\n") +
                 "       s.spend_primary_label AS spend_primary,\n"
                 "       s.spend_label         AS spend_detailed,\n"
@@ -608,7 +621,7 @@ FILTER_FIELD_COLUMNS = {
     "web_positions_history": ("as_of_day", "silver_source_id",
                               "asset_class", "vehicle"),
     # The spending views (migration 0043). On the money dashboard both
-    # bind their account picker to display_name rather than
+    # bind their account picker to account_label rather than
     # account_external_id — see dashboard_parameters for why the readable
     # column wins, and why the privacy twin carries no such picker.
     # spend_primary_label, not spend_primary: a field filter's widget is
@@ -617,10 +630,10 @@ FILTER_FIELD_COLUMNS = {
     # name now holds the display label. Binding the two to different
     # vocabularies would leave the picker offering labels and the native
     # cards matching them against vendored values — every tile empty.
-    "web_spending": ("occurred_at", "silver_source_id", "display_name",
+    "web_spending": ("occurred_at", "silver_source_id", "account_label",
                      "spend_primary_label"),
     "web_card_balances_history": ("as_of_day", "silver_source_id",
-                                  "display_name"),
+                                  "account_label"),
 }
 FIELD_IDS = {}          # (table, column) -> field id, filled by main()
 CURRENCY_FIELD_ID = None
@@ -755,6 +768,23 @@ def _series_viz(time_col, series_col, metric, *, log=False, percent=False):
     if percent:
         viz["column_settings"] = {f'["name","{metric}"]': {"number_style": "percent"}}
     return viz
+
+
+def _donut(threshold=0):
+    """Viz for a `pie` card, which Metabase draws as a ring: the total in
+    the hole, and each slice's share in the legend rather than crowded
+    onto the ring itself.
+
+    `threshold` is the share (%) below which slices fold into a single
+    wedge Metabase labels "Other". Zero — the default here, not
+    Metabase's — draws every slice, and is right wherever the breakout
+    has few enough values to name: this taxonomy HAS a category called
+    "Other", and two legend entries by that name read as a rendering
+    fault. Set it only where the tail is genuinely too long to draw,
+    and say so on the card."""
+    return {"pie.show_total": True,
+            "pie.percent_visibility": "legend",
+            "pie.slice_threshold": threshold}
 
 
 def metric_defs(db_id, mid):
@@ -996,34 +1026,68 @@ def question_defs(db_id, mid):
                   {"aggregation": [["share",
                        ["=", _f("spend_primary", "type/Text"), UNCATEGORIZED]]]}),
             _percent_viz("share")),
-        "Spending by month": ("bar",
+        # The axes are PINNED, and this is the card that most needs it.
+        # Left to infer them, Metabase puts the dimension with the most
+        # distinct values on the x-axis — and there are more categories
+        # than months in any window worth charting, so the card drew its
+        # own transpose: a bar per CATEGORY stacked by month, under a
+        # band of rotated category names deep enough to leave the bars a
+        # sliver. A card called "by month" charts months. Only the
+        # dimensions are pinned; the metric is left to default, since
+        # naming it would be guessing at what Metabase calls an
+        # aggregation column.
+        #
+        # Stacked areas rather than bars: months are a continuous axis,
+        # so the categories read as bands whose thickness moves across
+        # the window, and the envelope is the window's own shape. A
+        # month whose refunds beat its purchases dips its band below the
+        # line.
+        "Spending by month": ("area",
             "Net spend per month, stacked by primary category — the shape of "
             "the window: which months were heavy and what carried "
             "them." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
                    "breakout": [month, _f("spend_primary", "type/Text")]}),
-            {"stackable.stack_type": "stacked"}),
-        "Spending by category": ("row",
-            "Net spend by primary category over the window, largest first. "
-            "Click a bar to drill through to the lines behind it; the "
-            "subcategory tile beside it holds the same window at the "
-            "detailed level." + spend_note,
+            {"graph.dimensions": ["occurred_at", "spend_primary"],
+             "stackable.stack_type": "stacked"}),
+        # The two breakdowns are donuts: the question they answer is how
+        # the window DIVIDES, and a ring reads that as one shape where a
+        # bar chart reads it as a ranking. The ring's hole carries the
+        # window's own total, so the tile answers "how much" and "of
+        # what" at once, and the legend carries each slice's share.
+        #
+        # `_donut` is where the two settings that make that work live:
+        # every slice drawn (Metabase would otherwise fold the small
+        # ones into a wedge it calls "Other", which is also the name of
+        # a real category here), and the shares shown in the legend
+        # rather than crowded onto the ring.
+        #
+        # A category can go net-negative over a window whose refunds
+        # beat its purchases; a ring has no way to draw that, so
+        # Metabase leaves such a slice out. The figure is in the
+        # transaction list either way.
+        "Spending by category": ("pie",
+            "Net spend by primary category over the window, largest first, "
+            "with the window's total in the middle. Click a slice to drill "
+            "through to the lines behind it; the subcategory tile beside it "
+            "holds the same window at the detailed level. A category whose "
+            "refunds beat its purchases has no slice." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
                    "breakout": [_f("spend_primary", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]]}),
-            {}),
-        "Spending by subcategory": ("row",
+            _donut()),
+        "Spending by subcategory": ("pie",
             "The detailed level of Spending by category: net spend by "
-            "detailed category, the twenty-five largest (the vocabulary "
-            "holds far more than a row chart can show)." + spend_note,
+            "detailed category. The vocabulary holds eighty-odd values, so "
+            "the ring draws the ones worth a slice and folds the long tail "
+            "into one — the whole window is on it either way." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
                    "breakout": [_f("spend_detailed", "type/Text")],
-                   "order-by": [["desc", ["aggregation", 0]]],
-                   "limit": 25}),
-            {}),
+                   "order-by": [["desc", ["aggregation", 0]]]}),
+            _donut(threshold=1.5)),
         # Ranks merchants only. A line resolved to a delta — a gift, a
         # bill on a card not itemised, cash out of an ATM — is not a
         # merchant transaction, and one kind of delta line carries a
@@ -1073,24 +1137,32 @@ def question_defs(db_id, mid):
             {}),
         "Spend by account": ("row",
             "Net spend by account over the window — which card or deposit "
-            "account the money left through." + spend_note,
+            "account the money left through. Each bar is labelled with the "
+            "account's name, its source and its kind, since a name on its "
+            "own says neither." + spend_note,
             _mbql(db_id, mid["report_spending"],
                   {"expressions": net_spend, "aggregation": spend_sum,
                    "breakout": [_f("display_name", "type/Text")],
                    "order-by": [["desc", ["aggregation", 0]]]}),
             {}),
+        # Read the way an issuer states a card: what is OWED, as a
+        # positive figure. Gold stores the same balance negative — a card
+        # is a liability, the margin-debit precedent — and keeps doing so
+        # everywhere else, the CLI included; the sign is flipped in this
+        # projection and nowhere else, so the chart matches the statement
+        # a reader compares it against.
         "Card balances over time": ("line",
             "What each credit card owed for every day of the window, "
-            "carried forward between statement closings. Balances are "
-            "negative — a card is a liability — so the line runs below zero "
-            "and a paid-off card returns to it." + native_note,
+            "carried forward between statement closings. Stated the way an "
+            "issuer states it: the line is what is owed, and a paid-off "
+            "card returns to zero." + native_note,
             _native(db_id,
-                "SELECT as_of_day, display_name,\n"
-                f"       sum({_ccy_case('balance')}) AS balance\n"
+                "SELECT as_of_day, account_label,\n"
+                f"       sum({_ccy_case('balance', neg=True)}) AS owed\n"
                 "  FROM web_card_balances_history"
                 + _spend_where(bal_tags, " ") + "\n"
                 " GROUP BY 1, 2\n ORDER BY 1", bal_tags),
-            _series_viz("as_of_day", "display_name", "balance")),
+            _series_viz("as_of_day", "account_label", "owed")),
         "Largest transactions": ("table",
             "The fifty largest single spending lines of the window, with "
             "merchant (blank only where the line has none to show), account "
@@ -1362,13 +1434,13 @@ def base_dashboards():
             ("Spend — monthly trend", 0, 0, 8, 3, "occurred_at"),
             ("Net spend", 0, 8, 8, 3, "occurred_at"),
             ("Uncategorized share", 0, 16, 8, 3, "occurred_at"),
-            ("Spending by month", 3, 0, 24, 6, "occurred_at"),
-            ("Spending by category", 9, 0, 12, 8, "occurred_at"),
-            ("Spending by subcategory", 9, 12, 12, 8, "occurred_at"),
-            ("Top 50 merchants", 17, 0, 12, 8, "occurred_at"),
-            ("Spend by account", 17, 12, 12, 8, "occurred_at"),
-            ("Card balances over time", 25, 0, 24, 6, "as_of_day"),
-            ("Largest transactions", 31, 0, 24, 8, "occurred_at"),
+            ("Spending by month", 3, 0, 24, 9, "occurred_at"),
+            ("Spending by category", 12, 0, 12, 8, "occurred_at"),
+            ("Spending by subcategory", 12, 12, 12, 8, "occurred_at"),
+            ("Top 50 merchants", 20, 0, 12, 8, "occurred_at"),
+            ("Spend by account", 20, 12, 12, 8, "occurred_at"),
+            ("Card balances over time", 28, 0, 24, 6, "as_of_day"),
+            ("Largest transactions", 34, 0, 24, 8, "occurred_at"),
         ]),
         "Data Freshness": (
             "Age of each source's latest snapshot — which feeds need a "
@@ -1415,11 +1487,11 @@ def _cl(tags, name):
 # privacy variants below are what the twin's cards actually take.
 SPEND_FILTERS = {"time_range": ("occurred_at", "date/all-options"),
                  "source": ("silver_source_id", "string/="),
-                 "account": ("display_name", "string/="),
+                 "account": ("account_label", "string/="),
                  "category": ("spend_primary_label", "string/=")}
 CARD_BALANCE_FILTERS = {"time_range": ("as_of_day", "date/all-options"),
                         "source": ("silver_source_id", "string/="),
-                        "account": ("display_name", "string/=")}
+                        "account": ("account_label", "string/=")}
 # The same specs for the privacy twin, WITHOUT the account filter. A
 # field filter's widget is a dropdown of the values its column takes, so
 # an account filter on a privacy card offers account labels — which is
@@ -1449,9 +1521,9 @@ def _ccy_case(col, neg=False):
     """The `col`_usd / _chf / _eur trio reduced to the one the required
     {{currency}} variable names. A template variable interpolates a
     VALUE, never an identifier, so a native card picks its column with a
-    CASE rather than by splicing a column name in. `neg` negates it, so a
-    spending outflow — canonically negative — reads as a positive
-    figure."""
+    CASE rather than by splicing a column name in. `neg` negates it, so
+    a figure gold stores negative by convention — a spending outflow, a
+    card's owed balance — reads as a positive one."""
     s = "-" if neg else ""
     return (f"CASE {{{{currency}}}} WHEN 'CHF' THEN {s}{col}_chf"
             f" WHEN 'EUR' THEN {s}{col}_eur ELSE {s}{col}_usd END")
@@ -1802,9 +1874,9 @@ def spending_privacy_defs(db_id, model_ids):
     pickers applied, so a narrowed selection rescales to itself. The
     breakdowns, the merchant and account lists and the largest lines
     divide by the window's own total net spend (they sum to 100); the
-    trend and the monthly bars divide by the window's peak month (the
-    tallest bar reads 100). The card-balances chart takes the same shape
-    with the window's deepest total owed, so its trough reads -100.
+    trend and the monthly bands divide by the window's peak month (the
+    peak reads 100). The card-balances chart takes the same shape
+    with the window's deepest total owed, so its peak reads 100.
     Guards blank a degenerate window (no positive month, or a total of
     zero) rather than render inf / sign-flipped shares.
 
@@ -1851,9 +1923,9 @@ def spending_privacy_defs(db_id, model_ids):
         "with no positive month shows blank.",
         month_cte() + "   GROUP BY 1),\n" + peak_cte +
         f"SELECT month, {peak_div} AS spend_pct\n  FROM m\n ORDER BY 1", {})
-    spend_card("Spending by month (privacy)", "bar",
+    spend_card("Spending by month (privacy)", "area",
         "Net spend per month, stacked by primary category, as % of the "
-        "window's biggest spending month — the tallest bar reads 100. A "
+        "window's biggest spending month — the peak reads 100. A "
         "category can dip negative (a month whose refunds beat its "
         "purchases).",
         month_cte("spend_primary_label AS category,\n         ")
@@ -1877,20 +1949,26 @@ def spending_privacy_defs(db_id, model_ids):
     share_of_total = ("v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END"
                       " FROM r) * 100")
 
-    for name, col, limit, what in (
-            ("Spending by category (privacy)", "spend_primary_label", "",
+    # Rings, like the money tiles they twin — and the shape suits a
+    # share even better than an amount, since the slices are already the
+    # percentages the ring would compute. The LIMIT the detailed card
+    # used to carry is gone with it: a limited ring renormalizes onto
+    # what it drew and would print shares disagreeing with its own
+    # values, where the threshold folds the tail into a wedge and keeps
+    # the whole window on the ring.
+    for name, col, threshold, what in (
+            ("Spending by category (privacy)", "spend_primary_label", 0,
              "Primary-category shares (%) of the window's net spend; sums "
              "to 100."),
-            ("Spending by subcategory (privacy)", "spend_label",
-             "\n LIMIT 25",
+            ("Spending by subcategory (privacy)", "spend_label", 1.5,
              "Detailed-category shares (%) of the window's net spend, the "
-             "twenty-five largest — the shares are of the whole window, so "
-             "the listed ones sum to less than 100.")):
-        spend_card(name, "row", what,
+             "ones worth a slice — the long tail folds into one wedge, so "
+             "the ring is still the whole window.")):
+        spend_card(name, "pie", what,
             total_cte(f"{col} AS category,\n         ", "1") +
             f"SELECT category, {share_of_total} AS spend_pct\n"
-            f"  FROM r\n ORDER BY 2 DESC{limit}",
-            {"graph.dimensions": ["category"], "graph.metrics": ["spend_pct"]})
+            "  FROM r\n ORDER BY 2 DESC",
+            _donut(threshold=threshold))
 
     # Merchants, ranked and unnamed: merchant_name is a GROUP BY key and
     # a WHERE predicate only, so the counterparty decides the rows
@@ -1946,20 +2024,21 @@ def spending_privacy_defs(db_id, model_ids):
 
     # Card balances: its own view, its own picker set (no category
     # dimension), and a denominator of its own — the deepest total owed
-    # within the window, so the trough reads -100 and a paid-off card
-    # returns to 0. Split by source rather than by account.
+    # within the window, so the peak reads 100 and a paid-off card
+    # returns to 0. Split by source rather than by account. The sign is
+    # flipped as on the money tile: what is owed reads positive.
     bal_tags = spend_tags("web_card_balances_history",
                           PRIVACY_CARD_BALANCE_FILTERS)
     bal_name = "Card balances over time (privacy)"
     out[bal_name] = ("question", "line",
         "What the cards owed for every day of the window as % of the "
-        "window's deepest total owed: the trough reads -100, and a "
+        "window's deepest total owed: the peak reads 100, and a "
         "paid-off card returns to 0. Split by source; account labels are "
         "redacted." + PRIVACY_DESC,
         _native(db_id,
             "WITH d AS (\n"
             "  SELECT as_of_day, silver_source_id,\n"
-            f"         sum({_ccy_case('balance')})::DOUBLE AS v\n"
+            f"         sum({_ccy_case('balance', neg=True)})::DOUBLE AS v\n"
             "    FROM web_card_balances_history" + _spend_where(bal_tags) + "\n"
             "   GROUP BY 1, 2),\n"
             "p AS (SELECT CASE WHEN max(abs(t)) > 0 THEN max(abs(t)) END AS peak\n"
@@ -2146,19 +2225,22 @@ def dashboard_parameters(model_ids, mode, name=""):
                 "isMultiSelect": False, "default": ["USD"], "required": True,
                 "values_source_type": "static-list",
                 "values_source_config": {"values": ["USD", "CHF", "EUR"]}}
-    # The account picker targets `display_name`, NOT
+    # The account picker targets `display_name` — the model's name for
+    # the account LABEL (migration 0063) — and NOT
     # `account_external_id`: a picker lists the raw values of the column
     # it is bound to and there is no field-remapping machinery here, so
-    # binding it to the id would offer a list of opaque identifiers.
-    # Accounts sharing a display name therefore select together —
-    # accepted: a readable picker is worth more than separating two
-    # same-named accounts, and the money tiles group by the same column.
+    # binding it to the id would offer a list of opaque identifiers. The
+    # label carries the source and the kind, so two accounts wearing the
+    # same generic product name at two institutions are no longer one
+    # indistinguishable pair of entries; two named alike WITHIN one
+    # source still select together, accepted on the same reasoning, and
+    # the money tiles group by the same column.
     #
     # THE PRIVACY TWIN CARRIES NO ACCOUNT PICKER. A picker cannot redact
     # what it offers: its dropdown IS the list of values the bound column
-    # takes, and both columns that identify an account are labels — a
-    # display name (a card's falls back to its masked last four digits)
-    # or the external id. Rebinding to a column that identifies no
+    # takes, and every column that identifies an account is a label — the
+    # account label, the display name it is built from (a card's falls
+    # back to its masked last four digits), or the external id. Rebinding to a column that identifies no
     # account would make it a different filter wearing the same name, so
     # the twin drops it, the way its cards drop the columns they cannot
     # show (spending_privacy_defs). The Source picker still narrows by

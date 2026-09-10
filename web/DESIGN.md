@@ -120,7 +120,7 @@ drill-through never exposes absolute amounts.
 The **Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
 (the breakdowns, merchant and account lists) or of its biggest month (the
-trend and the monthly bars), and no card renders a merchant or account
+trend and the monthly bands), and no card renders a merchant or account
 label — the merchant list ranks unnamed rows, the account breakdown regroups
 onto source × account kind, and `report_spending_pct` drops the merchant
 column so a scalar's drill-through cannot surface a counterparty either.

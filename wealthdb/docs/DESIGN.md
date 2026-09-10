@@ -2491,6 +2491,15 @@ migration `0049`):
   it (§10.7). Zero balances are kept in both: a paid-off card really is at zero,
   and dropping the row would leave the series owing money forever.
 
+Both views label an account through the shared `account_label` macro
+(migration `0063`): `<name> (<source> <kind>)`, where the name falls back
+to the account's id when an adapter leaves it unset (`0061`) — a name on
+its own says neither which institution the account belongs to nor whether
+the money moved through a deposit account or a card, and names collide
+across sources. The name comes first so a chart truncating a long label
+clips the annotation rather than the identity. The bare name and the id
+stay projected beside it.
+
 ## 11. Repository layout
 
 ```
