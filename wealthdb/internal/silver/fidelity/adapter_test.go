@@ -467,3 +467,88 @@ func TestHistoricalDAFPoolClassification(t *testing.T) {
 		t.Errorf("historical tax_wrapper = %v, want charitable", histAcct.TaxWrapper)
 	}
 }
+
+// TestOutflowKindsReachSpending pins the two actions that decide
+// whether a managed account's real outflows are visible at all.
+//
+// Both used to fall through kindFor to TxKindOther, and the spending
+// population selects on kind — so an account could pay its manager
+// four figures a quarter and wire six figures out, and a spending
+// report would show it spending nothing.
+//
+// ADVISOR joins FEE rather than getting a kind of its own: both are
+// money out for a fee, and what tells a management fee from a
+// security-level ADR pass-through is the NARRATIVE, which the rule
+// tier reads. WIRE becomes a withdrawal so the internal-transfer
+// matcher gets first refusal on it — a wire to an account wealthdb
+// also tracks pairs and nets out; one to an account it does not is
+// spend.
+func TestOutflowKindsReachSpending(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 3, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES
+            ('adv',  900, 'ACC1', 'ADVISOR', NULL, 'USD', 0, 0, -1234.00,
+             '{"Action": "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)"}'),
+            ('wire', 910, 'ACC1', 'WIRE',    NULL, 'USD', 0, 0, -5678.00,
+             '{"Action": "WIRE TRANSFER TO BANK (Cash)"}'),
+            ('adr',  920, 'ACC1', 'FEE',     'XYZ', 'USD', 0, 0, -1.50,
+             '{"Action": "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)", "Description": "EXAMPLE CORP SPON ADR"}');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	conn := openAdapter(t, path)
+	w, _ := conn.ChangeWindow(context.Background(), -1)
+	stream, _ := conn.Transactions(context.Background(), w)
+	defer stream.Close()
+	batch, _, _ := stream.Next(context.Background())
+
+	got := map[string]canonical.TransactionChange{}
+	for _, tx := range batch.Transactions {
+		got[tx.TransactionExternalID] = tx
+	}
+	for id, want := range map[string]canonical.TxKind{
+		"adv":  canonical.TxKindFee,
+		"wire": canonical.TxKindWithdrawal,
+		"adr":  canonical.TxKindFee,
+	} {
+		if got[id].Kind != want {
+			t.Errorf("%s kind = %q, want %q", id, got[id].Kind, want)
+		}
+	}
+
+	// The narrative is what separates the two fees, so it has to
+	// reach gold — without it a fidelity row carries no merchant, no
+	// counterparty and nothing for a rule to match.
+	for id, want := range map[string]string{
+		"adv":  "ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
+		"wire": "WIRE TRANSFER TO BANK (Cash)",
+		"adr":  "FEE CHARGED EXAMPLE CORP SPON ADR (XYZ) (Cash)",
+	} {
+		if got[id].Description == nil {
+			t.Errorf("%s carries no description; gold would have nothing to categorise it by", id)
+			continue
+		}
+		if *got[id].Description != want {
+			t.Errorf("%s description = %q, want %q", id, *got[id].Description, want)
+		}
+	}
+}
+
+// TestNarrativePrefersTheActionOverTheSecurity: Fidelity's Description
+// column names the SECURITY, which on a fee or a withholding says
+// nothing about the movement. The Action is the movement, so it leads
+// and Description is only what is left when a row carries no action.
+func TestNarrativePrefersTheActionOverTheSecurity(t *testing.T) {
+	if got := payloadNarrative(
+		`{"Action": "FOREIGN TAX PAID FOO (BAR)", "Description": "FOO ADR"}`,
+	); got != "FOREIGN TAX PAID FOO (BAR)" {
+		t.Errorf("narrative = %q, want the Action", got)
+	}
+	if got := payloadNarrative(`{"Action": "  ", "Description": "FOO ADR"}`); got != "FOO ADR" {
+		t.Errorf("narrative = %q, want the Description fallback", got)
+	}
+	if got := payloadNarrative(`not json`); got != "" {
+		t.Errorf("narrative = %q, want empty on malformed payload", got)
+	}
+}

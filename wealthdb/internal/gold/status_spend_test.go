@@ -9,7 +9,7 @@ func TestStatusSpendCounters(t *testing.T) {
                               display_name, first_seen_at, last_seen_at) VALUES
             ('test-src', 'CASH1', 'cash',      'Everyday',  1, 1),
             ('test-src', 'CARD1', 'card',      'Card',      1, 1),
-            ('test-src', 'BRK1',  'brokerage', 'Brokerage', 1, 1);
+            ('test-src', 'CUST1', 'custody',   'Custody',   1, 1);
 
         INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id,
                                    currency, balance_kind, amount) VALUES
@@ -18,7 +18,7 @@ func TestStatusSpendCounters(t *testing.T) {
 
         INSERT INTO positions (silver_source_id, snapshot_at, account_external_id,
                                position_key, asset_class, currency, market_value) VALUES
-            ('test-src', 9000, 'BRK1', 'P1', 'equity', 'USD', 1000);
+            ('test-src', 9000, 'CUST1', 'P1', 'equity', 'USD', 1000);
 
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount) VALUES
@@ -27,7 +27,7 @@ func TestStatusSpendCounters(t *testing.T) {
             ('test-src', 'T-BUY',    3000, 'CARD1', 'purchase',   'USD', -20),
             ('test-src', 'T-OTHER',  3000, 'CASH1', 'other',      'USD', -30),
             ('test-src', 'T-JRNL',   3000, 'CASH1', 'journal',    'USD', -35),
-            ('test-src', 'T-OTHBRK', 3000, 'BRK1',  'other',      'USD', -40);
+            ('test-src', 'T-OTHBRK', 3000, 'CUST1',  'other',      'USD', -40);
 
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
                                           merchant_signature, signature_version,
@@ -51,8 +51,10 @@ func TestStatusSpendCounters(t *testing.T) {
 		t.Errorf("UncategorizedSpendCount = %d, want 1", st.UncategorizedSpendCount)
 	}
 	// Both CATCH-ALL kinds count, and only on an IN-SCOPE account: the
-	// cash `other` and `journal` rows are spending gaps, the brokerage
-	// `other` row is not.
+	// cash `other` and `journal` rows are spending gaps, the custody
+	// account's `other` row is not. Custody and not brokerage — a
+	// brokerage account IS in scope (migration 0064), so it would no
+	// longer make the point.
 	if st.ExcludedUnmappedCount != 2 {
 		t.Errorf("ExcludedUnmappedCount = %d, want 2 (the in-scope 'other' and 'journal' rows)",
 			st.ExcludedUnmappedCount)
@@ -73,8 +75,8 @@ func TestStatusSpendCounters(t *testing.T) {
 	if got := byKind["card"]; got.LatestTransactionAt != 3000 || got.LatestSnapshotAt != 3000 {
 		t.Errorf("card activity = %+v, want the stale extrema", got)
 	}
-	if got := byKind["brokerage"]; got.LatestSnapshotAt != 9000 || got.LatestTransactionAt != 3000 {
-		t.Errorf("brokerage activity = %+v", got)
+	if got := byKind["custody"]; got.LatestSnapshotAt != 9000 || got.LatestTransactionAt != 3000 {
+		t.Errorf("custody activity = %+v", got)
 	}
 }
 

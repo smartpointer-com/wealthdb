@@ -592,3 +592,74 @@ func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
 		t.Error("the counterparty field must keep working when the issuer is silent")
 	}
 }
+
+// TestRuleCategoryBrokerageNarratives pins the three rules a brokerage
+// account brought into scope (migration 0064) needs.
+//
+// The account kind widened; the narratives that arrive with it are new
+// to this tier. Two of them look alike and are not: a custodian's
+// SECURITY-level pass-through, booked once per position per period and
+// buying the household nothing it chose, versus the account's own
+// management fee, which is a service it pays for. Filing both as one
+// thing would bury a four-figure advisory fee under four thousand
+// fifteen-dollar depositary charges.
+func TestRuleCategoryBrokerageNarratives(t *testing.T) {
+	for _, tc := range []struct{ narrative, detailed string }{
+		// A depositary charge names the security, never a payee.
+		{"FEE CHARGED ABB LTD SPON ADR EACH REP 1 ORD SHS (Cash)",
+			"BANK_FEES_OTHER_BANK_FEES"},
+		{"ADR FEE", "BANK_FEES_OTHER_BANK_FEES"},
+
+		// Withholding at source on foreign dividend income. The
+		// household never sees it, but the gross dividend is booked
+		// as income, so the withholding is the tax it paid.
+		{"FOREIGN TAX PAID EQUINOR ASA SPON ADR EACH REP 1 ORD SHS",
+			"GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"},
+		{"WITHHOLDING TAX", "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"},
+
+		// The fee for being managed — a service, not a pass-through.
+		{"ADVISOR FEE DEDUCTED Advisor Fee (Cash)",
+			"GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING"},
+		{"ADVISOR FEE DEDUCTED Investment Mgr Fee (Cash)",
+			"GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING"},
+	} {
+		got, _, ok := RuleCategory("", "", tc.narrative, "")
+		if !ok || got != tc.detailed {
+			t.Errorf("RuleCategory(%q) = (%q, %v), want %q",
+				tc.narrative, got, ok, tc.detailed)
+		}
+	}
+}
+
+// TestRuleCategoryLeavesAWireAlone: a wire out of a brokerage account
+// is NOT the rule tier's to place. It is either an own-account move —
+// which only the matcher can know, by finding the receiving leg — or
+// it is spend on something the narrative does not name. Guessing here
+// would outrank the matcher's evidence for the first case and invent a
+// merchant for the second.
+func TestRuleCategoryLeavesAWireAlone(t *testing.T) {
+	for _, narrative := range []string{
+		"WIRE TRANSFER TO BANK (Cash)",
+		"WIRE TRANSFER TO BANK",
+	} {
+		if _, _, ok := RuleCategory("", "", narrative, ""); ok {
+			t.Errorf("RuleCategory(%q) placed a verdict; a wire is the "+
+				"matcher's to pair or nobody's to guess", narrative)
+		}
+	}
+}
+
+// TestRuleCategoryWireFee: the charge for SENDING a wire is a bank
+// fee, and is not to be confused with the wire itself — which no rule
+// places (TestRuleCategoryLeavesAWireAlone).
+func TestRuleCategoryWireFee(t *testing.T) {
+	for _, n := range []string{"WIRED FUNDS FEE", "WIRE TRANSFER FEE"} {
+		got, _, ok := RuleCategory("", "", n, "")
+		if !ok || got != "BANK_FEES_OTHER_BANK_FEES" {
+			t.Errorf("RuleCategory(%q) = (%q, %v), want a bank fee", n, got, ok)
+		}
+	}
+	if _, _, ok := RuleCategory("", "", "WIRED FUNDS DISBURSED", ""); ok {
+		t.Error("the wire itself must stay unplaced; only its fee is a bank fee")
+	}
+}

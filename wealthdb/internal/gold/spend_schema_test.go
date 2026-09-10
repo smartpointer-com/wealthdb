@@ -513,13 +513,13 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('test-src', 'CARD1', 'card',      'Card',       1, 1),
             ('test-src', 'BRK1',  'brokerage', 'Brokerage',  1, 1),
             ('test-src', 'CASH2', 'cash',      'Opted out',  1, 1),
-            ('test-src', 'BRK2',  'brokerage', 'Opted in',   1, 1);
+            ('test-src', 'CUST1', 'custody',   'Opted in',   1, 1);
 
         -- Scope overrides both ways round: a cash account fenced out,
         -- a non-cash/card account pulled in.
         INSERT INTO spend_account_scope (silver_source_id, account_external_id, mode) VALUES
             ('test-src', 'CASH2', 'exclude'),
-            ('test-src', 'BRK2',  'include');
+            ('test-src', 'CUST1', 'include');
 
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount) VALUES
@@ -539,7 +539,7 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             -- account scope.
             ('test-src', 'T-BRK',        1000, 'BRK1',  'purchase',   'USD',  -40),
             ('test-src', 'T-OPTOUT',     1000, 'CASH2', 'purchase',   'USD',  -60),
-            ('test-src', 'T-OPTIN',      1000, 'BRK2',  'purchase',   'USD',  -70),
+            ('test-src', 'T-OPTIN',      1000, 'CUST1', 'purchase',   'USD',  -70),
             -- transfer-eligible legs on accounts the spending base
             -- never charts: an unscoped account kind, and an account
             -- fenced out by spend_account_scope. Both are matcher-pool
@@ -636,12 +636,12 @@ func TestSpendingLinesBasePopulation(t *testing.T) {
 		"T-BACKLOG":     "uncategorised rows are the model tier's backlog",
 		"T-CARD-BILL":   "card_spend is generic spend on a card not itemised, in the base like any primary",
 		"T-GIFT":        "gift is a cash gift with no merchant behind it, in the base like any primary",
+		"T-BRK":         "a brokerage account spends too — one product can be a brokerage and a chequing account at once (migration 0064)",
 	}
 	excluded := map[string]string{
 		"T-INT-POS":    "positive interest is income",
 		"T-DEPOSIT":    "deposit is income",
 		"T-OTHER":      "the `other` kind carries no reliable sign",
-		"T-BRK":        "brokerage is not a spending account kind",
 		"T-OPTOUT":     "spend_account_scope fences an account out",
 		"T-XFER-TXN":   "internal_transfer from the transaction overlay",
 		"T-XFER-MERCH": "internal_transfer from the merchant store",
@@ -760,7 +760,6 @@ func TestSpendPopulationLayering(t *testing.T) {
 		"T-DEPOSIT": "deposit is income",
 		"T-INT-POS": "credited interest is income",
 		"T-OTHER":   "the `other` kind carries no reliable sign",
-		"T-BRK":     "brokerage is not a spending account kind",
 		"T-OPTOUT":  "spend_account_scope fences an account out",
 		"T-LATE":    "outside the window",
 	} {
@@ -800,8 +799,8 @@ func TestSpendPopulationLayering(t *testing.T) {
 		`SELECT COUNT(*) FROM spend_scoped_accounts()`).Scan(&scoped); err != nil {
 		t.Fatalf("count spend_scoped_accounts: %v", err)
 	}
-	if scoped != 3 {
-		t.Errorf("spend_scoped_accounts = %d, want 3 (both cash/card defaults plus the pulled-in account, minus the fenced one)", scoped)
+	if scoped != 4 {
+		t.Errorf("spend_scoped_accounts = %d, want 4 (the cash/card/brokerage defaults plus the pulled-in custody account, minus the fenced cash one)", scoped)
 	}
 }
 

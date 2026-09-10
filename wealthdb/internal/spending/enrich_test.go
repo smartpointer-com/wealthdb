@@ -44,6 +44,7 @@ func openGold(t *testing.T) (*sql.DB, context.Context) {
              VALUES ('bank', 'CASH1', 'cash',      'Everyday',  1, 1),
                     ('bank', 'CARD1', 'card',      'Card',      1, 1),
                     ('bank', 'BRK1',  'brokerage', 'Brokerage', 1, 1),
+                    ('bank', 'CUST1', 'custody',   'Custody',   1, 1),
                     ('other-bank', 'CASH2', 'cash',      'Elsewhere', 1, 1),
                     ('other-bank', 'BRK2',  'brokerage', 'Invested',  1, 1);
     `); err != nil {
@@ -1755,21 +1756,23 @@ func TestPassOwnsManualRows(t *testing.T) {
 // it — the population macros read the table the pass just wrote.
 func TestPassStampsAccountScope(t *testing.T) {
 	db, ctx := openGold(t)
+	// CUSTODY and not brokerage: a brokerage account is in scope by
+	// default (migration 0064), so pulling one in would prove nothing.
 	seedTxns(t, db, ctx,
-		txn{"bank", "T-BRK", "BRK1", "purchase", day(10), -70, "Corner Market", "", "Groceries"},
+		txn{"bank", "T-CUST", "CUST1", "purchase", day(10), -70, "Corner Market", "", "Groceries"},
 		txn{"bank", "T-CARD", "CARD1", "purchase", day(10), -50, "Corner Market", "", "Groceries"})
 
 	res := runPass(t, db, ctx, Options{
-		Include: map[string][]string{"bank": {"BRK1"}},
+		Include: map[string][]string{"bank": {"CUST1"}},
 		Exclude: map[string][]string{"bank": {"CARD1"}},
 	})
 	if res.ScopeRows != 2 {
 		t.Errorf("ScopeRows = %d, want 2", res.ScopeRows)
 	}
 	if res.Population != 1 {
-		t.Errorf("Population = %d, want 1 (the included brokerage row only)", res.Population)
+		t.Errorf("Population = %d, want 1 (the included custody row only)", res.Population)
 	}
-	if got := enrichmentSnapshot(t, db, ctx); len(got) != 1 || !strings.Contains(got[0], "T-BRK") {
+	if got := enrichmentSnapshot(t, db, ctx); len(got) != 1 || !strings.Contains(got[0], "T-CUST") {
 		t.Errorf("overlay = %v, want the pulled-in account's row alone", got)
 	}
 
@@ -1812,10 +1815,10 @@ func TestPassCountsUnresolvedScopeAccounts(t *testing.T) {
 			res.UnresolvedScopeAccounts)
 	}
 	// The resolved entries still do their work, and the unresolved
-	// ones changed nothing: the pulled-in brokerage row and the
-	// card row by default.
+	// ones changed nothing: the brokerage row and the card row, both
+	// in scope by their kind.
 	if res.Population != 2 {
-		t.Errorf("Population = %d, want 2 (the included brokerage row and the card row)", res.Population)
+		t.Errorf("Population = %d, want 2 (the brokerage row and the card row)", res.Population)
 	}
 
 	// An entry that resolves is not counted.

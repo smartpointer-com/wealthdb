@@ -299,6 +299,52 @@ var builtinRules = []spendRule{
 		tokens:   []string{"MORTGAGE", "HYPOTHEK", "HYPOTHEKARZINS"},
 		phrases:  []string{"HOME LOAN", "MORTGAGE PAYMENT"},
 	},
+	{
+		// A custodian's SECURITY-level pass-through: the depositary
+		// fee an ADR charges against the position that holds it,
+		// booked once per security per period. The narrative names
+		// the security, never a payee, and the amounts are cents to
+		// low tens — thousands of rows that together buy nothing the
+		// household chose.
+		//
+		// It is spend all the same: the money is gone, and the
+		// alternative — leaving it out of the base — hides a real
+		// outflow rather than explaining it. Filed as a bank fee
+		// because that is what it is, a charge levied by the
+		// institution holding the asset, and a report that groups by
+		// category can then set the whole class aside in one line.
+		//
+		// Ordered ahead of nothing in particular; the phrase is
+		// specific enough that no other rule contends for it.
+		detailed: "BANK_FEES_OTHER_BANK_FEES",
+		phrases: []string{"FEE CHARGED", "ADR FEE", "DEPOSITARY FEE",
+			// A broker's charge for sending a wire. Not a
+			// pass-through, but the same category and the same
+			// reason to name it: unlabelled it reads as spend on
+			// nothing.
+			"WIRED FUNDS FEE", "WIRE FEE", "WIRE TRANSFER FEE"},
+	},
+	{
+		// Tax withheld at source on foreign dividend income. The
+		// household never sees the money, but it is tax it paid, and
+		// the gross dividend is booked as income — so leaving the
+		// withholding out would report the gross as though it were
+		// net.
+		detailed: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT",
+		phrases:  []string{"FOREIGN TAX PAID", "TAX WITHHELD",
+			"WITHHOLDING TAX"},
+	},
+	{
+		// The fee an account pays for being managed — the one fee on
+		// a brokerage account that IS a service the household buys,
+		// as against the security-level pass-through above. Fidelity
+		// prints both "Advisor Fee" and "Investment Mgr Fee" under
+		// one action verb.
+		detailed: "GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING",
+		phrases: []string{"ADVISOR FEE", "ADVISORY FEE",
+			"INVESTMENT MGR FEE", "INVESTMENT MANAGEMENT FEE",
+			"MANAGEMENT FEE"},
+	},
 }
 
 // RuleCategory applies the built-in rule tier to a row: its merchant

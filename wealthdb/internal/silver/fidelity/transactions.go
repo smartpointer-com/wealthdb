@@ -47,6 +47,17 @@ SELECT activity_id, timestamp, account_external_id, kind,
 
 		qty := silver.DecimalPtrOrNil(qtyStr)
 		kind := kindFor(rawKind, qty, payload)
+		// The Action text is this source's narrative, and without it
+		// gold has nothing to categorise a fidelity row by: no
+		// merchant, no counterparty, no description. It is what
+		// separates the two kinds of fee this source books — an ADR
+		// pass-through ("FEE CHARGED <security>") from the account's
+		// own management fee ("ADVISOR FEE DEDUCTED …") — and what a
+		// rule matches a wire or a withholding on. Fidelity's own
+		// Description column is the SECURITY name, which says nothing
+		// about the movement, so it is the fallback rather than the
+		// first choice.
+		descr := payloadNarrative(payload)
 		netDec := silver.DecimalPtrOrNil(amtStr)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: activityID,
@@ -58,6 +69,10 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			Quantity:              qty,
 			Price:                 silver.DecimalPtrOrNil(priceStr),
 			Payload:               json.RawMessage(payload),
+		}
+		if descr != "" {
+			d := descr
+			tx.Description = &d
 		}
 		if instr != "" {
 			s := instr
