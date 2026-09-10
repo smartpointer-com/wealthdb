@@ -1004,7 +1004,9 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
             ('test-src', 'T-ADR',   1000, 'CASH1', 'fee',      'USD',  -1.50),
             ('test-src', 'T-WHT',   1000, 'CASH1', 'tax',      'USD', -12.00),
             ('test-src', 'T-FXFEE', 1000, 'CARD1', 'fee',      'USD',  -3.00),
-            ('test-src', 'T-NOCAT', 1000, 'CASH1', 'purchase', 'USD', -20.00);
+            ('test-src', 'T-NOCAT', 1000, 'CASH1', 'purchase', 'USD', -20.00),
+            ('test-src', 'T-MARGIN', 1000, 'CASH1', 'interest', 'USD',  -6.66),
+            ('test-src', 'T-CREDIT', 1000, 'CASH1', 'interest', 'USD',   4.00);
 
         -- Nothing placed any of them; the first three carry a signature.
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
@@ -1013,7 +1015,9 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
             ('test-src', 'T-ADR',   'EXAMPLE HOLDINGS ADR', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-WHT',   'EXAMPLE TREASURY ETF', 1, NULL, 'signature-only', 100),
             ('test-src', 'T-FXFEE', 'FOREIGN TRANSACTION FEE', 1, NULL, 'signature-only', 100),
-            ('test-src', 'T-NOCAT', 'SOMETHING UNPLACED', 1, NULL, 'signature-only', 100);
+            ('test-src', 'T-NOCAT',  'SOMETHING UNPLACED', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-MARGIN', 'MARGIN INTEREST', 1, NULL, 'signature-only', 100),
+            ('test-src', 'T-CREDIT', 'CREDITED INTEREST', 1, NULL, 'signature-only', 100);
 
         -- ...except that the MODEL has a verdict for the fx-fee signature,
         -- and it is finer than the floor could ever be.
@@ -1051,7 +1055,12 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 		"T-WHT": {canonical.SpendDetailedWithholdingTax, "kind"},
 		// the model's finer verdict survives the floor
 		"T-FXFEE": {"BANK_FEES_FOREIGN_TRANSACTION_FEES", "model"},
-		// the floor covers fee and tax and nothing else
+		// interest joins them, but only when it was CHARGED: the
+		// same macro is read at transaction grain, where credited
+		// interest reaches it and is income, not a fee (0067)
+		"T-MARGIN": {"BANK_FEES_INTEREST_CHARGE", "kind"},
+		"T-CREDIT": {"", "signature-only"},
+		// and the floor covers nothing beyond those three kinds
 		"T-NOCAT": {"", "signature-only"},
 	} {
 		if got[id] != want {
