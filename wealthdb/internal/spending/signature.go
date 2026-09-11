@@ -157,7 +157,16 @@ import (
 //     no payee anywhere — the split case (docs/SPENDING.md §4). A
 //     narrative with no field tag, no segment separator and a payee in
 //     its counterparty is keyed exactly as version 8 keys it.
-const SignatureVersion = 9
+//   - 10: a narrative that is NOTHING but the structured field tag
+//     yields no signature at all. Version 9 read such a narrative down
+//     to its head, found the head empty, and fell back to the whole
+//     line — which is the tag, so the bank's booking code became the
+//     key and then the merchant name. A code names no one: these rows
+//     are refused at candidacy now and reach a verdict through the
+//     tiers that read something other than a payee, the transaction's
+//     own kind among them. Rows that shared a code key lose it; every
+//     other narrative is keyed exactly as version 9 keys it.
+const SignatureVersion = 10
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
 // Narratives run long — a full address, a terminal id, a
@@ -278,6 +287,15 @@ func Normalize(counterparty, description string) string {
 		// survives.
 		if structured && hasWord(head) {
 			return joinCapped(head)
+		}
+		// A narrative that is NOTHING but the field tag has no payee
+		// behind it to fall back to, so taking the whole line would
+		// put the bank's own booking code back as the key — and a
+		// booking code is not a merchant. No key is the honest
+		// answer: the row is refused at candidacy and left to the
+		// tiers that read something other than a payee.
+		if structured && len(head) == 0 {
+			return ""
 		}
 		return joinCapped(desc)
 	case len(head) > len(cp) && startsWith(head, 0, cp...) && !contactLine:

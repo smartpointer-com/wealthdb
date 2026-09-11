@@ -141,8 +141,8 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 // it hands Normalize moves keys just as surely (versions 4, 7, 8 and
 // 9), so the stamp is not a version number for this file alone.
 func TestSignatureVersion(t *testing.T) {
-	if SignatureVersion != 9 {
-		t.Errorf("SignatureVersion = %d, want 9", SignatureVersion)
+	if SignatureVersion != 10 {
+		t.Errorf("SignatureVersion = %d, want 10", SignatureVersion)
 	}
 }
 
@@ -796,8 +796,13 @@ func TestMT940PaymentNarrativeCandidacy(t *testing.T) {
 		{"a utility paid by QR-bill",
 			"Z59?EXAMPLE WERKE AG; INDUSTRIESTRASSE 3; CH EXAMPLE 9999; QRR",
 			"EXAMPLE WERKE AG", false},
-		{"a code and nothing else", "N21?", "N21", true},
-		{"another code and nothing else", "D37?", "D37", true},
+		// Version 10: a narrative that is nothing but the tag yields
+		// NO key. Refusing it at candidacy was never enough — the
+		// signature is also what a report shows as the merchant when
+		// no merchant store names one, so the bank's booking code was
+		// reaching a reader as a payee.
+		{"a code and nothing else", "N21?", "", true},
+		{"another code and nothing else", "D37?", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -904,11 +909,12 @@ func TestNormalizeDropsTheAddressBehindThePayee(t *testing.T) {
 		{"a description richer than the counterparty still wins, less its address",
 			"Blue Harbour", "Blue Harbour Cafe;CH 8000 Zurich",
 			"BLUE HARBOUR CAFE"},
-		// The tag survives as the key when it is all there was, and
-		// carries no word, so candidacy refuses it like any other
-		// wordless narrative.
+		// Nothing but the tag yields no key at all (version 10). The
+		// head is empty and the whole line is the tag, so falling back
+		// to it would put the bank's filing back as the key — and the
+		// key is what a report shows when no merchant store names one.
 		{"a narrative that is nothing but a field tag names no merchant",
-			"", "Z21?", "Z21"},
+			"", "Z21?", ""},
 		// The guard on the rule above. Only a tagged narrative is
 		// known to lead with the payee; the export feed composes its
 		// description the other way round, and trimming that to the
@@ -927,5 +933,28 @@ func TestNormalizeDropsTheAddressBehindThePayee(t *testing.T) {
 					tc.counterparty, tc.description, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestABookingCodeAloneIsNoSignature: a narrative that is nothing but
+// the MT940 :86: structured-field tag names no one. Reading it down to
+// its head leaves nothing, and the fallback to the whole line used to
+// put the code back — so the bank's filing became the key, and then the
+// merchant name on a report.
+func TestABookingCodeAloneIsNoSignature(t *testing.T) {
+	for _, narrative := range []string{"K52?", "Z77?", "B37?", "W05?"} {
+		if got := Normalize("", narrative); got != "" {
+			t.Errorf("Normalize(%q) = %q, want no signature — a booking code names no one",
+				narrative, got)
+		}
+	}
+}
+
+// TestATagWithAPayeeBehindItStillKeysOnThePayee is the other side: the
+// tag is dropped, not the narrative, so a real payee still decides.
+func TestATagWithAPayeeBehindItStillKeysOnThePayee(t *testing.T) {
+	got := Normalize("", "Z44?EXAMPLE FLORIST GMBH; EXAMPLE STREET 1; 9999 EXAMPLETOWN")
+	if got == "" || strings.Contains(got, "Z44") {
+		t.Errorf("Normalize(tag + payee) = %q, want the payee without the tag", got)
 	}
 }
