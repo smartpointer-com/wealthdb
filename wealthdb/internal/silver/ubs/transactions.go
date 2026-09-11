@@ -117,7 +117,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return tx, err
 		}
-		tx.Kind = kindFor(silverKind, "", "") // Buy default; side flips below
+		tx.Kind = kindFor(silverKind, "", "", "") // Buy default; side flips below
 		if p.Side == "S" || p.Side == "SELL" {
 			tx.Kind = canonical.TxKindSell
 		}
@@ -141,7 +141,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return tx, err
 		}
-		tx.Kind = kindFor(silverKind, p.Narrative, p.CreditDebit)
+		tx.Kind = kindFor(silverKind, p.Narrative, p.CreditDebit, p.TxnType)
 		if p.Account != "" {
 			tx.AccountExternalID = p.Account
 		}
@@ -177,7 +177,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return tx, err
 		}
-		tx.Kind = kindFor(silverKind, "", "")
+		tx.Kind = kindFor(silverKind, "", "", "")
 		if p.ISIN != "" {
 			tx.InstrumentExternalID = &p.ISIN
 		}
@@ -187,7 +187,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		tx.Description = textPtr(p.CAEV)
 
 	default:
-		tx.Kind = kindFor(silverKind, "", "")
+		tx.Kind = kindFor(silverKind, "", "", "")
 	}
 
 	// Currency is required by the gold schema. If a kind didn't

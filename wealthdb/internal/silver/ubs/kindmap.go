@@ -10,7 +10,7 @@ import (
 // for cash_movement disambiguation) to a canonical TxKind.
 //
 // See docs/adapters/ubs.md §5 and §6.
-func kindFor(silverKind, narrative string, creditDebit string) canonical.TxKind {
+func kindFor(silverKind, narrative string, creditDebit, txnType string) canonical.TxKind {
 	switch silverKind {
 	case "trade_confirmation":
 		// `side` discrimination happens in the caller; default
@@ -55,7 +55,7 @@ func kindFor(silverKind, narrative string, creditDebit string) canonical.TxKind 
 		return signedDepositWithdrawal(creditDebit)
 
 	case "cash_movement":
-		return cashMovementKind(narrative, creditDebit)
+		return cashMovementKind(narrative, creditDebit, txnType)
 
 	default:
 		return canonical.TxKindOther
@@ -70,7 +70,52 @@ func kindFor(silverKind, narrative string, creditDebit string) canonical.TxKind 
 //
 // Prefix matching is case-insensitive and looks at the first
 // "word" (run of letters) only.
-func cashMovementKind(narrative, creditDebit string) canonical.TxKind {
+// txnTypeKind reads the MT940 :61: transaction type identification
+// code — the bank's own structured statement of what an entry is,
+// present on every movement whether or not the :86: narrative says
+// anything.
+//
+// It is a FLOOR, consulted only where the narrative yields no verdict,
+// so no row the prose already classifies moves. That matters because
+// the narrative is the better witness when it exists: it distinguishes
+// a stamp duty from a custody price, which no type code does.
+//
+// The codes are SWIFT's, not UBS's, and only the ones the feed
+// actually carries are mapped; anything else falls through to the
+// direction, which is what the whole function did before.
+//
+// NSEC is the important one. The cash leg of a trade settles on the
+// cash account, and the account-statement feed has always booked that
+// leg as a buy or a sell — the direction says which. Where the MT940
+// feed is the only witness the narrative is often empty, so the leg
+// used to land as a plain withdrawal or deposit: spending counted it
+// as money leaving the household, and returns counted it as capital,
+// because deposits and withdrawals are external and never netted.
+// Neither is true of a trade settling inside the portfolio.
+func txnTypeKind(txnType, creditDebit string) (canonical.TxKind, bool) {
+	switch strings.ToUpper(strings.TrimSpace(txnType)) {
+	case "NSEC":
+		// A purchase debits the cash account, a sale credits it.
+		if creditDebit == "D" {
+			return canonical.TxKindBuy, true
+		}
+		return canonical.TxKindSell, true
+	case "NFEX":
+		// A currency conversion between the holder's own pockets.
+		return canonical.TxKindFx, true
+	case "NDIV":
+		return canonical.TxKindDividend, true
+	case "NRTI", "NINT":
+		return canonical.TxKindInterest, true
+	case "NCHG", "NCOM":
+		return canonical.TxKindFee, true
+	case "NTAX":
+		return canonical.TxKindTax, true
+	}
+	return "", false
+}
+
+func cashMovementKind(narrative, creditDebit, txnType string) canonical.TxKind {
 	upper := strings.ToUpper(narrative)
 
 	// Swiss transfer stamp duty (Umsatzabgabe / droit de timbre /
@@ -100,6 +145,12 @@ func cashMovementKind(narrative, creditDebit string) canonical.TxKind {
 		return canonical.TxKindTax
 	case "DIV", "DIVIDEND", "DIVIDENDE":
 		return canonical.TxKindDividend
+	}
+
+	// The narrative said nothing a reader could place. The :61: type
+	// code is the bank's own answer and is always there.
+	if k, ok := txnTypeKind(txnType, creditDebit); ok {
+		return k
 	}
 	return signedDepositWithdrawal(creditDebit)
 }

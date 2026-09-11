@@ -431,6 +431,55 @@ func TestEraTextFoldTakesTheRicherNarrative(t *testing.T) {
 	}
 }
 
+// TestEraTextFoldTakesTheRicherNarrativeOverASubfieldMarker is the
+// same fold, for the shape that actually reaches the feed. An MT940
+// :86: block introduces each subfield with `?20`, `?21`, … after the
+// booking code, so an entry the bank wrote nothing into arrives as the
+// code with a bare introducer behind it — `B37?`, not `B37`.
+//
+// That one rune used to be enough: a column is only a bare code if
+// every rune is a letter or a digit, so the marker made the code read
+// as composed of more than one thing, and it beat the export
+// narrative that had the payee in it. The entry then reached gold
+// with a booking type where its merchant belongs, and nothing
+// downstream could place it.
+func TestEraTextFoldTakesTheRicherNarrativeOverASubfieldMarker(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedWebTextRow(t, r, "Y1", 310*86400, 200.0, nil, "EXAMPLE PAYEE", "e-banking payment order",
+		`{"Description1":"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN","Description2":"e-banking payment order","Description3":""}`)
+
+	_, psnDB := newFixtureSilver(t)
+	seedPSNCashMovement(t, psnDB, textAcct, "Y1", "B37?", "NTRF", 310*86400)
+
+	got := mergedText(t, r, psnDB)
+	checkText(t, got, map[string]textCase{
+		"mt940:" + textAcct + ":Y1": {
+			"EXAMPLE PAYEE; EXAMPLE STREET 1; 9999 EXAMPLETOWN",
+			"EXAMPLE PAYEE", "e-banking payment order"},
+	})
+}
+
+// TestASubfieldMarkerDoesNotMakeRealTextACode is the other side: the
+// trailing `?` is discounted, not the text in front of it, so a
+// narrative that says something keeps saying it.
+func TestASubfieldMarkerDoesNotMakeRealTextACode(t *testing.T) {
+	// Longer than a code, or carrying a separator — the two things
+	// that made a column real text before the marker was discounted,
+	// and still do. ("PAID?" is NOT here: `PAID` is four letters and
+	// reads as a code with or without the marker.)
+	for _, s := range []string{"EXAMPLE PAYEE?", "REFUND?", "B37 X?"} {
+		if isCodeOnly(s) {
+			t.Errorf("isCodeOnly(%q) = true, want false — only the marker is discounted", s)
+		}
+	}
+	for _, s := range []string{"B37?", "NMSC?", "B37??", " B37? ", "?", ""} {
+		if !isCodeOnly(s) {
+			t.Errorf("isCodeOnly(%q) = false, want true — a code with an empty subfield marker", s)
+		}
+	}
+}
+
 // TestEraTextFoldKeepsASingleEraRowUnchanged pins the other side of
 // it: with no second feed to fold from, every row reaches gold exactly
 // as its own era projects it — the PSN rows through the merged stream

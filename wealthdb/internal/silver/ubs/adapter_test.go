@@ -561,7 +561,7 @@ func TestKindMapping(t *testing.T) {
 		{"unknown-bank-kind", "", "", canonical.TxKindOther},
 	}
 	for _, c := range cases {
-		got := kindFor(c.silverKind, c.narrative, c.creditDebit)
+		got := kindFor(c.silverKind, c.narrative, c.creditDebit, "")
 		if got != c.want {
 			t.Errorf("kindFor(%q, %q, %q) = %q, want %q",
 				c.silverKind, c.narrative, c.creditDebit, got, c.want)

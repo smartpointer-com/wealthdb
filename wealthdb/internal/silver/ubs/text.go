@@ -159,11 +159,19 @@ const codeOnlyMaxRunes = 5
 // separator is composed of more than one thing and is never a bare
 // code, however short; anything longer than a code is not one either.
 //
+// A trailing `?` belongs to the code rather than to the text. An
+// MT940 :86: block writes its subfields as `?20`, `?21`, … after the
+// booking code, so an entry the bank filled in nothing for arrives as
+// the code with the introducer and nothing behind it. Left in, that
+// one rune made the column read as composed of more than one thing,
+// so the code beat the Account-Statement narrative that had the payee
+// — the opposite of what this test exists to decide.
+//
 // It decides only which of two records of the SAME entry carries the
 // narrative (richerText). It never decides what a row is: no kind,
 // sign, amount, date or id is read from it.
 func isCodeOnly(s string) bool {
-	s = strings.TrimSpace(s)
+	s = strings.TrimRight(strings.TrimSpace(s), "?")
 	if s == "" {
 		return true
 	}

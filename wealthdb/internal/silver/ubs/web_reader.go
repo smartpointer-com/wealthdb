@@ -926,7 +926,7 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 			if err := json.Unmarshal([]byte(payload), &p); err != nil || p.Amount == nil {
 				continue
 			}
-			kind := cashMovementKind(p.Narrative, p.CreditDebit)
+			kind := cashMovementKind(p.Narrative, p.CreditDebit, p.TxnType)
 			if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
 				continue
 			}
