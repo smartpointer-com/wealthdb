@@ -1829,7 +1829,7 @@ func TestPassCountsUnresolvedScopeAccounts(t *testing.T) {
 	}
 	// The resolved entries still do their work, and the unresolved
 	// ones changed nothing: the brokerage row and the card row, both
-	// in scope by their kind.
+	// in scope because nothing excludes them.
 	if res.Population != 2 {
 		t.Errorf("Population = %d, want 2 (the brokerage row and the card row)", res.Population)
 	}

@@ -703,7 +703,7 @@ the model may say. A merchant the model can see and has mis-placed
 still belongs in the merchant store, where the verdict is per-merchant
 and visible; a single row belongs in the pins.
 
-A config rule is consulted after the three built-ins, so an ATM
+A config rule is consulted after the built-ins, so an ATM
 withdrawal that happens to carry the holder's name is still
 `cash_withdrawal`, and the matcher outranks it as it outranks every
 rule: a withdrawal whose counter-leg *is* in gold is
@@ -793,12 +793,13 @@ transfer, a card top-up). It names no line of business, so a translation
 would file person-to-person transfers as shopping; leaving it unmapped
 sends the row to the model, which sees the descriptor.
 
-The map carries every UBS FX spelling for vocabulary completeness, but
-only the MT940 `NFEX` shape — a withdrawal whose narrative is a bare
-tag — can ever be placed: the adapter files the web and PDF eras' FX
-bookings as `fx` kinds, which the enrichment population excludes by
-kind (§1), so it is the kind and not the tier that keeps those rows
-out of spending. See docs/adapters/ubs.md §7.
+The map carries every UBS FX spelling for vocabulary completeness, and
+none of them can now be placed: every era's FX booking reaches gold as
+an `fx` kind, which the enrichment population excludes by kind (§1), so
+it is the kind and not the tier that keeps those rows out of spending.
+The MT940 `NFEX` shape — a movement whose narrative is a bare tag — was
+the one exception until the adapter learned to read the `:61:` type
+code for exactly those rows. See docs/adapters/ubs.md §7.
 
 The UBS web export puts the payer's own message ahead of the booking
 type in the column the adapter reads (`THANKS; e-banking payment
@@ -1443,7 +1444,7 @@ filter, and either answer is wrong for some reader.
 ### The provenance column
 
 `provenance` names the tier that decided the category, in the
-vocabulary of §3. Six values:
+vocabulary of §3. Seven values:
 
 | value | what it means |
 |---|---|
@@ -1452,12 +1453,14 @@ vocabulary of §3. Six values:
 | `rule` | a built-in or configured rule |
 | `provider` | the source's own filing of the row |
 | `model` | the merchant store's verdict for the line's signature |
+| `kind` | the floor: what the transaction's own kind says a row IS, where nothing else placed it (migrations 0066, 0067) |
 | `signature-only` | no verdict: the pass reached the row, recorded its signature and could not place it |
 
 Five of them are stamped on the overlay row by the enrichment pass and
 are what the `spend_txn_enrichment` CHECK admits (migration 0041).
-`model` is stored nowhere, because the model tier writes to the
-merchant store rather than the overlay: it is derived by
+`model` and `kind` are stored nowhere. The model tier writes to the
+merchant store rather than the overlay, and the kind floor reads no
+verdict at all; both are derived by
 `spend_txn_categories()` where the two scopes meet (migration 0050),
 which is the one place a store verdict is distinguishable from the
 backlog — at table level such a line carries `signature-only`, the same

@@ -593,16 +593,20 @@ func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
 	}
 }
 
-// TestRuleCategoryBrokerageNarratives pins the three rules a brokerage
+// TestRuleCategoryBrokerageNarratives pins the rules a brokerage
 // account brought into scope (migration 0064) needs.
 //
 // The account kind widened, and the narratives that arrive with it are
-// new to this tier. Three shapes, two verdicts: a custodian's
+// new to this tier. Four shapes, three verdicts: a custodian's
 // SECURITY-level pass-through and the account's own management fee
 // both file as investment fees — they are the same cost, of holding
 // the assets — while tax withheld at source is its own thing. What the
 // rules must NOT do is confuse any of them with a fee for banking,
 // which is what the wire-fee case below pins.
+//
+// Because two of the rules share a verdict, the value alone does not
+// say which fired; TestEachBrokerageNarrativeMatchesItsOwnRule below
+// pins that separately.
 func TestRuleCategoryBrokerageNarratives(t *testing.T) {
 	for _, tc := range []struct{ narrative, detailed string }{
 		// A depositary charge names the security, never a payee.
@@ -662,5 +666,47 @@ func TestRuleCategoryWireFee(t *testing.T) {
 	}
 	if _, _, ok := RuleCategory("", "", "WIRED FUNDS DISBURSED", ""); ok {
 		t.Error("the wire itself must stay unplaced; only its fee is a bank fee")
+	}
+}
+
+// TestEachBrokerageNarrativeMatchesItsOwnRule is the assertion the
+// shared verdict costs the test above.
+//
+// A security-level pass-through and an account's management fee both
+// file as investment fees, so asserting the category cannot catch a
+// phrase that moved from one rule's list to the other's — the value
+// would be right and the reason wrong. matchRule returns the rule, so
+// the phrase lists stay pinned where they belong.
+func TestEachBrokerageNarrativeMatchesItsOwnRule(t *testing.T) {
+	ruleOf := func(t *testing.T, narrative string) spendRule {
+		t.Helper()
+		r, _, ok := matchRule("", "", narrative, "")
+		if !ok {
+			t.Fatalf("matchRule(%q) placed nothing", narrative)
+		}
+		return r
+	}
+	passThrough := ruleOf(t, "ADR FEE")
+	managed := ruleOf(t, "ADVISOR FEE DEDUCTED Advisor Fee (Cash)")
+
+	if passThrough.detailed != managed.detailed {
+		t.Fatalf("the two rules no longer share a verdict (%q vs %q); this test's"+
+			" reason to exist is gone and TestRuleCategoryBrokerageNarratives covers it",
+			passThrough.detailed, managed.detailed)
+	}
+	if &passThrough.phrases[0] == &managed.phrases[0] {
+		t.Error("both narratives matched the SAME rule; the pass-through and the" +
+			" management fee must stay separate rules with separate phrase lists")
+	}
+	// And each keeps its own side of the split.
+	for _, n := range []string{"FEE CHARGED EXAMPLE INDUSTRIAL AG SPON ADR", "DEPOSITARY FEE"} {
+		if &ruleOf(t, n).phrases[0] != &passThrough.phrases[0] {
+			t.Errorf("%q left the pass-through rule", n)
+		}
+	}
+	for _, n := range []string{"MANAGEMENT FEE", "INVESTMENT MGR FEE", "ADVISORY FEE"} {
+		if &ruleOf(t, n).phrases[0] != &managed.phrases[0] {
+			t.Errorf("%q left the management-fee rule", n)
+		}
 	}
 }

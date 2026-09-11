@@ -491,9 +491,8 @@ func (m *ReturnsTransferMatching) Tolerance() float64 {
 // it, the way `symbol_resolution` groups its own model with its own
 // overrides.
 type SpendingConfig struct {
-	// Accounts overrides the account-kind default of the spending
-	// scope. Absent ⇒ every account counts; only an entry here takes
-	// one out.
+	// Accounts is the spending scope's only exception mechanism.
+	// Absent ⇒ every account counts; only an entry here takes one out.
 	Accounts *SpendingAccounts `json:"accounts,omitempty"`
 	// InternalTransferMatching tunes the matcher that pairs the two
 	// legs of an own-account move so neither counts as spending.
@@ -597,7 +596,7 @@ type CompiledSpendScope struct {
 
 // SpendingAccounts lists the account-scope overrides, keyed by
 // silver_source_id, in the same shape as returns_exclude. `include`
-// pulls an account of a non-spending kind into the population (a
+// is a no-op on an account already in the population by default (a
 // wallet whose outflows really are spending); `exclude` fences a cash
 // or card account out (a card belonging to someone else on a shared
 // login). An account may not appear in both.
@@ -730,8 +729,8 @@ func (s *SpendingCategorization) CategorizationModel() *ModelConfig {
 }
 
 // SpendAccountScope returns the include and exclude maps the
-// enrichment pass stamps into gold. A nil block scopes nothing beyond
-// the account-kind default.
+// enrichment pass stamps into gold. A nil block scopes nothing, which
+// leaves every account in.
 func (c *Config) SpendAccountScope() (include, exclude map[string][]string) {
 	if c.Spending == nil || c.Spending.Accounts == nil {
 		return nil, nil

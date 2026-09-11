@@ -203,15 +203,15 @@ var cashWithdrawalRule = spendRule{
 // are the most specific; a row matching two rules is a row whose
 // narrative already named the more specific thing.
 //
-// Each rule must keep a DISTINCT detailed value. RuleCategory names no
-// rule — it returns the category and the issuer label a card bill
-// carries — so the tests identify which rule fired by the value it
-// assigns; two rules sharing one would quietly weaken those tests to a
-// category assertion. If a second rule ever has to assign an existing
-// value, give the tests an unexported matchRule over the same inputs,
-// returning (spendRule, bool), that RuleCategory wraps — rather than
-// putting the rule's name back on the exported signature: provenance
-// in gold is the tier, not the rule.
+// Two rules assign one detailed value, deliberately: a security-level
+// pass-through and an account's management fee are both what holding
+// the assets costs, and the extension exists to keep them together.
+// RuleCategory names no rule — it returns the category and the issuer
+// label a card bill carries — so a test asserting the value alone
+// cannot say which of the two fired, and would keep passing if a
+// phrase moved between them. The tests use the unexported matchRule
+// over the same inputs for that; the exported signature stays as it
+// is, because provenance in gold is the tier, not the rule.
 var builtinRules = []spendRule{
 	{
 		// A card payment leaving a cash account is one of two things,
@@ -338,9 +338,9 @@ var builtinRules = []spendRule{
 			"WITHHOLDING TAX", "NRA TAX"},
 	},
 	{
-		// The fee an account pays for being managed. It is a service
-		// the household buys, where the pass-through above is levied
-		// on the security — but both are the cost of holding the
+		// The fee an account pays for being managed. It is levied on
+		// the ACCOUNT, where the pass-through above is levied on the
+		// security — but both are the cost of holding the
 		// assets, and keeping them together is the point of the
 		// extension: an accountant's bill is professional services, a
 		// manager's bill is what the portfolio costs to run. Fidelity
@@ -380,6 +380,24 @@ var builtinRules = []spendRule{
 // Reading it to decline a row is the opposite move: it lets the tier
 // below, which owns that filing, have the row.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
+	r, fields, ok := matchRule(signature, counterparty, description, providerCategory)
+	if !ok {
+		return "", "", false
+	}
+	return r.detailed, r.label(fields), true
+}
+
+// matchRule is RuleCategory's core, returning the RULE that fired
+// rather than only its verdict.
+//
+// Unexported and for the tests: two built-in rules may assign one
+// detailed value — a security-level pass-through and an account's
+// management fee are both what holding the assets costs — so a test
+// asserting the value alone cannot say which of them matched, and
+// would keep passing if a phrase moved from one to the other.
+// Provenance in gold stays the tier rather than the rule, which is why
+// this does not widen the exported signature.
+func matchRule(signature, counterparty, description, providerCategory string) (spendRule, []narrativeField, bool) {
 	description, _ = canonical.SplitDescriptionMemo(description)
 	fields := make([]narrativeField, 0, 3)
 	for _, s := range []string{signature, counterparty, description} {
@@ -396,10 +414,10 @@ func RuleCategory(signature, counterparty, description, providerCategory string)
 			continue
 		}
 		if r.matchesAny(fields) {
-			return r.detailed, r.label(fields), true
+			return r, fields, true
 		}
 	}
-	return "", "", false
+	return spendRule{}, nil, false
 }
 
 // narrativeField is one text the rules are tested against, folded
@@ -502,7 +520,7 @@ func (s RuleScope) Admits(source, portfolio, account string, occurredAt int64) b
 
 // ConfigRuleCategory applies the config-supplied rules to a row's
 // narrative — first match wins, in the order written — and returns the
-// category the match places. It is consulted AFTER the three built-in
+// category the match places. It is consulted AFTER the built-in
 // rules, so a built-in verdict is never overridden by a pattern that
 // happens to fire on the same row.
 //

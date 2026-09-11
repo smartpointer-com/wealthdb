@@ -515,8 +515,9 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('test-src', 'CASH2', 'cash',      'Opted out',  1, 1),
             ('test-src', 'CUST1', 'custody',   'Opted in',   1, 1);
 
-        -- Scope overrides both ways round: a cash account fenced out,
-        -- a non-cash/card account pulled in.
+        -- Scope overrides both ways round. Since migration 0068 every
+        -- account is in by default, so the exclude is what carries the
+        -- proof and the include is a no-op held for symmetry.
         INSERT INTO spend_account_scope (silver_source_id, account_external_id, mode) VALUES
             ('test-src', 'CASH2', 'exclude'),
             ('test-src', 'CUST1', 'include');
@@ -540,9 +541,9 @@ func seedSpendingFixture(t *testing.T, db *sql.DB, ctx context.Context) {
             ('test-src', 'T-BRK',        1000, 'BRK1',  'purchase',   'USD',  -40),
             ('test-src', 'T-OPTOUT',     1000, 'CASH2', 'purchase',   'USD',  -60),
             ('test-src', 'T-OPTIN',      1000, 'CUST1', 'purchase',   'USD',  -70),
-            -- transfer-eligible legs on accounts the spending base
-            -- never charts: an unscoped account kind, and an account
-            -- fenced out by spend_account_scope. Both are matcher-pool
+            -- transfer-eligible legs whose KIND the spending base
+            -- never charts, one of them on an account fenced out by
+            -- spend_account_scope as well. Both are matcher-pool
             -- candidates, because a movement's receiving half lands
             -- wherever the money went.
             ('test-src', 'T-BRK-XFER',   1000, 'BRK1',  'deposit',    'USD',  400),
@@ -613,8 +614,8 @@ func macroTxnIDs(t *testing.T, db *sql.DB, ctx context.Context, macro string, fr
 }
 
 // TestSpendingLinesBasePopulation pins the shared population
-// definition: which account kinds count, how spend_account_scope
-// overrides them, which transaction kinds are spend, that `interest`
+// definition: that every account counts until spend_account_scope
+// excludes it, which transaction kinds are spend, that `interest`
 // splits on sign, that `other` and the income kinds stay out, and that
 // an own-account move drops out however its category was resolved.
 func TestSpendingLinesBasePopulation(t *testing.T) {
@@ -630,7 +631,7 @@ func TestSpendingLinesBasePopulation(t *testing.T) {
 		"T-TAX":         "tax is spend",
 		"T-WITHDRAWAL":  "withdrawal is spend",
 		"T-INT-NEG":     "negative interest is a finance charge",
-		"T-OPTIN":       "spend_account_scope pulls a non-cash/card account in",
+		"T-OPTIN":       "an account no spend_account_scope row excludes",
 		"T-BY-MERCHANT": "resolved from the merchant store",
 		"T-BY-TXN":      "resolved from the transaction overlay",
 		"T-BACKLOG":     "uncategorised rows are the model tier's backlog",
@@ -775,7 +776,7 @@ func TestSpendPopulationLayering(t *testing.T) {
 	for id, why := range map[string]string{
 		"T-WITHDRAWAL":  "a withdrawal is the outgoing half of a movement",
 		"T-DEPOSIT":     "the income side: without it an outgoing leg has nothing to pair with",
-		"T-BRK-XFER":    "an account kind the spending base never charts still holds counter-legs",
+		"T-BRK-XFER":    "a transaction kind the spending base never charts still holds counter-legs",
 		"T-OPTOUT-XFER": "an account fenced out of spending still holds counter-legs",
 	} {
 		if _, ok := pool[id]; !ok {
@@ -800,7 +801,7 @@ func TestSpendPopulationLayering(t *testing.T) {
 		t.Fatalf("count spend_scoped_accounts: %v", err)
 	}
 	if scoped != 4 {
-		t.Errorf("spend_scoped_accounts = %d, want 4 (the cash/card/brokerage defaults plus the pulled-in custody account, minus the fenced cash one)", scoped)
+		t.Errorf("spend_scoped_accounts = %d, want 4 (every seeded account, minus the one fenced out)", scoped)
 	}
 }
 

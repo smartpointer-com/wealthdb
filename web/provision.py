@@ -1420,7 +1420,7 @@ def base_dashboards():
             "Where the money goes — the trend, the categories behind it, "
             "the merchants and accounts it left through, and what the cards "
             "owe — over a chosen window in a chosen currency (default USD). "
-            "Spending is what the cash and card accounts paid out; "
+            "Spending is what the tracked accounts paid out; "
             "own-account moves are not spend and never appear. " + note,
             "range", [
             # The three headline figures, then the shape of the window

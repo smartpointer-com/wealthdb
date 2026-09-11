@@ -141,7 +141,7 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 
 | UBS | Gold | Adapter notes |
 | --- | --- | --- |
-| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` | from MT940 `:86:` narrative (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account is demoted to `other` (same-day offset veto, `buildSameDayOffsetVeto`) |
+| `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | from the MT940 `:86:` narrative, then the `:61:` type code as a floor (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account is demoted to `other` (same-day offset veto, `buildSameDayOffsetVeto`) |
 | `securities_movement` | `transfer_in` / `transfer_out` | sign-driven |
 | `trade_confirmation` | `buy` or `sell` | from MT515 payload `side` |
 | `fx_confirmation` | `fx` | MT300 |
@@ -189,9 +189,23 @@ both directions stay internal, as every rail booking does there.
 `cash_movement` events (MT940 `:61:` lines) carry a free-text
 narrative in the `:86:` continuation. The adapter parses this to
 split bare `cash_movement` into more specific canonical kinds.
-The narrative parser is conservative — unmapped narratives fall
-through to `deposit` or `withdrawal` based on the amount sign,
-with the raw narrative preserved in payload.
+The narrative parser is conservative — an unmapped narrative falls
+through to the `:61:` transaction type code, and then to `deposit` or
+`withdrawal` by direction, with the raw narrative preserved in payload.
+
+The type code is a FLOOR, read only where the narrative says nothing a
+reader could place, because the narrative is the better witness where
+it exists — it is the only one that tells a transaction tax from a
+custody price. It matters because an entry the bank wrote no narrative
+for arrives as a bare booking code, and the cash leg of a trade
+settling that way would otherwise read as a plain withdrawal: spending
+would count it as money leaving and returns as external capital.
+`NSEC` settles as `buy` or `sell` by direction, `NFEX` as `fx`, `NDIV`
+as `dividend`, `NINT` as `interest`, `NCHG`/`NCOM` as `fee`, `NTAX` as
+`tax`. `NRTI` is a RETURNED ITEM, not interest, and is deliberately
+unmapped. A reversal — marked `RC` or `RD` in the credit/debit field —
+bypasses the floor entirely: its sign is not yet flipped at that point,
+so any kind read off it would be stated against the wrong direction.
 
 Common narrative prefixes (extend as observed):
 
@@ -289,7 +303,8 @@ the account, because UBS stamps both legs of an inter-account transfer
 with one number and the two legs have different payees to state.
 
 Per column, and only downward: a column that is empty or a bare code
-(no separator, at most a few alphanumerics — `isCodeOnly`) takes the
+(no separator, at most a few alphanumerics, a trailing MT940
+subfield marker discounted — `isCodeOnly`) takes the
 export's value where the export's is not itself one; a column that
 already says something keeps it. Nothing else moves — the amount, the
 value date, the kind and the id are the MT940 row's, byte for byte,

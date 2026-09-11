@@ -326,7 +326,7 @@ func printSpendCanaries(w io.Writer, c *spendCanaries) {
 	fmt.Fprintln(w, "categorize: canaries")
 
 	if len(c.Rates) == 0 {
-		fmt.Fprintln(w, "  categorisation rate: (no spending population — no cash or card account in scope)")
+		fmt.Fprintln(w, "  categorisation rate: (no spending population — no account in scope, or nothing spend-side in the window)")
 	} else {
 		parts := make([]string, 0, len(c.Rates))
 		for _, r := range c.Rates {

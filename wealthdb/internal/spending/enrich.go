@@ -56,7 +56,7 @@ const ProvenanceManual = "manual"
 type Options struct {
 	// Include and Exclude are the config-declared account-scope
 	// overrides, keyed by silver_source_id. Include pulls an account
-	// of a non-spending kind in; Exclude fences a cash or card account
+	// already-included account in; Exclude fences an account
 	// out. They are stamped into spend_account_scope at the start of
 	// the pass, so the report macros need no runtime config injection.
 	Include map[string][]string

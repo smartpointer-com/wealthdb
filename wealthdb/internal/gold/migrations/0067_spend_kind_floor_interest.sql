@@ -11,11 +11,13 @@
 -- base the sign is redundant: the population admits an interest row
 -- ONLY when it is negative (migration 0041 — credited interest is
 -- income, charged interest is spend). But this macro's driving table
--- is spend_txn_enrichment, not the population, and the enrichment
--- pass records a row for every scoped transaction whether the
--- population admitted it or not. A credited interest row therefore
--- does reach this CASE, and without the guard would be labelled a
--- fee wherever the macro is read at transaction grain.
+-- is spend_txn_enrichment, and that table is keyed by transaction
+-- alone: it holds whatever any pass has ever written a verdict for,
+-- including legs the matcher reached outside the population and rows
+-- left by a scope the deployment has since changed. A credited
+-- interest row can therefore reach this CASE, and without the guard
+-- would be labelled a fee wherever the macro is read at transaction
+-- grain.
 --
 -- BANK_FEES_INTEREST_CHARGE is vendored, not one of ours: "fees
 -- incurred for interest on purchases, including not-paid-in-full or

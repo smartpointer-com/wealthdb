@@ -1,6 +1,6 @@
 ---
 name: wealthdb-ro
-description: Query the user's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (time-weighted TWR & money-weighted MWR/XIRR), and categorised spending on the cash and card accounts — through the read-only `wealthdb` CLI. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in/out, how an account / portfolio / the whole portfolio has performed over a period, or what was spent and on what.
+description: Query the user's consolidated cross-institution investment portfolio — holdings, account and portfolio balances, net worth, asset allocation, transaction history, investment returns (time-weighted TWR & money-weighted MWR/XIRR), and categorised spending across the tracked accounts — through the read-only `wealthdb` CLI. Use whenever a question is about current holdings, what an account or portfolio is worth, allocation, money in/out, how an account / portfolio / the whole portfolio has performed over a period, or what was spent and on what.
 ---
 
 # wealthdb — portfolio queries (read-only)
@@ -155,7 +155,8 @@ wealthdb returns sources --period monthly 2024-01-01 - -f json
 ```
 
 ## Spending — what was spent (`wealthdb spending <view>`)
-Answers "where did the money go?", over the **cash and card accounts only**.
+Answers "where did the money go?", over **every account** except those the
+config excludes.
 Investment activity is not spending and never appears here; neither do
 own-account moves (card payments, funding wires, mortgage payments) —
 those are transfers between accounts the product already tracks.
