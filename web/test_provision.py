@@ -666,14 +666,24 @@ if spending:
     tiles = [dc for dc in body["dashcards"] if dc["card_id"] is not None]
     check("every tile plus the switch link is present",
           len(tiles) == 10 and len(body["dashcards"]) == 11)
+    ALL_CCY_IDS = {card_ids[c] for c in p.SPEND_ALL_CURRENCY_CARDS}
     check("every picker lands on every tile",
           all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
               {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
                p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID}
               for dc in tiles
-              if dc["card_id"] != card_ids["Card balances over time"]),
+              if dc["card_id"] != card_ids["Card balances over time"]
+              and dc["card_id"] not in ALL_CCY_IDS),
           json.dumps([[m["parameter_id"] for m in dc["parameter_mappings"]]
                       for dc in tiles]))
+    # A tile carrying every currency as its own column is the exception:
+    # the Currency picker is a row filter on the long model, so wiring it
+    # would empty the two columns the picker does not select.
+    for dc in (dc for dc in tiles if dc["card_id"] in ALL_CCY_IDS):
+        check("an all-currency tile takes every picker but Currency",
+              {m["parameter_id"] for m in dc["parameter_mappings"]} ==
+              {p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
+               p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID})
     balances = [dc for dc in tiles
                 if dc["card_id"] == card_ids["Card balances over time"]][0]
     check("the card-balances tile takes every picker but the category one",
@@ -707,3 +717,22 @@ if FAILS:
 else:
     print("provision tests: all passed")
 sys.exit(1 if FAILS else 0)
+
+section("the merchant ranking carries every currency")
+MERCH = CARDS["Top 50 merchants"][2]["query"]
+AGGS = MERCH.get("aggregation", [])
+check("it sums one column per reporting currency",
+      [a[2].get("display-name") for a in AGGS if a[0] == "aggregation-options"]
+      == ["USD", "CHF", "EUR"])
+check("each column carries its own currency predicate, so no row filter is needed",
+      all(a[1][0] == "sum-where"
+          and a[1][2] == ["=", ["field", "currency", {"base-type": "type/Text"}], ccy]
+          for a, ccy in zip(AGGS, ("USD", "CHF", "EUR"))))
+check("the ranking is by the USD column (aggregation 0)",
+      MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
+      and AGGS[0][2]["display-name"] == "USD")
+check("it no longer needs the standalone-currency caveat",
+      "filter currency to a single" not in CARDS["Top 50 merchants"][1])
+check("the Currency picker is not wired to it — a row filter would empty "
+      "the two columns it does not select",
+      "Top 50 merchants" in p.SPEND_ALL_CURRENCY_CARDS)

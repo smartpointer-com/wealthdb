@@ -845,6 +845,20 @@ def question_defs(db_id, mid):
     # a currency filter sums USD + CHF + EUR, hence the standalone note.
     net_spend = {"net_spend": ["*", _dec("value"), -1]}
     spend_sum = [["sum", ["expression", "net_spend"]]]
+
+    def ccy_spend(ccy):
+        """Net spend in ONE reporting currency, as a named column.
+
+        The long model carries a row per (line, currency), so a card that
+        wants all three at once cannot take the Currency picker — a row
+        filter would empty the two columns it does not select. Each
+        column instead carries its own currency predicate, which makes
+        the card right on the dashboard and right opened standalone,
+        where no picker reaches it."""
+        return ["aggregation-options",
+                ["sum-where", ["*", _dec("value"), -1],
+                 ["=", _f("currency", "type/Text"), ccy]],
+                {"name": ccy, "display-name": ccy}]
     spend_note = (" Built for the Spending dashboard, which supplies the "
                   "currency; opened standalone, filter currency to a single "
                   "value first — the model carries one row per currency.")
@@ -1124,9 +1138,13 @@ def question_defs(db_id, mid):
             "on a card not itemised (which names its issuer, not a "
             "merchant), cash out of an ATM — and lines nothing has resolved "
             "are outside the ranking, though inside every total and the "
-            "transaction list." + spend_note,
+            "transaction list. Net spend is shown in all three reporting "
+            "currencies at once and the ranking is by USD, so this card "
+            "answers to every picker except Currency — and reads the same "
+            "opened on its own as it does on the dashboard.",
             _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
+                  {"aggregation": [ccy_spend("USD"), ccy_spend("CHF"),
+                                   ccy_spend("EUR")],
                    "filter": ["and",
                               ["not-null", _f("merchant_name", "type/Text")],
                               ["!=", _f("spend_primary", "type/Text"),
@@ -1345,6 +1363,13 @@ SPENDING_DASHBOARDS = {"Spending", "Spending" + PRIVACY_SUFFIX}
 # individual holdings. The breakdown widgets each already group by one of
 # the dimensions, so filtering them by it would mostly self-select.
 POSITION_FILTERED_CARDS = {"Top 100 positions (USD)", "Top 100 positions (privacy)"}
+
+# Spending cards that carry every reporting currency as its own column,
+# and so must NOT be wired to the Currency picker: the long model has a
+# row per (line, currency), so a row filter on `currency` would empty the
+# two columns the picker does not select. Such a card is also the only
+# kind that reads correctly opened standalone, where no picker reaches it.
+SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
 
 
 def base_dashboards():
@@ -2704,7 +2729,9 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids):
                          for pid, col in (
                              (SPEND_CURRENCY_PARAM_ID, "currency"),
                              (ACCOUNT_PARAM_ID, "display_name"),
-                             (CATEGORY_PARAM_ID, "spend_primary"))]
+                             (CATEGORY_PARAM_ID, "spend_primary"))
+                         if not (pid == SPEND_CURRENCY_PARAM_ID
+                                 and card in SPEND_ALL_CURRENCY_CARDS)]
             if mode == "asof" and card in POSITION_FILTERED_CARDS:
                 maps.append({"parameter_id": ASSET_PARAM_ID,
                              "card_id": card_ids[card],
