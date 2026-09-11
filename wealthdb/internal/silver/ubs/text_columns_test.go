@@ -3,11 +3,30 @@ package ubs
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/spending"
 )
+
+// TestTheBanksOwnChargesNameOneMerchant pins what SignatureVersion 11
+// records at the signature level: each of the bank's own charges keys
+// as the bank — or, where the narrative itself leads with the bank's
+// name and its product, on that head, which the merchant store resolves
+// to the same merchant.
+func TestTheBanksOwnChargesNameOneMerchant(t *testing.T) {
+	for _, bookingType := range []string{
+		"CUSTODY PRICE", "UBS ADVICE", "RENTAL FEE SAFE BOX",
+		"BALANCE CLOSING OF SERVICE PRICES", "INTEREST CALCULATION BALANCE",
+	} {
+		got, _, _ := projectWebTxText("230-XXXXXX.S9", bookingType, webTxPayload{}, false)
+		key := spending.Normalize(got.counterparty, got.description)
+		if key != bankName && !strings.HasPrefix(key, bankName+" ") {
+			t.Errorf("%q keys as %q, want the bank or a head led by it", bookingType, key)
+		}
+	}
+}
 
 // The text-column contract (description / counterparty / provider_category)
 // per UBS transaction era, pinned on synthetic silver rows. Every string here
@@ -185,7 +204,8 @@ func checkMemo(t *testing.T, got map[string]canonical.TransactionChange, memos m
 }
 
 // TestWebTextColumns pins the ubs-web contract for both feeds sharing the
-// table: counterparty is silver's promoted column verbatim, provider_category
+// table: counterparty is silver's promoted column — verbatim, save a booking
+// type (refused) and one of the bank's own charges (the bank) — provider_category
 // is the booking type — description_kind verbatim, less the payer's message a
 // CSV row may carry before its last "; " — and description is the
 // Description1 caption when there is one (unchanged — gold's name lookups key
@@ -640,26 +660,65 @@ func TestTheBankIsThePayeeOnItsOwnCharges(t *testing.T) {
 // depositary's fee and a third-party charge are collected on someone
 // else's behalf, so naming the bank would misstate who was paid.
 func TestACollectedChargeIsNotTheBanks(t *testing.T) {
+	const promoted = "VN 00000000 XXXXXXS9"
 	for _, bookingType := range []string{"ADR/GDR HANDLING FEES", "THIRD-PARTY CHARGES"} {
-		got, _, _ := projectWebTxText("VN 00000000 XXXXXXS9", bookingType, webTxPayload{}, false)
-		if got.counterparty == bankName {
-			t.Errorf("%q was attributed to the bank; it is collected for someone else",
-				bookingType)
+		got, _, _ := projectWebTxText(promoted, bookingType, webTxPayload{}, false)
+		if got.counterparty != promoted {
+			t.Errorf("%q payee = %q, want the promoted column kept — it is collected for someone else",
+				bookingType, got.counterparty)
 		}
 	}
 }
 
-// TestTheBankIsThePayeeWhenOnlyTheNarrativeNamesTheCharge: the
-// statement-archive era fills no booking-type column, so the product
-// name arrives as the narrative itself. The charge is the bank's
-// either way, and reading only the booking type left that era's rows
-// keyed on the product instead.
+// TestTheBankIsThePayeeWhenOnlyTheNarrativeNamesTheCharge: some CSV-feed
+// rows leave the booking-type column empty and carry the product as
+// Description1's first segment, which the promotion then reads as the
+// payee. The charge is the bank's either way, and reading only the
+// booking type left those rows keyed on the product.
 func TestTheBankIsThePayeeWhenOnlyTheNarrativeNamesTheCharge(t *testing.T) {
-	got, _, _ := projectWebTxText("", "", webTxPayload{
+	got, _, _ := projectWebTxText("Custody Price", "", webTxPayload{
 		Description1: "Custody Price",
-	}, true)
+	}, false)
 	if got.counterparty != bankName {
 		t.Errorf("payee = %q, want %q — the narrative names one of the bank's own charges",
 			got.counterparty, bankName)
+	}
+}
+
+// TestAChargeWithNoBookingTypeIsAFeeNotAWithdrawal: on a CSV-feed row
+// that leaves the booking-type column empty, the product in
+// Description1's first segment names the charge — and it must name the
+// KIND as well as the payee. Read for the payee alone, the row was the
+// bank's custody price with a withdrawal's kind, which the returns
+// policy counts as capital leaving.
+func TestAChargeWithNoBookingTypeIsAFeeNotAWithdrawal(t *testing.T) {
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedWebTextRow(t, r, "N1", 320*86400, 100.0, nil, "Custody Price", nil,
+		`{"Description1":"Custody Price","Description2":"","Description3":""}`)
+	// The same shape with a reference where the booking type belongs.
+	seedWebTextRow(t, r, "N2", 321*86400, 100.0, nil, "Rental Fee safe box", "000000      00",
+		`{"Description1":"Rental Fee safe box","Description2":"000000      00","Description3":""}`)
+	// The period-close marker at a zero amount is dropped; at a real
+	// amount it is a charge and stays.
+	seedWebTextRow(t, r, "Z0", 322*86400, 0.0, nil, "Balance closing of service prices", nil,
+		`{"Description1":"Balance closing of service prices","Description2":"","Description3":""}`)
+	seedWebTextRow(t, r, "Z1", 323*86400, 40.0, nil, "Balance closing of service prices", nil,
+		`{"Description1":"Balance closing of service prices","Description2":"","Description3":""}`)
+	got := drainTx(t, emitWebStream(t, r))
+	for _, id := range []string{"N1", "N2", "Z1"} {
+		tx, ok := got[id+"@"+textAcct]
+		if !ok {
+			t.Fatalf("%s is missing from the emitted stream", id)
+		}
+		if tx.Kind != canonical.TxKindFee {
+			t.Errorf("%s: kind = %q, want fee — the narrative's head names the charge", id, tx.Kind)
+		}
+		if derefText(tx.Counterparty) != bankName {
+			t.Errorf("%s: payee = %q, want %q", id, derefText(tx.Counterparty), bankName)
+		}
+	}
+	if _, ok := got["Z0@"+textAcct]; ok {
+		t.Error("a zero-amount service-price close reached the stream; it is a period marker, not a charge")
 	}
 }

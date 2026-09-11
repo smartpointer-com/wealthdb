@@ -446,7 +446,8 @@ SELECT transaction_external_id, value_date, account_external_id,
 			continue
 		}
 
-		kind, net, netAmount := webProjectedNet(kindStr.String, isStatementEraID(txID), debit, credit)
+		hint := webKindHint(kindStr, counterparty)
+		kind, net, netAmount := webProjectedNet(hint, isStatementEraID(txID), debit, credit)
 		netPtr := net
 
 		// A statement's period summary is not a booking. The "Turnover
@@ -458,7 +459,8 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// Dropped here and counted so the drop is visible. The same line
 		// under a real fee or interest amount is a booking and is kept;
 		// its narrative is composed without the line (bookingLines) and
-		// its counterparty left empty below (docs/adapters/ubs.md §7).
+		// its counterparty is the bank, the booking being one of its own
+		// charges (projectWebTxText; docs/adapters/ubs.md §7).
 		// A payload that does not decode is treated as a PDF backfill
 		// whatever its fields say: that routes the row through
 		// pdfCashIsExternal, which on the zero value classifies it
@@ -467,8 +469,11 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// uses stay on the same side: the summary drop needs a summary
 		// line the zero payload does not carry, and the booking type
 		// travels whole instead of being split into memo + type.
+		// The CSV feed prints the same close as a zero-amount service-price
+		// row with no booking type; it is the same period marker, dropped
+		// and counted the same way.
 		p, pdfBackfill := decodeWebTxEra(payload)
-		if pdfBackfill && net.IsZero() && isStatementSummary(p) {
+		if net.IsZero() && (pdfBackfill && isStatementSummary(p) || !pdfBackfill && isServicePriceClose(hint)) {
 			summaries++
 			continue
 		}
@@ -567,7 +572,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		})
 	}
 	if summaries > 0 {
-		log.Printf("ubs adapter: dropped %d statement summary row(s) — a zero-amount period-close line carrying nothing but the turnover totals", summaries)
+		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
 	}
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d statement row(s) into the export or feed record of the same booking — one booking, one row", folded)
@@ -859,7 +864,8 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 
 	rows, err := r.db.QueryContext(ctx, `
 SELECT transaction_external_id, value_date, account_external_id,
-       currency_iso, amount_debit, amount_credit, description_kind
+       currency_iso, amount_debit, amount_credit, description_kind,
+       counterparty
   FROM transactions`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("buildSameDayOffsetVeto (web): %w", err)
@@ -869,10 +875,10 @@ SELECT transaction_external_id, value_date, account_external_id,
 		var (
 			txID, acct, ccy string
 			valueDate       int64
-			debit, credit   sql.NullFloat64
-			kindStr         sql.NullString
+			debit, credit         sql.NullFloat64
+			kindStr, counterparty sql.NullString
 		)
-		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr); err != nil {
+		if err := rows.Scan(&txID, &valueDate, &acct, &ccy, &debit, &credit, &kindStr, &counterparty); err != nil {
 			return nil, nil, fmt.Errorf("buildSameDayOffsetVeto scan (web): %w", err)
 		}
 		// Emitted-universe filter: mirror the transaction loop's hard cut at
@@ -889,7 +895,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		if folded[txID+"@"+acct] {
 			continue
 		}
-		kind := webKind(kindStr.String, debit.Valid, credit.Valid)
+		kind := webKind(webKindHint(kindStr, counterparty), debit.Valid, credit.Valid)
 		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
 			continue
 		}
@@ -1217,6 +1223,26 @@ func webReversal(descKind string, statementEra bool, debit, credit sql.NullFloat
 // underlying event so they net out when summed by kind, and
 // rely on ApplyCanonicalSign preserving the source's negative
 // sign rather than forcing it positive.
+// webKindHint is the text webKind classifies a row by: the booking type
+// when it is one the vocabulary knows; otherwise the first segment of
+// the promoted counterparty when THAT is one. Some CSV-feed rows leave
+// the booking-type column empty, or fill it with a reference — a
+// safe-box number, an interest period — and carry the product in
+// Description1, the very text the promotion reads as the payee. Read
+// there for the kind as well as for the payee (projectWebTxText), a
+// custody price or a safe-box rental is a fee and not a withdrawal.
+// When neither text is a type the booking type is returned as given,
+// so the direction decides exactly as before.
+func webKindHint(descKind, counterparty sql.NullString) string {
+	if isBookingType(descKind.String) {
+		return descKind.String
+	}
+	if head := firstSegment(counterparty.String); isBookingType(head) {
+		return head
+	}
+	return descKind.String
+}
+
 func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 	// Strip a `;Reversal` suffix if present and recurse on the
 	// base. Lets us pick up any future reversal flavour the bank
@@ -1286,14 +1312,13 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		// own vocabulary. A capital call buys fund units and a
 		// distribution sells them, both against the cash account that
 		// sits in the same portfolio as the units — so neither is
-		// capital crossing the household's boundary.
-		//
-		// Left as deposits and withdrawals they were, and the returns
-		// policy counts those as external capital and never nets
-		// them: a call read as capital leaving while the fund's NAV
-		// rose to meet it, and a distribution will read as capital
-		// arriving while the NAV falls. Both legs of a single internal
-		// move, each booked as though the other did not exist.
+		// capital crossing the household's boundary. Left to the
+		// direction fallback they would be deposits and withdrawals,
+		// which the returns policy counts as external capital and never
+		// nets: a call reads as capital leaving while the fund's NAV
+		// rises to meet it, a distribution as capital arriving while it
+		// falls — both legs of one internal move, each booked as though
+		// the other did not exist.
 		"CAPITAL CALL", "ISSUE WITHOUT RIGHTS",
 		"PURCHASE FROM ISSUE WITH PREPAYMENT",
 		"CASH SETTLEMENT", "CASH DISTRIBUTION":

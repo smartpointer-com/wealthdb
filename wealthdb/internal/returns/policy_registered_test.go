@@ -57,6 +57,9 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if man.Flow.IsTransferLike(canonical.TxKindTransferIn) {
 		t.Error("manual: a ledger leg has nothing on this source to net against")
 	}
+	if man.ClosureScope != returns.ClosureLedgerExact {
+		t.Error("manual: a hand-dated release leg on the day a claim zeroes is a real exit, not a drain to subsume")
+	}
 
 	// carta / equityzen: complete double-entry ledgers on the custody account.
 	// The deposit/withdrawal boundary legs are external capital; the holding

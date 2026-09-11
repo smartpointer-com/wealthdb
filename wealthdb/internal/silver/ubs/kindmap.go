@@ -132,6 +132,16 @@ func isReversalMark(creditDebit string) bool {
 	return false
 }
 
+// isOwnChargeCode reports whether an MT940 :61: transaction type is a
+// charge the account-servicing institution levies for itself — the one
+// payee MT940 carries, since such a row names none in its narrative.
+// It is txnTypeKind's fee arm read back, so the code list lives in one
+// place and a reversal is left alone by the same gate.
+func isOwnChargeCode(txnType, creditDebit string) bool {
+	k, ok := txnTypeKind(txnType, creditDebit)
+	return ok && k == canonical.TxKindFee
+}
+
 // cashMovementKind classifies an MT940 cash movement, reading three
 // things in order of how much they know.
 //
@@ -145,21 +155,6 @@ func isReversalMark(creditDebit string) bool {
 // entries the bank wrote no narrative for at all.
 //
 // The DIRECTION is the last word, and the only one for a reversal.
-// isOwnChargeCode reports whether an MT940 :61: transaction type is
-// one the account-servicing institution levies for itself. A reversal
-// is excluded for the same reason it bypasses the kind floor: its
-// direction is not yet settled, so nothing should be asserted from it.
-func isOwnChargeCode(txnType, creditDebit string) bool {
-	if isReversalMark(creditDebit) {
-		return false
-	}
-	switch strings.ToUpper(strings.TrimSpace(txnType)) {
-	case "NCHG", "NCOM":
-		return true
-	}
-	return false
-}
-
 func cashMovementKind(narrative, creditDebit, txnType string) canonical.TxKind {
 	upper := strings.ToUpper(narrative)
 

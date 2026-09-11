@@ -54,14 +54,16 @@ func TestWebKindClassification(t *testing.T) {
 		{"mt940 pm spot sell", "Sell PM spot w/o VAT", N, C, canonical.TxKindSell},
 		{"mt940 order prefixed", "UCCDD00000000001; order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 capital gain", "Capital gain", N, C, canonical.TxKindDeposit},
-		// A fund unit issuance settles against the cash account beside
-		// it, so it is a purchase, not capital leaving the household.
-		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindBuy},
 		// TWINT in the CSV feed's mixed case: money moving, by type.
 		{"mt940 twint payment", "Payment UBS TWINT", D, N, canonical.TxKindWithdrawal},
 		{"mt940 twint debit", "Debit UBS TWINT", D, N, canonical.TxKindWithdrawal},
 		{"mt940 twint credit", "Credit UBS TWINT", N, C, canonical.TxKindDeposit},
 		{"mt940 twint reversal", "Reversal UBS TWINT", N, C, canonical.TxKindDeposit},
+
+		// ---- MT940 feed: reclassified on purpose (see webKind). ----
+		// A fund unit issuance settles against the cash account beside
+		// it, so it is a purchase, not capital leaving the household.
+		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindBuy},
 
 		// ---- PDF backfill: correct classification. ----
 		// Genuine external flows.
@@ -166,15 +168,10 @@ func TestWebProjectedNetKeepsAStatementReversal(t *testing.T) {
 	}
 }
 
-// TestAPrivateMarketCallIsABuyAndADistributionIsASell.
-//
-// A fund's units and the cash account that funds them sit in one
-// portfolio, so a capital call moves value between two pockets of the
-// same entity. Booked as a withdrawal it was external capital instead —
-// the returns policy counts deposits and withdrawals as capital
-// crossing the boundary and never nets them — so a call read as money
-// leaving while the NAV rose, and a distribution reads as money
-// arriving while the NAV falls.
+// TestAPrivateMarketCallIsABuyAndADistributionIsASell pins the
+// mapping: the bank's private-market vocabulary settles by cash side,
+// a debit buying units and a credit selling them. Why it must — see
+// the case comment in webKind.
 func TestAPrivateMarketCallIsABuyAndADistributionIsASell(t *testing.T) {
 	for _, bookingType := range []string{
 		"CAPITAL CALL", "Issue without rights",
@@ -209,6 +206,26 @@ func TestAPrivateMarketSettlementIsNotAReturnsFlow(t *testing.T) {
 				t.Errorf("%q settles as %q, which returns counts as external capital",
 					bookingType, k)
 			}
+		}
+	}
+}
+
+// TestWebKindHintReadsThePromotedHeadWhenTheBookingTypeIsNotOne pins the
+// four shapes a CSV-feed row can take: a booking type the vocabulary
+// knows is used as is; an empty one, or a reference in its place, yields
+// to the promoted counterparty's first segment when that names a
+// product; and when neither text is a type the booking type is returned
+// as given, so the direction decides as before.
+func TestWebKindHintReadsThePromotedHeadWhenTheBookingTypeIsNotOne(t *testing.T) {
+	ns := func(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+	for _, tc := range []struct{ name, descKind, counterparty, want string }{
+		{"a known booking type stands", "e-banking payment order", "EXAMPLE PAYEE", "e-banking payment order"},
+		{"an empty one yields to the product", "", "Custody Price; 000-000000.S0", "Custody Price"},
+		{"a reference yields to the product", "000000      00", "Rental Fee safe box", "Rental Fee safe box"},
+		{"neither a type: as given", "000000      00", "EXAMPLE PAYEE", "000000      00"},
+	} {
+		if got := webKindHint(ns(tc.descKind), ns(tc.counterparty)); got != tc.want {
+			t.Errorf("%s: hint = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

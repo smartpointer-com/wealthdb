@@ -173,7 +173,9 @@ import (
 //     in its payee column, and a bare booking code on the feed that
 //     writes no payee at all. So one relationship's fees keyed as many
 //     merchants as it had referenced accounts, none of them a party.
-//     The adapter now names the bank on those, and they key as one.
+//     The adapter now names the bank on those, so they key as the
+//     bank — or, where the narrative itself leads with the bank's name
+//     and its product, on that head, which names the same merchant.
 //     A depositary's pass-through and a third-party charge keep their
 //     own keys, being collected on someone else's behalf. Every other
 //     narrative is keyed exactly as version 10 keys it.

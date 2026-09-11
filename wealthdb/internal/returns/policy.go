@@ -195,13 +195,15 @@ func ParseRegime(s string) (Regime, error) {
 	return 0, fmt.Errorf("unknown flow regime %q (want flow_complete, crypto_partial, or nav_only)", s)
 }
 
-// FlowPolicyForRegime returns the named regime's canonical FlowPolicy — the
-// exact kind sets the regime's reference sources register: flow_complete →
-// the bank sets, crypto_partial → fiat deposit/withdrawal external with no
-// netting set (cointracking's shape), nav_only → empty sets. A config-side
-// regime override REPLACES a source's whole flow classification with this
-// shape; swapping only the enum would leave the old kind sets attached — a
-// hybrid no regime defines.
+// FlowPolicyForRegime returns the named regime's bare FlowPolicy:
+// flow_complete → the bank sets, crypto_partial → fiat deposit/withdrawal
+// external with no netting set (cointracking's shape), nav_only → no
+// counted kinds. A source's registered default may be wider than its
+// regime's bare shape — manual is nav_only and still admits the two
+// ledger kinds — and an override does not carry that: a config-side
+// regime override REPLACES a source's whole flow classification with
+// this shape, because swapping only the enum would leave the old kind
+// sets attached, a hybrid no regime defines.
 func FlowPolicyForRegime(r Regime) FlowPolicy {
 	switch r {
 	case RegimeCryptoPartial:

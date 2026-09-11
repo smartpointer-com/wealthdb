@@ -25,7 +25,7 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
 - **Credit cards are returns-invisible** — see below.
 - **The NAV-only source** (manual) reports value-growth TWR tagged
   `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows` on the
-  source alone. Its one counted flow kind is a hand-asserted ledger leg
+  source alone. Its only counted flows are the hand-asserted ledger legs
   (`transfer_in` / `transfer_out` from the equity-transfer ledger) for value
   that arrived from another tracked vehicle rather than a bank.
   A blended aggregate MWR is still computed and tagged
@@ -390,9 +390,8 @@ Deferred flags: `corp_action_present` / `corp_action_split_timing`,
 
 - **Per-source policy migrations** still pending — each its own reviewed
   change with a per-source before/after: schwab appreciated-transfer
-  handling folded into the policy + `ClassifyFlow`; manual onto the
-  `NavOnly` knob (it derives NAV-only from `Flow.Regime`); svb
-  drained-closure handling. End state: no source-named code in the returns
+  handling folded into the policy + `ClassifyFlow`; svb drained-closure
+  handling. End state: no source-named code in the returns
   calculation — all source-specificity is a declarative policy (+ rare
   hook) co-located in `internal/silver/<source>/`. (Done: carta / equityzen
   count their ledgers' real boundary flows — the pairs moved from the

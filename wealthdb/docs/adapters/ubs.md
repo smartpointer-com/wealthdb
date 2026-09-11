@@ -159,9 +159,12 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 
 The web silver's `description_kind` — the statement PDF's printed
 booking type, the CSV feed's `Description2` label — is classified
-by `webKind` (`web_reader.go`), which matches the whole type
-case-insensitively so the two eras' spellings (`CREDIT` /
-`credit`) land together: the income and cost types (`DIVIDEND`,
+by `webKind` (`web_reader.go`) — on a CSV-feed row whose booking-type
+column is empty or holds a reference rather than a type, the first
+segment of the promoted counterparty stands in for it (`webKindHint`),
+since such rows carry the product there —
+which matches the whole type case-insensitively so the two eras'
+spellings (`CREDIT` / `credit`) land together: the income and cost types (`DIVIDEND`,
 `COUPON`, `CUSTODY PRICE`, `INTEREST CALCULATION BALANCE`, …) to
 `dividend` / `coupon` / `interest` / `fee`, the FX types to the
 `fx` kinds, the securities settlements to `buy` / `sell` by cash
@@ -231,9 +234,9 @@ column depends on the era a row comes from:
 
 | Era (silver rows) | `counterparty` | `provider_category` | `description` |
 | --- | --- | --- | --- |
-| Web CSV feed — `ubs-web.transactions` rows without a `payload.source` marker (`Description1/2/3` in the payload) | the `counterparty` column verbatim: the first `;`-segment of `Description1` — the payee, or the security caption on a securities row | the booking type: `description_kind` (`Description2`, the bank's booking-kind label — `Dividend`, `e-banking payment order`, …; a `;Reversal` suffix stays) less the payer's message. The export puts a message typed on the order *ahead* of the type (`THANKS; e-banking payment order`), so the column is split at its last `; ` and the trailing part is the type; a column without the separator is the type verbatim. A **card-booked** entry puts the card's number and expiry in that leading slot instead (`<number>-<check> MM/YY; ATM Withdrawal`), which is the bank's reference rather than the payer's words — recognised whole and dropped, so it becomes no memo (§10.7) | the `Description1` caption with its ISIN tail stripped — unchanged, gold's name lookups key on it. Only when there is no caption: the booking type, then `Description3`. The payer's message, when there is one, is emitted apart as the change's memo, which gold stores last, behind the memo separator |
-| Web PDF backfill — `payload.source = "account_statement_pdf"` | the `counterparty` column verbatim: the first statement continuation line — none when that line is the statement's turnover-total line (below) | `description_kind` verbatim: the printed booking type (`E-BANKING PAYMENT ORDER`, `FEES`, …) | the booking type, then every `payload.continuation` line in order, less the turnover-total line |
-| PSN MT940 — `ubs-psn.events` of kind `cash_movement` | never: the `:86:` narrative carries no structured payee and none is parsed out of the free text | `payload.txn_type` verbatim: the `:61:` transaction type code (`NTRF`, `NMSC`, …) | the `:86:` narrative (`payload.narrative`), line by line |
+| Web CSV feed — `ubs-web.transactions` rows without a `payload.source` marker (`Description1/2/3` in the payload) | the `counterparty` column: the first `;`-segment of `Description1` — the payee, or the security caption on a securities row — kept as promoted except where it is not a party: a booking type the bank filed without a payee is refused, and on a charge the bank bills for itself (custody, advice, safe box, the service-price close, an interest calculation — named in the booking type or, on a row whose booking-type column is empty or holds a reference, as the narrative's first segment) the counterparty is the bank; a depositary's pass-through and a third-party charge keep the promoted text | the booking type: `description_kind` (`Description2`, the bank's booking-kind label — `Dividend`, `e-banking payment order`, …; a `;Reversal` suffix stays) less the payer's message. The export puts a message typed on the order *ahead* of the type (`THANKS; e-banking payment order`), so the column is split at its last `; ` and the trailing part is the type; a column without the separator is the type verbatim. A **card-booked** entry puts the card's number and expiry in that leading slot instead (`<number>-<check> MM/YY; ATM Withdrawal`), which is the bank's reference rather than the payer's words — recognised whole and dropped, so it becomes no memo (§10.7) | the `Description1` caption with its ISIN tail stripped — unchanged, gold's name lookups key on it. Only when there is no caption: the booking type, then `Description3`. The payer's message, when there is one, is emitted apart as the change's memo, which gold stores last, behind the memo separator |
+| Web PDF backfill — `payload.source = "account_statement_pdf"` | the `counterparty` column: the first statement continuation line — none when that line is the statement's turnover-total line (below), and the bank on the booking types it bills for itself | `description_kind` verbatim: the printed booking type (`E-BANKING PAYMENT ORDER`, `FEES`, …) | the booking type, then every `payload.continuation` line in order, less the turnover-total line |
+| PSN MT940 — `ubs-psn.events` of kind `cash_movement` | the bank, when the `:61:` type is `NCHG` or `NCOM` — a charge or commission the bank levies for itself — and never on a reversal; otherwise none: the `:86:` narrative carries no structured payee and none is parsed out of the free text | `payload.txn_type` verbatim: the `:61:` transaction type code (`NTRF`, `NMSC`, …) | the `:86:` narrative (`payload.narrative`), line by line |
 | PSN MT515 — `trade_confirmation` | — | — | `payload.security_name` |
 | PSN MT564/566/568 — `corporate_action_*` | — | — | `payload.caev`, the ISO 15022 event code |
 
@@ -264,11 +267,14 @@ totals as its only narrative segment and a figure of `0.00`. The
 adapter drops such a row — amount exactly zero and no narrative but
 the turnover-total line (`isStatementSummary`) — and reports the
 count on the log, since the adapter interface carries no per-source
-diagnostics. When the same booking types carry a non-zero figure the
+diagnostics; the CSV feed's zero-amount `Balance closing of service
+prices` row, the same marker printed without a booking type, is
+dropped and counted the same way (`isServicePriceClose`). When the same booking types carry a non-zero figure the
 row is a real fee or interest booking and is kept, but its narrative
 is still the period's totals, not the booking's own text: the
-description is the booking type alone, the counterparty is left
-empty, and the provider tier places the row from the type
+description is the booking type alone, the counterparty is the
+bank (both types are charges for its own services), and the provider
+tier places the row from the type
 (`BANK_FEES_*`). The line is stripped from every statement-era
 narrative it attaches to (`bookingLines`), whichever booking precedes
 it — behind an ordinary payment order it is the trailing segment
@@ -418,8 +424,11 @@ read of the payload because it is the collector's stated extraction
 (`Description1`'s first segment; the first continuation line),
 populated on essentially every row, and recomputing it here would
 create a second source of truth. It feeds gold's merchant signature
-verbatim, so its format is part of this contract: a change to what
-the collector promotes re-keys merchants. The booking-kind label is
+as promoted — replaced only where the promoted text is not a party: a
+booking type (refused, SignatureVersion 9) or the reference or product
+name on one of the bank's own charges (the bank, SignatureVersion 11)
+— so its format is part of this contract: a change to what the
+collector promotes re-keys merchants. The booking-kind label is
 the provider category because it is the nearest thing a bank
 statement has to a card issuer's category — the bank's own filing of
 the entry, verbatim and un-normalised (the CSV and PDF vocabularies

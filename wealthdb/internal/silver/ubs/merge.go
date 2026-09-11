@@ -319,7 +319,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // gives the MT940 row to gold. What that row says is often the bank's
 // code and nothing more: the :86: narrative reduces to a
 // cash-withdrawal or dividend code, the :61: type code is the provider
-// category, and MT940 carries no structured payee at all. The export's
+// category, and MT940 carries no structured payee — the bank's own name
+// on a charge code is the one the adapter asserts. The export's
 // row for the same entry names the payee, the printed booking type and
 // the instrument. Keyed on the bank's own number for the entry — the
 // export's "Transaction no.", which the :61: line repeats as its bank

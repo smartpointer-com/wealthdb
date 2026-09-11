@@ -100,13 +100,16 @@ type webTxText struct {
 // printed booking type alone. The message travels as the row's memo,
 // never as part of the narrative: the gold writer stores it at the
 // description's end behind the memo separator (docs/adapters/ubs.md
-// §7). The counterparty is silver's promoted column verbatim — the CSV
-// feed's first Description1 segment, the PDF backfill's first
-// continuation line — because it feeds gold's merchant signature and
-// must never be reformatted here. The one line not kept is the
-// statement's turnover-total line: promoted when it is the first line
-// a period-close booking carries, it names the period's totals, never
-// a payee.
+// §7). The counterparty is silver's promoted column — the CSV feed's
+// first Description1 segment, the PDF backfill's first continuation
+// line — passed through because it feeds gold's merchant signature and
+// must not be reformatted here. It is replaced only where the promoted
+// text is not a party at all, three cases pinned in
+// text_columns_test.go: the statement's turnover-total line (the
+// period's figures, dropped); a booking type the bank filed without a
+// payee (refused, so the description decides); and one of the bank's
+// own service charges, whose promoted text is an account or security
+// reference or the product's name (the bank is named instead).
 func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfBackfill bool) (text webTxText, instrumentID *string, memo string) {
 	instrumentID, captionDesc := extractInstrumentFromDescription1(p)
 	bookingType := descriptionKind
@@ -132,9 +135,13 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 	// in it, so the bank is the payee. The export feed writes the
 	// product under the booking type and an account or security
 	// reference in the payee column, and a reference is not a party:
-	// left alone it became the merchant, one per referenced account,
+	// left alone it becomes the merchant, one per referenced account,
 	// splitting a single relationship's fees across as many merchants
-	// as it has accounts.
+	// as it has accounts. Some CSV-feed rows leave the booking-type
+	// column empty, or fill it with a reference, and carry the product
+	// as Description1's first segment instead — which the promotion
+	// then reads as the payee — so the narrative's head is consulted
+	// as well.
 	description := derefText(webDescription(captionDesc, bookingType, p))
 	if isOwnServiceCharge(bookingType) || isOwnServiceCharge(firstSegment(description)) {
 		payee = bankName
@@ -146,12 +153,8 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 	}, instrumentID, memo
 }
 
-// firstSegment is the head of a statement narrative — what precedes the
-// separator that divides a payee from the address and reason behind it.
-//
-// The booking type is the better place to read a product name from, but
-// the statement-archive era does not fill that column: there the
-// product IS the narrative, and its whole first segment names it.
+// firstSegment is the head of a narrative — what precedes the separator
+// that divides a payee from the address and reason behind it.
 func firstSegment(s string) string {
 	if i := strings.IndexByte(s, ';'); i >= 0 {
 		return strings.TrimSpace(s[:i])
@@ -180,9 +183,24 @@ var ownServiceCharges = map[string]bool{
 }
 
 // isOwnServiceCharge reports whether a booking type is one the bank
-// bills for itself.
+// bills for itself. A `;Reversal` suffix is stripped first, as webKind
+// strips it: a reversed custody price is still the bank's booking.
 func isOwnServiceCharge(bookingType string) bool {
+	if base, ok := stripReversalSuffix(bookingType); ok {
+		bookingType = base
+	}
 	return ownServiceCharges[strings.ToUpper(strings.TrimSpace(bookingType))]
+}
+
+// isServicePriceClose reports whether a booking is the service-price
+// close the bank prints at each period end. At a zero amount it is a
+// period marker rather than a charge, and the emitter drops it as it
+// drops the statement era's summary line.
+func isServicePriceClose(bookingType string) bool {
+	if base, ok := stripReversalSuffix(bookingType); ok {
+		bookingType = base
+	}
+	return strings.ToUpper(strings.TrimSpace(bookingType)) == "BALANCE CLOSING OF SERVICE PRICES"
 }
 
 // derefText reads an optional text column as a plain string, an absent
@@ -241,8 +259,12 @@ func isCodeOnly(s string) bool {
 //
 // The MT940 feed composes its description from the :86: narrative and
 // its provider category from the :61: type code, so where the bank
-// wrote nothing but a code both columns are that code, and it carries
-// no payee at all. The Account-Statement export records the same entry
+// wrote nothing but a code both columns are that code, and the only
+// payee it can carry is the bank's own name, asserted from a charge
+// code (isOwnChargeCode). That name is code-shaped by this test, so an
+// export twin that names a real party wins over it, and one that also
+// names the bank leaves the row of record's own. The Account-Statement
+// export records the same entry
 // with the payee, the printed booking type and the cost note. A column
 // that is a bare code — or absent — therefore gives way to one
 // carrying more, and a column that already says something is kept: the

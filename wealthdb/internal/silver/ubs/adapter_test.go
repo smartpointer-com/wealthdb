@@ -779,3 +779,29 @@ func TestTaxonomyPairForWebDescription(t *testing.T) {
 		})
 	}
 }
+
+// TestABankChargeNamesTheBankAsPayee: MT940 carries no structured payee,
+// so the only one a cash movement can carry is asserted from the :61:
+// code — a charge or commission the bank levies for itself. A reversal
+// gets none, and a plain transfer never does.
+func TestABankChargeNamesTheBankAsPayee(t *testing.T) {
+	payload := func(txnType, creditDebit string) string {
+		return `{"account":"CH00CASH","amount":"12.50","bank_ref":"REF","credit_debit":"` + creditDebit +
+			`","customer_ref":"","entry_date":"0101","funds":null,"narrative":"K00?","txn_type":"` + txnType +
+			`","value_date":"260101"}`
+	}
+	for _, tc := range []struct{ txnType, creditDebit, want string }{
+		{"NCHG", "D", bankName},
+		{"NCOM", "D", bankName},
+		{"NCHG", "RC", ""},
+		{"NTRF", "D", ""},
+	} {
+		tx, err := buildTransaction("E1", 0, "CH00CASH", "cash_movement", nil, payload(tc.txnType, tc.creditDebit))
+		if err != nil {
+			t.Fatalf("buildTransaction(%s, %s): %v", tc.txnType, tc.creditDebit, err)
+		}
+		if got := derefText(tx.Counterparty); got != tc.want {
+			t.Errorf("%s/%s payee = %q, want %q", tc.txnType, tc.creditDebit, got, tc.want)
+		}
+	}
+}

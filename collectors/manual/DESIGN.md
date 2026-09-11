@@ -266,7 +266,6 @@ the bank's deposit is its own external inflow, and the two do not need to
 pair. Interest is a mark above the cash that eventually comes out (a gain).
 A claim paid out to a third party is a mark-down with **no ledger row**
 (a loss); forfeiture is the mark going to zero the same way.
-Nothing else is ever needed.
 
 **Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
 widens the `silver_sources` `silver_kind` whitelist (the 0007–0015
