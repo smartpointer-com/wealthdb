@@ -79,7 +79,7 @@ func TestTheTypeCodeClassifiesWhatTheNarrativeCannot(t *testing.T) {
 		{"NFEX", "D", canonical.TxKindFx},
 		{"NFEX", "C", canonical.TxKindFx},
 		{"NDIV", "C", canonical.TxKindDividend},
-		{"NRTI", "C", canonical.TxKindInterest},
+		{"NINT", "C", canonical.TxKindInterest},
 		{"NCHG", "D", canonical.TxKindFee},
 		{"NTAX", "D", canonical.TxKindTax},
 		// Not a code the feed carries: the direction still decides.
@@ -105,5 +105,31 @@ func TestTheNarrativeStillOutranksTheTypeCode(t *testing.T) {
 	}
 	if got := cashMovementKind("DIVIDENDE", "C", "NSEC"); got != canonical.TxKindDividend {
 		t.Errorf("a named dividend = %q, want dividend", got)
+	}
+}
+
+// TestAReversalIsReadByDirectionAlone: MT940 marks a reversal in the
+// credit/debit field (`RC`, `RD`), and the caller pre-negates only a
+// plain `D` — so a reversal arrives with a positive amount and a
+// direction that means the opposite of what it spells. Reading a type
+// code off that states a kind confidently against an unflipped sign,
+// which turned a dividend clawback into interest income.
+func TestAReversalIsReadByDirectionAlone(t *testing.T) {
+	for _, txnType := range []string{"NRTI", "NSEC", "NDIV", "NFEX", "NCHG"} {
+		if got := cashMovementKind("W09?", "RC", txnType); got != canonical.TxKindWithdrawal {
+			t.Errorf("a reversed credit marked %q = %q, want withdrawal — the direction is the only safe reading",
+				txnType, got)
+		}
+	}
+}
+
+// TestAReturnedItemIsNotInterest guards the SWIFT name trap: NRTI is
+// RTI, a returned item, and resembles NINT only in spelling.
+func TestAReturnedItemIsNotInterest(t *testing.T) {
+	if got := cashMovementKind("W09?", "C", "NRTI"); got == canonical.TxKindInterest {
+		t.Error("NRTI classified as interest; it is a returned item")
+	}
+	if got := cashMovementKind("X01?", "C", "NINT"); got != canonical.TxKindInterest {
+		t.Errorf("NINT = %q, want interest", got)
 	}
 }
