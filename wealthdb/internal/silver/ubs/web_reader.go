@@ -873,8 +873,8 @@ SELECT transaction_external_id, value_date, account_external_id,
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			txID, acct, ccy string
-			valueDate       int64
+			txID, acct, ccy       string
+			valueDate             int64
 			debit, credit         sql.NullFloat64
 			kindStr, counterparty sql.NullString
 		)
@@ -1276,7 +1276,18 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"THIRD-PARTY CHARGES",
 		"RENTAL FEE SAFE BOX",
 		"BALANCE CLOSING OF SERVICE PRICES",
-		"ADVICE", "UBS ADVICE":
+		"ADVICE", "UBS ADVICE",
+		// The discretionary mandate's periodic management charge,
+		// billed to the mandate's own cash account at each period
+		// end. It names the PRODUCT the charge is for, the way
+		// "Custody Price" and "UBS Advice" do, and like them carries
+		// no instrument, quantity or price — the booking type is the
+		// only thing that says what it is. `CAN` cancels a charge
+		// already billed and `REC` re-bills the corrected figure;
+		// both are the same charge and take the same kind, and the
+		// cancellation's inflow survives because the statement era
+		// prints it as a negative debit, which webReversal reads.
+		"UBS MANAGE", "CAN UBS MANAGE", "REC UBS MANAGE":
 		return canonical.TxKindFee
 	// ---- Currency conversion between the holder's own accounts —
 	// an internal reshuffle, not a capital flow. Spot, forward and
@@ -1307,7 +1318,6 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
 		"BUY PM SPOT W/O VAT", "SELL PM SPOT W/O VAT",
 		"SUBSCRIPTION RIGHT",
-		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE",
 		// Private-market vehicles settle the same way, under their
 		// own vocabulary. A capital call buys fund units and a
 		// distribution sells them, both against the cash account that

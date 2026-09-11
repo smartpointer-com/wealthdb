@@ -19,6 +19,7 @@ func TestTheBanksOwnChargesNameOneMerchant(t *testing.T) {
 	for _, bookingType := range []string{
 		"CUSTODY PRICE", "UBS ADVICE", "RENTAL FEE SAFE BOX",
 		"BALANCE CLOSING OF SERVICE PRICES", "INTEREST CALCULATION BALANCE",
+		"UBS MANAGE", "CAN UBS MANAGE", "REC UBS MANAGE",
 	} {
 		got, _, _ := projectWebTxText("230-XXXXXX.S9", bookingType, webTxPayload{}, false)
 		key := spending.Normalize(got.counterparty, got.description)
@@ -647,6 +648,7 @@ func TestTheBankIsThePayeeOnItsOwnCharges(t *testing.T) {
 	for _, bookingType := range []string{
 		"CUSTODY PRICE", "UBS ADVICE", "RENTAL FEE SAFE BOX",
 		"BALANCE CLOSING OF SERVICE PRICES", "INTEREST CALCULATION BALANCE",
+		"UBS MANAGE", "CAN UBS MANAGE", "REC UBS MANAGE",
 	} {
 		got, _, _ := projectWebTxText("230-XXXXXX.S9", bookingType, webTxPayload{}, false)
 		if got.counterparty != bankName {

@@ -101,7 +101,13 @@ func TestWebKindClassification(t *testing.T) {
 		{"pdf purchase", "PURCHASE", D, N, canonical.TxKindBuy},
 		{"pdf sale", "SALE", N, C, canonical.TxKindSell},
 		{"pdf order buy", "ORDER", D, N, canonical.TxKindBuy},
-		{"pdf ubs manage buy", "UBS MANAGE", D, N, canonical.TxKindBuy},
+		// The mandate management charge is a charge, not a
+		// settlement: it moves cash out and buys nothing, so
+		// classified by direction it booked a purchase of nothing at
+		// each period end and reached no fee total at all.
+		{"pdf ubs manage fee", "UBS MANAGE", D, N, canonical.TxKindFee},
+		{"pdf ubs manage rebill", "REC UBS MANAGE", D, N, canonical.TxKindFee},
+		{"pdf ubs manage cancel", "CAN UBS MANAGE", D, N, canonical.TxKindFee},
 		{"pdf precious metal sell", "PRECIOUS METAL SELL", N, C, canonical.TxKindSell},
 		// Mortgage principal payoff — classified by direction
 		// (a debit → withdrawal).
@@ -150,6 +156,15 @@ func TestWebProjectedNetKeepsAStatementReversal(t *testing.T) {
 		{"a cancelled statement withdrawal", "CANC.MORT.MAT.", true, debit(-100), none, 100},
 		{"a cancelled statement dividend", "REVERSAL DIVIDEND", true, none, debit(-100), -100},
 		{"a cancelled statement purchase", "SHARE", true, debit(-100), none, 100},
+		// The mandate charge and the pair that corrects one. The
+		// re-bill is another charge out; the cancellation is the
+		// bank handing the original back, and it says so with a
+		// negative in the column the charge went out in — so it must
+		// survive as an inflow against a kind whose sign is pinned
+		// outward.
+		{"a mandate charge", "UBS MANAGE", true, debit(100), none, -100},
+		{"a re-billed mandate charge", "REC UBS MANAGE", true, debit(80), none, -80},
+		{"a cancelled mandate charge", "CAN UBS MANAGE", true, debit(-100), none, 100},
 		// The export states direction in the cell's own sign, and the
 		// booking type is where its reversals are named.
 		{"an export payment", "e-banking payment order", false, debit(-100), none, -100},

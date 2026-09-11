@@ -180,6 +180,13 @@ var ownServiceCharges = map[string]bool{
 	"RENTAL FEE SAFE BOX":               true,
 	"BALANCE CLOSING OF SERVICE PRICES": true,
 	"INTEREST CALCULATION BALANCE":      true,
+	// The mandate management charge, and the cancel / re-bill pair
+	// that corrects one. Their payee column holds the relationship
+	// the mandate runs under, which is a reference and not a party:
+	// left alone it becomes the merchant, one per mandate.
+	"UBS MANAGE":     true,
+	"CAN UBS MANAGE": true,
+	"REC UBS MANAGE": true,
 }
 
 // isOwnServiceCharge reports whether a booking type is one the bank
