@@ -190,7 +190,7 @@ check("the money cards render merchant labels",
       all("merchant_name" in json.dumps(CARDS[c][2])
           for c in ("Top 50 merchants", "Largest transactions")))
 check("the money cards render account labels",
-      all("display_name" in json.dumps(CARDS[c][2])
+      all("account_label" in json.dumps(CARDS[c][2])
           for c in ("Spend by account", "Largest transactions")))
 
 # The two breakdowns are rings, on both dashboards. Every slice is drawn
@@ -234,14 +234,13 @@ check("the money card-balances chart is split by the account label",
 # A card called "by month" charts months. Metabase infers the x-axis
 # from cardinality, and there are more categories than months in any
 # window worth charting, so both monthly cards pin their dimensions —
-# the money one over the model's columns, the twin over its own SQL
-# aliases. Without the pin the card draws its own transpose.
+# over their own SQL aliases now that both read the view natively.
+# Without the pin the card draws its own transpose.
 check("the monthly cards put the month on the x-axis, categories in the "
       "stack",
-      _QDEFS["Spending by month"][3]["graph.dimensions"]
-      == ["occurred_at", "spend_primary"]
-      and _PDEFS["Spending by month (privacy)"][4]["graph.dimensions"]
-      == ["month", "category"])
+      all(d[i]["graph.dimensions"] == ["month", "category"]
+          for d, i in ((_QDEFS["Spending by month"], 3),
+                       (_PDEFS["Spending by month (privacy)"], 4))))
 check("...as stacked bands over a continuous axis",
       all(d == "area" and v.get("stackable.stack_type") == "stacked"
           for d, v in ((_QDEFS["Spending by month"][0],
@@ -300,7 +299,7 @@ check("exactly the two rankings filter on the merchant column",
        for c, *_ in DEFS[d][3] if filters_on_merchant(CARDS[c][2])}
       == MERCHANT_RANKINGS)
 check("the largest-lines card keeps blank merchants (a line is a line)",
-      "filter" not in CARDS["Largest transactions"][2]["query"])
+      "merchant_name IS NOT NULL" not in (sql_of(CARDS["Largest transactions"][2]) or ""))
 check("every tile of every dashboard resolves to a defined card",
       not [(d, c) for d, (_, _, _, tiles) in DEFS.items()
            for c, *_ in tiles if c not in CARDS],
@@ -736,3 +735,27 @@ check("it no longer needs the standalone-currency caveat",
 check("the Currency picker is not wired to it — a row filter would empty "
       "the two columns it does not select",
       "Top 50 merchants" in p.SPEND_ALL_CURRENCY_CARDS)
+
+section("every spending tile reads one currency")
+# The long-format model is right only under a row filter on `currency`,
+# which the dashboard supplies and nothing else does — so a tile over it
+# summed all three currencies whenever it was opened on its own. Every
+# money spending tile now settles that for itself: natively through the
+# {{currency}} variable the picker substitutes (and which defaults to
+# USD), or, on the merchant ranking, by carrying each currency as its own
+# column. Nothing on the dashboard may still read the model unguarded.
+SPEND_MODEL_CARD = f"card__{MID['report_spending']}"
+for _c, *_ in DEFS["Spending"][3]:
+    _q = CARDS[_c][2]
+    _sql = sql_of(_q)
+    if _sql is not None:
+        check(f"'{_c}' names its currency through the variable",
+              "{{currency}}" in _sql,
+              _sql[:160])
+        continue
+    if _q.get("query", {}).get("source-table") != SPEND_MODEL_CARD:
+        continue          # the _pct model's share is a row count: invariant
+    check(f"'{_c}' carries a currency column per reporting currency",
+          _c in p.SPEND_ALL_CURRENCY_CARDS
+          and [a[2].get("display-name")
+               for a in _q["query"]["aggregation"]] == ["USD", "CHF", "EUR"])

@@ -870,6 +870,33 @@ def question_defs(db_id, mid):
     register_native_targets("Card balances over time", bal_tags,
                             CARD_BALANCE_PICKERS)
 
+    # The spending tiles read the serving view natively, the way the
+    # privacy twin's already do. The reason is the Currency picker: the
+    # long-format model carries a row per (line, reporting currency), so
+    # an MBQL tile over it is right only while a row filter holds it to
+    # one — which the dashboard supplies and nothing else does. Opened on
+    # its own, such a tile summed all three currencies, silently and
+    # plausibly. A template VARIABLE is substituted by the picker rather
+    # than ANDed with the tile's own filters, and {{currency}} defaults
+    # to USD, so a native tile reads the dashboard's choice on the
+    # dashboard and USD anywhere else.
+    #
+    # What it costs is MBQL drill-through: a native result has no "see
+    # these records". The two tables keep theirs by staying MBQL — one
+    # aggregates, so a per-currency column collapses its duplicate rows
+    # (ccy_spend), and the other is the transaction list, which is
+    # itself the records a drill-through would reach.
+    sp_tags = spend_tags("web_spending", SPEND_FILTERS)
+    sp_where = _spend_where(sp_tags)
+    sp_val = f"sum({_ccy_case('value', neg=True)})::DOUBLE"
+
+    def spend_native(name, display, desc, sql, viz):
+        register_native_targets(name, sp_tags, SPEND_PICKERS)
+        return (display, desc + native_note, _native(db_id, sql, sp_tags), viz)
+
+    sp_month = ("CAST(date_trunc('month', occurred_at) AS TIMESTAMP)"
+                " AS month")
+
     month = _f("occurred_at", "type/DateTime", "month")
     days_stale = ["datetime-diff", _f("snapshot_at", "type/DateTime"),
                   ["now"], "day"]
@@ -1011,20 +1038,20 @@ def question_defs(db_id, mid):
         # day, carried forward) with no model of their own, so it reads
         # web_card_balances_history natively and takes the pickers as
         # template tags (registered above).
-        "Spend — monthly trend": ("smartscalar",
+        "Spend — monthly trend": spend_native("Spend — monthly trend",
+            "smartscalar",
             "Net spend in the window's latest month, with the change vs the "
             "month before. Net spend is purchases minus refunds and "
-            "rewards." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
-                   "breakout": [month]}),
+            "rewards.",
+            f"SELECT {sp_month},\n       {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 1",
             {}),
-        "Net spend": ("scalar",
+        "Net spend": spend_native("Net spend", "scalar",
             "Total net spend over the selected window: purchases minus "
             "refunds and rewards, across the selected accounts and "
-            "categories." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum}),
+            "categories.",
+            f"SELECT {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where,
             {}),
         # Shows a percentage, so the privacy twin reuses it as-is
         # (PRIVACY_EXEMPT_CARDS). A scalar's "see these records"
@@ -1056,14 +1083,13 @@ def question_defs(db_id, mid):
         # the window, and the envelope is the window's own shape. A
         # month whose refunds beat its purchases dips its band below the
         # line.
-        "Spending by month": ("area",
+        "Spending by month": spend_native("Spending by month", "area",
             "Net spend per month, stacked by primary category — the shape of "
-            "the window: which months were heavy and what carried "
-            "them." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
-                   "breakout": [month, _f("spend_primary", "type/Text")]}),
-            {"graph.dimensions": ["occurred_at", "spend_primary"],
+            "the window: which months were heavy and what carried them.",
+            f"SELECT {sp_month},\n       spend_primary_label AS category,\n"
+            f"       {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n GROUP BY 1, 2\n ORDER BY 1",
+            {"graph.dimensions": ["month", "category"],
              "stackable.stack_type": "stacked"}),
         # The two breakdowns are donuts: the question they answer is how
         # the window DIVIDES, and a ring reads that as one shape where a
@@ -1081,26 +1107,23 @@ def question_defs(db_id, mid):
         # beat its purchases; a ring has no way to draw that, so
         # Metabase leaves such a slice out. The figure is in the
         # transaction list either way.
-        "Spending by category": ("pie",
+        "Spending by category": spend_native("Spending by category", "pie",
             "Net spend by primary category over the window, largest first, "
-            "with the window's total in the middle. Click a slice to drill "
-            "through to the lines behind it; the subcategory tile beside it "
-            "holds the same window at the detailed level. A category whose "
-            "refunds beat its purchases has no slice." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
-                   "breakout": [_f("spend_primary", "type/Text")],
-                   "order-by": [["desc", ["aggregation", 0]]]}),
+            "with the window's total in the middle. The subcategory tile "
+            "beside it holds the same window at the detailed level, and the "
+            "transaction list below holds the lines. A category whose "
+            "refunds beat its purchases has no slice.",
+            f"SELECT spend_primary_label AS category,\n       {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut()),
-        "Spending by subcategory": ("pie",
+        "Spending by subcategory": spend_native("Spending by subcategory",
+            "pie",
             "The detailed level of Spending by category: net spend by "
             "detailed category. The vocabulary holds eighty-odd values, so "
             "the ring draws the ones worth a slice and folds the long tail "
-            "into one — the whole window is on it either way." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
-                   "breakout": [_f("spend_detailed", "type/Text")],
-                   "order-by": [["desc", ["aggregation", 0]]]}),
+            "into one — the whole window is on it either way.",
+            f"SELECT spend_label AS category,\n       {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut(threshold=1.5)),
         # Ranks merchants only. A line resolved to a delta — a gift, a
         # bill on a card not itemised, cash out of an ATM — is not a
@@ -1153,15 +1176,13 @@ def question_defs(db_id, mid):
                    "order-by": [["desc", ["aggregation", 0]]],
                    "limit": 50}),
             {}),
-        "Spend by account": ("row",
+        "Spend by account": spend_native("Spend by account", "row",
             "Net spend by account over the window — which card or deposit "
             "account the money left through. Each bar is labelled with the "
             "account's name, its source and its kind, since a name on its "
-            "own says neither." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend, "aggregation": spend_sum,
-                   "breakout": [_f("display_name", "type/Text")],
-                   "order-by": [["desc", ["aggregation", 0]]]}),
+            "own says neither.",
+            f"SELECT account_label AS account,\n       {sp_val} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             {}),
         # Read the way an issuer states a card: what is OWED, as a
         # positive figure. Gold stores the same balance negative — a card
@@ -1181,22 +1202,20 @@ def question_defs(db_id, mid):
                 + _spend_where(bal_tags, " ") + "\n"
                 " GROUP BY 1, 2\n ORDER BY 1", bal_tags),
             _series_viz("as_of_day", "account_label", "owed")),
-        "Largest transactions": ("table",
+        # The one tile that lists LINES rather than grouping them, which
+        # is why it reads the view natively like the charts do: the long
+        # model would hand it each line three times over, once per
+        # reporting currency, and no aggregation to fold them back.
+        "Largest transactions": spend_native("Largest transactions", "table",
             "The fifty largest single spending lines of the window, with "
             "merchant (blank only where the line has none to show), account "
-            "and both category "
-            "levels. A refund sorts to "
-            "the bottom (its net spend is negative)." + spend_note,
-            _mbql(db_id, mid["report_spending"],
-                  {"expressions": net_spend,
-                   "fields": [_f("occurred_at", "type/DateTime"),
-                              _f("display_name", "type/Text"),
-                              _f("merchant_name", "type/Text"),
-                              _f("spend_primary", "type/Text"),
-                              _f("spend_detailed", "type/Text"),
-                              ["expression", "net_spend"]],
-                   "order-by": [["desc", ["expression", "net_spend"]]],
-                   "limit": 50}),
+            "and both category levels. A refund sorts to the bottom (its "
+            "net spend is negative).",
+            "SELECT occurred_at,\n       account_label AS account,\n"
+            "       merchant_name,\n       spend_primary_label AS category,\n"
+            "       spend_label AS subcategory,\n"
+            f"       {_ccy_case('value', neg=True)} AS net_spend\n"
+            "  FROM web_spending" + sp_where + "\n ORDER BY net_spend DESC\n LIMIT 50",
             {}),
         # The returns cards run over the materialized report_returns table.
         # The three scalars and the by-source table are MBQL (grain 'global' /
