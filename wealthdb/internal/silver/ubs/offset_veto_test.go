@@ -546,3 +546,74 @@ func TestTheConduitVerdictNeverGoesMissing(t *testing.T) {
 		})
 	}
 }
+
+// TestASeamDroppedRowDoesNotConsumeAVetoMatch pins the wiring between the
+// two suppressions and the veto. The seam drops a web row because the MT940
+// feed already holds that booking; if the veto still counts that row in its
+// emitted universe, the row it no longer emits can win the mirror its PSN
+// counterpart needed. One leg is then demoted while the other keeps its
+// flow kind — the one-sided phantom flow the veto exists to prevent.
+//
+// Shape: two own accounts, one day. A's debit is held by BOTH feeds (the
+// seam window), so the seam drops the web copy and the MT940 row is what
+// gold keeps. B's credit is the mirror. Every id and figure is invented.
+func TestASeamDroppedRowDoesNotConsumeAVetoMatch(t *testing.T) {
+	const sharedRef = "AW00000XX0000000"
+
+	r := newWebTxFixture(t)
+	seedRailEraAnchor(t, r)
+	seedWebAccount(t, r, vetoAcctA)
+	seedWebAccount(t, r, vetoAcctB)
+	// The duplicated leg, under the bank's own number for the entry...
+	seedWebTx(t, r, sharedRef, vetoAcctA, vetoDay1, "CHF", -40000, true)
+	// ...and its same-day mirror on another own account, web-only.
+	seedWebTx(t, r, "T2", vetoAcctB, vetoDay1, "CHF", 40000, true)
+
+	_, psnDB := newFixtureSilver(t)
+	if _, err := psnDB.Exec(`
+        INSERT INTO events (event_external_id, timestamp, relationship_id,
+            account_external_id, kind, currency_iso, payload)
+        VALUES ('mt940:`+vetoAcctA+`:`+sharedRef+`', ?, 'R1', ?, 'cash_movement', 'CHF',
+                json_object('amount','40000','credit_debit','D','narrative','TRANSFER',
+                            'account', ?, 'funds','CHF','bank_ref', ?))`,
+		vetoDay1, vetoAcctA, vetoAcctA, sharedRef); err != nil {
+		t.Fatalf("seed psn event: %v", err)
+	}
+
+	conn := &Connection{web: r, psn: &psnReader{db: psnDB}}
+	stream, err := conn.Transactions(context.Background(),
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true})
+	if err != nil {
+		t.Fatalf("merged Transactions: %v", err)
+	}
+	kinds := map[string]canonical.TxKind{}
+	internal := map[string]bool{}
+	for {
+		batch, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		for _, tx := range batch.Transactions {
+			kinds[tx.TransactionExternalID] = tx.Kind
+			internal[tx.TransactionExternalID] = strings.Contains(
+				string(tx.Payload), `"returns_flow":"internal"`)
+		}
+		if !more {
+			break
+		}
+	}
+
+	// The seam did its job: the web copy is gone, the MT940 row kept it.
+	if _, ok := kinds[sharedRef+"@"+vetoAcctA]; ok {
+		t.Fatal("the seam did not drop the web copy — this test no longer tests what it claims")
+	}
+	psnID := "mt940:" + vetoAcctA + ":" + sharedRef
+	if _, ok := kinds[psnID]; !ok {
+		t.Fatal("the PSN row is not emitted — this test no longer tests what it claims")
+	}
+	// Both legs of the pair move together, or neither does.
+	if internal[psnID] != internal["T2@"+vetoAcctB] {
+		t.Errorf("one-sided demotion: PSN leg internal=%v, mirror internal=%v — a phantom external flow",
+			internal[psnID], internal["T2@"+vetoAcctB])
+	}
+}

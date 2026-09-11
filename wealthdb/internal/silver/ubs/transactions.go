@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/silver"
@@ -18,6 +19,15 @@ import (
 func (c *psnReader) Transactions(ctx context.Context, w canonical.Window, offsetVeto map[string]bool) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
+	}
+
+	ibans, err := c.cashAccountIBANs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	settled, err := c.buildSettlementFold(ctx, ibans)
+	if err != nil {
+		return nil, err
 	}
 
 	const q = `
@@ -41,7 +51,11 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			return nil, fmt.Errorf("ubs Transactions scan: %w", err)
 		}
 
-		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload)
+		if settled.covers(kind, extID, currencyISO, occurredAt, payload) {
+			continue
+		}
+
+		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload, ibans)
 		if err != nil {
 			return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 		}
@@ -61,15 +75,22 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 // --- per-kind payload structs ---------------------------------------------
 
 type tradeConfirmationPayload struct {
-	Side                  string             `json:"side"`
-	ISIN                  string             `json:"isin"`
-	GrossAmount           *canonical.Decimal `json:"gross_amount"`
-	NetAmount             *canonical.Decimal `json:"net_amount"`
-	NetCurrency           string             `json:"net_currency"`
-	Price                 *canonical.Decimal `json:"price"`
-	Quantity              *canonical.Decimal `json:"quantity"`
-	CashAccountExternalID string             `json:"cash_account_external_id"`
-	SecurityName          string             `json:"security_name"`
+	Side        string             `json:"side"`
+	ISIN        string             `json:"isin"`
+	GrossAmount *canonical.Decimal `json:"gross_amount"`
+	NetAmount   *canonical.Decimal `json:"net_amount"`
+	NetCurrency string             `json:"net_currency"`
+	Price       *canonical.Decimal `json:"price"`
+	Quantity    *canonical.Decimal `json:"quantity"`
+	// The confirmation names the cash account in the bank's INTERNAL
+	// form (`:97A::CASH//`), which is not the IBAN the account
+	// registry is keyed by — see cashAccountIBANs.
+	CashAccountExternalID string `json:"cash_account_external_id"`
+	SecurityName          string `json:"security_name"`
+	// SettlementDateUnix is `:98A::SETT//`, the day the cash leg hits
+	// the account. It is the day the MT940 statement books that leg
+	// on, which is what pairs the two records (settlementFold).
+	SettlementDateUnix int64 `json:"settlement_date_unix"`
 }
 
 type cashMovementPayload struct {
@@ -97,10 +118,229 @@ type corporateActionPayload struct {
 	CAEV string `json:"caev"`
 }
 
+// A securities trade reaches PSN twice, on two rails that share no id:
+// the MT515 confirmation of the trade and the MT940 `:61:` line for the
+// cash leg settling it. Both name the same cash account and the same
+// figure, so left alone one trade is two rows in the ledger — and every
+// count, turnover and per-instrument total built over it is doubled.
+//
+// The confirmation is the one that survives, and that is the rail's
+// property rather than a per-row judgement: it carries the instrument,
+// the quantity, the price and the side, where the statement line
+// carries a bare booking code (`B37?`) and no security at all. So the
+// fold drops the cash line, exactly as buildEraFold drops the
+// reconstruction and keeps the machine-readable record.
+//
+// Only a line the bank itself typed as a securities settlement is
+// eligible (`:61:` NSEC). A trade the MT940 feed never carried — the
+// minor-currency cash accounts it does not deliver — has nothing to
+// fold and keeps its confirmation, which is why the confirmation is
+// also the rail that reads completely.
+//
+// The whole silver, unwindowed, for buildEraFold's reason: whether a
+// booking is recorded twice depends on silver's contents alone and
+// never on which slice of time a load happens to cover. A window that
+// held the cash line but not its confirmation would otherwise emit the
+// duplicate the next window folds away.
+type settlementFold struct {
+	// unpaired counts the confirmations still to be matched at each
+	// key, and covers spends one per cash leg it folds. A set would
+	// fold EVERY leg that hashes to a key against a single
+	// confirmation: two NSEC lines on one account, day, currency and
+	// magnitude — one settling a trade, one not — would both vanish,
+	// and the second booking's money would leave the cash ledger
+	// entirely. Counting bounds the fold at N legs for N
+	// confirmations, which is buildEraFold's 1:1 rule in the form a
+	// streaming pass can hold.
+	//
+	// Which of two indistinguishable legs is folded is left to row
+	// order, and deliberately: at equal account, day, currency and
+	// magnitude the two differ only in their id, so no field the
+	// ledger carries can prefer one.
+	unpaired map[settlementKey]int
+	ibans    map[string]string
+}
+
+// settlementKey is the identity the two rails' id schemes cannot
+// express: one cash account, one currency, one figure, one settlement
+// day. The magnitude is unsigned because the two rails state direction
+// differently — the confirmation in its side, the statement in its
+// debit/credit mark — and a fold that disagreed with either about the
+// sign would pair nothing.
+type settlementKey struct {
+	account  string
+	currency string
+	amount   string
+	day      int64
+}
+
+// unixDay is the UTC day a timestamp falls in. Both rails date the
+// settlement to the day and neither carries a time of day on it.
+func unixDay(ts int64) int64 {
+	const day = 86400
+	d := ts / day
+	if ts < 0 && ts%day != 0 {
+		d--
+	}
+	return d
+}
+
+func newSettlementKey(account, currency string, amount *canonical.Decimal, settlementUnix int64) (settlementKey, bool) {
+	if account == "" || amount == nil || settlementUnix == 0 {
+		return settlementKey{}, false
+	}
+	abs := amount.Abs()
+	if abs.IsZero() {
+		return settlementKey{}, false
+	}
+	return settlementKey{
+		account:  account,
+		currency: strings.ToUpper(strings.TrimSpace(currency)),
+		amount:   abs.String(),
+		day:      unixDay(settlementUnix),
+	}, true
+}
+
+// buildSettlementFold reads every trade confirmation the silver holds
+// and records the cash leg each one settles.
+func (c *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]string) (*settlementFold, error) {
+	out := &settlementFold{unpaired: map[settlementKey]int{}, ibans: ibans}
+	if c == nil || c.db == nil {
+		return out, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`)
+	if err != nil {
+		return nil, fmt.Errorf("ubs buildSettlementFold: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			currencyISO *string
+			payload     string
+		)
+		if err := rows.Scan(&currencyISO, &payload); err != nil {
+			return nil, fmt.Errorf("ubs buildSettlementFold scan: %w", err)
+		}
+		var p tradeConfirmationPayload
+		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+			return nil, fmt.Errorf("ubs buildSettlementFold payload: %w", err)
+		}
+		currency := p.NetCurrency
+		if currency == "" && currencyISO != nil {
+			currency = *currencyISO
+		}
+		key, ok := newSettlementKey(
+			cashIBAN(ibans, p.CashAccountExternalID), currency,
+			p.NetAmount, p.SettlementDateUnix)
+		if ok {
+			out.unpaired[key]++
+		}
+	}
+	return out, rows.Err()
+}
+
+// covers reports whether an event is the cash leg of a trade a
+// confirmation already records in full, and SPENDS that confirmation:
+// each one folds at most one leg, so a second leg at the same key
+// survives and reaches gold on its own classification. That is the
+// conservative direction — a duplicate row is visible and fixable, a
+// vanished booking is not.
+func (f *settlementFold) covers(kind, account string, currencyISO *string, occurredAt int64, payload string) bool {
+	if f == nil || len(f.unpaired) == 0 || kind != "cash_movement" {
+		return false
+	}
+	var p cashMovementPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(p.TxnType)) != "NSEC" {
+		return false
+	}
+	acct := account
+	if p.Account != "" {
+		acct = p.Account
+	}
+	currency := p.Funds
+	if currency == "" && currencyISO != nil {
+		currency = *currencyISO
+	}
+	key, ok := newSettlementKey(cashIBAN(f.ibans, acct), currency, p.Amount, occurredAt)
+	if !ok || f.unpaired[key] == 0 {
+		return false
+	}
+	f.unpaired[key]--
+	return true
+}
+
+// cashAccountIBANs maps the bank's internal cash-account id onto the
+// IBAN the rest of the adapter — and gold's account registry — is keyed
+// by. The master-data feed states both, and the MT940 feed already
+// names accounts by IBAN; only the MT515 confirmation uses the internal
+// form, so without the map its rows name an account nothing else does.
+func (c *psnReader) cashAccountIBANs(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	if c == nil || c.db == nil {
+		return out, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT DISTINCT json_extract(payload, '$.AcctId'), account_external_id
+  FROM cash_accounts`)
+	if err != nil {
+		return nil, fmt.Errorf("ubs cashAccountIBANs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var acctID, iban *string
+		if err := rows.Scan(&acctID, &iban); err != nil {
+			return nil, fmt.Errorf("ubs cashAccountIBANs scan: %w", err)
+		}
+		if acctID != nil && iban != nil && *acctID != "" && *iban != "" {
+			out[*acctID] = *iban
+		}
+	}
+	return out, rows.Err()
+}
+
+// isSellSide reports whether a trade confirmation's side is the one
+// that hands securities back for cash.
+//
+// The side reaches silver from the order's business function
+// (`:22H::BUSE//`), which carries two vocabularies in the one tag: a
+// market trade names the party the holder was (`BUYI` / `SELL`), a
+// fund order the operation (`SUBS` subscribes, `REDM` redeems). The
+// collector folds only the market pair to a common spelling, so a fund
+// order arrives under its own word. Read for the market vocabulary
+// alone, a redemption fell to the buy default and a disposal was
+// booked as an acquisition — cash arriving against a row that says
+// cash left.
+func isSellSide(side string) bool {
+	switch strings.ToUpper(strings.TrimSpace(side)) {
+	case "S", "SELL", "REDM":
+		return true
+	}
+	return false
+}
+
+// cashIBAN resolves a cash-account id the bank wrote in its internal
+// form to the IBAN the account registry is keyed by. An id already in
+// IBAN form, or one the map does not cover, is returned as given: the
+// map is an improvement on the raw id, never a filter on which rows
+// reach gold.
+func cashIBAN(ibans map[string]string, id string) string {
+	if iban, ok := ibans[id]; ok {
+		return iban
+	}
+	return id
+}
+
 // buildTransaction routes a silver event into a TransactionChange.
 // Each silverKind variant has its own payload shape; common fields
-// (account, instrument, kind) fall out per branch.
-func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind string, defaultCcy *string, payload string) (canonical.TransactionChange, error) {
+// (account, instrument, kind) fall out per branch. `ibans` maps the
+// bank's internal cash-account ids onto the IBANs the account registry
+// is keyed by (cashAccountIBANs); nil where the caller emits no kind
+// that names a cash account of its own.
+func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind string, defaultCcy *string, payload string, ibans map[string]string) (canonical.TransactionChange, error) {
 	tx := canonical.TransactionChange{
 		TransactionExternalID: eventID,
 		OccurredAt:            occurredAt,
@@ -118,14 +358,20 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 			return tx, err
 		}
 		tx.Kind = kindFor(silverKind, "", "", "") // Buy default; side flips below
-		if p.Side == "S" || p.Side == "SELL" {
+		if isSellSide(p.Side) {
 			tx.Kind = canonical.TxKindSell
 		}
 		if p.ISIN != "" {
 			tx.InstrumentExternalID = &p.ISIN
 		}
-		if p.CashAccountExternalID != "" {
-			tx.AccountExternalID = p.CashAccountExternalID
+		// The confirmation books against the cash account its
+		// settlement leg moves, named in the bank's internal form.
+		// Carried through as given it is an account gold has no
+		// record of, so the trade reaches the ledger attached to
+		// nothing: no kind, no portfolio, and outside every
+		// account-scoped filter.
+		if acct := cashIBAN(ibans, p.CashAccountExternalID); acct != "" {
+			tx.AccountExternalID = acct
 		}
 		if p.NetCurrency != "" {
 			tx.Currency = p.NetCurrency

@@ -796,7 +796,7 @@ func TestABankChargeNamesTheBankAsPayee(t *testing.T) {
 		{"NCHG", "RC", ""},
 		{"NTRF", "D", ""},
 	} {
-		tx, err := buildTransaction("E1", 0, "CH00CASH", "cash_movement", nil, payload(tc.txnType, tc.creditDebit))
+		tx, err := buildTransaction("E1", 0, "CH00CASH", "cash_movement", nil, payload(tc.txnType, tc.creditDebit), nil)
 		if err != nil {
 			t.Fatalf("buildTransaction(%s, %s): %v", tc.txnType, tc.creditDebit, err)
 		}

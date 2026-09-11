@@ -143,7 +143,7 @@ in `silver.events`) maps to gold's canonical `kind` taxonomy:
 | --- | --- | --- |
 | `cash_movement` | `deposit` / `withdrawal` / `fee` / `interest` / `tax` / `dividend` / `buy` / `sell` / `fx` | from the MT940 `:86:` narrative, then the `:61:` type code as a floor (adapter splits — see §6); a deposit/withdrawal leg whose same-day mirror books on another own account is demoted to `other` (same-day offset veto, `buildSameDayOffsetVeto`) |
 | `securities_movement` | `transfer_in` / `transfer_out` | sign-driven |
-| `trade_confirmation` | `buy` or `sell` | from MT515 payload `side` |
+| `trade_confirmation` | `buy` or `sell` | from MT515 payload `side`, which the collector reads off the order's business function (`:22H::BUSE//`). That tag carries two vocabularies: a market trade names the party the holder was (`BUYI`/`SELL`, folded to `BUY`/`SELL` at load), a fund order the operation (`SUBS` subscribes, `REDM` redeems, kept verbatim). Books against the settlement's cash account, resolved to its IBAN (`cashAccountIBANs`); the MT940 line for the same settlement folds away (the settlement fold, §7) |
 | `fx_confirmation` | `fx` | MT300 |
 | `fx_option_confirmation` | `fx` | MT305 (no dedicated option kind; the settlement is an FX cash effect) |
 | `loan_deposit_confirmation` | `other` | MT320/MT330/MT350 |
@@ -218,7 +218,9 @@ settling that way would otherwise read as a plain withdrawal: spending
 would count it as money leaving and returns as external capital.
 `NSEC` settles as `buy` or `sell` by direction, `NFEX` as `fx`, `NDIV`
 as `dividend`, `NINT` as `interest`, `NCHG`/`NCOM` as `fee`, `NTAX` as
-`tax`. `NRTI` is a RETURNED ITEM, not interest, and is deliberately
+`tax`. An `NSEC` line whose trade the MT515 rail also confirms never
+reaches this floor at all — the settlement fold (§7) drops it in favour
+of the confirmation, which names the security the floor cannot. `NRTI` is a RETURNED ITEM, not interest, and is deliberately
 unmapped. A reversal — marked `RC` or `RD` in the credit/debit field —
 bypasses the floor entirely: its sign is not yet flipped at that point,
 so any kind read off it would be stated against the wrong direction.
@@ -456,6 +458,58 @@ classifies the web and PDF eras' FX bookings (`FOREX SALE`, `Purchase
 FX Spot`, `Sale from FX Swap`, …) as `fx` kinds, which the spending
 population excludes by kind, so the map's entries for those spellings
 state their meaning without placing anything.
+
+### The settlement fold
+
+Two PSN rails record one securities trade: the MT515 confirmation of the
+trade itself and the MT940 `:61:` line for the cash leg settling it, the
+latter typed `NSEC` and narrated with a bare booking code. They share no
+id, so left alone one trade is two rows and every count, turnover and
+per-instrument total over the ledger is doubled.
+
+`buildSettlementFold` (`transactions.go`) is the match, and its key is
+the settlement the two rails agree on: the cash account, the currency,
+the **unsigned** figure, and the settlement day — `:98A::SETT//` on the
+confirmation, the value date on the statement line. Unsigned because the
+rails state direction differently, the confirmation in its side and the
+statement in its debit/credit mark; a key that took one rail's word on
+the sign would pair nothing. It reads the whole silver, unwindowed, for
+`buildEraFold`'s reason: whether a booking is recorded twice depends on
+silver's contents, never on which slice of time a load covers.
+
+**The confirmation is the copy that survives**, and that is a rail-level
+rule rather than a per-row judgement: it carries the ISIN, the quantity,
+the price and the side, where the statement line carries a booking code
+and names no security at all. Only a line the bank itself typed `NSEC`
+is eligible, so an ordinary payment that happens to match a trade's
+account, day and figure stays. A trade settling on a cash account the MT940
+feed does not deliver keeps its confirmation, which is why the
+confirmation is also the rail that reads completely.
+
+The confirmation names its cash account in the bank's INTERNAL form
+(`:97A::CASH//`), which is not the IBAN the account registry and every
+other rail are keyed by; `cashAccountIBANs` resolves it from the
+master-data feed, which states both. Without that the trade reaches
+gold attached to an account nothing else records — no kind, no
+portfolio, and outside every account-scoped filter.
+
+### The seam
+
+The hard cut is placed at the first PSN **dump**, because that is the
+day PSN's coverage becomes complete: before it the MT940 feed holds only
+part of the ledger, so a cut placed earlier would drop web bookings PSN
+never carried. But that first dump's statements reach back over the days
+before it, leaving a short window where both feeds hold an entry and
+neither side's window excludes it.
+
+`buildSeamBankRefs` closes it on the bank's own number for the entry —
+the export prints it as "Transaction no." and the `:61:` line repeats it
+verbatim — paired with the account, because an inter-account transfer's
+two legs share the reference and are two bookings. That is an exact
+identity rather than a signature over amounts, the same one
+`psnWebTextFoldStream` already trusts to carry text. **The web copy is
+the one dropped**, matching what the cut does on every later day: the
+MT940 row reaches gold and the export's text folds onto it.
 
 ## 8. Change number
 

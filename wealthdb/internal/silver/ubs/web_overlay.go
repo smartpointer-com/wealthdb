@@ -3,6 +3,7 @@ package ubs
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -107,6 +108,55 @@ SELECT snapshot_at, account_external_id, currency_iso, payload
 type webTxTextKey struct {
 	account string
 	txnNo   string
+}
+
+// buildSeamBankRefs is the set of bookings the MT940 feed already holds,
+// keyed by the bank's own number for the entry and the account it sits
+// on — the same identity psnWebTextFoldStream carries text along.
+//
+// The hard cut is placed at the first PSN DUMP, because that is the day
+// PSN's coverage becomes complete and a cut placed any earlier would
+// drop web bookings PSN never carried. But the first dump's MT940
+// statements reach back over the days before it, so the seam has a
+// short window where both feeds hold the same entry and neither side's
+// window excludes it. The web copy is the one dropped, matching what
+// the cut does on every later day: the MT940 row reaches gold and the
+// export's text is folded onto it.
+//
+// The bank reference is an exact identity, not a signature over amounts
+// — the export prints it as "Transaction no." and the `:61:` line
+// repeats it verbatim — so this drops only an entry the two feeds agree
+// is one booking. Paired with the account because an inter-account
+// transfer's two legs share the reference and are two bookings.
+func (r *webReader) buildSeamBankRefs(ctx context.Context, psn *psnReader) (map[webTxTextKey]bool, error) {
+	out := map[webTxTextKey]bool{}
+	if psn == nil || psn.db == nil {
+		return out, nil
+	}
+	rows, err := psn.db.QueryContext(ctx, `
+SELECT account_external_id, payload FROM events WHERE kind = 'cash_movement'`)
+	if err != nil {
+		return nil, fmt.Errorf("ubs-psn buildSeamBankRefs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var acct, payload string
+		if err := rows.Scan(&acct, &payload); err != nil {
+			return nil, fmt.Errorf("ubs-psn buildSeamBankRefs scan: %w", err)
+		}
+		var m cashMovementPayload
+		if err := json.Unmarshal([]byte(payload), &m); err != nil {
+			continue
+		}
+		if m.BankRef == "" {
+			continue
+		}
+		if m.Account != "" {
+			acct = m.Account
+		}
+		out[webTxTextKey{account: acct, txnNo: m.BankRef}] = true
+	}
+	return out, rows.Err()
 }
 
 // transactionTextByKey returns the narrative columns every web
@@ -369,7 +419,7 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 				c := ccy.String
 				ccyPtr = &c
 			}
-			tx, err := buildTransaction(eventID, ts, acct, "cash_movement", ccyPtr, payload)
+			tx, err := buildTransaction(eventID, ts, acct, "cash_movement", ccyPtr, payload, nil)
 			if err != nil {
 				continue
 			}

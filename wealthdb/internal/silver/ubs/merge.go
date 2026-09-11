@@ -32,12 +32,18 @@ import (
 //   Transactions
 //     - Hard cut at PSN-start per relationship — see
 //       transactionsBeforePSNStart for why an overlap merge isn't
-//       safe here.
+//       safe here. The cut sits at the first PSN dump, whose MT940
+//       statements reach back over the days before it, so a seam fold
+//       (buildSeamBankRefs) drops the web copy of a booking the feed
+//       already holds, found by the bank's own number for the entry.
 //     - An era fold (buildEraFold) collapses a booking that two eras
 //       both recorded: a statement reconstruction whose account,
 //       value day, signed amount and currency match an export or
 //       MT940 row is dropped, and its narrative is carried onto the
 //       row that kept the booking. One booking, one row.
+//     - Inside PSN, a settlement fold (buildSettlementFold) does the
+//       same for the two rails that record one trade: the MT515
+//       confirmation keeps it, the MT940 cash leg settling it drops.
 //     - The PSN stream is wrapped in a text fold
 //       (psnWebTextFoldStream) that fills a narrative column the
 //       MT940 feed left as a bare code from the account-statement

@@ -361,14 +361,17 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // costs one wrong narrative rather than a duplicated or vanished
 // booking.
 //
-// The era fold (buildEraFold) is the one place a row IS dropped for
-// being a second record of a booking, and only inside the web silver's
-// own two eras against the machine-readable records: a statement
-// reconstruction whose account, value day, signed amount and currency
-// match an export or MT940 row is not emitted, because the row that
-// matched it already carries the booking. That is an exact signature on
-// the booking's own facts rather than a heuristic on ids, and it never
-// folds two rows of one era.
+// Two folds DO drop a web row for being a second record of a booking,
+// and both decide on an exact identity rather than a heuristic on ids.
+// The era fold (buildEraFold) works inside the web silver's own two
+// eras against the machine-readable records: a statement reconstruction
+// whose account, value day, signed amount and currency match an export
+// or MT940 row is not emitted, because the row that matched it already
+// carries the booking; it never folds two rows of one era. The seam
+// (buildSeamBankRefs) covers the days the first PSN dump's statements
+// reach back over, where the cut excludes neither copy, and matches on
+// the bank's own number for the entry. Both verdicts reach the offset
+// veto, which must not count a row nothing emits.
 //
 // The second return value is what this pass decided about rows the PSN
 // stream will emit (psnHints): the event ids of PSN cash movements whose
@@ -396,13 +399,30 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, psnHints{}, err
 	}
-	// The era fold runs first: a statement row it folds away is not in the
-	// ledger, so it must not consume an offset-veto match either.
+	// Both folds run BEFORE the offset veto, and their verdicts reach it
+	// together: a web row either fold suppresses is not in the ledger, so
+	// it must not consume an offset-veto match either. The veto's universe
+	// is the EMITTED rows, and a suppressed row is represented there by
+	// its PSN counterpart; leave it in and it can win the mirror its
+	// counterpart needed, demoting one leg of a pair while the other keeps
+	// its flow kind — the one-sided phantom flow the veto exists to
+	// prevent.
 	fold, err := r.buildEraFold(ctx, psn, cutoff, accountToRel)
 	if err != nil {
 		return nil, psnHints{}, err
 	}
-	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel, fold.drop)
+	seam, err := r.buildSeamBankRefs(ctx, psn)
+	if err != nil {
+		return nil, psnHints{}, err
+	}
+	suppressed := make(map[string]bool, len(fold.drop)+len(seam))
+	for k := range fold.drop {
+		suppressed[k] = true
+	}
+	for k := range seam {
+		suppressed[k.txnNo+"@"+k.account] = true
+	}
+	offsetVeto, psnVeto, err := r.buildSameDayOffsetVeto(ctx, psn, cutoff, accountToRel, suppressed)
 	if err != nil {
 		return nil, psnHints{}, err
 	}
@@ -442,6 +462,15 @@ SELECT transaction_external_id, value_date, account_external_id,
 		// the machine-readable record keeps it. Counted so the drop is
 		// visible on the load summary.
 		if fold.drop[emittedKey] {
+			folded++
+			continue
+		}
+		// The seam (buildSeamBankRefs): the MT940 feed's first
+		// statements reach back over the days before the cut, so a
+		// booking in that window is held by both feeds and excluded by
+		// neither window. The MT940 row keeps it, as it does on every
+		// day after the cut.
+		if seam[webTxTextKey{account: accountID, txnNo: txID}] {
 			folded++
 			continue
 		}
@@ -575,7 +604,7 @@ SELECT transaction_external_id, value_date, account_external_id,
 		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
 	}
 	if folded > 0 {
-		log.Printf("ubs adapter: folded %d statement row(s) into the export or feed record of the same booking — one booking, one row", folded)
+		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), psnHints{veto: psnVeto, carry: fold.psn}, rows.Err()
 }
@@ -844,10 +873,12 @@ type offsetLeg struct {
 // duplicate and must not consume a match) plus PSN cash movements, over the
 // FULL silver rather than the load window — a row's classification depends
 // only on silver contents, never on load slicing; a mirror leg that lands in
-// a later dump is picked up on the next `reload`. `folded` names the statement
-// rows the era fold (buildEraFold) removed from that universe for the same
-// reason the cut removes rows: their booking is already represented by the
-// export or feed row that kept it.
+// a later dump is picked up on the next `reload`. `suppressed` names the web
+// rows removed from that universe by either fold — the era fold
+// (buildEraFold) and the seam (buildSeamBankRefs) — for the same reason the
+// cut removes rows: their booking is already represented by the row that kept
+// it. Every fold that drops a web row belongs in this set; one that is left
+// out silently consumes matches on behalf of a row nothing emits.
 //
 // Matching is 1:1 greedy and deterministic, in two global phases: first every
 // bank-linked twin (shared Transaction no. — UBS stamps both sides of an
@@ -855,7 +886,7 @@ type offsetLeg struct {
 // currency, so they never pair here), then loose same-day offsets among the
 // remaining legs. The twin phase is global so a twin-less leg that merely
 // sorts earlier can never steal another leg's bank-linked twin.
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string, folded map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, cutoff map[string]int64, accountToRel map[string]string, suppressed map[string]bool) (webVeto, psnVeto map[string]bool, err error) {
 	type groupKey struct {
 		day int64
 		ccy string
@@ -888,11 +919,11 @@ SELECT transaction_external_id, value_date, account_external_id,
 				continue
 			}
 		}
-		// A statement row the era fold folded away is likewise not in the
-		// ledger: its booking is represented by the export or feed row that
-		// kept it, and letting the folded copy stand here would let one
-		// booking consume two mirrors.
-		if folded[txID+"@"+acct] {
+		// A web row either fold suppressed is likewise not in the ledger:
+		// its booking is represented by the row that kept it, and letting
+		// the suppressed copy stand here would let one booking consume two
+		// mirrors.
+		if suppressed[txID+"@"+acct] {
 			continue
 		}
 		kind := webKind(webKindHint(kindStr, counterparty), debit.Valid, credit.Valid)
