@@ -15,6 +15,7 @@ ISINs / IBANs / amounts only.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import zipfile
@@ -44,6 +45,89 @@ MT535 = (
     ":16S:FIN\n"
     "-}"
 )
+
+
+# Minimal synthetic MT515 confirmations. The first is an exchange fill,
+# whose trade is timed to the second (:98C::TRAD//); the second is a
+# fund order, priced at a valuation point and so dated to the day alone
+# (:98A::TRAD//). Both settle two days later. Every id, ISIN and figure
+# is invented, and the dates sit in a decade the source cannot have
+# booked in.
+def _mt515(seme: str, trade_tag: str, buse: str) -> str:
+    return (
+        "{1:F01TESTXXXXAXXX0000000000}{2:I515TESTXXXXXXXXN}{4:\n"
+        ":16R:GENL\n"
+        f":20C::SEME//{seme}\n"
+        ":23G:NEWM\n"
+        ":16S:GENL\n"
+        ":16R:CONFDET\n"
+        f"{trade_tag}\n"
+        ":98A::SETT//20981204\n"
+        f":22H::BUSE//{buse}\n"
+        ":16R:CONFPRTY\n"
+        ":97A::SAFE//SK123\n"
+        ":97A::CASH//CASH123\n"
+        ":16S:CONFPRTY\n"
+        ":35B:ISIN XX0000000001\n"
+        "EXAMPLE FUND\n"
+        ":16S:CONFDET\n"
+        ":16R:SETDET\n"
+        ":16R:AMT\n"
+        ":19A::SETT//USD1000,\n"
+        ":16S:AMT\n"
+        ":16S:SETDET\n"
+        "-}"
+    )
+
+
+def test_load_mt515_dates_a_trade_to_the_day_it_was_struck(tmp_path):
+    """Both of ISO 15022's trade-date tags are read.
+
+    An exchange fill is timed to the second and a fund order is dated to
+    the day; read for the timed tag alone, a fund order looked undated
+    and fell through to its settlement date, which is a different day.
+    """
+    struck = int(datetime(2098, 12, 2, tzinfo=timezone.utc).timestamp())
+    for seme, trade_tag in (
+        ("TIMED01", ":98C::TRAD//20981202103000"),
+        ("DATED01", ":98A::TRAD//20981202"),
+    ):
+        conn = _fresh_db(tmp_path / seme)
+        with conn:
+            assert loader.load_mt515(
+                conn, 1700000000, REL, _mt515(seme, trade_tag, "BUYI")) == 1
+        row = conn.execute(
+            "SELECT timestamp FROM events WHERE event_external_id = ?",
+            (f"mt515:{seme}",)).fetchone()
+        # The timed form carries a time of day; both land on the day the
+        # trade was struck rather than the day it settled.
+        assert datetime.fromtimestamp(
+            row["timestamp"], timezone.utc).date() == datetime(
+                2098, 12, 2, tzinfo=timezone.utc).date(), seme
+        assert row["timestamp"] >= struck, seme
+
+
+def test_load_mt515_keeps_a_fund_orders_own_vocabulary(tmp_path):
+    """ISO states a fund order's direction as the operation (SUBS /
+    REDM) rather than the party the holder was (BUYI / SELL). Only the
+    market pair is folded to a common spelling; which vocabulary the
+    bank used is part of what the confirmation says, and the gold
+    adapter reads both."""
+    for seme, buse, want in (
+        ("MARKET01", "BUYI", "BUY"),
+        ("MARKET02", "SELL", "SELL"),
+        ("FUND0001", "SUBS", "SUBS"),
+        ("FUND0002", "REDM", "REDM"),
+    ):
+        conn = _fresh_db(tmp_path / seme)
+        with conn:
+            loader.load_mt515(
+                conn, 1700000000, REL,
+                _mt515(seme, ":98A::TRAD//20981202", buse))
+        row = conn.execute(
+            "SELECT payload FROM events WHERE event_external_id = ?",
+            (f"mt515:{seme}",)).fetchone()
+        assert json.loads(row["payload"])["side"] == want, seme
 
 
 def _fresh_db(tmp_path: Path) -> sqlite3.Connection:

@@ -987,7 +987,12 @@ def load_mt566(conn, snapshot_at, relationship_id, mt_text):
 # MT515 — trade confirmations
 # --------------------------------------------------------------------------
 
-# Map :22H::BUSE// raw code -> conventional side label.
+# :22H::BUSE// — the order's business function, which carries two
+# vocabularies in the one tag: a market trade names the party the holder was, a fund
+# order names the operation (SUBS subscribes, REDM redeems). Only the
+# market pair is folded to a common spelling; a fund order keeps its own
+# word, because which vocabulary the bank used is part of what the
+# confirmation says. The gold adapter reads both.
 _MT515_SIDE = {"BUYI": "BUY", "SELL": "SELL"}
 
 
@@ -1097,7 +1102,15 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
     buse = g("22H", "BUSE")
     side = _MT515_SIDE.get(buse, buse)
 
+    # The trade date comes in either of ISO 15022's two date tags, and a
+    # confirmation carries whichever the instrument's market reports. An
+    # exchange fill is timed to the second (:98C::TRAD//); a fund order
+    # is priced at a valuation point and dated to the day alone
+    # (:98A::TRAD//). Read for the timed form only, a fund order looked
+    # undated and fell through to its settlement date, which is a
+    # different day.
     trade_time_unix = _parse_unix_dt(g("98C", "TRAD"), "%Y%m%d%H%M%S")
+    trade_date_unix = _parse_unix_dt(g("98A", "TRAD"), "%Y%m%d")
     prep_time_unix = _parse_unix_dt(g("98C", "PREP"), "%Y%m%d%H%M%S")
     settlement_date_unix = _parse_unix_dt(g("98A", "SETT"), "%Y%m%d")
 
@@ -1134,6 +1147,7 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
         "seme": seme,
         "related_order_id": related,
         "trade_time_unix": trade_time_unix,
+        "trade_date_unix": trade_date_unix,
         "prep_time_unix": prep_time_unix,
         "settlement_date_unix": settlement_date_unix,
         "side": side,
@@ -1159,10 +1173,11 @@ def load_mt515(conn, snapshot_at, relationship_id, mt_text):
         "raw_fields": fields,
     }
 
-    # Timestamp = trade execution time when present (the natural "when"),
-    # else settlement, else prep, else the dump's snapshot_at.
-    timestamp = (trade_time_unix or settlement_date_unix or prep_time_unix
-                 or snapshot_at)
+    # Timestamp = when the trade was struck (the natural "when"), timed
+    # to the second where the market reports it and to the day where it
+    # does not; else settlement, else prep, else the dump's snapshot_at.
+    timestamp = (trade_time_unix or trade_date_unix or settlement_date_unix
+                 or prep_time_unix or snapshot_at)
 
     conn.execute(
         "INSERT OR REPLACE INTO events"
