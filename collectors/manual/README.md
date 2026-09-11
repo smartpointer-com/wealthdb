@@ -105,6 +105,9 @@ basis (gold's book value).
 > date lives on the position (`acquired_at`). See [DESIGN.md](DESIGN.md) §6. A
 > note→equity **conversion** is recorded position-side: close the note
 > (`closed_at`) and open the equity with `payload.converted_from_position_id`.
+> The one exception is value arriving from **another tracked vehicle** with no
+> bank in between — sale proceeds an agent holds back — whose cash half lives
+> in the equity-transfer ledger, not here (DESIGN.md §6).
 
 ### `payload` cheat-sheet
 

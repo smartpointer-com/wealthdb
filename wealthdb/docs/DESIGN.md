@@ -3082,6 +3082,16 @@ double-counted — while a mid-life transfer is booked in full. The
 ledger is source-agnostic; any source's transfers are just rows
 with that `silver_source_id`.
 
+That includes the positions-only source. `manual` collects no
+transactions, but value can reach it from another tracked vehicle
+with no bank in between, and the selling source books only its own
+half. A row
+against `manual`'s single account (blank `instrument` and
+`quantity`: a bare valued movement) supplies the other half, and
+that source's returns policy admits exactly the two ledger kinds so
+the claim's arrival is funded rather than read as performance. The
+runbook is in `collectors/manual/DESIGN.md` §6.
+
 ### 13.11 Spending pins ledger
 
 Some rows on a cash account cannot be classified from anything gold

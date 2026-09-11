@@ -34,8 +34,13 @@ import (
 )
 
 func TestRegisteredFlowPolicies(t *testing.T) {
-	// The NAV-only source: manual emits no transactions at all, so nothing is
-	// countable — nav_only regime, no external kinds.
+	// The NAV-only source: manual emits no transactions at all, so no
+	// COLLECTED kind is countable — nav_only regime, deposits and the
+	// private-market kinds stay outside. The two ledger kinds are the one
+	// exception: value that moved in from another tracked vehicle is booked
+	// through the equity-transfer ledger as a transfer_in / transfer_out on
+	// this source, and only those count — otherwise a claim arriving from
+	// an escrow reads as performance.
 	man, _ := returns.ReturnsPolicyFor("manual")
 	if !man.Flow.Known {
 		t.Error("manual: policy must be Known (registered)")
@@ -44,7 +49,13 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		t.Errorf("manual: regime %v, want nav_only", man.Flow.Regime)
 	}
 	if man.Flow.IsExternal(canonical.TxKindDeposit) || man.Flow.IsExternal(canonical.TxKindContribution) {
-		t.Error("manual: nav-only must have no external kinds")
+		t.Error("manual: a collected deposit or contribution must not count")
+	}
+	if !man.Flow.IsExternal(canonical.TxKindTransferIn) || !man.Flow.IsExternal(canonical.TxKindTransferOut) {
+		t.Error("manual: the ledger kinds transfer_in / transfer_out must count")
+	}
+	if man.Flow.IsTransferLike(canonical.TxKindTransferIn) {
+		t.Error("manual: a ledger leg has nothing on this source to net against")
 	}
 
 	// carta / equityzen: complete double-entry ledgers on the custody account.

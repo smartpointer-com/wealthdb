@@ -17,10 +17,13 @@ const (
 	// an unclassifiable mix (internal moves + airdrops/gifts) and are excluded
 	// (cointracking). TWR from the value series + fiat flows; MWR partial.
 	RegimeCryptoPartial
-	// RegimeNavOnly: no usable external flows (manual — its wires are already
-	// captured by the bank collectors). Returns from the NAV / value series;
-	// MWR = n/a; TWR reliable only while capital is static after onboarding
-	// (nav_only_capital_call_risk).
+	// RegimeNavOnly: no collected external flows (manual — its wires are
+	// already captured by the bank collectors). Returns from the NAV / value
+	// series; MWR = n/a on the source alone; TWR reliable only while capital
+	// is static after onboarding (nav_only_capital_call_risk). The regime
+	// does not force the kind sets empty: a source may still admit the
+	// hand-asserted ledger kinds (transfer_in / transfer_out) for value that
+	// moved in from another tracked vehicle rather than from a bank.
 	RegimeNavOnly
 )
 

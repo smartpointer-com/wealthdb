@@ -24,7 +24,10 @@ domain knowledge enters through a pluggable `ReturnsPolicy` (see
   liability line.
 - **Credit cards are returns-invisible** — see below.
 - **The NAV-only source** (manual) reports value-growth TWR tagged
-  `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows`.
+  `nav_only` + `nav_only_capital_call_risk`; MWR is `mwr_no_flows` on the
+  source alone. Its one counted flow kind is a hand-asserted ledger leg
+  (`transfer_in` / `transfer_out` from the equity-transfer ledger) for value
+  that arrived from another tracked vehicle rather than a bank.
   A blended aggregate MWR is still computed and tagged
   `mwr_incomplete_flows` — disclose, don't refuse. carta / equityzen count
   the real boundary flows of their double-entry ledgers (see "Pluggable

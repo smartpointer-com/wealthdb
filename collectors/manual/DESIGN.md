@@ -241,6 +241,33 @@ the position. carta/equityzen *need* their double-entry ledgers (booked on
 their custody accounts) because those sources' cash is invisible to everything
 else; manual's is not.
 
+**One exception — value that arrives from another tracked vehicle, not from a
+bank.** Another source can book a withdrawal whose value reappears here as a
+claim, with no bank in between: sale proceeds an agent holds back, for
+example, as an `other`/`escrow` position. The position alone would make the
+returns engine read the arrival as performance — a mark stepping up with
+nothing to fund it — and a later release as a loss of the whole claim. The
+missing half is supplied by a row in the config-side equity-transfer ledger
+(wealthdb `docs/DESIGN.md` §13.10) written against this source's single
+account; the loader injects it as a `transfer_in` / `transfer_out`, and the
+source's returns policy admits exactly those two kinds. The invariant, for
+every date something happens to such a claim:
+
+- the `valuations.csv` row says what the claim is **still worth after** the
+  event;
+- the ledger row says what **cash actually crossed** the claim's boundary,
+  and in which direction;
+- the engine books (Δvalue + cash) as the return.
+
+So the arrival is a `direction=in` leg against a valuation of the same
+amount (return 0). A release tranche is a `direction=out` leg dated the day
+cash reaches the bank, against a mark-down of the same amount (return 0);
+the bank's deposit is its own external inflow, and the two do not need to
+pair. Interest is a mark above the cash that eventually comes out (a gain).
+A claim paid out to a third party is a mark-down with **no ledger row**
+(a loss); forfeiture is the mark going to zero the same way.
+Nothing else is ever needed.
+
 **Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
 widens the `silver_sources` `silver_kind` whitelist (the 0007–0015
 rename-recreate pattern); `real_estate` + `convertible_note` are added to
