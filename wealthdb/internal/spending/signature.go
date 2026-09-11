@@ -166,7 +166,18 @@ import (
 //     tiers that read something other than a payee, the transaction's
 //     own kind among them. Rows that shared a code key lose it; every
 //     other narrative is keyed exactly as version 9 keys it.
-const SignatureVersion = 10
+//   - 11: Normalize is unchanged; what moves is again what the UBS
+//     adapter gives it. A charge for one of the bank's own services —
+//     custody, advice, a safe box, the service-price close, an
+//     interest calculation — carried an account or security REFERENCE
+//     in its payee column, and a bare booking code on the feed that
+//     writes no payee at all. So one relationship's fees keyed as many
+//     merchants as it had referenced accounts, none of them a party.
+//     The adapter now names the bank on those, and they key as one.
+//     A depositary's pass-through and a third-party charge keep their
+//     own keys, being collected on someone else's behalf. Every other
+//     narrative is keyed exactly as version 10 keys it.
+const SignatureVersion = 11
 
 // maxSignatureLen bounds a signature, at a whole-token boundary.
 // Narratives run long — a full address, a terminal id, a

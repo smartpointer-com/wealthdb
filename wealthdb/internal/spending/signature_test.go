@@ -141,8 +141,8 @@ func TestNormalizeFallsBackToDescription(t *testing.T) {
 // it hands Normalize moves keys just as surely (versions 4, 7, 8 and
 // 9), so the stamp is not a version number for this file alone.
 func TestSignatureVersion(t *testing.T) {
-	if SignatureVersion != 10 {
-		t.Errorf("SignatureVersion = %d, want 10", SignatureVersion)
+	if SignatureVersion != 11 {
+		t.Errorf("SignatureVersion = %d, want 11", SignatureVersion)
 	}
 }
 

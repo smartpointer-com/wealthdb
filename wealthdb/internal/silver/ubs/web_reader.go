@@ -1281,7 +1281,22 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		"PRECIOUS METAL BUY", "PRECIOUS METAL SELL",
 		"BUY PM SPOT W/O VAT", "SELL PM SPOT W/O VAT",
 		"SUBSCRIPTION RIGHT",
-		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE":
+		"UBS MANAGE", "REC UBS MANAGE", "CAN UBS MANAGE",
+		// Private-market vehicles settle the same way, under their
+		// own vocabulary. A capital call buys fund units and a
+		// distribution sells them, both against the cash account that
+		// sits in the same portfolio as the units — so neither is
+		// capital crossing the household's boundary.
+		//
+		// Left as deposits and withdrawals they were, and the returns
+		// policy counts those as external capital and never nets
+		// them: a call read as capital leaving while the fund's NAV
+		// rose to meet it, and a distribution will read as capital
+		// arriving while the NAV falls. Both legs of a single internal
+		// move, each booked as though the other did not exist.
+		"CAPITAL CALL", "ISSUE WITHOUT RIGHTS",
+		"PURCHASE FROM ISSUE WITH PREPAYMENT",
+		"CASH SETTLEMENT", "CASH DISTRIBUTION":
 		return securitiesSide(hasDebit, hasCredit)
 	// ---- Mobile payments: money moving across the relationship
 	// boundary, like a card payment or a payment order. The statement

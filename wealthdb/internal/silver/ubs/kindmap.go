@@ -145,6 +145,21 @@ func isReversalMark(creditDebit string) bool {
 // entries the bank wrote no narrative for at all.
 //
 // The DIRECTION is the last word, and the only one for a reversal.
+// isOwnChargeCode reports whether an MT940 :61: transaction type is
+// one the account-servicing institution levies for itself. A reversal
+// is excluded for the same reason it bypasses the kind floor: its
+// direction is not yet settled, so nothing should be asserted from it.
+func isOwnChargeCode(txnType, creditDebit string) bool {
+	if isReversalMark(creditDebit) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(txnType)) {
+	case "NCHG", "NCOM":
+		return true
+	}
+	return false
+}
+
 func cashMovementKind(narrative, creditDebit, txnType string) canonical.TxKind {
 	upper := strings.ToUpper(narrative)
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ptu-gh/wealthdb/wealthdb/internal/canonical"
+	"github.com/ptu-gh/wealthdb/wealthdb/internal/returns"
 )
 
 // TestWebKindClassification pins the description_kind → TxKind
@@ -53,7 +54,9 @@ func TestWebKindClassification(t *testing.T) {
 		{"mt940 pm spot sell", "Sell PM spot w/o VAT", N, C, canonical.TxKindSell},
 		{"mt940 order prefixed", "UCCDD00000000001; order", D, N, canonical.TxKindWithdrawal},
 		{"mt940 capital gain", "Capital gain", N, C, canonical.TxKindDeposit},
-		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindWithdrawal},
+		// A fund unit issuance settles against the cash account beside
+		// it, so it is a purchase, not capital leaving the household.
+		{"mt940 issue without rights", "Issue without rights", D, N, canonical.TxKindBuy},
 		// TWINT in the CSV feed's mixed case: money moving, by type.
 		{"mt940 twint payment", "Payment UBS TWINT", D, N, canonical.TxKindWithdrawal},
 		{"mt940 twint debit", "Debit UBS TWINT", D, N, canonical.TxKindWithdrawal},
@@ -160,5 +163,52 @@ func TestWebProjectedNetKeepsAStatementReversal(t *testing.T) {
 					tc.descKind, tc.statementEra, got.String(), want.String())
 			}
 		})
+	}
+}
+
+// TestAPrivateMarketCallIsABuyAndADistributionIsASell.
+//
+// A fund's units and the cash account that funds them sit in one
+// portfolio, so a capital call moves value between two pockets of the
+// same entity. Booked as a withdrawal it was external capital instead —
+// the returns policy counts deposits and withdrawals as capital
+// crossing the boundary and never nets them — so a call read as money
+// leaving while the NAV rose, and a distribution reads as money
+// arriving while the NAV falls.
+func TestAPrivateMarketCallIsABuyAndADistributionIsASell(t *testing.T) {
+	for _, bookingType := range []string{
+		"CAPITAL CALL", "Issue without rights",
+		"Purchase from issue with prepayment", "Cash Settlement",
+	} {
+		if got := webKind(bookingType, true, false); got != canonical.TxKindBuy {
+			t.Errorf("%q on the debit side = %q, want buy", bookingType, got)
+		}
+	}
+	for _, bookingType := range []string{"Cash Distribution", "Cash Settlement"} {
+		if got := webKind(bookingType, false, true); got != canonical.TxKindSell {
+			t.Errorf("%q on the credit side = %q, want sell", bookingType, got)
+		}
+	}
+}
+
+// TestAPrivateMarketSettlementIsNotAReturnsFlow states the property the
+// mapping exists for, rather than the mapping itself: whatever kind
+// these settle as, it must not be one the returns policy counts as
+// capital crossing the household's boundary.
+func TestAPrivateMarketSettlementIsNotAReturnsFlow(t *testing.T) {
+	external := map[canonical.TxKind]bool{}
+	for _, k := range returns.BankExternal() {
+		external[k] = true
+	}
+	for _, bookingType := range []string{
+		"CAPITAL CALL", "Issue without rights", "Cash Distribution",
+		"Purchase from issue with prepayment", "Cash Settlement",
+	} {
+		for _, debit := range []bool{true, false} {
+			if k := webKind(bookingType, debit, !debit); external[k] {
+				t.Errorf("%q settles as %q, which returns counts as external capital",
+					bookingType, k)
+			}
+		}
 	}
 }

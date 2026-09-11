@@ -85,16 +85,18 @@ func TestStatementSummaryRowIsDropped(t *testing.T) {
 
 // TestPeriodCloseBookingKeepsTypeOnly: a fee or interest booking at a period
 // close keeps its kind and amount, its description is the booking type alone,
-// its counterparty is empty, and the provider category still carries the
-// type for the provider map to place. A trailing turnover line behind an
-// ordinary booking is stripped without touching the payee.
+// and the provider category still carries the type for the provider map to
+// place. Its payee is the BANK: both booking types are charges for the
+// bank's own services, and the turnover line the statement attaches behind
+// them is not a party. A trailing turnover line behind an ordinary booking
+// is stripped without touching the payee.
 func TestPeriodCloseBookingKeepsTypeOnly(t *testing.T) {
 	r := newWebTxFixture(t)
 	seedStatementSummaryRows(t, r)
 	got := drainTx(t, emitWebStream(t, r))
 	checkText(t, got, map[string]textCase{
-		"F1@" + textAcct: {"BALANCE CLOSING OF SERVICE PRICES", "<nil>", "BALANCE CLOSING OF SERVICE PRICES"},
-		"I1@" + textAcct: {"INTEREST CALCULATION BALANCE", "<nil>", "INTEREST CALCULATION BALANCE"},
+		"F1@" + textAcct: {"BALANCE CLOSING OF SERVICE PRICES", bankName, "BALANCE CLOSING OF SERVICE PRICES"},
+		"I1@" + textAcct: {"INTEREST CALCULATION BALANCE", bankName, "INTEREST CALCULATION BALANCE"},
 		"Z1@" + textAcct: {"E-BANKING PAYMENT ORDER; EXAMPLE PAYEE", "EXAMPLE PAYEE", "E-BANKING PAYMENT ORDER"},
 		"P1@" + textAcct: {"E-BANKING PAYMENT ORDER; EXAMPLE GROCER; EXAMPLE CITY", "EXAMPLE GROCER", "E-BANKING PAYMENT ORDER"},
 	})

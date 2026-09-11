@@ -617,3 +617,49 @@ func TestRefusedBookingTypeLetsTheNarrativeNameTheMerchant(t *testing.T) {
 		t.Errorf("signature = %q, want the payee from the narrative", got)
 	}
 }
+
+// TestTheBankIsThePayeeOnItsOwnCharges: a charge for one of the bank's
+// own services names a product, not a party. The export feed writes an
+// account or security reference in the payee column, and a reference
+// keyed as a merchant splits one relationship's fees across as many
+// merchants as it has referenced accounts.
+func TestTheBankIsThePayeeOnItsOwnCharges(t *testing.T) {
+	for _, bookingType := range []string{
+		"CUSTODY PRICE", "UBS ADVICE", "RENTAL FEE SAFE BOX",
+		"BALANCE CLOSING OF SERVICE PRICES", "INTEREST CALCULATION BALANCE",
+	} {
+		got, _, _ := projectWebTxText("230-XXXXXX.S9", bookingType, webTxPayload{}, false)
+		if got.counterparty != bankName {
+			t.Errorf("%q payee = %q, want %q — the bank bills this one for itself",
+				bookingType, got.counterparty, bankName)
+		}
+	}
+}
+
+// TestACollectedChargeIsNotTheBanks is the guard on the rule above. A
+// depositary's fee and a third-party charge are collected on someone
+// else's behalf, so naming the bank would misstate who was paid.
+func TestACollectedChargeIsNotTheBanks(t *testing.T) {
+	for _, bookingType := range []string{"ADR/GDR HANDLING FEES", "THIRD-PARTY CHARGES"} {
+		got, _, _ := projectWebTxText("VN 00000000 XXXXXXS9", bookingType, webTxPayload{}, false)
+		if got.counterparty == bankName {
+			t.Errorf("%q was attributed to the bank; it is collected for someone else",
+				bookingType)
+		}
+	}
+}
+
+// TestTheBankIsThePayeeWhenOnlyTheNarrativeNamesTheCharge: the
+// statement-archive era fills no booking-type column, so the product
+// name arrives as the narrative itself. The charge is the bank's
+// either way, and reading only the booking type left that era's rows
+// keyed on the product instead.
+func TestTheBankIsThePayeeWhenOnlyTheNarrativeNamesTheCharge(t *testing.T) {
+	got, _, _ := projectWebTxText("", "", webTxPayload{
+		Description1: "Custody Price",
+	}, true)
+	if got.counterparty != bankName {
+		t.Errorf("payee = %q, want %q — the narrative names one of the bank's own charges",
+			got.counterparty, bankName)
+	}
+}

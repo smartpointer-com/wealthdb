@@ -128,11 +128,61 @@ func projectWebTxText(counterparty, descriptionKind string, p webTxPayload, pdfB
 	if isBookingType(payee) {
 		payee = ""
 	}
+	// A charge for one of the bank's OWN services has no third party
+	// in it, so the bank is the payee. The export feed writes the
+	// product under the booking type and an account or security
+	// reference in the payee column, and a reference is not a party:
+	// left alone it became the merchant, one per referenced account,
+	// splitting a single relationship's fees across as many merchants
+	// as it has accounts.
+	description := derefText(webDescription(captionDesc, bookingType, p))
+	if isOwnServiceCharge(bookingType) || isOwnServiceCharge(firstSegment(description)) {
+		payee = bankName
+	}
 	return webTxText{
 		counterparty:     payee,
-		description:      derefText(webDescription(captionDesc, bookingType, p)),
+		description:      description,
 		providerCategory: bookingType,
 	}, instrumentID, memo
+}
+
+// firstSegment is the head of a statement narrative — what precedes the
+// separator that divides a payee from the address and reason behind it.
+//
+// The booking type is the better place to read a product name from, but
+// the statement-archive era does not fill that column: there the
+// product IS the narrative, and its whole first segment names it.
+func firstSegment(s string) string {
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}
+
+// bankName is the institution this adapter reads, as it should appear
+// where the bank itself is the counterparty.
+const bankName = "UBS"
+
+// ownServiceCharges are the booking types under which the bank bills
+// for its own services. Each names a product rather than a party,
+// because the party is the bank.
+//
+// Two charge types are deliberately absent. An ADR/GDR handling fee is
+// a DEPOSITARY's charge passed through, and a third-party charge says
+// as much in its name: the bank collects both on someone else's
+// behalf, so attributing them to the bank would misstate who was paid.
+var ownServiceCharges = map[string]bool{
+	"UBS ADVICE":                        true,
+	"CUSTODY PRICE":                     true,
+	"RENTAL FEE SAFE BOX":               true,
+	"BALANCE CLOSING OF SERVICE PRICES": true,
+	"INTEREST CALCULATION BALANCE":      true,
+}
+
+// isOwnServiceCharge reports whether a booking type is one the bank
+// bills for itself.
+func isOwnServiceCharge(bookingType string) bool {
+	return ownServiceCharges[strings.ToUpper(strings.TrimSpace(bookingType))]
 }
 
 // derefText reads an optional text column as a plain string, an absent

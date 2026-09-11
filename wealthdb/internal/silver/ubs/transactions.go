@@ -169,6 +169,16 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		// was classified from the raw narrative and is unaffected.
 		tx.Description = narrativeText(p.Narrative)
 		tx.ProviderCategory = silver.StrPtrIfNonEmpty(p.TxnType)
+		// The one payee MT940 does carry, in the :61: code rather than
+		// the text: NCHG is "charges and other expenses" and NCOM a
+		// commission, both levied by the account-servicing institution
+		// itself. They name no party because the party is the bank,
+		// and the narrative on them is usually a bare booking code —
+		// so without this the row reaches a report with no merchant at
+		// all, or with the code standing in for one.
+		if isOwnChargeCode(p.TxnType, p.CreditDebit) {
+			tx.Counterparty = silver.StrPtrIfNonEmpty(bankName)
+		}
 
 	case "corporate_action_confirmation",
 		"corporate_action_notification",
