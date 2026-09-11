@@ -2,31 +2,35 @@
 # One fingerprint per line; lines starting with '#' and blank lines are ignored.
 # An optional "SHA256:" prefix is accepted.
 #
-# Source: confirmed out-of-band with UBS PSN support
-# (Switzerland endpoint, sftp-keyport-ch.ubs.com / 94.154.164.145 and
-# 94.154.166.145, port 26701). Supersedes the values printed in the
-# earlier PSN SFTP factsheet, which were no longer current.
+# Source: the UBS PSN "Update of SFTP PULL CH Certificates" notice of
+# 2026-09-11 (sh-psn@ubs.com), which attaches the two 2026 RSA host keys
+# for the Switzerland endpoint (sftp-keyport-ch.ubs.com / 94.154.164.145
+# and 94.154.166.145, port 26701) and states that older keys are retired
+# by 2026-09-12. Both fingerprints below were recomputed from the attached
+# public keys and match the hash file UBS attached beside them; both had
+# already been confirmed out-of-band with UBS PSN support, and every pull
+# recorded in bronze presents one of the two.
 #
 # UBS may rotate these keys again. If you see a fingerprint mismatch, do
 # not use --ignore-fingerprint-mismatch blindly: confirm the new value
 # out-of-band with UBS (sh-psn@ubs.com), then update this file.
 
-# Key 1 (94.154.164.145)
+# CH01, 2026 (94.154.164.145)
+# MD5:98:13:60:54:8d:78:da:f5:27:bb:f2:46:8c:dd:40:5a
 tkC/ch8xKFs7lfOTwDaEfDwpisqzkjmNYSOL9XfAWXA
 
-# Key 2 (94.154.166.145)
+# CH02, 2026 (94.154.166.145)
+# MD5:9d:d2:89:7f:90:41:2e:12:ce:51:d9:67:21:27:6c:5f
 bHRqUemrDhGZ0FCbuL07EljAp+7T5aAssppOtczOcYo
 
-# --- Upcoming rotation -------------------------------------------------
-# Announced by UBS ahead of the rotation. Pre-loaded so the pull
-# keeps validating across it. Keys 1 and 2 above stay valid until
-# the rotation takes effect and can be pruned once these are
-# confirmed live. Both are "no comment" RSA keys; MD5 retained for
-# out-of-band cross-check with UBS.
+# --- Announced but never observed ----------------------------------------
+# Pre-loaded on 2026-05-28 from a UBS notice of a rotation due late June
+# 2026. Neither key has been presented on any recorded pull, and the
+# 2026-09-11 notice does not mention them. Kept so a late cutover to them
+# still validates; prune once a rotation has come and gone without them.
 
-# Upcoming Key A (MD5:87:3f:46:24:0c:14:64:26:75:9b:7d:cb:6b:f3:0b:b8)
+# Key A (MD5:87:3f:46:24:0c:14:64:26:75:9b:7d:cb:6b:f3:0b:b8)
 hds2XqxFCZ95OIN1+O3d/H1PbZ7xiL22fj4PmJ6l5bA
 
-# Upcoming Key B (MD5:62:ec:f6:f5:c2:82:75:0d:e5:58:29:d0:a9:53:e1:c8)
+# Key B (MD5:62:ec:f6:f5:c2:82:75:0d:e5:58:29:d0:a9:53:e1:c8)
 25fxkwBnSAuD0ebmxg+SNuvY9/45WoLsnGWzvMmnrCM
-
