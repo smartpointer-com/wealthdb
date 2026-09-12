@@ -220,6 +220,24 @@ check("the detailed rings do fold their tail (eighty-odd values)",
       all(_RINGS[n][1].get("pie.slice_threshold", 0) > 0
           for n in ("Spending by subcategory",
                     "Spending by subcategory (privacy)")))
+# The figure in the hole sums the slices Metabase DREW, and a ring
+# cannot draw a negative one — so where a bucket can go net-negative
+# (refunds beating purchases) the hole runs over by what it left out.
+# The money rings keep it: it is the figure they are read for, and
+# their descriptions say it is the drawn categories'. The share rings
+# drop it, since there it would carry that error while restating a
+# figure their own description gives as 100.
+check("the share rings carry no figure in the hole",
+      all(_RINGS[n][1].get("pie.show_total") is False
+          for n in ("Spending by category (privacy)",
+                    "Spending by subcategory (privacy)")))
+check("the money rings keep their total in the hole",
+      all(_RINGS[n][1].get("pie.show_total") is True
+          for n in ("Spending by category", "Spending by subcategory")))
+check("a ring promising a total in the hole says whose total it is",
+      all("drawn categories" in CARDS[n][1] or "in the total" in CARDS[n][1]
+          for n in ("Spending by category", "Spending by subcategory")),
+      [CARDS[n][1] for n in ("Spending by category", "Spending by subcategory")])
 
 # Card balances read the way an issuer states them: owed, positive. The
 # flip is in the projection only — gold stores the liability negative.

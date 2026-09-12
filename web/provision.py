@@ -770,7 +770,7 @@ def _series_viz(time_col, series_col, metric, *, log=False, percent=False):
     return viz
 
 
-def _donut(threshold=0):
+def _donut(threshold=0, total=True):
     """Viz for a `pie` card, which Metabase draws as a ring: the total in
     the hole, and each slice's share in the legend rather than crowded
     onto the ring itself.
@@ -781,8 +781,18 @@ def _donut(threshold=0):
     has few enough values to name: this taxonomy HAS a category called
     "Other", and two legend entries by that name read as a rendering
     fault. Set it only where the tail is genuinely too long to draw,
-    and say so on the card."""
-    return {"pie.show_total": True,
+    and say so on the card.
+
+    `total` draws the figure in the hole, which is the sum of the
+    slices the ring DREW rather than of the rows the query returned.
+    A ring cannot draw a negative slice, so on a breakdown where a
+    bucket can go net-negative — refunds beating purchases over the
+    window — the hole runs over the true total by exactly what it
+    left out. Turn it off wherever it would carry that error without
+    carrying anything else: on a breakdown already expressed as
+    shares the hole reads ~100 by construction, so it restates the
+    description's own sentence and is wrong while doing it."""
+    return {"pie.show_total": total,
             "pie.percent_visibility": "legend",
             "pie.slice_threshold": threshold}
 
@@ -1106,13 +1116,17 @@ def question_defs(db_id, mid):
         # A category can go net-negative over a window whose refunds
         # beat its purchases; a ring has no way to draw that, so
         # Metabase leaves such a slice out. The figure is in the
-        # transaction list either way.
+        # transaction list either way. The hole sums what was drawn,
+        # so it carries the drawn categories rather than the window —
+        # the two differ by the net-negative ones, and the
+        # description says which figure it is.
         "Spending by category": spend_native("Spending by category", "pie",
             "Net spend by primary category over the window, largest first, "
-            "with the window's total in the middle. The subcategory tile "
-            "beside it holds the same window at the detailed level, and the "
-            "transaction list below holds the lines. A category whose "
-            "refunds beat its purchases has no slice.",
+            "with the drawn categories' total in the middle. The subcategory "
+            "tile beside it holds the same window at the detailed level, and "
+            "the transaction list below holds the lines. A category whose "
+            "refunds beat its purchases has no slice, and is not in that "
+            "total.",
             f"SELECT spend_primary_label AS category,\n       {sp_val} AS net_spend\n"
             "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut()),
@@ -1121,7 +1135,9 @@ def question_defs(db_id, mid):
             "The detailed level of Spending by category: net spend by "
             "detailed category. The vocabulary holds eighty-odd values, so "
             "the ring draws the ones worth a slice and folds the long tail "
-            "into one — the whole window is on it either way.",
+            "into one — every category that spent is on it either way. One "
+            "whose refunds beat its purchases has no slice, and is not in "
+            "the total in the middle.",
             f"SELECT spend_label AS category,\n       {sp_val} AS net_spend\n"
             "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
             _donut(threshold=1.5)),
@@ -2000,19 +2016,31 @@ def spending_privacy_defs(db_id, model_ids):
     # what it drew and would print shares disagreeing with its own
     # values, where the threshold folds the tail into a wedge and keeps
     # the whole window on the ring.
+    #
+    # No figure in the hole. The shares are of a SIGNED total, so a
+    # category whose refunds beat its purchases carries a negative one
+    # and a ring cannot draw it — leaving the hole to sum the rest and
+    # read just over 100. The values are right and total exactly 100;
+    # it is the hole that cannot represent them, and a hole reading
+    # ~100 on a breakdown already expressed as shares says nothing the
+    # description does not.
     for name, col, threshold, what in (
             ("Spending by category (privacy)", "spend_primary_label", 0,
-             "Primary-category shares (%) of the window's net spend; sums "
-             "to 100."),
+             "Primary-category shares (%) of the window's net spend; they "
+             "sum to 100. A category whose refunds beat its purchases has a "
+             "negative share and no slice, so the drawn ones can run just "
+             "over."),
             ("Spending by subcategory (privacy)", "spend_label", 1.5,
              "Detailed-category shares (%) of the window's net spend, the "
              "ones worth a slice — the long tail folds into one wedge, so "
-             "the ring is still the whole window.")):
+             "the ring is still the whole window. They sum to 100, except "
+             "that a category whose refunds beat its purchases has a "
+             "negative share and no slice.")):
         spend_card(name, "pie", what,
             total_cte(f"{col} AS category,\n         ", "1") +
             f"SELECT category, {share_of_total} AS spend_pct\n"
             "  FROM r\n ORDER BY 2 DESC",
-            _donut(threshold=threshold))
+            _donut(threshold=threshold, total=False))
 
     # Merchants, ranked and unnamed: merchant_name is a GROUP BY key and
     # a WHERE predicate only, so the counterparty decides the rows
