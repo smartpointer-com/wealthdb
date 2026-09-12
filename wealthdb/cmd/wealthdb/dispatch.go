@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 
@@ -20,19 +21,33 @@ import (
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	g, rest, err := parseGlobal(args, stderr)
 	if err != nil {
-		// flag.ContinueOnError prints to stderr already; return 2
-		// (same code the stdlib uses for usage errors).
+		// `--help` is a request that was answered, not a misuse:
+		// flag has already written the usage through fs.Usage, and
+		// asking for help succeeds. Everything else that fails to
+		// parse is a usage error, which flag has also already
+		// reported — 2, the code the stdlib uses for those.
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if len(rest) == 0 {
-		fmt.Fprint(stderr, globalUsage)
+		printGlobalUsage(stderr)
 		return 2
 	}
 
 	subcommand, subargs := rest[0], rest[1:]
 	handler, ok := subcommands[subcommand]
 	if !ok {
-		fmt.Fprintf(stderr, "wealthdb: unknown subcommand %q\n\n%s", subcommand, globalUsage)
+		// The listing names a command or two this binary does not
+		// serve; say which side runs them rather than calling a
+		// command the help just advertised unknown.
+		if c, host := hostSideCommand(subcommand); host {
+			fmt.Fprintf(stderr, "wealthdb: %q is served by the host-side wealthdb wrapper, not this binary.\n%s\n",
+				subcommand, c.detail())
+			return 2
+		}
+		fmt.Fprintf(stderr, "wealthdb: unknown subcommand %q\n\n%s", subcommand, usageString())
 		return 2
 	}
 

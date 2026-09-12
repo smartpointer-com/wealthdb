@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,7 +39,7 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 	fs := flag.NewFlagSet("wealthdb", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	fs.Usage = func() {
-		fmt.Fprint(errOut, globalUsage)
+		printGlobalUsage(errOut)
 	}
 
 	g := globalFlags{ConfigPath: defaultConfigPath()}
@@ -54,30 +53,3 @@ func parseGlobal(args []string, errOut io.Writer) (globalFlags, []string, error)
 	}
 	return g, fs.Args(), nil
 }
-
-const globalUsage = `wealthdb — gold-layer portfolio CLI
-
-usage:
-  wealthdb [global flags] <subcommand> [subcommand flags]
-
-global flags:
-  -c, --config <path>   config file (default ${XDG_CONFIG_HOME:-~/.config}/wealthdb.cfg)
-  -r, --read-only       force read-only access to the gold DB
-
-subcommands:
-  config                interactive first-time setup wizard
-  init                  initialise an empty gold DB at the configured gold_db path
-  load <id> | -a        merge new silver snapshots into gold
-  reset <id> | -a       purge a silver source's data from gold
-  reload <id> | -a      reset then load (use after upgrading wealthdb; -a builds a fresh, compact file)
-  compact [--dry-run]   rewrite the gold DB into a fresh file to reclaim dead space
-  holdings <view>       point-in-time portfolio views: positions, accounts, portfolios, sources, global
-  returns <view>        TWR / MWR returns: accounts, portfolios, sources, global ('wealthdb returns <view> -h')
-  transactions [flags]  print transactions over a date range (default past 30 days, oldest first)
-  spending <view>       spending reports: summary, categories, transactions ('wealthdb spending <view> -h')
-  status [<id>] [-v]    report gold state vs each silver source
-  snapshots <id> | -a   list snapshots gold has loaded for a silver
-  web <verb>            manage the optional Metabase BI server ('wealthdb web help'; host-side, see web/README.md)
-  version               print the wealthdb version
-  help [<subcommand>]   help for a subcommand
-`
